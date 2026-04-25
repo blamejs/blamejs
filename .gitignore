@@ -1,5 +1,54 @@
+# Deny all dotfiles by default; allow-list specific ones below.
+# Catches .env*, .aws/, .ssh/, .npmrc-with-tokens, .vscode/, .idea/,
+# .bash_history, .DS_Store, AI-tooling scratch, and anything else
+# that conventionally lives in a dotfile we don't intend to ship.
+.*
+
+# Dotfiles we DO want tracked
+!.gitignore
+!.gitattributes
+!.github/
+!.editorconfig
+!.dockerignore
+!.nvmrc
+
+# Build / dependencies
 node_modules/
-.DS_Store
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# Runtime / logs
 *.log
-.env
-.env.local
+*.pid
+*.pid.lock
+*.seed
+tmp/
+
+# OS junk (non-dotfile)
+Thumbs.db
+desktop.ini
+
+# Editor scratch (non-dotfile)
+*.swp
+*.swo
+*~
+
+# Credential / key material — belt-and-braces over .*
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+secrets.json
+credentials.json
+id_rsa*
+id_ed25519*
+
+# Backup / patch artifacts
+*.bak
+*.orig
+*.rej
