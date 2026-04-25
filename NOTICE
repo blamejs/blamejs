@@ -1,0 +1,28 @@
+blamejs
+Copyright 2026 blamejs contributors
+
+This product includes software developed by the blamejs project
+(https://blamejs.com).
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+================================================================================
+Third-Party Components
+================================================================================
+
+blamejs vendors third-party libraries under lib/vendor/ rather than peer-
+depending them through npm. Each vendored component retains its original
+copyright and license. Bundle versions and source SHAs are tracked in
+lib/vendor/MANIFEST.json. License texts for each vendored component are
+preserved under lib/vendor/LICENSES/.
+
+(No third-party components vendored yet — entries will be added as the
+framework grows. Each entry below should follow this format:)
+
+--------------------------------------------------------------------------------
+Component:   <package name>
+Version:     <vendored version>
+Source:      <upstream URL>
+License:     <SPDX identifier>
+Copyright:   <upstream copyright line>
+--------------------------------------------------------------------------------

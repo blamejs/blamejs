@@ -25,4 +25,4 @@ Because when something breaks, `blame` should know exactly where it lives. We ow
 
 ## License
 
-TBD — likely permissive (MIT or Apache-2.0) for the framework itself.
+Apache-2.0. See [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for attribution of vendored components.
