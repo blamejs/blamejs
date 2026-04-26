@@ -38,6 +38,19 @@ var check       = helpers.check;
 var setupTestDb = helpers.setupTestDb;
 var teardownTestDb = helpers.teardownTestDb;
 
+// httpClient tests stand up local http://127.0.0.1 mock servers. The
+// framework default is HTTPS-only; tests opt in to cleartext the same
+// way an operator with an internal cleartext endpoint would —
+// `allowedProtocols: urlSafe.ALLOW_HTTP_ALL`. Wrapping it in this thin
+// helper keeps the tests focused on what they're verifying without
+// repeating the opt-in 18 times.
+function httpReq(opts) {
+  return b.httpClient.request(Object.assign(
+    { allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL },
+    opts
+  ));
+}
+
 // ---- sql-safe ----
 
 function testSqlSafeIdentifierValidation() {
@@ -1504,6 +1517,100 @@ function testBufferSafeBoundedChunkCollector() {
   check("collector: requires maxBytes", threwBadArg);
 }
 
+// ---- url-safe ----
+
+function testUrlSafeDefaultIsHttpsOnly() {
+  var u = b.urlSafe;
+  // Default allowlist = ALLOW_HTTP_TLS (https only). http:// rejected.
+  var rejected = null;
+  try { u.parse("http://example.com/x"); }
+  catch (e) { rejected = e; }
+  check("url-safe: http rejected by default",         rejected !== null);
+  check("url-safe: rejection is UrlSafeError",        rejected instanceof u.UrlSafeError);
+  check("url-safe: rejection code = protocol-disallowed",
+        rejected.code === "url-safe/protocol-disallowed");
+
+  // https:// accepted by default
+  var ok = u.parse("https://example.com/x");
+  check("url-safe: https accepted by default",        ok.protocol === "https:");
+}
+
+function testUrlSafeCustomAllowlist() {
+  var u = b.urlSafe;
+  // ALLOW_HTTP_ALL accepts both http: and https:
+  var http  = u.parse("http://example.com/",  { allowedProtocols: u.ALLOW_HTTP_ALL });
+  var https = u.parse("https://example.com/", { allowedProtocols: u.ALLOW_HTTP_ALL });
+  check("url-safe: ALLOW_HTTP_ALL accepts http",  http.protocol === "http:");
+  check("url-safe: ALLOW_HTTP_ALL accepts https", https.protocol === "https:");
+
+  // ALLOW_WS_TLS rejects http: even with same host
+  var rejected = null;
+  try { u.parse("https://example.com/", { allowedProtocols: u.ALLOW_WS_TLS }); }
+  catch (e) { rejected = e; }
+  check("url-safe: WS_TLS rejects https (category error)", rejected !== null);
+
+  var ws = u.parse("wss://example.com/sock", { allowedProtocols: u.ALLOW_WS_TLS });
+  check("url-safe: ALLOW_WS_TLS accepts wss", ws.protocol === "wss:");
+}
+
+function testUrlSafeMalformed() {
+  var u = b.urlSafe;
+  var malformed = null;
+  try { u.parse("not-a-url"); }
+  catch (e) { malformed = e; }
+  check("url-safe: malformed rejects",       malformed !== null);
+  check("url-safe: malformed code",          malformed.code === "url-safe/malformed");
+
+  var missing = null;
+  try { u.parse(""); }
+  catch (e) { missing = e; }
+  check("url-safe: empty rejects",           missing !== null);
+  check("url-safe: empty code = missing",    missing.code === "url-safe/missing");
+
+  var nullMissing = null;
+  try { u.parse(null); }
+  catch (e) { nullMissing = e; }
+  check("url-safe: null rejects",            nullMissing !== null);
+}
+
+function testUrlSafeUrlInstancePassThrough() {
+  var u = b.urlSafe;
+  var { URL } = require("url");
+  var input = new URL("https://example.com/already-parsed");
+  var out = u.parse(input);
+  check("url-safe: URL instance returned as-is", out === input);
+}
+
+function testUrlSafeErrorClassInjection() {
+  var u = b.urlSafe;
+  var rejected = null;
+  try {
+    u.parse("ftp://example.com/", { errorClass: b.frameworkError.ObjectStoreError });
+  } catch (e) { rejected = e; }
+  check("url-safe: errorClass injection returns custom class",
+        rejected instanceof b.frameworkError.ObjectStoreError);
+  check("url-safe: injected error carries protocol-disallowed code",
+        rejected.code === "url-safe/protocol-disallowed");
+  // Operational errors get permanent=true (retry won't help fix a bad URL)
+  check("url-safe: injected error is permanent",
+        rejected.permanent === true);
+}
+
+function testUrlSafeAllowAny() {
+  var u = b.urlSafe;
+  var schemes = ["http://h/", "https://h/", "ws://h/", "wss://h/"];
+  for (var i = 0; i < schemes.length; i++) {
+    var ok = u.parse(schemes[i], { allowedProtocols: u.ALLOW_ANY });
+    check("url-safe: ALLOW_ANY accepts " + schemes[i],
+          ok.protocol === schemes[i].split("://")[0] + ":");
+  }
+  // ftp:// still blocked even by ALLOW_ANY
+  var rejected = null;
+  try { u.parse("ftp://h/", { allowedProtocols: u.ALLOW_ANY }); }
+  catch (e) { rejected = e; }
+  check("url-safe: ALLOW_ANY still rejects ftp:", rejected !== null);
+}
+
 async function testHttpClientBasic() {
   var http = require("http");
   // Local mock server — listens on a random port, captures method+path.
@@ -1522,14 +1629,14 @@ async function testHttpClientBasic() {
     b.httpClient._resetForTest();
 
     // GET
-    var got = await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/foo" });
+    var got = await httpReq({ url: "http://127.0.0.1:" + port + "/foo" });
     check("httpClient: GET status",          got.statusCode === 200);
     check("httpClient: GET body buffered",   Buffer.isBuffer(got.body));
     check("httpClient: GET body content",    got.body.toString("utf8").indexOf("got GET /foo") === 0);
     check("httpClient: GET headers",         got.headers["x-method"] === "GET");
 
     // POST with Buffer body
-    var posted = await b.httpClient.request({
+    var posted = await httpReq({
       method: "POST", url: "http://127.0.0.1:" + port + "/bar",
       body: Buffer.from("hello", "utf8"),
     });
@@ -1538,7 +1645,7 @@ async function testHttpClientBasic() {
     // Connection pooling — same origin reuses the cached agent
     check("httpClient: transport cached after first call",
           b.httpClient._getCachedTransportCount() >= 1);
-    await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/baz" });
+    await httpReq({ url: "http://127.0.0.1:" + port + "/baz" });
     check("httpClient: same origin reuses transport",
           b.httpClient._getCachedTransportCount() === 1);
   } finally {
@@ -1562,7 +1669,7 @@ async function testHttpClientErrorStatus() {
 
     // 404 → permanent
     var threw404 = null;
-    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/notfound", errorClass: b.frameworkError.ObjectStoreError }); }
+    try { await httpReq({ url: "http://127.0.0.1:" + port + "/notfound", errorClass: b.frameworkError.ObjectStoreError }); }
     catch (e) { threw404 = e; }
     check("httpClient: 404 rejects",            threw404 !== null);
     check("httpClient: 404 ObjectStoreError",   threw404 instanceof b.frameworkError.ObjectStoreError);
@@ -1571,13 +1678,13 @@ async function testHttpClientErrorStatus() {
 
     // 429 → transient
     var threw429 = null;
-    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/throttle", errorClass: b.frameworkError.ObjectStoreError }); }
+    try { await httpReq({ url: "http://127.0.0.1:" + port + "/throttle", errorClass: b.frameworkError.ObjectStoreError }); }
     catch (e) { threw429 = e; }
     check("httpClient: 429 transient (not permanent)", threw429.permanent === false);
 
     // 500 → transient
     var threw500 = null;
-    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/boom", errorClass: b.frameworkError.ObjectStoreError }); }
+    try { await httpReq({ url: "http://127.0.0.1:" + port + "/boom", errorClass: b.frameworkError.ObjectStoreError }); }
     catch (e) { threw500 = e; }
     check("httpClient: 500 transient", threw500.permanent === false);
   } finally {
@@ -1605,7 +1712,7 @@ async function testHttpClientWallClockTimeout() {
     var threw = null;
     var t0 = Date.now();
     try {
-      await b.httpClient.request({
+      await httpReq({
         url: "http://127.0.0.1:" + port + "/slow",
         timeoutMs: 200,                 // wall-clock — must fire even if data IS flowing
         idleTimeoutMs: 5000,            // generous idle so wall-clock is what fires
@@ -1637,7 +1744,7 @@ async function testHttpClientAbortSignal() {
     setTimeout(function () { ac.abort(); }, 100);
     var threw = null;
     try {
-      await b.httpClient.request({
+      await httpReq({
         url: "http://127.0.0.1:" + port + "/hang",
         signal: ac.signal,
         idleTimeoutMs: 60000,
@@ -1663,7 +1770,7 @@ async function testHttpClientStreamResponse() {
   var port = server.address().port;
   try {
     b.httpClient._resetForTest();
-    var got = await b.httpClient.request({
+    var got = await httpReq({
       url: "http://127.0.0.1:" + port + "/stream",
       responseMode: "stream",
     });
@@ -1704,7 +1811,7 @@ async function testHttpClientH2Basic() {
     var url = "http://127.0.0.1:" + port + "/foo";
 
     // GET via h2c — preferH2 flag opts in (no ALPN over cleartext)
-    var got = await b.httpClient.request({ url: url, preferH2: true });
+    var got = await httpReq({ url: url, preferH2: true });
     check("httpClient h2: GET status",       got.statusCode === 200);
     check("httpClient h2: GET body",         got.body.toString("utf8").indexOf("h2 got GET /foo") === 0);
     check("httpClient h2: GET headers",      got.headers["x-method"] === "GET");
@@ -1713,7 +1820,7 @@ async function testHttpClientH2Basic() {
     check("httpClient h2: cached as h2",     b.httpClient._getCachedTransportKind(url) === "h2");
 
     // POST with body — same h2 session multiplexes
-    var posted = await b.httpClient.request({
+    var posted = await httpReq({
       method: "POST", url: url, body: Buffer.from("hello-h2"), preferH2: true,
     });
     check("httpClient h2: POST body sent",   posted.body.toString("utf8").indexOf("body=hello-h2") !== -1);
@@ -1743,7 +1850,7 @@ async function testHttpClientH2AbortSignal() {
     setTimeout(function () { ac.abort(); }, 100);
     var threw = null;
     try {
-      await b.httpClient.request({ url: url, preferH2: true, signal: ac.signal, idleTimeoutMs: 60000 });
+      await httpReq({ url: url, preferH2: true, signal: ac.signal, idleTimeoutMs: 60000 });
     } catch (e) { threw = e; }
     check("httpClient h2: AbortSignal cancels stream", threw !== null);
     check("httpClient h2: abort code ABORT",           threw && threw.code === "ABORT");
@@ -1771,7 +1878,7 @@ async function testHttpClientH2ErrorStatus() {
     b.httpClient._resetForTest();
 
     var threw404 = null;
-    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/notfound", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
+    try { await httpReq({ url: "http://127.0.0.1:" + port + "/notfound", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
     catch (e) { threw404 = e; }
     check("httpClient h2: 404 rejects",           threw404 !== null);
     check("httpClient h2: 404 ObjectStoreError",  threw404 instanceof b.frameworkError.ObjectStoreError);
@@ -1779,12 +1886,12 @@ async function testHttpClientH2ErrorStatus() {
     check("httpClient h2: 404 permanent",         threw404.permanent === true);
 
     var threw429 = null;
-    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/throttle", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
+    try { await httpReq({ url: "http://127.0.0.1:" + port + "/throttle", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
     catch (e) { threw429 = e; }
     check("httpClient h2: 429 transient", threw429.permanent === false);
 
     var threw500 = null;
-    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/boom", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
+    try { await httpReq({ url: "http://127.0.0.1:" + port + "/boom", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
     catch (e) { threw500 = e; }
     check("httpClient h2: 500 transient", threw500.permanent === false);
   } finally {
@@ -1811,7 +1918,7 @@ async function testHttpClientH2Multiplex() {
     // Fire 5 concurrent requests over the same h2 session.
     var promises = [];
     for (var i = 0; i < 5; i++) {
-      promises.push(b.httpClient.request({
+      promises.push(httpReq({
         url: "http://127.0.0.1:" + port + "/p" + i,
         preferH2: true,
       }));
@@ -1842,7 +1949,7 @@ async function testHttpClientH2Stream() {
   var port = server.address().port;
   try {
     b.httpClient._resetForTest();
-    var got = await b.httpClient.request({
+    var got = await httpReq({
       url: "http://127.0.0.1:" + port + "/stream",
       preferH2: true,
       responseMode: "stream",
@@ -2163,7 +2270,7 @@ async function testHttpClientObserver() {
     b.httpClient._resetForTest();
     var stages = [];
     var observer = function (stage, info) { stages.push({ stage: stage, info: info }); };
-    await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/obs", observer: observer });
+    await httpReq({ url: "http://127.0.0.1:" + port + "/obs", observer: observer });
     check("httpClient: observer saw request:start",     stages[0].stage === "request:start");
     check("httpClient: observer saw response:headers",  stages[1].stage === "response:headers");
     check("httpClient: observer saw response:end",      stages[2].stage === "response:end");
@@ -2558,6 +2665,9 @@ function testCryptoAndModuleSurface() {
   check("storage namespace present",    typeof b.storage === "object");
   check("session.create is a function", typeof b.session.create === "function");
   check("storage.saveFile is a function", typeof b.storage.saveFile === "function");
+  check("urlSafe namespace present",    typeof b.urlSafe === "object");
+  check("urlSafe.parse is a function",  typeof b.urlSafe.parse === "function");
+  check("urlSafe.ALLOW_HTTP_TLS frozen", Object.isFrozen(b.urlSafe.ALLOW_HTTP_TLS));
 
   // Constants surface
   check("ENVELOPE_MAGIC = 0xE1",        b.constants.ENVELOPE_MAGIC === 0xE1);
@@ -2713,6 +2823,15 @@ async function run() {
   testConstantsReferenceIntegrity();
   // framework-error base + cross-module operational classes
   testFrameworkError();
+  // url-safe primitive (validates scheme + shape at outbound boundary —
+  // declared as a prerequisite for httpClient since httpClient routes
+  // every URL through urlSafe.parse)
+  testUrlSafeDefaultIsHttpsOnly();
+  testUrlSafeCustomAllowlist();
+  testUrlSafeMalformed();
+  testUrlSafeUrlInstancePassThrough();
+  testUrlSafeErrorClassInjection();
+  testUrlSafeAllowAny();
   // http-client primitive (used by 5 protocol adapters)
   await testHttpClientBasic();
   await testHttpClientErrorStatus();
@@ -2805,6 +2924,12 @@ module.exports = {
   testBufferSafeSecureZero:                  testBufferSafeSecureZero,
   testLogger:                                testLogger,
   testConstantsReferenceIntegrity:           testConstantsReferenceIntegrity,
+  testUrlSafeDefaultIsHttpsOnly:             testUrlSafeDefaultIsHttpsOnly,
+  testUrlSafeCustomAllowlist:                testUrlSafeCustomAllowlist,
+  testUrlSafeMalformed:                      testUrlSafeMalformed,
+  testUrlSafeUrlInstancePassThrough:         testUrlSafeUrlInstancePassThrough,
+  testUrlSafeErrorClassInjection:            testUrlSafeErrorClassInjection,
+  testUrlSafeAllowAny:                       testUrlSafeAllowAny,
   testHttpClientBasic:                       testHttpClientBasic,
   testHttpClientErrorStatus:                 testHttpClientErrorStatus,
   testHttpClientWallClockTimeout:            testHttpClientWallClockTimeout,

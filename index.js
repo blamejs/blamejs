@@ -52,6 +52,7 @@ var frameworkError = require("./lib/framework-error");
 var logger = require("./lib/logger");
 var httpClient = require("./lib/http-client");
 var websocket = require("./lib/websocket");
+var urlSafe = require("./lib/url-safe");
 
 module.exports = {
   crypto:           crypto,
@@ -91,6 +92,7 @@ module.exports = {
   logger:           logger,
   httpClient:       httpClient,
   websocket:        websocket,
+  urlSafe:          urlSafe,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

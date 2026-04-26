@@ -568,12 +568,13 @@ async function testSigv4MockServer() {
   var port = server.address().port;
   try {
     var client = sigv4.create({
-      endpoint:        "http://127.0.0.1:" + port,
-      region:          "us-east-1",
-      bucket:          "test-bucket",
-      accessKeyId:     "AKIAIOSFODNN7EXAMPLE",
-      secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-      pathStyle:       true,   // 127.0.0.1 doesn't support virtual-hosted
+      endpoint:         "http://127.0.0.1:" + port,
+      region:           "us-east-1",
+      bucket:           "test-bucket",
+      accessKeyId:      "AKIAIOSFODNN7EXAMPLE",
+      secretAccessKey:  "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      pathStyle:        true,   // 127.0.0.1 doesn't support virtual-hosted
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,   // local mock — opt in to cleartext
     });
 
     // PUT
@@ -725,10 +726,11 @@ async function testGcsMockServer() {
   var port = server.address().port;
   try {
     var client = gcs.create({
-      bucket:         "test-bucket",
-      serviceAccount: sa,
-      endpoint:       "http://127.0.0.1:" + port,
-      tokenEndpoint:  "http://127.0.0.1:" + port + "/token",
+      bucket:           "test-bucket",
+      serviceAccount:   sa,
+      endpoint:         "http://127.0.0.1:" + port,
+      tokenEndpoint:    "http://127.0.0.1:" + port + "/token",
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
     });
 
     var content = Buffer.from("gcs test payload " + Date.now(), "utf8");
@@ -850,10 +852,11 @@ async function testAzureBlobMockServer() {
   var port = server.address().port;
   try {
     var client = az.create({
-      accountName: "test",
-      accountKey:  Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "utf8").toString("base64"),
-      container:   "test-container",
-      endpoint:    "http://127.0.0.1:" + port,
+      accountName:      "test",
+      accountKey:       Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "utf8").toString("base64"),
+      container:        "test-container",
+      endpoint:         "http://127.0.0.1:" + port,
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
     });
 
     var content = Buffer.from("azure test payload " + Date.now(), "utf8");
@@ -1126,14 +1129,15 @@ async function testLogStreamWebhook() {
       b.logStream.init({
         sinks: {
           siem: {
-            protocol:      "webhook",
-            url:           "http://127.0.0.1:" + port + "/ingest",
-            auth:          "bearer",
-            token:         "test-token",
-            batchSize:     2,
-            maxBatchAgeMs: 100,
-            bodyShape:     "array",
-            retry:         { maxAttempts: 1 },
+            protocol:         "webhook",
+            url:              "http://127.0.0.1:" + port + "/ingest",
+            auth:             "bearer",
+            token:            "test-token",
+            batchSize:        2,
+            maxBatchAgeMs:    100,
+            bodyShape:        "array",
+            retry:            { maxAttempts: 1 },
+            allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
           },
         },
       });
