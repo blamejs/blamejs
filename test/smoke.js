@@ -41,7 +41,11 @@ check("ENVELOPE_MAGIC = 0xE1",        b.constants.ENVELOPE_MAGIC === 0xE1);
 check("ACTIVE.KEM is hybrid",         b.constants.ACTIVE.KEM === b.constants.KEM_IDS.ML_KEM_1024_P384);
 check("ACTIVE.CIPHER is XChaCha20",   b.constants.ACTIVE.CIPHER === b.constants.CIPHER_IDS.XCHACHA20_POLY1305);
 check("ACTIVE.KDF is SHAKE256",       b.constants.ACTIVE.KDF === b.constants.KDF_IDS.SHAKE256);
-check("TIME.ONE_DAY = 86400000",      b.constants.TIME.ONE_DAY === 86400000);
+check("TIME.days(1) = 86400000",      b.constants.TIME.days(1) === 86400000);
+check("TIME.minutes(45) = 2700000",   b.constants.TIME.minutes(45) === 2700000);
+check("TIME.hours(2) = 7200000",      b.constants.TIME.hours(2) === 7200000);
+check("BYTES.mib(64) = 67108864",     b.constants.BYTES.mib(64) === 67108864);
+check("BYTES.kib(4) = 4096",          b.constants.BYTES.kib(4) === 4096);
 check("TLS prefers PQ hybrid first",  b.constants.TLS_GROUP_PREFERENCE[0] === "SecP384r1MLKEM1024");
 
 // 3. Envelope encrypt/decrypt round-trip
