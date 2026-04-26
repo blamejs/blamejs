@@ -1458,6 +1458,43 @@ function testBufferSafeBoundedChunkCollector() {
   check("collector: requires maxBytes", threwBadArg);
 }
 
+function testFrameworkError() {
+  var fe = b.frameworkError;
+  check("frameworkError namespace present", typeof fe === "object");
+  check("FrameworkError class present",     typeof fe.FrameworkError === "function");
+
+  // Base class shape
+  var base = new fe.FrameworkError("oops", "test/err");
+  check("FrameworkError: name",        base.name === "FrameworkError");
+  check("FrameworkError: code",        base.code === "test/err");
+  check("FrameworkError: isFrameworkError flag",  base.isFrameworkError === true);
+  check("FrameworkError: instanceof Error",       base instanceof Error);
+
+  // Cross-module subclasses
+  var oserr = new fe.ObjectStoreError("BUCKET_NOT_FOUND", "missing", true, 404);
+  check("ObjectStoreError: extends FrameworkError", oserr instanceof fe.FrameworkError);
+  check("ObjectStoreError: extends Error",          oserr instanceof Error);
+  check("ObjectStoreError: code",       oserr.code === "BUCKET_NOT_FOUND");
+  check("ObjectStoreError: permanent",  oserr.permanent === true);
+  check("ObjectStoreError: statusCode", oserr.statusCode === 404);
+  check("ObjectStoreError: legacy flag", oserr.isObjectStoreError === true);
+
+  var qerr = new fe.QueueError("JOB_NOT_FOUND", "no such job", true);
+  check("QueueError: instanceof FrameworkError", qerr instanceof fe.FrameworkError);
+  check("QueueError: legacy flag",               qerr.isQueueError === true);
+
+  // Existing *SafeError classes now also pass instanceof FrameworkError
+  try { b.jsonSafe.parse("{not-json}"); }
+  catch (e) {
+    check("JsonSafeError: extends FrameworkError",  e instanceof fe.FrameworkError);
+    check("JsonSafeError: legacy flag preserved",   e.isJsonSafeError === true);
+  }
+  try { b.sqlSafe.validateIdentifier("123"); }
+  catch (e) {
+    check("SqlSafeError: extends FrameworkError",   e instanceof fe.FrameworkError);
+  }
+}
+
 function testLazyRequire() {
   check("lazyRequire is a function", typeof b.lazyRequire === "function");
 
@@ -1842,6 +1879,8 @@ async function run() {
   testBufferSafeToBuffer();
   testBufferSafeBoundedChunkCollector();
   testBufferSafeSecureZero();
+  // framework-error base + cross-module operational classes
+  testFrameworkError();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
@@ -1912,6 +1951,7 @@ module.exports = {
   testBufferSafeToBuffer:                    testBufferSafeToBuffer,
   testBufferSafeBoundedChunkCollector:       testBufferSafeBoundedChunkCollector,
   testBufferSafeSecureZero:                  testBufferSafeSecureZero,
+  testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
   testJsonParse:                             testJsonParse,

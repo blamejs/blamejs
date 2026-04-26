@@ -48,6 +48,7 @@ var sqlSafe = require("./lib/sql-safe");
 var chainWriter = require("./lib/chain-writer");
 var bufferSafe = require("./lib/buffer-safe");
 var lazyRequire = require("./lib/lazy-require");
+var frameworkError = require("./lib/framework-error");
 
 module.exports = {
   crypto:           crypto,
@@ -83,6 +84,7 @@ module.exports = {
   chainWriter:      chainWriter,
   bufferSafe:       bufferSafe,
   lazyRequire:      lazyRequire,
+  frameworkError:   frameworkError,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
