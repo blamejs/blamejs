@@ -38,6 +38,7 @@ var objectStoreRetry = require("./lib/object-store-retry");
 var queue = require("./lib/queue");
 var logStream = require("./lib/log-stream");
 var redact = require("./lib/redact");
+var externalDb = require("./lib/external-db");
 
 module.exports = {
   crypto:           crypto,
@@ -60,6 +61,7 @@ module.exports = {
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
+  externalDb:       externalDb,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,

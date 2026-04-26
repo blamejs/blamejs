@@ -2584,6 +2584,290 @@ async function testLogStreamBidirectional() {
 }
 
 // =====================================================================
+// v0.0.14 — external DB (bring-your-own-client dispatcher)
+// =====================================================================
+
+// Build a fake DB driver — in-memory key/value store that responds to
+// "SELECT id, value FROM kv WHERE id = $1" + "INSERT INTO kv (id, value) VALUES ($1, $2)" etc.
+// Tests focus on the dispatcher's pooling / retry / classification /
+// transaction / audit semantics, not on real SQL.
+function _makeFakeDriver(opts) {
+  opts = opts || {};
+  var connectCount = 0;
+  var queryCount = 0;
+  var store = {};
+  var failNextN = opts.failNextN || 0;
+  var failPermanent = opts.failPermanent || false;
+
+  return {
+    connect: async function () {
+      connectCount += 1;
+      return { id: "client-" + connectCount, store: store };
+    },
+    query: async function (client, sql, params) {
+      queryCount += 1;
+      if (failNextN > 0) {
+        failNextN -= 1;
+        var e = new Error("simulated failure");
+        e.code = failPermanent ? "PERMANENT" : "ECONNRESET";
+        e.permanent = failPermanent;
+        throw e;
+      }
+      // Tiny SQL "parser" for tests — handle SELECT/INSERT/DELETE/BEGIN/COMMIT/ROLLBACK only
+      if (/^SELECT 1$/i.test(sql)) return { rows: [{ "?column?": 1 }], rowCount: 1 };
+      if (/^BEGIN/i.test(sql) || /^COMMIT/i.test(sql) || /^ROLLBACK/i.test(sql)) {
+        return { rows: [], rowCount: 0 };
+      }
+      var insertMatch = sql.match(/^INSERT INTO kv \(id, value\) VALUES \(\$1, \$2\)/i);
+      if (insertMatch) {
+        client.store[params[0]] = params[1];
+        return { rows: [], rowCount: 1 };
+      }
+      var selectMatch = sql.match(/^SELECT id, value FROM kv WHERE id = \$1/i);
+      if (selectMatch) {
+        var v = client.store[params[0]];
+        if (v === undefined) return { rows: [], rowCount: 0 };
+        return { rows: [{ id: params[0], value: v }], rowCount: 1 };
+      }
+      var deleteMatch = sql.match(/^DELETE FROM kv WHERE id = \$1/i);
+      if (deleteMatch) {
+        var existed = params[0] in client.store;
+        delete client.store[params[0]];
+        return { rows: [], rowCount: existed ? 1 : 0 };
+      }
+      throw new Error("fake driver: unknown SQL: " + sql);
+    },
+    close: async function () { /* no-op */ },
+    ping:  async function () { return true; },
+    getStats: function () { return { connectCount: connectCount, queryCount: queryCount }; },
+  };
+}
+
+async function testExternalDbBasic() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-extdb-"));
+  try {
+    await setupTestDb(tmpDir);
+    var driver = _makeFakeDriver();
+    b.externalDb.init({
+      backends: {
+        "primary": {
+          connect:  driver.connect,
+          query:    driver.query,
+          close:    driver.close,
+          ping:     driver.ping,
+        },
+      },
+    });
+
+    check("externalDb namespace present",                typeof b.externalDb === "object");
+
+    var listed = b.externalDb.listBackends();
+    check("listBackends returns 1 entry",                listed.length === 1);
+
+    var insertResult = await b.externalDb.query(
+      "INSERT INTO kv (id, value) VALUES ($1, $2)", ["k1", "v1"]
+    );
+    check("insert returns rowCount = 1",                 insertResult.rowCount === 1);
+
+    var selectResult = await b.externalDb.query(
+      "SELECT id, value FROM kv WHERE id = $1", ["k1"]
+    );
+    check("select returns the inserted row",             selectResult.rows[0].value === "v1");
+
+    var miss = await b.externalDb.query(
+      "SELECT id, value FROM kv WHERE id = $1", ["missing"]
+    );
+    check("miss returns 0 rows",                         miss.rowCount === 0);
+
+    // Health check
+    var hc = await b.externalDb.healthCheck();
+    check("healthCheck returns ok for primary",          hc.primary && hc.primary.ok === true);
+    check("healthCheck returns breakerState",            hc.primary.breakerState === "closed");
+
+    // Audit recorded
+    var qRows = b.audit.query({ action: "system.externaldb.query" });
+    check("audit recorded externaldb.query events",      qRows.length >= 3);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testExternalDbPool() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-extdbpool-"));
+  try {
+    await setupTestDb(tmpDir);
+    var driver = _makeFakeDriver();
+    b.externalDb.init({
+      backends: {
+        "primary": {
+          connect: driver.connect, query: driver.query, close: driver.close,
+          pool:    { min: 0, max: 3, idleTimeoutMs: 60000 },
+        },
+      },
+    });
+
+    // Sequential queries reuse the same connection
+    await b.externalDb.query("SELECT 1");
+    await b.externalDb.query("SELECT 1");
+    await b.externalDb.query("SELECT 1");
+    var s = driver.getStats();
+    check("pool reuses idle connection",                 s.connectCount === 1);
+
+    // Concurrent queries open up to max
+    var promises = [];
+    for (var i = 0; i < 5; i++) promises.push(b.externalDb.query("SELECT 1"));
+    await Promise.all(promises);
+    var s2 = driver.getStats();
+    check("concurrent queries open up to pool.max",      s2.connectCount <= 3);
+
+    // listBackends shows pool stats
+    var listed = b.externalDb.listBackends();
+    check("listBackends includes pool stats",            typeof listed[0].pool === "object");
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testExternalDbTransaction() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-extdbtx-"));
+  try {
+    await setupTestDb(tmpDir);
+    var driver = _makeFakeDriver();
+    b.externalDb.init({
+      backends: {
+        "primary": {
+          connect: driver.connect, query: driver.query, close: driver.close,
+        },
+      },
+    });
+
+    // Successful transaction commits
+    var commitResult = await b.externalDb.transaction(async function (tx) {
+      await tx.query("INSERT INTO kv (id, value) VALUES ($1, $2)", ["tx1", "a"]);
+      await tx.query("INSERT INTO kv (id, value) VALUES ($1, $2)", ["tx2", "b"]);
+      return "all-good";
+    });
+    check("transaction returns fn's return value",       commitResult === "all-good");
+    var got1 = await b.externalDb.query("SELECT id, value FROM kv WHERE id = $1", ["tx1"]);
+    check("committed rows visible",                      got1.rows[0].value === "a");
+
+    // Failed transaction (handler throws) — rollback
+    var caught = false;
+    try {
+      await b.externalDb.transaction(async function (tx) {
+        await tx.query("INSERT INTO kv (id, value) VALUES ($1, $2)", ["tx3", "c"]);
+        throw new Error("simulated");
+      });
+    } catch (e) { caught = e.message === "simulated"; }
+    check("transaction error propagates",                caught);
+
+    // Audit recorded
+    var txRows = b.audit.query({ action: "system.externaldb.transaction" });
+    check("transaction events audit-logged",             txRows.length >= 2);
+    var failRows = txRows.filter(function (r) { return r.outcome === "failure"; });
+    check("rollback event recorded as failure",          failRows.length === 1);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testExternalDbResidency() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-extdbres-"));
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir: tmpDir,
+      atRest:  "plain",
+      auditSigning: { mode: "plaintext" },
+      schema:  [],
+      dataResidency: { region: "EU", allowedStorageRegions: ["EU"] },
+    });
+
+    var driver = _makeFakeDriver();
+    var residencyViolation = false;
+    try {
+      b.externalDb.init({
+        backends: {
+          "us-bad": {
+            connect: driver.connect, query: driver.query, close: driver.close,
+            classifications: ["personal"],
+            residencyTag:    "US",        // ← violation
+          },
+        },
+      });
+    } catch (e) { residencyViolation = e.code === "RESIDENCY_VIOLATION"; }
+    check("external DB residency violation refused",     residencyViolation);
+
+    // EU-tagged backend OK
+    b.externalDb._resetForTest();
+    b.externalDb.init({
+      backends: {
+        "eu-ok": {
+          connect: driver.connect, query: driver.query, close: driver.close,
+          classifications: ["personal"],
+          residencyTag:    "EU",
+        },
+      },
+    });
+    var listed = b.externalDb.listBackends();
+    check("EU backend accepted",                          listed.length === 1 && listed[0].residencyTag === "EU");
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testExternalDbClassification() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-extdbcls-"));
+  try {
+    await setupTestDb(tmpDir);
+    var personalDriver    = _makeFakeDriver();
+    var operationalDriver = _makeFakeDriver();
+    b.externalDb.init({
+      backends: {
+        "personal-db": {
+          connect: personalDriver.connect, query: personalDriver.query, close: personalDriver.close,
+          classifications: ["personal"],
+        },
+        "ops-db": {
+          connect: operationalDriver.connect, query: operationalDriver.query, close: operationalDriver.close,
+          classifications: ["operational"],
+        },
+      },
+    });
+
+    await b.externalDb.query("INSERT INTO kv (id, value) VALUES ($1, $2)", ["x", "y"], { classification: "personal" });
+    await b.externalDb.query("INSERT INTO kv (id, value) VALUES ($1, $2)", ["a", "b"], { classification: "operational" });
+
+    check("personal query routed to personal-db",        personalDriver.getStats().queryCount === 1);
+    check("operational query routed to ops-db",          operationalDriver.getStats().queryCount === 1);
+
+    // Wrong-classification rejection
+    var rejected = false;
+    try {
+      await b.externalDb.query("SELECT 1", [], { backend: "ops-db", classification: "personal" });
+    } catch (e) { rejected = e.code === "CLASSIFICATION_MISMATCH"; }
+    check("backend that doesn't serve classification rejected",  rejected);
+
+    // No backend serves a missing classification
+    var noBackendRejected = false;
+    try { await b.externalDb.query("SELECT 1", [], { classification: "nonexistent" }); }
+    catch (e) { noBackendRejected = e.code === "NO_BACKEND_FOR_CLASSIFICATION"; }
+    check("missing classification rejected",             noBackendRejected);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -2897,6 +3181,12 @@ function testJsonFormats() {
   await testLogStreamLocal();
   await testLogStreamWebhook();
   await testLogStreamBidirectional();
+  // v0.0.14 external DB
+  await testExternalDbBasic();
+  await testExternalDbPool();
+  await testExternalDbTransaction();
+  await testExternalDbResidency();
+  await testExternalDbClassification();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
