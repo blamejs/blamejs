@@ -5258,90 +5258,58 @@ async function testClusterInitAndRequireLeader() {
 // =====================================================================
 
 (async function () {
-  // Phase 1a tests
-  await testVaultWrapRoundTrip();
-  await testPassphraseEnv();
-  await testVaultPlaintextRoundTrip();
-  await testVaultModeMismatch();
-  await testVaultRequiresDataDir();
-  await testVaultWrappedE2E();
-  // Phase 1b tests
-  await testDbBasic();
-  await testDbWriteOps();
-  await testDbSealedWithoutDerived();
-  await testDbTransactions();
-  await testDbPersistence();
-  await testDbSchemaEvolution();
-  await testDbMigrations();
-  // Phase 1c tests
-  await testFrameworkSchema();
-  await testReservedTableProtection();
-  await testAuditChain();
-  await testAuditChainBreak();
-  await testConsent();
-  await testSubjectRights();
-  await testDataResidency();
-  // Phase 1d-1 tests
-  await testSession();
-  await testStorage();
-  // json (utility primitive — not phase-bound)
+  // ===================================================================
+  // LAYER 0 — pure primitives (no framework state, no I/O dependencies)
+  // ===================================================================
+  // If any of these fail, every consumer test below would also fail.
+  // Run them first so the FIRST red light is the actual root cause.
+
+  // crypto + envelope (already covered by inline checks above smoke
+  // body; nothing async here)
+
+  // json-safe
   testJsonParse();
   testJsonStringify();
   testJsonCanonical();
   testJsonValidate();
   testJsonValidateCollect();
   testJsonFormats();
-  // v0.0.7 traceability hardening
-  await testAppendOnlyTriggers();
-  await testForeignKeys();
-  await testTableMetadata();
-  await testAuditSelfLogging();
-  await testBeginTrace();
-  // v0.0.8 tamper-proofing
-  await testCheckpointSign();
-  await testCheckpointVerify();
-  await testCheckpointTamperDetect();
-  await testRollbackDetection();
-  // v0.0.9 multi-backend storage + retry/breaker
-  await testMultiBackend();
-  await testClassificationRouting();
-  await testResidencyEnforcement();
-  await testRetryAndBreaker();
-  // v0.0.10 sigv4 protocol
-  testSigv4Primitives();
-  await testSigv4MockServer();
-  // v0.0.11 gcs + azure-blob protocols
-  testGcsPrimitives();
-  await testGcsMockServer();
-  testAzureBlobPrimitives();
-  await testAzureBlobMockServer();
-  // v0.0.12 local queue
-  await testQueueLocal();
-  await testQueueConsume();
-  await testQueueRetryAndFail();
-  await testQueueLeaseExpiry();
-  await testQueueShutdown();
-  // v0.0.13 log streaming + redaction
-  testRedact();
-  await testLogStreamLocal();
-  await testLogStreamWebhook();
-  await testLogStreamBidirectional();
-  // v0.0.14 external DB
-  await testExternalDbBasic();
-  await testExternalDbPool();
-  await testExternalDbTransaction();
-  await testExternalDbResidency();
-  await testExternalDbClassification();
-  // v0.0.15 HTTP middleware
-  await testMiddlewareRequestId();
-  await testMiddlewareSecurityHeaders();
-  await testMiddlewareErrorHandler();
-  await testMiddlewareBotGuard();
-  await testMiddlewareCors();
-  await testMiddlewareRateLimit();
-  // v0.0.16 atomic file + multi-format parsers
+
+  // async-safe (Mutex, Semaphore, Once, withTimeout, CircuitBreaker, ...)
+  await testAsyncSafeWithTimeoutResolves();
+  await testAsyncSafeWithTimeoutRejects();
+  await testAsyncSafeWithTimeoutAbort();
+  await testAsyncSafeWithTimeoutPropagatesError();
+  await testAsyncSafeSafeAwait();
+  await testAsyncSafeMutexSerializes();
+  await testAsyncSafeMutexReleaseOnThrow();
+  await testAsyncSafeMutexAbortableAcquire();
+  await testAsyncSafeSemaphoreBoundedConcurrency();
+  await testAsyncSafeSemaphoreAbortableAcquire();
+  await testAsyncSafeOnceSingleFlight();
+  await testAsyncSafeOnceCachesFailure();
+  await testAsyncSafeOnceReset();
+  await testAsyncSafeCircuitBreakerStateTransitions();
+
+  // handlers (depends on async-safe)
+  await testHandlerEmitAndDrain();
+  await testHandlerEmitDuringFlushNextCycle();
+  await testHandlerRetryOnFlushFailure();
+  await testHandlerCircuitBreakerOpensOnPersistentFailure();
+  await testHandlerBoundedShutdown();
+  await testHandlerStats();
+  await testHandlerBackpressureDrop();
+
+  // sql-safe (no deps)
+  testSqlSafeIdentifierValidation();
+  testSqlSafeQuoteIdentifier();
+  testSqlSafeAssertOneOf();
+
+  // atomic-file (depends on crypto, json-safe)
   await testAtomicFile();
   await testAtomicFileLock();
+
+  // parsers/* (independent)
   testXmlParse();
   testXmlSecurityRejections();
   testCsvParse();
@@ -5357,60 +5325,155 @@ async function testClusterInitAndRequireLeader() {
   testYamlSecurityRejections();
   testEnvParseBasic();
   testEnvParseSecurityRejections();
-  await testEnvLoadDiffAndAudit();
-  await testEnvLoadSchemaAndTypos();
-  await testEnvLoadBreakingChange();
-  // async-safe primitives
-  await testAsyncSafeWithTimeoutResolves();
-  await testAsyncSafeWithTimeoutRejects();
-  await testAsyncSafeWithTimeoutAbort();
-  await testAsyncSafeWithTimeoutPropagatesError();
-  await testAsyncSafeSafeAwait();
-  await testAsyncSafeMutexSerializes();
-  await testAsyncSafeMutexReleaseOnThrow();
-  await testAsyncSafeMutexAbortableAcquire();
-  await testAsyncSafeSemaphoreBoundedConcurrency();
-  await testAsyncSafeSemaphoreAbortableAcquire();
-  await testAsyncSafeOnceSingleFlight();
-  await testAsyncSafeOnceCachesFailure();
-  await testAsyncSafeOnceReset();
-  await testAsyncSafeCircuitBreakerStateTransitions();
-  await testHandlerEmitAndDrain();
-  await testHandlerEmitDuringFlushNextCycle();
-  await testHandlerRetryOnFlushFailure();
-  await testHandlerCircuitBreakerOpensOnPersistentFailure();
-  await testHandlerBoundedShutdown();
-  await testHandlerStats();
-  await testHandlerBackpressureDrop();
-  // sql-safe primitive
-  testSqlSafeIdentifierValidation();
-  testSqlSafeQuoteIdentifier();
-  testSqlSafeAssertOneOf();
-  // chain-writer primitive
-  await testChainWriterRejectsBadTable();
-  await testChainWriterRaceSafetyConcurrentAppends();
-  // Cluster coordination — leader election + fencing tokens
+
+  // redact
+  testRedact();
+
+  // ===================================================================
+  // LAYER 1 — framework-state-dependent but isolated
+  // ===================================================================
+
+  // vault primitives
+  await testVaultWrapRoundTrip();
+  await testPassphraseEnv();
+  await testVaultPlaintextRoundTrip();
+  await testVaultModeMismatch();
+  await testVaultRequiresDataDir();
+  await testVaultWrappedE2E();
+
+  // cluster module + provider
   await testClusterSingleNodeFallback();
   await testClusterProviderAcquireAndRenew();
   await testClusterProviderTwoNodeContention();
   await testClusterProviderTakeoverAfterExpiry();
   await testClusterProviderRenewalRace();
   await testClusterInitAndRequireLeader();
-  // Cluster — framework-state schema for external-db
+
+  // framework-schema (DDL emitter + table-name resolver)
   await testFrameworkSchemaEnsure();
   testFrameworkSchemaTableNameMapping();
   await testFrameworkSchemaInvalidDialect();
-  // Cluster — framework-state SQL dispatcher
+
+  // ===================================================================
+  // LAYER 2 — needs db
+  // ===================================================================
+
+  // db basic
+  await testDbBasic();
+  await testDbWriteOps();
+  await testDbSealedWithoutDerived();
+  await testDbTransactions();
+  await testDbPersistence();
+  await testDbSchemaEvolution();
+  await testDbMigrations();
+
+  // framework schema + reserved-table protection
+  await testFrameworkSchema();
+  await testReservedTableProtection();
+
+  // ===================================================================
+  // LAYER 3 — uses db + chain-writer + cluster-storage
+  // ===================================================================
+
+  // cluster-storage (SQL dispatcher)
   await testClusterStorageLocalDispatch();
   testClusterStoragePlaceholderize();
   testClusterStorageResolveTablesIsNoOpInSingleNode();
   await testClusterStorageClusterDispatch();
-  // Cluster — write-side gates across framework subsystems
+
+  // chain-writer (the audit/consent append primitive)
+  await testChainWriterRejectsBadTable();
+  await testChainWriterRaceSafetyConcurrentAppends();
+
+  // audit chain + verify (now exercises chain-writer transitively)
+  await testAuditChain();
+  await testAuditChainBreak();
+  await testAuditSelfLogging();
+  await testBeginTrace();
+
+  // consent (uses chain-writer)
+  await testConsent();
+
+  // subject rights (uses audit + db)
+  await testSubjectRights();
+
+  // append-only triggers + foreign keys + table metadata
+  await testAppendOnlyTriggers();
+  await testForeignKeys();
+  await testTableMetadata();
+
+  // checkpoint sign / verify / tamper / rollback
+  await testCheckpointSign();
+  await testCheckpointVerify();
+  await testCheckpointTamperDetect();
+  await testRollbackDetection();
+
+  // ===================================================================
+  // LAYER 4 — uses audit (consumer modules)
+  // ===================================================================
+
+  // session
+  await testSession();
+
+  // data residency (db + storage)
+  await testDataResidency();
+
+  // storage + object-store
+  await testStorage();
+  await testMultiBackend();
+  await testClassificationRouting();
+  await testResidencyEnforcement();
+  await testRetryAndBreaker();
+  testSigv4Primitives();
+  await testSigv4MockServer();
+  testGcsPrimitives();
+  await testGcsMockServer();
+  testAzureBlobPrimitives();
+  await testAzureBlobMockServer();
+
+  // queue
+  await testQueueLocal();
+  await testQueueConsume();
+  await testQueueRetryAndFail();
+  await testQueueLeaseExpiry();
+  await testQueueShutdown();
+
+  // log-stream
+  await testLogStreamLocal();
+  await testLogStreamWebhook();
+  await testLogStreamBidirectional();
+
+  // external-db
+  await testExternalDbBasic();
+  await testExternalDbPool();
+  await testExternalDbTransaction();
+  await testExternalDbResidency();
+  await testExternalDbClassification();
+
+  // middleware
+  await testMiddlewareRequestId();
+  await testMiddlewareSecurityHeaders();
+  await testMiddlewareErrorHandler();
+  await testMiddlewareBotGuard();
+  await testMiddlewareCors();
+  await testMiddlewareRateLimit();
+
+  // env-safe.load() — full lifecycle (depends on audit chain)
+  await testEnvLoadDiffAndAudit();
+  await testEnvLoadSchemaAndTypos();
+  await testEnvLoadBreakingChange();
+
+  // ===================================================================
+  // LAYER 5 — operator-facing integration / cross-module flows
+  // ===================================================================
+
+  // Cluster gates — write-side gates across framework subsystems
   await testClusterGatesAuditAndConsent();
   await testClusterGatesSession();
   await testClusterGatesSubject();
   await testClusterGatesQueue();
   await testClusterGatesObjectStoreLocal();
+
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
