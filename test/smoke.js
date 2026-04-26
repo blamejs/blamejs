@@ -1908,6 +1908,301 @@ async function testSigv4MockServer() {
 }
 
 // =====================================================================
+// v0.0.11 — gcs + azure-blob protocol adapters
+// =====================================================================
+
+// Generate a throwaway RSA keypair to use as a fake "service account" so
+// the GCS adapter has real key material for JWT signing in tests.
+function _makeFakeServiceAccount() {
+  var nodeCrypto = require("crypto");
+  var pair = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  return {
+    type:         "service_account",
+    project_id:   "test-project",
+    client_email: "test-sa@test-project.iam.gserviceaccount.com",
+    private_key:  pair.privateKey,
+    private_key_id: "test-key-id-001",
+  };
+}
+
+function testGcsPrimitives() {
+  var gcs = require("../lib/object-store-gcs");
+
+  // base64url encoding (no padding, '+'→'-', '/'→'_')
+  var b1 = gcs._base64UrlEncode(Buffer.from("hello"));
+  check("gcs base64url encodes basic input",         b1 === "aGVsbG8");
+  var b2 = gcs._base64UrlEncode(Buffer.from([0xff, 0xff, 0xff]));
+  check("gcs base64url has no padding",              !/=/.test(b2));
+  check("gcs base64url uses '-' and '_'",            !/\+|\//.test(b2));
+
+  // JWT signing with a real keypair
+  var sa = _makeFakeServiceAccount();
+  var jwt = gcs._signJwt(sa, "test-scope", "https://oauth2.googleapis.com/token");
+  var parts = jwt.split(".");
+  check("JWT has 3 parts",                           parts.length === 3);
+  // Header is base64url(JSON({ alg, typ }))
+  var headerJson = JSON.parse(Buffer.from(parts[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  check("JWT header alg is RS256",                   headerJson.alg === "RS256");
+  check("JWT header typ is JWT",                     headerJson.typ === "JWT");
+  var claimJson = JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  check("JWT iss is service-account email",          claimJson.iss === sa.client_email);
+  check("JWT scope is honored",                      claimJson.scope === "test-scope");
+  check("JWT aud is token endpoint",                 claimJson.aud === "https://oauth2.googleapis.com/token");
+  check("JWT exp - iat = 3600",                      claimJson.exp - claimJson.iat === 3600);
+}
+
+async function testGcsMockServer() {
+  var http = require("http");
+  var url = require("url");
+  var gcs = require("../lib/object-store-gcs");
+  var sa = _makeFakeServiceAccount();
+
+  var stored = {};
+  var tokenIssued = 0;
+
+  // Mock OAuth2 token endpoint + storage JSON API on the same server,
+  // routed by pathname.
+  var server = http.createServer(function (req, res) {
+    var u = new url.URL(req.url, "http://x");
+    var path = u.pathname;
+
+    // Token exchange
+    if (req.method === "POST" && path === "/token") {
+      var bufs = [];
+      req.on("data", function (c) { bufs.push(c); });
+      req.on("end", function () {
+        var body = Buffer.concat(bufs).toString("utf8");
+        if (!/grant_type=urn/.test(body) || !/assertion=/.test(body)) {
+          res.writeHead(400); res.end("bad request"); return;
+        }
+        tokenIssued += 1;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ access_token: "mock-access-token-" + tokenIssued, expires_in: 3600, token_type: "Bearer" }));
+      });
+      return;
+    }
+
+    // All storage operations require Bearer auth
+    if (!/^Bearer mock-access-token-/.test(req.headers["authorization"] || "")) {
+      res.writeHead(401); res.end("missing bearer"); return;
+    }
+
+    // PUT object: POST /upload/storage/v1/b/<bucket>/o?uploadType=media&name=<key>
+    if (req.method === "POST" && /^\/upload\/storage\/v1\/b\/[^/]+\/o$/.test(path)) {
+      var name = u.searchParams.get("name");
+      var bufs2 = [];
+      req.on("data", function (c) { bufs2.push(c); });
+      req.on("end", function () {
+        stored[name] = Buffer.concat(bufs2);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ name: name, size: String(stored[name].length), etag: "\"" + name + "\"", updated: "2026-04-25T00:00:00.000Z" }));
+      });
+      return;
+    }
+
+    // GET / HEAD: /storage/v1/b/<bucket>/o/<encoded-key>
+    var objectMatch = path.match(/^\/storage\/v1\/b\/[^/]+\/o\/(.+)$/);
+    if (objectMatch && req.method === "GET") {
+      var key = decodeURIComponent(objectMatch[1]);
+      if (u.searchParams.get("alt") === "media") {
+        if (stored[key]) {
+          res.writeHead(200); res.end(stored[key]);
+        } else {
+          res.writeHead(404); res.end();
+        }
+      } else {
+        // metadata
+        if (stored[key]) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ name: key, size: String(stored[key].length), etag: "\"" + key + "\"", updated: "2026-04-25T00:00:00.000Z" }));
+        } else {
+          res.writeHead(404); res.end();
+        }
+      }
+      return;
+    }
+    if (objectMatch && req.method === "DELETE") {
+      var dkey = decodeURIComponent(objectMatch[1]);
+      if (stored[dkey]) { delete stored[dkey]; res.writeHead(204); res.end(); }
+      else { res.writeHead(404); res.end(); }
+      return;
+    }
+
+    // LIST: /storage/v1/b/<bucket>/o (no /<key>)
+    if (req.method === "GET" && /^\/storage\/v1\/b\/[^/]+\/o$/.test(path)) {
+      var prefix = u.searchParams.get("prefix") || "";
+      var items = Object.keys(stored).filter(function (k) { return k.indexOf(prefix) === 0; }).map(function (k) {
+        return { name: k, size: String(stored[k].length), updated: "2026-04-25T00:00:00.000Z" };
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ items: items }));
+      return;
+    }
+
+    res.writeHead(404); res.end();
+  });
+
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var client = gcs.create({
+      bucket:         "test-bucket",
+      serviceAccount: sa,
+      endpoint:       "http://127.0.0.1:" + port,
+      tokenEndpoint:  "http://127.0.0.1:" + port + "/token",
+    });
+
+    var content = Buffer.from("gcs test payload " + Date.now(), "utf8");
+    var putResult = await client.put("dir/object.bin", content);
+    check("gcs put returns size",                    putResult.size === content.length);
+
+    var got = await client.get("dir/object.bin");
+    check("gcs get round-trips bytes",               got.equals(content));
+
+    var meta = await client.head("dir/object.bin");
+    check("gcs head returns size",                   meta.size === content.length);
+
+    var listed = await client.list("");
+    check("gcs list returns 1 item",                 listed.items.length === 1);
+    check("gcs list returns the key",                listed.items[0].key === "dir/object.bin");
+
+    var del = await client.delete("dir/object.bin");
+    check("gcs delete returns true",                 del === true);
+
+    // Token caching: should have only issued ONE token across all calls
+    check("gcs token issued once and cached across calls",  tokenIssued === 1);
+  } finally {
+    server.close();
+  }
+}
+
+function testAzureBlobPrimitives() {
+  var az = require("../lib/object-store-azure-blob");
+
+  // signRequest produces SharedKey-format Authorization
+  var s = az.signRequest({
+    method:      "PUT",
+    url:         "https://test.blob.core.windows.net/c/key1",
+    headers:     { "Content-Type": "application/octet-stream", "Content-Length": "5", "x-ms-blob-type": "BlockBlob" },
+    accountName: "test",
+    accountKey:  Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "utf8").toString("base64"),
+  });
+  check("azure signRequest produces SharedKey auth",      /^SharedKey test:/.test(s.headers["Authorization"]));
+  check("azure signRequest sets x-ms-version",            !!s.headers["x-ms-version"]);
+  check("azure signRequest sets x-ms-date",               !!s.headers["x-ms-date"]);
+  check("azure signature is base64",                      /^[A-Za-z0-9+/=]+$/.test(s.signature));
+
+  // Same inputs at same time produce same signature
+  var date = new Date(Date.UTC(2026, 3, 25, 12, 34, 56));
+  var dateStr = date.toUTCString();
+  var s1 = az.signRequest({
+    method:      "GET",
+    url:         "https://test.blob.core.windows.net/c/key2",
+    headers:     { "x-ms-date": dateStr },
+    accountName: "test",
+    accountKey:  Buffer.from("ZZZZZZZZ", "base64").toString("base64"),
+  });
+  var s2 = az.signRequest({
+    method:      "GET",
+    url:         "https://test.blob.core.windows.net/c/key2",
+    headers:     { "x-ms-date": dateStr },
+    accountName: "test",
+    accountKey:  Buffer.from("ZZZZZZZZ", "base64").toString("base64"),
+  });
+  check("azure signature deterministic for same inputs",  s1.signature === s2.signature);
+}
+
+async function testAzureBlobMockServer() {
+  var http = require("http");
+  var az = require("../lib/object-store-azure-blob");
+
+  var stored = {};
+  var server = http.createServer(function (req, res) {
+    if (!/^SharedKey /.test(req.headers["authorization"] || "")) {
+      res.writeHead(401); res.end("missing SharedKey"); return;
+    }
+    if (!req.headers["x-ms-version"]) { res.writeHead(400); res.end("missing x-ms-version"); return; }
+    if (!req.headers["x-ms-date"])    { res.writeHead(400); res.end("missing x-ms-date"); return; }
+
+    var path = req.url.split("?")[0];
+    var keyMatch = path.match(/^\/[^/]+\/(.+)$/);
+    var key = keyMatch ? keyMatch[1] : null;
+
+    if (req.method === "PUT" && key) {
+      if (req.headers["x-ms-blob-type"] !== "BlockBlob") { res.writeHead(400); res.end("bad blob type"); return; }
+      var bufs = [];
+      req.on("data", function (c) { bufs.push(c); });
+      req.on("end", function () {
+        stored[key] = Buffer.concat(bufs);
+        res.writeHead(201, { ETag: "\"" + key + "\"" });
+        res.end();
+      });
+      return;
+    }
+    if (req.method === "GET" && key && stored[key]) {
+      res.writeHead(200, { "Content-Length": stored[key].length });
+      res.end(stored[key]);
+      return;
+    }
+    if (req.method === "HEAD" && key && stored[key]) {
+      res.writeHead(200, { "Content-Length": stored[key].length });
+      res.end();
+      return;
+    }
+    if (req.method === "DELETE" && key) {
+      if (stored[key]) { delete stored[key]; res.writeHead(202); res.end(); }
+      else { res.writeHead(404); res.end(); }
+      return;
+    }
+    if (req.method === "GET" && (req.url || "").indexOf("comp=list") !== -1) {
+      var xml = "<?xml version=\"1.0\"?><EnumerationResults><Blobs>";
+      Object.keys(stored).forEach(function (k) {
+        xml += "<Blob><Name>" + k + "</Name><Properties><Content-Length>" + stored[k].length + "</Content-Length><Last-Modified>Sat, 25 Apr 2026 00:00:00 GMT</Last-Modified></Properties></Blob>";
+      });
+      xml += "</Blobs><NextMarker/></EnumerationResults>";
+      res.writeHead(200, { "Content-Type": "application/xml" });
+      res.end(xml);
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var client = az.create({
+      accountName: "test",
+      accountKey:  Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "utf8").toString("base64"),
+      container:   "test-container",
+      endpoint:    "http://127.0.0.1:" + port,
+    });
+
+    var content = Buffer.from("azure test payload " + Date.now(), "utf8");
+    var putResult = await client.put("dir/blob.bin", content);
+    check("azure put returns size",                  putResult.size === content.length);
+
+    var got = await client.get("dir/blob.bin");
+    check("azure get round-trips bytes",             got.equals(content));
+
+    var meta = await client.head("dir/blob.bin");
+    check("azure head returns size",                 meta.size === content.length);
+
+    var listed = await client.list("");
+    check("azure list returns 1 item",               listed.items.length === 1);
+    check("azure list returns the key",              listed.items[0].key === "dir/blob.bin");
+
+    var del = await client.delete("dir/blob.bin");
+    check("azure delete returns true",               del === true);
+  } finally {
+    server.close();
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -2205,6 +2500,11 @@ function testJsonFormats() {
   // v0.0.10 sigv4 protocol
   testSigv4Primitives();
   await testSigv4MockServer();
+  // v0.0.11 gcs + azure-blob protocols
+  testGcsPrimitives();
+  await testGcsMockServer();
+  testAzureBlobPrimitives();
+  await testAzureBlobMockServer();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
