@@ -1458,6 +1458,48 @@ function testBufferSafeBoundedChunkCollector() {
   check("collector: requires maxBytes", threwBadArg);
 }
 
+function testLazyRequire() {
+  check("lazyRequire is a function", typeof b.lazyRequire === "function");
+
+  // Loader is invoked exactly once on first call
+  var loadCount = 0;
+  var loader = function () {
+    loadCount += 1;
+    return { hello: "world", n: loadCount };
+  };
+  var lazy = b.lazyRequire(loader);
+
+  check("lazyRequire: not invoked until called",  loadCount === 0);
+  var v1 = lazy();
+  check("lazyRequire: first call resolves",       v1.hello === "world" && loadCount === 1);
+  var v2 = lazy();
+  check("lazyRequire: second call returns cache", v2 === v1 && loadCount === 1);
+
+  // reset() clears the cache so the next call re-runs the loader
+  lazy.reset();
+  var v3 = lazy();
+  check("lazyRequire: reset re-runs loader",      loadCount === 2 && v3 !== v1);
+
+  // Non-function loader is rejected
+  var threw = false;
+  try { b.lazyRequire("./db"); }
+  catch (_e) { threw = true; }
+  check("lazyRequire: rejects non-function loader", threw);
+
+  // Loader returning falsy values is still cached after first call —
+  // separate `loaded` flag distinguishes "not yet loaded" from "loaded
+  // with a null/undefined/0/false value".
+  var falsyCount = 0;
+  var falsyLoader = b.lazyRequire(function () { falsyCount += 1; return 0; });
+  falsyLoader(); falsyLoader(); falsyLoader();
+  check("lazyRequire: falsy (0) return value cached", falsyCount === 1);
+
+  var nullCount = 0;
+  var nullLoader = b.lazyRequire(function () { nullCount += 1; return null; });
+  nullLoader(); nullLoader();
+  check("lazyRequire: null return value cached", nullCount === 1);
+}
+
 function testBufferSafeSecureZero() {
   var bs = b.bufferSafe;
   check("bufferSafe.secureZero is a function", typeof bs.secureZero === "function");
@@ -1800,6 +1842,8 @@ async function run() {
   testBufferSafeToBuffer();
   testBufferSafeBoundedChunkCollector();
   testBufferSafeSecureZero();
+  // lazy-require primitive (used by 12 modules to break circular loads)
+  testLazyRequire();
   // json-safe primitive
   testJsonModuleSurface();
   testJsonParse();
@@ -1868,6 +1912,7 @@ module.exports = {
   testBufferSafeToBuffer:                    testBufferSafeToBuffer,
   testBufferSafeBoundedChunkCollector:       testBufferSafeBoundedChunkCollector,
   testBufferSafeSecureZero:                  testBufferSafeSecureZero,
+  testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
   testJsonParse:                             testJsonParse,
   testJsonStringify:                         testJsonStringify,
