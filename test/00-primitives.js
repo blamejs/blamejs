@@ -1836,6 +1836,66 @@ async function testHttpClientObserver() {
   }
 }
 
+function testConstantsReferenceIntegrity() {
+  // Static scan: walks lib/ for `C.TIME.X` / `C.BYTES.X` references and
+  // verifies every X resolves to a known function. Catches the class of
+  // bug where a stale all-caps constant (e.g. C.TIME.FIVE_MIN) silently
+  // evaluates to `undefined` and propagates into setInterval / setTimeout
+  // / server.timeout call sites — Node coerces undefined to a small
+  // positive integer for those, so the bug shows up as 1ms-tight loops
+  // instead of a noisy crash. Live evidence: a stale FIVE_MIN reference
+  // in db.js + router.js sat undetected because neither call site
+  // throws when the constant is missing.
+  var fs   = require("fs");
+  var path = require("path");
+
+  var TIME_FNS  = new Set(Object.keys(b.constants.TIME));
+  var BYTES_FNS = new Set(Object.keys(b.constants.BYTES));
+
+  function _walk(dir, out) {
+    var entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (var i = 0; i < entries.length; i++) {
+      var ent = entries[i];
+      if (ent.name === "vendor") continue;            // skip vendored libs
+      if (ent.name === "node_modules") continue;
+      var full = path.join(dir, ent.name);
+      if (ent.isDirectory()) _walk(full, out);
+      else if (ent.isFile() && ent.name.endsWith(".js")) out.push(full);
+    }
+  }
+
+  var libRoot = path.join(__dirname, "..", "lib");
+  var files = [];
+  _walk(libRoot, files);
+
+  var pattern = /\b(?:C\.)?(TIME|BYTES)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+
+  var bad = [];
+  for (var f = 0; f < files.length; f++) {
+    var src = fs.readFileSync(files[f], "utf8");
+    var stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    var m;
+    while ((m = pattern.exec(stripped)) !== null) {
+      var ns = m[1];
+      var ident = m[2];
+      var known = ns === "TIME" ? TIME_FNS : BYTES_FNS;
+      if (!known.has(ident)) {
+        bad.push(files[f].replace(libRoot, "lib") + " : C." + ns + "." + ident);
+      }
+    }
+    pattern.lastIndex = 0;
+  }
+
+  check("constants integrity: every C.TIME.X / C.BYTES.X resolves to a known function",
+        bad.length === 0);
+  if (bad.length > 0) {
+    console.error("Stale constant references:");
+    for (var i = 0; i < bad.length; i++) console.error("  " + bad[i]);
+  }
+}
+
 function testLogger() {
   check("logger namespace present",        typeof b.logger === "object");
   check("logger.createLogger is function", typeof b.logger.createLogger === "function");
@@ -2306,6 +2366,9 @@ async function run() {
   testBufferSafeSecureZero();
   // logger primitive (per-module log channel)
   testLogger();
+  // static-scan integrity check — guards against stale all-caps constants
+  // silently evaluating to undefined in setInterval / setTimeout / etc.
+  testConstantsReferenceIntegrity();
   // framework-error base + cross-module operational classes
   testFrameworkError();
   // http-client primitive (used by 5 protocol adapters)
@@ -2391,6 +2454,7 @@ module.exports = {
   testBufferSafeBoundedChunkCollector:       testBufferSafeBoundedChunkCollector,
   testBufferSafeSecureZero:                  testBufferSafeSecureZero,
   testLogger:                                testLogger,
+  testConstantsReferenceIntegrity:           testConstantsReferenceIntegrity,
   testHttpClientBasic:                       testHttpClientBasic,
   testHttpClientErrorStatus:                 testHttpClientErrorStatus,
   testHttpClientWallClockTimeout:            testHttpClientWallClockTimeout,
