@@ -383,6 +383,182 @@ async function testClusterAuditTipFencing() {
   }
 }
 
+async function testClusterAuditTipRollbackHappyPath() {
+  // Happy path — tip matches the row at its recorded counter, cluster.init
+  // proceeds. Pre-populate an audit_log row + a matching tip row, then
+  // run cluster.init; verify the rollback-check log line and a clean
+  // boot.
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rb-ok-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    // One audit_log row at counter=1 with hash "h1", plus a tip row
+    // pointing at it. cluster.init should accept this as a clean state.
+    await b.externalDb.query(
+      "INSERT INTO _blamejs_audit_log " +
+      "(_id, recordedAt, monotonicCounter, action, outcome, prevHash, rowHash, nonce, fencingToken) " +
+      "VALUES ('row-ok', ?, 1, 'system.test.ok', 'success', '', 'h1', x'00000000000000000000000000000000', 1)",
+      [Date.now()]
+    );
+    await b.externalDb.query(
+      "INSERT INTO _blamejs_audit_tip (scope, atMonotonicCounter, rowHash, signedAt, fencingToken) " +
+      "VALUES ('audit', 1, 'h1', '0', 1)"
+    );
+
+    var threw = null;
+    try {
+      await b.cluster.init({
+        nodeId:            "rb-ok-1",
+        externalDbBackend: "ops",
+        dialect:           "sqlite",
+        leaseTtl:          b.constants.TIME.seconds(30),
+        heartbeatInterval: b.constants.TIME.seconds(10),
+      });
+    } catch (e) { threw = e; }
+    check("cluster.init: happy-path rollback check passes",  threw === null);
+    check("cluster.init: lease acquired",                    b.cluster.isLeader() === true);
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testClusterAuditTipRollbackDetected() {
+  // Pre-seed a tip recording counter=999 with no matching audit_log
+  // row. cluster.init should detect this as rollback (current MAX <
+  // tip counter) and process.exit(1). We fork a child process to
+  // capture the exit code and stderr — same pattern as the
+  // single-node testRollbackDetection.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rb-detect-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    // Empty audit_log + tip claiming counter=999. Net: rollback.
+    await b.externalDb.query(
+      "INSERT INTO _blamejs_audit_tip (scope, atMonotonicCounter, rowHash, signedAt, fencingToken) " +
+      "VALUES ('audit', 999, 'rolled-hash', '0', 5)"
+    );
+    await b.externalDb.shutdown();
+    driver._close();
+
+    // Spawn a child that re-opens the same db file and calls
+    // cluster.init. The rollback check should fire and exit(1).
+    var spawnSync = require("child_process").spawnSync;
+    var indexPath = path.resolve(__dirname, "..", "index.js").replace(/\\/g, "/");
+    var dbPathForChild = dbPath.replace(/\\/g, "/");
+    var childScript =
+      "var b = require('" + indexPath + "');\n" +
+      "var sqlite = require('node:sqlite');\n" +
+      "var conn = new sqlite.DatabaseSync('" + dbPathForChild + "');\n" +
+      "var driver = {\n" +
+      "  connect: async function () { return { id: 'c1' }; },\n" +
+      "  query:   async function (_c, sql, params) {\n" +
+      "    var stmt = conn.prepare(sql);\n" +
+      "    if (/^\\s*SELECT/i.test(sql) || /\\bRETURNING\\b/i.test(sql)) {\n" +
+      "      return { rows: stmt.all.apply(stmt, params || []), rowCount: 0 };\n" +
+      "    }\n" +
+      "    var info = stmt.run.apply(stmt, params || []);\n" +
+      "    return { rows: [], rowCount: info.changes };\n" +
+      "  },\n" +
+      "  close:   async function () {},\n" +
+      "};\n" +
+      "(async function () {\n" +
+      "  b.externalDb.init({ backends: { ops: driver } });\n" +
+      "  await b.cluster.init({ nodeId: 'rb-child', externalDbBackend: 'ops', dialect: 'sqlite', leaseTtl: 30000, heartbeatInterval: 10000 });\n" +
+      "  console.log('UNEXPECTED-BOOT');\n" +
+      "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
+    var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
+    check("rollback boot exits with code 1",
+          result.status === 1);
+    check("rollback boot logs detection message",
+          /audit-log rollback detected/i.test(result.stderr || ""));
+    check("rollback boot did NOT print UNEXPECTED-BOOT (exited before continuing)",
+          (result.stdout || "").indexOf("UNEXPECTED-BOOT") === -1);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testClusterAuditTipRowHashMismatch() {
+  // Same counter on both sides but different rowHash — row substitution
+  // at the chain head. Detection path: tipCounter == currentMax, but
+  // the row at that counter has a different hash than the tip recorded.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rb-hash-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    await b.externalDb.query(
+      "INSERT INTO _blamejs_audit_log " +
+      "(_id, recordedAt, monotonicCounter, action, outcome, prevHash, rowHash, nonce, fencingToken) " +
+      "VALUES ('row-substituted', ?, 1, 'system.test.subst', 'success', '', 'WRONG-HASH', x'00000000000000000000000000000000', 1)",
+      [Date.now()]
+    );
+    // Tip records the OLD hash at the same counter — substitution.
+    await b.externalDb.query(
+      "INSERT INTO _blamejs_audit_tip (scope, atMonotonicCounter, rowHash, signedAt, fencingToken) " +
+      "VALUES ('audit', 1, 'ORIGINAL-HASH', '0', 1)"
+    );
+    await b.externalDb.shutdown();
+    driver._close();
+
+    var spawnSync = require("child_process").spawnSync;
+    var indexPath = path.resolve(__dirname, "..", "index.js").replace(/\\/g, "/");
+    var dbPathForChild = dbPath.replace(/\\/g, "/");
+    var childScript =
+      "var b = require('" + indexPath + "');\n" +
+      "var sqlite = require('node:sqlite');\n" +
+      "var conn = new sqlite.DatabaseSync('" + dbPathForChild + "');\n" +
+      "var driver = {\n" +
+      "  connect: async function () { return { id: 'c1' }; },\n" +
+      "  query:   async function (_c, sql, params) {\n" +
+      "    var stmt = conn.prepare(sql);\n" +
+      "    if (/^\\s*SELECT/i.test(sql) || /\\bRETURNING\\b/i.test(sql)) {\n" +
+      "      return { rows: stmt.all.apply(stmt, params || []), rowCount: 0 };\n" +
+      "    }\n" +
+      "    var info = stmt.run.apply(stmt, params || []);\n" +
+      "    return { rows: [], rowCount: info.changes };\n" +
+      "  },\n" +
+      "  close:   async function () {},\n" +
+      "};\n" +
+      "(async function () {\n" +
+      "  b.externalDb.init({ backends: { ops: driver } });\n" +
+      "  await b.cluster.init({ nodeId: 'rb-hash-child', externalDbBackend: 'ops', dialect: 'sqlite', leaseTtl: 30000, heartbeatInterval: 10000 });\n" +
+      "  console.log('UNEXPECTED-BOOT');\n" +
+      "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
+    var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
+    check("row-hash mismatch boot exits with code 1",
+          result.status === 1);
+    check("row-hash mismatch boot logs detection message",
+          /row-hash mismatch/i.test(result.stderr || ""));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function testClusterAuditFlushNoRecursionHang() {
   // Regression test for v0.1.46:
   // Before the fix, audit.flush() in cluster mode hung forever because
@@ -1158,6 +1334,11 @@ async function run() {
   await testClusterAuditFlushNoRecursionHang();
   await testClusterAuditTipFencedOutErrorSurface();
 
+  // cluster-mode boot-time rollback detection on the audit chain
+  await testClusterAuditTipRollbackHappyPath();
+  await testClusterAuditTipRollbackDetected();
+  await testClusterAuditTipRowHashMismatch();
+
   // audit chain + verify (now exercises chain-writer transitively)
   await testAuditChain();
   await testAuditChainBreak();
@@ -1196,6 +1377,9 @@ module.exports = {
   testClusterAuditTipFencing:                          testClusterAuditTipFencing,
   testClusterAuditFlushNoRecursionHang:                testClusterAuditFlushNoRecursionHang,
   testClusterAuditTipFencedOutErrorSurface:            testClusterAuditTipFencedOutErrorSurface,
+  testClusterAuditTipRollbackHappyPath:                testClusterAuditTipRollbackHappyPath,
+  testClusterAuditTipRollbackDetected:                 testClusterAuditTipRollbackDetected,
+  testClusterAuditTipRowHashMismatch:                  testClusterAuditTipRowHashMismatch,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,
   testAuditSelfLogging:                                testAuditSelfLogging,
