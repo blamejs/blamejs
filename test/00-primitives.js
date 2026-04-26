@@ -1976,6 +1976,175 @@ function testWebSocketFrames() {
   check("FrameParser: rejects oversized frame", threwTooLarge);
 }
 
+async function testWebSocketH2() {
+  var http2 = require("http2");
+  var ws = b.websocket;
+
+  // h2c server with Extended CONNECT advertised. Per RFC 8441, the
+  // server MUST send SETTINGS_ENABLE_CONNECT_PROTOCOL=1 before clients
+  // can use :method=CONNECT, :protocol=websocket.
+  var server = http2.createServer({
+    settings: { enableConnectProtocol: true },
+  });
+
+  server.on("stream", function (stream, headers) {
+    if (headers[":method"] === "CONNECT" && headers[":protocol"] === "websocket") {
+      var conn = ws.handleExtendedConnect(stream, headers, {});
+      if (conn) {
+        conn.on("message", function (data, isBinary) {
+          conn.send(isBinary ? data : "h2-echo:" + data);
+        });
+      }
+    } else {
+      stream.respond({ ":status": 404 });
+      stream.end();
+    }
+  });
+
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+
+  try {
+    // Use Node's h2 client to send the Extended CONNECT.
+    var client = http2.connect("http://127.0.0.1:" + port);
+    await new Promise(function (resolve, reject) {
+      client.once("connect", resolve);
+      client.once("error", reject);
+    });
+
+    // Wait for server's SETTINGS to arrive — the client cannot issue
+    // Extended CONNECT until it knows the server supports it.
+    // h2 SETTINGS handshake is automatic, but `client.remoteSettings`
+    // is populated after the first SETTINGS frame.
+    await new Promise(function (resolve) {
+      if (client.remoteSettings && client.remoteSettings.enableConnectProtocol) return resolve();
+      client.once("remoteSettings", resolve);
+    });
+    check("h2 WebSocket: server advertises enableConnectProtocol",
+          client.remoteSettings.enableConnectProtocol === true);
+
+    // Issue the Extended CONNECT request.
+    var stream = client.request({
+      ":method":   "CONNECT",
+      ":protocol": "websocket",
+      ":path":     "/",
+      ":scheme":   "http",
+      ":authority": "127.0.0.1:" + port,
+    });
+
+    // Wait for response headers — should be :status 200.
+    var responseHeaders = await new Promise(function (resolve, reject) {
+      stream.once("response", resolve);
+      stream.once("error", reject);
+    });
+    check("h2 WebSocket: server responds 200 (not 101)",
+          responseHeaders[":status"] === 200);
+
+    // Send a WebSocket frame (UNMASKED — h2 mode forbids masking).
+    var clientFrame = ws.serializeFrame(ws.OPCODE_TEXT, Buffer.from("hello-h2", "utf8"));
+    // Default mask=false, which is what we want for h2.
+    stream.write(clientFrame);
+
+    // Read response frames.
+    var parser = new ws.FrameParser({ maxFrameBytes: 64 * 1024 });
+    var echoFrames = await new Promise(function (resolve, reject) {
+      var collected = [];
+      stream.on("data", function (chunk) {
+        try {
+          var fs = parser.push(chunk);
+          for (var i = 0; i < fs.length; i++) collected.push(fs[i]);
+          if (collected.length > 0) resolve(collected);
+        } catch (e) { reject(e); }
+      });
+      stream.on("error", reject);
+    });
+
+    check("h2 WebSocket: server echoed text frame",
+          echoFrames[0].payload.toString("utf8") === "h2-echo:hello-h2");
+    check("h2 WebSocket: server frame unmasked (h2 rule)",
+          echoFrames[0].masked === false);
+
+    // Close the WebSocket cleanly.
+    var closePayload = Buffer.alloc(2);
+    closePayload.writeUInt16BE(1000, 0);
+    var clientClose = ws.serializeFrame(ws.OPCODE_CLOSE, closePayload);
+    stream.write(clientClose);
+
+    // Wait for the stream to close.
+    await new Promise(function (resolve) {
+      stream.once("close", resolve);
+      setTimeout(resolve, 1000);
+    });
+
+    client.close();
+  } finally {
+    server.close();
+  }
+}
+
+async function testWebSocketH2RejectsMaskedFrame() {
+  // Spec compliance check: h2 WebSocket MUST refuse masked frames
+  // (opposite of h1). Verify the server closes the connection with
+  // protocol-error code when the client incorrectly masks.
+  var http2 = require("http2");
+  var ws = b.websocket;
+
+  var connSeen = null;
+  var server = http2.createServer({ settings: { enableConnectProtocol: true } });
+  server.on("stream", function (stream, headers) {
+    if (headers[":method"] === "CONNECT" && headers[":protocol"] === "websocket") {
+      connSeen = ws.handleExtendedConnect(stream, headers, {});
+    }
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+
+  try {
+    var client = http2.connect("http://127.0.0.1:" + port);
+    await new Promise(function (resolve, reject) { client.once("connect", resolve); client.once("error", reject); });
+    await new Promise(function (resolve) {
+      if (client.remoteSettings && client.remoteSettings.enableConnectProtocol) return resolve();
+      client.once("remoteSettings", resolve);
+    });
+
+    var stream = client.request({
+      ":method":   "CONNECT",
+      ":protocol": "websocket",
+      ":path":     "/",
+      ":scheme":   "http",
+      ":authority": "127.0.0.1:" + port,
+    });
+    await new Promise(function (resolve, reject) { stream.once("response", resolve); stream.once("error", reject); });
+
+    // Send a MASKED frame — illegal in h2 mode.
+    var maskedFrame = ws.serializeFrame(ws.OPCODE_TEXT, Buffer.from("nope", "utf8"), { mask: true });
+    stream.write(maskedFrame);
+
+    // Server should respond with a close frame (code 1002) and end the stream.
+    var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
+    var closeSeen = await new Promise(function (resolve) {
+      var collected = [];
+      stream.on("data", function (chunk) {
+        try {
+          var fs = parser.push(chunk);
+          collected = collected.concat(fs);
+          var closeFrame = collected.find(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
+          if (closeFrame) resolve(closeFrame);
+        } catch (_e) { /* parser may also error — that's a server send-and-destroy scenario */ }
+      });
+      stream.once("close", function () { resolve(null); });
+      setTimeout(function () { resolve(null); }, 2000);
+    });
+
+    check("h2 WebSocket: masked client frame rejected with close",
+          closeSeen !== null && closeSeen.payload.readUInt16BE(0) === ws.CLOSE_PROTOCOL_ERROR);
+
+    client.close();
+  } finally {
+    server.close();
+  }
+}
+
 async function testWebSocketConnection() {
   var net = require("net");
   var ws = b.websocket;
@@ -2693,10 +2862,12 @@ async function run() {
   await testHttpClientH2ErrorStatus();
   await testHttpClientH2Multiplex();
   await testHttpClientH2Stream();
-  // websocket primitive (RFC 6455)
+  // websocket primitive (RFC 6455 + RFC 8441)
   testWebSocketHandshake();
   testWebSocketFrames();
   await testWebSocketConnection();
+  await testWebSocketH2();
+  await testWebSocketH2RejectsMaskedFrame();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
@@ -2784,6 +2955,8 @@ module.exports = {
   testWebSocketHandshake:                    testWebSocketHandshake,
   testWebSocketFrames:                       testWebSocketFrames,
   testWebSocketConnection:                   testWebSocketConnection,
+  testWebSocketH2:                           testWebSocketH2,
+  testWebSocketH2RejectsMaskedFrame:         testWebSocketH2RejectsMaskedFrame,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
