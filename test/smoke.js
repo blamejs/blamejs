@@ -2868,6 +2868,308 @@ async function testExternalDbClassification() {
 }
 
 // =====================================================================
+// v0.0.15 — HTTP middleware
+// =====================================================================
+
+// Mock req/res factories — minimal Node http.IncomingMessage / ServerResponse
+// surface that the middleware uses. No real HTTP server.
+function _mockReq(opts) {
+  opts = opts || {};
+  return {
+    method:    opts.method || "GET",
+    url:       opts.url || "/",
+    pathname:  opts.pathname || (opts.url || "/").split("?")[0],
+    headers:   Object.assign({}, opts.headers || {}),
+    socket:    opts.socket || { remoteAddress: "127.0.0.1" },
+  };
+}
+function _mockRes() {
+  var headers = {};
+  var statusCode = null;
+  var bodyParts = [];
+  var ended = false;
+  return {
+    statusCode:    null,
+    writableEnded: false,
+    setHeader:     function (k, v) { headers[k.toLowerCase()] = v; },
+    getHeader:     function (k) { return headers[k.toLowerCase()]; },
+    writeHead:     function (s, h) {
+      statusCode = s;
+      if (h) for (var k in h) headers[k.toLowerCase()] = h[k];
+    },
+    end:           function (b) { if (b !== undefined) bodyParts.push(b); ended = true; this.writableEnded = true; },
+    _captured:     function () { return { status: statusCode, headers: headers, body: bodyParts.join(""), ended: ended }; },
+  };
+}
+
+async function testMiddlewareRequestId() {
+  await setupTestDbForMW();
+  try {
+    var mw = b.middleware.requestId();
+    var nextCalled = false;
+
+    // Generates fresh ID
+    var req1 = _mockReq();
+    var res1 = _mockRes();
+    mw(req1, res1, function () { nextCalled = true; });
+    check("requestId calls next()",                         nextCalled);
+    check("requestId sets req.requestId (32 hex chars)",    typeof req1.requestId === "string" && req1.requestId.length === 32);
+    check("requestId sets X-Request-Id response header",    res1._captured().headers["x-request-id"] === req1.requestId);
+
+    // Propagates upstream value when format matches
+    var req2 = _mockReq({ headers: { "x-request-id": "trace-abc-123_xyz" } });
+    var res2 = _mockRes();
+    mw(req2, res2, function () {});
+    check("requestId propagates valid upstream id",         req2.requestId === "trace-abc-123_xyz");
+
+    // Rejects malformed and generates fresh
+    var req3 = _mockReq({ headers: { "x-request-id": "bad id with spaces!@#" } });
+    var res3 = _mockRes();
+    mw(req3, res3, function () {});
+    check("requestId rejects malformed upstream id",        req3.requestId !== "bad id with spaces!@#");
+  } finally { teardownMW(); }
+}
+
+async function testMiddlewareSecurityHeaders() {
+  await setupTestDbForMW();
+  try {
+    var mw = b.middleware.securityHeaders();
+    var req = _mockReq();
+    var res = _mockRes();
+    mw(req, res, function () {});
+    var h = res._captured().headers;
+    check("security: HSTS set",                          /max-age=63072000.+includeSubDomains/.test(h["strict-transport-security"]));
+    check("security: X-Content-Type-Options nosniff",    h["x-content-type-options"] === "nosniff");
+    check("security: X-Frame-Options DENY",              h["x-frame-options"] === "DENY");
+    check("security: Referrer-Policy no-referrer",       h["referrer-policy"] === "no-referrer");
+    check("security: Permissions-Policy disables camera", /camera=\(\)/.test(h["permissions-policy"]));
+    check("security: COOP same-origin",                  h["cross-origin-opener-policy"] === "same-origin");
+    check("security: CORP same-origin",                  h["cross-origin-resource-policy"] === "same-origin");
+    check("security: CSP includes default-src 'self'",   /default-src 'self'/.test(h["content-security-policy"]));
+
+    // Override + disable
+    var mw2 = b.middleware.securityHeaders({ frameOptions: "SAMEORIGIN", csp: false });
+    var req2 = _mockReq();
+    var res2 = _mockRes();
+    mw2(req2, res2, function () {});
+    var h2 = res2._captured().headers;
+    check("security: frameOptions override applied",     h2["x-frame-options"] === "SAMEORIGIN");
+    check("security: csp disabled when false",           h2["content-security-policy"] === undefined);
+  } finally { teardownMW(); }
+}
+
+async function testMiddlewareErrorHandler() {
+  await setupTestDbForMW();
+  try {
+    var mw = b.middleware.errorHandler({ exposeStackInDev: false });
+
+    // Simple error → 500
+    var req = _mockReq({ url: "/x" });
+    var res = _mockRes();
+    mw(new Error("boom"), req, res, function () {});
+    var captured = res._captured();
+    check("errorHandler: default → 500",                 captured.status === 500);
+    var body = JSON.parse(captured.body);
+    check("errorHandler: generic message on 500",        body.error.message === "Internal Server Error");
+    check("errorHandler: error code present",            !!body.error.code);
+
+    // statusCode-bearing error → that status
+    var customErr = new Error("not found");
+    customErr.statusCode = 404;
+    customErr.code = "not_found";
+    var req2 = _mockReq();
+    var res2 = _mockRes();
+    mw(customErr, req2, res2, function () {});
+    var c2 = res2._captured();
+    check("errorHandler: respects statusCode on error",  c2.status === 404);
+    var b2 = JSON.parse(c2.body);
+    check("errorHandler: 4xx exposes message",           b2.error.message === "not found");
+
+    // JsonSafeError → 400 + path
+    var jse = new b.json.JsonSafeError("validation failed", "json/validation", "$.email");
+    var req3 = _mockReq();
+    var res3 = _mockRes();
+    mw(jse, req3, res3, function () {});
+    var c3 = res3._captured();
+    check("errorHandler: JsonSafeError → 400",           c3.status === 400);
+    var b3 = JSON.parse(c3.body);
+    check("errorHandler: 400 body includes path",        b3.error.path === "$.email");
+
+    // Audit recorded
+    var errRows = b.audit.query({ action: "system.http.error" });
+    check("errorHandler: audit-recorded errors",          errRows.length === 3);
+  } finally { teardownMW(); }
+}
+
+async function testMiddlewareBotGuard() {
+  await setupTestDbForMW();
+  try {
+    var mw = b.middleware.botGuard();
+
+    // curl UA in 'block' mode → 403
+    var req = _mockReq({ headers: { "user-agent": "curl/8.0.0", "accept-language": "en", "sec-fetch-mode": "navigate" } });
+    var res = _mockRes();
+    var nextCalled = false;
+    mw(req, res, function () { nextCalled = true; });
+    check("botGuard: curl UA blocked",                    res._captured().status === 403 && !nextCalled);
+
+    // Real-browser-shaped request → pass
+    var req2 = _mockReq({ headers: { "user-agent": "Mozilla/5.0", "accept-language": "en-US", "sec-fetch-mode": "navigate" } });
+    var res2 = _mockRes();
+    var next2 = false;
+    mw(req2, res2, function () { next2 = true; });
+    check("botGuard: browser request passes",            next2);
+
+    // Tag mode marks req but doesn't block
+    var mwTag = b.middleware.botGuard({ mode: "tag" });
+    var req3 = _mockReq({ headers: { "user-agent": "curl/8.0.0", "accept-language": "en" } });
+    var res3 = _mockRes();
+    var next3 = false;
+    mwTag(req3, res3, function () { next3 = true; });
+    check("botGuard tag mode: passes through",            next3);
+    check("botGuard tag mode: req.suspectedBot set",     req3.suspectedBot === "blocked-agent");
+
+    // Skip path
+    var mwSkip = b.middleware.botGuard({ skipPaths: ["/healthz"] });
+    var req4 = _mockReq({ url: "/healthz", pathname: "/healthz", headers: { "user-agent": "curl/8.0.0" } });
+    var res4 = _mockRes();
+    var next4 = false;
+    mwSkip(req4, res4, function () { next4 = true; });
+    check("botGuard: skipPaths bypassed",                next4);
+
+    // API path is exempt from missing-Accept-Language by default (onlyForHtml)
+    var req5 = _mockReq({ url: "/api/x", pathname: "/api/x", headers: { "user-agent": "Mozilla" } });
+    var res5 = _mockRes();
+    var next5 = false;
+    mw(req5, res5, function () { next5 = true; });
+    check("botGuard: onlyForHtml exempts /api/*",        next5);
+  } finally { teardownMW(); }
+}
+
+async function testMiddlewareCors() {
+  await setupTestDbForMW();
+  try {
+    var mw = b.middleware.cors({
+      origins:     ["https://app.example.com", /^https:\/\/.+\.staging\.example\.com$/],
+      credentials: true,
+    });
+
+    // Allowed origin → CORS headers set
+    var req = _mockReq({ headers: { origin: "https://app.example.com" } });
+    var res = _mockRes();
+    var nextCalled = false;
+    mw(req, res, function () { nextCalled = true; });
+    check("cors: allowed origin → next called",          nextCalled);
+    check("cors: ACAO set",                               res._captured().headers["access-control-allow-origin"] === "https://app.example.com");
+    check("cors: ACAC set when credentials:true",        res._captured().headers["access-control-allow-credentials"] === "true");
+
+    // Regex origin → match
+    var req2 = _mockReq({ headers: { origin: "https://feature-1.staging.example.com" } });
+    var res2 = _mockRes();
+    var n2 = false;
+    mw(req2, res2, function () { n2 = true; });
+    check("cors: regex origin matched",                   res2._captured().headers["access-control-allow-origin"] === "https://feature-1.staging.example.com");
+
+    // Disallowed origin → 403 (refuseUnknown default)
+    var req3 = _mockReq({ headers: { origin: "https://evil.example.com" } });
+    var res3 = _mockRes();
+    var n3 = false;
+    mw(req3, res3, function () { n3 = true; });
+    check("cors: unknown origin blocked",                 res3._captured().status === 403 && !n3);
+
+    // No Origin header → pass through
+    var req4 = _mockReq();
+    var res4 = _mockRes();
+    var n4 = false;
+    mw(req4, res4, function () { n4 = true; });
+    check("cors: no Origin header → passes through",     n4 && !res4._captured().headers["access-control-allow-origin"]);
+
+    // Preflight (OPTIONS + Access-Control-Request-Method) → 204 with allow-headers
+    var req5 = _mockReq({ method: "OPTIONS", headers: { origin: "https://app.example.com", "access-control-request-method": "PUT" } });
+    var res5 = _mockRes();
+    mw(req5, res5, function () {});
+    check("cors preflight: 204",                          res5._captured().status === 204);
+    check("cors preflight: ACAM set",                     /PUT/.test(res5._captured().headers["access-control-allow-methods"]));
+  } finally { teardownMW(); }
+}
+
+async function testMiddlewareRateLimit() {
+  await setupTestDbForMW();
+  try {
+    var mw = b.middleware.rateLimit({ burst: 3, refillPerSecond: 1 });
+
+    function fire() {
+      var req = _mockReq();
+      var res = _mockRes();
+      var nextCalled = false;
+      mw(req, res, function () { nextCalled = true; });
+      return { passed: nextCalled, status: res._captured().status };
+    }
+
+    // First 3 pass (burst=3)
+    check("rateLimit: 1st request passes",                 fire().passed);
+    check("rateLimit: 2nd request passes",                 fire().passed);
+    check("rateLimit: 3rd request passes",                 fire().passed);
+    var blocked = fire();
+    check("rateLimit: 4th request blocked with 429",      !blocked.passed && blocked.status === 429);
+
+    // Different key → independent bucket
+    var mw2 = b.middleware.rateLimit({ burst: 2, refillPerSecond: 0.5, keyFn: function (req) { return req.headers["x-key"] || "default"; } });
+    function fireKey(k) {
+      var req = _mockReq({ headers: { "x-key": k } });
+      var res = _mockRes();
+      var ok = false;
+      mw2(req, res, function () { ok = true; });
+      return ok;
+    }
+    check("rateLimit: keyA 1st passes",                    fireKey("a"));
+    check("rateLimit: keyA 2nd passes",                    fireKey("a"));
+    check("rateLimit: keyA 3rd blocked",                   !fireKey("a"));
+    check("rateLimit: keyB independent — 1st passes",      fireKey("b"));
+
+    // Skip path
+    var mwSkip = b.middleware.rateLimit({ burst: 1, refillPerSecond: 0.1, skipPaths: ["/healthz"] });
+    function fireWithPath(p) {
+      var req = _mockReq({ url: p, pathname: p });
+      var res = _mockRes();
+      var ok = false;
+      mwSkip(req, res, function () { ok = true; });
+      return ok;
+    }
+    check("rateLimit: 1st /healthz passes",                fireWithPath("/healthz"));
+    check("rateLimit: 2nd /healthz passes (skipped)",      fireWithPath("/healthz"));
+    check("rateLimit: 1st /api passes",                    fireWithPath("/api"));
+    check("rateLimit: 2nd /api blocked",                   !fireWithPath("/api"));
+  } finally { teardownMW(); }
+}
+
+// Helper that sets up just the minimum DB (no schema needed) for middleware
+// audit hooks to work.
+async function setupTestDbForMW() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mw-"));
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+  await b.db.init({
+    dataDir: tmpDir,
+    atRest:  "plain",
+    auditSigning: { mode: "plaintext" },
+    schema:  [],
+  });
+  global._mwTmpDir = tmpDir;
+}
+function teardownMW() {
+  try { b.db.close(); } catch (_e) {}
+  b.db._resetForTest();
+  b.vault._resetForTest();
+  if (global._mwTmpDir) {
+    try { fs.rmSync(global._mwTmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -3187,6 +3489,13 @@ function testJsonFormats() {
   await testExternalDbTransaction();
   await testExternalDbResidency();
   await testExternalDbClassification();
+  // v0.0.15 HTTP middleware
+  await testMiddlewareRequestId();
+  await testMiddlewareSecurityHeaders();
+  await testMiddlewareErrorHandler();
+  await testMiddlewareBotGuard();
+  await testMiddlewareCors();
+  await testMiddlewareRateLimit();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

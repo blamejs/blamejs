@@ -39,6 +39,7 @@ var queue = require("./lib/queue");
 var logStream = require("./lib/log-stream");
 var redact = require("./lib/redact");
 var externalDb = require("./lib/external-db");
+var middleware = require("./lib/middleware");
 
 module.exports = {
   crypto:           crypto,
@@ -62,6 +63,7 @@ module.exports = {
   logStream:        logStream,
   redact:           redact,
   externalDb:       externalDb,
+  middleware:       middleware,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,
