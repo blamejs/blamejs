@@ -61,14 +61,18 @@ async function testClusterGatesAuditAndConsent() {
 async function testClusterGatesSession() {
   var fx = await _setupClusterGateFixture();
   try {
-    _expectNotLeaderError("session.create on follower", function () {
-      b.session.create({ userId: "u1" });
+    // session.* are async since v0.1.50 (cluster-storage dispatch).
+    // _expectNotLeaderError awaits the returned promise when fn returns
+    // one — but the call-site await is what makes the assertion sequence
+    // before the next statement runs.
+    await _expectNotLeaderError("session.create on follower", function () {
+      return b.session.create({ userId: "u1" });
     });
-    _expectNotLeaderError("session.destroy on follower", function () {
-      b.session.destroy("any-token");
+    await _expectNotLeaderError("session.destroy on follower", function () {
+      return b.session.destroy("any-token");
     });
-    _expectNotLeaderError("session.purgeExpired on follower", function () {
-      b.session.purgeExpired();
+    await _expectNotLeaderError("session.purgeExpired on follower", function () {
+      return b.session.purgeExpired();
     });
   } finally {
     await fx.teardown();

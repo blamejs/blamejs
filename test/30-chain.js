@@ -383,6 +383,79 @@ async function testClusterAuditTipFencing() {
   }
 }
 
+async function testClusterSessionsSharedAcrossNodes() {
+  // Sessions migrated to external-db in v0.1.50 — a session created on
+  // the leader must be verifiable by reading the SAME external-db row.
+  // We can't truly stand up two node processes in-test, so we simulate
+  // the cluster-shared-storage property by:
+  //   1. cluster.init as leader, create a session — row lands in
+  //      external-db's _blamejs_sessions.
+  //   2. SELECT directly from external-db; row is there with sealed
+  //      data (proves it didn't go to local SQLite).
+  //   3. session.verify reads through cluster-storage and returns
+  //      the unsealed row — proves the round-trip works.
+  //   4. Compare against the local SQLite _blamejs_sessions table —
+  //      should be empty (proves cluster mode is actually routing
+  //      reads/writes away from local).
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-sess-cl-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    await setupTestDb(tmpDir);
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    await b.cluster.init({
+      nodeId:            "sess-cluster-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    var s = await b.session.create({ userId: "u-cluster-1", data: { role: "admin" } });
+    check("create returned token",                  typeof s.token === "string");
+
+    // Row lands in external-db, NOT in local SQLite
+    var extRows = await b.externalDb.query(
+      "SELECT sidHash FROM _blamejs_sessions",
+      [], { backend: "ops" }
+    );
+    check("session row in external-db",             extRows.rows.length === 1);
+    check("session row sidHash is hashed (128 hex)",
+          /^[0-9a-f]{128}$/.test(extRows.rows[0].sidHash));
+
+    var localRows = b.db.prepare("SELECT sidHash FROM _blamejs_sessions").all();
+    check("local SQLite session table is empty in cluster mode",
+          localRows.length === 0);
+
+    // Round-trip: verify reads back through external-db
+    var v = await b.session.verify(s.token);
+    check("cluster-mode verify returns userId",     v && v.userId === "u-cluster-1");
+    check("cluster-mode verify returns unsealed data",
+          v && v.data && v.data.role === "admin");
+
+    // Cleanup via destroy hits external-db too
+    var destroyed = await b.session.destroy(s.token);
+    check("cluster-mode destroy returns true",      destroyed === true);
+    var afterDelete = await b.externalDb.query(
+      "SELECT COUNT(*) AS n FROM _blamejs_sessions",
+      [], { backend: "ops" }
+    );
+    check("session row removed from external-db",   Number(afterDelete.rows[0].n) === 0);
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testClusterVaultKeyFirstBootRecords() {
   // First cluster boot: no _blamejs_cluster_state row yet. cluster.init
   // should write THIS node's vault-key fingerprint and record nodeId.
@@ -1472,6 +1545,11 @@ async function run() {
   await testClusterVaultKeyFirstBootRecords();
   await testClusterVaultKeyMismatchDetected();
 
+  // cluster-mode sessions: session.* now dispatches through
+  // cluster-storage so writes/reads land in external-db, making the
+  // session store shared across all nodes
+  await testClusterSessionsSharedAcrossNodes();
+
   // audit chain + verify (now exercises chain-writer transitively)
   await testAuditChain();
   await testAuditChainBreak();
@@ -1515,6 +1593,7 @@ module.exports = {
   testClusterAuditTipRowHashMismatch:                  testClusterAuditTipRowHashMismatch,
   testClusterVaultKeyFirstBootRecords:                 testClusterVaultKeyFirstBootRecords,
   testClusterVaultKeyMismatchDetected:                 testClusterVaultKeyMismatchDetected,
+  testClusterSessionsSharedAcrossNodes:                testClusterSessionsSharedAcrossNodes,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,
   testAuditSelfLogging:                                testAuditSelfLogging,

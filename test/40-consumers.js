@@ -48,11 +48,11 @@ async function testSession() {
     await setupTestDb(tmpDir);
 
     // Create + verify
-    var s1 = b.session.create({ userId: "u-1", data: { csrfToken: "abc" } });
+    var s1 = await b.session.create({ userId: "u-1", data: { csrfToken: "abc" } });
     check("create returns 64-hex token",            typeof s1.token === "string" && s1.token.length === 64);
     check("create returns expiresAt > now",         s1.expiresAt > Date.now());
 
-    var v1 = b.session.verify(s1.token);
+    var v1 = await b.session.verify(s1.token);
     check("verify returns the session",             v1 && v1.userId === "u-1");
     check("verify decrypts data field",             v1 && v1.data && v1.data.csrfToken === "abc");
 
@@ -62,47 +62,50 @@ async function testSession() {
           rawRows.every(r => r.sidHash !== s1.token && r.sidHash.length === 128));
 
     // verify on garbage token returns null
-    check("verify on garbage token returns null",   b.session.verify("not-a-real-token") === null);
-    check("verify on empty token returns null",     b.session.verify("") === null);
+    check("verify on garbage token returns null",   (await b.session.verify("not-a-real-token")) === null);
+    check("verify on empty token returns null",     (await b.session.verify("")) === null);
 
     // touch
-    var beforeTouch = b.session.verify(s1.token);
+    var beforeTouch = await b.session.verify(s1.token);
     var t0 = beforeTouch.lastActivity;
     // Sleep briefly to ensure lastActivity changes
     await new Promise(function (r) { setTimeout(r, 10); });
-    var ok = b.session.touch(s1.token);
+    var ok = await b.session.touch(s1.token);
     check("touch returns true",                     ok === true);
-    var afterTouch = b.session.verify(s1.token);
+    var afterTouch = await b.session.verify(s1.token);
     check("touch updates lastActivity",             afterTouch.lastActivity > t0);
 
     // destroyAllForUser
-    var s2 = b.session.create({ userId: "u-1" });
-    var s3 = b.session.create({ userId: "u-2" });
-    check("count includes all active sessions",     b.session.count() === 3);
-    var nDel = b.session.destroyAllForUser("u-1");
+    var s2 = await b.session.create({ userId: "u-1" });
+    var s3 = await b.session.create({ userId: "u-2" });
+    check("count includes all active sessions",     (await b.session.count()) === 3);
+    var nDel = await b.session.destroyAllForUser("u-1");
     check("destroyAllForUser returns count",        nDel === 2);
-    check("u-1's sessions all gone",                b.session.verify(s1.token) === null && b.session.verify(s2.token) === null);
-    check("u-2's session survives",                 b.session.verify(s3.token) !== null);
+    check("u-1's sessions all gone",
+          (await b.session.verify(s1.token)) === null && (await b.session.verify(s2.token)) === null);
+    check("u-2's session survives",                 (await b.session.verify(s3.token)) !== null);
 
     // destroy single
-    check("destroy returns true on success",        b.session.destroy(s3.token) === true);
-    check("destroy returns false on missing",       b.session.destroy(s3.token) === false);
+    check("destroy returns true on success",        (await b.session.destroy(s3.token)) === true);
+    check("destroy returns false on missing",       (await b.session.destroy(s3.token)) === false);
 
     // Expired session auto-cleans on verify
-    var sExp = b.session.create({ userId: "u-3", ttlMs: 50 });
+    var sExp = await b.session.create({ userId: "u-3", ttlMs: 50 });
     await new Promise(function (r) { setTimeout(r, 100); });
-    check("verify on expired session returns null", b.session.verify(sExp.token) === null);
+    check("verify on expired session returns null", (await b.session.verify(sExp.token)) === null);
 
     // purgeExpired
-    var sExp2 = b.session.create({ userId: "u-4", ttlMs: 50 });
+    var sExp2 = await b.session.create({ userId: "u-4", ttlMs: 50 });
     void sExp2;
     await new Promise(function (r) { setTimeout(r, 100); });
-    var purged = b.session.purgeExpired();
+    var purged = await b.session.purgeExpired();
     check("purgeExpired returns count",             purged >= 1);
 
-    // Invalid input
+    // Invalid input — session.create rejects synchronously before
+    // returning a Promise, so the throw is observable via try/catch
+    // around the awaited call (the rejected Promise raises in await).
     var rejected = false;
-    try { b.session.create({}); } catch (_) { rejected = true; }
+    try { await b.session.create({}); } catch (_) { rejected = true; }
     check("session.create requires userId",         rejected);
   } finally {
     await teardownTestDb(tmpDir);
