@@ -3471,6 +3471,140 @@ function testCsvFormulaInjection() {
   check("csv round-trip preserves quote in field",       parsed[1].b === "with \"quote\"");
 }
 
+function testTomlBasicTypes() {
+  var src =
+    "title = \"blamejs\"\n" +
+    "active = true\n" +
+    "disabled = false\n" +
+    "answer = 42\n" +
+    "ratio = 3.14\n" +
+    "neg = -17\n" +
+    "biginthex = 0xDEADbeef\n" +
+    "octal = 0o755\n" +
+    "binary = 0b1010\n" +
+    "underscored = 1_000_000\n" +
+    "infinity = inf\n" +
+    "negInf = -inf\n" +
+    "notNum = nan\n" +
+    "literal = 'no \\n escapes here'\n" +
+    "stamp = 1979-05-27T07:32:00Z\n" +
+    "localDate = 1979-05-27\n" +
+    "localTime = 07:32:00\n";
+  var doc = b.parsers.toml.parse(src);
+  check("toml: string value",                      doc.title === "blamejs");
+  check("toml: bool true",                         doc.active === true);
+  check("toml: bool false",                        doc.disabled === false);
+  check("toml: integer",                           doc.answer === 42);
+  check("toml: float",                             Math.abs(doc.ratio - 3.14) < 1e-9);
+  check("toml: negative integer",                  doc.neg === -17);
+  check("toml: hex with underscore-camelcase digits", doc.biginthex === 0xDEADbeef);
+  check("toml: octal",                             doc.octal === 0o755);
+  check("toml: binary",                            doc.binary === 10);
+  check("toml: underscored decimal",               doc.underscored === 1000000);
+  check("toml: inf",                               doc.infinity === Infinity);
+  check("toml: -inf",                              doc.negInf === -Infinity);
+  check("toml: nan",                               Number.isNaN(doc.notNum));
+  check("toml: literal string preserves backslash-n",  doc.literal === "no \\n escapes here");
+  check("toml: offset date-time → Date",           doc.stamp instanceof Date);
+  check("toml: offset date-time correct epoch",    doc.stamp.getTime() === Date.UTC(1979, 4, 27, 7, 32, 0));
+  check("toml: local date as ISO string",          doc.localDate === "1979-05-27");
+  check("toml: local time as ISO string",          doc.localTime === "07:32:00");
+}
+
+function testTomlTablesAndArrays() {
+  var src =
+    "tags = [\"a\", \"b\", \"c\"]\n" +
+    "\n" +
+    "[server]\n" +
+    "host = \"localhost\"\n" +
+    "port = 8080\n" +
+    "\n" +
+    "[server.tls]\n" +
+    "cert = \"/etc/ssl/cert.pem\"\n" +
+    "\n" +
+    "[[products]]\n" +
+    "name = \"widget\"\n" +
+    "price = 9.99\n" +
+    "\n" +
+    "[[products]]\n" +
+    "name = \"gizmo\"\n" +
+    "price = 19.99\n";
+  var doc = b.parsers.toml.parse(src);
+  check("toml: array of strings (top-level)",      Array.isArray(doc.tags) && doc.tags.length === 3);
+  check("toml: array element 0",                   doc.tags[0] === "a");
+  check("toml: nested table",                      doc.server.host === "localhost");
+  check("toml: integer in nested table",           doc.server.port === 8080);
+  check("toml: deeper nested table",               doc.server.tls.cert === "/etc/ssl/cert.pem");
+  check("toml: array of tables length",            doc.products.length === 2);
+  check("toml: AoT first element",                 doc.products[0].name === "widget");
+  check("toml: AoT second element",                doc.products[1].name === "gizmo");
+  check("toml: AoT prices",                        doc.products[1].price === 19.99);
+}
+
+function testTomlInlineTablesAndDottedKeys() {
+  var src =
+    "point = { x = 1, y = 2 }\n" +
+    "name.first = \"Tom\"\n" +
+    "name.last = \"Preston-Werner\"\n";
+  var doc = b.parsers.toml.parse(src);
+  check("toml: inline table",                      doc.point.x === 1 && doc.point.y === 2);
+  check("toml: dotted-key creates nested object",  doc.name.first === "Tom" && doc.name.last === "Preston-Werner");
+}
+
+function testTomlSecurityRejections() {
+  // Prototype pollution via dotted key
+  var threwProto = false;
+  try { b.parsers.toml.parse("__proto__.polluted = true"); }
+  catch (e) { threwProto = e.code === "toml/poisoned-key"; }
+  check("toml: __proto__ rejected",                threwProto);
+
+  var threwConstructor = false;
+  try { b.parsers.toml.parse("a.constructor = 1"); }
+  catch (e) { threwConstructor = e.code === "toml/poisoned-key"; }
+  check("toml: constructor rejected",              threwConstructor);
+
+  // Duplicate key
+  var threwDup = false;
+  try { b.parsers.toml.parse("a = 1\na = 2"); }
+  catch (e) { threwDup = e.code === "toml/duplicate-key"; }
+  check("toml: duplicate key rejected",            threwDup);
+
+  // Inline table mutation
+  var threwInlineMutate = false;
+  try { b.parsers.toml.parse("x = { a = 1 }\nx.b = 2"); }
+  catch (e) { threwInlineMutate = e.code === "toml/inline-table-mutated"; }
+  check("toml: inline-table mutation rejected",    threwInlineMutate);
+
+  // Table redefinition
+  var threwRedefine = false;
+  try { b.parsers.toml.parse("[a]\nb = 1\n[a]\nc = 2"); }
+  catch (e) { threwRedefine = e.code === "toml/redefine"; }
+  check("toml: table redefinition rejected",       threwRedefine);
+
+  // Size cap
+  var threwSize = false;
+  try { b.parsers.toml.parse("a = \"" + "x".repeat(2000) + "\"", { maxBytes: 1000 }); }
+  catch (e) { threwSize = e.code === "toml/too-large"; }
+  check("toml: maxBytes enforced",                 threwSize);
+
+  // Integer overflow
+  var threwOverflow = false;
+  try { b.parsers.toml.parse("big = 9223372036854775807"); }
+  catch (e) { threwOverflow = e.code === "toml/integer-overflow"; }
+  check("toml: integer-overflow on > MAX_SAFE_INTEGER", threwOverflow);
+
+  // Unterminated string
+  var threwUnterm = false;
+  try { b.parsers.toml.parse("a = \"unterminated\nb = 1"); }
+  catch (e) { threwUnterm = !!e.isTomlSafeError; }
+  check("toml: unterminated string rejected",      threwUnterm);
+
+  // Multi-line basic string
+  var doc = b.parsers.toml.parse("greeting = \"\"\"\nhello,\nworld\n\"\"\"");
+  check("toml: multi-line basic string trims first newline + preserves rest",
+        doc.greeting === "hello,\nworld\n");
+}
+
 // =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
@@ -4223,6 +4357,10 @@ async function testClusterInitAndRequireLeader() {
   testXmlSecurityRejections();
   testCsvParse();
   testCsvFormulaInjection();
+  testTomlBasicTypes();
+  testTomlTablesAndArrays();
+  testTomlInlineTablesAndDottedKeys();
+  testTomlSecurityRejections();
   // Cluster coordination — leader election + fencing tokens
   await testClusterSingleNodeFallback();
   await testClusterProviderAcquireAndRenew();
