@@ -684,6 +684,52 @@ function testJsonFormats() {
 // All Layer 0: pure / file-IO primitives with no framework state.
 // =====================================================================
 
+async function testAtomicFileListDir() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-listdir-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "a.log"), "alpha");
+    fs.writeFileSync(path.join(tmpDir, "b.log"), "beta");
+    fs.writeFileSync(path.join(tmpDir, "c.txt"), "carrot");
+    fs.mkdirSync(path.join(tmpDir, "sub"));
+
+    // Default — no filter, no stat
+    var all = b.atomicFile.listDir(tmpDir);
+    check("listDir: returns all entries by default", all.length === 4);
+    check("listDir: each entry has name + fullPath",
+          all[0].name && all[0].fullPath && all[0].fullPath.indexOf(tmpDir) === 0);
+    check("listDir: no stat fields when includeStat off", all[0].mtimeMs === undefined);
+
+    // Filter
+    var logs = b.atomicFile.listDir(tmpDir, {
+      filter: function (n) { return n.endsWith(".log"); },
+    });
+    check("listDir: filter narrows to .log", logs.length === 2);
+
+    // includeStat populates size, mtime, isDirectory, isFile
+    var withStat = b.atomicFile.listDir(tmpDir, { includeStat: true });
+    var byName = {};
+    withStat.forEach(function (e) { byName[e.name] = e; });
+    check("listDir: includeStat — size of a.log", byName["a.log"].sizeBytes === 5);
+    check("listDir: includeStat — a.log isFile",  byName["a.log"].isFile === true);
+    check("listDir: includeStat — a.log not dir", byName["a.log"].isDirectory === false);
+    check("listDir: includeStat — sub isDirectory", byName["sub"].isDirectory === true);
+    check("listDir: includeStat — mtimeMs is a number",
+          typeof byName["a.log"].mtimeMs === "number");
+
+    // Missing dir — default missingOk: true returns []
+    var missing = b.atomicFile.listDir(path.join(tmpDir, "nope"));
+    check("listDir: missing dir returns [] by default", Array.isArray(missing) && missing.length === 0);
+
+    // missingOk: false throws
+    var threwMissing = false;
+    try { b.atomicFile.listDir(path.join(tmpDir, "nope"), { missingOk: false }); }
+    catch (e) { threwMissing = e.code === "atomic-file/list-failed"; }
+    check("listDir: missingOk: false throws", threwMissing);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function testAtomicFile() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-atomicfile-"));
   try {
@@ -2400,6 +2446,7 @@ async function run() {
   // atomic-file primitive (depends on crypto + json-safe)
   await testAtomicFile();
   await testAtomicFileLock();
+  await testAtomicFileListDir();
   // parsers/* primitives (independent of framework state)
   testXmlParse();
   testXmlSecurityRejections();
@@ -2481,6 +2528,7 @@ module.exports = {
   testJsonFormats:                           testJsonFormats,
   testAtomicFile:                            testAtomicFile,
   testAtomicFileLock:                        testAtomicFileLock,
+  testAtomicFileListDir:                     testAtomicFileListDir,
   testXmlParse:                              testXmlParse,
   testXmlSecurityRejections:                 testXmlSecurityRejections,
   testCsvParse:                              testCsvParse,
