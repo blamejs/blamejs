@@ -946,6 +946,167 @@ async function testDataResidency() {
 }
 
 // =====================================================================
+// Phase 1d-1 — session + storage (local backend)
+// =====================================================================
+
+// 37. Module surface
+check("session namespace present",          typeof b.session === "object");
+check("storage namespace present",          typeof b.storage === "object");
+check("session.create is a function",       typeof b.session.create === "function");
+check("storage.saveFile is a function",     typeof b.storage.saveFile === "function");
+
+// 38. session: create / verify / destroy / TTL / lifecycle
+async function testSession() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-session-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    // Create + verify
+    var s1 = b.session.create({ userId: "u-1", data: { csrfToken: "abc" } });
+    check("create returns 64-hex token",            typeof s1.token === "string" && s1.token.length === 64);
+    check("create returns expiresAt > now",         s1.expiresAt > Date.now());
+
+    var v1 = b.session.verify(s1.token);
+    check("verify returns the session",             v1 && v1.userId === "u-1");
+    check("verify decrypts data field",             v1 && v1.data && v1.data.csrfToken === "abc");
+
+    // The plaintext sid should NEVER be in the DB — only its hash
+    var rawRows = b.db.prepare("SELECT sidHash FROM _blamejs_sessions").all();
+    check("only sidHash stored, never plaintext sid",
+          rawRows.every(r => r.sidHash !== s1.token && r.sidHash.length === 128));
+
+    // verify on garbage token returns null
+    check("verify on garbage token returns null",   b.session.verify("not-a-real-token") === null);
+    check("verify on empty token returns null",     b.session.verify("") === null);
+
+    // touch
+    var beforeTouch = b.session.verify(s1.token);
+    var t0 = beforeTouch.lastActivity;
+    // Sleep briefly to ensure lastActivity changes
+    await new Promise(function (r) { setTimeout(r, 10); });
+    var ok = b.session.touch(s1.token);
+    check("touch returns true",                     ok === true);
+    var afterTouch = b.session.verify(s1.token);
+    check("touch updates lastActivity",             afterTouch.lastActivity > t0);
+
+    // destroyAllForUser
+    var s2 = b.session.create({ userId: "u-1" });
+    var s3 = b.session.create({ userId: "u-2" });
+    check("count includes all active sessions",     b.session.count() === 3);
+    var nDel = b.session.destroyAllForUser("u-1");
+    check("destroyAllForUser returns count",        nDel === 2);
+    check("u-1's sessions all gone",                b.session.verify(s1.token) === null && b.session.verify(s2.token) === null);
+    check("u-2's session survives",                 b.session.verify(s3.token) !== null);
+
+    // destroy single
+    check("destroy returns true on success",        b.session.destroy(s3.token) === true);
+    check("destroy returns false on missing",       b.session.destroy(s3.token) === false);
+
+    // Expired session auto-cleans on verify
+    var sExp = b.session.create({ userId: "u-3", ttlMs: 50 });
+    await new Promise(function (r) { setTimeout(r, 100); });
+    check("verify on expired session returns null", b.session.verify(sExp.token) === null);
+
+    // purgeExpired
+    var sExp2 = b.session.create({ userId: "u-4", ttlMs: 50 });
+    void sExp2;
+    await new Promise(function (r) { setTimeout(r, 100); });
+    var purged = b.session.purgeExpired();
+    check("purgeExpired returns count",             purged >= 1);
+
+    // Invalid input
+    var rejected = false;
+    try { b.session.create({}); } catch (_) { rejected = true; }
+    check("session.create requires userId",         rejected);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// 39. storage: saveFile / getFileBuffer / getFileStream / round-trip
+async function testStorage() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-storage-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage.init({ backend: "local", uploadDir: path.join(tmpDir, "uploads") });
+
+    var content = Buffer.from("hello blamejs storage " + Date.now(), "utf8");
+    var saved = b.storage.saveFile(content, "user-1/welcome.txt");
+    check("saveFile returns storedPath",            saved.storedPath === "user-1/welcome.txt");
+    check("saveFile returns sealed encryptionKey",
+          typeof saved.encryptionKey === "string" && saved.encryptionKey.startsWith("vault:"));
+
+    // The on-disk file must NOT contain the plaintext content
+    var onDisk = fs.readFileSync(path.join(tmpDir, "uploads", "user-1/welcome.txt"));
+    check("on-disk file is encrypted (not plaintext)",  onDisk.indexOf(content) === -1);
+    check("on-disk file starts with format byte 0x02",  onDisk[0] === b.constants.FORMAT.XCHACHA20_POLY1305);
+
+    // Round-trip
+    var decrypted = b.storage.getFileBuffer("user-1/welcome.txt", saved.encryptionKey);
+    check("getFileBuffer round-trip preserves content", decrypted.equals(content));
+
+    // Stream form
+    var stream = b.storage.getFileStream("user-1/welcome.txt", saved.encryptionKey);
+    var chunks = [];
+    for await (var chunk of stream) chunks.push(chunk);
+    var streamed = Buffer.concat(chunks);
+    check("getFileStream round-trip preserves content", streamed.equals(content));
+
+    // Wrong key fails
+    var wrongRejected = false;
+    try { b.storage.getFileBuffer("user-1/welcome.txt", b.vault.seal("not-the-real-key")); }
+    catch (_) { wrongRejected = true; }
+    check("getFileBuffer with wrong key throws",       wrongRejected);
+
+    // No key required throws
+    var noKeyRejected = false;
+    try { b.storage.getFileBuffer("user-1/welcome.txt", null); }
+    catch (_) { noKeyRejected = true; }
+    check("getFileBuffer without key throws",          noKeyRejected);
+
+    // exists
+    check("exists returns true on present file",       b.storage.exists("user-1/welcome.txt") === true);
+    check("exists returns false on missing",           b.storage.exists("does/not/exist.txt") === false);
+
+    // saveRaw / getRawBuffer (no encryption)
+    var rawContent = Buffer.from("already-encrypted-or-not-sensitive", "utf8");
+    b.storage.saveRaw(rawContent, "raw/blob.bin");
+    var rawBack = b.storage.getRawBuffer("raw/blob.bin");
+    check("saveRaw / getRawBuffer round-trip",        rawBack.equals(rawContent));
+
+    // deleteFile
+    check("deleteFile returns true on existing",       b.storage.deleteFile("user-1/welcome.txt") === true);
+    check("deleteFile returns false on missing",       b.storage.deleteFile("user-1/welcome.txt") === false);
+    check("file no longer exists after delete",        b.storage.exists("user-1/welcome.txt") === false);
+
+    // Path traversal rejected
+    var traversalRejected = false;
+    try { b.storage.saveFile(content, "../escape.txt"); }
+    catch (_) { traversalRejected = true; }
+    check("path traversal via .. rejected",            traversalRejected);
+
+    var absRejected = false;
+    try { b.storage.saveFile(content, "/etc/passwd"); }
+    catch (_) { absRejected = true; }
+    check("absolute path rejected",                    absRejected);
+
+    var nullByteRejected = false;
+    try { b.storage.saveFile(content, "ok injected"); }
+    catch (_) { nullByteRejected = true; }
+    check("null-byte in path rejected",                nullByteRejected);
+
+    // S3 backend not yet available
+    b.storage._resetForTest();
+    var s3Rejected = false;
+    try { b.storage.init({ backend: "s3", bucket: "x" }); }
+    catch (e) { s3Rejected = /not yet implemented/.test(e.message); }
+    check("storage backend 's3' rejected with clear message", s3Rejected);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// =====================================================================
 // Run async tests
 // =====================================================================
 
@@ -973,6 +1134,9 @@ async function testDataResidency() {
   await testConsent();
   await testSubjectRights();
   await testDataResidency();
+  // Phase 1d-1 tests
+  await testSession();
+  await testStorage();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

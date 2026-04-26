@@ -4,13 +4,14 @@
  *
  * The Node framework that owns its stack.
  *
- * v0.0.4 (Phase 1c — audit, consent, subject rights): adds tamper-evident
- * audit_log and consent_log (baked into the schema runner — apps cannot opt
- * out), per-row SHA3-512 hash chain with refuse-to-boot on break, and the
- * GDPR Article 15–22 / AU APP 12–13 / Privacy Act subject-rights primitives.
+ * v0.0.5 (Phase 1d-1 — session & storage local backend): adds DB-backed
+ * session management with sid-hashed-at-rest tokens, and a file storage
+ * abstraction with per-file vault-sealed encryption. Local backend only;
+ * S3 backend defers to v0.0.6.
  *
- * Phase 0 / 1a / 1b carryover: crypto, router, constants, vault, vault-wrap,
- * passphrase-source, db, fieldCrypto.
+ * Phase 0 / 1a / 1b / 1c carryover: crypto, router, constants, vault,
+ * vault-wrap, passphrase-source, db, fieldCrypto, audit, audit-chain,
+ * consent, subject.
  *
  * See LICENSE (Apache-2.0) and NOTICE for vendored attribution.
  */
@@ -27,6 +28,8 @@ var audit = require("./lib/audit");
 var auditChain = require("./lib/audit-chain");
 var consent = require("./lib/consent");
 var subject = require("./lib/subject");
+var session = require("./lib/session");
+var storage = require("./lib/storage");
 
 module.exports = {
   crypto:           crypto,
@@ -41,5 +44,7 @@ module.exports = {
   auditChain:       auditChain,
   consent:          consent,
   subject:          subject,
+  session:          session,
+  storage:          storage,
   version:          constants.version,
 };
