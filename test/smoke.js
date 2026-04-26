@@ -814,7 +814,7 @@ async function testConsent() {
     var subjectId = "user-7";
     check("isGranted is false before grant",     b.consent.isGranted({ subjectId, purpose: "marketing.email" }) === false);
 
-    b.consent.grant({
+    await b.consent.grant({
       subjectId:    subjectId,
       purpose:      "marketing.email",
       lawfulBasis:  "consent",
@@ -824,7 +824,7 @@ async function testConsent() {
     });
     check("isGranted true after grant",          b.consent.isGranted({ subjectId, purpose: "marketing.email" }) === true);
 
-    b.consent.withdraw({ subjectId, purpose: "marketing.email" });
+    await b.consent.withdraw({ subjectId, purpose: "marketing.email" });
     check("isGranted false after withdraw",      b.consent.isGranted({ subjectId, purpose: "marketing.email" }) === false);
 
     var hist = b.consent.history(subjectId);
@@ -838,7 +838,7 @@ async function testConsent() {
 
     // Invalid lawful basis
     var basisRejected = false;
-    try { b.consent.grant({ subjectId, purpose: "x", lawfulBasis: "bogus", channel: "x" }); }
+    try { await b.consent.grant({ subjectId, purpose: "x", lawfulBasis: "bogus", channel: "x" }); }
     catch (_) { basisRejected = true; }
     check("invalid lawfulBasis rejected", basisRejected);
   } finally {
@@ -1151,7 +1151,7 @@ async function testAppendOnlyTriggers() {
     check("UPDATE on audit_log raises ABORT",            updateRejected);
 
     // consent_log
-    b.consent.grant({ subjectId: "u-1", purpose: "x", lawfulBasis: "consent", channel: "api" });
+    await b.consent.grant({ subjectId: "u-1", purpose: "x", lawfulBasis: "consent", channel: "api" });
     var conDelRejected = false;
     try { b.db.runSql("DELETE FROM consent_log"); }
     catch (e) { conDelRejected = /append-only|prohibited/i.test(e.message); }
@@ -4502,6 +4502,125 @@ async function testHandlerStats() {
   check("handler.getStats: breakerState exposed",           s.breakerState === "closed");
 }
 
+function testSqlSafeIdentifierValidation() {
+  // Good shape
+  check("sqlSafe.validateIdentifier accepts valid name",
+        b.sqlSafe.validateIdentifier("audit_log") === "audit_log");
+  check("sqlSafe.validateIdentifier accepts leading underscore",
+        b.sqlSafe.validateIdentifier("_blamejs_audit_log") === "_blamejs_audit_log");
+  // Bad shape
+  var badRejects = [
+    ["empty",            ""],
+    ["leading digit",    "1foo"],
+    ["embedded space",   "foo bar"],
+    ["punctuation",      "foo.bar"],
+    ["semicolon",        "foo;DROP"],
+    ["quote",            'foo"bar'],
+    ["backslash",        "foo\\bar"],
+    ["null byte",        "foo\0bar"],
+  ];
+  for (var i = 0; i < badRejects.length; i++) {
+    var label = badRejects[i][0];
+    var input = badRejects[i][1];
+    var threw = false;
+    try { b.sqlSafe.validateIdentifier(input); }
+    catch (e) { threw = !!e.isSqlSafeError; }
+    check("sqlSafe rejects bad identifier (" + label + ")", threw);
+  }
+  // Reserved word
+  var threwReserved = false;
+  try { b.sqlSafe.validateIdentifier("SELECT"); }
+  catch (e) { threwReserved = e.code === "sql/reserved-word"; }
+  check("sqlSafe rejects SQL reserved word",                threwReserved);
+  // sqlite_ prefix
+  var threwInternal = false;
+  try { b.sqlSafe.validateIdentifier("sqlite_master"); }
+  catch (e) { threwInternal = e.code === "sql/internal-prefix"; }
+  check("sqlSafe rejects sqlite_-prefixed identifier",      threwInternal);
+  // Length cap
+  var threwLong = false;
+  try { b.sqlSafe.validateIdentifier("a".repeat(70)); }
+  catch (e) { threwLong = e.code === "sql/too-long"; }
+  check("sqlSafe rejects over-long identifier",             threwLong);
+}
+
+function testSqlSafeQuoteIdentifier() {
+  check("quoteIdentifier sqlite uses double-quote",
+        b.sqlSafe.quoteIdentifier("audit_log", "sqlite") === '"audit_log"');
+  check("quoteIdentifier postgres uses double-quote",
+        b.sqlSafe.quoteIdentifier("audit_log", "postgres") === '"audit_log"');
+  check("quoteIdentifier mysql uses backtick",
+        b.sqlSafe.quoteIdentifier("audit_log", "mysql") === "`audit_log`");
+  // quote rejects bad shape
+  var threw = false;
+  try { b.sqlSafe.quoteIdentifier("foo;DROP"); }
+  catch (e) { threw = !!e.isSqlSafeError; }
+  check("quoteIdentifier rejects bad name",                 threw);
+}
+
+function testSqlSafeAssertOneOf() {
+  var allow = new Set(["audit_log", "consent_log"]);
+  check("assertOneOf passes when in allowlist",
+        b.sqlSafe.assertOneOf("audit_log", allow) === "audit_log");
+  var threw = false;
+  try { b.sqlSafe.assertOneOf("users", allow); }
+  catch (e) { threw = e.code === "sql/not-allowed"; }
+  check("assertOneOf rejects non-allowlisted",              threw);
+  // Array form
+  check("assertOneOf accepts array allowlist",
+        b.sqlSafe.assertOneOf("a", ["a", "b"]) === "a");
+}
+
+async function testChainWriterRejectsBadTable() {
+  // chain-writer constructor must reject non-chain tables.
+  var threw = null;
+  try {
+    b.chainWriter.create({
+      table: "users",
+      columnsForInsert: ["_id"],
+      hashableColumns:  ["_id"],
+    });
+  } catch (e) { threw = e; }
+  check("chainWriter rejects non-chain table",
+        threw && (threw.code === "sql/not-allowed" || threw.code === "chain-writer/invalid-config" ||
+                  /not in allowlist/.test(threw.message)));
+}
+
+async function testChainWriterRaceSafetyConcurrentAppends() {
+  // Concurrent appends through chain-writer should produce a chain
+  // with no forks — every row's prevHash matches the predecessor's
+  // rowHash, monotonicCounter strictly increases by 1.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cw-"));
+  try {
+    b.cluster._resetForTest();
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+
+    // Fire 10 concurrent audit.record calls
+    var promises = [];
+    for (var i = 0; i < 10; i++) {
+      promises.push(b.audit.record({
+        actor:   { userId: "u-" + i },
+        action:  "test.concurrent",
+        outcome: "success",
+      }));
+    }
+    var results = await Promise.all(promises);
+
+    // Verify chain integrity
+    var verified = await b.audit.verify();
+    check("chain-writer race test: chain verifies after 10 concurrent appends",
+          verified.ok === true);
+    // Counters are unique and strictly monotonic
+    var counters = results.map(function (r) { return r.monotonicCounter; }).sort(function (a, b) { return a - b; });
+    var allUnique = counters.every(function (c, idx, arr) { return idx === 0 || c === arr[idx - 1] + 1; });
+    check("chain-writer race test: counters strictly monotonic, no duplicates",
+          allUnique && counters.length === 10);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testHandlerBackpressureDrop() {
   var dropped = [];
   var h = b.handlers.create({
@@ -4774,16 +4893,16 @@ async function testClusterGatesAuditAndConsent() {
     _expectNotLeaderError("audit.checkpoint on follower", async function () {
       await b.audit.checkpoint();
     });
-    _expectNotLeaderError("consent.grant on follower", function () {
-      b.consent.grant({
+    _expectNotLeaderError("consent.grant on follower", async function () {
+      await b.consent.grant({
         subjectId:   "subj-1",
         purpose:     "marketing",
         lawfulBasis: "consent",
         channel:     "web-form",
       });
     });
-    _expectNotLeaderError("consent.withdraw on follower", function () {
-      b.consent.withdraw({ subjectId: "subj-1", purpose: "marketing" });
+    _expectNotLeaderError("consent.withdraw on follower", async function () {
+      await b.consent.withdraw({ subjectId: "subj-1", purpose: "marketing" });
     });
   } finally {
     await fx.teardown();
@@ -5263,6 +5382,13 @@ async function testClusterInitAndRequireLeader() {
   await testHandlerBoundedShutdown();
   await testHandlerStats();
   await testHandlerBackpressureDrop();
+  // sql-safe primitive
+  testSqlSafeIdentifierValidation();
+  testSqlSafeQuoteIdentifier();
+  testSqlSafeAssertOneOf();
+  // chain-writer primitive
+  await testChainWriterRejectsBadTable();
+  await testChainWriterRaceSafetyConcurrentAppends();
   // Cluster coordination — leader election + fencing tokens
   await testClusterSingleNodeFallback();
   await testClusterProviderAcquireAndRenew();

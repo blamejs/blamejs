@@ -44,6 +44,8 @@ var frameworkSchema = require("./lib/framework-schema");
 var clusterStorage = require("./lib/cluster-storage");
 var asyncSafe = require("./lib/async-safe");
 var handlers = require("./lib/handlers");
+var sqlSafe = require("./lib/sql-safe");
+var chainWriter = require("./lib/chain-writer");
 
 module.exports = {
   crypto:           crypto,
@@ -75,6 +77,8 @@ module.exports = {
   clusterStorage:   clusterStorage,
   asyncSafe:        asyncSafe,
   handlers:         handlers,
+  sqlSafe:          sqlSafe,
+  chainWriter:      chainWriter,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
