@@ -17,10 +17,12 @@
  *   - sql-safe (identifier validation, quoting, allowlist)
  *   - chain-writer (rejects non-chain-table; race-safety under
  *     concurrent appends)
+ *   - async-safe (withTimeout / safeAwait / Mutex / Semaphore /
+ *     Once / CircuitBreaker)
+ *   - handlers (emit/drain, retry, breaker, DLQ, shutdown, stats,
+ *     backpressure, recursion-safe emit-during-flush)
  *
  * Pending migration (still in smoke.js):
- *   - async-safe primitives (v0.1.17)
- *   - handlers primitive (v0.1.17)
  *   - json-safe (v0.1.18)
  *   - atomic-file / parsers / redact (v0.1.19)
  */
@@ -157,23 +159,358 @@ async function testChainWriterRaceSafetyConcurrentAppends() {
   }
 }
 
+// ---- async-safe ----
+
+async function testAsyncSafeWithTimeoutResolves() {
+  var v = await b.asyncSafe.withTimeout(Promise.resolve("ok"), 100);
+  check("withTimeout: resolves with value when fast",       v === "ok");
+}
+
+async function testAsyncSafeWithTimeoutRejects() {
+  var threw = null;
+  try {
+    await b.asyncSafe.withTimeout(new Promise(function () {}), 20, { name: "test-op" });
+  } catch (e) { threw = e; }
+  check("withTimeout: rejects on timeout",                  threw && threw.code === "async/timeout");
+  check("withTimeout: timeout error names operation",       threw && threw.message.indexOf("test-op") >= 0);
+}
+
+async function testAsyncSafeWithTimeoutAbort() {
+  var ctrl = new AbortController();
+  var p = b.asyncSafe.withTimeout(new Promise(function () {}), 10000, { signal: ctrl.signal });
+  setTimeout(function () { ctrl.abort(); }, 10);
+  var threw = null;
+  try { await p; } catch (e) { threw = e; }
+  check("withTimeout: AbortSignal aborts cleanly",          threw && threw.code === "async/aborted");
+}
+
+async function testAsyncSafeWithTimeoutPropagatesError() {
+  var threw = null;
+  try {
+    await b.asyncSafe.withTimeout(Promise.reject(new Error("boom")), 100);
+  } catch (e) { threw = e; }
+  check("withTimeout: propagates underlying rejection",     threw && threw.message === "boom");
+}
+
+async function testAsyncSafeSafeAwait() {
+  var ok = await b.asyncSafe.safeAwait(Promise.resolve(42));
+  check("safeAwait: success returns [null, value]",         ok[0] === null && ok[1] === 42);
+  var fail = await b.asyncSafe.safeAwait(Promise.reject(new Error("nope")));
+  check("safeAwait: failure returns [error, null]",         fail[0] && fail[0].message === "nope" && fail[1] === null);
+}
+
+async function testAsyncSafeMutexSerializes() {
+  var m = new b.asyncSafe.Mutex();
+  var order = [];
+  async function task(label, durMs) {
+    return m.runExclusive(async function () {
+      order.push(label + ":enter");
+      await new Promise(function (r) { setTimeout(r, durMs); });
+      order.push(label + ":exit");
+    });
+  }
+  await Promise.all([task("A", 30), task("B", 5), task("C", 5)]);
+  check("Mutex: A enters first",       order[0] === "A:enter");
+  check("Mutex: A exits before B/C enter",
+        order.indexOf("A:exit") < order.indexOf("B:enter") &&
+        order.indexOf("A:exit") < order.indexOf("C:enter"));
+  check("Mutex: B and C don't interleave",
+        Math.abs(order.indexOf("B:enter") - order.indexOf("B:exit")) === 1);
+}
+
+async function testAsyncSafeMutexReleaseOnThrow() {
+  var m = new b.asyncSafe.Mutex();
+  var threw = null;
+  try {
+    await m.runExclusive(async function () { throw new Error("inner"); });
+  } catch (e) { threw = e; }
+  check("Mutex: runExclusive propagates thrown error",      threw && threw.message === "inner");
+  check("Mutex: lock released after throw",                 !m.isHeld());
+}
+
+async function testAsyncSafeMutexAbortableAcquire() {
+  var m = new b.asyncSafe.Mutex();
+  await m.acquire();
+  var ctrl = new AbortController();
+  var p = m.acquire({ signal: ctrl.signal });
+  setTimeout(function () { ctrl.abort(); }, 10);
+  var threw = null;
+  try { await p; } catch (e) { threw = e; }
+  check("Mutex: aborted acquire rejects",                   threw && threw.code === "async/aborted");
+  check("Mutex: aborted acquirer no longer queued",         m.pendingCount() === 0);
+  m.release();
+}
+
+async function testAsyncSafeSemaphoreBoundedConcurrency() {
+  var s = new b.asyncSafe.Semaphore(2);
+  var concurrent = 0;
+  var maxConcurrent = 0;
+  async function task() {
+    return s.runWith(async function () {
+      concurrent += 1;
+      if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+      await new Promise(function (r) { setTimeout(r, 10); });
+      concurrent -= 1;
+    });
+  }
+  await Promise.all([task(), task(), task(), task(), task()]);
+  check("Semaphore: max concurrency respected",             maxConcurrent === 2);
+}
+
+async function testAsyncSafeSemaphoreAbortableAcquire() {
+  var s = new b.asyncSafe.Semaphore(1);
+  await s.acquire();
+  var ctrl = new AbortController();
+  var p = s.acquire({ signal: ctrl.signal });
+  setTimeout(function () { ctrl.abort(); }, 10);
+  var threw = null;
+  try { await p; } catch (e) { threw = e; }
+  check("Semaphore: aborted acquire rejects",               threw && threw.code === "async/aborted");
+  s.release();
+}
+
+async function testAsyncSafeOnceSingleFlight() {
+  var calls = 0;
+  var once = new b.asyncSafe.Once(async function () {
+    calls += 1;
+    await new Promise(function (r) { setTimeout(r, 10); });
+    return "result-" + calls;
+  });
+  var results = await Promise.all([once.invoke(), once.invoke(), once.invoke()]);
+  check("Once: function invoked exactly once",              calls === 1);
+  check("Once: all callers see same result",
+        results[0] === "result-1" && results[1] === "result-1" && results[2] === "result-1");
+}
+
+async function testAsyncSafeOnceCachesFailure() {
+  var once = new b.asyncSafe.Once(async function () { throw new Error("init failed"); });
+  var first = null, second = null;
+  try { await once.invoke(); } catch (e) { first = e; }
+  try { await once.invoke(); } catch (e) { second = e; }
+  check("Once: failure caches; both callers see same rejection",
+        first && second && first.message === "init failed" && second.message === "init failed");
+}
+
+async function testAsyncSafeOnceReset() {
+  var calls = 0;
+  var once = new b.asyncSafe.Once(async function () {
+    calls += 1;
+    if (calls === 1) throw new Error("transient");
+    return "ok";
+  });
+  var failed = null;
+  try { await once.invoke(); } catch (e) { failed = e; }
+  check("Once: first call fails as expected",               failed && failed.message === "transient");
+  once.reset();
+  var second = await once.invoke();
+  check("Once: reset enables retry; second call succeeds",  second === "ok" && calls === 2);
+}
+
+async function testAsyncSafeCircuitBreakerStateTransitions() {
+  var br = new b.asyncSafe.CircuitBreaker("test", { failureThreshold: 2, cooldownMs: 30, successThreshold: 1 });
+  check("CircuitBreaker: starts closed",                    br.getState() === "closed");
+  for (var i = 0; i < 2; i++) {
+    try { await br.wrap(async function () { throw new Error("fail"); }); } catch (_e) {}
+  }
+  check("CircuitBreaker: opens after failureThreshold",     br.getState() === "open");
+  var fastFail = null;
+  try { await br.wrap(async function () { return "ok"; }); }
+  catch (e) { fastFail = e; }
+  check("CircuitBreaker: open state fast-fails",            fastFail && fastFail.code === "CIRCUIT_OPEN");
+  await new Promise(function (r) { setTimeout(r, 50); });
+  var probe = await br.wrap(async function () { return "ok"; });
+  check("CircuitBreaker: half-open probe success",          probe === "ok");
+  check("CircuitBreaker: closes after success threshold",   br.getState() === "closed");
+}
+
+// ---- handlers ----
+
+async function testHandlerEmitAndDrain() {
+  var flushed = [];
+  var h = b.handlers.create({
+    name:  "test",
+    flush: async function (batch) { flushed.push.apply(flushed, batch); },
+  });
+  h.emit({ id: 1 });
+  h.emit({ id: 2 });
+  h.emit({ id: 3 });
+  check("handler: emit returns nothing (sync)",             h.emit({ id: 4 }) === undefined);
+  await h.drain();
+  check("handler: drain flushes all buffered items",        flushed.length === 4);
+  check("handler: items delivered in order",                flushed[0].id === 1 && flushed[3].id === 4);
+  check("handler: buffer empty post-drain",                 h.size() === 0);
+}
+
+async function testHandlerEmitDuringFlushNextCycle() {
+  var phase1 = [];
+  var phase2 = [];
+  var emitDuring = true;
+  var h;
+  h = b.handlers.create({
+    name:  "test-recursion",
+    flush: async function (batch) {
+      if (emitDuring) {
+        emitDuring = false;
+        h.emit({ id: 99 });
+        phase1.push.apply(phase1, batch);
+      } else {
+        phase2.push.apply(phase2, batch);
+      }
+    },
+  });
+  h.emit({ id: 1 });
+  h.emit({ id: 2 });
+  await h.drain();
+  check("handler: emit-during-flush lands in next cycle",
+        phase1.length === 2 && phase2.length === 1 && phase2[0].id === 99);
+}
+
+async function testHandlerRetryOnFlushFailure() {
+  var attempts = 0;
+  var seen = null;
+  var h = b.handlers.create({
+    name:  "test-retry",
+    flush: async function (batch) {
+      attempts += 1;
+      if (attempts < 3) throw new Error("transient");
+      seen = batch;
+    },
+    retry: { maxAttempts: 5, baseDelayMs: 1 },
+  });
+  h.emit({ id: 1 });
+  await h.drain();
+  check("handler: retries on flush failure",                attempts >= 3);
+  check("handler: eventually succeeds",                     seen && seen.length === 1);
+}
+
+async function testHandlerCircuitBreakerOpensOnPersistentFailure() {
+  var dlqCalls = 0;
+  var h = b.handlers.create({
+    name:  "test-breaker",
+    flush: async function () { throw new Error("always fails"); },
+    retry: { maxAttempts: 1, baseDelayMs: 1 },
+    breaker: { failureThreshold: 2, cooldownMs: 10000, successThreshold: 1 },
+    deadLetter: function () { dlqCalls += 1; },
+    onError: function () { /* swallow expected errors */ },
+  });
+  h.emit({ id: 1 });
+  await h.drain();
+  h.emit({ id: 2 });
+  await h.drain();
+  h.emit({ id: 3 });
+  await h.drain();
+  var stats = h.getStats();
+  check("handler: breaker tripped after consecutive failures",
+        stats.breakerState === "open" || stats.breakerState === "half-open");
+  check("handler: dead-lettered items on persistent failure", dlqCalls >= 1);
+}
+
+async function testHandlerBoundedShutdown() {
+  var h = b.handlers.create({
+    name:  "test-shutdown",
+    flush: async function () {
+      await new Promise(function (r) { setTimeout(r, 100); });
+    },
+    retry: { maxAttempts: 1, baseDelayMs: 1 },
+    onError: function () { /* swallow */ },
+  });
+  h.emit({ id: 1 });
+  var t0 = Date.now();
+  await h.shutdown({ timeoutMs: 20 });
+  var dur = Date.now() - t0;
+  check("handler: shutdown bounded by timeout (< 100ms)",   dur < 80);
+}
+
+async function testHandlerStats() {
+  var h = b.handlers.create({
+    name:  "test-stats",
+    flush: async function () { await new Promise(function (r) { setTimeout(r, 5); }); },
+  });
+  for (var i = 0; i < 5; i++) h.emit({ id: i });
+  await h.drain();
+  var s = h.getStats();
+  check("handler.getStats: totalEmitted",                   s.totalEmitted === 5);
+  check("handler.getStats: totalFlushed",                   s.totalFlushed === 5);
+  check("handler.getStats: bufferSize=0 post-drain",        s.bufferSize === 0);
+  check("handler.getStats: lastFlushDurationMs > 0",        s.lastFlushDurationMs > 0);
+  check("handler.getStats: breakerState exposed",           s.breakerState === "closed");
+}
+
+async function testHandlerBackpressureDrop() {
+  var dropped = [];
+  var h = b.handlers.create({
+    name:          "test-backpressure",
+    flush:         async function () { await new Promise(function () {}); /* hang */ },
+    maxBufferSize: 3,
+    deadLetter:    function (items) { dropped.push.apply(dropped, items); },
+    onError:       function () { /* swallow */ },
+  });
+  for (var i = 0; i < 10; i++) h.emit({ id: i });
+  await new Promise(function (r) { setImmediate(r); });
+  check("handler: maxBufferSize drops over-cap items to DLQ", dropped.length >= 5);
+}
+
 // ---- run() ----
 
 async function run() {
+  // async-safe primitives
+  await testAsyncSafeWithTimeoutResolves();
+  await testAsyncSafeWithTimeoutRejects();
+  await testAsyncSafeWithTimeoutAbort();
+  await testAsyncSafeWithTimeoutPropagatesError();
+  await testAsyncSafeSafeAwait();
+  await testAsyncSafeMutexSerializes();
+  await testAsyncSafeMutexReleaseOnThrow();
+  await testAsyncSafeMutexAbortableAcquire();
+  await testAsyncSafeSemaphoreBoundedConcurrency();
+  await testAsyncSafeSemaphoreAbortableAcquire();
+  await testAsyncSafeOnceSingleFlight();
+  await testAsyncSafeOnceCachesFailure();
+  await testAsyncSafeOnceReset();
+  await testAsyncSafeCircuitBreakerStateTransitions();
+  // handlers primitive
+  await testHandlerEmitAndDrain();
+  await testHandlerEmitDuringFlushNextCycle();
+  await testHandlerRetryOnFlushFailure();
+  await testHandlerCircuitBreakerOpensOnPersistentFailure();
+  await testHandlerBoundedShutdown();
+  await testHandlerStats();
+  await testHandlerBackpressureDrop();
   // sql-safe primitive
   testSqlSafeIdentifierValidation();
   testSqlSafeQuoteIdentifier();
   testSqlSafeAssertOneOf();
-  // chain-writer primitive
+  // chain-writer primitive (cross-layer; documented in test header)
   await testChainWriterRejectsBadTable();
   await testChainWriterRaceSafetyConcurrentAppends();
 }
 
 module.exports = {
-  name: "Layer 0 — primitives (sql-safe, chain-writer)",
+  name: "Layer 0 — primitives (async-safe, handlers, sql-safe, chain-writer)",
   run:  run,
   // Exported individually so smoke.js (or future selective-run tooling)
   // can reach them by name without going through run().
+  testAsyncSafeWithTimeoutResolves:          testAsyncSafeWithTimeoutResolves,
+  testAsyncSafeWithTimeoutRejects:           testAsyncSafeWithTimeoutRejects,
+  testAsyncSafeWithTimeoutAbort:             testAsyncSafeWithTimeoutAbort,
+  testAsyncSafeWithTimeoutPropagatesError:   testAsyncSafeWithTimeoutPropagatesError,
+  testAsyncSafeSafeAwait:                    testAsyncSafeSafeAwait,
+  testAsyncSafeMutexSerializes:              testAsyncSafeMutexSerializes,
+  testAsyncSafeMutexReleaseOnThrow:          testAsyncSafeMutexReleaseOnThrow,
+  testAsyncSafeMutexAbortableAcquire:        testAsyncSafeMutexAbortableAcquire,
+  testAsyncSafeSemaphoreBoundedConcurrency:  testAsyncSafeSemaphoreBoundedConcurrency,
+  testAsyncSafeSemaphoreAbortableAcquire:    testAsyncSafeSemaphoreAbortableAcquire,
+  testAsyncSafeOnceSingleFlight:             testAsyncSafeOnceSingleFlight,
+  testAsyncSafeOnceCachesFailure:            testAsyncSafeOnceCachesFailure,
+  testAsyncSafeOnceReset:                    testAsyncSafeOnceReset,
+  testAsyncSafeCircuitBreakerStateTransitions: testAsyncSafeCircuitBreakerStateTransitions,
+  testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
+  testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
+  testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
+  testHandlerCircuitBreakerOpensOnPersistentFailure: testHandlerCircuitBreakerOpensOnPersistentFailure,
+  testHandlerBoundedShutdown:                testHandlerBoundedShutdown,
+  testHandlerStats:                          testHandlerStats,
+  testHandlerBackpressureDrop:               testHandlerBackpressureDrop,
   testSqlSafeIdentifierValidation:           testSqlSafeIdentifierValidation,
   testSqlSafeQuoteIdentifier:                testSqlSafeQuoteIdentifier,
   testSqlSafeAssertOneOf:                    testSqlSafeAssertOneOf,
