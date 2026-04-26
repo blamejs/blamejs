@@ -256,6 +256,57 @@ async function testVaultRequiresDataDir() {
   b.vault._resetForTest();
 }
 
+// 20b. End-to-end wrapped-mode round-trip — exercises the production path
+//      (default Argon2 params, real wrap format, persistence across reinit).
+//      Slower (~2s) but verifies the framework's default boot mode actually
+//      works. Skip with BLAMEJS_SKIP_WRAPPED_E2E=1 for fast local iteration.
+async function testVaultWrappedE2E() {
+  if (process.env.BLAMEJS_SKIP_WRAPPED_E2E === "1") {
+    return;
+  }
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-wrap-e2e-"));
+  var passphrase = "smoke-wrapped-vault-2026-" + Date.now();
+  process.env.BLAMEJS_VAULT_PASSPHRASE = passphrase;
+  try {
+    b.vault._resetForTest();
+    var t0 = Date.now();
+    await b.vault.init({ dataDir: tmpDir, mode: "wrapped" });
+    var t1 = Date.now();
+    check("wrapped first-run init under 5s", (t1 - t0) < 5000);
+    check("wrapped init sets mode='wrapped'",          b.vault.getMode() === "wrapped");
+    check("wrapped init writes vault.key.sealed",      fs.existsSync(path.join(tmpDir, "vault.key.sealed")));
+    check("wrapped init does NOT write vault.key",     !fs.existsSync(path.join(tmpDir, "vault.key")));
+
+    // Verify the sealed file format starts with the wrap magic byte (0xE2)
+    var sealedBytes = fs.readFileSync(path.join(tmpDir, "vault.key.sealed"));
+    check("vault.key.sealed starts with magic 0xE2",   sealedBytes[0] === 0xE2);
+    check("vault.key.sealed has format version 0x01",  sealedBytes[1] === 0x01);
+
+    // seal/unseal round-trip works under wrapped mode
+    var payload = "wrapped-e2e-payload-" + b.version;
+    var sealedVal = b.vault.seal(payload);
+    var openedVal = b.vault.unseal(sealedVal);
+    check("wrapped seal/unseal round-trip preserves plaintext", openedVal === payload);
+
+    // Persistence — close, reset, re-init from the same sealed file with the same passphrase
+    b.vault._resetForTest();
+    process.env.BLAMEJS_VAULT_PASSPHRASE = passphrase;
+    var t2 = Date.now();
+    await b.vault.init({ dataDir: tmpDir, mode: "wrapped" });
+    var t3 = Date.now();
+    check("wrapped restore (existing sealed) under 5s", (t3 - t2) < 5000);
+    check("restored mode is 'wrapped'",                 b.vault.getMode() === "wrapped");
+
+    // The previously-sealed value must still decrypt under the restored vault
+    var openedAgain = b.vault.unseal(sealedVal);
+    check("wrapped persistence: prior sealed value decrypts after restart", openedAgain === payload);
+  } finally {
+    delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    b.vault._resetForTest();
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 // =====================================================================
 // Phase 1b — db + query builder + field-crypto + migrations
 // =====================================================================
@@ -905,6 +956,7 @@ async function testDataResidency() {
   await testVaultPlaintextRoundTrip();
   await testVaultModeMismatch();
   await testVaultRequiresDataDir();
+  await testVaultWrappedE2E();
   // Phase 1b tests
   await testDbBasic();
   await testDbWriteOps();
