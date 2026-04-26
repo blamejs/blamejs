@@ -595,6 +595,306 @@ async function testDbMigrations() {
 }
 
 // =====================================================================
+// Phase 1c — audit, consent, subject rights
+// =====================================================================
+
+// 29. Module surface
+check("audit namespace present",         typeof b.audit === "object");
+check("auditChain namespace present",    typeof b.auditChain === "object");
+check("consent namespace present",       typeof b.consent === "object");
+check("subject namespace present",       typeof b.subject === "object");
+check("db.getDataResidency present",     typeof b.db.getDataResidency === "function");
+
+// 30. audit_log + consent_log baked into framework schema
+async function testFrameworkSchema() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fw-"));
+  try {
+    await setupTestDb(tmpDir);
+    var auditCols = b.db.prepare("PRAGMA table_info(audit_log)").all();
+    check("audit_log table exists",      auditCols.length > 0);
+    check("audit_log has prevHash col",  auditCols.some(c => c.name === "prevHash"));
+    check("audit_log has rowHash col",   auditCols.some(c => c.name === "rowHash"));
+    check("audit_log has nonce col",     auditCols.some(c => c.name === "nonce"));
+
+    var consentCols = b.db.prepare("PRAGMA table_info(consent_log)").all();
+    check("consent_log table exists",    consentCols.length > 0);
+    check("consent_log has chain cols",  consentCols.some(c => c.name === "rowHash"));
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// 31. App schema cannot collide with reserved table names
+async function testReservedTableProtection() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-reserved-"));
+  try {
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    var threw = false;
+    try {
+      await b.db.init({
+        dataDir: tmpDir,
+        atRest:  "plain",
+        schema: [{ name: "audit_log", columns: { _id: "TEXT PRIMARY KEY" } }],
+      });
+    } catch (e) {
+      threw = /reserved/.test(e.message);
+    }
+    check("app schema with reserved table name throws", threw);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// 32. audit.record / query / verify round-trip
+async function testAuditChain() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-audit-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    // Unregistered namespace rejected
+    var nsRejected = false;
+    try { b.audit.record({ action: "orders.created", outcome: "success" }); }
+    catch (_) { nsRejected = true; }
+    check("unregistered namespace rejected", nsRejected);
+
+    // Register + record
+    b.audit.registerNamespace("orders");
+    var ev1 = b.audit.record({
+      actor:    { userId: "user-1", ip: "1.2.3.4" },
+      action:   "orders.created",
+      resource: { kind: "order", id: "ord-1" },
+      outcome:  "success",
+      metadata: { total: 99.95 },
+    });
+    check("audit.record returns row with rowHash",   typeof ev1.rowHash === "string" && ev1.rowHash.length === 128);
+    check("first row's prevHash is ZERO_HASH",       ev1.prevHash === b.auditChain.ZERO_HASH);
+
+    var ev2 = b.audit.record({
+      actor:    { userId: "user-1", ip: "1.2.3.4" },
+      action:   "auth.login.success",
+      resource: { kind: "user", id: "user-1" },
+      outcome:  "success",
+    });
+    check("second row's prevHash = first row's rowHash", ev2.prevHash === ev1.rowHash);
+    check("monotonicCounter increments",                 ev2.monotonicCounter === ev1.monotonicCounter + 1);
+
+    // Invalid action format
+    var actionRejected = false;
+    try { b.audit.record({ action: "no-dot", outcome: "success" }); }
+    catch (_) { actionRejected = true; }
+    check("malformed action rejected", actionRejected);
+
+    // Invalid outcome
+    var outcomeRejected = false;
+    try { b.audit.record({ action: "auth.login.success", outcome: "ok" }); }
+    catch (_) { outcomeRejected = true; }
+    check("invalid outcome rejected", outcomeRejected);
+
+    // Verify chain is intact
+    var v1 = b.audit.verify();
+    check("audit.verify() ok after valid records",  v1.ok === true && v1.rowsVerified === 2);
+
+    // Query by various criteria
+    var byUser = b.audit.query({ actorUserId: "user-1" });
+    check("query by sealed actorUserId returns rows",   byUser.length === 2);
+    check("query result rows are unsealed",             byUser[0].actorUserId === "user-1");
+    var byAction = b.audit.query({ action: "auth.login.success" });
+    check("query by action returns matching",            byAction.length === 1);
+    var byKind = b.audit.query({ resourceKind: "order" });
+    check("query by resourceKind returns matching",     byKind.length === 1);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// 33. audit.verify() detects a manually broken chain
+async function testAuditChainBreak() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-broken-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+    b.audit.record({ action: "test.event", outcome: "success" });
+    b.audit.record({ action: "test.event", outcome: "success" });
+    var v1 = b.audit.verify();
+    check("chain ok before tampering", v1.ok === true);
+
+    // Manually corrupt a row's reason field — should change rowHash on next verify
+    b.db.prepare('UPDATE audit_log SET reason = ? WHERE monotonicCounter = 1').run("vault:tampered-but-not-actually-sealed");
+    var v2 = b.audit.verify();
+    check("chain detected after row tampering",         v2.ok === false);
+    check("chain break reports breakAt index",          v2.breakAt === 0 || v2.breakAt === 1);
+    check("chain break reports rowHash mismatch reason",
+          v2.reason === "rowHash mismatch" || v2.reason === "prevHash mismatch");
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// 34. consent: grant / isGranted / withdraw / history / verify
+async function testConsent() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-consent-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    var subjectId = "user-7";
+    check("isGranted is false before grant",     b.consent.isGranted({ subjectId, purpose: "marketing.email" }) === false);
+
+    b.consent.grant({
+      subjectId:    subjectId,
+      purpose:      "marketing.email",
+      lawfulBasis:  "consent",
+      scope:        { channels: ["email"], topics: ["product-updates"] },
+      channel:      "web_form_v2",
+      evidenceRef:  "/evidence/forms/2026-04-25T...",
+    });
+    check("isGranted true after grant",          b.consent.isGranted({ subjectId, purpose: "marketing.email" }) === true);
+
+    b.consent.withdraw({ subjectId, purpose: "marketing.email" });
+    check("isGranted false after withdraw",      b.consent.isGranted({ subjectId, purpose: "marketing.email" }) === false);
+
+    var hist = b.consent.history(subjectId);
+    check("history returns 2 events",            hist.length === 2);
+    check("history first event is grant",        hist[0].action === "granted");
+    check("history second event is withdraw",    hist[1].action === "withdrawn");
+    check("history unsealed subjectId",          hist[0].subjectId === subjectId);
+
+    var cv = b.consent.verify();
+    check("consent.verify() ok",                 cv.ok === true && cv.rowsVerified === 2);
+
+    // Invalid lawful basis
+    var basisRejected = false;
+    try { b.consent.grant({ subjectId, purpose: "x", lawfulBasis: "bogus", channel: "x" }); }
+    catch (_) { basisRejected = true; }
+    check("invalid lawfulBasis rejected", basisRejected);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// 35. subject: export / rectify / erase (with acknowledgements) / restrict
+async function testSubjectRights() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-subject-"));
+  try {
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir: tmpDir,
+      atRest:  "plain",
+      schema: [
+        {
+          name: "users",
+          columns: {
+            _id:       "TEXT PRIMARY KEY",
+            email:     "TEXT",
+            emailHash: "TEXT",
+            name:      "TEXT",
+          },
+          indexes:        ["emailHash"],
+          sealedFields:   ["email", "name"],
+          derivedHashes:  { emailHash: { from: "email", normalize: function (v) { return String(v).toLowerCase(); } } },
+          subjectField:   "_id",
+          personalDataCategories: { email: "email", name: "name" },
+        },
+        {
+          name: "orders",
+          columns: {
+            _id:        "TEXT PRIMARY KEY",
+            userId:     "TEXT",
+            userIdHash: "TEXT",
+            amount:     "REAL",
+          },
+          indexes:        ["userIdHash"],
+          sealedFields:   [],
+          derivedHashes:  { userIdHash: { from: "userId" } },
+          subjectField:   "userId",
+          personalDataCategories: {},
+        },
+      ],
+    });
+
+    var alice = b.db.from("users").insertOne({ _id: "u-alice", email: "alice@x.com", name: "Alice" });
+    b.db.from("users").insertOne({ _id: "u-bob",   email: "bob@x.com",   name: "Bob" });
+    b.db.from("orders").insertOne({ _id: "o-1", userId: "u-alice", amount: 99.95 });
+    b.db.from("orders").insertOne({ _id: "o-2", userId: "u-alice", amount: 12.50 });
+    b.db.from("orders").insertOne({ _id: "o-3", userId: "u-bob",   amount: 7.00 });
+
+    // Export
+    var dump = b.subject.export("u-alice", { reason: "Art. 15 access request 2026-04-25" });
+    check("subject.export returns dump for alice",    dump.users && dump.users.length === 1);
+    check("subject.export decrypts sealed fields",    dump.users[0].email === "alice@x.com");
+    check("subject.export walks orders too",          dump.orders && dump.orders.length === 2);
+
+    // Rectify
+    var ok = b.subject.rectify("u-alice", {
+      table:   "users",
+      id:      "u-alice",
+      changes: { name: "Alice Updated" },
+      reason:  "Art. 16 rectification 2026-04-25",
+    });
+    check("rectify returns true",                     ok === true);
+    var aliceAfter = b.db.from("users").where({ _id: "u-alice" }).first();
+    check("rectify wrote new value",                  aliceAfter.name === "Alice Updated");
+
+    // Erase requires both acknowledgements
+    var noAckRejected = false;
+    try { b.subject.erase("u-alice", { reason: "Art. 17", acknowledgements: ["no-litigation-hold"] }); }
+    catch (_) { noAckRejected = true; }
+    check("erase without all acknowledgements rejected", noAckRejected);
+
+    // Erase with all acks
+    var result = b.subject.erase("u-alice", {
+      reason:           "Art. 17 erasure request 2026-04-25 ticket #4471",
+      acknowledgements: ["no-litigation-hold", "no-statutory-retention-required"],
+    });
+    check("erase returns rowsDeleted",                 result.rowsDeleted >= 3);
+    check("alice gone from users",                     b.db.from("users").where({ _id: "u-alice" }).first() === null);
+    check("alice's orders gone",                       b.db.from("orders").where({ userIdHash: b.db.hashFor("orders", "userId", "u-alice") }).all().length === 0);
+    check("bob still present",                         b.db.from("users").where({ _id: "u-bob" }).first() !== null);
+
+    // Erasure marker recorded
+    var erasureRow = b.db.prepare("SELECT subjectIdHash FROM _blamejs_subject_erasures").all();
+    check("subject erasure marker recorded",           erasureRow.length === 1);
+
+    // Restrict / isRestricted
+    check("isRestricted false initially",              b.subject.isRestricted("u-bob") === false);
+    b.subject.restrict("u-bob", { on: true, reason: "Art. 18 contested accuracy" });
+    check("isRestricted true after restrict",          b.subject.isRestricted("u-bob") === true);
+    b.subject.restrict("u-bob", { on: false });
+    check("isRestricted false after lift",             b.subject.isRestricted("u-bob") === false);
+
+    // Audit chain still intact after all this activity
+    var av = b.audit.verify();
+    check("audit chain intact through subject ops",    av.ok === true);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// 36. dataResidency stored
+async function testDataResidency() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-dr-"));
+  try {
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir: tmpDir,
+      atRest:  "plain",
+      schema:  [{ name: "x", columns: { _id: "TEXT PRIMARY KEY" } }],
+      dataResidency: { region: "EU", allowedStorageRegions: ["eu-west-1"] },
+    });
+    var dr = b.db.getDataResidency();
+    check("getDataResidency returns config",         dr && dr.region === "EU");
+    check("dataResidency includes allowedRegions",   dr.allowedStorageRegions[0] === "eu-west-1");
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// =====================================================================
 // Run async tests
 // =====================================================================
 
@@ -613,6 +913,14 @@ async function testDbMigrations() {
   await testDbPersistence();
   await testDbSchemaEvolution();
   await testDbMigrations();
+  // Phase 1c tests
+  await testFrameworkSchema();
+  await testReservedTableProtection();
+  await testAuditChain();
+  await testAuditChainBreak();
+  await testConsent();
+  await testSubjectRights();
+  await testDataResidency();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
