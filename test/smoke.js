@@ -1722,6 +1722,192 @@ async function testRetryAndBreaker() {
 }
 
 // =====================================================================
+// v0.0.10 — sigv4 protocol adapter
+// =====================================================================
+
+function testSigv4Primitives() {
+  var sigv4 = require("../lib/object-store-sigv4");
+
+  // AWS-published test vector for signing-key derivation
+  // (https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html)
+  var key = sigv4.deriveSigningKey(
+    "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    "20150830",
+    "us-east-1",
+    "iam"
+  );
+  var hex = key.toString("hex");
+  check("sigv4 deriveSigningKey matches AWS test vector",
+        hex === "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9");
+
+  // awsUriEncode
+  check("awsUriEncode preserves alphanumerics and unreserved",
+        sigv4.awsUriEncode("hello-world.txt", true) === "hello-world.txt");
+  check("awsUriEncode encodes spaces",
+        sigv4.awsUriEncode("a b", true) === "a%20b");
+  check("awsUriEncode preserves slashes when encodeSlash=false",
+        sigv4.awsUriEncode("foo/bar", false) === "foo/bar");
+  check("awsUriEncode encodes slashes when encodeSlash=true",
+        sigv4.awsUriEncode("foo/bar", true) === "foo%2Fbar");
+
+  // canonicalQueryString — sorted, encoded
+  var u = new (require("url").URL)("https://x/?b=2&a=1&c=3");
+  check("canonicalQueryString sorts keys",
+        sigv4.canonicalQueryString(u.searchParams) === "a=1&b=2&c=3");
+
+  // canonicalHeaders — lowercase keys, sorted, signed list
+  var ch = sigv4.canonicalHeaders({ "X-Foo": "bar", host: "example.com", "Z-Last": "  trim  " });
+  check("canonicalHeaders has trailing newline per pair",
+        /host:example\.com\n/.test(ch.canonical));
+  check("canonicalHeaders lowercases + sorts",
+        ch.signed === "host;x-foo;z-last");
+  check("canonicalHeaders trims + collapses whitespace",
+        /z-last:trim\n/.test(ch.canonical));
+
+  // signRequest produces an Authorization header with the right shape
+  var signed = sigv4.signRequest({
+    method:          "GET",
+    url:             "https://test-bucket.s3.us-east-1.amazonaws.com/key1",
+    headers:         {},
+    payloadHash:     sigv4.sha256Hex(Buffer.alloc(0)),
+    region:          "us-east-1",
+    accessKeyId:     "AKIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    date:            new Date(Date.UTC(2026, 3, 25, 12, 34, 56)),  // 2026-04-25T12:34:56Z
+  });
+  check("signRequest produces AWS4-HMAC-SHA256 Authorization",
+        /^AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE\/20260425\/us-east-1\/s3\/aws4_request, SignedHeaders=[a-z0-9;-]+, Signature=[0-9a-f]{64}$/.test(signed.headers["Authorization"]));
+  check("signRequest sets host header",         signed.headers["host"] === "test-bucket.s3.us-east-1.amazonaws.com");
+  check("signRequest sets x-amz-date",          signed.headers["x-amz-date"] === "20260425T123456Z");
+  check("signRequest sets x-amz-content-sha256",
+        signed.headers["x-amz-content-sha256"] === sigv4.sha256Hex(Buffer.alloc(0)));
+  check("signRequest signature is deterministic for same inputs",
+        signed.signature.length === 64);
+
+  // Same inputs → same signature
+  var signed2 = sigv4.signRequest({
+    method:          "GET",
+    url:             "https://test-bucket.s3.us-east-1.amazonaws.com/key1",
+    headers:         {},
+    payloadHash:     sigv4.sha256Hex(Buffer.alloc(0)),
+    region:          "us-east-1",
+    accessKeyId:     "AKIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    date:            new Date(Date.UTC(2026, 3, 25, 12, 34, 56)),
+  });
+  check("signRequest deterministic across calls",  signed.signature === signed2.signature);
+}
+
+async function testSigv4MockServer() {
+  var http = require("http");
+  var sigv4 = require("../lib/object-store-sigv4");
+
+  // In-process mock S3 server. Validates request shape (Authorization +
+  // x-amz-date + x-amz-content-sha256) and stores PUT bodies in memory
+  // so subsequent GET/HEAD/LIST/DELETE can return them.
+  var stored = {};
+  var server = http.createServer(function (req, res) {
+    var auth = req.headers["authorization"] || "";
+    if (!/^AWS4-HMAC-SHA256 /.test(auth)) {
+      res.writeHead(401); res.end("missing AWS4-HMAC-SHA256"); return;
+    }
+    if (!req.headers["x-amz-date"]) {
+      res.writeHead(400); res.end("missing x-amz-date"); return;
+    }
+    if (!req.headers["x-amz-content-sha256"]) {
+      res.writeHead(400); res.end("missing x-amz-content-sha256"); return;
+    }
+    // Strip query for routing; URL parse needs Host header
+    var pathname = req.url.split("?")[0];
+    // Path-style: /bucket/key  → key extraction
+    var m = pathname.match(/^\/[^/]+\/(.+)$/);
+    var key = m ? m[1] : null;
+
+    if (req.method === "PUT" && key) {
+      var bufs = [];
+      req.on("data", function (c) { bufs.push(c); });
+      req.on("end", function () {
+        stored[key] = Buffer.concat(bufs);
+        res.writeHead(200, { ETag: '"' + sigv4.sha256Hex(stored[key]).slice(0, 32) + '"' });
+        res.end();
+      });
+      return;
+    }
+    if (req.method === "GET" && key && stored[key]) {
+      res.writeHead(200, { "Content-Length": stored[key].length });
+      res.end(stored[key]);
+      return;
+    }
+    if (req.method === "GET" && pathname === "/test-bucket/" || (req.url || "").indexOf("list-type=2") !== -1) {
+      // List request
+      var xml = "<?xml version=\"1.0\"?><ListBucketResult>";
+      Object.keys(stored).forEach(function (k) {
+        xml += "<Contents><Key>" + k + "</Key><Size>" + stored[k].length + "</Size>" +
+               "<LastModified>2026-04-25T00:00:00.000Z</LastModified></Contents>";
+      });
+      xml += "<IsTruncated>false</IsTruncated></ListBucketResult>";
+      res.writeHead(200, { "Content-Type": "application/xml" });
+      res.end(xml);
+      return;
+    }
+    if (req.method === "HEAD" && key && stored[key]) {
+      res.writeHead(200, { "Content-Length": stored[key].length });
+      res.end();
+      return;
+    }
+    if (req.method === "DELETE" && key) {
+      if (stored[key]) {
+        delete stored[key];
+        res.writeHead(204); res.end();
+      } else {
+        res.writeHead(404); res.end();
+      }
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var client = sigv4.create({
+      endpoint:        "http://127.0.0.1:" + port,
+      region:          "us-east-1",
+      bucket:          "test-bucket",
+      accessKeyId:     "AKIAIOSFODNN7EXAMPLE",
+      secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      pathStyle:       true,   // 127.0.0.1 doesn't support virtual-hosted
+    });
+
+    // PUT
+    var content = Buffer.from("sigv4 test payload " + Date.now(), "utf8");
+    var putResult = await client.put("dir/object.bin", content);
+    check("sigv4 put returns size + etag", putResult.size === content.length && typeof putResult.etag === "string");
+
+    // GET round-trip
+    var got = await client.get("dir/object.bin");
+    check("sigv4 get round-trips bytes", got.equals(content));
+
+    // HEAD
+    var meta = await client.head("dir/object.bin");
+    check("sigv4 head returns size",     meta.size === content.length);
+
+    // LIST
+    var listed = await client.list("");
+    check("sigv4 list returns 1 item",   listed.items.length === 1);
+    check("sigv4 list returns the key",  listed.items[0].key === "dir/object.bin");
+
+    // DELETE
+    var del = await client.delete("dir/object.bin");
+    check("sigv4 delete returns true",   del === true);
+    var del2 = await client.delete("dir/object.bin");
+    check("sigv4 delete on missing returns false", del2 === false);
+  } finally {
+    server.close();
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -2016,6 +2202,9 @@ function testJsonFormats() {
   await testClassificationRouting();
   await testResidencyEnforcement();
   await testRetryAndBreaker();
+  // v0.0.10 sigv4 protocol
+  testSigv4Primitives();
+  await testSigv4MockServer();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
