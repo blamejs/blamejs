@@ -1636,6 +1636,186 @@ async function testHttpClientStreamResponse() {
   }
 }
 
+async function testHttpClientH2Basic() {
+  var http2 = require("http2");
+  // h2c (cleartext h2) mock server
+  var server = http2.createServer();
+  server.on("stream", function (stream, headers) {
+    var method = headers[":method"];
+    var path   = headers[":path"];
+    var chunks = [];
+    stream.on("data", function (c) { chunks.push(c); });
+    stream.on("end", function () {
+      var bodyIn = Buffer.concat(chunks).toString("utf8");
+      stream.respond({ ":status": 200, "x-method": method, "content-type": "text/plain" });
+      stream.end("h2 got " + method + " " + path + " body=" + bodyIn);
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    var url = "http://127.0.0.1:" + port + "/foo";
+
+    // GET via h2c — preferH2 flag opts in (no ALPN over cleartext)
+    var got = await b.httpClient.request({ url: url, preferH2: true });
+    check("httpClient h2: GET status",       got.statusCode === 200);
+    check("httpClient h2: GET body",         got.body.toString("utf8").indexOf("h2 got GET /foo") === 0);
+    check("httpClient h2: GET headers",      got.headers["x-method"] === "GET");
+
+    // Transport cache shows h2 kind
+    check("httpClient h2: cached as h2",     b.httpClient._getCachedTransportKind(url) === "h2");
+
+    // POST with body — same h2 session multiplexes
+    var posted = await b.httpClient.request({
+      method: "POST", url: url, body: Buffer.from("hello-h2"), preferH2: true,
+    });
+    check("httpClient h2: POST body sent",   posted.body.toString("utf8").indexOf("body=hello-h2") !== -1);
+
+    // Transport count = 1 (multiplexed over single session)
+    check("httpClient h2: single session",   b.httpClient._getCachedTransportCount() === 1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientH2AbortSignal() {
+  var http2 = require("http2");
+  var server = http2.createServer();
+  server.on("stream", function (stream, _headers) {
+    stream.respond({ ":status": 200 });
+    // Hang — only client cancellation closes this stream.
+    stream.on("close", function () {});
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    var url = "http://127.0.0.1:" + port + "/hang";
+    var ac = new AbortController();
+    setTimeout(function () { ac.abort(); }, 100);
+    var threw = null;
+    try {
+      await b.httpClient.request({ url: url, preferH2: true, signal: ac.signal, idleTimeoutMs: 60000 });
+    } catch (e) { threw = e; }
+    check("httpClient h2: AbortSignal cancels stream", threw !== null);
+    check("httpClient h2: abort code ABORT",           threw && threw.code === "ABORT");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientH2ErrorStatus() {
+  var http2 = require("http2");
+  var server = http2.createServer();
+  server.on("stream", function (stream, headers) {
+    if (headers[":path"] === "/notfound") {
+      stream.respond({ ":status": 404 }); stream.end("missing");
+    } else if (headers[":path"] === "/throttle") {
+      stream.respond({ ":status": 429 }); stream.end("slow down");
+    } else {
+      stream.respond({ ":status": 500 }); stream.end("oops");
+    }
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+
+    var threw404 = null;
+    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/notfound", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
+    catch (e) { threw404 = e; }
+    check("httpClient h2: 404 rejects",           threw404 !== null);
+    check("httpClient h2: 404 ObjectStoreError",  threw404 instanceof b.frameworkError.ObjectStoreError);
+    check("httpClient h2: 404 statusCode",        threw404.statusCode === 404);
+    check("httpClient h2: 404 permanent",         threw404.permanent === true);
+
+    var threw429 = null;
+    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/throttle", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
+    catch (e) { threw429 = e; }
+    check("httpClient h2: 429 transient", threw429.permanent === false);
+
+    var threw500 = null;
+    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/boom", preferH2: true, errorClass: b.frameworkError.ObjectStoreError }); }
+    catch (e) { threw500 = e; }
+    check("httpClient h2: 500 transient", threw500.permanent === false);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientH2Multiplex() {
+  var http2 = require("http2");
+  var server = http2.createServer();
+  server.on("stream", function (stream, headers) {
+    // Tag response with the request path so we can verify each request
+    // landed independently — they share the session, not the response.
+    setTimeout(function () {
+      stream.respond({ ":status": 200 });
+      stream.end("path=" + headers[":path"]);
+    }, 10);
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    // Fire 5 concurrent requests over the same h2 session.
+    var promises = [];
+    for (var i = 0; i < 5; i++) {
+      promises.push(b.httpClient.request({
+        url: "http://127.0.0.1:" + port + "/p" + i,
+        preferH2: true,
+      }));
+    }
+    var results = await Promise.all(promises);
+    var bodies = results.map(function (r) { return r.body.toString("utf8"); }).sort();
+    check("httpClient h2: 5 multiplexed responses", bodies.length === 5);
+    check("httpClient h2: each response carries its path",
+          bodies[0] === "path=/p0" && bodies[4] === "path=/p4");
+    // All 5 sharing one cached session
+    check("httpClient h2: still one cached session", b.httpClient._getCachedTransportCount() === 1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientH2Stream() {
+  var http2 = require("http2");
+  var server = http2.createServer();
+  server.on("stream", function (stream) {
+    stream.respond({ ":status": 200 });
+    stream.write("part1-");
+    stream.write("part2-");
+    stream.end("end");
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    var got = await b.httpClient.request({
+      url: "http://127.0.0.1:" + port + "/stream",
+      preferH2: true,
+      responseMode: "stream",
+    });
+    check("httpClient h2: stream returns Readable",
+          got.body && typeof got.body.on === "function");
+    var collected = await new Promise(function (resolve, reject) {
+      var chunks = [];
+      got.body.on("data", function (c) { chunks.push(c); });
+      got.body.on("end",  function ()  { resolve(Buffer.concat(chunks).toString("utf8")); });
+      got.body.on("error", reject);
+    });
+    check("httpClient h2: stream content", collected === "part1-part2-end");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
 async function testHttpClientObserver() {
   var http = require("http");
   var server = http.createServer(function (req, res) { res.writeHead(200); res.end("ok"); });
@@ -2135,6 +2315,11 @@ async function run() {
   await testHttpClientAbortSignal();
   await testHttpClientStreamResponse();
   await testHttpClientObserver();
+  await testHttpClientH2Basic();
+  await testHttpClientH2AbortSignal();
+  await testHttpClientH2ErrorStatus();
+  await testHttpClientH2Multiplex();
+  await testHttpClientH2Stream();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
@@ -2212,6 +2397,11 @@ module.exports = {
   testHttpClientAbortSignal:                 testHttpClientAbortSignal,
   testHttpClientStreamResponse:              testHttpClientStreamResponse,
   testHttpClientObserver:                    testHttpClientObserver,
+  testHttpClientH2Basic:                     testHttpClientH2Basic,
+  testHttpClientH2AbortSignal:               testHttpClientH2AbortSignal,
+  testHttpClientH2ErrorStatus:               testHttpClientH2ErrorStatus,
+  testHttpClientH2Multiplex:                 testHttpClientH2Multiplex,
+  testHttpClientH2Stream:                    testHttpClientH2Stream,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
