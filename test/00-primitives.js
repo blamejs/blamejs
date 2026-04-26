@@ -1338,6 +1338,84 @@ function testEnvParseSecurityRejections() {
   check("env: unterminated quoted rejected",       threwUnterm);
 }
 
+function testEnvReadVar() {
+  var env = b.parsers.env;
+  check("env.readVar is a function", typeof env.readVar === "function");
+
+  // Save + clean a unique env namespace for this test
+  var KEYS = ["BLAMEJS_TEST_VAR1", "BLAMEJS_TEST_VAR2", "BLAMEJS_TEST_VAR3", "BLAMEJS_TEST_VAR4"];
+  var saved = {};
+  for (var i = 0; i < KEYS.length; i++) { saved[KEYS[i]] = process.env[KEYS[i]]; delete process.env[KEYS[i]]; }
+
+  try {
+    // Missing + no default → undefined
+    check("readVar: missing without default returns undefined", env.readVar("BLAMEJS_TEST_VAR1") === undefined);
+
+    // Missing + default → default
+    check("readVar: missing with default returns default",
+          env.readVar("BLAMEJS_TEST_VAR1", { default: "fallback" }) === "fallback");
+
+    // Missing + required → throws
+    var threwReq = false;
+    try { env.readVar("BLAMEJS_TEST_VAR1", { required: true }); }
+    catch (e) { threwReq = e.code === "env/missing-required"; }
+    check("readVar: missing + required throws", threwReq);
+
+    // Plain string read
+    process.env.BLAMEJS_TEST_VAR1 = "hello";
+    check("readVar: string round-trip", env.readVar("BLAMEJS_TEST_VAR1") === "hello");
+
+    // type:number coerces
+    process.env.BLAMEJS_TEST_VAR2 = "42";
+    check("readVar: number coercion", env.readVar("BLAMEJS_TEST_VAR2", { type: "number" }) === 42);
+
+    // type:boolean strict spelling
+    process.env.BLAMEJS_TEST_VAR2 = "true";
+    check("readVar: boolean true",  env.readVar("BLAMEJS_TEST_VAR2", { type: "boolean" }) === true);
+    process.env.BLAMEJS_TEST_VAR2 = "false";
+    check("readVar: boolean false", env.readVar("BLAMEJS_TEST_VAR2", { type: "boolean" }) === false);
+    process.env.BLAMEJS_TEST_VAR2 = "yes";
+    var threwBool = false;
+    try { env.readVar("BLAMEJS_TEST_VAR2", { type: "boolean" }); }
+    catch (e) { threwBool = e.code === "env/bad-type"; }
+    check("readVar: boolean rejects 'yes'", threwBool);
+
+    // type:buffer + strip
+    process.env.BLAMEJS_TEST_VAR3 = "secret-passphrase";
+    var buf = env.readVar("BLAMEJS_TEST_VAR3", { type: "buffer", strip: true, maxBytes: 4096 });
+    check("readVar: buffer round-trip",  Buffer.isBuffer(buf) && buf.toString("utf8") === "secret-passphrase");
+    check("readVar: strip deletes env",  !("BLAMEJS_TEST_VAR3" in process.env));
+
+    // maxBytes cap
+    process.env.BLAMEJS_TEST_VAR4 = "x".repeat(5000);
+    var threwSize = false;
+    try { env.readVar("BLAMEJS_TEST_VAR4", { maxBytes: 1024 }); }
+    catch (e) { threwSize = e.code === "env/too-large"; }
+    check("readVar: maxBytes enforced", threwSize);
+
+    // enum constraint
+    process.env.BLAMEJS_TEST_VAR1 = "wrapped";
+    check("readVar: enum allows valid",
+          env.readVar("BLAMEJS_TEST_VAR1", { enum: ["wrapped", "plaintext"] }) === "wrapped");
+    process.env.BLAMEJS_TEST_VAR1 = "garbage";
+    var threwEnum = false;
+    try { env.readVar("BLAMEJS_TEST_VAR1", { enum: ["wrapped", "plaintext"] }); }
+    catch (e) { threwEnum = e.code === "env/bad-value"; }
+    check("readVar: enum rejects invalid", threwEnum);
+
+    // Empty string treated as missing (operator clearing the var)
+    process.env.BLAMEJS_TEST_VAR1 = "";
+    check("readVar: empty string is treated as missing",
+          env.readVar("BLAMEJS_TEST_VAR1", { default: "fallback" }) === "fallback");
+  } finally {
+    // Restore original env
+    for (var j = 0; j < KEYS.length; j++) {
+      if (saved[KEYS[j]] === undefined) delete process.env[KEYS[j]];
+      else process.env[KEYS[j]] = saved[KEYS[j]];
+    }
+  }
+}
+
 function testRedact() {
   check("redact module present",                 typeof b.redact === "object");
   check("redact.MARKER is '[REDACTED]'",         b.redact.MARKER === "[REDACTED]");
@@ -1601,6 +1679,7 @@ async function run() {
   testYamlSecurityRejections();
   testEnvParseBasic();
   testEnvParseSecurityRejections();
+  testEnvReadVar();
   // redact primitive
   testRedact();
 }
@@ -1661,5 +1740,6 @@ module.exports = {
   testYamlSecurityRejections:                testYamlSecurityRejections,
   testEnvParseBasic:                         testEnvParseBasic,
   testEnvParseSecurityRejections:            testEnvParseSecurityRejections,
+  testEnvReadVar:                            testEnvReadVar,
   testRedact:                                testRedact,
 };
