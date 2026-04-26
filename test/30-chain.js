@@ -456,6 +456,85 @@ async function testClusterSessionsSharedAcrossNodes() {
   }
 }
 
+async function testClusterQueueJobsSharedAcrossNodes() {
+  // Queue jobs migrated to external-db in v0.1.51 — enqueue from the
+  // leader writes to external-db; lease + complete observe the same
+  // shared row. Mirrors the session-cluster test's structure: one
+  // node process, but verifies storage-routing properties.
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-q-cl-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    await setupTestDb(tmpDir);
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    await b.cluster.init({
+      nodeId:            "q-cluster-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    // Use the queue-local protocol directly so the test focuses on the
+    // storage-routing semantics, not the dispatcher's audit-emit /
+    // breaker layers (those have their own tests).
+    var queueLocal = require("../lib/queue-local").create();
+    var enq = await queueLocal.enqueue("cl-test", { x: 42 }, { traceId: "trace-1" });
+    check("cluster queue: enqueue returns jobId",      typeof enq.jobId === "string");
+
+    // Row lands in external-db, NOT in local SQLite
+    var extRows = await b.externalDb.query(
+      "SELECT _id, queueName, status FROM _blamejs_jobs",
+      [], { backend: "ops" }
+    );
+    check("cluster queue: row in external-db",          extRows.rows.length === 1);
+    check("cluster queue: row status is pending",       extRows.rows[0].status === "pending");
+
+    var localRows = b.db.prepare("SELECT _id FROM _blamejs_jobs").all();
+    check("cluster queue: local SQLite jobs table empty",
+          localRows.length === 0);
+
+    // Lease via the same external-db storage; payload round-trips
+    // through the seal/unseal pipeline correctly
+    var leased = await queueLocal.lease("cl-test", b.constants.TIME.seconds(30), 1);
+    check("cluster queue: lease returns 1 job",         leased.length === 1);
+    check("cluster queue: lease unseals payload",
+          leased[0].payload && leased[0].payload.x === 42);
+    check("cluster queue: lease preserves traceId",     leased[0].traceId === "trace-1");
+
+    // Status transition lands in external-db
+    var afterLease = await b.externalDb.query(
+      "SELECT status, attempts FROM _blamejs_jobs WHERE _id = ?",
+      [enq.jobId], { backend: "ops" }
+    );
+    check("cluster queue: row status flipped to inflight",
+          afterLease.rows[0].status === "inflight");
+    check("cluster queue: attempts incremented",
+          Number(afterLease.rows[0].attempts) === 1);
+
+    // Complete cycles back to external-db
+    var done = await queueLocal.complete(enq.jobId);
+    check("cluster queue: complete returns true",       done === true);
+    var afterDone = await b.externalDb.query(
+      "SELECT status FROM _blamejs_jobs WHERE _id = ?",
+      [enq.jobId], { backend: "ops" }
+    );
+    check("cluster queue: row status now done",         afterDone.rows[0].status === "done");
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testClusterVaultKeyFirstBootRecords() {
   // First cluster boot: no _blamejs_cluster_state row yet. cluster.init
   // should write THIS node's vault-key fingerprint and record nodeId.
@@ -1550,6 +1629,12 @@ async function run() {
   // session store shared across all nodes
   await testClusterSessionsSharedAcrossNodes();
 
+  // cluster-mode queue: queue-local routes through cluster-storage so
+  // the leader's enqueue/lease/complete operate on the shared
+  // external-db queue — followers don't run lease (gated) but observe
+  // the same state via reads
+  await testClusterQueueJobsSharedAcrossNodes();
+
   // audit chain + verify (now exercises chain-writer transitively)
   await testAuditChain();
   await testAuditChainBreak();
@@ -1594,6 +1679,7 @@ module.exports = {
   testClusterVaultKeyFirstBootRecords:                 testClusterVaultKeyFirstBootRecords,
   testClusterVaultKeyMismatchDetected:                 testClusterVaultKeyMismatchDetected,
   testClusterSessionsSharedAcrossNodes:                testClusterSessionsSharedAcrossNodes,
+  testClusterQueueJobsSharedAcrossNodes:               testClusterQueueJobsSharedAcrossNodes,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,
   testAuditSelfLogging:                                testAuditSelfLogging,
