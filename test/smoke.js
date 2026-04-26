@@ -1,24 +1,44 @@
 "use strict";
 /**
- * Smoke test — verifies exit criteria for every shipped phase.
+ * Smoke test — orchestrator + Layer 0–5 test invocations.
  *
  * Run: `npm test` (or `node test/smoke.js`)
  *
- * Phases covered (must keep building forward — never delete):
- *   v0.0.1 / Phase 0 — crypto envelope, router, constants
- *   v0.0.2 / Phase 1a — vault, vault-wrap, passphrase-source
+ * Tests run in dependency order (per
+ * .claude/memory/feedback_test_dependency_order.md):
+ *
+ *   Layer 0 — pure primitives
+ *   Layer 1 — framework-state-dependent but isolated
+ *   Layer 2 — needs db
+ *   Layer 3 — uses db + chain-writer + cluster-storage
+ *   Layer 4 — uses audit (consumer modules)
+ *   Layer 5 — operator-facing integration
+ *
+ * Shared infrastructure (b binding, check(), setup/teardown helpers,
+ * fake drivers, mock req/res, cluster-gate fixture) lives in
+ * test/_helpers.js. This file currently keeps test FUNCTION
+ * DEFINITIONS inline — they will move to per-layer files
+ * (test/00-primitives.js, test/10-state.js, ...) in subsequent
+ * v0.1.16+ commits.
  */
 var assert = require("assert");
-var fs = require("fs");
-var os = require("os");
-var path = require("path");
-var b = require("../index.js");
-
-var checks = 0;
-function check(label, condition) {
-  if (!condition) throw new Error("FAIL: " + label);
-  checks += 1;
-}
+var helpers = require("./_helpers");
+var b           = helpers.b;
+var fs          = helpers.fs;
+var os          = helpers.os;
+var path        = helpers.path;
+var check       = helpers.check;
+var setupTestDb = helpers.setupTestDb;
+var teardownTestDb = helpers.teardownTestDb;
+var setupTestDbForMW = helpers.setupTestDbForMW;
+var teardownMW       = helpers.teardownMW;
+var _makeFakeDriver         = helpers._makeFakeDriver;
+var _makeSqliteDriver       = helpers._makeSqliteDriver;
+var _makeFakeServiceAccount = helpers._makeFakeServiceAccount;
+var _mockReq                = helpers._mockReq;
+var _mockRes                = helpers._mockRes;
+var _setupClusterGateFixture = helpers._setupClusterGateFixture;
+var _expectNotLeaderError    = helpers._expectNotLeaderError;
 
 console.log("blamejs v" + b.version + " — smoke test");
 
@@ -322,51 +342,7 @@ check("db.transaction is a function",    typeof b.db.transaction === "function")
 check("db.hashFor is a function",        typeof b.db.hashFor === "function");
 check("fieldCrypto namespace present",   typeof b.fieldCrypto === "object");
 
-async function setupTestDb(tmpDir, schemaOverrides) {
-  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
-  b.cluster._resetForTest();
-  b.audit._resetForTest();
-  b.vault._resetForTest();
-  b.db._resetForTest();
-  await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
-  // Audit signing also runs in plaintext mode for test speed (skips Argon2)
-  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
-  await b.db.init({
-    dataDir:  tmpDir,
-    atRest:   "plain",
-    schema:   schemaOverrides || [
-      {
-        name: "users",
-        columns: {
-          _id:       "TEXT PRIMARY KEY",
-          email:     "TEXT",
-          emailHash: "TEXT",
-          name:      "TEXT",
-          status:    "TEXT DEFAULT 'active'",
-          createdAt: "TEXT",
-        },
-        indexes: ["emailHash", "status"],
-        sealedFields:  ["email", "name"],
-        derivedHashes: { emailHash: { from: "email", normalize: function (v) { return String(v).toLowerCase(); } } },
-      },
-    ],
-  });
-}
-
-async function teardownTestDb(tmpDir) {
-  // Drain the audit handler's buffered emissions BEFORE close, so the
-  // pending audit rows (from middleware/storage/external-db emits during
-  // the test) land in audit_log and don't leak into the next test's
-  // database. The audit handler's emit() is sync + buffered; flush()
-  // is the explicit drain.
-  try { await b.audit.flush(); } catch (_e) {}
-  try { b.db.close(); } catch (_e) {}
-  b.audit._resetForTest();
-  b.db._resetForTest();
-  b.vault._resetForTest();
-  b.cluster._resetForTest();
-  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
-}
+// setupTestDb / teardownTestDb live in ./_helpers.js (imported above).
 
 // 22. db.init creates tables, indexes, basic round-trip
 async function testDbBasic() {
@@ -1925,23 +1901,7 @@ async function testSigv4MockServer() {
 // v0.0.11 — gcs + azure-blob protocol adapters
 // =====================================================================
 
-// Generate a throwaway RSA keypair to use as a fake "service account" so
-// the GCS adapter has real key material for JWT signing in tests.
-function _makeFakeServiceAccount() {
-  var nodeCrypto = require("crypto");
-  var pair = nodeCrypto.generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicKeyEncoding:  { type: "spki",  format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-  return {
-    type:         "service_account",
-    project_id:   "test-project",
-    client_email: "test-sa@test-project.iam.gserviceaccount.com",
-    private_key:  pair.privateKey,
-    private_key_id: "test-key-id-001",
-  };
-}
+// _makeFakeServiceAccount lives in ./_helpers.js (imported above).
 
 function testGcsPrimitives() {
   var gcs = require("../lib/object-store-gcs");
@@ -2607,61 +2567,7 @@ async function testLogStreamBidirectional() {
 // v0.0.14 — external DB (bring-your-own-client dispatcher)
 // =====================================================================
 
-// Build a fake DB driver — in-memory key/value store that responds to
-// "SELECT id, value FROM kv WHERE id = $1" + "INSERT INTO kv (id, value) VALUES ($1, $2)" etc.
-// Tests focus on the dispatcher's pooling / retry / classification /
-// transaction / audit semantics, not on real SQL.
-function _makeFakeDriver(opts) {
-  opts = opts || {};
-  var connectCount = 0;
-  var queryCount = 0;
-  var store = {};
-  var failNextN = opts.failNextN || 0;
-  var failPermanent = opts.failPermanent || false;
-
-  return {
-    connect: async function () {
-      connectCount += 1;
-      return { id: "client-" + connectCount, store: store };
-    },
-    query: async function (client, sql, params) {
-      queryCount += 1;
-      if (failNextN > 0) {
-        failNextN -= 1;
-        var e = new Error("simulated failure");
-        e.code = failPermanent ? "PERMANENT" : "ECONNRESET";
-        e.permanent = failPermanent;
-        throw e;
-      }
-      // Tiny SQL "parser" for tests — handle SELECT/INSERT/DELETE/BEGIN/COMMIT/ROLLBACK only
-      if (/^SELECT 1$/i.test(sql)) return { rows: [{ "?column?": 1 }], rowCount: 1 };
-      if (/^BEGIN/i.test(sql) || /^COMMIT/i.test(sql) || /^ROLLBACK/i.test(sql)) {
-        return { rows: [], rowCount: 0 };
-      }
-      var insertMatch = sql.match(/^INSERT INTO kv \(id, value\) VALUES \(\$1, \$2\)/i);
-      if (insertMatch) {
-        client.store[params[0]] = params[1];
-        return { rows: [], rowCount: 1 };
-      }
-      var selectMatch = sql.match(/^SELECT id, value FROM kv WHERE id = \$1/i);
-      if (selectMatch) {
-        var v = client.store[params[0]];
-        if (v === undefined) return { rows: [], rowCount: 0 };
-        return { rows: [{ id: params[0], value: v }], rowCount: 1 };
-      }
-      var deleteMatch = sql.match(/^DELETE FROM kv WHERE id = \$1/i);
-      if (deleteMatch) {
-        var existed = params[0] in client.store;
-        delete client.store[params[0]];
-        return { rows: [], rowCount: existed ? 1 : 0 };
-      }
-      throw new Error("fake driver: unknown SQL: " + sql);
-    },
-    close: async function () { /* no-op */ },
-    ping:  async function () { return true; },
-    getStats: function () { return { connectCount: connectCount, queryCount: queryCount }; },
-  };
-}
+// _makeFakeDriver lives in ./_helpers.js (imported above).
 
 async function testExternalDbBasic() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-extdb-"));
@@ -2897,34 +2803,7 @@ async function testExternalDbClassification() {
 
 // Mock req/res factories — minimal Node http.IncomingMessage / ServerResponse
 // surface that the middleware uses. No real HTTP server.
-function _mockReq(opts) {
-  opts = opts || {};
-  return {
-    method:    opts.method || "GET",
-    url:       opts.url || "/",
-    pathname:  opts.pathname || (opts.url || "/").split("?")[0],
-    headers:   Object.assign({}, opts.headers || {}),
-    socket:    opts.socket || { remoteAddress: "127.0.0.1" },
-  };
-}
-function _mockRes() {
-  var headers = {};
-  var statusCode = null;
-  var bodyParts = [];
-  var ended = false;
-  return {
-    statusCode:    null,
-    writableEnded: false,
-    setHeader:     function (k, v) { headers[k.toLowerCase()] = v; },
-    getHeader:     function (k) { return headers[k.toLowerCase()]; },
-    writeHead:     function (s, h) {
-      statusCode = s;
-      if (h) for (var k in h) headers[k.toLowerCase()] = h[k];
-    },
-    end:           function (b) { if (b !== undefined) bodyParts.push(b); ended = true; this.writableEnded = true; },
-    _captured:     function () { return { status: statusCode, headers: headers, body: bodyParts.join(""), ended: ended }; },
-  };
-}
+// _mockReq / _mockRes live in ./_helpers.js (imported above).
 
 async function testMiddlewareRequestId() {
   await setupTestDbForMW();
@@ -3169,31 +3048,7 @@ async function testMiddlewareRateLimit() {
   } finally { teardownMW(); }
 }
 
-// Helper that sets up just the minimum DB (no schema needed) for middleware
-// audit hooks to work.
-async function setupTestDbForMW() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mw-"));
-  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
-  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
-  b.vault._resetForTest();
-  b.db._resetForTest();
-  await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
-  await b.db.init({
-    dataDir: tmpDir,
-    atRest:  "plain",
-    auditSigning: { mode: "plaintext" },
-    schema:  [],
-  });
-  global._mwTmpDir = tmpDir;
-}
-function teardownMW() {
-  try { b.db.close(); } catch (_e) {}
-  b.db._resetForTest();
-  b.vault._resetForTest();
-  if (global._mwTmpDir) {
-    try { fs.rmSync(global._mwTmpDir, { recursive: true, force: true }); } catch (_e) {}
-  }
-}
+// setupTestDbForMW / teardownMW live in ./_helpers.js (imported above).
 
 // =====================================================================
 // v0.0.16 — atomic file I/O + safe parsers (XML, CSV)
@@ -4639,32 +4494,7 @@ async function testHandlerBackpressureDrop() {
 // Cluster coordination — leader election + fencing tokens
 // =====================================================================
 
-// Real-SQL driver backed by node:sqlite — the cluster provider's
-// `INSERT ... ON CONFLICT ... DO UPDATE WHERE ... RETURNING` syntax
-// can't be hand-stubbed cheaply, so use a real engine that supports it.
-function _makeSqliteDriver(dbPath) {
-  var sqlite = require("node:sqlite");
-  var dbHandle = new sqlite.DatabaseSync(dbPath);
-  return {
-    connect: async function () { return { db: dbHandle }; },
-    query: async function (client, sql, params) {
-      params = params || [];
-      // SQLite uses ?-placeholders natively but accepts $N when you use
-      // named-param syntax; the provider uses $N. Translate.
-      var translated = sql.replace(/\$([0-9]+)/g, "?");
-      var stmt = client.db.prepare(translated);
-      var trimmed = sql.trim().toUpperCase();
-      if (trimmed.startsWith("SELECT") || /\sRETURNING\s/i.test(sql)) {
-        var rows = stmt.all.apply(stmt, params);
-        return { rows: rows, rowCount: rows.length };
-      }
-      var info = stmt.run.apply(stmt, params);
-      return { rows: [], rowCount: info.changes };
-    },
-    close: async function () { /* shared handle, closed by test teardown */ },
-    _close: function () { try { dbHandle.close(); } catch (_e) {} },
-  };
-}
+// _makeSqliteDriver lives in ./_helpers.js (imported above).
 
 async function testClusterSingleNodeFallback() {
   // Without cluster.init, the framework treats us as permanent leader.
@@ -4824,61 +4654,7 @@ async function testClusterProviderRenewalRace() {
 // isLeader() returns false. Then we try framework writes and expect
 // NotLeaderError.
 
-async function _setupClusterGateFixture() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-gate-"));
-  // Reset cluster first so setupTestDb's internal audit.checkpoint
-  // runs on the permanent-leader fallback. We re-init the cluster
-  // module after the framework db is up.
-  b.cluster._resetForTest();
-  await setupTestDb(tmpDir);
-
-  var dbPath = path.join(tmpDir, "ha-coord.db");
-  var driver = _makeSqliteDriver(dbPath);
-  b.externalDb.init({
-    backends: {
-      "ops": { connect: driver.connect, query: driver.query, close: driver.close },
-    },
-  });
-  await b.cluster.init({
-    nodeId:            "gate-test-node",
-    externalDbBackend: "ops",
-    dialect:           "sqlite",
-    leaseTtl:          b.constants.TIME.seconds(30),
-    heartbeatInterval: b.constants.TIME.seconds(10),
-  });
-  // Become a follower by shutting cluster down — terminated flag flips
-  // isLeader() to false without requiring a real takeover race.
-  await b.cluster.shutdown();
-
-  return {
-    tmpDir: tmpDir,
-    teardown: async function () {
-      try { await b.externalDb.shutdown(); } catch (_e) {}
-      driver._close();
-      await teardownTestDb(tmpDir);
-    },
-  };
-}
-
-function _expectNotLeaderError(label, fn) {
-  var threw = null;
-  try {
-    var maybePromise = fn();
-    // Synchronous gates throw immediately; async gates throw inside a
-    // Promise we won't await here. The framework's gates are sync at
-    // function entry, so .then() chains are unnecessary for the gate
-    // itself — but we tolerate either.
-    if (maybePromise && typeof maybePromise.then === "function") {
-      // Hand back the promise so the caller can await rejection.
-      return maybePromise.then(function () {
-        check(label + " — should have thrown", false);
-      }, function (e) {
-        check(label + " — throws NotLeaderError", e && e.code === "NOT_LEADER");
-      });
-    }
-  } catch (e) { threw = e; }
-  check(label + " — throws NotLeaderError", threw && threw.code === "NOT_LEADER");
-}
+// _setupClusterGateFixture / _expectNotLeaderError live in ./_helpers.js.
 
 async function testClusterGatesAuditAndConsent() {
   var fx = await _setupClusterGateFixture();
@@ -5474,7 +5250,7 @@ async function testClusterInitAndRequireLeader() {
   await testClusterGatesQueue();
   await testClusterGatesObjectStoreLocal();
 
-  console.log("OK — " + checks + " checks passed");
+  console.log("OK — " + helpers.getChecks() + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
   console.error(err.stack);
