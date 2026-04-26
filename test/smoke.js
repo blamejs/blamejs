@@ -1107,6 +1107,247 @@ async function testStorage() {
 }
 
 // =====================================================================
+// json — security-focused JSON parse/stringify + schema validation
+// =====================================================================
+
+// 40. Module surface
+check("json namespace present",        typeof b.json === "object");
+check("json.parse is a function",      typeof b.json.parse === "function");
+check("json.validate is a function",   typeof b.json.validate === "function");
+check("json.canonical is a function",  typeof b.json.canonical === "function");
+check("json.JsonSafeError exists",     typeof b.json.JsonSafeError === "function");
+
+// 41. parse: round-trip + size + depth + proto-pollution + types
+function testJsonParse() {
+  // Basic round-trip
+  var v = b.json.parse('{"a":1,"b":"hello","c":null,"d":[1,2,3],"e":true}');
+  check("parse round-trips object",   v.a === 1 && v.b === "hello" && v.c === null);
+  check("parse round-trips array",    Array.isArray(v.d) && v.d.length === 3);
+
+  // BOM tolerated
+  var bom = b.json.parse("﻿{\"x\":1}");
+  check("parse strips BOM",           bom.x === 1);
+
+  // Size limit
+  var bigInput = '{"x":"' + "a".repeat(200) + '"}';
+  var sizeRejected = false;
+  try { b.json.parse(bigInput, { maxBytes: 100 }); }
+  catch (e) { sizeRejected = e.code === "json/too-large"; }
+  check("parse rejects oversized input",                  sizeRejected);
+
+  // Depth limit
+  var deep = '{"a":'.repeat(10) + 'null' + '}'.repeat(10);
+  var depthRejected = false;
+  try { b.json.parse(deep, { maxDepth: 3 }); }
+  catch (e) { depthRejected = e.code === "json/too-deep"; }
+  check("parse rejects too-deep input",                   depthRejected);
+
+  // Proto pollution
+  var poisoned = b.json.parse('{"__proto__":{"isAdmin":true},"name":"alice"}');
+  check("parse strips __proto__ key",                     !("__proto__" in poisoned) || poisoned.__proto__ === Object.prototype);
+  check("parse does not pollute Object.prototype",        !({}.isAdmin));
+
+  var ctorPoisoned = b.json.parse('{"constructor":{"prototype":{"x":1}}}');
+  check("parse strips constructor key",                   !("constructor" in ctorPoisoned) || ctorPoisoned.constructor === Object);
+
+  // Syntax error
+  var syntaxRejected = false;
+  try { b.json.parse("{not-json}"); }
+  catch (e) { syntaxRejected = e.code === "json/syntax"; }
+  check("parse reports syntax errors with code",          syntaxRejected);
+
+  // Wrong input type
+  var typeRejected = false;
+  try { b.json.parse(123); }
+  catch (e) { typeRejected = e.code === "json/wrong-input-type"; }
+  check("parse rejects non-string/Buffer input",          typeRejected);
+
+  // parseOrDefault
+  check("parseOrDefault returns fallback on bad input",   b.json.parseOrDefault("not-json", { fallback: true }).fallback === true);
+  check("parseOrDefault returns parsed on good input",    b.json.parseOrDefault('{"x":1}', null).x === 1);
+
+  // Buffer input
+  var fromBuf = b.json.parse(Buffer.from('{"y":2}', "utf8"));
+  check("parse accepts Buffer input",                     fromBuf.y === 2);
+}
+
+// 42. stringify: round-trip + circular detection + proto-pollution stripping
+function testJsonStringify() {
+  var s = b.json.stringify({ a: 1, b: [1, 2, 3] });
+  check("stringify produces valid JSON",                  JSON.parse(s).a === 1);
+
+  var stripped = JSON.parse(b.json.stringify({ __proto__: { x: 1 }, name: "alice" }));
+  check("stringify strips __proto__",                     !("__proto__" in stripped) || stripped.__proto__ === Object.prototype);
+
+  var circular = { a: 1 };
+  circular.self = circular;
+  var circRejected = false;
+  try { b.json.stringify(circular); }
+  catch (e) { circRejected = e.code === "json/circular"; }
+  check("stringify throws on circular ref",               circRejected);
+
+  // Replace mode
+  var replaced = b.json.stringify(circular, { onCircular: "replace", circularReplacement: "<circular>" });
+  check("stringify circular replace mode works",          /<circular>/.test(replaced));
+}
+
+// 43. canonical: sorted keys + deterministic output
+function testJsonCanonical() {
+  var c1 = b.json.canonical({ b: 2, a: 1, c: 3 });
+  var c2 = b.json.canonical({ a: 1, c: 3, b: 2 });
+  check("canonical: identical content same key order → identical bytes",  c1 === c2);
+  check("canonical: keys sorted alphabetically",          c1 === '{"a":1,"b":2,"c":3}');
+
+  var nested = b.json.canonical({ z: { y: 1, x: 2 }, a: [3, 1, 2] });
+  check("canonical: nested objects also sorted",          nested === '{"a":[3,1,2],"z":{"x":2,"y":1}}');
+
+  // Non-finite numbers rejected
+  var nfRejected = false;
+  try { b.json.canonical({ x: NaN }); }
+  catch (e) { nfRejected = e.code === "json/non-finite"; }
+  check("canonical: NaN rejected",                        nfRejected);
+}
+
+// 44. validate: schema, types, formats, throw mode
+function testJsonValidate() {
+  // Type
+  b.json.validate("hello", { type: "string" });
+  check("validate type-pass returns silently", true);
+  var typeRejected = false;
+  try { b.json.validate(42, { type: "string" }); }
+  catch (e) { typeRejected = e.code === "json/validation" && /expected string/.test(e.message); }
+  check("validate type mismatch throws with path",         typeRejected);
+
+  // Required + properties
+  var schema = {
+    type: "object",
+    required: ["email", "age"],
+    properties: {
+      email: { type: "string", format: "email", maxLength: 254 },
+      age:   { type: "integer", minimum: 0, maximum: 150 },
+      role:  { type: "string", enum: ["admin", "user", "guest"] },
+    },
+    additionalProperties: false,
+  };
+
+  b.json.validate({ email: "alice@example.com", age: 30, role: "admin" }, schema);
+  check("validate good object passes silently", true);
+
+  var emailRejected = false;
+  try { b.json.validate({ email: "not-email", age: 30 }, schema); }
+  catch (e) { emailRejected = e.code === "json/validation" && /format 'email'/.test(e.message); }
+  check("validate bad email format throws",                emailRejected);
+
+  var requiredRejected = false;
+  try { b.json.validate({ email: "a@b.com" }, schema); }
+  catch (e) { requiredRejected = /missing required key 'age'/.test(e.message); }
+  check("validate missing required throws",                requiredRejected);
+
+  var rangeRejected = false;
+  try { b.json.validate({ email: "a@b.com", age: -1 }, schema); }
+  catch (e) { rangeRejected = /minimum/.test(e.message); }
+  check("validate range violation throws",                 rangeRejected);
+
+  var enumRejected = false;
+  try { b.json.validate({ email: "a@b.com", age: 30, role: "superuser" }, schema); }
+  catch (e) { enumRejected = /not in enum/.test(e.message); }
+  check("validate enum violation throws",                  enumRejected);
+
+  var unknownKeyRejected = false;
+  try { b.json.validate({ email: "a@b.com", age: 30, hax: 1 }, schema); }
+  catch (e) { unknownKeyRejected = /unknown key 'hax'/.test(e.message); }
+  check("validate unknown key with additionalProperties:false throws", unknownKeyRejected);
+
+  // Array items
+  var arrSchema = { type: "array", minItems: 1, items: { type: "integer" } };
+  b.json.validate([1, 2, 3], arrSchema);
+  var arrItemRejected = false;
+  try { b.json.validate([1, "two", 3], arrSchema); }
+  catch (e) { arrItemRejected = e.path === "$[1]" && /expected integer/.test(e.message); }
+  check("validate array item path is reported",            arrItemRejected);
+}
+
+// 45. validate collectErrors mode + parse with schema
+function testJsonValidateCollect() {
+  var schema = {
+    type: "object",
+    required: ["email", "age", "name"],
+    properties: {
+      email: { type: "string", format: "email" },
+      age:   { type: "integer", minimum: 0 },
+      name:  { type: "string", minLength: 1, maxLength: 100 },
+      role:  { type: "string", enum: ["admin", "user"] },
+    },
+  };
+  var bad = { email: "not-email", age: -5, name: "", role: "superuser" };
+  var result = b.json.validate(bad, schema, { collectErrors: true });
+  check("collectErrors returns { ok, value, errors }",      typeof result === "object" && result.ok === false);
+  check("collectErrors collects multiple errors",           result.errors.length >= 4);
+  check("collectErrors errors have .path",                  result.errors.every(function (e) { return typeof e.path === "string"; }));
+  check("collectErrors errors include format failure",      result.errors.some(function (e) { return /format 'email'/.test(e.message); }));
+  check("collectErrors errors include range failure",       result.errors.some(function (e) { return /minimum/.test(e.message); }));
+  check("collectErrors errors include length failure",      result.errors.some(function (e) { return /minLength/.test(e.message); }));
+  check("collectErrors errors include enum failure",        result.errors.some(function (e) { return /not in enum/.test(e.message); }));
+
+  // Good input — collect mode returns ok: true with empty errors
+  var good = { email: "a@b.com", age: 30, name: "Alice" };
+  var goodResult = b.json.validate(good, schema, { collectErrors: true });
+  check("collectErrors ok=true on valid input",             goodResult.ok === true && goodResult.errors.length === 0);
+
+  // parse({ schema, collectErrors }) round-trips the same shape
+  var parseResult = b.json.parse(JSON.stringify(bad), { schema: schema, collectErrors: true });
+  check("parse + collectErrors returns { ok, value, errors[] }",
+        typeof parseResult === "object" && parseResult.ok === false && parseResult.errors.length >= 4);
+}
+
+// 46. format registry: built-ins + custom registration
+function testJsonFormats() {
+  check("format email: valid passes",        b.json.formats.email("alice@example.com"));
+  check("format email: missing @ fails",     !b.json.formats.email("not-email"));
+  check("format url: https passes",          b.json.formats.url("https://example.com/path"));
+  check("format url: ftp fails (not in allowlist)", !b.json.formats.url("ftp://example.com"));
+  check("format uuid: valid passes",         b.json.formats.uuid("550e8400-e29b-41d4-a716-446655440000"));
+  check("format uuid: too-short fails",      !b.json.formats.uuid("550e8400"));
+  check("format ulid: valid passes",         b.json.formats.ulid("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+  check("format ipv4: valid passes",         b.json.formats.ipv4("192.168.1.1"));
+  check("format ipv4: out of range fails",   !b.json.formats.ipv4("192.168.1.256"));
+  check("format ipv4: leading zero fails",   !b.json.formats.ipv4("192.168.001.1"));
+  // ipv6 — full/compressed/IPv4-mapped/mixed-case
+  check("ipv6: full 8 groups",                          b.json.formats.ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334"));
+  check("ipv6: lowercase",                              b.json.formats.ipv6("2001:db8::1"));
+  check("ipv6: mixed case",                             b.json.formats.ipv6("2001:DB8::1"));
+  check("ipv6: loopback ::1",                           b.json.formats.ipv6("::1"));
+  check("ipv6: unspecified ::",                         b.json.formats.ipv6("::"));
+  check("ipv6: trailing :: (1::)",                      b.json.formats.ipv6("1::"));
+  check("ipv6: link-local fe80::1",                     b.json.formats.ipv6("fe80::1"));
+  check("ipv6: IPv4-mapped ::ffff:192.168.1.1",         b.json.formats.ipv6("::ffff:192.168.1.1"));
+  check("ipv6: IPv4-mapped uppercase",                  b.json.formats.ipv6("::FFFF:192.168.1.1"));
+  check("ipv6: longer IPv4-mapped form",                b.json.formats.ipv6("2001:db8::192.0.2.1"));
+  check("ipv6: rejects > 8 groups",                     !b.json.formats.ipv6("1:2:3:4:5:6:7:8:9"));
+  check("ipv6: rejects multiple ::",                    !b.json.formats.ipv6("1::2::3"));
+  check("ipv6: rejects non-hex chars",                  !b.json.formats.ipv6("g::"));
+  check("ipv6: rejects > 4 hex per group",              !b.json.formats.ipv6("12345::"));
+  check("ipv6: rejects zone IDs",                       !b.json.formats.ipv6("fe80::1%eth0"));
+  check("ipv6: rejects empty string",                   !b.json.formats.ipv6(""));
+  check("ipv6: rejects too long",                       !b.json.formats.ipv6("a".repeat(46)));
+  check("ipv6: rejects bad IPv4-mapped",                !b.json.formats.ipv6("::ffff:999.168.1.1"));
+  check("format hex: valid passes",          b.json.formats.hex("dead beef".replace(" ", "")));
+  check("format slug: valid passes",         b.json.formats.slug("my-blog-post"));
+  check("format slug: uppercase fails",      !b.json.formats.slug("MyBlogPost"));
+  check("format iso8601-date: valid passes", b.json.formats["iso8601-date"]("2026-04-25"));
+  check("format iso8601-date: invalid fails",!b.json.formats["iso8601-date"]("2026-13-01"));
+
+  // Register custom
+  b.json.registerFormat("us-zip", function (v) { return /^\d{5}(-\d{4})?$/.test(v); });
+  check("custom format registered + works",  b.json.formats["us-zip"]("12345"));
+  b.json.validate("90210", { type: "string", format: "us-zip" });
+  var customRejected = false;
+  try { b.json.validate("ABCDE", { type: "string", format: "us-zip" }); }
+  catch (e) { customRejected = /format 'us-zip'/.test(e.message); }
+  check("custom format used by validate",    customRejected);
+}
+
+// =====================================================================
 // Run async tests
 // =====================================================================
 
@@ -1137,6 +1378,13 @@ async function testStorage() {
   // Phase 1d-1 tests
   await testSession();
   await testStorage();
+  // json (utility primitive — not phase-bound)
+  testJsonParse();
+  testJsonStringify();
+  testJsonCanonical();
+  testJsonValidate();
+  testJsonValidateCollect();
+  testJsonFormats();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

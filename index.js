@@ -30,6 +30,7 @@ var consent = require("./lib/consent");
 var subject = require("./lib/subject");
 var session = require("./lib/session");
 var storage = require("./lib/storage");
+var json = require("./lib/json-safe");
 
 module.exports = {
   crypto:           crypto,
@@ -46,5 +47,6 @@ module.exports = {
   subject:          subject,
   session:          session,
   storage:          storage,
+  json:             json,
   version:          constants.version,
 };
