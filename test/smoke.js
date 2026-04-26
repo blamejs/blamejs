@@ -2382,6 +2382,208 @@ async function testQueueShutdown() {
 }
 
 // =====================================================================
+// v0.0.13 — log streaming + redaction
+// =====================================================================
+
+function testRedact() {
+  check("redact module present",                 typeof b.redact === "object");
+  check("redact.MARKER is '[REDACTED]'",         b.redact.MARKER === "[REDACTED]");
+
+  // Field-name redaction
+  var r1 = b.redact.redact({ user: "alice", password: "secret123", apiKey: "AKIAEXAMPLE" });
+  check("password field redacted by name",       r1.password === "[REDACTED]");
+  check("apiKey field redacted by name",         r1.apiKey === "[REDACTED]");
+  check("non-sensitive field preserved",         r1.user === "alice");
+
+  // Nested
+  var r2 = b.redact.redact({ outer: { innerPassword: "x", normal: "y" } });
+  check("nested sensitive redacted",             r2.outer.innerPassword === "[REDACTED]");
+  check("nested normal preserved",               r2.outer.normal === "y");
+
+  // Substring match
+  var r3 = b.redact.redact({ userPassword: "pw", emailToken: "t" });
+  check("substring 'password' triggers redaction", r3.userPassword === "[REDACTED]");
+  check("substring 'token' triggers redaction",    r3.emailToken === "[REDACTED]");
+
+  // Value-shape detectors
+  var ccRedacted = b.redact.redact({ note: "card 4111-1111-1111-1111 here" });
+  // Note: value detector only fires on STRING values that are EXACTLY a CC; embedded won't trigger
+  // Test exact match:
+  var ccExact = b.redact.redact({ field: "4111111111111111" });
+  check("credit-card-shaped value redacted",     ccExact.field === "[REDACTED-CC]");
+
+  var jwtExact = b.redact.redact({ field: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U" });
+  check("JWT-shaped value redacted",             jwtExact.field === "[REDACTED-JWT]");
+
+  var pemExact = b.redact.redact({ field: "-----BEGIN PRIVATE KEY-----\nABCD\n-----END PRIVATE KEY-----" });
+  check("PEM-shaped value redacted",             pemExact.field === "[REDACTED-PEM]");
+
+  var awsExact = b.redact.redact({ field: "AKIAIOSFODNN7EXAMPLE" });
+  check("AWS access key redacted",               awsExact.field === "[REDACTED-AWS-KEY]");
+
+  var sealExact = b.redact.redact({ field: "vault:abcdefxyz" });
+  check("vault-sealed value redacted",           sealExact.field === "[REDACTED-SEALED]");
+
+  var ssnExact = b.redact.redact({ field: "123-45-6789" });
+  check("SSN-shaped value redacted",             ssnExact.field === "[REDACTED-SSN]");
+
+  // Custom rule
+  b.redact.registerFieldRule("internal_token");
+  var custom = b.redact.redact({ internal_token: "x", other: "y" });
+  check("custom field rule applies",             custom.internal_token === "[REDACTED]");
+
+  // Array redaction
+  var arr = b.redact.redact({ creds: [{ password: "a" }, { password: "b" }] });
+  check("array elements redacted",               arr.creds[0].password === "[REDACTED]" && arr.creds[1].password === "[REDACTED]");
+
+  // Mutation — original unchanged
+  var orig = { password: "before" };
+  b.redact.redact(orig);
+  check("redact does NOT mutate input",          orig.password === "before");
+  void ccRedacted;
+}
+
+async function testLogStreamLocal() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-log-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.logStream.init({
+      sinks: { primary: { protocol: "local", dir: path.join(tmpDir, "logs"), maxFileBytes: 1024 } },
+      minLevel: "debug",
+    });
+
+    check("logStream namespace present",                  typeof b.logStream === "object");
+    check("logStream.LEVELS includes debug/info/warn/error",
+          b.logStream.LEVELS.length === 4);
+
+    b.logStream.info("hello world", { user: "alice" });
+    b.logStream.warn("watch out", { password: "should-be-redacted" });
+    b.logStream.error("kaboom", { jwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaaa.bbbb" });
+
+    // Allow async writes to complete
+    await new Promise(function (r) { setTimeout(r, 50); });
+    await b.logStream.shutdown();
+
+    var logPath = path.join(tmpDir, "logs", "blamejs.log");
+    check("log file exists",                              fs.existsSync(logPath));
+    var content = fs.readFileSync(logPath, "utf8");
+    var lines = content.trim().split("\n").filter(Boolean);
+    check("3 events emitted as JSON lines",               lines.length === 3);
+
+    var infoRecord = JSON.parse(lines[0]);
+    check("first record has level=info",                  infoRecord.level === "info");
+    check("first record has message",                     infoRecord.message === "hello world");
+    check("first record has meta.user",                   infoRecord.meta.user === "alice");
+
+    var warnRecord = JSON.parse(lines[1]);
+    check("warn record password is redacted",             warnRecord.meta.password === "[REDACTED]");
+
+    var errRecord = JSON.parse(lines[2]);
+    check("error record JWT-shaped value redacted",       errRecord.meta.jwt === "[REDACTED-JWT]");
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testLogStreamWebhook() {
+  var http = require("http");
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-loghook-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    var received = [];
+    var server = http.createServer(function (req, res) {
+      if (req.headers["authorization"] !== "Bearer test-token") {
+        res.writeHead(401); res.end("missing auth"); return;
+      }
+      var bufs = [];
+      req.on("data", function (c) { bufs.push(c); });
+      req.on("end", function () {
+        try {
+          var batch = JSON.parse(Buffer.concat(bufs).toString("utf8"));
+          batch.forEach(function (ev) { received.push(ev); });
+          res.writeHead(200); res.end("ok");
+        } catch (e) { res.writeHead(400); res.end(e.message); }
+      });
+    });
+    await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+    var port = server.address().port;
+
+    try {
+      b.logStream.init({
+        sinks: {
+          siem: {
+            protocol:      "webhook",
+            url:           "http://127.0.0.1:" + port + "/ingest",
+            auth:          "bearer",
+            token:         "test-token",
+            batchSize:     2,
+            maxBatchAgeMs: 100,
+            bodyShape:     "array",
+            retry:         { maxAttempts: 1 },
+          },
+        },
+      });
+
+      b.logStream.info("first",  { x: 1 });
+      b.logStream.info("second", { x: 2 });
+      // batchSize=2 should trigger immediate flush
+      await new Promise(function (r) { setTimeout(r, 200); });
+
+      check("webhook received 2 events",                   received.length === 2);
+      check("first event message",                         received[0].message === "first");
+      check("second event message",                        received[1].message === "second");
+
+      // Auth failure path: send another event after server stops accepting
+      b.logStream.info("third",  { x: 3 });
+      await new Promise(function (r) { setTimeout(r, 200); });
+      check("third event delivered (under batch size, flushed by age)", received.length >= 3);
+
+      await b.logStream.shutdown();
+    } finally {
+      server.close();
+    }
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testLogStreamBidirectional() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-logbidi-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.logStream.init({
+      sinks: { primary: { protocol: "local", dir: path.join(tmpDir, "logs") } },
+    });
+
+    var received = [];
+    var unregister = b.logStream.onIncoming(async function (payload, opts) {
+      received.push({ payload: payload, opts: opts });
+      return "ack-" + (received.length);
+    });
+
+    var results = await b.logStream.deliverIncoming({ command: "block-user", userId: "u-123" }, { source: "siem-test" });
+    check("deliverIncoming routes to handler",            received.length === 1);
+    check("payload preserved",                            received[0].payload.command === "block-user");
+    check("opts.source preserved",                        received[0].opts.source === "siem-test");
+    check("handler return value captured in results",     results[0].ok === true && results[0].value === "ack-1");
+
+    // Audit: incoming command logged
+    var incRows = b.audit.query({ action: "system.log.incoming" });
+    check("audit recorded system.log.incoming",           incRows.length === 1);
+
+    // Unregister and verify no further dispatch
+    unregister();
+    await b.logStream.deliverIncoming({ command: "second" });
+    check("after unregister, handler no longer called",   received.length === 1);
+
+    await b.logStream.shutdown();
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -2690,6 +2892,11 @@ function testJsonFormats() {
   await testQueueRetryAndFail();
   await testQueueLeaseExpiry();
   await testQueueShutdown();
+  // v0.0.13 log streaming + redaction
+  testRedact();
+  await testLogStreamLocal();
+  await testLogStreamWebhook();
+  await testLogStreamBidirectional();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

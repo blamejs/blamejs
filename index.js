@@ -36,6 +36,8 @@ var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
 var objectStoreRetry = require("./lib/object-store-retry");
 var queue = require("./lib/queue");
+var logStream = require("./lib/log-stream");
+var redact = require("./lib/redact");
 
 module.exports = {
   crypto:           crypto,
@@ -56,6 +58,8 @@ module.exports = {
   objectStore:      objectStore,
   objectStoreRetry: objectStoreRetry,
   queue:            queue,
+  logStream:        logStream,
+  redact:           redact,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,
