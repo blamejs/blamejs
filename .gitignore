@@ -11,6 +11,7 @@
 !.editorconfig
 !.dockerignore
 !.nvmrc
+!.npmrc
 
 # Build / dependencies
 node_modules/

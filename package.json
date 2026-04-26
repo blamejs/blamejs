@@ -1,0 +1,32 @@
+{
+  "name": "@blamejs/core",
+  "version": "0.0.1",
+  "description": "The Node framework that owns its stack.",
+  "license": "Apache-2.0",
+  "author": "blamejs contributors",
+  "homepage": "https://github.com/blamejs/blamejs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blamejs/blamejs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/blamejs/blamejs/issues"
+  },
+  "main": "index.js",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "files": [
+    "index.js",
+    "lib/",
+    "scripts/",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/smoke.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

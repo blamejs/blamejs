@@ -13,16 +13,14 @@ Third-Party Components
 blamejs vendors third-party libraries under lib/vendor/ rather than peer-
 depending them through npm. Each vendored component retains its original
 copyright and license. Bundle versions and source SHAs are tracked in
-lib/vendor/MANIFEST.json. License texts for each vendored component are
-preserved under lib/vendor/LICENSES/.
-
-(No third-party components vendored yet — entries will be added as the
-framework grows. Each entry below should follow this format:)
+lib/vendor/MANIFEST.json.
 
 --------------------------------------------------------------------------------
-Component:   <package name>
-Version:     <vendored version>
-Source:      <upstream URL>
-License:     <SPDX identifier>
-Copyright:   <upstream copyright line>
+Component:   @noble/ciphers
+Version:     2.2.0
+Source:      https://github.com/paulmillr/noble-ciphers
+License:     MIT
+Copyright:   Copyright (c) 2023 Paul Miller (https://paulmillr.com)
+Used for:    XChaCha20-Poly1305 authenticated encryption (lib/crypto.js,
+             via lib/vendor/noble-ciphers.cjs)
 --------------------------------------------------------------------------------

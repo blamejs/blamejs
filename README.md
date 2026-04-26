@@ -17,7 +17,23 @@ The modern Node app is a 1,200-package supply-chain liability with no LTS calend
 
 ## Status
 
-Early. The repo currently exists to claim the name and stake the principles. No public API yet — design phase.
+**v0.0.1 (Phase 0 — foundation).** The first usable layer is in place: envelope-versioned PQC crypto primitives (ML-KEM-1024 + P-384 hybrid, XChaCha20-Poly1305, SHAKE256), a zero-dependency HTTP router, and framework constants. No runtime npm dependencies.
+
+```js
+const { crypto, router, constants } = require("@blamejs/core");
+
+const keys = crypto.generateEncryptionKeyPair();
+const sealed = crypto.encrypt("hello", keys);
+const opened = crypto.decrypt(sealed, keys);          // "hello"
+
+const r = new router.Router();
+r.get("/", (req, res) => res.json({ ok: true }));
+r.listen(3000);
+```
+
+The full eleven-phase roadmap to v1.0 is planned. v0.0.1 satisfies Phase 0 only.
+
+**Requirements:** Node.js 24+ (current active LTS).
 
 ## Why "blamejs"
 

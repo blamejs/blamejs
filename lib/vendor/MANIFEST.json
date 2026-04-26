@@ -1,0 +1,19 @@
+{
+  "_comment": "Vendored dependencies — no npm runtime packages. Use scripts/vendor-update.sh to update.",
+  "packages": {
+    "@noble/ciphers": {
+      "version": "2.2.0",
+      "license": "MIT",
+      "author": "Paul Miller",
+      "source": "https://github.com/paulmillr/noble-ciphers",
+      "exports": [
+        "xchacha20poly1305"
+      ],
+      "files": {
+        "server": "lib/vendor/noble-ciphers.cjs"
+      },
+      "bundler": "esbuild --format=cjs --minify --platform=node",
+      "bundledAt": "2026-04-25"
+    }
+  }
+}
