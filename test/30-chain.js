@@ -383,6 +383,67 @@ async function testClusterAuditTipFencing() {
   }
 }
 
+async function testClusterAuditFlushNoRecursionHang() {
+  // Regression test for v0.1.46:
+  // Before the fix, audit.flush() in cluster mode hung forever because
+  // each drained event wrote through external-db, externalDb.query
+  // emitted a system.externaldb.query audit event back into the same
+  // handler buffer, and handlers.drain's while-loop processed those new
+  // items in the same call — so the buffer refilled as fast as it
+  // emptied. The fix bounds drain to a snapshot of the buffer at start
+  // (matching the documented recursion-safety contract). This test
+  // proves flush() returns within a tight wall-clock budget in cluster
+  // mode under exactly the producer/consumer cycle that triggered the
+  // hang.
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-flush-rec-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    await setupTestDb(tmpDir);
+    await b.audit.flush();    // drain any boot-time emits in single-node
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    await b.cluster.init({
+      nodeId:            "flush-rec-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    // record() bypasses the buffer, but the underlying externalDb.query
+    // emits a system.externaldb.query event INTO the buffer. Subsequent
+    // flush() drains that — and each drained event itself writes through
+    // external-db, emitting more events. Pre-fix: hang. Post-fix: drain
+    // is bounded; lingering events stay for the next call.
+    await b.audit.record({
+      action:  "system.test.flush_recursion",
+      outcome: "success",
+      actor:   { userId: "rec-test" },
+    });
+
+    var t0 = Date.now();
+    var raced = await Promise.race([
+      b.audit.flush().then(function () { return "done"; }),
+      new Promise(function (r) { setTimeout(function () { r("TIMEOUT"); }, 5000); }),
+    ]);
+    var elapsed = Date.now() - t0;
+    check("audit.flush returns (no recursion hang)",  raced === "done");
+    check("audit.flush returns within 5s budget",     elapsed < 5000);
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testClusterAuditTipFencedOutErrorSurface() {
   // Verify that audit.js's _upsertAuditTip surfaces
   // ClusterError(code=FENCED_OUT, permanent=true) when the fence rejects
@@ -1090,8 +1151,11 @@ async function run() {
   await testClusterEndpointInitValidation();
   await testClusterDiscoveryAcquiredLeader();
 
-  // cluster-mode audit-tip fencing (canonical fencing-token guard)
+  // cluster-mode audit-tip fencing (canonical fencing-token guard) +
+  // recursion-safety regression for the handlers.drain bug discovered
+  // while wiring the fence test
   await testClusterAuditTipFencing();
+  await testClusterAuditFlushNoRecursionHang();
   await testClusterAuditTipFencedOutErrorSurface();
 
   // audit chain + verify (now exercises chain-writer transitively)
@@ -1130,6 +1194,7 @@ module.exports = {
   testClusterEndpointInitValidation:                   testClusterEndpointInitValidation,
   testClusterDiscoveryAcquiredLeader:                  testClusterDiscoveryAcquiredLeader,
   testClusterAuditTipFencing:                          testClusterAuditTipFencing,
+  testClusterAuditFlushNoRecursionHang:                testClusterAuditFlushNoRecursionHang,
   testClusterAuditTipFencedOutErrorSurface:            testClusterAuditTipFencedOutErrorSurface,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,

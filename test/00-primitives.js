@@ -551,6 +551,13 @@ async function testHandlerEmitAndDrain() {
 }
 
 async function testHandlerEmitDuringFlushNextCycle() {
+  // Recursion-safety contract (per handlers.js docstring): items emitted
+  // BY a flush() call MUST land in the buffer for the NEXT drain cycle,
+  // not the current one. This test exists because in cluster mode, the
+  // audit handler's flush() writes through external-db, which itself
+  // emits a system.externaldb.query audit event back into the same
+  // handler — without a per-drain bound, drain refills as fast as it
+  // empties and never returns. The bound here is the structural fix.
   var phase1 = [];
   var phase2 = [];
   var emitDuring = true;
@@ -570,8 +577,17 @@ async function testHandlerEmitDuringFlushNextCycle() {
   h.emit({ id: 1 });
   h.emit({ id: 2 });
   await h.drain();
-  check("handler: emit-during-flush lands in next cycle",
-        phase1.length === 2 && phase2.length === 1 && phase2[0].id === 99);
+  check("handler: first drain flushes only originally-buffered items",
+        phase1.length === 2);
+  check("handler: emit-during-flush did NOT land in current drain",
+        phase2.length === 0);
+  check("handler: emit-during-flush still in buffer after first drain",
+        h.size() === 1);
+  await h.drain();
+  check("handler: second drain picks up the emit-during-flush item",
+        phase2.length === 1 && phase2[0].id === 99);
+  check("handler: buffer empty after second drain",
+        h.size() === 0);
 }
 
 async function testHandlerRetryOnFlushFailure() {
