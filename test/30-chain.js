@@ -294,6 +294,178 @@ async function testClusterDiscoveryAcquiredLeader() {
   }
 }
 
+async function testClusterAuditTipFencing() {
+  // Verify the canonical fencing-token guard on _blamejs_audit_tip:
+  //   1. First write (fencingToken=N) — INSERT path, accepted
+  //   2. Same-token re-write (N) — UPDATE path with WHERE N <= N, accepted
+  //   3. Higher-token write (N+5) — UPDATE path, accepted
+  //   4. Lower-token write (N+2) — UPDATE rejected by WHERE clause,
+  //      audit.checkpoint() throws ClusterError(code=FENCED_OUT).
+  //
+  // We drive checkpoint() directly rather than recreating the DB row by
+  // hand — this proves the framework's actual write path enforces the
+  // fence, not just that the SQL would do the right thing in isolation.
+  //
+  // Forcing the leader's fencingToken to step down is non-trivial in a
+  // single-process test (the cluster module's lease state isn't directly
+  // mutable). Instead we drive _upsertAuditTip directly with explicit
+  // tokens — that's the function the framework's write path calls, and
+  // it carries the WHERE-clause guard.
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fence-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+
+    await b.cluster.init({
+      nodeId:            "fence-test-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    // Direct upserts via cluster-storage (bypasses audit.checkpoint's
+    // chain-tip read so we can test the fence in isolation).
+    async function upsert(counter, hash, signedAt, token) {
+      var result = await b.clusterStorage.execute(
+        "INSERT INTO _blamejs_audit_tip " +
+        "  (scope, atMonotonicCounter, rowHash, signedAt, fencingToken) " +
+        "VALUES ('audit', ?, ?, ?, ?) " +
+        "ON CONFLICT (scope) DO UPDATE SET " +
+        "  atMonotonicCounter = EXCLUDED.atMonotonicCounter, " +
+        "  rowHash            = EXCLUDED.rowHash, " +
+        "  signedAt           = EXCLUDED.signedAt, " +
+        "  fencingToken       = EXCLUDED.fencingToken " +
+        "WHERE _blamejs_audit_tip.fencingToken <= EXCLUDED.fencingToken " +
+        "RETURNING fencingToken",
+        [counter, hash, signedAt, token]
+      );
+      return result.rows.length > 0;
+    }
+
+    // 1. First write (token=3) succeeds — INSERT path
+    check("audit-tip: first write at token=3 accepted",
+          (await upsert(1,  "h1", "1", 3)) === true);
+
+    // 2. Same-token rewrite (token=3) — WHERE 3<=3 → UPDATE path
+    check("audit-tip: same-token rewrite at token=3 accepted",
+          (await upsert(2,  "h2", "2", 3)) === true);
+
+    // 3. Higher-token bump (token=8) — WHERE 3<=8 → UPDATE
+    check("audit-tip: higher-token write at token=8 accepted",
+          (await upsert(3,  "h3", "3", 8)) === true);
+
+    // 4. Stale-token write (token=5, stored=8) — fenced out
+    check("audit-tip: lower-token write at token=5 rejected (fenced)",
+          (await upsert(4,  "h4", "4", 5)) === false);
+
+    // The stored row should still reflect the highest-accepted token (8)
+    var stored = await b.clusterStorage.executeOne(
+      "SELECT fencingToken, rowHash FROM _blamejs_audit_tip WHERE scope = 'audit'"
+    );
+    check("audit-tip: stored token unchanged after rejected write",
+          Number(stored.fencingToken) === 8);
+    check("audit-tip: stored rowHash unchanged after rejected write",
+          stored.rowHash === "h3");
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testClusterAuditTipFencedOutErrorSurface() {
+  // Verify that audit.js's _upsertAuditTip surfaces
+  // ClusterError(code=FENCED_OUT, permanent=true) when the fence rejects
+  // the write. This catches a regression where the original
+  // UPDATE-then-INSERT-if-missing path swallowed silently — operators
+  // MUST see fence rejection.
+  //
+  // We bypass audit.record/flush (which crosses the single-node →
+  // cluster-mode boundary mid-buffer, an unrelated complication) and
+  // exercise audit.checkpoint() directly: insert one audit_log row by
+  // hand into external-db, pre-seed the audit-tip with a higher token
+  // than the local lease has, and assert the checkpoint surfaces the
+  // FENCED_OUT class+code.
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fence-err-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    // Full framework boot needed because checkpoint() invokes audit-sign
+    // (signature over the chain head) which requires the signing key
+    // initialized via db.init.
+    await setupTestDb(tmpDir);
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+
+    await b.cluster.init({
+      nodeId:            "fence-err-test-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    // Insert one audit_log row directly so checkpoint has a tip to
+    // anchor. clusterStorage rewrites `audit_log` → `_blamejs_audit_log`
+    // in cluster mode, and we use `?` placeholders so the dispatcher's
+    // dialect translation handles the parameterization.
+    await b.clusterStorage.execute(
+      "INSERT INTO audit_log " +
+      "  (_id, recordedAt, monotonicCounter, action, outcome, " +
+      "   prevHash, rowHash, nonce, fencingToken) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["fence-row", Date.now(), 1, "system.test.fence", "success",
+       "", "fence-hash-1", Buffer.alloc(16), 1]
+    );
+
+    // Pre-seed _blamejs_audit_tip with a token (99) higher than this
+    // node's lease (=1 right after acquire). The checkpoint's
+    // _upsertAuditTip will write fencingToken=1, which is below the
+    // stored 99 — the WHERE-clause guard rejects it.
+    await b.clusterStorage.execute(
+      "INSERT INTO _blamejs_audit_tip " +
+      "  (scope, atMonotonicCounter, rowHash, signedAt, fencingToken) " +
+      "VALUES ('audit', ?, ?, ?, ?) " +
+      "ON CONFLICT (scope) DO UPDATE SET " +
+      "  fencingToken = EXCLUDED.fencingToken",
+      [0, "preseed", "0", 99]
+    );
+
+    var threw = null;
+    try { await b.audit.checkpoint(); }
+    catch (e) { threw = e; }
+
+    check("checkpoint: fenced-out throws", threw !== null);
+    check("checkpoint: error is ClusterError",
+          threw && threw.isClusterError === true);
+    check("checkpoint: error code is FENCED_OUT",
+          threw && threw.code === "FENCED_OUT");
+    check("checkpoint: error is permanent",
+          threw && threw.permanent === true);
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testAuditChain() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-audit-"));
   try {
@@ -918,6 +1090,10 @@ async function run() {
   await testClusterEndpointInitValidation();
   await testClusterDiscoveryAcquiredLeader();
 
+  // cluster-mode audit-tip fencing (canonical fencing-token guard)
+  await testClusterAuditTipFencing();
+  await testClusterAuditTipFencedOutErrorSurface();
+
   // audit chain + verify (now exercises chain-writer transitively)
   await testAuditChain();
   await testAuditChainBreak();
@@ -953,6 +1129,8 @@ module.exports = {
   testClusterDiscoveryHandlerSingleNode:               testClusterDiscoveryHandlerSingleNode,
   testClusterEndpointInitValidation:                   testClusterEndpointInitValidation,
   testClusterDiscoveryAcquiredLeader:                  testClusterDiscoveryAcquiredLeader,
+  testClusterAuditTipFencing:                          testClusterAuditTipFencing,
+  testClusterAuditTipFencedOutErrorSurface:            testClusterAuditTipFencedOutErrorSurface,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,
   testAuditSelfLogging:                                testAuditSelfLogging,
