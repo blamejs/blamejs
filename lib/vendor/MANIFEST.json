@@ -14,6 +14,32 @@
       },
       "bundler": "esbuild --format=cjs --minify --platform=node",
       "bundledAt": "2026-04-25"
+    },
+    "argon2": {
+      "version": "0.44.0",
+      "license": "MIT",
+      "author": "Ranieri Althoff",
+      "source": "https://github.com/ranisalt/node-argon2",
+      "exports": [
+        "hash",
+        "verify"
+      ],
+      "files": {
+        "server": "lib/vendor/argon2/argon2.cjs",
+        "prebuilds": "lib/vendor/argon2/prebuilds/"
+      },
+      "platforms": [
+        "darwin-arm64",
+        "darwin-x64",
+        "freebsd-arm64",
+        "freebsd-x64",
+        "linux-arm",
+        "linux-arm64",
+        "linux-x64",
+        "win32-x64"
+      ],
+      "bundler": "esbuild --format=cjs --platform=node (inlines @phc/format + node-gyp-build)",
+      "bundledAt": "2026-04-25"
     }
   }
 }
