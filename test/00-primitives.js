@@ -1338,6 +1338,149 @@ function testEnvParseSecurityRejections() {
   check("env: unterminated quoted rejected",       threwUnterm);
 }
 
+function testBufferSafeNormalizeText() {
+  var bs = b.bufferSafe;
+  check("bufferSafe.normalizeText is a function", typeof bs.normalizeText === "function");
+
+  // string passthrough
+  check("normalizeText: string passthrough", bs.normalizeText("hello") === "hello");
+
+  // Buffer → string
+  check("normalizeText: Buffer → string",
+        bs.normalizeText(Buffer.from("héllo", "utf8")) === "héllo");
+
+  // Uint8Array → string
+  var u8 = new Uint8Array([0x68, 0x69]);
+  check("normalizeText: Uint8Array → string", bs.normalizeText(u8) === "hi");
+
+  // BOM stripped by default
+  check("normalizeText: strips leading BOM",
+        bs.normalizeText("﻿withBom") === "withBom");
+
+  // BOM preserved when stripBom: false
+  check("normalizeText: stripBom:false keeps BOM",
+        bs.normalizeText("﻿withBom", { stripBom: false }) === "﻿withBom");
+
+  // maxBytes enforced
+  var threwSize = false;
+  try { bs.normalizeText("x".repeat(2000), { maxBytes: 100 }); }
+  catch (e) { threwSize = e.code === "buffer/too-large"; }
+  check("normalizeText: maxBytes enforced", threwSize);
+
+  // Wrong type rejected
+  var threwType = false;
+  try { bs.normalizeText(123); }
+  catch (e) { threwType = e.code === "buffer/wrong-input-type"; }
+  check("normalizeText: number rejected", threwType);
+
+  // errorClass override
+  function CustomErr(message, code) {
+    Error.call(this, message);
+    this.message = message;
+    this.code = code;
+    this.name = "CustomErr";
+  }
+  CustomErr.prototype = Object.create(Error.prototype);
+  var threwCustom = false;
+  try { bs.normalizeText(123, { errorClass: CustomErr, typeCode: "x/wrong-input-type" }); }
+  catch (e) {
+    threwCustom = e instanceof CustomErr && e.code === "x/wrong-input-type";
+  }
+  check("normalizeText: errorClass override", threwCustom);
+}
+
+function testBufferSafeToBuffer() {
+  var bs = b.bufferSafe;
+  check("bufferSafe.toBuffer is a function", typeof bs.toBuffer === "function");
+
+  // Buffer passthrough (same instance)
+  var orig = Buffer.from("hello", "utf8");
+  check("toBuffer: Buffer passthrough", bs.toBuffer(orig) === orig);
+
+  // string → Buffer
+  var b1 = bs.toBuffer("héllo");
+  check("toBuffer: string → Buffer", Buffer.isBuffer(b1) && b1.toString("utf8") === "héllo");
+
+  // Uint8Array → Buffer
+  var u8 = new Uint8Array([0x42, 0x43]);
+  var b2 = bs.toBuffer(u8);
+  check("toBuffer: Uint8Array → Buffer", Buffer.isBuffer(b2) && b2[0] === 0x42 && b2[1] === 0x43);
+
+  // maxBytes cap
+  var threwSize = false;
+  try { bs.toBuffer("x".repeat(2000), { maxBytes: 100 }); }
+  catch (e) { threwSize = e.code === "buffer/too-large"; }
+  check("toBuffer: maxBytes enforced", threwSize);
+
+  // Wrong type
+  var threwType = false;
+  try { bs.toBuffer(123); }
+  catch (e) { threwType = e.code === "buffer/wrong-input-type"; }
+  check("toBuffer: number rejected", threwType);
+}
+
+function testBufferSafeBoundedChunkCollector() {
+  var bs = b.bufferSafe;
+  check("bufferSafe.boundedChunkCollector is a function",
+        typeof bs.boundedChunkCollector === "function");
+
+  // Happy path
+  var c = bs.boundedChunkCollector({ maxBytes: 100 });
+  c.push(Buffer.from("hello "));
+  c.push(Buffer.from("world"));
+  check("collector: bytesCollected after pushes", c.bytesCollected() === 11);
+  var out = c.result();
+  check("collector: result joins chunks",
+        Buffer.isBuffer(out) && out.toString("utf8") === "hello world");
+
+  // String + Uint8Array also accepted
+  var c2 = bs.boundedChunkCollector({ maxBytes: 100 });
+  c2.push("foo");
+  c2.push(new Uint8Array([0x62, 0x61, 0x72]));
+  check("collector: accepts string + Uint8Array",
+        c2.result().toString("utf8") === "foobar");
+
+  // Cap enforced AT push time (the OOM defense)
+  var c3 = bs.boundedChunkCollector({ maxBytes: 10 });
+  c3.push(Buffer.alloc(8));
+  var threwOverflow = false;
+  try { c3.push(Buffer.alloc(5)); }  // 8 + 5 = 13 > 10
+  catch (e) { threwOverflow = e.code === "buffer/too-large"; }
+  check("collector: rejects at push when overflow", threwOverflow);
+  // After overflow the collector retains the previously-pushed bytes —
+  // intentional, callers expect to inspect partial state on error.
+  check("collector: state preserved on overflow", c3.bytesCollected() === 8);
+
+  // maxBytes required
+  var threwBadArg = false;
+  try { bs.boundedChunkCollector({}); }
+  catch (e) { threwBadArg = e.code === "buffer/bad-arg"; }
+  check("collector: requires maxBytes", threwBadArg);
+}
+
+function testBufferSafeSecureZero() {
+  var bs = b.bufferSafe;
+  check("bufferSafe.secureZero is a function", typeof bs.secureZero === "function");
+
+  var buf = Buffer.from("secret-passphrase", "utf8");
+  bs.secureZero(buf);
+  var allZero = true;
+  for (var i = 0; i < buf.length; i++) if (buf[i] !== 0) { allZero = false; break; }
+  check("secureZero: zeroes Buffer contents", allZero);
+
+  // Uint8Array also handled
+  var u8 = new Uint8Array([1, 2, 3, 4]);
+  bs.secureZero(u8);
+  check("secureZero: zeroes Uint8Array",
+        u8[0] === 0 && u8[1] === 0 && u8[2] === 0 && u8[3] === 0);
+
+  // Non-Buffer no-ops (doesn't throw)
+  bs.secureZero("not-a-buffer");
+  bs.secureZero(null);
+  bs.secureZero(undefined);
+  check("secureZero: non-Buffer is a no-op", true);
+}
+
 function testEnvReadVar() {
   var env = b.parsers.env;
   check("env.readVar is a function", typeof env.readVar === "function");
@@ -1652,6 +1795,11 @@ async function run() {
   // chain-writer primitive (cross-layer; documented in test header)
   await testChainWriterRejectsBadTable();
   await testChainWriterRaceSafetyConcurrentAppends();
+  // buffer-safe primitive (used by parsers, atomic-file, object-store)
+  testBufferSafeNormalizeText();
+  testBufferSafeToBuffer();
+  testBufferSafeBoundedChunkCollector();
+  testBufferSafeSecureZero();
   // json-safe primitive
   testJsonModuleSurface();
   testJsonParse();
@@ -1716,6 +1864,10 @@ module.exports = {
   testSqlSafeAssertOneOf:                    testSqlSafeAssertOneOf,
   testChainWriterRejectsBadTable:            testChainWriterRejectsBadTable,
   testChainWriterRaceSafetyConcurrentAppends: testChainWriterRaceSafetyConcurrentAppends,
+  testBufferSafeNormalizeText:               testBufferSafeNormalizeText,
+  testBufferSafeToBuffer:                    testBufferSafeToBuffer,
+  testBufferSafeBoundedChunkCollector:       testBufferSafeBoundedChunkCollector,
+  testBufferSafeSecureZero:                  testBufferSafeSecureZero,
   testJsonModuleSurface:                     testJsonModuleSurface,
   testJsonParse:                             testJsonParse,
   testJsonStringify:                         testJsonStringify,

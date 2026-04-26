@@ -46,6 +46,7 @@ var asyncSafe = require("./lib/async-safe");
 var handlers = require("./lib/handlers");
 var sqlSafe = require("./lib/sql-safe");
 var chainWriter = require("./lib/chain-writer");
+var bufferSafe = require("./lib/buffer-safe");
 
 module.exports = {
   crypto:           crypto,
@@ -79,6 +80,7 @@ module.exports = {
   handlers:         handlers,
   sqlSafe:          sqlSafe,
   chainWriter:      chainWriter,
+  bufferSafe:       bufferSafe,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
