@@ -383,6 +383,135 @@ async function testClusterAuditTipFencing() {
   }
 }
 
+async function testClusterVaultKeyFirstBootRecords() {
+  // First cluster boot: no _blamejs_cluster_state row yet. cluster.init
+  // should write THIS node's vault-key fingerprint and record nodeId.
+  // Subsequent cluster.init from the same vault file passes without
+  // changes (idempotent).
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-vk-first-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    await setupTestDb(tmpDir);    // initializes vault
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+
+    // First boot — writes the row.
+    await b.cluster.init({
+      nodeId:            "vk-first-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+    var stored = await b.externalDb.query(
+      "SELECT vaultKeyFp, recordedByNode FROM _blamejs_cluster_state WHERE scope='state'",
+      [], { backend: "ops" }
+    );
+    check("cluster-state row recorded after first boot",
+          stored.rows.length === 1);
+    check("cluster-state recorded by this node",
+          stored.rows[0].recordedByNode === "vk-first-1");
+    check("cluster-state fingerprint is hex sha3-512 (128 chars)",
+          /^[0-9a-f]{128}$/.test(stored.rows[0].vaultKeyFp));
+
+    // Same vault, fresh cluster.init — passes silently
+    await b.cluster.shutdown();
+    await b.cluster.init({
+      nodeId:            "vk-first-2",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+    var stored2 = await b.externalDb.query(
+      "SELECT vaultKeyFp, recordedByNode FROM _blamejs_cluster_state WHERE scope='state'",
+      [], { backend: "ops" }
+    );
+    check("cluster-state fingerprint unchanged after same-vault re-init",
+          stored2.rows[0].vaultKeyFp === stored.rows[0].vaultKeyFp);
+    check("cluster-state recordedByNode unchanged (first writer wins)",
+          stored2.rows[0].recordedByNode === "vk-first-1");
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testClusterVaultKeyMismatchDetected() {
+  // Pre-seed the cluster-state row with a fingerprint that won't match
+  // the freshly-generated vault keys in the child process. cluster.init
+  // detects the drift and process.exit(1)s. Spawn-a-child pattern so
+  // we can capture the exit code.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-vk-drift-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    // Provider ensureSchema creates _blamejs_leader + _blamejs_cluster_state.
+    // We don't run cluster.init here — just construct the provider manually
+    // so the table exists, then pre-seed with a wrong fingerprint.
+    var providerDb = require("../lib/cluster-provider-db");
+    var prov = providerDb.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    await prov.ensureSchema();
+
+    await b.externalDb.query(
+      "INSERT INTO _blamejs_cluster_state (scope, vaultKeyFp, recordedAt, recordedByNode) " +
+      "VALUES ('state', ?, ?, 'pre-existing-node')",
+      ["deadbeef".repeat(16), Date.now()]    // 128-hex bogus fingerprint
+    );
+    await b.externalDb.shutdown();
+    driver._close();
+
+    var spawnSync = require("child_process").spawnSync;
+    var indexPath = path.resolve(__dirname, "..", "index.js").replace(/\\/g, "/");
+    var dbPathForChild = dbPath.replace(/\\/g, "/");
+    var childTmp = path.resolve(tmpDir, "child-data").replace(/\\/g, "/");
+    var childScript =
+      "var b = require('" + indexPath + "');\n" +
+      "var sqlite = require('node:sqlite');\n" +
+      "var conn = new sqlite.DatabaseSync('" + dbPathForChild + "');\n" +
+      "var driver = {\n" +
+      "  connect: async function () { return { id: 'c1' }; },\n" +
+      "  query:   async function (_c, sql, params) {\n" +
+      "    var stmt = conn.prepare(sql);\n" +
+      "    if (/^\\s*SELECT/i.test(sql) || /\\bRETURNING\\b/i.test(sql)) {\n" +
+      "      return { rows: stmt.all.apply(stmt, params || []), rowCount: 0 };\n" +
+      "    }\n" +
+      "    var info = stmt.run.apply(stmt, params || []);\n" +
+      "    return { rows: [], rowCount: info.changes };\n" +
+      "  },\n" +
+      "  close:   async function () {},\n" +
+      "};\n" +
+      "process.env.BLAMEJS_SKIP_NTP_CHECK = '1';\n" +
+      "(async function () {\n" +
+      "  require('fs').mkdirSync('" + childTmp + "', { recursive: true });\n" +
+      "  await b.vault.init({ dataDir: '" + childTmp + "', mode: 'plaintext' });\n" +
+      "  b.externalDb.init({ backends: { ops: driver } });\n" +
+      "  await b.cluster.init({ nodeId: 'vk-drift-child', externalDbBackend: 'ops', dialect: 'sqlite', leaseTtl: 30000, heartbeatInterval: 10000 });\n" +
+      "  console.log('UNEXPECTED-BOOT');\n" +
+      "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
+    var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
+    check("vault-key drift boot exits with code 1",       result.status === 1);
+    check("vault-key drift boot logs detection message",
+          /vault-key drift detected/i.test(result.stderr || ""));
+    check("vault-key drift boot did NOT print UNEXPECTED-BOOT",
+          (result.stdout || "").indexOf("UNEXPECTED-BOOT") === -1);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function testClusterAuditTipRollbackHappyPath() {
   // Happy path — tip matches the row at its recorded counter, cluster.init
   // proceeds. Pre-populate an audit_log row + a matching tip row, then
@@ -1339,6 +1468,10 @@ async function run() {
   await testClusterAuditTipRollbackDetected();
   await testClusterAuditTipRowHashMismatch();
 
+  // cluster-mode vault-key consistency check
+  await testClusterVaultKeyFirstBootRecords();
+  await testClusterVaultKeyMismatchDetected();
+
   // audit chain + verify (now exercises chain-writer transitively)
   await testAuditChain();
   await testAuditChainBreak();
@@ -1380,6 +1513,8 @@ module.exports = {
   testClusterAuditTipRollbackHappyPath:                testClusterAuditTipRollbackHappyPath,
   testClusterAuditTipRollbackDetected:                 testClusterAuditTipRollbackDetected,
   testClusterAuditTipRowHashMismatch:                  testClusterAuditTipRowHashMismatch,
+  testClusterVaultKeyFirstBootRecords:                 testClusterVaultKeyFirstBootRecords,
+  testClusterVaultKeyMismatchDetected:                 testClusterVaultKeyMismatchDetected,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,
   testAuditSelfLogging:                                testAuditSelfLogging,
