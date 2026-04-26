@@ -324,6 +324,8 @@ check("fieldCrypto namespace present",   typeof b.fieldCrypto === "object");
 
 async function setupTestDb(tmpDir, schemaOverrides) {
   process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
   b.vault._resetForTest();
   b.db._resetForTest();
   await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
@@ -351,10 +353,18 @@ async function setupTestDb(tmpDir, schemaOverrides) {
   });
 }
 
-function teardownTestDb(tmpDir) {
+async function teardownTestDb(tmpDir) {
   try { b.db.close(); } catch (_e) {}
+  // Drain pending audit-recordSafe Promises before resetting db state.
+  // Fire-and-forget audit calls (middleware, log-stream, external-db
+  // emits) finish on later microtask ticks; without this drain, those
+  // Promises resume after _resetForTest has already nullified `database`
+  // and throw "db.init() must be awaited" during the next test's run.
+  for (var i = 0; i < 5; i++) await new Promise(function (r) { setImmediate(r); });
+  b.audit._resetForTest();
   b.db._resetForTest();
   b.vault._resetForTest();
+  b.cluster._resetForTest();
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
 }
 
@@ -388,7 +398,7 @@ async function testDbBasic() {
     var n = b.db.from("users").where({ status: "active" }).count();
     check("count() respects where clause",  n === 1);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -430,7 +440,7 @@ async function testDbWriteOps() {
     catch (_) { unconditionalDeleteRejected = true; }
     check("deleteMany without where() throws", unconditionalDeleteRejected);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -449,7 +459,7 @@ async function testDbSealedWithoutDerived() {
     }
     check("where on sealed-without-derived-hash throws", thrown);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -478,7 +488,7 @@ async function testDbTransactions() {
     check("transaction rolls back on throw", caught);
     check("transaction rollback removes inserted rows", b.db.from("users").count() === 2);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -517,7 +527,7 @@ async function testDbPersistence() {
     var loaded = b.db.from("users").where({ _id: id }).first();
     check("persistence: row survives close+reopen", loaded && loaded.email === "persist@x.com");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -563,7 +573,7 @@ async function testDbSchemaEvolution() {
     var newRow = b.db.from("users").insertOne({ email: "evo2@x.com", name: "E2", lastSeen: "2026-04-25" });
     check("ALTER TABLE additive: new column accepts writes", newRow.lastSeen === "2026-04-25");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -648,7 +658,7 @@ async function testDbMigrations() {
     var stillOne = b.db.prepare("SELECT COUNT(*) AS n FROM _blamejs_migrations").get();
     check("migration is idempotent — not re-run on second init", stillOne.n === 1);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -678,7 +688,7 @@ async function testFrameworkSchema() {
     check("consent_log table exists",    consentCols.length > 0);
     check("consent_log has chain cols",  consentCols.some(c => c.name === "rowHash"));
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -701,7 +711,7 @@ async function testReservedTableProtection() {
     }
     check("app schema with reserved table name throws", threw);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -713,13 +723,13 @@ async function testAuditChain() {
 
     // Unregistered namespace rejected
     var nsRejected = false;
-    try { b.audit.record({ action: "orders.created", outcome: "success" }); }
+    try { await b.audit.record({ action: "orders.created", outcome: "success" }); }
     catch (_) { nsRejected = true; }
     check("unregistered namespace rejected", nsRejected);
 
     // Register + record
     b.audit.registerNamespace("orders");
-    var ev1 = b.audit.record({
+    var ev1 = await b.audit.record({
       actor:    { userId: "user-1", ip: "1.2.3.4" },
       action:   "orders.created",
       resource: { kind: "order", id: "ord-1" },
@@ -729,7 +739,7 @@ async function testAuditChain() {
     check("audit.record returns row with rowHash",   typeof ev1.rowHash === "string" && ev1.rowHash.length === 128);
     check("first row's prevHash is ZERO_HASH",       ev1.prevHash === b.auditChain.ZERO_HASH);
 
-    var ev2 = b.audit.record({
+    var ev2 = await b.audit.record({
       actor:    { userId: "user-1", ip: "1.2.3.4" },
       action:   "auth.login.success",
       resource: { kind: "user", id: "user-1" },
@@ -740,30 +750,30 @@ async function testAuditChain() {
 
     // Invalid action format
     var actionRejected = false;
-    try { b.audit.record({ action: "no-dot", outcome: "success" }); }
+    try { await b.audit.record({ action: "no-dot", outcome: "success" }); }
     catch (_) { actionRejected = true; }
     check("malformed action rejected", actionRejected);
 
     // Invalid outcome
     var outcomeRejected = false;
-    try { b.audit.record({ action: "auth.login.success", outcome: "ok" }); }
+    try { await b.audit.record({ action: "auth.login.success", outcome: "ok" }); }
     catch (_) { outcomeRejected = true; }
     check("invalid outcome rejected", outcomeRejected);
 
     // Verify chain is intact
-    var v1 = b.audit.verify();
+    var v1 = await b.audit.verify();
     check("audit.verify() ok after valid records",  v1.ok === true && v1.rowsVerified === 2);
 
     // Query by various criteria
-    var byUser = b.audit.query({ actorUserId: "user-1" });
+    var byUser = await b.audit.query({ actorUserId: "user-1" });
     check("query by sealed actorUserId returns rows",   byUser.length === 2);
     check("query result rows are unsealed",             byUser[0].actorUserId === "user-1");
-    var byAction = b.audit.query({ action: "auth.login.success" });
+    var byAction = await b.audit.query({ action: "auth.login.success" });
     check("query by action returns matching",            byAction.length === 1);
-    var byKind = b.audit.query({ resourceKind: "order" });
+    var byKind = await b.audit.query({ resourceKind: "order" });
     check("query by resourceKind returns matching",     byKind.length === 1);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -773,9 +783,9 @@ async function testAuditChainBreak() {
   try {
     await setupTestDb(tmpDir);
     b.audit.registerNamespace("test");
-    b.audit.record({ action: "test.event", outcome: "success" });
-    b.audit.record({ action: "test.event", outcome: "success" });
-    var v1 = b.audit.verify();
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    var v1 = await b.audit.verify();
     check("chain ok before tampering", v1.ok === true);
 
     // Manually corrupt a row's reason field. As of v0.0.7 the audit_log
@@ -785,13 +795,13 @@ async function testAuditChainBreak() {
     b.db.runSql("DROP TRIGGER IF EXISTS no_update_audit_log");
     b.db.prepare('UPDATE audit_log SET reason = ? WHERE monotonicCounter = 1').run("vault:tampered-but-not-actually-sealed");
     b.db.runSql("CREATE TRIGGER IF NOT EXISTS no_update_audit_log BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only — UPDATE prohibited'); END");
-    var v2 = b.audit.verify();
+    var v2 = await b.audit.verify();
     check("chain detected after row tampering",         v2.ok === false);
     check("chain break reports breakAt index",          v2.breakAt === 0 || v2.breakAt === 1);
     check("chain break reports rowHash mismatch reason",
           v2.reason === "rowHash mismatch" || v2.reason === "prevHash mismatch");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -823,7 +833,7 @@ async function testConsent() {
     check("history second event is withdraw",    hist[1].action === "withdrawn");
     check("history unsealed subjectId",          hist[0].subjectId === subjectId);
 
-    var cv = b.consent.verify();
+    var cv = await b.consent.verify();
     check("consent.verify() ok",                 cv.ok === true && cv.rowsVerified === 2);
 
     // Invalid lawful basis
@@ -832,7 +842,7 @@ async function testConsent() {
     catch (_) { basisRejected = true; }
     check("invalid lawfulBasis rejected", basisRejected);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -929,10 +939,10 @@ async function testSubjectRights() {
     check("isRestricted false after lift",             b.subject.isRestricted("u-bob") === false);
 
     // Audit chain still intact after all this activity
-    var av = b.audit.verify();
+    var av = await b.audit.verify();
     check("audit chain intact through subject ops",    av.ok === true);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -953,7 +963,7 @@ async function testDataResidency() {
     check("getDataResidency returns config",         dr && dr.region === "EU");
     check("dataResidency includes allowedRegions",   dr.allowedStorageRegions[0] === "eu-west-1");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1031,7 +1041,7 @@ async function testSession() {
     try { b.session.create({}); } catch (_) { rejected = true; }
     check("session.create requires userId",         rejected);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1114,7 +1124,7 @@ async function testStorage() {
     catch (e) { s3Rejected = /sigv4|deferred|not yet/i.test(e.message); }
     check("storage backend 's3' deferred with clear message", s3Rejected);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1128,7 +1138,7 @@ async function testAppendOnlyTriggers() {
   try {
     await setupTestDb(tmpDir);
     b.audit.registerNamespace("test");
-    b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.record({ action: "test.event", outcome: "success" });
 
     var deleteRejected = false;
     try { b.db.runSql("DELETE FROM audit_log"); }
@@ -1152,7 +1162,7 @@ async function testAppendOnlyTriggers() {
     check("INSERT on audit_log still works",             counts.a >= 1);
     check("INSERT on consent_log still works",           counts.c >= 1);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1209,7 +1219,7 @@ async function testForeignKeys() {
     b.db.from("users").where({ _id: "u-1" }).deleteOne();
     check("ON DELETE CASCADE removes child rows",        b.db.from("orders").where({ _id: "o-1" }).first() === null);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1258,7 +1268,7 @@ async function testTableMetadata() {
     var freshMeta = b.db.getTableMetadata("items");
     check("metadata snapshot is deep-copied",            freshMeta.foreignKeys.length === 1);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1267,33 +1277,33 @@ async function testAuditSelfLogging() {
   try {
     await setupTestDb(tmpDir);
     b.audit.registerNamespace("test");
-    b.audit.record({ action: "test.event", outcome: "success" });
-    b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.record({ action: "test.event", outcome: "success" });
 
     // A query auto-records an audit.read event before returning rows
     var beforeCount = b.db.from("audit_log").count();
-    var rows = b.audit.query({ action: "test.event" });
+    var rows = await b.audit.query({ action: "test.event" });
     var afterCount = b.db.from("audit_log").count();
     check("query returned both test.event rows",         rows.length === 2);
     check("query auto-recorded an audit.read event",     afterCount === beforeCount + 1);
 
     // The audit.read row exists
-    var readRows = b.audit.query({ action: "audit.read" });
+    var readRows = await b.audit.query({ action: "audit.read" });
     check("audit.read events queryable directly",        readRows.length >= 1);
     check("audit.read row has criteria metadata",
           readRows[0].metadata && /criteria/.test(readRows[0].metadata));
 
     // Querying for audit.read does NOT recursively self-log (else infinite chain)
     var beforeRecursionCheck = b.db.from("audit_log").count();
-    b.audit.query({ action: "audit.read" });
+    await b.audit.query({ action: "audit.read" });
     var afterRecursionCheck = b.db.from("audit_log").count();
     check("query for audit.read does NOT auto-self-log",  afterRecursionCheck === beforeRecursionCheck);
 
     // Audit chain still verifies through all the self-logging
-    var v = b.audit.verify();
+    var v = await b.audit.verify();
     check("audit chain ok after self-log activity",       v.ok === true);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1309,30 +1319,30 @@ async function testBeginTrace() {
     check("beginTrace returns unique values",            t1 !== t2);
 
     // Apps thread the traceId through linked events
-    var ev1 = b.audit.record({
+    var ev1 = await b.audit.record({
       action:   "test.start",
       outcome:  "success",
       metadata: { traceId: t1 },
     });
-    var ev2 = b.audit.record({
+    var ev2 = await b.audit.record({
       action:   "test.continue",
       outcome:  "success",
       metadata: { traceId: t1, parentEventId: ev1._id },
     });
 
     // Query and verify trace correlation is queryable from metadata
-    var rows = b.audit.query({ action: "test.start" });
+    var rows = await b.audit.query({ action: "test.start" });
     var meta = JSON.parse(rows[0].metadata);
     check("traceId persists into audit row metadata",    meta.traceId === t1);
 
-    var rows2 = b.audit.query({ action: "test.continue" });
+    var rows2 = await b.audit.query({ action: "test.continue" });
     var meta2 = JSON.parse(rows2[0].metadata);
     check("parentEventId persists into audit row",       meta2.parentEventId === ev1._id);
     check("traceId is shared across linked events",      meta2.traceId === t1);
 
     void ev2;
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1356,26 +1366,26 @@ async function testCheckpointSign() {
     check("audit-sign.key file exists in plaintext mode",  fs.existsSync(path.join(tmpDir, "audit-sign.key")));
 
     // Empty audit_log → checkpoint returns null (nothing to anchor)
-    var emptyResult = b.audit.checkpoint();
+    var emptyResult = await b.audit.checkpoint();
     check("checkpoint() on empty log returns null",     emptyResult === null);
 
     // Record and checkpoint
     b.audit.registerNamespace("test");
-    b.audit.record({ action: "test.event", outcome: "success" });
-    b.audit.record({ action: "test.event", outcome: "success" });
-    var ckpt = b.audit.checkpoint();
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    var ckpt = await b.audit.checkpoint();
     check("checkpoint() returns a checkpoint object",   ckpt && typeof ckpt._id === "string");
     check("checkpoint anchors monotonic counter",       typeof ckpt.atMonotonicCounter === "number");
     check("checkpoint includes pubkey fingerprint",
           ckpt.publicKeyFingerprint === b.auditSign.getPublicKeyFingerprint());
 
     // skipIfUnchanged: second call with no new audit activity returns null
-    var skipResult = b.audit.checkpoint({ skipIfUnchanged: true });
+    var skipResult = await b.audit.checkpoint({ skipIfUnchanged: true });
     check("checkpoint(skipIfUnchanged) on unchanged log returns null", skipResult === null);
 
     // After more activity, skipIfUnchanged anchors a new checkpoint
-    b.audit.record({ action: "test.event", outcome: "success" });
-    var freshCkpt = b.audit.checkpoint({ skipIfUnchanged: true });
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    var freshCkpt = await b.audit.checkpoint({ skipIfUnchanged: true });
     check("skipIfUnchanged anchors when chain advances", freshCkpt !== null);
     check("new checkpoint counter > prior checkpoint",   freshCkpt.atMonotonicCounter > ckpt.atMonotonicCounter);
 
@@ -1385,7 +1395,7 @@ async function testCheckpointSign() {
     var tip = JSON.parse(fs.readFileSync(tipPath, "utf8"));
     check("audit.tip records latest counter",           tip.atMonotonicCounter === freshCkpt.atMonotonicCounter);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1396,24 +1406,24 @@ async function testCheckpointVerify() {
     b.audit.registerNamespace("test");
 
     // Empty case
-    var v0 = b.audit.verifyCheckpoints();
+    var v0 = await b.audit.verifyCheckpoints();
     check("verifyCheckpoints empty case ok",            v0.ok === true && v0.checkpointsVerified === 0);
 
     // Several events + checkpoints
     for (var i = 0; i < 5; i++) {
-      b.audit.record({ action: "test.event", outcome: "success" });
-      b.audit.checkpoint();
+      await b.audit.record({ action: "test.event", outcome: "success" });
+      await b.audit.checkpoint();
     }
-    var v1 = b.audit.verifyCheckpoints();
+    var v1 = await b.audit.verifyCheckpoints();
     check("verifyCheckpoints ok across multiple anchors", v1.ok === true && v1.checkpointsVerified === 5);
 
     // Adding more rows then a fresh checkpoint still verifies
-    b.audit.record({ action: "test.event", outcome: "success" });
-    b.audit.checkpoint();
-    var v2 = b.audit.verifyCheckpoints();
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.checkpoint();
+    var v2 = await b.audit.verifyCheckpoints();
     check("verifyCheckpoints ok after additional checkpoint", v2.ok === true && v2.checkpointsVerified === 6);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1422,11 +1432,11 @@ async function testCheckpointTamperDetect() {
   try {
     await setupTestDb(tmpDir);
     b.audit.registerNamespace("test");
-    b.audit.record({ action: "test.event", outcome: "success" });
-    b.audit.checkpoint();
-    b.audit.record({ action: "test.event", outcome: "success" });
-    b.audit.record({ action: "test.event", outcome: "success" });
-    var anchorCkpt = b.audit.checkpoint();
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.checkpoint();
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    await b.audit.record({ action: "test.event", outcome: "success" });
+    var anchorCkpt = await b.audit.checkpoint();
 
     // Tamper with the audit_log row that the checkpoint anchors. Drop the
     // append-only triggers temporarily, recompute the chain hash so the
@@ -1450,12 +1460,12 @@ async function testCheckpointTamperDetect() {
     // prevHash + rowHash recursively. They didn't here; verifyChain might
     // catch it at the next row. But the CHECKPOINT layer catches it
     // unconditionally — anchored rowHash no longer matches what's on disk.
-    var ckptResult = b.audit.verifyCheckpoints();
+    var ckptResult = await b.audit.verifyCheckpoints();
     check("checkpoint verify catches anchored-rowHash tampering",  ckptResult.ok === false);
     check("break reason mentions rowHash mismatch",
           /rowHash mismatch|tampered/i.test(ckptResult.reason || ""));
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1465,9 +1475,9 @@ async function testRollbackDetection() {
     await setupTestDb(tmpDir);
     b.audit.registerNamespace("test");
     for (var i = 0; i < 3; i++) {
-      b.audit.record({ action: "test.event", outcome: "success" });
+      await b.audit.record({ action: "test.event", outcome: "success" });
     }
-    b.audit.checkpoint();
+    await b.audit.checkpoint();
 
     // audit.tip should now record counter >= 3
     var tipPath = path.join(tmpDir, "audit.tip");
@@ -1505,7 +1515,7 @@ async function testRollbackDetection() {
     check("rollback boot exits with code 1",                  result.status === 1);
     check("rollback boot logs detection message",             /rollback detected/i.test(result.stderr || ""));
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1577,7 +1587,7 @@ async function testMultiBackend() {
     catch (e) { wrongBackendRejected = e.code === "CLASSIFICATION_MISMATCH"; }
     check("backend that doesn't serve classification rejected", wrongBackendRejected);
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1605,7 +1615,7 @@ async function testClassificationRouting() {
     var s3 = await b.storage.saveFile(c1, "z");
     check("wildcard backend accepts no-classification", s3.backend === "any");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -1658,7 +1668,7 @@ async function testResidencyEnforcement() {
     var listed = b.storage.listBackends();
     check("EU-tagged backend accepted",                listed.length === 1 && listed[0].residencyTag === "EU");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2247,7 +2257,7 @@ async function testQueueLocal() {
     check("_blamejs_jobs is reserved",                 b.db.RESERVED_TABLE_NAMES.has("_blamejs_jobs"));
   } finally {
     try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2281,15 +2291,15 @@ async function testQueueConsume() {
     check("all jobs marked done",                      doneCount.n === 3);
 
     // Audit chain has system.queue.enqueue + .consume.start + .consume.success
-    var enqRows = b.audit.query({ action: "system.queue.enqueue" });
+    var enqRows = await b.audit.query({ action: "system.queue.enqueue" });
     check("audit recorded enqueue events",             enqRows.length === 3);
-    var sucRows = b.audit.query({ action: "system.queue.consume.success" });
+    var sucRows = await b.audit.query({ action: "system.queue.consume.success" });
     check("audit recorded consume.success events",     sucRows.length === 3);
 
     consumer.cancel();
   } finally {
     try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2320,13 +2330,13 @@ async function testQueueRetryAndFail() {
     check("handler invoked maxAttempts times",                 attempts === 3);
 
     // Audit chain has consume.failure events
-    var failRows = b.audit.query({ action: "system.queue.consume.failure" });
+    var failRows = await b.audit.query({ action: "system.queue.consume.failure" });
     check("audit recorded consume.failure events",             failRows.length === 3);
 
     consumer.cancel();
   } finally {
     try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2353,7 +2363,7 @@ async function testQueueLeaseExpiry() {
           b.db.prepare("SELECT status FROM _blamejs_jobs WHERE queueName = ?").get("orphan-job").status === "pending");
   } finally {
     try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2381,7 +2391,7 @@ async function testQueueShutdown() {
     check("shutdown completes under timeout",          elapsed < 5000);
     void consumer;
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2485,7 +2495,7 @@ async function testLogStreamLocal() {
     var errRecord = JSON.parse(lines[2]);
     check("error record JWT-shaped value redacted",       errRecord.meta.jwt === "[REDACTED-JWT]");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2548,7 +2558,7 @@ async function testLogStreamWebhook() {
       server.close();
     }
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2573,7 +2583,7 @@ async function testLogStreamBidirectional() {
     check("handler return value captured in results",     results[0].ok === true && results[0].value === "ack-1");
 
     // Audit: incoming command logged
-    var incRows = b.audit.query({ action: "system.log.incoming" });
+    var incRows = await b.audit.query({ action: "system.log.incoming" });
     check("audit recorded system.log.incoming",           incRows.length === 1);
 
     // Unregister and verify no further dispatch
@@ -2583,7 +2593,7 @@ async function testLogStreamBidirectional() {
 
     await b.logStream.shutdown();
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2689,11 +2699,11 @@ async function testExternalDbBasic() {
     check("healthCheck returns breakerState",            hc.primary.breakerState === "closed");
 
     // Audit recorded
-    var qRows = b.audit.query({ action: "system.externaldb.query" });
+    var qRows = await b.audit.query({ action: "system.externaldb.query" });
     check("audit recorded externaldb.query events",      qRows.length >= 3);
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2730,7 +2740,7 @@ async function testExternalDbPool() {
     check("listBackends includes pool stats",            typeof listed[0].pool === "object");
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2767,14 +2777,19 @@ async function testExternalDbTransaction() {
     } catch (e) { caught = e.message === "simulated"; }
     check("transaction error propagates",                caught);
 
-    // Audit recorded
-    var txRows = b.audit.query({ action: "system.externaldb.transaction" });
+    // External-db emits audit fire-and-forget (avoids cluster-mode
+    // recursion); poll briefly for the rows to land before querying.
+    var txRows = [];
+    for (var pollI = 0; pollI < 20 && txRows.length < 2; pollI++) {
+      await new Promise(function (r) { setTimeout(r, 10); });
+      txRows = await b.audit.query({ action: "system.externaldb.transaction" });
+    }
     check("transaction events audit-logged",             txRows.length >= 2);
     var failRows = txRows.filter(function (r) { return r.outcome === "failure"; });
     check("rollback event recorded as failure",          failRows.length === 1);
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2824,7 +2839,7 @@ async function testExternalDbResidency() {
     check("EU backend accepted",                          listed.length === 1 && listed[0].residencyTag === "EU");
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -2867,7 +2882,7 @@ async function testExternalDbClassification() {
     check("missing classification rejected",             noBackendRejected);
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) {}
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 
@@ -3000,7 +3015,7 @@ async function testMiddlewareErrorHandler() {
     check("errorHandler: 400 body includes path",        b3.error.path === "$.email");
 
     // Audit recorded
-    var errRows = b.audit.query({ action: "system.http.error" });
+    var errRows = await b.audit.query({ action: "system.http.error" });
     check("errorHandler: audit-recorded errors",          errRows.length === 3);
   } finally { teardownMW(); }
 }
@@ -4423,7 +4438,7 @@ async function _setupClusterGateFixture() {
     teardown: async function () {
       try { await b.externalDb.shutdown(); } catch (_e) {}
       driver._close();
-      teardownTestDb(tmpDir);
+      await teardownTestDb(tmpDir);
     },
   };
 }
@@ -4451,15 +4466,15 @@ function _expectNotLeaderError(label, fn) {
 async function testClusterGatesAuditAndConsent() {
   var fx = await _setupClusterGateFixture();
   try {
-    _expectNotLeaderError("audit.record on follower", function () {
-      b.audit.record({
+    _expectNotLeaderError("audit.record on follower", async function () {
+      await b.audit.record({
         actor: { kind: "user", id: "u1" },
         action: "auth.login",
         outcome: "success",
       });
     });
-    _expectNotLeaderError("audit.checkpoint on follower", function () {
-      b.audit.checkpoint();
+    _expectNotLeaderError("audit.checkpoint on follower", async function () {
+      await b.audit.checkpoint();
     });
     _expectNotLeaderError("consent.grant on follower", function () {
       b.consent.grant({
@@ -4582,7 +4597,7 @@ async function testClusterStorageLocalDispatch() {
 
     // Seed an audit row via the existing local path so we have something
     // to read back.
-    var ev = b.audit.record({
+    var ev = await b.audit.record({
       actor:   { kind: "user", id: "u1" },
       action:  "auth.login",
       outcome: "success",
@@ -4598,7 +4613,7 @@ async function testClusterStorageLocalDispatch() {
     check("clusterStorage.executeAll local: row found", rows.length >= 1);
     check("clusterStorage row has audit action",        rows[0].action === "auth.login");
   } finally {
-    teardownTestDb(tmpDir);
+    await teardownTestDb(tmpDir);
   }
 }
 

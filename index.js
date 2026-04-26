@@ -42,6 +42,7 @@ var parsers = require("./lib/parsers");
 var cluster = require("./lib/cluster");
 var frameworkSchema = require("./lib/framework-schema");
 var clusterStorage = require("./lib/cluster-storage");
+var asyncSafe = require("./lib/async-safe");
 
 module.exports = {
   crypto:           crypto,
@@ -71,6 +72,7 @@ module.exports = {
   cluster:          cluster,
   frameworkSchema:  frameworkSchema,
   clusterStorage:   clusterStorage,
+  asyncSafe:        asyncSafe,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
