@@ -1976,212 +1976,6 @@ function testWebSocketFrames() {
   check("FrameParser: rejects oversized frame", threwTooLarge);
 }
 
-async function testWebSocketH2() {
-  var http2 = require("http2");
-  var ws = b.websocket;
-
-  // h2c server with Extended CONNECT advertised. Per RFC 8441, the
-  // server MUST send SETTINGS_ENABLE_CONNECT_PROTOCOL=1 before clients
-  // can use :method=CONNECT, :protocol=websocket.
-  var server = http2.createServer({
-    settings: { enableConnectProtocol: true },
-  });
-
-  server.on("stream", function (stream, headers) {
-    if (headers[":method"] === "CONNECT" && headers[":protocol"] === "websocket") {
-      var conn = ws.handleExtendedConnect(stream, headers, { closeGraceMs: 50 });
-      if (conn) {
-        conn.on("message", function (data, isBinary) {
-          conn.send(isBinary ? data : "h2-echo:" + data);
-        });
-      }
-    } else {
-      stream.respond({ ":status": 404 });
-      stream.end();
-    }
-  });
-
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
-
-  try {
-    // Use Node's h2 client to send the Extended CONNECT.
-    var client = http2.connect("http://127.0.0.1:" + port);
-    await new Promise(function (resolve, reject) {
-      client.once("connect", resolve);
-      client.once("error", reject);
-    });
-
-    // Wait for server's SETTINGS to arrive — the client cannot issue
-    // Extended CONNECT until it knows the server supports it.
-    // h2 SETTINGS handshake is automatic, but `client.remoteSettings`
-    // is populated after the first SETTINGS frame.
-    await new Promise(function (resolve) {
-      if (client.remoteSettings && client.remoteSettings.enableConnectProtocol) return resolve();
-      client.once("remoteSettings", resolve);
-    });
-    check("h2 WebSocket: server advertises enableConnectProtocol",
-          client.remoteSettings.enableConnectProtocol === true);
-
-    // Issue the Extended CONNECT request.
-    var stream = client.request({
-      ":method":   "CONNECT",
-      ":protocol": "websocket",
-      ":path":     "/",
-      ":scheme":   "http",
-      ":authority": "127.0.0.1:" + port,
-    });
-
-    // Wait for response headers — should be :status 200.
-    var responseHeaders = await new Promise(function (resolve, reject) {
-      stream.once("response", resolve);
-      stream.once("error", reject);
-    });
-    check("h2 WebSocket: server responds 200 (not 101)",
-          responseHeaders[":status"] === 200);
-
-    // Send a WebSocket frame (UNMASKED — h2 mode forbids masking).
-    var clientFrame = ws.serializeFrame(ws.OPCODE_TEXT, Buffer.from("hello-h2", "utf8"));
-    // Default mask=false, which is what we want for h2.
-    stream.write(clientFrame);
-
-    // Read response frames.
-    var parser = new ws.FrameParser({ maxFrameBytes: 64 * 1024 });
-    var echoFrames = await new Promise(function (resolve, reject) {
-      var collected = [];
-      stream.on("data", function (chunk) {
-        try {
-          var fs = parser.push(chunk);
-          for (var i = 0; i < fs.length; i++) collected.push(fs[i]);
-          if (collected.length > 0) resolve(collected);
-        } catch (e) { reject(e); }
-      });
-      stream.on("error", reject);
-    });
-
-    check("h2 WebSocket: server echoed text frame",
-          echoFrames[0].payload.toString("utf8") === "h2-echo:hello-h2");
-    check("h2 WebSocket: server frame unmasked (h2 rule)",
-          echoFrames[0].masked === false);
-
-    // Close the WebSocket cleanly.
-    var closePayload = Buffer.alloc(2);
-    closePayload.writeUInt16BE(1000, 0);
-    var clientClose = ws.serializeFrame(ws.OPCODE_CLOSE, closePayload);
-    stream.write(clientClose);
-
-    // Brief settle for the stream-end signal — closeGraceMs:50 on the
-    // server keeps this short. Capped at 200ms.
-    await new Promise(function (resolve) {
-      stream.once("close", resolve);
-      setTimeout(resolve, 200);
-    });
-
-    client.close();
-  } finally {
-    server.close();
-  }
-}
-
-async function testRouterWsH1Basic() {
-  var net = require("net");
-  var ws = b.websocket;
-
-  var router = new b.router.Router();
-  var receivedMessages = [];
-  router.ws("/realtime", function (conn, _req) {
-    conn.on("message", function (data, isBinary) {
-      receivedMessages.push({ data: isBinary ? data : data.toString(), isBinary: isBinary });
-      conn.send(isBinary ? data : "router-echo:" + data);
-    });
-  }, { origins: "*", closeGraceMs: 50 });
-
-  // Listen on a random port (no TLS — h1 only).
-  var server = await new Promise(function (resolve) {
-    var s = router.listen(0, function () { resolve(s); }, null, "127.0.0.1");
-  });
-  var port = server.address().port;
-
-  try {
-    var client = net.connect(port, "127.0.0.1");
-    await new Promise(function (r) { client.once("connect", r); });
-
-    var key = require("crypto").randomBytes(16).toString("base64");
-    client.write(
-      "GET /realtime HTTP/1.1\r\n" +
-      "Host: 127.0.0.1:" + port + "\r\n" +
-      "Upgrade: websocket\r\n" +
-      "Connection: Upgrade\r\n" +
-      "Sec-WebSocket-Key: " + key + "\r\n" +
-      "Sec-WebSocket-Version: 13\r\n" +
-      "\r\n"
-    );
-
-    var responseBuf = await _readUntil(client, "\r\n\r\n");
-    check("router.ws h1: 101 Switching Protocols",
-          responseBuf.toString("utf8").indexOf("HTTP/1.1 101") === 0);
-
-    var clientFrame = ws.serializeFrame(ws.OPCODE_TEXT,
-      Buffer.from("via-router", "utf8"), { mask: true });
-    client.write(clientFrame);
-
-    var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
-    var echoFrames = [];
-    while (echoFrames.length === 0) {
-      var more = await _readSome(client);
-      echoFrames = parser.push(more);
-    }
-    check("router.ws h1: handler echoed message",
-          echoFrames[0].payload.toString("utf8") === "router-echo:via-router");
-    check("router.ws h1: handler received the message",
-          receivedMessages.length === 1 && receivedMessages[0].data === "via-router");
-
-    client.destroy();
-  } finally {
-    server.close();
-  }
-}
-
-async function testRouterWsH2OnlyRefusesH1() {
-  var net = require("net");
-
-  var router = new b.router.Router();
-  router.ws("/realtime", function (_conn) { /* never reached */ },
-    { origins: "*", transport: "h2-only" });
-
-  var server = await new Promise(function (resolve) {
-    var s = router.listen(0, function () { resolve(s); }, null, "127.0.0.1");
-  });
-  var port = server.address().port;
-
-  try {
-    var client = net.connect(port, "127.0.0.1");
-    await new Promise(function (r) { client.once("connect", r); });
-
-    var key = require("crypto").randomBytes(16).toString("base64");
-    client.write(
-      "GET /realtime HTTP/1.1\r\n" +
-      "Host: 127.0.0.1:" + port + "\r\n" +
-      "Upgrade: websocket\r\n" +
-      "Connection: Upgrade\r\n" +
-      "Sec-WebSocket-Key: " + key + "\r\n" +
-      "Sec-WebSocket-Version: 13\r\n" +
-      "\r\n"
-    );
-
-    var responseBuf = await _readUntil(client, "\r\n\r\n");
-    var responseStr = responseBuf.toString("utf8");
-    check("router.ws h2-only: returns 426",
-          responseStr.indexOf("HTTP/1.1 426") === 0);
-    check("router.ws h2-only: advisory Upgrade: h2c header",
-          /Upgrade: h2c/i.test(responseStr));
-
-    client.destroy();
-  } finally {
-    server.close();
-  }
-}
-
 function testRouterWsValidation() {
   var router = new b.router.Router();
 
@@ -2210,69 +2004,6 @@ function testRouterWsValidation() {
   check("router.ws: accepts auto / h1-only / h2-only", ok);
   check("router.ws: registered routes counted",
         router._wsRoutes.size === 3);
-}
-
-async function testWebSocketH2RejectsMaskedFrame() {
-  // Spec compliance check: h2 WebSocket MUST refuse masked frames
-  // (opposite of h1). Verify the server closes the connection with
-  // protocol-error code when the client incorrectly masks.
-  var http2 = require("http2");
-  var ws = b.websocket;
-
-  var connSeen = null;
-  var server = http2.createServer({ settings: { enableConnectProtocol: true } });
-  server.on("stream", function (stream, headers) {
-    if (headers[":method"] === "CONNECT" && headers[":protocol"] === "websocket") {
-      connSeen = ws.handleExtendedConnect(stream, headers, { closeGraceMs: 50 });
-    }
-  });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
-
-  try {
-    var client = http2.connect("http://127.0.0.1:" + port);
-    await new Promise(function (resolve, reject) { client.once("connect", resolve); client.once("error", reject); });
-    await new Promise(function (resolve) {
-      if (client.remoteSettings && client.remoteSettings.enableConnectProtocol) return resolve();
-      client.once("remoteSettings", resolve);
-    });
-
-    var stream = client.request({
-      ":method":   "CONNECT",
-      ":protocol": "websocket",
-      ":path":     "/",
-      ":scheme":   "http",
-      ":authority": "127.0.0.1:" + port,
-    });
-    await new Promise(function (resolve, reject) { stream.once("response", resolve); stream.once("error", reject); });
-
-    // Send a MASKED frame — illegal in h2 mode.
-    var maskedFrame = ws.serializeFrame(ws.OPCODE_TEXT, Buffer.from("nope", "utf8"), { mask: true });
-    stream.write(maskedFrame);
-
-    // Server should respond with a close frame (code 1002) and end the stream.
-    var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
-    var closeSeen = await new Promise(function (resolve) {
-      var collected = [];
-      stream.on("data", function (chunk) {
-        try {
-          var fs = parser.push(chunk);
-          collected = collected.concat(fs);
-          var closeFrame = collected.find(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
-          if (closeFrame) resolve(closeFrame);
-        } catch (_e) { /* parser may also error — that's a server send-and-destroy scenario */ }
-      });
-      stream.once("close", function () { resolve(null); });
-      setTimeout(function () { resolve(null); }, 500);
-    });
-
-    check("h2 WebSocket: masked client frame rejected with close",
-          closeSeen !== null && closeSeen.payload.readUInt16BE(0) === ws.CLOSE_PROTOCOL_ERROR);
-
-    client.close();
-  } finally {
-    server.close();
-  }
 }
 
 async function testWebSocketConnection() {
@@ -2993,15 +2724,12 @@ async function run() {
   await testHttpClientH2ErrorStatus();
   await testHttpClientH2Multiplex();
   await testHttpClientH2Stream();
-  // websocket primitive (RFC 6455 + RFC 8441)
+  // websocket primitive (RFC 6455 + RFC 8441) — fixture-needing
+  // tests (h2c suite + router suite) live in module.exports.groups[]
+  // so each group's setup runs once and per-test timing is reported.
   testWebSocketHandshake();
   testWebSocketFrames();
   await testWebSocketConnection();
-  await testWebSocketH2();
-  await testWebSocketH2RejectsMaskedFrame();
-  // router.ws integration (covers h1 path, h2-only refusal, validation)
-  await testRouterWsH1Basic();
-  await testRouterWsH2OnlyRefusesH1();
   testRouterWsValidation();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
@@ -3090,10 +2818,6 @@ module.exports = {
   testWebSocketHandshake:                    testWebSocketHandshake,
   testWebSocketFrames:                       testWebSocketFrames,
   testWebSocketConnection:                   testWebSocketConnection,
-  testWebSocketH2:                           testWebSocketH2,
-  testWebSocketH2RejectsMaskedFrame:         testWebSocketH2RejectsMaskedFrame,
-  testRouterWsH1Basic:                       testRouterWsH1Basic,
-  testRouterWsH2OnlyRefusesH1:               testRouterWsH2OnlyRefusesH1,
   testRouterWsValidation:                    testRouterWsValidation,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
@@ -3124,4 +2848,236 @@ module.exports = {
   testEnvParseSecurityRejections:            testEnvParseSecurityRejections,
   testEnvReadVar:                            testEnvReadVar,
   testRedact:                                testRedact,
+
+  // ---- Fixture-aware groups ----
+  //
+  // Each group has setup (runs once) + tests (run sequentially against
+  // the shared context) + teardown. Smoke runner reports per-test
+  // timing for drift detection. Tests stay individually named so
+  // failure attribution is "Layer 0 / <group> / <test>".
+  groups: [
+    {
+      name: "websocket-h2c",
+      setup: async function () {
+        var http2 = require("http2");
+        var ws = b.websocket;
+        var server = http2.createServer({ settings: { enableConnectProtocol: true } });
+        server.on("stream", function (stream, headers) {
+          if (headers[":method"] !== "CONNECT" || headers[":protocol"] !== "websocket") {
+            try { stream.respond({ ":status": 404 }); stream.end(); } catch (_e) {}
+            return;
+          }
+          var conn = ws.handleExtendedConnect(stream, headers, { closeGraceMs: 50 });
+          if (!conn) return;
+          if (headers[":path"] === "/echo") {
+            conn.on("message", function (data, isBinary) {
+              conn.send(isBinary ? data : "h2-echo:" + data);
+            });
+          }
+          // /strict path: no message handler — masked-frame rejection
+          // path closes the connection on its own.
+        });
+        await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+        var port = server.address().port;
+        // Open one h2 client up front; reuse across the group's tests
+        // so each test pays only its own request RTT, not the
+        // connect+SETTINGS handshake overhead.
+        var client = http2.connect("http://127.0.0.1:" + port);
+        await new Promise(function (resolve, reject) {
+          client.once("connect", resolve);
+          client.once("error", reject);
+        });
+        await new Promise(function (resolve) {
+          if (client.remoteSettings && client.remoteSettings.enableConnectProtocol) return resolve();
+          client.once("remoteSettings", resolve);
+        });
+        return { server: server, client: client, port: port };
+      },
+      teardown: async function (ctx) {
+        if (!ctx) return;
+        try { ctx.client.close(); } catch (_e) {}
+        try { ctx.server.close(); } catch (_e) {}
+      },
+      tests: [
+        {
+          name: "advertises enableConnectProtocol",
+          run: async function (ctx) {
+            check("h2 WebSocket: server advertises enableConnectProtocol",
+                  ctx.client.remoteSettings.enableConnectProtocol === true);
+          },
+        },
+        {
+          name: "echo round-trip",
+          run: async function (ctx) {
+            var ws = b.websocket;
+            var stream = ctx.client.request({
+              ":method":   "CONNECT",
+              ":protocol": "websocket",
+              ":path":     "/echo",
+              ":scheme":   "http",
+              ":authority": "127.0.0.1:" + ctx.port,
+            });
+            var responseHeaders = await new Promise(function (resolve, reject) {
+              stream.once("response", resolve);
+              stream.once("error", reject);
+            });
+            check("h2 WebSocket: server responds 200 (not 101)",
+                  responseHeaders[":status"] === 200);
+
+            stream.write(ws.serializeFrame(ws.OPCODE_TEXT, Buffer.from("hello-h2", "utf8")));
+
+            var parser = new ws.FrameParser({ maxFrameBytes: 64 * 1024 });
+            var echoFrames = await new Promise(function (resolve, reject) {
+              var collected = [];
+              stream.on("data", function (chunk) {
+                try {
+                  var fs = parser.push(chunk);
+                  for (var i = 0; i < fs.length; i++) collected.push(fs[i]);
+                  if (collected.length > 0) resolve(collected);
+                } catch (e) { reject(e); }
+              });
+              stream.on("error", reject);
+            });
+            check("h2 WebSocket: server echoed text frame",
+                  echoFrames[0].payload.toString("utf8") === "h2-echo:hello-h2");
+            check("h2 WebSocket: server frame unmasked (h2 rule)",
+                  echoFrames[0].masked === false);
+
+            // Clean close on this stream only — group fixture stays alive.
+            var closePayload = Buffer.alloc(2);
+            closePayload.writeUInt16BE(1000, 0);
+            stream.write(ws.serializeFrame(ws.OPCODE_CLOSE, closePayload));
+            await new Promise(function (resolve) {
+              stream.once("close", resolve);
+              setTimeout(resolve, 200);
+            });
+          },
+        },
+        {
+          name: "rejects masked client frame",
+          run: async function (ctx) {
+            var ws = b.websocket;
+            var stream = ctx.client.request({
+              ":method":   "CONNECT",
+              ":protocol": "websocket",
+              ":path":     "/strict",
+              ":scheme":   "http",
+              ":authority": "127.0.0.1:" + ctx.port,
+            });
+            await new Promise(function (resolve, reject) {
+              stream.once("response", resolve);
+              stream.once("error", reject);
+            });
+            stream.write(ws.serializeFrame(ws.OPCODE_TEXT, Buffer.from("nope", "utf8"), { mask: true }));
+
+            var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
+            var closeSeen = await new Promise(function (resolve) {
+              var collected = [];
+              stream.on("data", function (chunk) {
+                try {
+                  var fs = parser.push(chunk);
+                  collected = collected.concat(fs);
+                  var closeFrame = collected.find(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
+                  if (closeFrame) resolve(closeFrame);
+                } catch (_e) { /* server send-and-destroy */ }
+              });
+              stream.once("close", function () { resolve(null); });
+              setTimeout(function () { resolve(null); }, 500);
+            });
+            check("h2 WebSocket: masked client frame rejected with close",
+                  closeSeen !== null && closeSeen.payload.readUInt16BE(0) === ws.CLOSE_PROTOCOL_ERROR);
+          },
+        },
+      ],
+    },
+    {
+      name: "websocket-router-h1",
+      setup: async function () {
+        var router = new b.router.Router();
+        var receivedMessages = [];
+        router.ws("/realtime", function (conn, _req) {
+          conn.on("message", function (data, isBinary) {
+            receivedMessages.push({ data: isBinary ? data : data.toString(), isBinary: isBinary });
+            conn.send(isBinary ? data : "router-echo:" + data);
+          });
+        }, { origins: "*", closeGraceMs: 50 });
+        router.ws("/h2only", function (_conn) { /* never reached on h1 */ },
+          { origins: "*", transport: "h2-only" });
+        var server = await new Promise(function (resolve) {
+          var s = router.listen(0, function () { resolve(s); }, null, "127.0.0.1");
+        });
+        return {
+          router: router,
+          server: server,
+          port: server.address().port,
+          receivedMessages: receivedMessages,
+        };
+      },
+      teardown: async function (ctx) {
+        if (ctx && ctx.server) ctx.server.close();
+      },
+      tests: [
+        {
+          name: "auto path: 101 + echo round-trip",
+          run: async function (ctx) {
+            var net = require("net");
+            var ws = b.websocket;
+            var client = net.connect(ctx.port, "127.0.0.1");
+            await new Promise(function (r) { client.once("connect", r); });
+            var key = require("crypto").randomBytes(16).toString("base64");
+            client.write(
+              "GET /realtime HTTP/1.1\r\n" +
+              "Host: 127.0.0.1:" + ctx.port + "\r\n" +
+              "Upgrade: websocket\r\n" +
+              "Connection: Upgrade\r\n" +
+              "Sec-WebSocket-Key: " + key + "\r\n" +
+              "Sec-WebSocket-Version: 13\r\n" +
+              "\r\n"
+            );
+            var responseBuf = await _readUntil(client, "\r\n\r\n");
+            check("router.ws h1: 101 Switching Protocols",
+                  responseBuf.toString("utf8").indexOf("HTTP/1.1 101") === 0);
+            client.write(ws.serializeFrame(ws.OPCODE_TEXT,
+              Buffer.from("via-router", "utf8"), { mask: true }));
+            var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
+            var echoFrames = [];
+            while (echoFrames.length === 0) {
+              var more = await _readSome(client);
+              echoFrames = parser.push(more);
+            }
+            check("router.ws h1: handler echoed message",
+                  echoFrames[0].payload.toString("utf8") === "router-echo:via-router");
+            check("router.ws h1: handler received the message",
+                  ctx.receivedMessages.length === 1 && ctx.receivedMessages[0].data === "via-router");
+            client.destroy();
+          },
+        },
+        {
+          name: "h2-only path: 426 Upgrade Required",
+          run: async function (ctx) {
+            var net = require("net");
+            var client = net.connect(ctx.port, "127.0.0.1");
+            await new Promise(function (r) { client.once("connect", r); });
+            var key = require("crypto").randomBytes(16).toString("base64");
+            client.write(
+              "GET /h2only HTTP/1.1\r\n" +
+              "Host: 127.0.0.1:" + ctx.port + "\r\n" +
+              "Upgrade: websocket\r\n" +
+              "Connection: Upgrade\r\n" +
+              "Sec-WebSocket-Key: " + key + "\r\n" +
+              "Sec-WebSocket-Version: 13\r\n" +
+              "\r\n"
+            );
+            var responseBuf = await _readUntil(client, "\r\n\r\n");
+            var responseStr = responseBuf.toString("utf8");
+            check("router.ws h2-only: returns 426",
+                  responseStr.indexOf("HTTP/1.1 426") === 0);
+            check("router.ws h2-only: advisory Upgrade: h2c header",
+                  /Upgrade: h2c/i.test(responseStr));
+            client.destroy();
+          },
+        },
+      ],
+    },
+  ],
 };
