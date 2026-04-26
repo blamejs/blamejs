@@ -3551,6 +3551,141 @@ function testTomlInlineTablesAndDottedKeys() {
   check("toml: dotted-key creates nested object",  doc.name.first === "Tom" && doc.name.last === "Preston-Werner");
 }
 
+function testYamlBasic() {
+  var src =
+    "title: blamejs\n" +
+    "version: 0.1.6\n" +
+    "active: true\n" +
+    "disabled: false\n" +
+    "answer: 42\n" +
+    "ratio: 3.14\n" +
+    "absent: null\n" +
+    "implicit_null: ~\n" +
+    "list:\n" +
+    "  - a\n" +
+    "  - b\n" +
+    "  - c\n" +
+    "nested:\n" +
+    "  host: localhost\n" +
+    "  port: 8080\n" +
+    "  tls:\n" +
+    "    cert: /etc/ssl/cert.pem\n" +
+    "flow_seq: [1, 2, 3]\n" +
+    "flow_map: { x: 1, y: 2 }\n";
+  var doc = b.parsers.yaml.parse(src);
+  check("yaml: string scalar",                     doc.title === "blamejs");
+  check("yaml: version string (mixed digits/dots)", doc.version === "0.1.6" || doc.version === 0.1);
+  check("yaml: bool true",                         doc.active === true);
+  check("yaml: bool false",                        doc.disabled === false);
+  check("yaml: integer",                           doc.answer === 42);
+  check("yaml: float",                             Math.abs(doc.ratio - 3.14) < 1e-9);
+  check("yaml: explicit null",                     doc.absent === null);
+  check("yaml: tilde null",                        doc.implicit_null === null);
+  check("yaml: block sequence length",             doc.list.length === 3);
+  check("yaml: block sequence elements",           doc.list[0] === "a" && doc.list[2] === "c");
+  check("yaml: nested mapping host",               doc.nested.host === "localhost");
+  check("yaml: deeply-nested mapping",             doc.nested.tls.cert === "/etc/ssl/cert.pem");
+  check("yaml: flow sequence",                     Array.isArray(doc.flow_seq) && doc.flow_seq.length === 3);
+  check("yaml: flow mapping",                      doc.flow_map.x === 1 && doc.flow_map.y === 2);
+}
+
+function testYamlNorwayProblem() {
+  // YAML 1.1 parsed `NO` / `OFF` / `YES` as booleans — the "Norway
+  // problem". YAML 1.2 core schema uses ONLY true/True/TRUE/false/False/FALSE.
+  var doc = b.parsers.yaml.parse("country: NO\nstate: ON\nflag: YES\n");
+  check("yaml: 'NO' is string (Norway problem fixed)", doc.country === "NO");
+  check("yaml: 'ON' is string",                          doc.state === "ON");
+  check("yaml: 'YES' is string",                         doc.flag === "YES");
+}
+
+function testYamlBlockScalars() {
+  var literal = b.parsers.yaml.parse(
+    "msg: |\n" +
+    "  line one\n" +
+    "  line two\n"
+  );
+  check("yaml: literal block scalar preserves newlines",  literal.msg === "line one\nline two\n");
+
+  var folded = b.parsers.yaml.parse(
+    "msg: >\n" +
+    "  paragraph one\n" +
+    "  continues here\n" +
+    "\n" +
+    "  paragraph two\n"
+  );
+  check("yaml: folded block scalar collapses lines",
+        folded.msg === "paragraph one continues here\nparagraph two\n");
+
+  var stripped = b.parsers.yaml.parse(
+    "msg: |-\n" +
+    "  no trailing newline"
+  );
+  check("yaml: literal-strip removes trailing newline",  stripped.msg === "no trailing newline");
+}
+
+function testYamlQuotedStrings() {
+  var doc = b.parsers.yaml.parse(
+    "double: \"hello\\nworld\"\n" +
+    "single: 'literal \\n stays'\n" +
+    "embedded: 'it''s great'\n"
+  );
+  check("yaml: double-quoted decodes \\n",          doc.double === "hello\nworld");
+  check("yaml: single-quoted preserves backslash",  doc.single === "literal \\n stays");
+  check("yaml: single-quoted '' becomes apostrophe", doc.embedded === "it's great");
+}
+
+function testYamlSecurityRejections() {
+  var threwAnchor = false;
+  try { b.parsers.yaml.parse("a: &anchor 1\nb: *anchor"); }
+  catch (e) { threwAnchor = e.code === "yaml/anchors-banned" || e.code === "yaml/aliases-banned"; }
+  check("yaml: anchors/aliases rejected",          threwAnchor);
+
+  var threwTag = false;
+  try { b.parsers.yaml.parse("a: !!str 42"); }
+  catch (e) { threwTag = e.code === "yaml/tags-banned"; }
+  check("yaml: !!tag rejected",                    threwTag);
+
+  var threwDirective = false;
+  try { b.parsers.yaml.parse("%YAML 1.2\n---\nfoo: bar"); }
+  catch (e) { threwDirective = e.code === "yaml/directives-banned"; }
+  check("yaml: %YAML directive rejected",          threwDirective);
+
+  var threwMultiDoc = false;
+  try { b.parsers.yaml.parse("a: 1\n---\nb: 2"); }
+  catch (e) { threwMultiDoc = e.code === "yaml/multi-document"; }
+  check("yaml: multi-document streams rejected",   threwMultiDoc);
+
+  var threwTab = false;
+  try { b.parsers.yaml.parse("a:\n\tb: 1"); }
+  catch (e) { threwTab = e.code === "yaml/tab-indent"; }
+  check("yaml: tab in indent rejected",            threwTab);
+
+  var threwProto = false;
+  try { b.parsers.yaml.parse("__proto__: pwn"); }
+  catch (e) { threwProto = e.code === "yaml/poisoned-key"; }
+  check("yaml: __proto__ rejected",                threwProto);
+
+  var threwMerge = false;
+  try { b.parsers.yaml.parse("base: { a: 1 }\nderived:\n  <<: base\n  b: 2"); }
+  catch (e) { threwMerge = e.code === "yaml/merge-key-banned"; }
+  check("yaml: merge key '<<' rejected",           threwMerge);
+
+  var threwDup = false;
+  try { b.parsers.yaml.parse("a: 1\na: 2"); }
+  catch (e) { threwDup = e.code === "yaml/duplicate-key"; }
+  check("yaml: duplicate key rejected",            threwDup);
+
+  var threwSize = false;
+  try { b.parsers.yaml.parse("a: \"" + "x".repeat(2000) + "\"", { maxBytes: 1000 }); }
+  catch (e) { threwSize = e.code === "yaml/too-large"; }
+  check("yaml: maxBytes enforced",                 threwSize);
+
+  var threwUnterm = false;
+  try { b.parsers.yaml.parse("a: \"unterminated"); }
+  catch (e) { threwUnterm = !!e.isYamlSafeError; }
+  check("yaml: unterminated string rejected",      threwUnterm);
+}
+
 function testTomlSecurityRejections() {
   // Prototype pollution via dotted key
   var threwProto = false;
@@ -4361,6 +4496,11 @@ async function testClusterInitAndRequireLeader() {
   testTomlTablesAndArrays();
   testTomlInlineTablesAndDottedKeys();
   testTomlSecurityRejections();
+  testYamlBasic();
+  testYamlNorwayProblem();
+  testYamlBlockScalars();
+  testYamlQuotedStrings();
+  testYamlSecurityRejections();
   // Cluster coordination — leader election + fencing tokens
   await testClusterSingleNodeFallback();
   await testClusterProviderAcquireAndRenew();
