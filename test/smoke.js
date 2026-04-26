@@ -323,6 +323,8 @@ async function setupTestDb(tmpDir, schemaOverrides) {
   b.vault._resetForTest();
   b.db._resetForTest();
   await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+  // Audit signing also runs in plaintext mode for test speed (skips Argon2)
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
   await b.db.init({
     dataDir:  tmpDir,
     atRest:   "plain",
@@ -1331,6 +1333,179 @@ async function testBeginTrace() {
 }
 
 // =====================================================================
+// v0.0.8 — tamper-proofing (signed checkpoints, rollback detection)
+// =====================================================================
+
+async function testCheckpointSign() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ckpt-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    // auditSign module surface
+    check("auditSign namespace present",                typeof b.auditSign === "object");
+    check("auditSign.getPublicKey is a function",       typeof b.auditSign.getPublicKey === "function");
+    check("auditSign.getPublicKeyFingerprint works",
+          typeof b.auditSign.getPublicKeyFingerprint() === "string" &&
+          b.auditSign.getPublicKeyFingerprint().length === 128);
+
+    // audit-sign keypair file written
+    check("audit-sign.key file exists in plaintext mode",  fs.existsSync(path.join(tmpDir, "audit-sign.key")));
+
+    // Empty audit_log → checkpoint returns null (nothing to anchor)
+    var emptyResult = b.audit.checkpoint();
+    check("checkpoint() on empty log returns null",     emptyResult === null);
+
+    // Record and checkpoint
+    b.audit.registerNamespace("test");
+    b.audit.record({ action: "test.event", outcome: "success" });
+    b.audit.record({ action: "test.event", outcome: "success" });
+    var ckpt = b.audit.checkpoint();
+    check("checkpoint() returns a checkpoint object",   ckpt && typeof ckpt._id === "string");
+    check("checkpoint anchors monotonic counter",       typeof ckpt.atMonotonicCounter === "number");
+    check("checkpoint includes pubkey fingerprint",
+          ckpt.publicKeyFingerprint === b.auditSign.getPublicKeyFingerprint());
+
+    // skipIfUnchanged: second call with no new audit activity returns null
+    var skipResult = b.audit.checkpoint({ skipIfUnchanged: true });
+    check("checkpoint(skipIfUnchanged) on unchanged log returns null", skipResult === null);
+
+    // After more activity, skipIfUnchanged anchors a new checkpoint
+    b.audit.record({ action: "test.event", outcome: "success" });
+    var freshCkpt = b.audit.checkpoint({ skipIfUnchanged: true });
+    check("skipIfUnchanged anchors when chain advances", freshCkpt !== null);
+    check("new checkpoint counter > prior checkpoint",   freshCkpt.atMonotonicCounter > ckpt.atMonotonicCounter);
+
+    // audit.tip sidecar written
+    var tipPath = path.join(tmpDir, "audit.tip");
+    check("audit.tip sidecar written",                  fs.existsSync(tipPath));
+    var tip = JSON.parse(fs.readFileSync(tipPath, "utf8"));
+    check("audit.tip records latest counter",           tip.atMonotonicCounter === freshCkpt.atMonotonicCounter);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testCheckpointVerify() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cverify-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+
+    // Empty case
+    var v0 = b.audit.verifyCheckpoints();
+    check("verifyCheckpoints empty case ok",            v0.ok === true && v0.checkpointsVerified === 0);
+
+    // Several events + checkpoints
+    for (var i = 0; i < 5; i++) {
+      b.audit.record({ action: "test.event", outcome: "success" });
+      b.audit.checkpoint();
+    }
+    var v1 = b.audit.verifyCheckpoints();
+    check("verifyCheckpoints ok across multiple anchors", v1.ok === true && v1.checkpointsVerified === 5);
+
+    // Adding more rows then a fresh checkpoint still verifies
+    b.audit.record({ action: "test.event", outcome: "success" });
+    b.audit.checkpoint();
+    var v2 = b.audit.verifyCheckpoints();
+    check("verifyCheckpoints ok after additional checkpoint", v2.ok === true && v2.checkpointsVerified === 6);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testCheckpointTamperDetect() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cdetect-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+    b.audit.record({ action: "test.event", outcome: "success" });
+    b.audit.checkpoint();
+    b.audit.record({ action: "test.event", outcome: "success" });
+    b.audit.record({ action: "test.event", outcome: "success" });
+    var anchorCkpt = b.audit.checkpoint();
+
+    // Tamper with the audit_log row that the checkpoint anchors. Drop the
+    // append-only triggers temporarily, recompute the chain hash so the
+    // per-row chain still verifies (simulating a privileged attacker with
+    // vault key access who's trying to rewrite history). The CHECKPOINT
+    // signature will still mismatch because the original rowHash was signed.
+    b.db.runSql("DROP TRIGGER IF EXISTS no_update_audit_log");
+    var origRow = b.db.prepare("SELECT * FROM audit_log WHERE monotonicCounter = ?").get(anchorCkpt.atMonotonicCounter);
+    // Change something innocuous + recompute rowHash so per-row chain holds
+    var tamperedFields = Object.assign({}, origRow);
+    tamperedFields.outcome = "denied";
+    var nonceBuf = Buffer.isBuffer(origRow.nonce) ? origRow.nonce : Buffer.from(origRow.nonce);
+    var fields = Object.assign({}, tamperedFields);
+    delete fields.prevHash; delete fields.rowHash; delete fields.nonce;
+    var newRowHash = b.auditChain.computeRowHash(origRow.prevHash, fields, nonceBuf);
+    b.db.prepare("UPDATE audit_log SET outcome = ?, rowHash = ? WHERE monotonicCounter = ?")
+        .run("denied", newRowHash, anchorCkpt.atMonotonicCounter);
+    b.db.runSql("CREATE TRIGGER IF NOT EXISTS no_update_audit_log BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only — UPDATE prohibited'); END");
+
+    // Per-row chain may still pass IF attacker also fixed the next row's
+    // prevHash + rowHash recursively. They didn't here; verifyChain might
+    // catch it at the next row. But the CHECKPOINT layer catches it
+    // unconditionally — anchored rowHash no longer matches what's on disk.
+    var ckptResult = b.audit.verifyCheckpoints();
+    check("checkpoint verify catches anchored-rowHash tampering",  ckptResult.ok === false);
+    check("break reason mentions rowHash mismatch",
+          /rowHash mismatch|tampered/i.test(ckptResult.reason || ""));
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testRollbackDetection() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rollback-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+    for (var i = 0; i < 3; i++) {
+      b.audit.record({ action: "test.event", outcome: "success" });
+    }
+    b.audit.checkpoint();
+
+    // audit.tip should now record counter >= 3
+    var tipPath = path.join(tmpDir, "audit.tip");
+    check("audit.tip exists post-checkpoint",   fs.existsSync(tipPath));
+    var tip = JSON.parse(fs.readFileSync(tipPath, "utf8"));
+    check("audit.tip records non-zero counter", tip.atMonotonicCounter >= 3);
+
+    // Simulate rollback: write an audit.tip claiming a higher counter than
+    // currently exists in DB. On next boot, db.init() should detect and
+    // refuse — but we can't easily test process.exit() in-process. Verify
+    // the rollback-detection function is wired by inspecting that an
+    // "out of sync" tip would be detected. Use the public surface:
+    // close, write tampered tip, reopen.
+    b.db.close();
+    fs.writeFileSync(tipPath, JSON.stringify({
+      atMonotonicCounter:   999999,
+      atRowHash:            "deadbeef".repeat(16),
+      anchoredAt:           Date.now(),
+      checkpointId:         "fake",
+      publicKeyFingerprint: "fake",
+      version:              1,
+    }, null, 2));
+
+    // Reopen — should detect rollback and exit. We fork a child to capture
+    // the exit code.
+    var spawnSync = require("child_process").spawnSync;
+    var childScript = "var b = require('" + path.resolve("../blamejs/index.js").replace(/\\/g, "/") + "');\n" +
+      "process.env.BLAMEJS_SKIP_NTP_CHECK = '1';\n" +
+      "process.env.BLAMEJS_AUDIT_SIGNING_MODE = 'plaintext';\n" +
+      "(async function () {\n" +
+      "  await b.vault.init({ dataDir: " + JSON.stringify(tmpDir) + ", mode: 'plaintext' });\n" +
+      "  await b.db.init({ dataDir: " + JSON.stringify(tmpDir) + ", atRest: 'plain', auditSigning: { mode: 'plaintext' }, schema: [] });\n" +
+      "})().catch(function (e) { console.error(e.message); process.exit(99); });\n";
+    var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
+    check("rollback boot exits with code 1",                  result.status === 1);
+    check("rollback boot logs detection message",             /rollback detected/i.test(result.stderr || ""));
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -1615,6 +1790,11 @@ function testJsonFormats() {
   await testTableMetadata();
   await testAuditSelfLogging();
   await testBeginTrace();
+  // v0.0.8 tamper-proofing
+  await testCheckpointSign();
+  await testCheckpointVerify();
+  await testCheckpointTamperDetect();
+  await testRollbackDetection();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

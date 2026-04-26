@@ -32,6 +32,7 @@ var session = require("./lib/session");
 var storage = require("./lib/storage");
 var json = require("./lib/json-safe");
 var ntpCheck = require("./lib/ntp-check");
+var auditSign = require("./lib/audit-sign");
 
 module.exports = {
   crypto:           crypto,
@@ -44,6 +45,7 @@ module.exports = {
   fieldCrypto:      fieldCrypto,
   audit:            audit,
   auditChain:       auditChain,
+  auditSign:        auditSign,
   consent:          consent,
   subject:          subject,
   session:          session,
