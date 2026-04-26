@@ -7,8 +7,8 @@
  * Public surface lives on the exported object: crypto, router, vault,
  * db, fieldCrypto, audit, consent, subject, session, storage, queue,
  * objectStore, externalDb, logStream, middleware, parsers, atomic-file,
- * ntp-check, redact, ha (high-availability coordination), and the
- * version-stable `constants` namespace.
+ * ntp-check, redact, cluster (leader election + write-side gates), and
+ * the version-stable `constants` namespace.
  *
  * See LICENSE (Apache-2.0) and NOTICE for vendored attribution.
  */
@@ -39,7 +39,7 @@ var externalDb = require("./lib/external-db");
 var middleware = require("./lib/middleware");
 var atomicFile = require("./lib/atomic-file");
 var parsers = require("./lib/parsers");
-var ha = require("./lib/ha");
+var cluster = require("./lib/cluster");
 
 module.exports = {
   crypto:           crypto,
@@ -66,7 +66,7 @@ module.exports = {
   middleware:       middleware,
   atomicFile:       atomicFile,
   parsers:          parsers,
-  ha:               ha,
+  cluster:          cluster,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,

@@ -3698,10 +3698,10 @@ function testJsonFormats() {
 }
 
 // =====================================================================
-// HA — leader election + fencing tokens
+// Cluster coordination — leader election + fencing tokens
 // =====================================================================
 
-// Real-SQL driver backed by node:sqlite — the HA provider's
+// Real-SQL driver backed by node:sqlite — the cluster provider's
 // `INSERT ... ON CONFLICT ... DO UPDATE WHERE ... RETURNING` syntax
 // can't be hand-stubbed cheaply, so use a real engine that supports it.
 function _makeSqliteDriver(dbPath) {
@@ -3728,21 +3728,21 @@ function _makeSqliteDriver(dbPath) {
   };
 }
 
-async function testHaSingleNodeFallback() {
-  // Without ha.init, the framework treats us as permanent leader.
-  b.ha._resetForTest();
-  check("ha.isLeader() true when not initialized",  b.ha.isLeader() === true);
-  check("ha.fencingToken() = 0 when not initialized", b.ha.fencingToken() === 0);
-  check("ha.currentNodeId() = single-node-local",   b.ha.currentNodeId() === "single-node-local");
+async function testClusterSingleNodeFallback() {
+  // Without cluster.init, the framework treats us as permanent leader.
+  b.cluster._resetForTest();
+  check("cluster.isLeader() true when not initialized",  b.cluster.isLeader() === true);
+  check("cluster.fencingToken() = 0 when not initialized", b.cluster.fencingToken() === 0);
+  check("cluster.currentNodeId() = single-node-local",   b.cluster.currentNodeId() === "single-node-local");
   // requireLeader is a no-op
   var threw = false;
-  try { b.ha.requireLeader(); } catch (_e) { threw = true; }
-  check("ha.requireLeader() does not throw on single-node", threw === false);
+  try { b.cluster.requireLeader(); } catch (_e) { threw = true; }
+  check("cluster.requireLeader() does not throw on single-node", threw === false);
 }
 
-async function testHaProviderAcquireAndRenew() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
-  var dbPath = path.join(tmpDir, "ha.db");
+async function testClusterProviderAcquireAndRenew() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-"));
+  var dbPath = path.join(tmpDir, "cluster.db");
   var driver = _makeSqliteDriver(dbPath);
   try {
     b.externalDb.init({
@@ -3750,7 +3750,7 @@ async function testHaProviderAcquireAndRenew() {
         "ops": { connect: driver.connect, query: driver.query, close: driver.close },
       },
     });
-    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var providerFactory = require(path.join(__dirname, "..", "lib", "cluster-provider-db"));
     var p = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
     await p.ensureSchema();
 
@@ -3779,9 +3779,9 @@ async function testHaProviderAcquireAndRenew() {
   }
 }
 
-async function testHaProviderTwoNodeContention() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
-  var dbPath = path.join(tmpDir, "ha.db");
+async function testClusterProviderTwoNodeContention() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-"));
+  var dbPath = path.join(tmpDir, "cluster.db");
   var driver = _makeSqliteDriver(dbPath);
   try {
     b.externalDb.init({
@@ -3789,7 +3789,7 @@ async function testHaProviderTwoNodeContention() {
         "ops": { connect: driver.connect, query: driver.query, close: driver.close },
       },
     });
-    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var providerFactory = require(path.join(__dirname, "..", "lib", "cluster-provider-db"));
     var pA = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
     var pB = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
     await pA.ensureSchema();
@@ -3809,9 +3809,9 @@ async function testHaProviderTwoNodeContention() {
   }
 }
 
-async function testHaProviderTakeoverAfterExpiry() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
-  var dbPath = path.join(tmpDir, "ha.db");
+async function testClusterProviderTakeoverAfterExpiry() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-"));
+  var dbPath = path.join(tmpDir, "cluster.db");
   var driver = _makeSqliteDriver(dbPath);
   try {
     b.externalDb.init({
@@ -3819,7 +3819,7 @@ async function testHaProviderTakeoverAfterExpiry() {
         "ops": { connect: driver.connect, query: driver.query, close: driver.close },
       },
     });
-    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var providerFactory = require(path.join(__dirname, "..", "lib", "cluster-provider-db"));
     var pA = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
     var pB = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
     await pA.ensureSchema();
@@ -3844,10 +3844,10 @@ async function testHaProviderTakeoverAfterExpiry() {
   }
 }
 
-async function testHaProviderRenewalRace() {
+async function testClusterProviderRenewalRace() {
   // After takeover, the old leader's renewLease must throw LEASE_LOST.
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
-  var dbPath = path.join(tmpDir, "ha.db");
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-"));
+  var dbPath = path.join(tmpDir, "cluster.db");
   var driver = _makeSqliteDriver(dbPath);
   try {
     b.externalDb.init({
@@ -3855,7 +3855,7 @@ async function testHaProviderRenewalRace() {
         "ops": { connect: driver.connect, query: driver.query, close: driver.close },
       },
     });
-    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var providerFactory = require(path.join(__dirname, "..", "lib", "cluster-provider-db"));
     var pA = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
     var pB = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
     await pA.ensureSchema();
@@ -3877,20 +3877,21 @@ async function testHaProviderRenewalRace() {
   }
 }
 
-// ----- HA write-gate test fixtures -----
+// ----- Cluster write-gate test fixtures -----
 //
 // Each gate test sets up the full framework (vault + db) for the
-// framework's own state, plus an external-db backend that HA uses for
-// leader-election coordination. We init HA, then immediately shut it
-// down — that flips the `terminated` state so isLeader() returns
-// false. Then we try framework writes and expect NotLeaderError.
+// framework's own state, plus an external-db backend that the cluster
+// module uses for leader-election coordination. We init cluster, then
+// immediately shut it down — that flips the `terminated` state so
+// isLeader() returns false. Then we try framework writes and expect
+// NotLeaderError.
 
-async function _setupHaGateFixture() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-gate-"));
-  // Reset HA first so setupTestDb's internal audit.checkpoint runs on
-  // the permanent-leader fallback. We re-init HA after the framework
-  // db is up.
-  b.ha._resetForTest();
+async function _setupClusterGateFixture() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-gate-"));
+  // Reset cluster first so setupTestDb's internal audit.checkpoint
+  // runs on the permanent-leader fallback. We re-init the cluster
+  // module after the framework db is up.
+  b.cluster._resetForTest();
   await setupTestDb(tmpDir);
 
   var dbPath = path.join(tmpDir, "ha-coord.db");
@@ -3900,16 +3901,16 @@ async function _setupHaGateFixture() {
       "ops": { connect: driver.connect, query: driver.query, close: driver.close },
     },
   });
-  await b.ha.init({
+  await b.cluster.init({
     nodeId:            "gate-test-node",
     externalDbBackend: "ops",
     dialect:           "sqlite",
     leaseTtl:          b.constants.TIME.seconds(30),
     heartbeatInterval: b.constants.TIME.seconds(10),
   });
-  // Become a follower by shutting HA down — terminated flag flips
+  // Become a follower by shutting cluster down — terminated flag flips
   // isLeader() to false without requiring a real takeover race.
-  await b.ha.shutdown();
+  await b.cluster.shutdown();
 
   return {
     tmpDir: tmpDir,
@@ -3941,8 +3942,8 @@ function _expectNotLeaderError(label, fn) {
   check(label + " — throws NotLeaderError", threw && threw.code === "NOT_LEADER");
 }
 
-async function testHaGatesAuditAndConsent() {
-  var fx = await _setupHaGateFixture();
+async function testClusterGatesAuditAndConsent() {
+  var fx = await _setupClusterGateFixture();
   try {
     _expectNotLeaderError("audit.record on follower", function () {
       b.audit.record({
@@ -3970,8 +3971,8 @@ async function testHaGatesAuditAndConsent() {
   }
 }
 
-async function testHaGatesSession() {
-  var fx = await _setupHaGateFixture();
+async function testClusterGatesSession() {
+  var fx = await _setupClusterGateFixture();
   try {
     _expectNotLeaderError("session.create on follower", function () {
       b.session.create({ userId: "u1" });
@@ -3987,8 +3988,8 @@ async function testHaGatesSession() {
   }
 }
 
-async function testHaGatesSubject() {
-  var fx = await _setupHaGateFixture();
+async function testClusterGatesSubject() {
+  var fx = await _setupClusterGateFixture();
   try {
     _expectNotLeaderError("subject.rectify on follower", function () {
       b.subject.rectify("subj-1", {
@@ -4012,8 +4013,8 @@ async function testHaGatesSubject() {
   }
 }
 
-async function testHaGatesQueue() {
-  var fx = await _setupHaGateFixture();
+async function testClusterGatesQueue() {
+  var fx = await _setupClusterGateFixture();
   try {
     b.queue.init({ backends: { "default": { protocol: "local" } } });
     var threwEnqueue = null;
@@ -4033,8 +4034,8 @@ async function testHaGatesQueue() {
   }
 }
 
-async function testHaGatesObjectStoreLocal() {
-  var fx = await _setupHaGateFixture();
+async function testClusterGatesObjectStoreLocal() {
+  var fx = await _setupClusterGateFixture();
   try {
     var localProto = require(path.join(__dirname, "..", "lib", "object-store-local"));
     var rootDir = path.join(fx.tmpDir, "obj");
@@ -4057,16 +4058,16 @@ async function testHaGatesObjectStoreLocal() {
     var threwGet = null;
     try { await backend.get("nope"); }
     catch (e) { threwGet = e; }
-    check("object-store-local.get not gated by HA",
+    check("object-store-local.get not gated by cluster",
           threwGet && threwGet.code === "NOT_FOUND");
   } finally {
     await fx.teardown();
   }
 }
 
-async function testHaInitAndRequireLeader() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
-  var dbPath = path.join(tmpDir, "ha.db");
+async function testClusterInitAndRequireLeader() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-"));
+  var dbPath = path.join(tmpDir, "cluster.db");
   var driver = _makeSqliteDriver(dbPath);
   try {
     b.externalDb.init({
@@ -4074,8 +4075,8 @@ async function testHaInitAndRequireLeader() {
         "ops": { connect: driver.connect, query: driver.query, close: driver.close },
       },
     });
-    b.ha._resetForTest();
-    await b.ha.init({
+    b.cluster._resetForTest();
+    await b.cluster.init({
       nodeId:            "test-node-1",
       externalDbBackend: "ops",
       dialect:           "sqlite",
@@ -4083,25 +4084,25 @@ async function testHaInitAndRequireLeader() {
       heartbeatInterval: b.constants.TIME.seconds(10),
     });
 
-    check("after init, isLeader() is true",              b.ha.isLeader() === true);
-    check("currentNodeId reflects config",               b.ha.currentNodeId() === "test-node-1");
-    check("fencingToken > 0 after init",                 b.ha.fencingToken() > 0);
+    check("after init, isLeader() is true",              b.cluster.isLeader() === true);
+    check("currentNodeId reflects config",               b.cluster.currentNodeId() === "test-node-1");
+    check("fencingToken > 0 after init",                 b.cluster.fencingToken() > 0);
 
     // requireLeader passes silently
     var threwOnLeader = false;
-    try { b.ha.requireLeader(); } catch (_e) { threwOnLeader = true; }
+    try { b.cluster.requireLeader(); } catch (_e) { threwOnLeader = true; }
     check("requireLeader does not throw on leader",      threwOnLeader === false);
 
-    var leader = await b.ha.currentLeader();
+    var leader = await b.cluster.currentLeader();
     check("currentLeader returns this node",             leader && leader.nodeId === "test-node-1");
 
     // Simulate becoming non-leader by manually clearing the lease (the
     // module's normal path for losing leadership is via a renewal race,
-    // already covered in testHaProviderRenewalRace).
-    await b.ha.shutdown();
-    check("after shutdown, isLeader() false",            b.ha.isLeader() === false);
+    // already covered in testClusterProviderRenewalRace).
+    await b.cluster.shutdown();
+    check("after shutdown, isLeader() false",            b.cluster.isLeader() === false);
     var threwOnFollower = null;
-    try { b.ha.requireLeader(); } catch (e) { threwOnFollower = e; }
+    try { b.cluster.requireLeader(); } catch (e) { threwOnFollower = e; }
     check("requireLeader throws when not leader",        threwOnFollower !== null);
     check("error is NotLeaderError",                     threwOnFollower &&
                                                           threwOnFollower.code === "NOT_LEADER");
@@ -4207,19 +4208,19 @@ async function testHaInitAndRequireLeader() {
   testXmlSecurityRejections();
   testCsvParse();
   testCsvFormulaInjection();
-  // HA — leader election + fencing tokens
-  await testHaSingleNodeFallback();
-  await testHaProviderAcquireAndRenew();
-  await testHaProviderTwoNodeContention();
-  await testHaProviderTakeoverAfterExpiry();
-  await testHaProviderRenewalRace();
-  await testHaInitAndRequireLeader();
-  // HA — write-side gates across framework subsystems
-  await testHaGatesAuditAndConsent();
-  await testHaGatesSession();
-  await testHaGatesSubject();
-  await testHaGatesQueue();
-  await testHaGatesObjectStoreLocal();
+  // Cluster coordination — leader election + fencing tokens
+  await testClusterSingleNodeFallback();
+  await testClusterProviderAcquireAndRenew();
+  await testClusterProviderTwoNodeContention();
+  await testClusterProviderTakeoverAfterExpiry();
+  await testClusterProviderRenewalRace();
+  await testClusterInitAndRequireLeader();
+  // Cluster — write-side gates across framework subsystems
+  await testClusterGatesAuditAndConsent();
+  await testClusterGatesSession();
+  await testClusterGatesSubject();
+  await testClusterGatesQueue();
+  await testClusterGatesObjectStoreLocal();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
