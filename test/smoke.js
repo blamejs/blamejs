@@ -3698,6 +3698,236 @@ function testJsonFormats() {
 }
 
 // =====================================================================
+// HA — leader election + fencing tokens
+// =====================================================================
+
+// Real-SQL driver backed by node:sqlite — the HA provider's
+// `INSERT ... ON CONFLICT ... DO UPDATE WHERE ... RETURNING` syntax
+// can't be hand-stubbed cheaply, so use a real engine that supports it.
+function _makeSqliteDriver(dbPath) {
+  var sqlite = require("node:sqlite");
+  var dbHandle = new sqlite.DatabaseSync(dbPath);
+  return {
+    connect: async function () { return { db: dbHandle }; },
+    query: async function (client, sql, params) {
+      params = params || [];
+      // SQLite uses ?-placeholders natively but accepts $N when you use
+      // named-param syntax; the provider uses $N. Translate.
+      var translated = sql.replace(/\$([0-9]+)/g, "?");
+      var stmt = client.db.prepare(translated);
+      var trimmed = sql.trim().toUpperCase();
+      if (trimmed.startsWith("SELECT") || /\sRETURNING\s/i.test(sql)) {
+        var rows = stmt.all.apply(stmt, params);
+        return { rows: rows, rowCount: rows.length };
+      }
+      var info = stmt.run.apply(stmt, params);
+      return { rows: [], rowCount: info.changes };
+    },
+    close: async function () { /* shared handle, closed by test teardown */ },
+    _close: function () { try { dbHandle.close(); } catch (_e) {} },
+  };
+}
+
+async function testHaSingleNodeFallback() {
+  // Without ha.init, the framework treats us as permanent leader.
+  b.ha._resetForTest();
+  check("ha.isLeader() true when not initialized",  b.ha.isLeader() === true);
+  check("ha.fencingToken() = 0 when not initialized", b.ha.fencingToken() === 0);
+  check("ha.currentNodeId() = single-node-local",   b.ha.currentNodeId() === "single-node-local");
+  // requireLeader is a no-op
+  var threw = false;
+  try { b.ha.requireLeader(); } catch (_e) { threw = true; }
+  check("ha.requireLeader() does not throw on single-node", threw === false);
+}
+
+async function testHaProviderAcquireAndRenew() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
+  var dbPath = path.join(tmpDir, "ha.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+      },
+    });
+    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var p = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    await p.ensureSchema();
+
+    var lease1 = await p.acquireLease("node-A", b.constants.TIME.seconds(30));
+    check("provider.acquireLease succeeds on empty DB",  lease1 !== null);
+    check("first lease has fencingToken = 1",            lease1.fencingToken === 1);
+    check("first lease records nodeId",                  lease1.nodeId === "node-A");
+    check("first lease has acquiredAt set",              typeof lease1.acquiredAt === "number");
+
+    var renewed = await p.renewLease(lease1);
+    check("renewLease returns updated lease",            renewed.leaseId === lease1.leaseId);
+    check("renewLease pushes expiresAt forward",         renewed.expiresAt >= lease1.expiresAt);
+    check("renewLease does NOT bump fencingToken",       renewed.fencingToken === 1);
+
+    var current = await p.currentLeader();
+    check("currentLeader returns us",                    current.nodeId === "node-A");
+    check("currentLeader fencingToken matches",          current.fencingToken === 1);
+
+    await p.releaseLease(renewed);
+    var afterRelease = await p.currentLeader();
+    check("currentLeader returns null after release",    afterRelease === null);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testHaProviderTwoNodeContention() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
+  var dbPath = path.join(tmpDir, "ha.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+      },
+    });
+    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var pA = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    var pB = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    await pA.ensureSchema();
+
+    var leaseA = await pA.acquireLease("node-A", b.constants.TIME.seconds(30));
+    check("node-A acquires lease",                       leaseA !== null);
+
+    var leaseB = await pB.acquireLease("node-B", b.constants.TIME.seconds(30));
+    check("node-B blocked while A holds non-expired",    leaseB === null);
+
+    var current = await pB.currentLeader();
+    check("node-B's currentLeader sees node-A",          current.nodeId === "node-A");
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testHaProviderTakeoverAfterExpiry() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
+  var dbPath = path.join(tmpDir, "ha.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+      },
+    });
+    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var pA = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    var pB = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    await pA.ensureSchema();
+
+    // Node A acquires with a tiny TTL — practically already expired by
+    // the time we attempt the takeover.
+    var leaseA = await pA.acquireLease("node-A", 50);
+    check("node-A acquired short-TTL lease",             leaseA !== null);
+    check("first acquire fencingToken = 1",              leaseA.fencingToken === 1);
+
+    // Wait past expiry (50ms TTL + buffer).
+    await new Promise(function (r) { setTimeout(r, 100); });
+
+    var leaseB = await pB.acquireLease("node-B", b.constants.TIME.seconds(30));
+    check("node-B steals expired lease",                 leaseB !== null);
+    check("takeover bumps fencingToken to 2",            leaseB.fencingToken === 2);
+    check("node-B is now recorded leader",               leaseB.nodeId === "node-B");
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testHaProviderRenewalRace() {
+  // After takeover, the old leader's renewLease must throw LEASE_LOST.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
+  var dbPath = path.join(tmpDir, "ha.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+      },
+    });
+    var providerFactory = require(path.join(__dirname, "..", "lib", "ha-provider-db"));
+    var pA = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    var pB = providerFactory.create({ externalDbBackend: "ops", dialect: "sqlite" });
+    await pA.ensureSchema();
+
+    var leaseA = await pA.acquireLease("node-A", 50);
+    await new Promise(function (r) { setTimeout(r, 100); });
+    var leaseB = await pB.acquireLease("node-B", b.constants.TIME.seconds(30));
+    check("takeover succeeded for race test",            leaseB !== null);
+
+    var threw = null;
+    try { await pA.renewLease(leaseA); }
+    catch (e) { threw = e; }
+    check("old leader's renewLease throws",              threw !== null);
+    check("error code is LEASE_LOST",                    threw && threw.code === "LEASE_LOST");
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testHaInitAndRequireLeader() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
+  var dbPath = path.join(tmpDir, "ha.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+      },
+    });
+    b.ha._resetForTest();
+    await b.ha.init({
+      nodeId:            "test-node-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    check("after init, isLeader() is true",              b.ha.isLeader() === true);
+    check("currentNodeId reflects config",               b.ha.currentNodeId() === "test-node-1");
+    check("fencingToken > 0 after init",                 b.ha.fencingToken() > 0);
+
+    // requireLeader passes silently
+    var threwOnLeader = false;
+    try { b.ha.requireLeader(); } catch (_e) { threwOnLeader = true; }
+    check("requireLeader does not throw on leader",      threwOnLeader === false);
+
+    var leader = await b.ha.currentLeader();
+    check("currentLeader returns this node",             leader && leader.nodeId === "test-node-1");
+
+    // Simulate becoming non-leader by manually clearing the lease (the
+    // module's normal path for losing leadership is via a renewal race,
+    // already covered in testHaProviderRenewalRace).
+    await b.ha.shutdown();
+    check("after shutdown, isLeader() false",            b.ha.isLeader() === false);
+    var threwOnFollower = null;
+    try { b.ha.requireLeader(); } catch (e) { threwOnFollower = e; }
+    check("requireLeader throws when not leader",        threwOnFollower !== null);
+    check("error is NotLeaderError",                     threwOnFollower &&
+                                                          threwOnFollower.code === "NOT_LEADER");
+    check("error has 503 statusCode",                    threwOnFollower &&
+                                                          threwOnFollower.statusCode === 503);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// =====================================================================
 // Run async tests
 // =====================================================================
 
@@ -3790,6 +4020,13 @@ function testJsonFormats() {
   testXmlSecurityRejections();
   testCsvParse();
   testCsvFormulaInjection();
+  // HA — leader election + fencing tokens
+  await testHaSingleNodeFallback();
+  await testHaProviderAcquireAndRenew();
+  await testHaProviderTwoNodeContention();
+  await testHaProviderTakeoverAfterExpiry();
+  await testHaProviderRenewalRace();
+  await testHaInitAndRequireLeader();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

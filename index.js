@@ -4,14 +4,11 @@
  *
  * The Node framework that owns its stack.
  *
- * v0.0.5 (Phase 1d-1 — session & storage local backend): adds DB-backed
- * session management with sid-hashed-at-rest tokens, and a file storage
- * abstraction with per-file vault-sealed encryption. Local backend only;
- * S3 backend defers to v0.0.6.
- *
- * Phase 0 / 1a / 1b / 1c carryover: crypto, router, constants, vault,
- * vault-wrap, passphrase-source, db, fieldCrypto, audit, audit-chain,
- * consent, subject.
+ * Public surface lives on the exported object: crypto, router, vault,
+ * db, fieldCrypto, audit, consent, subject, session, storage, queue,
+ * objectStore, externalDb, logStream, middleware, parsers, atomic-file,
+ * ntp-check, redact, ha (high-availability coordination), and the
+ * version-stable `constants` namespace.
  *
  * See LICENSE (Apache-2.0) and NOTICE for vendored attribution.
  */
@@ -42,6 +39,7 @@ var externalDb = require("./lib/external-db");
 var middleware = require("./lib/middleware");
 var atomicFile = require("./lib/atomic-file");
 var parsers = require("./lib/parsers");
+var ha = require("./lib/ha");
 
 module.exports = {
   crypto:           crypto,
@@ -68,6 +66,7 @@ module.exports = {
   middleware:       middleware,
   atomicFile:       atomicFile,
   parsers:          parsers,
+  ha:               ha,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,
