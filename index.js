@@ -50,6 +50,7 @@ var bufferSafe = require("./lib/buffer-safe");
 var lazyRequire = require("./lib/lazy-require");
 var frameworkError = require("./lib/framework-error");
 var logger = require("./lib/logger");
+var httpClient = require("./lib/http-client");
 
 module.exports = {
   crypto:           crypto,
@@ -87,6 +88,7 @@ module.exports = {
   lazyRequire:      lazyRequire,
   frameworkError:   frameworkError,
   logger:           logger,
+  httpClient:       httpClient,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

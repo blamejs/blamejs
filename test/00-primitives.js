@@ -1458,6 +1458,204 @@ function testBufferSafeBoundedChunkCollector() {
   check("collector: requires maxBytes", threwBadArg);
 }
 
+async function testHttpClientBasic() {
+  var http = require("http");
+  // Local mock server — listens on a random port, captures method+path.
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      var body = Buffer.concat(chunks).toString("utf8");
+      res.writeHead(200, { "Content-Type": "text/plain", "X-Method": req.method });
+      res.end("got " + req.method + " " + req.url + " body=" + body);
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+
+    // GET
+    var got = await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/foo" });
+    check("httpClient: GET status",          got.statusCode === 200);
+    check("httpClient: GET body buffered",   Buffer.isBuffer(got.body));
+    check("httpClient: GET body content",    got.body.toString("utf8").indexOf("got GET /foo") === 0);
+    check("httpClient: GET headers",         got.headers["x-method"] === "GET");
+
+    // POST with Buffer body
+    var posted = await b.httpClient.request({
+      method: "POST", url: "http://127.0.0.1:" + port + "/bar",
+      body: Buffer.from("hello", "utf8"),
+    });
+    check("httpClient: POST body sent", posted.body.toString("utf8").indexOf("body=hello") !== -1);
+
+    // Connection pooling — same origin reuses the cached agent
+    check("httpClient: transport cached after first call",
+          b.httpClient._getCachedTransportCount() >= 1);
+    await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/baz" });
+    check("httpClient: same origin reuses transport",
+          b.httpClient._getCachedTransportCount() === 1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientErrorStatus() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    if (req.url === "/notfound") { res.writeHead(404); res.end("missing"); }
+    else if (req.url === "/throttle") { res.writeHead(429); res.end("slow down"); }
+    else if (req.url === "/boom") { res.writeHead(500); res.end("oops"); }
+    else { res.writeHead(200); res.end("ok"); }
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+
+    // 404 → permanent
+    var threw404 = null;
+    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/notfound", errorClass: b.frameworkError.ObjectStoreError }); }
+    catch (e) { threw404 = e; }
+    check("httpClient: 404 rejects",            threw404 !== null);
+    check("httpClient: 404 ObjectStoreError",   threw404 instanceof b.frameworkError.ObjectStoreError);
+    check("httpClient: 404 statusCode",         threw404.statusCode === 404);
+    check("httpClient: 404 permanent",          threw404.permanent === true);
+
+    // 429 → transient
+    var threw429 = null;
+    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/throttle", errorClass: b.frameworkError.ObjectStoreError }); }
+    catch (e) { threw429 = e; }
+    check("httpClient: 429 transient (not permanent)", threw429.permanent === false);
+
+    // 500 → transient
+    var threw500 = null;
+    try { await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/boom", errorClass: b.frameworkError.ObjectStoreError }); }
+    catch (e) { threw500 = e; }
+    check("httpClient: 500 transient", threw500.permanent === false);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientWallClockTimeout() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    // Slow responder — write headers, dribble bytes well past timeout.
+    res.writeHead(200);
+    var i = 0;
+    var iv = setInterval(function () {
+      if (i++ >= 50) { clearInterval(iv); res.end(); return; }
+      res.write("x");
+    }, 50);
+    req.on("close", function () { clearInterval(iv); });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    var threw = null;
+    var t0 = Date.now();
+    try {
+      await b.httpClient.request({
+        url: "http://127.0.0.1:" + port + "/slow",
+        timeoutMs: 200,                 // wall-clock — must fire even if data IS flowing
+        idleTimeoutMs: 5000,            // generous idle so wall-clock is what fires
+      });
+    } catch (e) { threw = e; }
+    var elapsed = Date.now() - t0;
+    check("httpClient: wall-clock timeout fires",     threw !== null);
+    check("httpClient: timeout error code ETIMEDOUT", threw && threw.code === "ETIMEDOUT");
+    check("httpClient: wall-clock fired within 1s",    elapsed < 1000);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientAbortSignal() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    // Hang forever — only cancellation can free this.
+    res.writeHead(200);
+    // Don't end; wait for client disconnect.
+    req.on("close", function () { try { res.end(); } catch (_e) {} });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    var ac = new AbortController();
+    setTimeout(function () { ac.abort(); }, 100);
+    var threw = null;
+    try {
+      await b.httpClient.request({
+        url: "http://127.0.0.1:" + port + "/hang",
+        signal: ac.signal,
+        idleTimeoutMs: 60000,
+      });
+    } catch (e) { threw = e; }
+    check("httpClient: AbortSignal cancels request",  threw !== null);
+    check("httpClient: abort code ABORT",             threw && threw.code === "ABORT");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientStreamResponse() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    res.writeHead(200, { "Content-Type": "application/octet-stream" });
+    res.write("part1-");
+    res.write("part2-");
+    res.end("end");
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    var got = await b.httpClient.request({
+      url: "http://127.0.0.1:" + port + "/stream",
+      responseMode: "stream",
+    });
+    check("httpClient: stream mode returns Readable",
+          got.body && typeof got.body.on === "function");
+    var collected = await new Promise(function (resolve, reject) {
+      var chunks = [];
+      got.body.on("data", function (c) { chunks.push(c); });
+      got.body.on("end",  function ()  { resolve(Buffer.concat(chunks).toString("utf8")); });
+      got.body.on("error", reject);
+    });
+    check("httpClient: stream content", collected === "part1-part2-end");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientObserver() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) { res.writeHead(200); res.end("ok"); });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    b.httpClient._resetForTest();
+    var stages = [];
+    var observer = function (stage, info) { stages.push({ stage: stage, info: info }); };
+    await b.httpClient.request({ url: "http://127.0.0.1:" + port + "/obs", observer: observer });
+    check("httpClient: observer saw request:start",     stages[0].stage === "request:start");
+    check("httpClient: observer saw response:headers",  stages[1].stage === "response:headers");
+    check("httpClient: observer saw response:end",      stages[2].stage === "response:end");
+    check("httpClient: observer info has durationMs",   typeof stages[2].info.durationMs === "number");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
 function testLogger() {
   check("logger namespace present",        typeof b.logger === "object");
   check("logger.createLogger is function", typeof b.logger.createLogger === "function");
@@ -1930,6 +2128,13 @@ async function run() {
   testLogger();
   // framework-error base + cross-module operational classes
   testFrameworkError();
+  // http-client primitive (used by 5 protocol adapters)
+  await testHttpClientBasic();
+  await testHttpClientErrorStatus();
+  await testHttpClientWallClockTimeout();
+  await testHttpClientAbortSignal();
+  await testHttpClientStreamResponse();
+  await testHttpClientObserver();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
@@ -2001,6 +2206,12 @@ module.exports = {
   testBufferSafeBoundedChunkCollector:       testBufferSafeBoundedChunkCollector,
   testBufferSafeSecureZero:                  testBufferSafeSecureZero,
   testLogger:                                testLogger,
+  testHttpClientBasic:                       testHttpClientBasic,
+  testHttpClientErrorStatus:                 testHttpClientErrorStatus,
+  testHttpClientWallClockTimeout:            testHttpClientWallClockTimeout,
+  testHttpClientAbortSignal:                 testHttpClientAbortSignal,
+  testHttpClientStreamResponse:              testHttpClientStreamResponse,
+  testHttpClientObserver:                    testHttpClientObserver,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
