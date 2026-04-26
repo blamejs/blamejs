@@ -1039,7 +1039,7 @@ async function testStorage() {
     b.storage.init({ backend: "local", uploadDir: path.join(tmpDir, "uploads") });
 
     var content = Buffer.from("hello blamejs storage " + Date.now(), "utf8");
-    var saved = b.storage.saveFile(content, "user-1/welcome.txt");
+    var saved = await b.storage.saveFile(content, "user-1/welcome.txt");
     check("saveFile returns storedPath",            saved.storedPath === "user-1/welcome.txt");
     check("saveFile returns sealed encryptionKey",
           typeof saved.encryptionKey === "string" && saved.encryptionKey.startsWith("vault:"));
@@ -1050,11 +1050,11 @@ async function testStorage() {
     check("on-disk file starts with format byte 0x02",  onDisk[0] === b.constants.FORMAT.XCHACHA20_POLY1305);
 
     // Round-trip
-    var decrypted = b.storage.getFileBuffer("user-1/welcome.txt", saved.encryptionKey);
+    var decrypted = await b.storage.getFileBuffer("user-1/welcome.txt", saved.encryptionKey);
     check("getFileBuffer round-trip preserves content", decrypted.equals(content));
 
     // Stream form
-    var stream = b.storage.getFileStream("user-1/welcome.txt", saved.encryptionKey);
+    var stream = await b.storage.getFileStream("user-1/welcome.txt", saved.encryptionKey);
     var chunks = [];
     for await (var chunk of stream) chunks.push(chunk);
     var streamed = Buffer.concat(chunks);
@@ -1062,44 +1062,44 @@ async function testStorage() {
 
     // Wrong key fails
     var wrongRejected = false;
-    try { b.storage.getFileBuffer("user-1/welcome.txt", b.vault.seal("not-the-real-key")); }
+    try { await b.storage.getFileBuffer("user-1/welcome.txt", b.vault.seal("not-the-real-key")); }
     catch (_) { wrongRejected = true; }
     check("getFileBuffer with wrong key throws",       wrongRejected);
 
     // No key required throws
     var noKeyRejected = false;
-    try { b.storage.getFileBuffer("user-1/welcome.txt", null); }
+    try { await b.storage.getFileBuffer("user-1/welcome.txt", null); }
     catch (_) { noKeyRejected = true; }
     check("getFileBuffer without key throws",          noKeyRejected);
 
     // exists
-    check("exists returns true on present file",       b.storage.exists("user-1/welcome.txt") === true);
-    check("exists returns false on missing",           b.storage.exists("does/not/exist.txt") === false);
+    check("exists returns true on present file",       (await b.storage.exists("user-1/welcome.txt")) === true);
+    check("exists returns false on missing",           (await b.storage.exists("does/not/exist.txt")) === false);
 
     // saveRaw / getRawBuffer (no encryption)
     var rawContent = Buffer.from("already-encrypted-or-not-sensitive", "utf8");
-    b.storage.saveRaw(rawContent, "raw/blob.bin");
-    var rawBack = b.storage.getRawBuffer("raw/blob.bin");
+    await b.storage.saveRaw(rawContent, "raw/blob.bin");
+    var rawBack = await b.storage.getRawBuffer("raw/blob.bin");
     check("saveRaw / getRawBuffer round-trip",        rawBack.equals(rawContent));
 
     // deleteFile
-    check("deleteFile returns true on existing",       b.storage.deleteFile("user-1/welcome.txt") === true);
-    check("deleteFile returns false on missing",       b.storage.deleteFile("user-1/welcome.txt") === false);
-    check("file no longer exists after delete",        b.storage.exists("user-1/welcome.txt") === false);
+    check("deleteFile returns true on existing",       (await b.storage.deleteFile("user-1/welcome.txt")) === true);
+    check("deleteFile returns false on missing",       (await b.storage.deleteFile("user-1/welcome.txt")) === false);
+    check("file no longer exists after delete",        (await b.storage.exists("user-1/welcome.txt")) === false);
 
     // Path traversal rejected
     var traversalRejected = false;
-    try { b.storage.saveFile(content, "../escape.txt"); }
+    try { await b.storage.saveFile(content, "../escape.txt"); }
     catch (_) { traversalRejected = true; }
     check("path traversal via .. rejected",            traversalRejected);
 
     var absRejected = false;
-    try { b.storage.saveFile(content, "/etc/passwd"); }
+    try { await b.storage.saveFile(content, "/etc/passwd"); }
     catch (_) { absRejected = true; }
     check("absolute path rejected",                    absRejected);
 
     var nullByteRejected = false;
-    try { b.storage.saveFile(content, "ok injected"); }
+    try { await b.storage.saveFile(content, "ok injected"); }
     catch (_) { nullByteRejected = true; }
     check("null-byte in path rejected",                nullByteRejected);
 
@@ -1107,8 +1107,8 @@ async function testStorage() {
     b.storage._resetForTest();
     var s3Rejected = false;
     try { b.storage.init({ backend: "s3", bucket: "x" }); }
-    catch (e) { s3Rejected = /not yet implemented/.test(e.message); }
-    check("storage backend 's3' rejected with clear message", s3Rejected);
+    catch (e) { s3Rejected = /sigv4|deferred|not yet/i.test(e.message); }
+    check("storage backend 's3' deferred with clear message", s3Rejected);
   } finally {
     teardownTestDb(tmpDir);
   }
@@ -1506,6 +1506,222 @@ async function testRollbackDetection() {
 }
 
 // =====================================================================
+// v0.0.9 — multi-backend storage, classification routing, retry/breaker
+// =====================================================================
+
+async function testMultiBackend() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-multi-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage.init({
+      backends: {
+        "primary": {
+          protocol:        "local",
+          rootDir:         path.join(tmpDir, "primary"),
+          classifications: ["personal"],
+          residencyTag:    "unrestricted",
+        },
+        "ops": {
+          protocol:        "local",
+          rootDir:         path.join(tmpDir, "ops"),
+          classifications: ["operational", "public"],
+          residencyTag:    "unrestricted",
+        },
+      },
+      defaultClassification: "personal",
+      refuseUnclassified:    true,
+    });
+
+    var listed = b.storage.listBackends();
+    check("listBackends returns 2 entries",            listed.length === 2);
+    check("backend names enumerated",                  listed.some(b => b.name === "primary") && listed.some(b => b.name === "ops"));
+
+    // Save personal data → routes to 'primary'
+    var content1 = Buffer.from("private medical record", "utf8");
+    var saved1 = await b.storage.saveFile(content1, "patient/123.json", { classification: "personal" });
+    check("personal data routes to primary",           saved1.backend === "primary");
+
+    // Save operational data → routes to 'ops'
+    var content2 = Buffer.from("nginx access log line", "utf8");
+    var saved2 = await b.storage.saveFile(content2, "logs/2026-04-25.log", { classification: "operational" });
+    check("operational data routes to ops",            saved2.backend === "ops");
+
+    // File lands in the right physical directory
+    check("personal file in primary tree",             fs.existsSync(path.join(tmpDir, "primary", "patient/123.json")));
+    check("operational file in ops tree",              fs.existsSync(path.join(tmpDir, "ops", "logs/2026-04-25.log")));
+    check("personal NOT in ops tree",                  !fs.existsSync(path.join(tmpDir, "ops", "patient/123.json")));
+
+    // Round-trip with explicit backend opt
+    var back = await b.storage.getFileBuffer("patient/123.json", saved1.encryptionKey, { backend: "primary" });
+    check("explicit-backend round-trip works",         back.equals(content1));
+
+    // Unknown classification → fails
+    var unknownClsRejected = false;
+    try { await b.storage.saveFile(content1, "test", { classification: "unknown" }); }
+    catch (e) { unknownClsRejected = e.code === "NO_BACKEND_FOR_CLASSIFICATION"; }
+    check("unknown classification rejected",           unknownClsRejected);
+
+    // refuseUnclassified: missing classification rejected
+    var noClsRejected = false;
+    try { await b.storage.saveFile(content1, "test"); }
+    catch (e) { noClsRejected = e.code === "UNCLASSIFIED"; }
+    check("refuseUnclassified rejects missing classification", noClsRejected);
+
+    // Wrong-backend-for-classification rejected
+    var wrongBackendRejected = false;
+    try { await b.storage.saveFile(content1, "test", { backend: "ops", classification: "personal" }); }
+    catch (e) { wrongBackendRejected = e.code === "CLASSIFICATION_MISMATCH"; }
+    check("backend that doesn't serve classification rejected", wrongBackendRejected);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testClassificationRouting() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cls-"));
+  try {
+    await setupTestDb(tmpDir);
+    // Wildcard backend serves any classification
+    b.storage.init({
+      backends: {
+        "any": {
+          protocol:        "local",
+          rootDir:         path.join(tmpDir, "any"),
+          classifications: ["*"],
+          residencyTag:    "unrestricted",
+        },
+      },
+    });
+
+    var c1 = Buffer.from("a", "utf8");
+    var s1 = await b.storage.saveFile(c1, "x", { classification: "personal" });
+    check("wildcard backend accepts personal",         s1.backend === "any");
+    var s2 = await b.storage.saveFile(c1, "y", { classification: "audit-archive" });
+    check("wildcard backend accepts custom class",     s2.backend === "any");
+    var s3 = await b.storage.saveFile(c1, "z");
+    check("wildcard backend accepts no-classification", s3.backend === "any");
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testResidencyEnforcement() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-residency-"));
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir: tmpDir,
+      atRest:  "plain",
+      auditSigning: { mode: "plaintext" },
+      schema:  [],
+      dataResidency: { region: "EU", allowedStorageRegions: ["EU"] },
+    });
+
+    // Configuring a personal-data backend tagged US should refuse to init
+    var residencyViolation = false;
+    try {
+      b.storage.init({
+        backends: {
+          "us-bad": {
+            protocol:        "local",
+            rootDir:         path.join(tmpDir, "us"),
+            classifications: ["personal"],
+            residencyTag:    "US",   // ← violation
+          },
+        },
+      });
+    } catch (e) {
+      residencyViolation = e.code === "RESIDENCY_VIOLATION";
+    }
+    check("personal-data backend outside region refused", residencyViolation);
+
+    // EU-tagged backend is fine
+    b.storage._resetForTest();
+    b.storage.init({
+      backends: {
+        "eu-ok": {
+          protocol:        "local",
+          rootDir:         path.join(tmpDir, "eu"),
+          classifications: ["personal"],
+          residencyTag:    "EU",
+        },
+      },
+    });
+    var listed = b.storage.listBackends();
+    check("EU-tagged backend accepted",                listed.length === 1 && listed[0].residencyTag === "EU");
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testRetryAndBreaker() {
+  // Retry policy unit tests — exercise withRetry directly without backend setup
+  var attempts = 0;
+  var transientErr = function () {
+    attempts += 1;
+    var e = new Error("transient");
+    e.statusCode = 503;
+    e.isObjectStoreError = true;
+    e.permanent = false;
+    throw e;
+  };
+
+  // Retries 5xx
+  var caught = false;
+  attempts = 0;
+  try {
+    await b.objectStoreRetry.withRetry(transientErr, { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5 });
+  } catch (_) { caught = true; }
+  check("retry exhausts maxAttempts on transient",     caught && attempts === 3);
+
+  // Does NOT retry permanent (4xx)
+  attempts = 0;
+  var permErr = function () {
+    attempts += 1;
+    var e = new Error("forbidden");
+    e.statusCode = 403;
+    e.isObjectStoreError = true;
+    e.permanent = true;
+    throw e;
+  };
+  var permCaught = false;
+  try { await b.objectStoreRetry.withRetry(permErr, { maxAttempts: 5 }); }
+  catch (_) { permCaught = true; }
+  check("retry does NOT retry permanent errors",       permCaught && attempts === 1);
+
+  // Retryable classification
+  check("isRetryable: 503 → true",                     b.objectStoreRetry.isRetryable({ statusCode: 503 }));
+  check("isRetryable: 403 → false",                    !b.objectStoreRetry.isRetryable({ statusCode: 403 }));
+  check("isRetryable: ECONNRESET → true",              b.objectStoreRetry.isRetryable({ code: "ECONNRESET" }));
+  check("isRetryable: ENOENT → false (not in retry set)", !b.objectStoreRetry.isRetryable({ code: "ENOENT" }));
+
+  // Circuit breaker
+  var breaker = new b.objectStoreRetry.CircuitBreaker("test", { failureThreshold: 3, cooldownMs: 50, successThreshold: 1 });
+  check("breaker starts closed",                       breaker.getState() === "closed");
+  // Trip it
+  for (var i = 0; i < 3; i++) {
+    try { await breaker.wrap(function () { throw Object.assign(new Error("fail"), { code: "ECONNRESET" }); }); }
+    catch (_) {}
+  }
+  check("breaker opens after threshold",               breaker.getState() === "open");
+
+  // Open breaker fails fast (CIRCUIT_OPEN code)
+  var fastFail = false;
+  try { await breaker.wrap(function () { return Promise.resolve("never-runs"); }); }
+  catch (e) { fastFail = e.code === "CIRCUIT_OPEN"; }
+  check("open breaker fails fast",                     fastFail);
+
+  // Wait for cooldown then half-open + success closes
+  await new Promise(function (r) { setTimeout(r, 60); });
+  await breaker.wrap(function () { return Promise.resolve("ok"); });
+  check("breaker closes after successful probe",       breaker.getState() === "closed");
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -1795,6 +2011,11 @@ function testJsonFormats() {
   await testCheckpointVerify();
   await testCheckpointTamperDetect();
   await testRollbackDetection();
+  // v0.0.9 multi-backend storage + retry/breaker
+  await testMultiBackend();
+  await testClassificationRouting();
+  await testResidencyEnforcement();
+  await testRetryAndBreaker();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

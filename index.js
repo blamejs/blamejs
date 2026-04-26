@@ -33,6 +33,8 @@ var storage = require("./lib/storage");
 var json = require("./lib/json-safe");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
+var objectStore = require("./lib/object-store");
+var objectStoreRetry = require("./lib/object-store-retry");
 
 module.exports = {
   crypto:           crypto,
@@ -50,6 +52,8 @@ module.exports = {
   subject:          subject,
   session:          session,
   storage:          storage,
+  objectStore:      objectStore,
+  objectStoreRetry: objectStoreRetry,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,
