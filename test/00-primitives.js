@@ -1989,7 +1989,7 @@ async function testWebSocketH2() {
 
   server.on("stream", function (stream, headers) {
     if (headers[":method"] === "CONNECT" && headers[":protocol"] === "websocket") {
-      var conn = ws.handleExtendedConnect(stream, headers, {});
+      var conn = ws.handleExtendedConnect(stream, headers, { closeGraceMs: 50 });
       if (conn) {
         conn.on("message", function (data, isBinary) {
           conn.send(isBinary ? data : "h2-echo:" + data);
@@ -2070,16 +2070,146 @@ async function testWebSocketH2() {
     var clientClose = ws.serializeFrame(ws.OPCODE_CLOSE, closePayload);
     stream.write(clientClose);
 
-    // Wait for the stream to close.
+    // Brief settle for the stream-end signal — closeGraceMs:50 on the
+    // server keeps this short. Capped at 200ms.
     await new Promise(function (resolve) {
       stream.once("close", resolve);
-      setTimeout(resolve, 1000);
+      setTimeout(resolve, 200);
     });
 
     client.close();
   } finally {
     server.close();
   }
+}
+
+async function testRouterWsH1Basic() {
+  var net = require("net");
+  var ws = b.websocket;
+
+  var router = new b.router.Router();
+  var receivedMessages = [];
+  router.ws("/realtime", function (conn, _req) {
+    conn.on("message", function (data, isBinary) {
+      receivedMessages.push({ data: isBinary ? data : data.toString(), isBinary: isBinary });
+      conn.send(isBinary ? data : "router-echo:" + data);
+    });
+  }, { origins: "*", closeGraceMs: 50 });
+
+  // Listen on a random port (no TLS — h1 only).
+  var server = await new Promise(function (resolve) {
+    var s = router.listen(0, function () { resolve(s); }, null, "127.0.0.1");
+  });
+  var port = server.address().port;
+
+  try {
+    var client = net.connect(port, "127.0.0.1");
+    await new Promise(function (r) { client.once("connect", r); });
+
+    var key = require("crypto").randomBytes(16).toString("base64");
+    client.write(
+      "GET /realtime HTTP/1.1\r\n" +
+      "Host: 127.0.0.1:" + port + "\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      "Sec-WebSocket-Key: " + key + "\r\n" +
+      "Sec-WebSocket-Version: 13\r\n" +
+      "\r\n"
+    );
+
+    var responseBuf = await _readUntil(client, "\r\n\r\n");
+    check("router.ws h1: 101 Switching Protocols",
+          responseBuf.toString("utf8").indexOf("HTTP/1.1 101") === 0);
+
+    var clientFrame = ws.serializeFrame(ws.OPCODE_TEXT,
+      Buffer.from("via-router", "utf8"), { mask: true });
+    client.write(clientFrame);
+
+    var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
+    var echoFrames = [];
+    while (echoFrames.length === 0) {
+      var more = await _readSome(client);
+      echoFrames = parser.push(more);
+    }
+    check("router.ws h1: handler echoed message",
+          echoFrames[0].payload.toString("utf8") === "router-echo:via-router");
+    check("router.ws h1: handler received the message",
+          receivedMessages.length === 1 && receivedMessages[0].data === "via-router");
+
+    client.destroy();
+  } finally {
+    server.close();
+  }
+}
+
+async function testRouterWsH2OnlyRefusesH1() {
+  var net = require("net");
+
+  var router = new b.router.Router();
+  router.ws("/realtime", function (_conn) { /* never reached */ },
+    { origins: "*", transport: "h2-only" });
+
+  var server = await new Promise(function (resolve) {
+    var s = router.listen(0, function () { resolve(s); }, null, "127.0.0.1");
+  });
+  var port = server.address().port;
+
+  try {
+    var client = net.connect(port, "127.0.0.1");
+    await new Promise(function (r) { client.once("connect", r); });
+
+    var key = require("crypto").randomBytes(16).toString("base64");
+    client.write(
+      "GET /realtime HTTP/1.1\r\n" +
+      "Host: 127.0.0.1:" + port + "\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      "Sec-WebSocket-Key: " + key + "\r\n" +
+      "Sec-WebSocket-Version: 13\r\n" +
+      "\r\n"
+    );
+
+    var responseBuf = await _readUntil(client, "\r\n\r\n");
+    var responseStr = responseBuf.toString("utf8");
+    check("router.ws h2-only: returns 426",
+          responseStr.indexOf("HTTP/1.1 426") === 0);
+    check("router.ws h2-only: advisory Upgrade: h2c header",
+          /Upgrade: h2c/i.test(responseStr));
+
+    client.destroy();
+  } finally {
+    server.close();
+  }
+}
+
+function testRouterWsValidation() {
+  var router = new b.router.Router();
+
+  // Bad path
+  var threw1 = false;
+  try { router.ws("", function () {}); } catch (_e) { threw1 = true; }
+  check("router.ws: rejects empty path", threw1);
+
+  // Bad handler
+  var threw2 = false;
+  try { router.ws("/foo", "not-a-function"); } catch (_e) { threw2 = true; }
+  check("router.ws: rejects non-function handler", threw2);
+
+  // Bad transport
+  var threw3 = false;
+  try { router.ws("/foo", function () {}, { transport: "h3" }); } catch (_e) { threw3 = true; }
+  check("router.ws: rejects unknown transport", threw3);
+
+  // All valid transports accepted
+  var ok = true;
+  try {
+    router.ws("/auto",     function () {}, { origins: "*", transport: "auto" });
+    router.ws("/h1",       function () {}, { origins: "*", transport: "h1-only" });
+    router.ws("/h2",       function () {}, { origins: "*", transport: "h2-only" });
+  } catch (_e) { ok = false; }
+  check("router.ws: accepts auto / h1-only / h2-only", ok);
+  check("router.ws: registered routes counted",
+        router._wsRoutes.size === 3);
 }
 
 async function testWebSocketH2RejectsMaskedFrame() {
@@ -2093,7 +2223,7 @@ async function testWebSocketH2RejectsMaskedFrame() {
   var server = http2.createServer({ settings: { enableConnectProtocol: true } });
   server.on("stream", function (stream, headers) {
     if (headers[":method"] === "CONNECT" && headers[":protocol"] === "websocket") {
-      connSeen = ws.handleExtendedConnect(stream, headers, {});
+      connSeen = ws.handleExtendedConnect(stream, headers, { closeGraceMs: 50 });
     }
   });
   await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
@@ -2133,7 +2263,7 @@ async function testWebSocketH2RejectsMaskedFrame() {
         } catch (_e) { /* parser may also error — that's a server send-and-destroy scenario */ }
       });
       stream.once("close", function () { resolve(null); });
-      setTimeout(function () { resolve(null); }, 2000);
+      setTimeout(function () { resolve(null); }, 500);
     });
 
     check("h2 WebSocket: masked client frame rejected with close",
@@ -2173,7 +2303,7 @@ async function testWebSocketConnection() {
       }
       var req = { method: requestLine[0], url: requestLine[1], headers: headers };
       var head = Buffer.from(headerBuffer.substring(idx + 4), "binary");
-      var conn = ws.handleUpgrade(req, socket, head, {});
+      var conn = ws.handleUpgrade(req, socket, head, { closeGraceMs: 50 });
       if (conn) {
         connections.push(conn);
         // Echo handler
@@ -2246,8 +2376,9 @@ async function testWebSocketConnection() {
     check("WebSocketConnection: close code 1000",
           closeFrame && closeFrame.payload.readUInt16BE(0) === 1000);
 
-    // Wait for socket to fully close.
-    await new Promise(function (r) { client.once("close", r); setTimeout(r, 1000); });
+    // Verified at protocol level — close frame received. TCP teardown
+    // is incidental; don't block the test on it. closeGraceMs:50 on
+    // the server side keeps the actual TCP teardown fast anyway.
   } finally {
     server.close();
   }
@@ -2868,6 +2999,10 @@ async function run() {
   await testWebSocketConnection();
   await testWebSocketH2();
   await testWebSocketH2RejectsMaskedFrame();
+  // router.ws integration (covers h1 path, h2-only refusal, validation)
+  await testRouterWsH1Basic();
+  await testRouterWsH2OnlyRefusesH1();
+  testRouterWsValidation();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
@@ -2957,6 +3092,9 @@ module.exports = {
   testWebSocketConnection:                   testWebSocketConnection,
   testWebSocketH2:                           testWebSocketH2,
   testWebSocketH2RejectsMaskedFrame:         testWebSocketH2RejectsMaskedFrame,
+  testRouterWsH1Basic:                       testRouterWsH1Basic,
+  testRouterWsH2OnlyRefusesH1:               testRouterWsH2OnlyRefusesH1,
+  testRouterWsValidation:                    testRouterWsValidation,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
