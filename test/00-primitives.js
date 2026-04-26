@@ -1862,6 +1862,266 @@ async function testHttpClientH2Stream() {
   }
 }
 
+function testWebSocketHandshake() {
+  var ws = b.websocket;
+
+  // Sec-WebSocket-Accept derivation — RFC 6455 §1.3 example
+  // key "dGhlIHNhbXBsZSBub25jZQ==" should produce
+  // "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+  check("computeAcceptKey: RFC 6455 example",
+        ws.computeAcceptKey("dGhlIHNhbXBsZSBub25jZQ==") === "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+
+  // validateUpgradeRequest happy path
+  var goodReq = {
+    method: "GET",
+    headers: {
+      "upgrade": "websocket",
+      "connection": "Upgrade",
+      "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+      "sec-websocket-version": "13",
+    },
+  };
+  check("validateUpgradeRequest: happy path",
+        ws.validateUpgradeRequest(goodReq).ok === true);
+
+  // Missing headers — each rejection
+  var badMethod = Object.assign({}, goodReq, { method: "POST" });
+  check("validateUpgradeRequest: rejects POST",
+        ws.validateUpgradeRequest(badMethod).ok === false);
+
+  var badVersion = { method: "GET", headers: Object.assign({}, goodReq.headers, { "sec-websocket-version": "8" }) };
+  check("validateUpgradeRequest: rejects version != 13",
+        ws.validateUpgradeRequest(badVersion).ok === false);
+
+  // Connection header with multiple tokens
+  var multiConn = { method: "GET", headers: Object.assign({}, goodReq.headers, { "connection": "keep-alive, Upgrade" }) };
+  check("validateUpgradeRequest: accepts multi-token Connection",
+        ws.validateUpgradeRequest(multiConn).ok === true);
+
+  // Origin policy
+  var browserReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "origin": "https://app.example.com" }) };
+  check("isOriginAllowed: undefined origins accepts all", ws.isOriginAllowed(browserReq, null) === true);
+  check("isOriginAllowed: '*' accepts all",               ws.isOriginAllowed(browserReq, "*") === true);
+  check("isOriginAllowed: allowlist match",
+        ws.isOriginAllowed(browserReq, ["https://app.example.com"]) === true);
+  check("isOriginAllowed: allowlist miss",
+        ws.isOriginAllowed(browserReq, ["https://other.example.com"]) === false);
+  // Non-browser client (no Origin header) bypasses origin policy
+  check("isOriginAllowed: no Origin header bypasses (non-browser)",
+        ws.isOriginAllowed(goodReq, ["https://app.example.com"]) === true);
+
+  // Subprotocol negotiation
+  var protoReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "sec-websocket-protocol": "chat, foo, graphql-ws" }) };
+  check("negotiateSubprotocol: picks first match",
+        ws.negotiateSubprotocol(protoReq, ["graphql-ws", "chat"]) === "chat");
+  check("negotiateSubprotocol: returns null on no match",
+        ws.negotiateSubprotocol(protoReq, ["other"]) === null);
+  check("negotiateSubprotocol: empty supported returns null",
+        ws.negotiateSubprotocol(protoReq, []) === null);
+}
+
+function testWebSocketFrames() {
+  var ws = b.websocket;
+
+  // Round-trip: serialize → parse → same data, opcode preserved.
+  var payload = Buffer.from("hello websocket", "utf8");
+  var frame = ws.serializeFrame(ws.OPCODE_TEXT, payload);
+  // Mask the frame so the parser (which expects client-side frames)
+  // accepts it. Use the parser via the FrameParser API.
+  // Build a masked variant by hand for the parser test.
+  // The serializer's mask:true path produces a client-shaped frame.
+  var masked = ws.serializeFrame(ws.OPCODE_TEXT, payload, { mask: true });
+  var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
+  var frames = parser.push(masked);
+  check("FrameParser: parses single masked frame", frames.length === 1);
+  check("FrameParser: opcode preserved",            frames[0].opcode === ws.OPCODE_TEXT);
+  check("FrameParser: payload preserved",           frames[0].payload.equals(payload));
+  check("FrameParser: masked flag set",             frames[0].masked === true);
+  check("FrameParser: fin flag set",                frames[0].fin === true);
+
+  // Extended length encoding — 16-bit (126)
+  var medPayload = Buffer.alloc(200);
+  for (var i = 0; i < 200; i++) medPayload[i] = i & 0xFF;
+  var medMasked = ws.serializeFrame(ws.OPCODE_BINARY, medPayload, { mask: true });
+  parser = new ws.FrameParser({ maxFrameBytes: 65536 });
+  frames = parser.push(medMasked);
+  check("FrameParser: 16-bit length frame", frames[0].payload.equals(medPayload));
+
+  // Extended length encoding — 64-bit (127). Use a payload >65535.
+  var largePayload = Buffer.alloc(70000);
+  largePayload.fill(0x42);
+  var largeMasked = ws.serializeFrame(ws.OPCODE_BINARY, largePayload, { mask: true });
+  parser = new ws.FrameParser({ maxFrameBytes: 1024 * 1024 });
+  frames = parser.push(largeMasked);
+  check("FrameParser: 64-bit length frame", frames[0].payload.length === 70000 && frames[0].payload[0] === 0x42);
+
+  // Incremental parsing — split a frame across two pushes
+  var split1 = masked.subarray(0, 5);
+  var split2 = masked.subarray(5);
+  parser = new ws.FrameParser({ maxFrameBytes: 1024 });
+  var part1 = parser.push(split1);
+  var part2 = parser.push(split2);
+  check("FrameParser: partial first push yields nothing",  part1.length === 0);
+  check("FrameParser: completing push yields the frame",   part2.length === 1);
+  check("FrameParser: split frame payload intact",         part2[0].payload.equals(payload));
+
+  // Frame size cap rejection
+  var threwTooLarge = false;
+  try {
+    var tinyParser = new ws.FrameParser({ maxFrameBytes: 100 });
+    tinyParser.push(largeMasked);
+  } catch (e) {
+    threwTooLarge = e.code === "ws/frame-too-large";
+  }
+  check("FrameParser: rejects oversized frame", threwTooLarge);
+}
+
+async function testWebSocketConnection() {
+  var net = require("net");
+  var ws = b.websocket;
+
+  // Mock TCP server that hand-rolls handshake validation + WebSocketConnection
+  var connections = [];
+  var server = net.createServer(function (socket) {
+    var headerBuffer = "";
+    var headersDone = false;
+    socket.on("data", function (chunk) {
+      if (headersDone) return;
+      headerBuffer += chunk.toString("utf8");
+      var idx = headerBuffer.indexOf("\r\n\r\n");
+      if (idx === -1) return;
+      headersDone = true;
+      // Parse HTTP headers (very crude — enough for tests).
+      var headerLines = headerBuffer.substring(0, idx).split("\r\n");
+      var requestLine = headerLines[0].split(" ");
+      var headers = {};
+      for (var i = 1; i < headerLines.length; i++) {
+        var p = headerLines[i].indexOf(":");
+        if (p === -1) continue;
+        var k = headerLines[i].substring(0, p).trim().toLowerCase();
+        var v = headerLines[i].substring(p + 1).trim();
+        headers[k] = v;
+      }
+      var req = { method: requestLine[0], url: requestLine[1], headers: headers };
+      var head = Buffer.from(headerBuffer.substring(idx + 4), "binary");
+      var conn = ws.handleUpgrade(req, socket, head, {});
+      if (conn) {
+        connections.push(conn);
+        // Echo handler
+        conn.on("message", function (data, isBinary) {
+          conn.send(isBinary ? data : "echo:" + data);
+        });
+      }
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+
+  try {
+    // Open a raw TCP socket, send the upgrade handshake, then exchange frames.
+    var client = net.connect(port, "127.0.0.1");
+    await new Promise(function (r) { client.once("connect", r); });
+
+    var key = nodeCryptoForTest().randomBytes(16).toString("base64");
+    var handshakeRequest =
+      "GET / HTTP/1.1\r\n" +
+      "Host: 127.0.0.1:" + port + "\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      "Sec-WebSocket-Key: " + key + "\r\n" +
+      "Sec-WebSocket-Version: 13\r\n" +
+      "\r\n";
+    client.write(handshakeRequest);
+
+    // Read the 101 response + check the Sec-WebSocket-Accept matches.
+    var responseBuf = await _readUntil(client, "\r\n\r\n");
+    var responseStr = responseBuf.toString("utf8");
+    check("WebSocketConnection: 101 response sent",
+          responseStr.indexOf("HTTP/1.1 101") === 0);
+    var expectedAccept = ws.computeAcceptKey(key);
+    check("WebSocketConnection: Sec-WebSocket-Accept correct",
+          responseStr.toLowerCase().indexOf("sec-websocket-accept: " + expectedAccept.toLowerCase()) !== -1);
+
+    // Send a masked text frame "ping-test"
+    var clientFrame = ws.serializeFrame(ws.OPCODE_TEXT, Buffer.from("ping-test", "utf8"), { mask: true });
+    client.write(clientFrame);
+
+    // Read the server's echo (unmasked) — buffered until we have at least one frame.
+    var echoBuf = await _readNBytes(client, 2);   // header at minimum
+    // Use FrameParser on the response
+    var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
+    var echoChunks = [echoBuf];
+    var echoFrames = parser.push(echoBuf);
+    while (echoFrames.length === 0) {
+      var more = await _readSome(client);
+      echoChunks.push(more);
+      echoFrames = parser.push(more);
+    }
+    check("WebSocketConnection: server echoed frame",
+          echoFrames[0].payload.toString("utf8") === "echo:ping-test");
+    check("WebSocketConnection: server echo unmasked",
+          echoFrames[0].masked === false);
+
+    // Close handshake — client sends close, server echoes.
+    var closePayload = Buffer.alloc(2);
+    closePayload.writeUInt16BE(1000, 0);
+    var clientClose = ws.serializeFrame(ws.OPCODE_CLOSE, closePayload, { mask: true });
+    client.write(clientClose);
+
+    // Read server's close echo.
+    var closeRead = await _readSome(client);
+    var closeFrames = parser.push(closeRead);
+    var closeFrame = closeFrames.find(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
+    check("WebSocketConnection: server echoed close",
+          closeFrame !== undefined);
+    check("WebSocketConnection: close code 1000",
+          closeFrame && closeFrame.payload.readUInt16BE(0) === 1000);
+
+    // Wait for socket to fully close.
+    await new Promise(function (r) { client.once("close", r); setTimeout(r, 1000); });
+  } finally {
+    server.close();
+  }
+}
+
+// Test helpers — local to the websocket suite. nodeCrypto for the
+// random key, _readUntil/_readNBytes/_readSome for incremental client
+// socket reads.
+function nodeCryptoForTest() { return require("crypto"); }
+function _readUntil(socket, marker) {
+  return new Promise(function (resolve) {
+    var buf = Buffer.alloc(0);
+    function onData(chunk) {
+      buf = Buffer.concat([buf, chunk]);
+      if (buf.toString("binary").indexOf(marker) !== -1) {
+        socket.removeListener("data", onData);
+        resolve(buf);
+      }
+    }
+    socket.on("data", onData);
+  });
+}
+function _readNBytes(socket, n) {
+  return new Promise(function (resolve) {
+    var chunks = [];
+    var have = 0;
+    function onData(chunk) {
+      chunks.push(chunk);
+      have += chunk.length;
+      if (have >= n) {
+        socket.removeListener("data", onData);
+        resolve(Buffer.concat(chunks));
+      }
+    }
+    socket.on("data", onData);
+  });
+}
+function _readSome(socket) {
+  return new Promise(function (resolve) {
+    socket.once("data", resolve);
+  });
+}
+
 async function testHttpClientObserver() {
   var http = require("http");
   var server = http.createServer(function (req, res) { res.writeHead(200); res.end("ok"); });
@@ -2433,6 +2693,10 @@ async function run() {
   await testHttpClientH2ErrorStatus();
   await testHttpClientH2Multiplex();
   await testHttpClientH2Stream();
+  // websocket primitive (RFC 6455)
+  testWebSocketHandshake();
+  testWebSocketFrames();
+  await testWebSocketConnection();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
@@ -2517,6 +2781,9 @@ module.exports = {
   testHttpClientH2ErrorStatus:               testHttpClientH2ErrorStatus,
   testHttpClientH2Multiplex:                 testHttpClientH2Multiplex,
   testHttpClientH2Stream:                    testHttpClientH2Stream,
+  testWebSocketHandshake:                    testWebSocketHandshake,
+  testWebSocketFrames:                       testWebSocketFrames,
+  testWebSocketConnection:                   testWebSocketConnection,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,

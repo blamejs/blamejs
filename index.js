@@ -51,6 +51,7 @@ var lazyRequire = require("./lib/lazy-require");
 var frameworkError = require("./lib/framework-error");
 var logger = require("./lib/logger");
 var httpClient = require("./lib/http-client");
+var websocket = require("./lib/websocket");
 
 module.exports = {
   crypto:           crypto,
@@ -89,6 +90,7 @@ module.exports = {
   frameworkError:   frameworkError,
   logger:           logger,
   httpClient:       httpClient,
+  websocket:        websocket,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
