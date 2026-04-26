@@ -354,13 +354,13 @@ async function setupTestDb(tmpDir, schemaOverrides) {
 }
 
 async function teardownTestDb(tmpDir) {
+  // Drain the audit handler's buffered emissions BEFORE close, so the
+  // pending audit rows (from middleware/storage/external-db emits during
+  // the test) land in audit_log and don't leak into the next test's
+  // database. The audit handler's emit() is sync + buffered; flush()
+  // is the explicit drain.
+  try { await b.audit.flush(); } catch (_e) {}
   try { b.db.close(); } catch (_e) {}
-  // Drain pending audit-recordSafe Promises before resetting db state.
-  // Fire-and-forget audit calls (middleware, log-stream, external-db
-  // emits) finish on later microtask ticks; without this drain, those
-  // Promises resume after _resetForTest has already nullified `database`
-  // and throw "db.init() must be awaited" during the next test's run.
-  for (var i = 0; i < 5; i++) await new Promise(function (r) { setImmediate(r); });
   b.audit._resetForTest();
   b.db._resetForTest();
   b.vault._resetForTest();
@@ -2290,6 +2290,8 @@ async function testQueueConsume() {
     var doneCount = b.db.prepare("SELECT COUNT(*) AS n FROM _blamejs_jobs WHERE queueName = ? AND status = ?").get("test-job", "done");
     check("all jobs marked done",                      doneCount.n === 3);
 
+    // Drain buffered audit emissions before reading audit_log.
+    await b.audit.flush();
     // Audit chain has system.queue.enqueue + .consume.start + .consume.success
     var enqRows = await b.audit.query({ action: "system.queue.enqueue" });
     check("audit recorded enqueue events",             enqRows.length === 3);
@@ -2329,6 +2331,8 @@ async function testQueueRetryAndFail() {
     check("job ends up in 'failed' status after maxAttempts",  lastStatus === "failed");
     check("handler invoked maxAttempts times",                 attempts === 3);
 
+    // Drain buffered audit emissions before reading audit_log.
+    await b.audit.flush();
     // Audit chain has consume.failure events
     var failRows = await b.audit.query({ action: "system.queue.consume.failure" });
     check("audit recorded consume.failure events",             failRows.length === 3);
@@ -2582,6 +2586,8 @@ async function testLogStreamBidirectional() {
     check("opts.source preserved",                        received[0].opts.source === "siem-test");
     check("handler return value captured in results",     results[0].ok === true && results[0].value === "ack-1");
 
+    // Drain buffered audit emissions before reading audit_log.
+    await b.audit.flush();
     // Audit: incoming command logged
     var incRows = await b.audit.query({ action: "system.log.incoming" });
     check("audit recorded system.log.incoming",           incRows.length === 1);
@@ -2698,6 +2704,8 @@ async function testExternalDbBasic() {
     check("healthCheck returns ok for primary",          hc.primary && hc.primary.ok === true);
     check("healthCheck returns breakerState",            hc.primary.breakerState === "closed");
 
+    // Drain buffered audit emissions before reading audit_log.
+    await b.audit.flush();
     // Audit recorded
     var qRows = await b.audit.query({ action: "system.externaldb.query" });
     check("audit recorded externaldb.query events",      qRows.length >= 3);
@@ -2777,13 +2785,10 @@ async function testExternalDbTransaction() {
     } catch (e) { caught = e.message === "simulated"; }
     check("transaction error propagates",                caught);
 
-    // External-db emits audit fire-and-forget (avoids cluster-mode
-    // recursion); poll briefly for the rows to land before querying.
-    var txRows = [];
-    for (var pollI = 0; pollI < 20 && txRows.length < 2; pollI++) {
-      await new Promise(function (r) { setTimeout(r, 10); });
-      txRows = await b.audit.query({ action: "system.externaldb.transaction" });
-    }
+    // External-db's audit emissions buffer in the handler; flush
+    // explicitly to make them durable before querying.
+    await b.audit.flush();
+    var txRows = await b.audit.query({ action: "system.externaldb.transaction" });
     check("transaction events audit-logged",             txRows.length >= 2);
     var failRows = txRows.filter(function (r) { return r.outcome === "failure"; });
     check("rollback event recorded as failure",          failRows.length === 1);
@@ -3014,6 +3019,8 @@ async function testMiddlewareErrorHandler() {
     var b3 = JSON.parse(c3.body);
     check("errorHandler: 400 body includes path",        b3.error.path === "$.email");
 
+    // Drain buffered audit emissions before reading audit_log.
+    await b.audit.flush();
     // Audit recorded
     var errRows = await b.audit.query({ action: "system.http.error" });
     check("errorHandler: audit-recorded errors",          errRows.length === 3);
