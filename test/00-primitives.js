@@ -1458,6 +1458,53 @@ function testBufferSafeBoundedChunkCollector() {
   check("collector: requires maxBytes", threwBadArg);
 }
 
+function testLogger() {
+  check("logger namespace present",        typeof b.logger === "object");
+  check("logger.createLogger is function", typeof b.logger.createLogger === "function");
+
+  // Capture console output by stubbing
+  var origLog = console.log;
+  var origErr = console.error;
+  var captured = { log: [], error: [] };
+  console.log   = function (msg) { captured.log.push(msg); };
+  console.error = function (msg) { captured.error.push(msg); };
+
+  try {
+    var log = b.logger.createLogger("testmod");
+
+    // Default invocation = info → console.log
+    log("hello");
+    check("logger: default invocation logs to stdout", captured.log[0] === "[blamejs:testmod] hello");
+
+    // .info path
+    log.info("info msg");
+    check("logger: .info logs to stdout", captured.log[1] === "[blamejs:testmod] info msg");
+
+    // .warn → stderr
+    log.warn("warn msg");
+    check("logger: .warn logs to stderr", captured.error[0] === "[blamejs:testmod] warn msg");
+
+    // .error → stderr
+    log.error("err msg");
+    check("logger: .error logs to stderr", captured.error[1] === "[blamejs:testmod] err msg");
+
+    // .prefix exposed
+    check("logger: .prefix exposes the namespace", log.prefix === "[blamejs:testmod] ");
+
+    // Empty / non-string name rejected
+    var threw = false;
+    try { b.logger.createLogger(""); } catch (_e) { threw = true; }
+    check("logger: rejects empty name", threw);
+
+    var threw2 = false;
+    try { b.logger.createLogger(null); } catch (_e) { threw2 = true; }
+    check("logger: rejects non-string name", threw2);
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+  }
+}
+
 function testFrameworkError() {
   var fe = b.frameworkError;
   check("frameworkError namespace present", typeof fe === "object");
@@ -1879,6 +1926,8 @@ async function run() {
   testBufferSafeToBuffer();
   testBufferSafeBoundedChunkCollector();
   testBufferSafeSecureZero();
+  // logger primitive (per-module log channel)
+  testLogger();
   // framework-error base + cross-module operational classes
   testFrameworkError();
   // lazy-require primitive (used by 12 modules to break circular loads)
@@ -1951,6 +2000,7 @@ module.exports = {
   testBufferSafeToBuffer:                    testBufferSafeToBuffer,
   testBufferSafeBoundedChunkCollector:       testBufferSafeBoundedChunkCollector,
   testBufferSafeSecureZero:                  testBufferSafeSecureZero,
+  testLogger:                                testLogger,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
