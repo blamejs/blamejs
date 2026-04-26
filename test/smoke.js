@@ -319,6 +319,7 @@ check("db.hashFor is a function",        typeof b.db.hashFor === "function");
 check("fieldCrypto namespace present",   typeof b.fieldCrypto === "object");
 
 async function setupTestDb(tmpDir, schemaOverrides) {
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
   b.vault._resetForTest();
   b.db._resetForTest();
   await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
@@ -771,8 +772,13 @@ async function testAuditChainBreak() {
     var v1 = b.audit.verify();
     check("chain ok before tampering", v1.ok === true);
 
-    // Manually corrupt a row's reason field — should change rowHash on next verify
+    // Manually corrupt a row's reason field. As of v0.0.7 the audit_log
+    // table has BEFORE-UPDATE/DELETE triggers blocking direct mutation —
+    // simulating a raw-DB-file tamper that bypassed those guards by
+    // dropping the triggers around the corruption.
+    b.db.runSql("DROP TRIGGER IF EXISTS no_update_audit_log");
     b.db.prepare('UPDATE audit_log SET reason = ? WHERE monotonicCounter = 1').run("vault:tampered-but-not-actually-sealed");
+    b.db.runSql("CREATE TRIGGER IF NOT EXISTS no_update_audit_log BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only — UPDATE prohibited'); END");
     var v2 = b.audit.verify();
     check("chain detected after row tampering",         v2.ok === false);
     check("chain break reports breakAt index",          v2.breakAt === 0 || v2.breakAt === 1);
@@ -1107,6 +1113,224 @@ async function testStorage() {
 }
 
 // =====================================================================
+// v0.0.7 — traceability hardening (append-only triggers, FKs, metadata,
+//          audit self-logging, beginTrace)
+// =====================================================================
+
+async function testAppendOnlyTriggers() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-trig-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+    b.audit.record({ action: "test.event", outcome: "success" });
+
+    var deleteRejected = false;
+    try { b.db.runSql("DELETE FROM audit_log"); }
+    catch (e) { deleteRejected = /append-only|prohibited/i.test(e.message); }
+    check("DELETE on audit_log raises ABORT",            deleteRejected);
+
+    var updateRejected = false;
+    try { b.db.runSql("UPDATE audit_log SET outcome = 'denied' WHERE 1=1"); }
+    catch (e) { updateRejected = /append-only|prohibited/i.test(e.message); }
+    check("UPDATE on audit_log raises ABORT",            updateRejected);
+
+    // consent_log
+    b.consent.grant({ subjectId: "u-1", purpose: "x", lawfulBasis: "consent", channel: "api" });
+    var conDelRejected = false;
+    try { b.db.runSql("DELETE FROM consent_log"); }
+    catch (e) { conDelRejected = /append-only|prohibited/i.test(e.message); }
+    check("DELETE on consent_log raises ABORT",          conDelRejected);
+
+    // INSERT still works (the framework's API uses it constantly above)
+    var counts = b.db.prepare("SELECT (SELECT COUNT(*) FROM audit_log) AS a, (SELECT COUNT(*) FROM consent_log) AS c").get();
+    check("INSERT on audit_log still works",             counts.a >= 1);
+    check("INSERT on consent_log still works",           counts.c >= 1);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testForeignKeys() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fk-"));
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir: tmpDir,
+      atRest:  "plain",
+      schema: [
+        {
+          name: "users",
+          columns: { _id: "TEXT", email: "TEXT", emailHash: "TEXT" },
+          primaryKey: "_id",
+          indexes:    ["emailHash"],
+          sealedFields:  ["email"],
+          derivedHashes: { emailHash: { from: "email", normalize: function (v) { return String(v).toLowerCase(); } } },
+        },
+        {
+          name: "orders",
+          columns: { _id: "TEXT", userId: "TEXT NOT NULL", amount: "REAL" },
+          primaryKey: "_id",
+          foreignKeys: [{ column: "userId", references: "users._id", onDelete: "CASCADE" }],
+        },
+      ],
+    });
+
+    // Verify foreign_keys pragma is ON
+    var fkPragma = b.db.prepare("PRAGMA foreign_keys").get();
+    check("foreign_keys pragma is enabled",              fkPragma.foreign_keys === 1);
+
+    // Verify FK declared in DDL
+    var fkInfo = b.db.prepare("PRAGMA foreign_key_list(orders)").all();
+    check("orders has 1 FK declared",                    fkInfo.length === 1);
+    check("FK references users(_id)",                    fkInfo[0].table === "users" && fkInfo[0].from === "userId" && fkInfo[0].to === "_id");
+    check("FK on_delete is CASCADE",                     fkInfo[0].on_delete === "CASCADE");
+
+    // Insert valid user + order
+    b.db.from("users").insertOne({ _id: "u-1", email: "a@b.com" });
+    b.db.from("orders").insertOne({ _id: "o-1", userId: "u-1", amount: 100 });
+    check("valid order insert succeeds",                 b.db.from("orders").where({ _id: "o-1" }).first() !== null);
+
+    // FK violation: order with non-existent userId
+    var fkViolated = false;
+    try { b.db.from("orders").insertOne({ _id: "o-2", userId: "u-nonexistent", amount: 50 }); }
+    catch (e) { fkViolated = /FOREIGN KEY|constraint/i.test(e.message); }
+    check("FK violation rejects insert",                 fkViolated);
+
+    // Cascade delete: deleting user removes their orders
+    b.db.from("users").where({ _id: "u-1" }).deleteOne();
+    check("ON DELETE CASCADE removes child rows",        b.db.from("orders").where({ _id: "o-1" }).first() === null);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testTableMetadata() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-meta-"));
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir: tmpDir,
+      atRest:  "plain",
+      schema: [
+        {
+          name: "items",
+          columns: { _id: "TEXT", ownerId: "TEXT", name: "TEXT", nameHash: "TEXT" },
+          primaryKey: "_id",
+          foreignKeys: [{ column: "ownerId", references: "users._id", onDelete: "SET NULL" }],
+          indexes: ["nameHash"],
+          sealedFields: ["name"],
+          derivedHashes: { nameHash: { from: "name" } },
+          subjectField: "ownerId",
+          personalDataCategories: { name: "label" },
+        },
+        // users table with no FKs
+        { name: "users", columns: { _id: "TEXT" }, primaryKey: "_id" },
+      ],
+    });
+
+    var meta = b.db.getTableMetadata("items");
+    check("metadata returns object",                     typeof meta === "object" && meta !== null);
+    check("metadata.primaryKey is array",                Array.isArray(meta.primaryKey) && meta.primaryKey[0] === "_id");
+    check("metadata.foreignKeys captured",               meta.foreignKeys.length === 1 && meta.foreignKeys[0].references === "users._id");
+    check("metadata.sealedFields captured",              meta.sealedFields[0] === "name");
+    check("metadata.subjectField captured",              meta.subjectField === "ownerId");
+    check("metadata.personalDataCategories captured",    meta.personalDataCategories.name === "label");
+
+    // Framework tables also show up in metadata
+    var auditMeta = b.db.getTableMetadata("audit_log");
+    check("audit_log metadata available",                auditMeta !== null);
+    check("audit_log primaryKey is _id",                 auditMeta.primaryKey[0] === "_id");
+
+    // Mutating the snapshot doesn't affect framework state
+    meta.foreignKeys.push({ column: "fake" });
+    var freshMeta = b.db.getTableMetadata("items");
+    check("metadata snapshot is deep-copied",            freshMeta.foreignKeys.length === 1);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testAuditSelfLogging() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-selflog-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+    b.audit.record({ action: "test.event", outcome: "success" });
+    b.audit.record({ action: "test.event", outcome: "success" });
+
+    // A query auto-records an audit.read event before returning rows
+    var beforeCount = b.db.from("audit_log").count();
+    var rows = b.audit.query({ action: "test.event" });
+    var afterCount = b.db.from("audit_log").count();
+    check("query returned both test.event rows",         rows.length === 2);
+    check("query auto-recorded an audit.read event",     afterCount === beforeCount + 1);
+
+    // The audit.read row exists
+    var readRows = b.audit.query({ action: "audit.read" });
+    check("audit.read events queryable directly",        readRows.length >= 1);
+    check("audit.read row has criteria metadata",
+          readRows[0].metadata && /criteria/.test(readRows[0].metadata));
+
+    // Querying for audit.read does NOT recursively self-log (else infinite chain)
+    var beforeRecursionCheck = b.db.from("audit_log").count();
+    b.audit.query({ action: "audit.read" });
+    var afterRecursionCheck = b.db.from("audit_log").count();
+    check("query for audit.read does NOT auto-self-log",  afterRecursionCheck === beforeRecursionCheck);
+
+    // Audit chain still verifies through all the self-logging
+    var v = b.audit.verify();
+    check("audit chain ok after self-log activity",       v.ok === true);
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testBeginTrace() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-trace-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("test");
+
+    var t1 = b.audit.beginTrace();
+    var t2 = b.audit.beginTrace();
+    check("beginTrace returns 32-hex string",            typeof t1 === "string" && t1.length === 32 && /^[0-9a-f]+$/.test(t1));
+    check("beginTrace returns unique values",            t1 !== t2);
+
+    // Apps thread the traceId through linked events
+    var ev1 = b.audit.record({
+      action:   "test.start",
+      outcome:  "success",
+      metadata: { traceId: t1 },
+    });
+    var ev2 = b.audit.record({
+      action:   "test.continue",
+      outcome:  "success",
+      metadata: { traceId: t1, parentEventId: ev1._id },
+    });
+
+    // Query and verify trace correlation is queryable from metadata
+    var rows = b.audit.query({ action: "test.start" });
+    var meta = JSON.parse(rows[0].metadata);
+    check("traceId persists into audit row metadata",    meta.traceId === t1);
+
+    var rows2 = b.audit.query({ action: "test.continue" });
+    var meta2 = JSON.parse(rows2[0].metadata);
+    check("parentEventId persists into audit row",       meta2.parentEventId === ev1._id);
+    check("traceId is shared across linked events",      meta2.traceId === t1);
+
+    void ev2;
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -1385,6 +1609,12 @@ function testJsonFormats() {
   testJsonValidate();
   testJsonValidateCollect();
   testJsonFormats();
+  // v0.0.7 traceability hardening
+  await testAppendOnlyTriggers();
+  await testForeignKeys();
+  await testTableMetadata();
+  await testAuditSelfLogging();
+  await testBeginTrace();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

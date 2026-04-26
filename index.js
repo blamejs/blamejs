@@ -31,6 +31,7 @@ var subject = require("./lib/subject");
 var session = require("./lib/session");
 var storage = require("./lib/storage");
 var json = require("./lib/json-safe");
+var ntpCheck = require("./lib/ntp-check");
 
 module.exports = {
   crypto:           crypto,
@@ -48,5 +49,6 @@ module.exports = {
   session:          session,
   storage:          storage,
   json:             json,
+  ntpCheck:         ntpCheck,
   version:          constants.version,
 };
