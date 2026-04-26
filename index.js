@@ -27,7 +27,7 @@ var consent = require("./lib/consent");
 var subject = require("./lib/subject");
 var session = require("./lib/session");
 var storage = require("./lib/storage");
-var json = require("./lib/json-safe");
+var jsonSafe = require("./lib/json-safe");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
@@ -67,7 +67,7 @@ module.exports = {
   atomicFile:       atomicFile,
   parsers:          parsers,
   cluster:          cluster,
-  json:             json,
+  jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
