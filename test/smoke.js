@@ -3551,6 +3551,228 @@ function testTomlInlineTablesAndDottedKeys() {
   check("toml: dotted-key creates nested object",  doc.name.first === "Tom" && doc.name.last === "Preston-Werner");
 }
 
+function testEnvParseBasic() {
+  var src =
+    "# comment\n" +
+    "DATABASE_URL=postgres://localhost\n" +
+    "PORT=8080\n" +
+    "FEATURE_FLAG=true\n" +
+    "EMPTY=\n" +
+    "QUOTED=\"hello world\"\n" +
+    "QUOTED_NL=\"line1\\nline2\"\n" +
+    "LITERAL='no \\n escapes'\n" +
+    "WITH_SPACES = trimmed\n" +
+    "export EXPORTED=ok\n" +
+    "INLINE=value # trailing comment\n";
+  var values = b.parsers.env.parse(src);
+  check("env: simple key/value",                   values.DATABASE_URL === "postgres://localhost");
+  check("env: numeric stays a string by default",  values.PORT === "8080");
+  check("env: bool stays a string by default",     values.FEATURE_FLAG === "true");
+  check("env: empty value",                        values.EMPTY === "");
+  check("env: double-quoted",                      values.QUOTED === "hello world");
+  check("env: double-quoted decodes \\n",          values.QUOTED_NL === "line1\nline2");
+  check("env: single-quoted preserves backslash",  values.LITERAL === "no \\n escapes");
+  check("env: spaces around = stripped",           values.WITH_SPACES === "trimmed");
+  check("env: 'export' prefix accepted",           values.EXPORTED === "ok");
+  check("env: trailing # comment stripped",        values.INLINE === "value");
+}
+
+function testEnvParseSecurityRejections() {
+  // $VAR expansion banned
+  var threwExpand = false;
+  try { b.parsers.env.parse("KEY=$OTHER"); }
+  catch (e) { threwExpand = e.code === "env/expansion-banned"; }
+  check("env: $VAR expansion rejected",            threwExpand);
+
+  var threwExpandQuoted = false;
+  try { b.parsers.env.parse("KEY=\"hello $WORLD\""); }
+  catch (e) { threwExpandQuoted = e.code === "env/expansion-banned"; }
+  check("env: $VAR in double-quoted rejected",     threwExpandQuoted);
+
+  // \$ literal works
+  var literal = b.parsers.env.parse("KEY=\"\\$LITERAL\"");
+  check("env: \\$ literal escape works",           literal.KEY === "$LITERAL");
+
+  // Bad key shape
+  var threwShape = false;
+  try { b.parsers.env.parse("lowercase=value"); }
+  catch (e) { threwShape = e.code === "env/bad-key-shape"; }
+  check("env: lowercase key rejected by default",  threwShape);
+
+  // Hyphen rejected
+  var threwHyphen = false;
+  try { b.parsers.env.parse("MY-KEY=value"); }
+  catch (e) { threwHyphen = e.code === "env/bad-key-shape"; }
+  check("env: hyphenated key rejected by default", threwHyphen);
+
+  // __proto__ rejected
+  var threwProto = false;
+  try { b.parsers.env.parse("__proto__=pwn"); }
+  catch (e) { threwProto = e.code === "env/poisoned-key" || e.code === "env/bad-key-shape"; }
+  check("env: __proto__ rejected",                 threwProto);
+
+  // Duplicate key
+  var threwDup = false;
+  try { b.parsers.env.parse("KEY=1\nKEY=2"); }
+  catch (e) { threwDup = e.code === "env/duplicate-key"; }
+  check("env: duplicate key rejected",             threwDup);
+
+  // Missing =
+  var threwMissingEq = false;
+  try { b.parsers.env.parse("KEY value"); }
+  catch (e) { threwMissingEq = e.code === "env/bad-line"; }
+  check("env: missing '=' rejected",               threwMissingEq);
+
+  // Tab in unquoted value
+  var threwTab = false;
+  try { b.parsers.env.parse("KEY=\tvalue"); }
+  catch (e) { threwTab = e.code === "env/tab-in-value"; }
+  check("env: tab at start of value rejected",     threwTab);
+
+  // Size cap
+  var threwSize = false;
+  try { b.parsers.env.parse("KEY=" + "x".repeat(2000), { maxBytes: 1000 }); }
+  catch (e) { threwSize = e.code === "env/too-large"; }
+  check("env: maxBytes enforced",                  threwSize);
+
+  // Unterminated string
+  var threwUnterm = false;
+  try { b.parsers.env.parse("KEY=\"unterminated"); }
+  catch (e) { threwUnterm = e.code === "env/unterminated-string"; }
+  check("env: unterminated quoted rejected",       threwUnterm);
+}
+
+function testEnvLoadDiffAndAudit() {
+  // Use real file I/O via atomicFile — exercises load() end-to-end.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-env-"));
+  try {
+    var envPath = path.join(tmpDir, ".env");
+    var snapPath = path.join(tmpDir, "env.snapshot.json");
+
+    fs.writeFileSync(envPath, "DATABASE_URL=postgres://A\nFEATURE_FOO=true\n");
+    var res1 = b.parsers.env.load(envPath, {
+      snapshotPath: snapPath,
+      audit:        false,    // no framework db wired in this test fixture
+    });
+    check("env.load returns values",                 res1.values.DATABASE_URL === "postgres://A");
+    check("env.load first call: 2 added",            res1.diff.added.length === 2);
+    check("env.load first call: nothing removed",    res1.diff.removed.length === 0);
+    check("env.load first call: nothing changed",    res1.diff.changed.length === 0);
+
+    // Now change one and add another
+    fs.writeFileSync(envPath, "DATABASE_URL=postgres://B\nFEATURE_FOO=true\nNEW_KEY=hello\n");
+    var res2 = b.parsers.env.load(envPath, { snapshotPath: snapPath, audit: false });
+    check("env.load second call: 1 added",           res2.diff.added.length === 1 && res2.diff.added[0] === "NEW_KEY");
+    check("env.load second call: nothing removed",   res2.diff.removed.length === 0);
+    check("env.load second call: 1 changed",         res2.diff.changed.length === 1);
+    check("env.load second call: changed key",       res2.diff.changed[0].key === "DATABASE_URL");
+
+    // Now remove one
+    fs.writeFileSync(envPath, "DATABASE_URL=postgres://B\nNEW_KEY=hello\n");
+    var res3 = b.parsers.env.load(envPath, { snapshotPath: snapPath, audit: false });
+    check("env.load third call: 1 removed",          res3.diff.removed.length === 1 && res3.diff.removed[0] === "FEATURE_FOO");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function testEnvLoadSchemaAndTypos() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-env-"));
+  try {
+    var envPath = path.join(tmpDir, ".env");
+    fs.writeFileSync(envPath,
+      "DATABSE_URL=oops\n" +              // typo of DATABASE_URL
+      "feature_flag=true\n");             // case mismatch — wait, this is rejected by keyShape
+    // Actually case-mismatch must use keys that pass shape. Use uppercase
+    // mismatch instead — rewrite.
+    fs.writeFileSync(envPath,
+      "DATABSE_URL=oops\n" +              // typo (missing 'A')
+      "FEATURE_FLAG=true\n" +             // exact match for registered
+      "TOTALLY_UNKNOWN=other\n");
+    var expected = {
+      DATABASE_URL: { type: "string", sensitivity: "breaking" },
+      FEATURE_FLAG: { type: "boolean", sensitivity: "runtime" },
+    };
+    var res = b.parsers.env.load(envPath, {
+      expected: expected,
+      audit:    false,
+    });
+    check("env: schema coerces type when registered",  res.values.FEATURE_FLAG === true);
+
+    // Find the typo entry in suspicious
+    var typo = res.diff.suspicious.find(function (s) { return s.key === "DATABSE_URL"; });
+    check("env: typo flagged as suspicious",            typo && typo.suggestion === "DATABASE_URL");
+    check("env: typo reason is single-char-typo",       typo && typo.reason === "single-char-typo");
+
+    var unknown = res.diff.suspicious.find(function (s) { return s.key === "TOTALLY_UNKNOWN"; });
+    check("env: unrelated unknown flagged",             unknown && unknown.reason === "unknown");
+
+    // rejectUnknown mode refuses
+    var threwRejectUnknown = false;
+    try { b.parsers.env.load(envPath, { expected: expected, audit: false, rejectUnknown: true }); }
+    catch (e) { threwRejectUnknown = e.code === "env/unknown-keys"; }
+    check("env: rejectUnknown surfaces error",         threwRejectUnknown);
+
+    // Required key missing
+    fs.writeFileSync(envPath, "FEATURE_FLAG=true\n");
+    var threwRequired = false;
+    try {
+      b.parsers.env.load(envPath, {
+        expected: { DATABASE_URL: { type: "string", required: true } },
+        audit:    false,
+      });
+    } catch (e) { threwRequired = e.code === "env/missing-required"; }
+    check("env: missing required key rejected",         threwRequired);
+
+    // Bad type coercion
+    fs.writeFileSync(envPath, "FEATURE_FLAG=yes\n");
+    var threwBadBool = false;
+    try {
+      b.parsers.env.load(envPath, {
+        expected: { FEATURE_FLAG: { type: "boolean" } },
+        audit:    false,
+      });
+    } catch (e) { threwBadBool = e.code === "env/bad-type"; }
+    check("env: 'yes' for boolean rejected (no Norway)", threwBadBool);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function testEnvLoadBreakingChange() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-env-"));
+  try {
+    var envPath = path.join(tmpDir, ".env");
+    var snapPath = path.join(tmpDir, "env.snapshot.json");
+    var expected = {
+      DATABASE_URL: { type: "string", sensitivity: "breaking" },
+    };
+
+    fs.writeFileSync(envPath, "DATABASE_URL=postgres://A\n");
+    b.parsers.env.load(envPath, { expected: expected, snapshotPath: snapPath, audit: false });
+
+    // Try to change without acknowledgement
+    fs.writeFileSync(envPath, "DATABASE_URL=postgres://B\n");
+    var threwBreaking = false;
+    try {
+      b.parsers.env.load(envPath, { expected: expected, snapshotPath: snapPath, audit: false });
+    } catch (e) { threwBreaking = e.code === "env/breaking-change"; }
+    check("env: breaking-sensitivity change refused",   threwBreaking);
+
+    // With explicit allow, succeeds
+    var ok = b.parsers.env.load(envPath, {
+      expected:     expected,
+      snapshotPath: snapPath,
+      audit:        false,
+      allow:        ["DATABASE_URL"],
+    });
+    check("env: { allow: [...] } authorises breaking change",
+          ok.values.DATABASE_URL === "postgres://B");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 function testYamlBasic() {
   var src =
     "title: blamejs\n" +
@@ -4501,6 +4723,11 @@ async function testClusterInitAndRequireLeader() {
   testYamlBlockScalars();
   testYamlQuotedStrings();
   testYamlSecurityRejections();
+  testEnvParseBasic();
+  testEnvParseSecurityRejections();
+  await testEnvLoadDiffAndAudit();
+  await testEnvLoadSchemaAndTypos();
+  await testEnvLoadBreakingChange();
   // Cluster coordination — leader election + fencing tokens
   await testClusterSingleNodeFallback();
   await testClusterProviderAcquireAndRenew();
