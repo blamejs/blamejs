@@ -1846,9 +1846,13 @@ function testConstantsReferenceIntegrity() {
   // instead of a noisy crash. Live evidence: a stale FIVE_MIN reference
   // in db.js + router.js sat undetected because neither call site
   // throws when the constant is missing.
-  var fs   = require("fs");
-  var path = require("path");
-
+  //
+  // File reads go through b.atomicFile.readSync (framework primitive,
+  // size-capped + error-classed). Directory listing uses fs.readdirSync
+  // — the framework lacks a list-dir primitive today (atomic-file owns
+  // single-file ops); 5+ other lib/ sites use fs.readdirSync the same
+  // way, so this matches existing convention pending a future
+  // atomicFile.listDir primitive.
   var TIME_FNS  = new Set(Object.keys(b.constants.TIME));
   var BYTES_FNS = new Set(Object.keys(b.constants.BYTES));
 
@@ -1872,7 +1876,7 @@ function testConstantsReferenceIntegrity() {
 
   var bad = [];
   for (var f = 0; f < files.length; f++) {
-    var src = fs.readFileSync(files[f], "utf8");
+    var src = b.atomicFile.readSync(files[f]).toString("utf8");
     var stripped = src
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
