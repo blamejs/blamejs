@@ -2111,7 +2111,8 @@ async function testWebSocketConnection() {
     // is incidental; don't block the test on it. closeGraceMs:50 on
     // the server side keeps the actual TCP teardown fast anyway.
   } finally {
-    server.close();
+    try { server.closeAllConnections(); } catch (_e) {}
+    await new Promise(function (r) { server.close(function () { r(); }); });
   }
 }
 
@@ -2895,8 +2896,12 @@ module.exports = {
       },
       teardown: async function (ctx) {
         if (!ctx) return;
-        try { ctx.client.close(); } catch (_e) {}
-        try { ctx.server.close(); } catch (_e) {}
+        try { ctx.client.destroy(); } catch (_e) {}
+        try { ctx.server.closeAllConnections(); } catch (_e) {}
+        await new Promise(function (resolve) {
+          try { ctx.server.close(function () { resolve(); }); }
+          catch (_e) { resolve(); }
+        });
       },
       tests: [
         {
@@ -3014,7 +3019,15 @@ module.exports = {
         };
       },
       teardown: async function (ctx) {
-        if (ctx && ctx.server) ctx.server.close();
+        if (!ctx) return;
+        // Operator API closes all active WS connections via the
+        // proper close handshake (or force-destroys after timeout).
+        // Same primitive operators use for graceful rolling deploy.
+        try { await ctx.router.closeWebSockets({ timeoutMs: 200 }); } catch (_e) {}
+        await new Promise(function (resolve) {
+          try { ctx.server.close(function () { resolve(); }); }
+          catch (_e) { resolve(); }
+        });
       },
       tests: [
         {
