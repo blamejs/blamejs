@@ -35,6 +35,7 @@ var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
 var objectStoreRetry = require("./lib/object-store-retry");
+var queue = require("./lib/queue");
 
 module.exports = {
   crypto:           crypto,
@@ -54,6 +55,7 @@ module.exports = {
   storage:          storage,
   objectStore:      objectStore,
   objectStoreRetry: objectStoreRetry,
+  queue:            queue,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,

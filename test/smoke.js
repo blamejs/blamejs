@@ -2203,6 +2203,185 @@ async function testAzureBlobMockServer() {
 }
 
 // =====================================================================
+// v0.0.12 — queue dispatcher + local SQLite-backed protocol
+// =====================================================================
+
+async function testQueueLocal() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-queue-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+
+    check("queue namespace present",                  typeof b.queue === "object");
+    check("queue.listBackends has 1 entry",           b.queue.listBackends().length === 1);
+
+    // Enqueue
+    var result = await b.queue.enqueue("send-welcome", { userId: "u-1", email: "a@b.com" }, {
+      classification: "personal",
+      traceId:        "trace-123",
+    });
+    check("enqueue returns jobId",                     typeof result.jobId === "string");
+    check("enqueue returns queueName",                 result.queueName === "send-welcome");
+    check("enqueue returns classification",            result.classification === "personal");
+
+    // size reflects pending
+    check("size returns 1 after one enqueue",          (await b.queue.size("send-welcome")) === 1);
+
+    // payload sealed on disk
+    var rawRow = b.db.prepare("SELECT payload FROM _blamejs_jobs WHERE _id = ?").get(result.jobId);
+    check("queue payload sealed in DB",                rawRow.payload.startsWith("vault:"));
+
+    // unrelated queue is independent
+    check("size returns 0 for empty queue",            (await b.queue.size("other-queue")) === 0);
+
+    // purge clears
+    var purged = await b.queue.purge("send-welcome");
+    check("purge returns count of deleted",            purged === 1);
+    check("size returns 0 after purge",                (await b.queue.size("send-welcome")) === 0);
+
+    // Reserved table name protection still works
+    check("_blamejs_jobs is reserved",                 b.db.RESERVED_TABLE_NAMES.has("_blamejs_jobs"));
+  } finally {
+    try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testQueueConsume() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-qcons-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+
+    var processed = [];
+    var consumer = b.queue.consume("test-job", function (job) {
+      processed.push(job.payload);
+      return Promise.resolve();
+    }, { concurrency: 2, pollIntervalMs: 50, fastPollMs: 20, leaseDurationMs: 5000 });
+
+    await b.queue.enqueue("test-job", { msg: "hello-1" });
+    await b.queue.enqueue("test-job", { msg: "hello-2" });
+    await b.queue.enqueue("test-job", { msg: "hello-3" });
+
+    // Wait for processing (poll up to 3s)
+    var deadline = Date.now() + 3000;
+    while (processed.length < 3 && Date.now() < deadline) {
+      await new Promise(function (r) { setTimeout(r, 50); });
+    }
+    check("consume processed all 3 jobs",              processed.length === 3);
+    check("payloads decoded correctly",                processed.some(p => p.msg === "hello-1"));
+    check("queue size 0 after consume",                (await b.queue.size("test-job")) === 0);
+
+    // All jobs should be in 'done' status
+    var doneCount = b.db.prepare("SELECT COUNT(*) AS n FROM _blamejs_jobs WHERE queueName = ? AND status = ?").get("test-job", "done");
+    check("all jobs marked done",                      doneCount.n === 3);
+
+    // Audit chain has system.queue.enqueue + .consume.start + .consume.success
+    var enqRows = b.audit.query({ action: "system.queue.enqueue" });
+    check("audit recorded enqueue events",             enqRows.length === 3);
+    var sucRows = b.audit.query({ action: "system.queue.consume.success" });
+    check("audit recorded consume.success events",     sucRows.length === 3);
+
+    consumer.cancel();
+  } finally {
+    try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testQueueRetryAndFail() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-qfail-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+
+    var attempts = 0;
+    var consumer = b.queue.consume("fail-job", function (_job) {
+      attempts += 1;
+      throw new Error("simulated failure attempt " + attempts);
+    }, { concurrency: 1, pollIntervalMs: 50, fastPollMs: 20, leaseDurationMs: 5000 });
+
+    await b.queue.enqueue("fail-job", { x: 1 }, { maxAttempts: 3 });
+
+    // Wait until job is finally failed (3 attempts × ~exponential backoff = up to ~7s)
+    var deadline = Date.now() + 12000;
+    var lastStatus;
+    while (Date.now() < deadline) {
+      var row = b.db.prepare("SELECT status FROM _blamejs_jobs WHERE queueName = ?").get("fail-job");
+      lastStatus = row && row.status;
+      if (lastStatus === "failed") break;
+      await new Promise(function (r) { setTimeout(r, 100); });
+    }
+    check("job ends up in 'failed' status after maxAttempts",  lastStatus === "failed");
+    check("handler invoked maxAttempts times",                 attempts === 3);
+
+    // Audit chain has consume.failure events
+    var failRows = b.audit.query({ action: "system.queue.consume.failure" });
+    check("audit recorded consume.failure events",             failRows.length === 3);
+
+    consumer.cancel();
+  } finally {
+    try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testQueueLeaseExpiry() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-qlease-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+
+    // Manually call lease via the backend to simulate a crashed handler
+    // (lease the job, never complete or fail it).
+    var localBackend = require("../lib/queue-local").create({});
+    await b.queue.enqueue("orphan-job", { x: 1 });
+    var leased = await localBackend.lease("orphan-job", 100, 1);  // 100ms lease
+    check("lease returned the job",                    leased.length === 1);
+    check("after lease, job status is inflight",
+          b.db.prepare("SELECT status FROM _blamejs_jobs WHERE queueName = ?").get("orphan-job").status === "inflight");
+
+    // Wait for lease to expire, then sweep
+    await new Promise(function (r) { setTimeout(r, 200); });
+    var swept = await localBackend.sweepExpired();
+    check("sweepExpired returned 1 unstuck job",       swept === 1);
+    check("unstuck job is back to pending",
+          b.db.prepare("SELECT status FROM _blamejs_jobs WHERE queueName = ?").get("orphan-job").status === "pending");
+  } finally {
+    try { await b.queue.shutdown({ timeoutMs: 1000 }); } catch (_e) {}
+    teardownTestDb(tmpDir);
+  }
+}
+
+async function testQueueShutdown() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-qsh-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+
+    var processed = 0;
+    var consumer = b.queue.consume("shutdown-job", async function (_job) {
+      // Long-running handler
+      await new Promise(function (r) { setTimeout(r, 200); });
+      processed += 1;
+    }, { concurrency: 2, pollIntervalMs: 30, fastPollMs: 10, leaseDurationMs: 5000 });
+
+    for (var i = 0; i < 3; i++) await b.queue.enqueue("shutdown-job", { i: i });
+    await new Promise(function (r) { setTimeout(r, 100) }); // let some lease
+
+    var t0 = Date.now();
+    await b.queue.shutdown({ timeoutMs: 5000 });
+    var elapsed = Date.now() - t0;
+
+    check("shutdown waits for in-flight handlers",     processed >= 1);
+    check("shutdown completes under timeout",          elapsed < 5000);
+    void consumer;
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -2505,6 +2684,12 @@ function testJsonFormats() {
   await testGcsMockServer();
   testAzureBlobPrimitives();
   await testAzureBlobMockServer();
+  // v0.0.12 local queue
+  await testQueueLocal();
+  await testQueueConsume();
+  await testQueueRetryAndFail();
+  await testQueueLeaseExpiry();
+  await testQueueShutdown();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
