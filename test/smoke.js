@@ -4571,6 +4571,101 @@ async function testClusterGatesObjectStoreLocal() {
   }
 }
 
+async function testFrameworkSchemaEnsure() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fs-"));
+  var dbPath = path.join(tmpDir, "schema.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+      },
+    });
+    var result = await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    check("ensureSchema returns 4 tables",          result.tables.length === 4);
+    check("ensureSchema includes _blamejs_audit_log",
+          result.tables.indexOf("_blamejs_audit_log") !== -1);
+    check("ensureSchema includes _blamejs_consent_log",
+          result.tables.indexOf("_blamejs_consent_log") !== -1);
+    check("ensureSchema includes _blamejs_audit_checkpoints",
+          result.tables.indexOf("_blamejs_audit_checkpoints") !== -1);
+    check("ensureSchema includes _blamejs_audit_tip",
+          result.tables.indexOf("_blamejs_audit_tip") !== -1);
+
+    // Each table is queryable
+    var auditEmpty = await b.externalDb.query("SELECT COUNT(*) AS n FROM _blamejs_audit_log");
+    check("audit_log table exists and is empty",    auditEmpty.rows[0].n === 0);
+    var consentEmpty = await b.externalDb.query("SELECT COUNT(*) AS n FROM _blamejs_consent_log");
+    check("consent_log table exists and is empty",  consentEmpty.rows[0].n === 0);
+
+    // Audit-tip CHECK constraint enforces scope = 'audit'
+    var threwBadScope = false;
+    try {
+      await b.externalDb.query(
+        "INSERT INTO _blamejs_audit_tip (scope, atMonotonicCounter, fencingToken) VALUES ($1, $2, $3)",
+        ["NOT_AUDIT", 0, 0]
+      );
+    } catch (e) { threwBadScope = true; }
+    check("audit_tip CHECK constraint rejects bad scope", threwBadScope);
+
+    // Idempotent re-run
+    var second = await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    check("ensureSchema is idempotent",             second.tables.length === 4);
+
+    // Indexes exist
+    var idxRow = await b.externalDb.query(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = '_blamejs_audit_log'"
+    );
+    check("audit_log indexes created",              idxRow.rows.length >= 4);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function testFrameworkSchemaTableNameMapping() {
+  check("tableName('audit_log') maps to prefixed",
+        b.frameworkSchema.tableName("audit_log") === "_blamejs_audit_log");
+  check("tableName('consent_log') maps to prefixed",
+        b.frameworkSchema.tableName("consent_log") === "_blamejs_consent_log");
+  check("tableName('audit_checkpoints') maps to prefixed",
+        b.frameworkSchema.tableName("audit_checkpoints") === "_blamejs_audit_checkpoints");
+  check("tableName('_blamejs_audit_tip') is identity",
+        b.frameworkSchema.tableName("_blamejs_audit_tip") === "_blamejs_audit_tip");
+  check("tableName(unknown) returns identity",
+        b.frameworkSchema.tableName("custom_table") === "custom_table");
+  check("LOCAL_TO_EXTERNAL is frozen",
+        Object.isFrozen(b.frameworkSchema.LOCAL_TO_EXTERNAL));
+}
+
+function testFrameworkSchemaInvalidDialect() {
+  var threw = null;
+  try {
+    b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "mysql",
+    }).catch(function (e) { /* swallow async path */ });
+  } catch (e) { threw = e; }
+  // The throw can come either sync (config validation) or async (per-table
+  // execution). In either case the returned promise rejects.
+  return b.frameworkSchema.ensureSchema({
+    externalDbBackend: "ops",
+    dialect:           "mysql",
+  }).then(function () {
+    check("ensureSchema mysql rejects sync or async — succeeded unexpectedly", false);
+  }, function (e) {
+    check("ensureSchema rejects unsupported dialect (mysql)",
+          e.code === "framework-schema/unsupported-dialect");
+  });
+}
+
 async function testClusterInitAndRequireLeader() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-"));
   var dbPath = path.join(tmpDir, "cluster.db");
@@ -4735,6 +4830,10 @@ async function testClusterInitAndRequireLeader() {
   await testClusterProviderTakeoverAfterExpiry();
   await testClusterProviderRenewalRace();
   await testClusterInitAndRequireLeader();
+  // Cluster — framework-state schema for external-db
+  await testFrameworkSchemaEnsure();
+  testFrameworkSchemaTableNameMapping();
+  await testFrameworkSchemaInvalidDialect();
   // Cluster — write-side gates across framework subsystems
   await testClusterGatesAuditAndConsent();
   await testClusterGatesSession();

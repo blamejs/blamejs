@@ -40,6 +40,7 @@ var middleware = require("./lib/middleware");
 var atomicFile = require("./lib/atomic-file");
 var parsers = require("./lib/parsers");
 var cluster = require("./lib/cluster");
+var frameworkSchema = require("./lib/framework-schema");
 
 module.exports = {
   crypto:           crypto,
@@ -67,6 +68,7 @@ module.exports = {
   atomicFile:       atomicFile,
   parsers:          parsers,
   cluster:          cluster,
+  frameworkSchema:  frameworkSchema,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
