@@ -4571,6 +4571,111 @@ async function testClusterGatesObjectStoreLocal() {
   }
 }
 
+async function testClusterStorageLocalDispatch() {
+  // With no cluster.init, executeAll should dispatch to local SQLite.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cs-"));
+  try {
+    // Reset cluster BEFORE setupTestDb so its internal audit.checkpoint
+    // runs on the permanent-leader fallback (terminated=false).
+    b.cluster._resetForTest();
+    await setupTestDb(tmpDir);
+
+    // Seed an audit row via the existing local path so we have something
+    // to read back.
+    var ev = b.audit.record({
+      actor:   { kind: "user", id: "u1" },
+      action:  "auth.login",
+      outcome: "success",
+    });
+    check("setup: audit row recorded locally",      ev !== null);
+
+    // Now read back through cluster-storage. In single-node mode, should
+    // hit the local SQLite, table name is unprefixed.
+    check("tableName(audit_log) is unprefixed locally",
+          b.clusterStorage.tableName("audit_log") === "audit_log");
+
+    var rows = await b.clusterStorage.executeAll("SELECT _id, action FROM audit_log");
+    check("clusterStorage.executeAll local: row found", rows.length >= 1);
+    check("clusterStorage row has audit action",        rows[0].action === "auth.login");
+  } finally {
+    teardownTestDb(tmpDir);
+  }
+}
+
+function testClusterStoragePlaceholderize() {
+  check("placeholderize sqlite: passthrough",
+        b.clusterStorage.placeholderize("SELECT * FROM t WHERE a = ? AND b = ?", "sqlite") ===
+        "SELECT * FROM t WHERE a = ? AND b = ?");
+  check("placeholderize postgres: ? → $1, $2",
+        b.clusterStorage.placeholderize("SELECT * FROM t WHERE a = ? AND b = ?", "postgres") ===
+        "SELECT * FROM t WHERE a = $1 AND b = $2");
+  check("placeholderize: skips ? inside single-quoted strings",
+        b.clusterStorage.placeholderize("SELECT * FROM t WHERE label = '?' AND id = ?", "postgres") ===
+        "SELECT * FROM t WHERE label = '?' AND id = $1");
+}
+
+function testClusterStorageResolveTablesIsNoOpInSingleNode() {
+  b.cluster._resetForTest();
+  var sql = "SELECT * FROM audit_log";
+  check("resolveTables: passthrough when not cluster mode",
+        b.clusterStorage.resolveTables(sql) === sql);
+}
+
+async function testClusterStorageClusterDispatch() {
+  // Spin up a real cluster: full framework + external-db + cluster.init.
+  // Then run executeAll against external-db tables created by
+  // frameworkSchema.ensureSchema. The resolveTables should rewrite
+  // audit_log → _blamejs_audit_log automatically.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cs-cluster-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+      },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+
+    b.cluster._resetForTest();
+    await b.cluster.init({
+      nodeId:            "cs-cluster-test",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    // Now in cluster mode. Insert a row using unprefixed name + ? placeholders.
+    await b.clusterStorage.execute(
+      "INSERT INTO audit_log (_id, recordedAt, monotonicCounter, action, outcome, prevHash, rowHash, nonce, fencingToken) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["row1", Date.now(), 1, "auth.login", "success", "", "h1", Buffer.alloc(16), 1]
+    );
+
+    // Read back, also via unprefixed name. Dispatcher rewrites both.
+    var rows = await b.clusterStorage.executeAll("SELECT _id, action FROM audit_log WHERE _id = ?", ["row1"]);
+    check("clusterStorage cluster mode: row found via unprefixed name",  rows.length === 1);
+    check("clusterStorage cluster mode: row data preserved",             rows[0].action === "auth.login");
+
+    // Verify the row actually landed in the prefixed table
+    var directRows = await b.externalDb.query("SELECT _id FROM _blamejs_audit_log WHERE _id = ?", ["row1"]);
+    check("cluster row written to _blamejs_-prefixed external table",    directRows.rows.length === 1);
+
+    // tableName getter reflects cluster mode
+    check("tableName(audit_log) prefixed in cluster mode",
+          b.clusterStorage.tableName("audit_log") === "_blamejs_audit_log");
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function testFrameworkSchemaEnsure() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fs-"));
   var dbPath = path.join(tmpDir, "schema.db");
@@ -4834,6 +4939,11 @@ async function testClusterInitAndRequireLeader() {
   await testFrameworkSchemaEnsure();
   testFrameworkSchemaTableNameMapping();
   await testFrameworkSchemaInvalidDialect();
+  // Cluster — framework-state SQL dispatcher
+  await testClusterStorageLocalDispatch();
+  testClusterStoragePlaceholderize();
+  testClusterStorageResolveTablesIsNoOpInSingleNode();
+  await testClusterStorageClusterDispatch();
   // Cluster — write-side gates across framework subsystems
   await testClusterGatesAuditAndConsent();
   await testClusterGatesSession();

@@ -41,6 +41,7 @@ var atomicFile = require("./lib/atomic-file");
 var parsers = require("./lib/parsers");
 var cluster = require("./lib/cluster");
 var frameworkSchema = require("./lib/framework-schema");
+var clusterStorage = require("./lib/cluster-storage");
 
 module.exports = {
   crypto:           crypto,
@@ -69,6 +70,7 @@ module.exports = {
   parsers:          parsers,
   cluster:          cluster,
   frameworkSchema:  frameworkSchema,
+  clusterStorage:   clusterStorage,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
