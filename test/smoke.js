@@ -3877,6 +3877,193 @@ async function testHaProviderRenewalRace() {
   }
 }
 
+// ----- HA write-gate test fixtures -----
+//
+// Each gate test sets up the full framework (vault + db) for the
+// framework's own state, plus an external-db backend that HA uses for
+// leader-election coordination. We init HA, then immediately shut it
+// down — that flips the `terminated` state so isLeader() returns
+// false. Then we try framework writes and expect NotLeaderError.
+
+async function _setupHaGateFixture() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-gate-"));
+  // Reset HA first so setupTestDb's internal audit.checkpoint runs on
+  // the permanent-leader fallback. We re-init HA after the framework
+  // db is up.
+  b.ha._resetForTest();
+  await setupTestDb(tmpDir);
+
+  var dbPath = path.join(tmpDir, "ha-coord.db");
+  var driver = _makeSqliteDriver(dbPath);
+  b.externalDb.init({
+    backends: {
+      "ops": { connect: driver.connect, query: driver.query, close: driver.close },
+    },
+  });
+  await b.ha.init({
+    nodeId:            "gate-test-node",
+    externalDbBackend: "ops",
+    dialect:           "sqlite",
+    leaseTtl:          b.constants.TIME.seconds(30),
+    heartbeatInterval: b.constants.TIME.seconds(10),
+  });
+  // Become a follower by shutting HA down — terminated flag flips
+  // isLeader() to false without requiring a real takeover race.
+  await b.ha.shutdown();
+
+  return {
+    tmpDir: tmpDir,
+    teardown: async function () {
+      try { await b.externalDb.shutdown(); } catch (_e) {}
+      driver._close();
+      teardownTestDb(tmpDir);
+    },
+  };
+}
+
+function _expectNotLeaderError(label, fn) {
+  var threw = null;
+  try {
+    var maybePromise = fn();
+    // Synchronous gates throw immediately; async gates throw inside a
+    // Promise we won't await here. The framework's gates are sync at
+    // function entry, so .then() chains are unnecessary for the gate
+    // itself — but we tolerate either.
+    if (maybePromise && typeof maybePromise.then === "function") {
+      // Hand back the promise so the caller can await rejection.
+      return maybePromise.then(function () {
+        check(label + " — should have thrown", false);
+      }, function (e) {
+        check(label + " — throws NotLeaderError", e && e.code === "NOT_LEADER");
+      });
+    }
+  } catch (e) { threw = e; }
+  check(label + " — throws NotLeaderError", threw && threw.code === "NOT_LEADER");
+}
+
+async function testHaGatesAuditAndConsent() {
+  var fx = await _setupHaGateFixture();
+  try {
+    _expectNotLeaderError("audit.record on follower", function () {
+      b.audit.record({
+        actor: { kind: "user", id: "u1" },
+        action: "auth.login",
+        outcome: "success",
+      });
+    });
+    _expectNotLeaderError("audit.checkpoint on follower", function () {
+      b.audit.checkpoint();
+    });
+    _expectNotLeaderError("consent.grant on follower", function () {
+      b.consent.grant({
+        subjectId:   "subj-1",
+        purpose:     "marketing",
+        lawfulBasis: "consent",
+        channel:     "web-form",
+      });
+    });
+    _expectNotLeaderError("consent.withdraw on follower", function () {
+      b.consent.withdraw({ subjectId: "subj-1", purpose: "marketing" });
+    });
+  } finally {
+    await fx.teardown();
+  }
+}
+
+async function testHaGatesSession() {
+  var fx = await _setupHaGateFixture();
+  try {
+    _expectNotLeaderError("session.create on follower", function () {
+      b.session.create({ userId: "u1" });
+    });
+    _expectNotLeaderError("session.destroy on follower", function () {
+      b.session.destroy("any-token");
+    });
+    _expectNotLeaderError("session.purgeExpired on follower", function () {
+      b.session.purgeExpired();
+    });
+  } finally {
+    await fx.teardown();
+  }
+}
+
+async function testHaGatesSubject() {
+  var fx = await _setupHaGateFixture();
+  try {
+    _expectNotLeaderError("subject.rectify on follower", function () {
+      b.subject.rectify("subj-1", {
+        table: "users", id: "u1", changes: { email: "a@b.c" }, reason: "test",
+      });
+    });
+    _expectNotLeaderError("subject.erase on follower", function () {
+      b.subject.erase("subj-1", {
+        reason: "test",
+        acknowledgements: ["no-litigation-hold", "no-statutory-retention-required"],
+      });
+    });
+    _expectNotLeaderError("subject.restrict on follower", function () {
+      b.subject.restrict("subj-1", { on: true, reason: "test" });
+    });
+    _expectNotLeaderError("subject.recordObjection on follower", function () {
+      b.subject.recordObjection("subj-1", { purpose: "marketing", reason: "test" });
+    });
+  } finally {
+    await fx.teardown();
+  }
+}
+
+async function testHaGatesQueue() {
+  var fx = await _setupHaGateFixture();
+  try {
+    b.queue.init({ backends: { "default": { protocol: "local" } } });
+    var threwEnqueue = null;
+    try { await b.queue.enqueue("test-q", { x: 1 }); }
+    catch (e) { threwEnqueue = e; }
+    check("queue.enqueue on follower throws NotLeaderError",
+          threwEnqueue && threwEnqueue.code === "NOT_LEADER");
+
+    var threwPurge = null;
+    try { await b.queue.purge("test-q"); }
+    catch (e) { threwPurge = e; }
+    check("queue.purge on follower throws NotLeaderError",
+          threwPurge && threwPurge.code === "NOT_LEADER");
+    try { await b.queue.shutdown(); } catch (_e) {}
+  } finally {
+    await fx.teardown();
+  }
+}
+
+async function testHaGatesObjectStoreLocal() {
+  var fx = await _setupHaGateFixture();
+  try {
+    var localProto = require(path.join(__dirname, "..", "lib", "object-store-local"));
+    var rootDir = path.join(fx.tmpDir, "obj");
+    var backend = localProto.create({ rootDir: rootDir });
+
+    var threwPut = null;
+    try { await backend.put("foo/bar", Buffer.from("hi")); }
+    catch (e) { threwPut = e; }
+    check("object-store-local.put on follower throws",
+          threwPut && threwPut.code === "NOT_LEADER");
+
+    var threwDelete = null;
+    try { await backend.delete("foo/bar"); }
+    catch (e) { threwDelete = e; }
+    check("object-store-local.delete on follower throws",
+          threwDelete && threwDelete.code === "NOT_LEADER");
+
+    // Reads remain anywhere — no gate. Set up a non-existent key for
+    // a clean error type comparison (NOT_FOUND, not NOT_LEADER).
+    var threwGet = null;
+    try { await backend.get("nope"); }
+    catch (e) { threwGet = e; }
+    check("object-store-local.get not gated by HA",
+          threwGet && threwGet.code === "NOT_FOUND");
+  } finally {
+    await fx.teardown();
+  }
+}
+
 async function testHaInitAndRequireLeader() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ha-"));
   var dbPath = path.join(tmpDir, "ha.db");
@@ -4027,6 +4214,12 @@ async function testHaInitAndRequireLeader() {
   await testHaProviderTakeoverAfterExpiry();
   await testHaProviderRenewalRace();
   await testHaInitAndRequireLeader();
+  // HA — write-side gates across framework subsystems
+  await testHaGatesAuditAndConsent();
+  await testHaGatesSession();
+  await testHaGatesSubject();
+  await testHaGatesQueue();
+  await testHaGatesObjectStoreLocal();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
