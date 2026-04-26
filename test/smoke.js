@@ -3210,6 +3210,21 @@ async function testAtomicFile() {
     catch (e) { sizeRejected = e.code === "atomic-file/too-large"; }
     check("atomicFile read maxBytes enforced",       sizeRejected);
 
+    // readSync: same semantics as async read, for boot-path callers
+    var rSync = b.atomicFile.readSync(p);
+    check("atomicFile readSync returns Buffer",      Buffer.isBuffer(rSync));
+    check("atomicFile readSync content matches",     rSync.equals(content));
+    var rSyncStr = b.atomicFile.readSync(p, { encoding: "utf8" });
+    check("atomicFile readSync encoding option",     rSyncStr === content.toString("utf8"));
+    var syncSizeRejected = false;
+    try { b.atomicFile.readSync(bigPath, { maxBytes: 1024 }); }
+    catch (e) { syncSizeRejected = e.code === "atomic-file/too-large"; }
+    check("atomicFile readSync maxBytes enforced",   syncSizeRejected);
+    var syncMissingRejected = false;
+    try { b.atomicFile.readSync(path.join(tmpDir, "no-such-file")); }
+    catch (e) { syncMissingRejected = e.code === "ENOENT"; }
+    check("atomicFile readSync ENOENT on missing",   syncMissingRejected);
+
     // Crash safety: tmp file should NOT remain after success
     var tmpFiles = fs.readdirSync(tmpDir).filter(function (f) { return /\.tmp-/.test(f); });
     check("atomicFile cleans up tmp on success",     tmpFiles.length === 0);
