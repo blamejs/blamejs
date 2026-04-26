@@ -308,6 +308,24 @@ function _expectNotLeaderError(label, fn) {
   check(label + " — throws NotLeaderError", threw && threw.code === "NOT_LEADER");
 }
 
+// listenOnRandomPort — bind an http or http2 server to an ephemeral port
+// on the given host (default 127.0.0.1) and return the chosen port. The
+// pattern `await new Promise(r => server.listen(0, host, r)); var port =
+// server.address().port;` was repeated 14 times across the test files;
+// this helper collapses it. Works with anything that has the
+// listen(port, host, cb) + address() shape (http.Server, http2.Server,
+// net.Server, tls.Server).
+function listenOnRandomPort(server, host) {
+  host = host || "127.0.0.1";
+  return new Promise(function (resolve, reject) {
+    server.once("error", reject);
+    server.listen(0, host, function () {
+      server.removeListener("error", reject);
+      resolve(server.address().port);
+    });
+  });
+}
+
 module.exports = {
   b:                          b,
   fs:                         fs,
@@ -320,6 +338,7 @@ module.exports = {
   teardownTestDb:             teardownTestDb,
   setupTestDbForMW:           setupTestDbForMW,
   teardownMW:                 teardownMW,
+  listenOnRandomPort:         listenOnRandomPort,
   _makeFakeDriver:            _makeFakeDriver,
   _makeSqliteDriver:          _makeSqliteDriver,
   _makeFakeServiceAccount:    _makeFakeServiceAccount,

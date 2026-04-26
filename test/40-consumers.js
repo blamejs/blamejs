@@ -35,6 +35,7 @@ var setupTestDb              = helpers.setupTestDb;
 var teardownTestDb           = helpers.teardownTestDb;
 var setupTestDbForMW         = helpers.setupTestDbForMW;
 var teardownMW               = helpers.teardownMW;
+var listenOnRandomPort       = helpers.listenOnRandomPort;
 var _makeFakeDriver          = helpers._makeFakeDriver;
 var _makeSqliteDriver        = helpers._makeSqliteDriver;
 var _makeFakeServiceAccount  = helpers._makeFakeServiceAccount;
@@ -564,8 +565,7 @@ async function testSigv4MockServer() {
     res.writeHead(404); res.end();
   });
 
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     var client = sigv4.create({
       endpoint:         "http://127.0.0.1:" + port,
@@ -722,8 +722,7 @@ async function testGcsMockServer() {
     res.writeHead(404); res.end();
   });
 
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     var client = gcs.create({
       bucket:           "test-bucket",
@@ -848,8 +847,7 @@ async function testAzureBlobMockServer() {
     res.writeHead(404); res.end();
   });
 
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     var client = az.create({
       accountName:      "test",
@@ -1122,8 +1120,7 @@ async function testLogStreamWebhook() {
         } catch (e) { res.writeHead(400); res.end(e.message); }
       });
     });
-    await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-    var port = server.address().port;
+    var port = await listenOnRandomPort(server);
 
     try {
       b.logStream.init({

@@ -37,6 +37,7 @@ var path        = helpers.path;
 var check       = helpers.check;
 var setupTestDb = helpers.setupTestDb;
 var teardownTestDb = helpers.teardownTestDb;
+var listenOnRandomPort = helpers.listenOnRandomPort;
 
 // httpClient tests stand up local http://127.0.0.1 mock servers. The
 // framework default is HTTPS-only; tests opt in to cleartext the same
@@ -336,6 +337,199 @@ async function testAsyncSafeCircuitBreakerStateTransitions() {
   var probe = await br.wrap(async function () { return "ok"; });
   check("CircuitBreaker: half-open probe success",          probe === "ok");
   check("CircuitBreaker: closes after success threshold",   br.getState() === "closed");
+}
+
+async function testAsyncSafeSleepBasic() {
+  var t0 = Date.now();
+  await b.asyncSafe.sleep(40);
+  var elapsed = Date.now() - t0;
+  check("sleep: resolves after delay", elapsed >= 35 && elapsed < 200);
+}
+
+async function testAsyncSafeSleepZeroResolvesImmediately() {
+  var t0 = Date.now();
+  await b.asyncSafe.sleep(0);
+  await b.asyncSafe.sleep(-5);
+  var elapsed = Date.now() - t0;
+  check("sleep: ms<=0 resolves immediately", elapsed < 20);
+}
+
+async function testAsyncSafeSleepBadArg() {
+  var threw = null;
+  try { await b.asyncSafe.sleep("nope"); }
+  catch (e) { threw = e; }
+  check("sleep: non-numeric ms rejects", threw && threw.code === "async/bad-arg");
+  threw = null;
+  try { await b.asyncSafe.sleep(Infinity); }
+  catch (e) { threw = e; }
+  check("sleep: non-finite ms rejects",  threw && threw.code === "async/bad-arg");
+}
+
+async function testAsyncSafeSleepAbort() {
+  var ac = new AbortController();
+  var t0 = Date.now();
+  setTimeout(function () { ac.abort(new Error("user cancel")); }, 20);
+  var threw = null;
+  try { await b.asyncSafe.sleep(5000, { signal: ac.signal }); }
+  catch (e) { threw = e; }
+  var elapsed = Date.now() - t0;
+  check("sleep: abort cancels mid-sleep",  threw && threw.code === "async/aborted");
+  check("sleep: abort short-circuits the wait", elapsed < 200);
+
+  // Pre-aborted signal rejects immediately (no waiting).
+  var preAborted = new AbortController();
+  preAborted.abort(new Error("already gone"));
+  var threwPre = null;
+  try { await b.asyncSafe.sleep(5000, { signal: preAborted.signal }); }
+  catch (e) { threwPre = e; }
+  check("sleep: pre-aborted signal rejects", threwPre && threwPre.code === "async/aborted");
+}
+
+async function testAsyncSafeSleepUnrefOptIn() {
+  // sleep(ms, { unref: true }) MUST NOT keep the process alive. Spawn a
+  // child that requires async-safe directly (avoiding the framework boot,
+  // which schedules its own intervals that would mask the unref check)
+  // and starts an unref'd sleep without awaiting it. The script body's
+  // last line is a synchronous console.log — when the script function
+  // returns, node's loop has only the unref'd timer, so it should exit
+  // cleanly within ~100ms. 5s wall clock fails fast on regression.
+  var { spawn } = require("child_process");
+  var asyncSafePath = path.resolve(__dirname, "..", "lib", "async-safe.js").replace(/\\/g, "\\\\");
+  var script =
+    'var as = require("' + asyncSafePath + '");' +
+    'as.sleep(60000, { unref: true });' +    // pending unref'd sleep, no await
+    'console.log("script-end");';
+  var child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+  var stdout = "";
+  child.stdout.on("data", function (c) { stdout += c.toString(); });
+
+  var exited = await new Promise(function (resolve) {
+    var killed = false;
+    var t = setTimeout(function () { killed = true; child.kill("SIGKILL"); resolve("timeout"); }, 5000);
+    child.once("exit", function (code) { clearTimeout(t); resolve(killed ? "killed" : "exit:" + code); });
+  });
+  check("sleep: { unref:true } lets process exit during pending sleep", exited === "exit:0");
+  check("sleep: script body ran before exit",                            stdout.indexOf("script-end") !== -1);
+}
+
+async function testAsyncSafeSleepDefaultRefd() {
+  // The natural `await sleep(ms)` pattern keeps the loop alive for the
+  // duration. A bug in the previous draft made sleep unconditionally
+  // unref the timer, which deadlocked otherwise-idle processes (loop
+  // exits because nothing keeps it alive, awaiting Promise never
+  // resolves). Verify by running a child whose ONLY work is `await
+  // sleep(150)` then a final console.log — without the ref, node exits
+  // before sleep completes and "post-sleep" never prints.
+  var { spawn } = require("child_process");
+  var asyncSafePath = path.resolve(__dirname, "..", "lib", "async-safe.js").replace(/\\/g, "\\\\");
+  var script =
+    'var as = require("' + asyncSafePath + '");' +
+    '(async function() { await as.sleep(150); console.log("post-sleep"); })()' +
+    '  .catch(function (e) { console.error("FAIL", e.message); process.exit(2); });';
+  var child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+  var stdout = "";
+  child.stdout.on("data", function (c) { stdout += c.toString(); });
+  var exited = await new Promise(function (resolve) {
+    var t = setTimeout(function () { child.kill("SIGKILL"); resolve("timeout"); }, 5000);
+    child.once("exit", function (code) { clearTimeout(t); resolve("exit:" + code); });
+  });
+  check("sleep: default keeps loop alive for await pattern",  exited === "exit:0");
+  check("sleep: post-sleep continuation actually ran",        stdout.indexOf("post-sleep") !== -1);
+}
+
+function testAsyncSafeWithTimeoutSignalCases() {
+  var as = b.asyncSafe;
+
+  // 1. null + no ms → null (caller's "no signal needed" path)
+  check("withTimeoutSignal: null+0 returns null", as.withTimeoutSignal(null, 0) === null);
+  check("withTimeoutSignal: null+undefined returns null",
+        as.withTimeoutSignal(null) === null);
+
+  // 2. null signal + positive ms → AbortSignal.timeout
+  var sig = as.withTimeoutSignal(null, 50);
+  check("withTimeoutSignal: only timeout returns an AbortSignal",
+        sig instanceof AbortSignal && sig.aborted === false);
+
+  // 3. user signal + 0 ms → user signal unchanged
+  var ac = new AbortController();
+  var passthrough = as.withTimeoutSignal(ac.signal, 0);
+  check("withTimeoutSignal: user-only returns user signal unchanged",
+        passthrough === ac.signal);
+
+  // 4. both → composes (firing user signal aborts the composed)
+  var ac2 = new AbortController();
+  var combined = as.withTimeoutSignal(ac2.signal, 5000);
+  check("withTimeoutSignal: composed signal exists",
+        combined instanceof AbortSignal && combined.aborted === false);
+  ac2.abort(new Error("user"));
+  check("withTimeoutSignal: composed aborts when user aborts",
+        combined.aborted === true);
+}
+
+async function testAsyncSafeWithTimeoutSignalTimeoutFires() {
+  var sig = b.asyncSafe.withTimeoutSignal(null, 30);
+  await new Promise(function (r) { setTimeout(r, 80); });
+  check("withTimeoutSignal: timeout-only signal fires after ms", sig.aborted === true);
+}
+
+// ---- auth-header ----
+
+function testAuthHeaderBearer() {
+  var ah = b.authHeader;
+  var h = ah.bearer("abc-123");
+  check("authHeader.bearer: Authorization shape", h.Authorization === "Bearer abc-123");
+
+  var threw = null;
+  try { ah.bearer(""); }
+  catch (e) { threw = e; }
+  check("authHeader.bearer: rejects empty token", threw instanceof ah.AuthHeaderError);
+
+  threw = null;
+  try { ah.bearer(null); }
+  catch (e) { threw = e; }
+  check("authHeader.bearer: rejects null token", threw instanceof ah.AuthHeaderError);
+}
+
+function testAuthHeaderBasic() {
+  var ah = b.authHeader;
+  var h = ah.basic("alice", "s3cret");
+  // RFC 7617: "alice:s3cret" base64-encoded
+  var expected = Buffer.from("alice:s3cret", "utf8").toString("base64");
+  check("authHeader.basic: Authorization shape",
+        h.Authorization === "Basic " + expected);
+
+  // Empty password permitted (legacy endpoints sometimes want this)
+  var emptyPwd = ah.basic("alice", "");
+  check("authHeader.basic: empty password permitted",
+        emptyPwd.Authorization === "Basic " + Buffer.from("alice:", "utf8").toString("base64"));
+
+  var threw = null;
+  try { ah.basic(undefined, "x"); }
+  catch (e) { threw = e; }
+  check("authHeader.basic: rejects undefined username",
+        threw instanceof ah.AuthHeaderError);
+}
+
+function testAuthHeaderFromConfig() {
+  var ah = b.authHeader;
+  check("authHeader.fromConfig: undefined → {}",
+        Object.keys(ah.fromConfig()).length === 0);
+  check("authHeader.fromConfig: {auth:none} → {}",
+        Object.keys(ah.fromConfig({ auth: "none" })).length === 0);
+
+  var bearerH = ah.fromConfig({ auth: "bearer", token: "tok" });
+  check("authHeader.fromConfig: bearer returns Bearer header",
+        bearerH.Authorization === "Bearer tok");
+
+  var basicH = ah.fromConfig({ auth: "basic", username: "u", password: "p" });
+  check("authHeader.fromConfig: basic returns Basic header",
+        basicH.Authorization.indexOf("Basic ") === 0);
+
+  var threw = null;
+  try { ah.fromConfig({ auth: "ntlm" }); }
+  catch (e) { threw = e; }
+  check("authHeader.fromConfig: rejects unknown method",
+        threw && threw.code === "auth-header/unknown-method");
 }
 
 // ---- handlers ----
@@ -1623,8 +1817,7 @@ async function testHttpClientBasic() {
       res.end("got " + req.method + " " + req.url + " body=" + body);
     });
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
 
@@ -1662,8 +1855,7 @@ async function testHttpClientErrorStatus() {
     else if (req.url === "/boom") { res.writeHead(500); res.end("oops"); }
     else { res.writeHead(200); res.end("ok"); }
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
 
@@ -1705,8 +1897,7 @@ async function testHttpClientWallClockTimeout() {
     }, 50);
     req.on("close", function () { clearInterval(iv); });
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     var threw = null;
@@ -1736,8 +1927,7 @@ async function testHttpClientAbortSignal() {
     // Don't end; wait for client disconnect.
     req.on("close", function () { try { res.end(); } catch (_e) {} });
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     var ac = new AbortController();
@@ -1766,8 +1956,7 @@ async function testHttpClientStreamResponse() {
     res.write("part2-");
     res.end("end");
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     var got = await httpReq({
@@ -1804,8 +1993,7 @@ async function testHttpClientH2Basic() {
       stream.end("h2 got " + method + " " + path + " body=" + bodyIn);
     });
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     var url = "http://127.0.0.1:" + port + "/foo";
@@ -1841,8 +2029,7 @@ async function testHttpClientH2AbortSignal() {
     // Hang — only client cancellation closes this stream.
     stream.on("close", function () {});
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     var url = "http://127.0.0.1:" + port + "/hang";
@@ -1872,8 +2059,7 @@ async function testHttpClientH2ErrorStatus() {
       stream.respond({ ":status": 500 }); stream.end("oops");
     }
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
 
@@ -1911,8 +2097,7 @@ async function testHttpClientH2Multiplex() {
       stream.end("path=" + headers[":path"]);
     }, 10);
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     // Fire 5 concurrent requests over the same h2 session.
@@ -1945,8 +2130,7 @@ async function testHttpClientH2Stream() {
     stream.write("part2-");
     stream.end("end");
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     var got = await httpReq({
@@ -2151,8 +2335,7 @@ async function testWebSocketConnection() {
       }
     });
   });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
 
   try {
     // Open a raw TCP socket, send the upgrade handshake, then exchange frames.
@@ -2264,8 +2447,7 @@ function _readSome(socket) {
 async function testHttpClientObserver() {
   var http = require("http");
   var server = http.createServer(function (req, res) { res.writeHead(200); res.end("ok"); });
-  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-  var port = server.address().port;
+  var port = await listenOnRandomPort(server);
   try {
     b.httpClient._resetForTest();
     var stages = [];
@@ -2668,6 +2850,13 @@ function testCryptoAndModuleSurface() {
   check("urlSafe namespace present",    typeof b.urlSafe === "object");
   check("urlSafe.parse is a function",  typeof b.urlSafe.parse === "function");
   check("urlSafe.ALLOW_HTTP_TLS frozen", Object.isFrozen(b.urlSafe.ALLOW_HTTP_TLS));
+  check("authHeader namespace present", typeof b.authHeader === "object");
+  check("authHeader.bearer is a function",     typeof b.authHeader.bearer === "function");
+  check("authHeader.basic is a function",      typeof b.authHeader.basic === "function");
+  check("authHeader.fromConfig is a function", typeof b.authHeader.fromConfig === "function");
+  check("asyncSafe.sleep is a function",       typeof b.asyncSafe.sleep === "function");
+  check("asyncSafe.withTimeoutSignal is a function",
+        typeof b.asyncSafe.withTimeoutSignal === "function");
 
   // Constants surface
   check("ENVELOPE_MAGIC = 0xE1",        b.constants.ENVELOPE_MAGIC === 0xE1);
@@ -2796,6 +2985,19 @@ async function run() {
   await testAsyncSafeOnceCachesFailure();
   await testAsyncSafeOnceReset();
   await testAsyncSafeCircuitBreakerStateTransitions();
+  // sleep + withTimeoutSignal — primitives lifted out of ad-hoc patterns
+  await testAsyncSafeSleepBasic();
+  await testAsyncSafeSleepZeroResolvesImmediately();
+  await testAsyncSafeSleepBadArg();
+  await testAsyncSafeSleepAbort();
+  await testAsyncSafeSleepUnrefOptIn();
+  await testAsyncSafeSleepDefaultRefd();
+  testAsyncSafeWithTimeoutSignalCases();
+  await testAsyncSafeWithTimeoutSignalTimeoutFires();
+  // auth-header — primitive replacing 3x duplicated _authHeaders()
+  testAuthHeaderBearer();
+  testAuthHeaderBasic();
+  testAuthHeaderFromConfig();
   // handlers primitive
   await testHandlerEmitAndDrain();
   await testHandlerEmitDuringFlushNextCycle();
@@ -2906,6 +3108,17 @@ module.exports = {
   testAsyncSafeOnceCachesFailure:            testAsyncSafeOnceCachesFailure,
   testAsyncSafeOnceReset:                    testAsyncSafeOnceReset,
   testAsyncSafeCircuitBreakerStateTransitions: testAsyncSafeCircuitBreakerStateTransitions,
+  testAsyncSafeSleepBasic:                   testAsyncSafeSleepBasic,
+  testAsyncSafeSleepZeroResolvesImmediately: testAsyncSafeSleepZeroResolvesImmediately,
+  testAsyncSafeSleepBadArg:                  testAsyncSafeSleepBadArg,
+  testAsyncSafeSleepAbort:                   testAsyncSafeSleepAbort,
+  testAsyncSafeSleepUnrefOptIn:              testAsyncSafeSleepUnrefOptIn,
+  testAsyncSafeSleepDefaultRefd:             testAsyncSafeSleepDefaultRefd,
+  testAsyncSafeWithTimeoutSignalCases:       testAsyncSafeWithTimeoutSignalCases,
+  testAsyncSafeWithTimeoutSignalTimeoutFires: testAsyncSafeWithTimeoutSignalTimeoutFires,
+  testAuthHeaderBearer:                      testAuthHeaderBearer,
+  testAuthHeaderBasic:                       testAuthHeaderBasic,
+  testAuthHeaderFromConfig:                  testAuthHeaderFromConfig,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
@@ -3003,8 +3216,7 @@ module.exports = {
           // /strict path: no message handler — masked-frame rejection
           // path closes the connection on its own.
         });
-        await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
-        var port = server.address().port;
+        var port = await listenOnRandomPort(server);
         // Open one h2 client up front; reuse across the group's tests
         // so each test pays only its own request RTT, not the
         // connect+SETTINGS handshake overhead.
