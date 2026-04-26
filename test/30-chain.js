@@ -138,6 +138,162 @@ async function testClusterStorageClusterDispatch() {
   }
 }
 
+// Single-node tests for the discovery surface — no external-db needed,
+// run against the permanent-leader fallback.
+function testClusterEndpointSingleNode() {
+  b.cluster._resetForTest();
+  check("cluster.endpoint() returns null in single-node fallback",
+        b.cluster.endpoint() === null);
+}
+
+async function testClusterDiscoveryHandlerSingleNode() {
+  b.cluster._resetForTest();
+  var handler = b.cluster.discoveryHandler();
+  check("cluster.discoveryHandler returns a function", typeof handler === "function");
+
+  // Mock res with capture
+  var captured = { status: null, headers: null, body: "" };
+  var res = {
+    writeHead: function (s, h) { captured.status = s; captured.headers = h; },
+    end:       function (b)    { captured.body += b || ""; },
+  };
+  await handler({ method: "GET", url: "/cluster/leader" }, res);
+
+  check("discoveryHandler: 200 in single-node fallback",        captured.status === 200);
+  check("discoveryHandler: Content-Type is JSON",
+        captured.headers["Content-Type"].indexOf("application/json") === 0);
+  check("discoveryHandler: Cache-Control is no-store",
+        captured.headers["Cache-Control"] === "no-store");
+
+  var body = JSON.parse(captured.body);
+  check("discoveryHandler: leader.nodeId is single-node-local",
+        body.leader && body.leader.nodeId === "single-node-local");
+  check("discoveryHandler: leader.endpoint is null when unconfigured",
+        body.leader.endpoint === null);
+  check("discoveryHandler: self.isLeader is true in fallback",
+        body.self && body.self.isLeader === true);
+}
+
+async function testClusterEndpointInitValidation() {
+  b.cluster._resetForTest();
+
+  // Setup minimal external-db so cluster.init has somewhere to land —
+  // we'll never reach the heartbeat because validation throws first.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-clep-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+
+    // 1. http:// rejected by default (HTTPS-only allowlist)
+    var rejected = null;
+    try {
+      await b.cluster.init({
+        nodeId:            "ep-test-1",
+        externalDbBackend: "ops",
+        dialect:           "sqlite",
+        endpoint:          "http://node1.internal:8080",
+      });
+    } catch (e) { rejected = e; }
+    check("cluster.init: http:// endpoint rejected by default",
+          rejected && rejected.code === "INVALID_ENDPOINT");
+    b.cluster._resetForTest();
+
+    // 2. Malformed URL rejected
+    var malformed = null;
+    try {
+      await b.cluster.init({
+        nodeId:            "ep-test-2",
+        externalDbBackend: "ops",
+        dialect:           "sqlite",
+        endpoint:          "not-a-url",
+      });
+    } catch (e) { malformed = e; }
+    check("cluster.init: malformed endpoint rejected",
+          malformed && malformed.code === "INVALID_ENDPOINT");
+    b.cluster._resetForTest();
+
+    // 3. http:// accepted with explicit allowedProtocols opt-in
+    await b.cluster.init({
+      nodeId:            "ep-test-3",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      endpoint:          "http://node1.internal:8080",
+      allowedProtocols:  b.urlSafe.ALLOW_HTTP_ALL,
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+    check("cluster.endpoint() returns configured value",
+          b.cluster.endpoint() === "http://node1.internal:8080");
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testClusterDiscoveryAcquiredLeader() {
+  // Spin up a real cluster, configure an endpoint, verify the leader-row
+  // captures it AND discoveryHandler reports it back.
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-disc-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+
+    await b.cluster.init({
+      nodeId:            "disc-test-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      endpoint:          "https://disc-test-1.internal:8443",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    check("cluster.isLeader after acquire", b.cluster.isLeader() === true);
+
+    var leader = await b.cluster.currentLeader();
+    check("currentLeader: nodeId matches",
+          leader && leader.nodeId === "disc-test-1");
+    check("currentLeader: endpoint persisted to leader row",
+          leader.endpoint === "https://disc-test-1.internal:8443");
+    check("currentLeader: fencingToken is monotonic (>= 1)",
+          typeof leader.fencingToken === "number" && leader.fencingToken >= 1);
+
+    // discoveryHandler reports leader + endpoint
+    var captured = { status: null, body: "" };
+    var res = {
+      writeHead: function (s, _h) { captured.status = s; },
+      end:       function (b)     { captured.body += b || ""; },
+    };
+    await b.cluster.discoveryHandler()({ method: "GET" }, res);
+    check("discoveryHandler: 200 with active leader",         captured.status === 200);
+    var body = JSON.parse(captured.body);
+    check("discoveryHandler: leader.nodeId in cluster mode",
+          body.leader.nodeId === "disc-test-1");
+    check("discoveryHandler: leader.endpoint in cluster mode",
+          body.leader.endpoint === "https://disc-test-1.internal:8443");
+    check("discoveryHandler: self.isLeader is true",          body.self.isLeader === true);
+    check("discoveryHandler: self.endpoint matches",
+          body.self.endpoint === "https://disc-test-1.internal:8443");
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function testAuditChain() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-audit-"));
   try {
@@ -756,6 +912,12 @@ async function run() {
   testClusterStorageResolveTablesIsNoOpInSingleNode();
   await testClusterStorageClusterDispatch();
 
+  // cluster discovery surface (endpoint + discoveryHandler)
+  testClusterEndpointSingleNode();
+  await testClusterDiscoveryHandlerSingleNode();
+  await testClusterEndpointInitValidation();
+  await testClusterDiscoveryAcquiredLeader();
+
   // audit chain + verify (now exercises chain-writer transitively)
   await testAuditChain();
   await testAuditChainBreak();
@@ -787,6 +949,10 @@ module.exports = {
   testClusterStoragePlaceholderize:                    testClusterStoragePlaceholderize,
   testClusterStorageResolveTablesIsNoOpInSingleNode:   testClusterStorageResolveTablesIsNoOpInSingleNode,
   testClusterStorageClusterDispatch:                   testClusterStorageClusterDispatch,
+  testClusterEndpointSingleNode:                       testClusterEndpointSingleNode,
+  testClusterDiscoveryHandlerSingleNode:               testClusterDiscoveryHandlerSingleNode,
+  testClusterEndpointInitValidation:                   testClusterEndpointInitValidation,
+  testClusterDiscoveryAcquiredLeader:                  testClusterDiscoveryAcquiredLeader,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,
   testAuditSelfLogging:                                testAuditSelfLogging,
