@@ -3170,6 +3170,289 @@ function teardownMW() {
 }
 
 // =====================================================================
+// v0.0.16 — atomic file I/O + safe parsers (XML, CSV)
+// =====================================================================
+
+async function testAtomicFile() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-atomicfile-"));
+  try {
+    check("atomicFile namespace present",            typeof b.atomicFile === "object");
+
+    // Basic write + read round-trip
+    var p = path.join(tmpDir, "data.bin");
+    var content = Buffer.from("hello atomic " + Date.now(), "utf8");
+    var w = await b.atomicFile.write(p, content, { computeHash: true });
+    check("atomicFile write returns bytesWritten",   w.bytesWritten === content.length);
+    check("atomicFile write returns hash",           typeof w.hash === "string" && w.hash.length === 128);
+
+    var r = await b.atomicFile.read(p);
+    check("atomicFile read returns Buffer",          Buffer.isBuffer(r));
+    check("atomicFile read content matches",         r.equals(content));
+
+    // Hash verification
+    var rOk = await b.atomicFile.read(p, { expectedHash: w.hash });
+    check("atomicFile hash verify accepts good hash", rOk.equals(content));
+
+    var hashRejected = false;
+    try { await b.atomicFile.read(p, { expectedHash: "0".repeat(128) }); }
+    catch (e) { hashRejected = e.code === "atomic-file/integrity"; }
+    check("atomicFile hash verify rejects bad hash", hashRejected);
+
+    // Size limit
+    var bigPath = path.join(tmpDir, "big.bin");
+    await b.atomicFile.write(bigPath, Buffer.alloc(2048));
+    var sizeRejected = false;
+    try { await b.atomicFile.read(bigPath, { maxBytes: 1024 }); }
+    catch (e) { sizeRejected = e.code === "atomic-file/too-large"; }
+    check("atomicFile read maxBytes enforced",       sizeRejected);
+
+    // Crash safety: tmp file should NOT remain after success
+    var tmpFiles = fs.readdirSync(tmpDir).filter(function (f) { return /\.tmp-/.test(f); });
+    check("atomicFile cleans up tmp on success",     tmpFiles.length === 0);
+
+    // JSON convenience
+    var jsonPath = path.join(tmpDir, "data.json");
+    await b.atomicFile.writeJson(jsonPath, { a: 1, b: [2, 3] });
+    var parsed = await b.atomicFile.readJson(jsonPath);
+    check("atomicFile writeJson/readJson round-trip", parsed.a === 1 && parsed.b[1] === 3);
+
+    // readJson with schema
+    var schemaPath = path.join(tmpDir, "schema.json");
+    await b.atomicFile.writeJson(schemaPath, { name: "alice", age: 30 });
+    var validated = await b.atomicFile.readJson(schemaPath, {
+      schema: { type: "object", required: ["name", "age"], properties: { name: { type: "string" }, age: { type: "integer" } } },
+    });
+    check("atomicFile readJson + schema validates",  validated.name === "alice");
+
+    // copy
+    var copyPath = path.join(tmpDir, "copy.bin");
+    var c = await b.atomicFile.copy(p, copyPath, { computeHash: true });
+    check("atomicFile copy returns hash",            c.hash === w.hash);
+    check("atomicFile copy file exists",             b.atomicFile.exists(copyPath));
+
+    // Read missing file → ENOENT
+    var missingRejected = false;
+    try { await b.atomicFile.read(path.join(tmpDir, "nope")); }
+    catch (e) { missingRejected = e.code === "ENOENT" || e.code === "atomic-file/not-found"; }
+    check("atomicFile read missing → ENOENT",         missingRejected);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testAtomicFileLock() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-atlock-"));
+  try {
+    var p = path.join(tmpDir, "shared.txt");
+    var counter = 0;
+
+    // Two concurrent locks — they should serialize
+    async function increment() {
+      await b.atomicFile.lock(p, async function () {
+        var current;
+        try { current = parseInt((await b.atomicFile.read(p)).toString("utf8"), 10) || 0; }
+        catch (_e) { current = 0; }
+        await new Promise(function (r) { setTimeout(r, 20); });   // simulate work
+        await b.atomicFile.write(p, String(current + 1));
+        counter += 1;
+      });
+    }
+
+    await Promise.all([increment(), increment(), increment(), increment(), increment()]);
+    var finalValue = parseInt((await b.atomicFile.read(p)).toString("utf8"), 10);
+    check("atomicFile.lock serializes concurrent access",  finalValue === 5);
+    check("counter agrees",                                counter === 5);
+
+    // Lock file is gone after lock body finishes
+    check("lock sentinel cleaned up",                      !b.atomicFile.exists(p + ".lock"));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function testXmlParse() {
+  check("parsers namespace present",                  typeof b.parsers === "object");
+  check("parsers.xml present",                        typeof b.parsers.xml === "object");
+
+  // Simple element
+  var simple = b.parsers.xml.parse("<root>hello</root>");
+  check("xml: simple text element",                   simple.root === "hello");
+
+  // Attributes + nested
+  var attr = b.parsers.xml.parse('<root id="x"><child>text</child></root>');
+  check("xml: attributes preserved at @attrs",        attr.root["@attrs"].id === "x");
+  check("xml: nested child element",                  attr.root.child === "text");
+
+  // Multiple children with same name → array
+  var multi = b.parsers.xml.parse('<root><item>a</item><item>b</item><item>c</item></root>');
+  check("xml: repeated children become array",        Array.isArray(multi.root.item) && multi.root.item.length === 3);
+  check("xml: array preserves order",                 multi.root.item[0] === "a" && multi.root.item[2] === "c");
+
+  // XML declaration tolerated
+  var withDecl = b.parsers.xml.parse('<?xml version="1.0" encoding="UTF-8"?><root>x</root>');
+  check("xml: XML decl ignored",                      withDecl.root === "x");
+
+  // Built-in entities decoded
+  var entities = b.parsers.xml.parse("<root>&lt;ok&gt; &amp; &quot;quoted&quot;</root>");
+  check("xml: built-in entities decoded",             entities.root === "<ok> & \"quoted\"");
+
+  // Numeric character refs
+  var numref = b.parsers.xml.parse("<root>&#65;&#x42;</root>");
+  check("xml: numeric character refs decoded",        numref.root === "AB");
+
+  // Self-closing
+  var selfClose = b.parsers.xml.parse("<root><br/></root>");
+  check("xml: self-closing element parses",           selfClose.root.br === "");
+
+  // CDATA
+  var cdata = b.parsers.xml.parse("<root><![CDATA[<not parsed>]]></root>");
+  check("xml: CDATA preserved literally",             cdata.root === "<not parsed>");
+}
+
+function testXmlSecurityRejections() {
+  // DOCTYPE rejected by default
+  var doctypeRejected = false;
+  try { b.parsers.xml.parse('<!DOCTYPE foo SYSTEM "http://evil.com/foo.dtd"><root/>'); }
+  catch (e) { doctypeRejected = e.code === "xml/doctype"; }
+  check("xml: DOCTYPE rejected by default (XXE)",     doctypeRejected);
+
+  // External entity reference rejected
+  var entityRejected = false;
+  try { b.parsers.xml.parse('<root>&customEntity;</root>'); }
+  catch (e) { entityRejected = e.code === "xml/external-entity"; }
+  check("xml: custom entity ref rejected",            entityRejected);
+
+  // Processing instruction rejected
+  var piRejected = false;
+  try { b.parsers.xml.parse('<root><?php echo $secret; ?></root>'); }
+  catch (e) { piRejected = e.code === "xml/processing"; }
+  check("xml: processing instruction rejected",        piRejected);
+
+  // Mismatched tags
+  var mismatchedRejected = false;
+  try { b.parsers.xml.parse("<a><b></a></b>"); }
+  catch (e) { mismatchedRejected = e.code === "xml/mismatched-tag"; }
+  check("xml: mismatched tags rejected",              mismatchedRejected);
+
+  // Depth limit
+  var deep = "<a>".repeat(20) + "x" + "</a>".repeat(20);
+  var depthRejected = false;
+  try { b.parsers.xml.parse(deep, { maxDepth: 5 }); }
+  catch (e) { depthRejected = e.code === "xml/too-deep"; }
+  check("xml: maxDepth enforced",                     depthRejected);
+
+  // Element count limit
+  var manyKids = "<root>" + "<x/>".repeat(50) + "</root>";
+  var countRejected = false;
+  try { b.parsers.xml.parse(manyKids, { maxElements: 10 }); }
+  catch (e) { countRejected = e.code === "xml/too-many-elements"; }
+  check("xml: maxElements enforced",                  countRejected);
+
+  // Attribute count limit
+  var manyAttrs = "<root " + Array.from({ length: 20 }, function (_, i) { return "a" + i + "=\"v\""; }).join(" ") + "/>";
+  var attrRejected = false;
+  try { b.parsers.xml.parse(manyAttrs, { maxAttributes: 5 }); }
+  catch (e) { attrRejected = e.code === "xml/too-many-attrs"; }
+  check("xml: maxAttributes enforced",                attrRejected);
+
+  // Size limit
+  var sizeRejected = false;
+  try { b.parsers.xml.parse("<r>" + "a".repeat(10000) + "</r>", { maxBytes: 1000 }); }
+  catch (e) { sizeRejected = e.code === "xml/too-large"; }
+  check("xml: maxBytes enforced",                     sizeRejected);
+
+  // Duplicate attributes
+  var dupRejected = false;
+  try { b.parsers.xml.parse('<r id="a" id="b"/>'); }
+  catch (e) { dupRejected = e.code === "xml/duplicate-attr"; }
+  check("xml: duplicate attribute rejected",           dupRejected);
+
+  // < in attribute value
+  var ltRejected = false;
+  try { b.parsers.xml.parse('<r x="<bad"/>'); }
+  catch (e) { ltRejected = e.code === "xml/bad-attr"; }
+  check("xml: '<' in attribute value rejected",        ltRejected);
+}
+
+function testCsvParse() {
+  check("parsers.csv present",                        typeof b.parsers.csv === "object");
+
+  // Simple round-trip
+  var simple = b.parsers.csv.parse("name,age\nalice,30\nbob,25");
+  check("csv: header+rows → object array",            simple.length === 2);
+  check("csv: object has header keys",                simple[0].name === "alice" && simple[0].age === "30");
+
+  // Without header
+  var noHeader = b.parsers.csv.parse("a,b,c\n1,2,3", { header: false });
+  check("csv: no header → array of arrays",           Array.isArray(noHeader[0]));
+  check("csv: 2 rows",                                noHeader.length === 2);
+
+  // Quoted fields
+  var quoted = b.parsers.csv.parse('name,note\n"alice","says ""hi"""\n"bob","comma, inside"', { header: true });
+  check("csv: quoted field with escaped quote",       quoted[0].note === 'says "hi"');
+  check("csv: quoted field with comma",               quoted[1].note === "comma, inside");
+
+  // CRLF
+  var crlf = b.parsers.csv.parse("a,b\r\n1,2\r\n3,4", { header: false });
+  check("csv: CRLF line endings",                     crlf.length === 3);
+
+  // Custom delimiter
+  var tsv = b.parsers.csv.parse("a\tb\n1\t2", { delimiter: "\t", header: false });
+  check("csv: custom delimiter",                      tsv[1][0] === "1" && tsv[1][1] === "2");
+
+  // BOM stripped
+  var bom = b.parsers.csv.parse("﻿a,b\n1,2", { header: false });
+  check("csv: BOM stripped",                          bom[0][0] === "a");
+
+  // Size limit
+  var sizeRejected = false;
+  try { b.parsers.csv.parse("a,".repeat(100), { maxBytes: 50, header: false }); }
+  catch (e) { sizeRejected = e.code === "csv/too-large"; }
+  check("csv: maxBytes enforced",                     sizeRejected);
+
+  // Row count limit
+  var manyRows = Array.from({ length: 10 }, function (_, i) { return i + ",x"; }).join("\n");
+  var rowsRejected = false;
+  try { b.parsers.csv.parse(manyRows, { maxRows: 3, header: false }); }
+  catch (e) { rowsRejected = e.code === "csv/too-many-rows"; }
+  check("csv: maxRows enforced",                      rowsRejected);
+
+  // Unterminated quote
+  var unterminatedRejected = false;
+  try { b.parsers.csv.parse('a,b\n"unclosed,1\n2,3', { header: false }); }
+  catch (e) { unterminatedRejected = e.code === "csv/unterminated-quote"; }
+  check("csv: unterminated quote rejected",            unterminatedRejected);
+}
+
+function testCsvFormulaInjection() {
+  // Default: injection-prone cells get a '-prefix
+  var dangerous = b.parsers.csv.stringify([
+    { name: "=SUM(A1:A10)", value: "ok" },
+    { name: "+CMD|/c calc",  value: "ok" },
+    { name: "-1+2",          value: "ok" },
+    { name: "@SUM(1,2)",     value: "ok" },
+    { name: "normal",        value: "ok" },
+  ]);
+  check("csv stringify: =formula gets '-prefix",        /'\=SUM/.test(dangerous));
+  check("csv stringify: +formula gets '-prefix",        /'\+CMD/.test(dangerous));
+  check("csv stringify: -formula gets '-prefix",        /'\-1\+2/.test(dangerous));
+  check("csv stringify: @formula gets '-prefix",        /'\@SUM/.test(dangerous));
+  check("csv stringify: normal cell unchanged",         /(^|\n|\r)normal,ok/.test(dangerous));
+
+  // Disabled mode (RFC 4180 strict)
+  var raw = b.parsers.csv.stringify([{ name: "=SUM(A1:A10)" }], { preventFormulaInjection: false });
+  check("csv stringify: preventFormulaInjection:false leaves =formula", /^name\r\n=SUM/.test(raw));
+
+  // Round-trip via parse + stringify
+  var rows = [{ a: "1", b: "two, three" }, { a: "x\nnewline", b: "with \"quote\"" }];
+  var serialized = b.parsers.csv.stringify(rows);
+  var parsed = b.parsers.csv.parse(serialized);
+  check("csv round-trip preserves comma in field",       parsed[0].b === "two, three");
+  check("csv round-trip preserves newline in field",     parsed[1].a === "x\nnewline");
+  check("csv round-trip preserves quote in field",       parsed[1].b === "with \"quote\"");
+}
+
+// =====================================================================
 // json — security-focused JSON parse/stringify + schema validation
 // =====================================================================
 
@@ -3496,6 +3779,13 @@ function testJsonFormats() {
   await testMiddlewareBotGuard();
   await testMiddlewareCors();
   await testMiddlewareRateLimit();
+  // v0.0.16 atomic file + multi-format parsers
+  await testAtomicFile();
+  await testAtomicFileLock();
+  testXmlParse();
+  testXmlSecurityRejections();
+  testCsvParse();
+  testCsvFormulaInjection();
   console.log("OK — " + checks + " checks passed");
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);

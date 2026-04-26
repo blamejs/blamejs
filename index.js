@@ -40,6 +40,8 @@ var logStream = require("./lib/log-stream");
 var redact = require("./lib/redact");
 var externalDb = require("./lib/external-db");
 var middleware = require("./lib/middleware");
+var atomicFile = require("./lib/atomic-file");
+var parsers = require("./lib/parsers");
 
 module.exports = {
   crypto:           crypto,
@@ -64,6 +66,8 @@ module.exports = {
   redact:           redact,
   externalDb:       externalDb,
   middleware:       middleware,
+  atomicFile:       atomicFile,
+  parsers:          parsers,
   json:             json,
   ntpCheck:         ntpCheck,
   version:          constants.version,
