@@ -3273,6 +3273,169 @@ function testVaultRotateVerifyRegressionWithOldKeys() {
   } finally { fx.cleanup(); }
 }
 
+async function testVaultRotateRotateEndToEnd() {
+  // Build a real on-disk dataDir layout that the rotate primitive
+  // recognizes, run rotate(), then assert the staged copy reads back
+  // under the new keys and the source dataDir is untouched.
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-vrot-rot-"));
+  try {
+    var dataDir   = path.join(dir, "data");
+    var stagingDir = path.join(dir, "staging");
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    var oldKeys = b.crypto.generateEncryptionKeyPair();
+    var newKeys = b.crypto.generateEncryptionKeyPair();
+
+    // 32-byte XChaCha20 key for the at-rest DB envelope
+    var dbKey = b.crypto.generateBytes(32);
+
+    // vault.key: plaintext JSON of the keypair (matches plaintext mode)
+    fs.writeFileSync(path.join(dataDir, "vault.key"), JSON.stringify(oldKeys, null, 2));
+    // db.key.enc: vault-sealed base64(dbKey)
+    fs.writeFileSync(path.join(dataDir, "db.key.enc"),
+      b.constants.VAULT_PREFIX + b.crypto.encrypt(dbKey.toString("base64"), oldKeys));
+
+    // Build a small SQLite DB with sealed rows
+    var { DatabaseSync } = require("node:sqlite");
+    var plainDbPath = path.join(dir, "build.db");
+    var bdb = new DatabaseSync(plainDbPath);
+    bdb.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT, name TEXT)");
+    var ins = bdb.prepare("INSERT INTO users (_id, email, name) VALUES (?, ?, ?)");
+    for (var i = 0; i < 10; i++) {
+      ins.run(
+        "u-" + i,
+        b.constants.VAULT_PREFIX + b.crypto.encrypt("user" + i + "@b.com", oldKeys),
+        b.constants.VAULT_PREFIX + b.crypto.encrypt("Name " + i, oldKeys));
+    }
+    bdb.close();
+    var plainBytes = fs.readFileSync(plainDbPath);
+    fs.writeFileSync(path.join(dataDir, "db.enc"),
+      b.crypto.encryptPacked(plainBytes, dbKey));
+
+    // Register the schema before rotation so the rotator knows which columns are sealed
+    b.fieldCrypto.clearForTest();
+    b.fieldCrypto.registerTable("users", { sealedFields: ["email", "name"] });
+
+    var ageBefore = fs.statSync(path.join(dataDir, "db.enc")).mtimeMs;
+
+    // Rotate
+    var progressEvents = [];
+    var result = await b.vaultRotate.rotate({
+      oldKeys: oldKeys, newKeys: newKeys,
+      dataDir: dataDir, stagingDir: stagingDir,
+      mode: "plaintext",
+      progressCallback: function (e) { progressEvents.push(e.phase); },
+    });
+
+    check("rotate returns durationMs",              typeof result.durationMs === "number");
+    check("rotate processed users table",           result.tablesProcessed === 1);
+    check("rotate processed all 10 rows × 2 cols",  result.totalRowsProcessed >= 20);
+    check("rotate verify passed",                   result.verifyResult && result.verifyResult.ok === true);
+    check("progress phases include init/done",
+          progressEvents.indexOf("init") !== -1 &&
+          progressEvents.indexOf("done") !== -1);
+
+    // Staging should hold the new vault key
+    var stagedVaultKey = JSON.parse(fs.readFileSync(path.join(stagingDir, "vault.key"), "utf8"));
+    check("staged vault.key is the new keypair",
+          stagedVaultKey.encryptionMlkem === newKeys.encryptionMlkem ||
+          stagedVaultKey.encryption === newKeys.encryption ||
+          // shape varies but the staged keypair must NOT equal oldKeys
+          JSON.stringify(stagedVaultKey) !== JSON.stringify(oldKeys));
+
+    // Staged db.key.enc should decrypt under newKeys to the SAME dbKey
+    var stagedSealedKey = fs.readFileSync(path.join(stagingDir, "db.key.enc"), "utf8").trim();
+    var dbKeyAfterB64 = b.crypto.decrypt(stagedSealedKey.substring(b.constants.VAULT_PREFIX.length), newKeys);
+    check("staged db.key.enc decrypts under newKeys",
+          Buffer.from(dbKeyAfterB64, "base64").equals(dbKey));
+
+    // Staged db.enc should decrypt with dbKey, contain the same rows, and
+    // every email/name column should now be sealed under newKeys.
+    var stagedPacked = fs.readFileSync(path.join(stagingDir, "db.enc"));
+    var stagedPlain = b.crypto.decryptPacked(stagedPacked, dbKey);
+    var verifyDbPath = path.join(dir, "verify.db");
+    fs.writeFileSync(verifyDbPath, stagedPlain);
+    var vdb = new DatabaseSync(verifyDbPath);
+    try {
+      var rows = vdb.prepare("SELECT _id, email, name FROM users ORDER BY _id").all();
+      check("staged db has same row count",         rows.length === 10);
+      // Each row's sealed columns decrypt under newKeys
+      var allDecrypt = true;
+      for (var j = 0; j < rows.length; j++) {
+        var emailPayload = rows[j].email.substring(b.constants.VAULT_PREFIX.length);
+        var namePayload = rows[j].name.substring(b.constants.VAULT_PREFIX.length);
+        try {
+          if (b.crypto.decrypt(emailPayload, newKeys) !== "user" + j + "@b.com") allDecrypt = false;
+          if (b.crypto.decrypt(namePayload, newKeys) !== "Name " + j) allDecrypt = false;
+        } catch (_e) { allDecrypt = false; }
+      }
+      check("every staged sealed value decrypts under newKeys + plaintext matches",
+            allDecrypt);
+
+      // And NO row still decrypts under oldKeys
+      var anyOldDecrypt = false;
+      for (var k = 0; k < rows.length; k++) {
+        try {
+          b.crypto.decrypt(rows[k].email.substring(b.constants.VAULT_PREFIX.length), oldKeys);
+          anyOldDecrypt = true; break;
+        } catch (_e) { /* expected */ }
+      }
+      check("no staged row decrypts under oldKeys",  anyOldDecrypt === false);
+    } finally { vdb.close(); }
+
+    // dataDir is untouched (mtime unchanged)
+    var ageAfter = fs.statSync(path.join(dataDir, "db.enc")).mtimeMs;
+    check("rotate did NOT mutate dataDir/db.enc",   ageAfter === ageBefore);
+
+    b.fieldCrypto.clearForTest();
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testVaultRotateRotateValidation() {
+  var oldKeys = b.crypto.generateEncryptionKeyPair();
+  var newKeys = b.crypto.generateEncryptionKeyPair();
+  var threw;
+
+  threw = null;
+  try { await b.vaultRotate.rotate({}); } catch (e) { threw = e; }
+  check("rotate without keys throws",             threw && threw.code === "vault-rotate/no-keys");
+
+  threw = null;
+  try { await b.vaultRotate.rotate({ oldKeys: oldKeys, newKeys: newKeys, dataDir: "/nonexistent-blamejs-test", stagingDir: "/tmp/x" }); }
+  catch (e) { threw = e; }
+  check("rotate with missing dataDir throws",     threw && threw.code === "vault-rotate/no-datadir");
+
+  // staging exists → reject
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-vrot-val-"));
+  try {
+    fs.mkdirSync(path.join(dir, "staging"));
+    threw = null;
+    try {
+      await b.vaultRotate.rotate({
+        oldKeys: oldKeys, newKeys: newKeys,
+        dataDir: dir, stagingDir: path.join(dir, "staging"),
+      });
+    } catch (e) { threw = e; }
+    check("rotate with existing stagingDir throws", threw && threw.code === "vault-rotate/staging-exists");
+
+    // wrapped mode without passphrase → reject
+    threw = null;
+    try {
+      await b.vaultRotate.rotate({
+        oldKeys: oldKeys, newKeys: newKeys,
+        dataDir: dir, stagingDir: path.join(dir, "staging-2"),
+        mode: "wrapped",
+      });
+    } catch (e) { threw = e; }
+    check("rotate wrapped without passphrase throws",
+          threw && threw.code === "vault-rotate/no-passphrase");
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 function testVaultRotateVerifyRequiresKeysAndDb() {
   var threw;
   threw = null; try { b.vaultRotate.verify({}); } catch (e) { threw = e; }
@@ -8036,6 +8199,8 @@ async function run() {
   testVaultRotateVerifyDetectsTampering();
   testVaultRotateVerifyRegressionWithOldKeys();
   testVaultRotateVerifyRequiresKeysAndDb();
+  await testVaultRotateRotateEndToEnd();
+  await testVaultRotateRotateValidation();
   // pqc-agent — outbound HTTPS agent locked to PQC group preference (Phase 7 slice 2)
   testPqcAgentSurface();
   testPqcAgentCreateHasPqcPosture();
@@ -8368,6 +8533,8 @@ module.exports = {
   testVaultRotateVerifyDetectsTampering:     testVaultRotateVerifyDetectsTampering,
   testVaultRotateVerifyRegressionWithOldKeys: testVaultRotateVerifyRegressionWithOldKeys,
   testVaultRotateVerifyRequiresKeysAndDb:    testVaultRotateVerifyRequiresKeysAndDb,
+  testVaultRotateRotateEndToEnd:             testVaultRotateRotateEndToEnd,
+  testVaultRotateRotateValidation:           testVaultRotateRotateValidation,
   testPqcAgentSurface:                       testPqcAgentSurface,
   testPqcAgentCreateHasPqcPosture:           testPqcAgentCreateHasPqcPosture,
   testPqcAgentCannotWeakenCryptoPosture:     testPqcAgentCannotWeakenCryptoPosture,
