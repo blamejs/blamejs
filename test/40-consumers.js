@@ -1816,17 +1816,20 @@ async function testMiddlewareCsrfProtect() {
       });
     }
 
+    var bodyParser = b.middleware.bodyParser();
     var protect = b.middleware.csrfProtect({
       tokenLookup: function (req) { return EXPECTED; },
     });
     var server = http.createServer(async function (req, res) {
-      // tokenLookup runs against the real EXPECTED so we can drive the
-      // verify path; the protected route writes a 200.
+      // bodyParser runs first so urlencoded form posts populate req.body
+      // for csrf-protect to read. Header path still works without it.
       await new Promise(function (resolve) {
-        protect(req, res, function () {
-          res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": 2 });
-          res.end("ok");
-          resolve();
+        bodyParser(req, res, function () {
+          protect(req, res, function () {
+            res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": 2 });
+            res.end("ok");
+            resolve();
+          });
         });
       });
     });

@@ -5020,6 +5020,423 @@ async function testBackupCryptoArgValidation() {
         threw && threw.code === "backup-crypto/bad-input");
 }
 
+// ---- body-parser ----
+
+function _mockBodyReq(method, headers, body) {
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method = method;
+  req.url = "/";
+  req.headers = Object.assign({}, headers || {});
+  req.socket = { remoteAddress: "127.0.0.1" };
+  req.destroy = function () { /* mock — no-op */ };
+  setImmediate(function () {
+    if (Buffer.isBuffer(body)) req.emit("data", body);
+    else if (typeof body === "string") req.emit("data", Buffer.from(body));
+    req.emit("end");
+  });
+  return req;
+}
+
+function _mockBodyRes() {
+  var EE = require("node:events").EventEmitter;
+  var res = new EE();
+  res.statusCode = null;
+  res.headersSent = false;
+  res._captured = "";
+  res._endedStatus = null;
+  res.writeHead = function (s, h) {
+    res.statusCode = s;
+    res._endedStatus = s;
+    res.headersSent = true;
+    res._headers = h;
+  };
+  res.end = function (body) { if (body) res._captured += body; res.emit("finish"); };
+  return res;
+}
+
+function _runBodyParser(bp, req, res) {
+  return new Promise(function (resolve) {
+    var nextCalled = false;
+    var resolved = false;
+    function done(payload) { if (resolved) return; resolved = true; resolve(payload); }
+    // Register the finish listener BEFORE calling bp — synchronous
+    // 415 paths fire res.end() and emit "finish" inline, before any
+    // post-call listener could attach.
+    res.on("finish", function () { if (!nextCalled) done({ next: false, req: req, res: res }); });
+    bp(req, res, function () { nextCalled = true; done({ next: true, req: req, res: res }); });
+  });
+}
+
+async function testBodyParserSurface() {
+  var bp = b.middleware.bodyParser();
+  check("b.middleware.bodyParser is a function", typeof b.middleware.bodyParser === "function");
+  check("bodyParser returns a 3-arg middleware",  typeof bp === "function" && bp.length >= 2);
+  var raw = b.middleware._modules.bodyParser;
+  check("BodyParserError is exposed",            typeof raw.BodyParserError === "function");
+  check("POISONED_KEYS is exposed",              raw.POISONED_KEYS instanceof Set);
+}
+
+async function testBodyParserGetSkipped() {
+  var bp = b.middleware.bodyParser();
+  var req = _mockBodyReq("GET", {});
+  var res = _mockBodyRes();
+  var r = await _runBodyParser(bp, req, res);
+  check("GET request: bodyParser passes through (no body)",  r.next === true);
+  check("GET request: req.body unset",                       req.body === undefined);
+}
+
+async function testBodyParserJsonHappy() {
+  var bp = b.middleware.bodyParser();
+  var body = '{"name":"Alice","age":30}';
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+    body);
+  var res = _mockBodyRes();
+  var r = await _runBodyParser(bp, req, res);
+  check("JSON body: middleware called next()",   r.next === true);
+  check("JSON body: req.body parsed",            req.body && req.body.name === "Alice" && req.body.age === 30);
+}
+
+async function testBodyParserJsonStripsPrototypePollution() {
+  // safe-json strips POISONED_KEYS during parse. Confirm bodyParser
+  // surfaces a clean object even when the wire body contains __proto__.
+  var bp = b.middleware.bodyParser();
+  var body = '{"a":"ok","__proto__":{"polluted":true}}';
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+    body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("JSON body: __proto__ key stripped by safe-json",  req.body.polluted === undefined);
+  check("JSON body: legitimate keys retained",             req.body.a === "ok");
+  check("JSON body: Object.prototype not polluted",        ({}).polluted === undefined);
+}
+
+async function testBodyParserJsonSizeCap() {
+  var bp = b.middleware.bodyParser({ json: { limit: 100 } });
+  var body = '{"x":"' + "A".repeat(200) + '"}';
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+    body);
+  var res = _mockBodyRes();
+  var r = await _runBodyParser(bp, req, res);
+  check("JSON body too large: 413 response",     res._endedStatus === 413);
+  check("JSON body too large: next() not called", r.next === false);
+}
+
+async function testBodyParserJsonMalformed() {
+  var bp = b.middleware.bodyParser();
+  var body = '{not valid json';
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+    body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("JSON malformed: 400 response",          res._endedStatus === 400);
+}
+
+async function testBodyParserJsonStrictMode() {
+  var bp = b.middleware.bodyParser({ json: { strict: true } });
+  var body = '"a string"';
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+    body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("JSON strict: bare string rejected",     res._endedStatus === 400);
+}
+
+async function testBodyParserUrlencoded() {
+  var bp = b.middleware.bodyParser();
+  var body = "name=Alice&age=30&tag=js&tag=node";
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/x-www-form-urlencoded",
+      "content-length": String(Buffer.byteLength(body)) },
+    body);
+  var res = _mockBodyRes();
+  var r = await _runBodyParser(bp, req, res);
+  check("urlencoded: middleware called next()",  r.next === true);
+  check("urlencoded: scalar field parsed",       req.body.name === "Alice");
+  check("urlencoded: repeated key → array",      Array.isArray(req.body.tag) && req.body.tag.length === 2 &&
+                                                   req.body.tag[0] === "js" && req.body.tag[1] === "node");
+}
+
+async function testBodyParserUrlencodedPoisonedKey() {
+  var bp = b.middleware.bodyParser();
+  var body = "name=Alice&__proto__=poisoned";
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/x-www-form-urlencoded",
+      "content-length": String(Buffer.byteLength(body)) },
+    body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("urlencoded: __proto__ field rejected",  res._endedStatus === 400);
+}
+
+async function testBodyParserText() {
+  var bp = b.middleware.bodyParser();
+  var body = "hello world";
+  var req = _mockBodyReq("POST",
+    { "content-type": "text/plain", "content-length": String(body.length) }, body);
+  var res = _mockBodyRes();
+  var r = await _runBodyParser(bp, req, res);
+  check("text/plain: middleware called next()",  r.next === true);
+  check("text/plain: req.body is the string",    req.body === "hello world");
+}
+
+async function testBodyParserRaw() {
+  var bp = b.middleware.bodyParser();
+  var body = Buffer.from([0x01, 0x02, 0x03, 0x04, 0xff]);
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/octet-stream", "content-length": String(body.length) }, body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("application/octet-stream: req.body is Buffer",       Buffer.isBuffer(req.body));
+  check("application/octet-stream: bytes preserved",          req.body[0] === 0x01 && req.body[4] === 0xff);
+}
+
+async function testBodyParserUnsupportedType() {
+  var bp = b.middleware.bodyParser({ raw: false }); // disable raw catch-all
+  var body = Buffer.from([1, 2, 3]);
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/x-something-weird", "content-length": "3" }, body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("unsupported Content-Type: 415 response", res._endedStatus === 415);
+}
+
+async function testBodyParserDisabledSubparser() {
+  // Setting a sub-parser to false leaves req.body untouched; bodyParser
+  // returns 415 because no parser claims the type. This tests the
+  // explicit-disable path versus the catch-all.
+  var bp = b.middleware.bodyParser({ json: false, raw: false, urlencoded: false, text: false, multipart: false });
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": "2" }, "{}");
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("all sub-parsers disabled: 415 response", res._endedStatus === 415);
+}
+
+async function testBodyParserKeepRawBody() {
+  var bp = b.middleware.bodyParser({ keepRawBody: true });
+  var body = '{"signed":true}';
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }, body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("keepRawBody: req.bodyRaw is the original Buffer",  Buffer.isBuffer(req.bodyRaw));
+  check("keepRawBody: bytes preserved",                     req.bodyRaw.toString("utf8") === body);
+  check("keepRawBody: req.body still parsed",               req.body && req.body.signed === true);
+}
+
+function _buildMultipartBody(boundary, parts) {
+  // parts: [{ name, value, filename?, contentType? }, ...]
+  var pieces = [];
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i];
+    var headers = 'Content-Disposition: form-data; name="' + p.name + '"';
+    if (p.filename) headers += '; filename="' + p.filename + '"';
+    if (p.contentType) headers += "\r\nContent-Type: " + p.contentType;
+    pieces.push("--" + boundary + "\r\n" + headers + "\r\n\r\n");
+    pieces.push(p.value);
+    pieces.push("\r\n");
+  }
+  pieces.push("--" + boundary + "--\r\n");
+  return Buffer.concat(pieces.map(function (x) {
+    return Buffer.isBuffer(x) ? x : Buffer.from(x);
+  }));
+}
+
+async function testBodyParserMultipartFields() {
+  var bp = b.middleware.bodyParser();
+  var boundary = "----blamejs-test-boundary-1";
+  var body = _buildMultipartBody(boundary, [
+    { name: "name", value: "Alice" },
+    { name: "age",  value: "30" },
+  ]);
+  var req = _mockBodyReq("POST",
+    { "content-type": "multipart/form-data; boundary=" + boundary,
+      "content-length": String(body.length) }, body);
+  var res = _mockBodyRes();
+  var r = await _runBodyParser(bp, req, res);
+  check("multipart fields: middleware called next()", r.next === true);
+  check("multipart fields: name parsed",              req.body.name === "Alice");
+  check("multipart fields: age parsed",               req.body.age === "30");
+  check("multipart fields: no files",                 Array.isArray(req.files) && req.files.length === 0);
+}
+
+async function testBodyParserMultipartFile() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({ multipart: { tmpDir: tmpDir } });
+    var boundary = "----blamejs-test-boundary-2";
+    var fileBytes = Buffer.from("hello multipart file body");
+    var body = _buildMultipartBody(boundary, [
+      { name: "title",  value: "My File" },
+      { name: "upload", value: fileBytes, filename: "test.txt", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("multipart file: title field parsed",        req.body.title === "My File");
+    check("multipart file: file metadata captured",    req.files.length === 1);
+    check("multipart file: filename sanitized",        req.files[0].filename === "test.txt");
+    check("multipart file: mime preserved",            req.files[0].mimeType === "text/plain");
+    check("multipart file: size matches",              req.files[0].size === fileBytes.length);
+    check("multipart file: tmp file written",          fs.existsSync(req.files[0].path));
+    var diskBytes = fs.readFileSync(req.files[0].path);
+    check("multipart file: disk content matches",      diskBytes.toString("utf8") === "hello multipart file body");
+    check("multipart file: hash present",              typeof req.files[0].hash === "string" && req.files[0].hash.length === 128);
+    // Cleanup wired to res.finish — fire it and verify the tmp file disappears
+    res.emit("finish");
+    check("multipart file: tmp cleaned on res.finish", !fs.existsSync(req.files[0].path));
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartFilenameTraversal() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({ multipart: { tmpDir: tmpDir } });
+    var boundary = "----blamejs-test-boundary-3";
+    var body = _buildMultipartBody(boundary, [
+      { name: "upload", value: Buffer.from("evil"),
+        filename: "../../../etc/passwd", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    // The path components are stripped; only "passwd" survives
+    // sanitization. The tmp PATH itself is framework-generated, never
+    // derived from the operator-supplied filename.
+    check("multipart traversal: filename basename only", req.files[0].filename === "passwd");
+    check("multipart traversal: tmp path inside tmpDir",
+          req.files[0].path.indexOf(tmpDir) === 0);
+    res.emit("finish");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartFileSizeLimit() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({ multipart: { tmpDir: tmpDir, fileSize: 10 } });
+    var boundary = "----blamejs-test-boundary-4";
+    var body = _buildMultipartBody(boundary, [
+      { name: "upload", value: Buffer.from("this is way more than ten bytes"),
+        filename: "big.txt", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("multipart file too large: 413 response",  res._endedStatus === 413);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartMimeAllowlist() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: { tmpDir: tmpDir, mimeAllowlist: ["image/png"] },
+    });
+    var boundary = "----blamejs-test-boundary-5";
+    var body = _buildMultipartBody(boundary, [
+      { name: "upload", value: Buffer.from("not actually a png"),
+        filename: "bad.exe", contentType: "application/octet-stream" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("multipart MIME allowlist: rejection 415",  res._endedStatus === 415);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartPoisonedFieldName() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({ multipart: { tmpDir: tmpDir } });
+    var boundary = "----blamejs-test-boundary-6";
+    var body = _buildMultipartBody(boundary, [
+      { name: "__proto__", value: "polluted" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("multipart __proto__ field: 400 response",  res._endedStatus === 400);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartTruncated() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({ multipart: { tmpDir: tmpDir } });
+    var boundary = "----blamejs-test-boundary-7";
+    // Body missing the trailing -- closing boundary
+    var bodyStr = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\nvalue\r\n";
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(Buffer.byteLength(bodyStr)) }, bodyStr);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("multipart truncated: 400 response",       res._endedStatus === 400);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserContentLengthExceedsLimitImmediate() {
+  // Reject by Content-Length BEFORE reading any bytes — clients sending
+  // a huge body shouldn't be allowed to even stream.
+  var bp = b.middleware.bodyParser({ json: { limit: 100 } });
+  var req = _mockBodyReq("POST",
+    { "content-type": "application/json", "content-length": "10000" }, "");
+  // Don't actually emit data — the rejection should be immediate from CL.
+  var res = _mockBodyRes();
+  // Replace the setImmediate-driven 'data'/'end' since we want no body.
+  // The mock already won't emit data because body is empty; fake a long body via CL.
+  await _runBodyParser(bp, req, res);
+  check("content-length over limit: 413 immediate",  res._endedStatus === 413);
+}
+
+async function testBodyParserSanitizeFilenameUnit() {
+  var raw = b.middleware._modules.bodyParser;
+  check("filename: strips path components",
+        raw._sanitizeFilename("/etc/passwd") === "passwd");
+  check("filename: strips backslash separators",
+        raw._sanitizeFilename("C:\\evil\\bad.exe") === "bad.exe");
+  check("filename: traversal stripped",
+        raw._sanitizeFilename("../../etc/passwd") === "passwd");
+  check("filename: NUL byte removed",
+        raw._sanitizeFilename("test\x00.txt") === "test.txt");
+  check("filename: leading dots removed",
+        raw._sanitizeFilename("...bashrc") === "bashrc");
+  check("filename: pure dots rejected",
+        raw._sanitizeFilename("..") === null);
+  check("filename: empty after strip rejected",
+        raw._sanitizeFilename("/") === null);
+  check("filename: 256-char string truncated",
+        raw._sanitizeFilename("a".repeat(300)).length === 255);
+}
+
 // ---- safe-schema (declarative input validator) ----
 
 function testSafeSchemaSurface() {
@@ -11678,6 +12095,30 @@ async function run() {
   await testBackupCryptoFreshSaltUnique();
   testBackupCryptoChecksumIsSha3_512();
   await testBackupCryptoArgValidation();
+  // body-parser — request-body buffering + dispatch (Phase 9.2)
+  await testBodyParserSurface();
+  await testBodyParserGetSkipped();
+  await testBodyParserJsonHappy();
+  await testBodyParserJsonStripsPrototypePollution();
+  await testBodyParserJsonSizeCap();
+  await testBodyParserJsonMalformed();
+  await testBodyParserJsonStrictMode();
+  await testBodyParserUrlencoded();
+  await testBodyParserUrlencodedPoisonedKey();
+  await testBodyParserText();
+  await testBodyParserRaw();
+  await testBodyParserUnsupportedType();
+  await testBodyParserDisabledSubparser();
+  await testBodyParserKeepRawBody();
+  await testBodyParserMultipartFields();
+  await testBodyParserMultipartFile();
+  await testBodyParserMultipartFilenameTraversal();
+  await testBodyParserMultipartFileSizeLimit();
+  await testBodyParserMultipartMimeAllowlist();
+  await testBodyParserMultipartPoisonedFieldName();
+  await testBodyParserMultipartTruncated();
+  await testBodyParserContentLengthExceedsLimitImmediate();
+  testBodyParserSanitizeFilenameUnit();
   // safe-schema — declarative input validation (Phase 9.1)
   testSafeSchemaSurface();
   testSafeSchemaStringPrimitive();
@@ -12154,6 +12595,29 @@ module.exports = {
   testBackupCryptoFreshSaltUnique:           testBackupCryptoFreshSaltUnique,
   testBackupCryptoChecksumIsSha3_512:        testBackupCryptoChecksumIsSha3_512,
   testBackupCryptoArgValidation:             testBackupCryptoArgValidation,
+  testBodyParserSurface:                     testBodyParserSurface,
+  testBodyParserGetSkipped:                  testBodyParserGetSkipped,
+  testBodyParserJsonHappy:                   testBodyParserJsonHappy,
+  testBodyParserJsonStripsPrototypePollution: testBodyParserJsonStripsPrototypePollution,
+  testBodyParserJsonSizeCap:                 testBodyParserJsonSizeCap,
+  testBodyParserJsonMalformed:               testBodyParserJsonMalformed,
+  testBodyParserJsonStrictMode:              testBodyParserJsonStrictMode,
+  testBodyParserUrlencoded:                  testBodyParserUrlencoded,
+  testBodyParserUrlencodedPoisonedKey:       testBodyParserUrlencodedPoisonedKey,
+  testBodyParserText:                        testBodyParserText,
+  testBodyParserRaw:                         testBodyParserRaw,
+  testBodyParserUnsupportedType:             testBodyParserUnsupportedType,
+  testBodyParserDisabledSubparser:           testBodyParserDisabledSubparser,
+  testBodyParserKeepRawBody:                 testBodyParserKeepRawBody,
+  testBodyParserMultipartFields:             testBodyParserMultipartFields,
+  testBodyParserMultipartFile:               testBodyParserMultipartFile,
+  testBodyParserMultipartFilenameTraversal:  testBodyParserMultipartFilenameTraversal,
+  testBodyParserMultipartFileSizeLimit:      testBodyParserMultipartFileSizeLimit,
+  testBodyParserMultipartMimeAllowlist:      testBodyParserMultipartMimeAllowlist,
+  testBodyParserMultipartPoisonedFieldName:  testBodyParserMultipartPoisonedFieldName,
+  testBodyParserMultipartTruncated:          testBodyParserMultipartTruncated,
+  testBodyParserContentLengthExceedsLimitImmediate: testBodyParserContentLengthExceedsLimitImmediate,
+  testBodyParserSanitizeFilenameUnit:        testBodyParserSanitizeFilenameUnit,
   testSafeSchemaSurface:                     testSafeSchemaSurface,
   testSafeSchemaStringPrimitive:             testSafeSchemaStringPrimitive,
   testSafeSchemaNumberPrimitive:             testSafeSchemaNumberPrimitive,
