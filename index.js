@@ -71,6 +71,7 @@ var scheduler = require("./lib/scheduler");
 var log = require("./lib/log");
 var errorsPage = require("./lib/errors-page");
 var cookies = require("./lib/cookies");
+var migrations = require("./lib/migrations");
 
 module.exports = {
   crypto:           crypto,
@@ -124,6 +125,7 @@ module.exports = {
   log:              log,
   errorsPage:       errorsPage,
   cookies:          cookies,
+  migrations:       migrations,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

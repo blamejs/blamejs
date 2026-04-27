@@ -3078,6 +3078,261 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- migrations ----
+
+function _makeMigrationsFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mig-"));
+  var dbPath = path.join(dir, "test.db");
+  var migDir = path.join(dir, "migrations");
+  fs.mkdirSync(migDir, { recursive: true });
+  var { DatabaseSync } = require("node:sqlite");
+  var db = new DatabaseSync(dbPath);
+  return {
+    dir:    dir,
+    migDir: migDir,
+    db:     db,
+    cleanup: function () {
+      try { db.close(); } catch (_e) {}
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+    write: function (file, content) {
+      fs.writeFileSync(path.join(migDir, file), content);
+    },
+  };
+}
+
+function testMigrationsSurface() {
+  check("b.migrations namespace present",         typeof b.migrations === "object");
+  check("b.migrations.create is a function",      typeof b.migrations.create === "function");
+  check("b.migrations.MigrationError is a class", typeof b.migrations.MigrationError === "function");
+  check("b.migrations.MIGRATIONS_TABLE constant",
+        b.migrations.MIGRATIONS_TABLE === "_blamejs_migrations");
+
+  var threw;
+  threw = null;
+  try { b.migrations.create({}); } catch (e) { threw = e; }
+  check("create rejects missing dir",             threw && threw.code === "migrations/no-dir");
+}
+
+function testMigrationsUpAppliesPending() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-create-widgets.js", [
+      "module.exports = {",
+      "  description: 'create widgets',",
+      "  up:   function (db) { db['exec'](\"CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT)\"); },",
+      "  down: function (db) { db['exec'](\"DROP TABLE widgets\"); },",
+      "};",
+    ].join("\n"));
+    fx.write("0002-add-color.js", [
+      "module.exports = {",
+      "  up:   function (db) { db['exec'](\"ALTER TABLE widgets ADD COLUMN color TEXT\"); },",
+      "  down: function (db) { db['exec'](\"ALTER TABLE widgets DROP COLUMN color\"); },",
+      "};",
+    ].join("\n"));
+
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    var r1 = migs.up();
+    check("up applied both migrations in order",
+          r1.applied.length === 2 &&
+          r1.applied[0] === "0001-create-widgets.js" &&
+          r1.applied[1] === "0002-add-color.js");
+    check("up returned no skipped on first run",  r1.skipped.length === 0);
+
+    // Verify the schema actually changed
+    var cols = fx.db.prepare("PRAGMA table_info(widgets)").all();
+    var colNames = cols.map(function (c) { return c.name; });
+    check("up created widgets table",             colNames.indexOf("id") !== -1 && colNames.indexOf("name") !== -1);
+    check("up added the color column",            colNames.indexOf("color") !== -1);
+
+    // Re-run is idempotent
+    var r2 = migs.up();
+    check("re-run applied nothing",                r2.applied.length === 0);
+    check("re-run skipped both",                   r2.skipped.length === 2);
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsStatus() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-a.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE a (id INTEGER)\"); } };");
+    fx.write("0002-b.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE b (id INTEGER)\"); } };");
+    fx.write("0003-c.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE c (id INTEGER)\"); } };");
+
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    var pre = migs.status();
+    check("status before up: 0 applied",          pre.applied.length === 0);
+    check("status before up: 3 pending",          pre.pending.length === 3);
+    check("status total reflects all files",      pre.total === 3);
+
+    migs.up();
+    var post = migs.status();
+    check("status after up: 3 applied",           post.applied.length === 3);
+    check("status after up: 0 pending",           post.pending.length === 0);
+    check("applied rows carry name + appliedAt",
+          post.applied[0].name === "0001-a.js" &&
+          typeof post.applied[0].appliedAt === "string" &&
+          /^\d{4}-/.test(post.applied[0].appliedAt));
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsDownRollback() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-create-x.js", [
+      "module.exports = {",
+      "  up:   function (db) { db['exec'](\"CREATE TABLE x (id INTEGER)\"); },",
+      "  down: function (db) { db['exec'](\"DROP TABLE x\"); },",
+      "};",
+    ].join("\n"));
+    fx.write("0002-create-y.js", [
+      "module.exports = {",
+      "  up:   function (db) { db['exec'](\"CREATE TABLE y (id INTEGER)\"); },",
+      "  down: function (db) { db['exec'](\"DROP TABLE y\"); },",
+      "};",
+    ].join("\n"));
+
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    migs.up();
+
+    // Roll back the most recent (y)
+    var r1 = migs.down();
+    check("default steps=1 reverts one migration", r1.reverted.length === 1 && r1.reverted[0] === "0002-create-y.js");
+
+    // y is gone, x is still here
+    var tbls = fx.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('x','y')").all();
+    var tblNames = tbls.map(function (t) { return t.name; });
+    check("y dropped after rollback",              tblNames.indexOf("y") === -1);
+    check("x still present after partial rollback", tblNames.indexOf("x") !== -1);
+
+    // status reflects the partial rollback
+    var st = migs.status();
+    check("status: x applied, y pending",
+          st.applied.length === 1 && st.applied[0].name === "0001-create-x.js" &&
+          st.pending.length === 1 && st.pending[0] === "0002-create-y.js");
+
+    // Roll back x as well, with explicit steps
+    var r2 = migs.down({ steps: 1 });
+    check("rollback the remaining migration",      r2.reverted.length === 1 && r2.reverted[0] === "0001-create-x.js");
+    var st2 = migs.status();
+    check("status: nothing applied, both pending",
+          st2.applied.length === 0 && st2.pending.length === 2);
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsDownMultiSteps() {
+  var fx = _makeMigrationsFixture();
+  try {
+    for (var i = 1; i <= 3; i++) {
+      var n = i;
+      fx.write("000" + n + "-step.js", [
+        "module.exports = {",
+        "  up:   function (db) { db['exec'](\"CREATE TABLE t" + n + " (id INTEGER)\"); },",
+        "  down: function (db) { db['exec'](\"DROP TABLE t" + n + "\"); },",
+        "};",
+      ].join("\n"));
+    }
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    migs.up();
+
+    var r = migs.down({ steps: 2 });
+    check("steps=2 reverts 2 migrations in reverse order",
+          r.reverted.length === 2 &&
+          r.reverted[0] === "0003-step.js" &&
+          r.reverted[1] === "0002-step.js");
+
+    var st = migs.status();
+    check("only oldest still applied",             st.applied.length === 1 && st.applied[0].name === "0001-step.js");
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsDownRejectsBadSteps() {
+  var fx = _makeMigrationsFixture();
+  try {
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    var threw;
+    threw = null; try { migs.down({ steps: 0 }); }    catch (e) { threw = e; }
+    check("steps=0 rejected",                      threw && threw.code === "migrations/bad-steps");
+    threw = null; try { migs.down({ steps: -1 }); }   catch (e) { threw = e; }
+    check("negative steps rejected",               threw && threw.code === "migrations/bad-steps");
+    threw = null; try { migs.down({ steps: 1.5 }); }  catch (e) { threw = e; }
+    check("non-integer steps rejected",            threw && threw.code === "migrations/bad-steps");
+    threw = null; try { migs.down({ steps: "x" }); }  catch (e) { threw = e; }
+    check("non-numeric steps rejected",            threw && threw.code === "migrations/bad-steps");
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsRejectsRollbackWithoutDown() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-no-down.js",
+      "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE z (id INTEGER)\"); } };");
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    migs.up();
+    var threw = null;
+    try { migs.down(); } catch (e) { threw = e; }
+    check("missing down() surfaces clear error",
+          threw && threw.code === "migrations/no-down" &&
+          /no `down\(db\)` function/.test(threw.message));
+    // The migration should still be marked applied (rollback aborted before delete)
+    check("aborted rollback leaves migration applied",
+          migs.status().applied.length === 1);
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsUpFailureRollsBackTransaction() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-good.js",
+      "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE good (id INTEGER)\"); }, down: function (db) { db['exec'](\"DROP TABLE good\"); } };");
+    fx.write("0002-bad.js", [
+      "module.exports = {",
+      "  up: function (db) {",
+      "    db['exec'](\"CREATE TABLE bad (id INTEGER)\");",
+      "    throw new Error('intentional failure');",
+      "  },",
+      "};",
+    ].join("\n"));
+
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    var threw = null;
+    try { migs.up(); } catch (e) { threw = e; }
+    check("failing up surfaces MigrationError",
+          threw && threw.code === "migrations/up-failed" && /intentional failure/.test(threw.message));
+
+    // good migration applied; bad migration's table NOT created (rolled back)
+    var tbls = fx.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('good','bad')").all();
+    var tblNames = tbls.map(function (t) { return t.name; });
+    check("first (good) migration applied",        tblNames.indexOf("good") !== -1);
+    check("failed migration's CREATE was rolled back", tblNames.indexOf("bad") === -1);
+
+    // Status: 1 applied, 1 pending (the bad one)
+    var st = migs.status();
+    check("status reflects partial apply",         st.applied.length === 1 && st.pending.length === 1);
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsRejectsMalformedFiles() {
+  var fx = _makeMigrationsFixture();
+  try {
+    // No matching file pattern → just ignored (not an error)
+    fs.writeFileSync(path.join(fx.migDir, "README.md"), "ignore me");
+    fs.writeFileSync(path.join(fx.migDir, "no-prefix.js"),
+      "module.exports = { up: function () {} };");
+
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    var st = migs.status();
+    check("non-matching files ignored",            st.total === 0);
+
+    // Matching file without up() → load-time error
+    fx.write("0001-noup.js", "module.exports = { description: 'oops' };");
+    var threw = null;
+    try { migs.up(); } catch (e) { threw = e; }
+    check("missing up() surfaces missing-up error",
+          threw && threw.code === "migrations/missing-up");
+  } finally { fx.cleanup(); }
+}
+
 // ---- cookies ----
 
 function _cookieFakeRes() {
@@ -6582,6 +6837,16 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // migrations — public migration runner with up/down/status (Phase 6 slice 4)
+  testMigrationsSurface();
+  testMigrationsUpAppliesPending();
+  testMigrationsStatus();
+  testMigrationsDownRollback();
+  testMigrationsDownMultiSteps();
+  testMigrationsDownRejectsBadSteps();
+  testMigrationsRejectsRollbackWithoutDown();
+  testMigrationsUpFailureRollsBackTransaction();
+  testMigrationsRejectsMalformedFiles();
   // cookies — RFC 6265 cookie primitive + sealed-value access gate (Phase 6 slice 3)
   testCookiesSurface();
   testCookiesParse();
@@ -6856,6 +7121,15 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testMigrationsSurface:                     testMigrationsSurface,
+  testMigrationsUpAppliesPending:            testMigrationsUpAppliesPending,
+  testMigrationsStatus:                      testMigrationsStatus,
+  testMigrationsDownRollback:                testMigrationsDownRollback,
+  testMigrationsDownMultiSteps:              testMigrationsDownMultiSteps,
+  testMigrationsDownRejectsBadSteps:         testMigrationsDownRejectsBadSteps,
+  testMigrationsRejectsRollbackWithoutDown:  testMigrationsRejectsRollbackWithoutDown,
+  testMigrationsUpFailureRollsBackTransaction: testMigrationsUpFailureRollsBackTransaction,
+  testMigrationsRejectsMalformedFiles:       testMigrationsRejectsMalformedFiles,
   testCookiesSurface:                        testCookiesSurface,
   testCookiesParse:                          testCookiesParse,
   testCookiesSerialize:                      testCookiesSerialize,
