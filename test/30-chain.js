@@ -1612,6 +1612,171 @@ async function testTableMetadata() {
   }
 }
 
+async function testAuditSignDefaultsToSlhDsa() {
+  // First-run plaintext init in a fresh data directory should generate
+  // an SLH-DSA-SHAKE-256f keypair (the v0.1.54 default), and the
+  // on-disk file should record `algorithm: "slh-dsa-shake-256f"` so
+  // future loads dispatch correctly without re-detection.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-asd-"));
+  try {
+    await setupTestDb(tmpDir);
+    check("auditSign.getAlgorithm is exposed",
+          typeof b.auditSign.getAlgorithm === "function");
+    check("auditSign default alg is SLH-DSA-SHAKE-256f",
+          b.auditSign.getAlgorithm() === "slh-dsa-shake-256f");
+    check("auditSign exposes DEFAULT_SIGNING_ALG constant",
+          b.auditSign.DEFAULT_SIGNING_ALG === "slh-dsa-shake-256f");
+    check("auditSign exposes SUPPORTED_SIGNING_ALGS",
+          Array.isArray(b.auditSign.SUPPORTED_SIGNING_ALGS) &&
+          b.auditSign.SUPPORTED_SIGNING_ALGS.indexOf("slh-dsa-shake-256f") !== -1 &&
+          b.auditSign.SUPPORTED_SIGNING_ALGS.indexOf("ml-dsa-87") !== -1);
+
+    // On-disk file records the algorithm
+    var keyJson = JSON.parse(fs.readFileSync(path.join(tmpDir, "audit-sign.key"), "utf8"));
+    check("on-disk key file records algorithm field",
+          keyJson.algorithm === "slh-dsa-shake-256f");
+    check("on-disk public key is SLH-DSA SPKI PEM",
+          /BEGIN PUBLIC KEY/.test(keyJson.publicKey));
+
+    // Sign + verify round-trip works with the SLH-DSA-SHAKE-256f key
+    var sig = b.auditSign.sign("hello from slh-dsa");
+    check("SLH-DSA sign returns a Buffer",                 Buffer.isBuffer(sig));
+    // SLH-DSA-SHAKE-256f signatures are ~50 KB
+    check("SLH-DSA-SHAKE-256f signature size matches FIPS 205 (~50 KB)",
+          sig.length > 49000 && sig.length < 51000);
+    check("SLH-DSA verify accepts the signature",
+          b.auditSign.verify("hello from slh-dsa", sig) === true);
+    check("SLH-DSA verify rejects altered payload",
+          b.auditSign.verify("hello from slh-dsa!", sig) === false);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testAuditSignMlDsaOptIn() {
+  // Operators with throughput-sensitive deployments can opt into
+  // ml-dsa-87 at db.init via auditSigning: { algorithm: "ml-dsa-87" }.
+  // Verify the option propagates and produces a working ML-DSA-87 key.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-asm-"));
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+    b.cluster._resetForTest();
+    b.audit._resetForTest();
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir:      tmpDir,
+      atRest:       "plain",
+      auditSigning: { mode: "plaintext", algorithm: "ml-dsa-87" },
+      schema:       [],
+    });
+
+    check("opt-in alg honored in keys.algorithm",
+          b.auditSign.getAlgorithm() === "ml-dsa-87");
+    var keyJson = JSON.parse(fs.readFileSync(path.join(tmpDir, "audit-sign.key"), "utf8"));
+    check("on-disk key file records ml-dsa-87",
+          keyJson.algorithm === "ml-dsa-87");
+
+    var sig = b.auditSign.sign("hello from ml-dsa-87");
+    // ML-DSA-87 signatures are ~5 KB — order-of-magnitude smaller than SLH-DSA
+    check("ML-DSA-87 signature size matches FIPS 204 (~5 KB)",
+          sig.length > 4000 && sig.length < 6000);
+    check("ML-DSA-87 verify round-trip",
+          b.auditSign.verify("hello from ml-dsa-87", sig) === true);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testAuditSignLegacyFileBackcompat() {
+  // Legacy audit-sign.key files (pre-v0.1.54) have no `algorithm`
+  // field. Treat them as ml-dsa-87 — the previous implicit default —
+  // so existing deployments keep verifying their checkpoint chain
+  // after upgrade. Forge a legacy file by hand and verify the load
+  // path picks up ml-dsa-87.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-asl-"));
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+
+    // Generate an ML-DSA-87 keypair directly + write the legacy file
+    // shape (no algorithm field).
+    var nodeCrypto = require("crypto");
+    var pair = nodeCrypto.generateKeyPairSync("ml-dsa-87", {
+      publicKeyEncoding:  { type: "spki",  format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, "audit-sign.key"),
+      JSON.stringify({ publicKey: pair.publicKey, privateKey: pair.privateKey }, null, 2),
+      { mode: 0o600 }
+    );
+
+    // Boot with that legacy file present
+    process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+    b.cluster._resetForTest();
+    b.audit._resetForTest();
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir:      tmpDir,
+      atRest:       "plain",
+      auditSigning: { mode: "plaintext" },
+      schema:       [],
+    });
+
+    check("legacy file (no algorithm) loads as ml-dsa-87",
+          b.auditSign.getAlgorithm() === "ml-dsa-87");
+    // The key file ON DISK is unchanged — back-compat doesn't rewrite
+    // (would surprise operators); the algorithm is just inferred at
+    // load. Operators who want the field added rotate the key.
+    var stillLegacy = JSON.parse(fs.readFileSync(path.join(tmpDir, "audit-sign.key"), "utf8"));
+    check("legacy file is NOT rewritten with algorithm field",
+          stillLegacy.algorithm === undefined);
+
+    // Pubkey fingerprint matches the original key (no key rotation occurred)
+    var pubFromModule = b.auditSign.getPublicKey();
+    check("legacy pubkey loaded as-is",                   pubFromModule === pair.publicKey);
+
+    var sig = b.auditSign.sign("legacy roundtrip");
+    check("legacy ML-DSA-87 sign+verify works",
+          b.auditSign.verify("legacy roundtrip", sig) === true);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testAuditSignRejectsUnsupportedAlgorithm() {
+  // Typo or unsupported alg name surfaces at init time, not as a deeper
+  // "key generation failed" error from nodeCrypto.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-asbad-"));
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+    b.cluster._resetForTest();
+    b.audit._resetForTest();
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+
+    var threw = null;
+    try {
+      await b.db.init({
+        dataDir:      tmpDir,
+        atRest:       "plain",
+        auditSigning: { mode: "plaintext", algorithm: "ed25519" },  // not in supported list
+        schema:       [],
+      });
+    } catch (e) { threw = e; }
+    check("unsupported algorithm rejected at init",
+          threw && /algorithm must be one of/.test(threw.message));
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 async function testCheckpointSign() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ckpt-"));
   try {
@@ -1848,6 +2013,12 @@ async function run() {
   await testForeignKeys();
   await testTableMetadata();
 
+  // audit-sign algorithm-agility (v0.1.54)
+  await testAuditSignDefaultsToSlhDsa();
+  await testAuditSignMlDsaOptIn();
+  await testAuditSignLegacyFileBackcompat();
+  await testAuditSignRejectsUnsupportedAlgorithm();
+
   // checkpoint sign / verify / tamper / rollback
   await testCheckpointSign();
   await testCheckpointVerify();
@@ -1888,6 +2059,10 @@ module.exports = {
   testAppendOnlyTriggers:                              testAppendOnlyTriggers,
   testForeignKeys:                                     testForeignKeys,
   testTableMetadata:                                   testTableMetadata,
+  testAuditSignDefaultsToSlhDsa:                       testAuditSignDefaultsToSlhDsa,
+  testAuditSignMlDsaOptIn:                             testAuditSignMlDsaOptIn,
+  testAuditSignLegacyFileBackcompat:                   testAuditSignLegacyFileBackcompat,
+  testAuditSignRejectsUnsupportedAlgorithm:            testAuditSignRejectsUnsupportedAlgorithm,
   testCheckpointSign:                                  testCheckpointSign,
   testCheckpointVerify:                                testCheckpointVerify,
   testCheckpointTamperDetect:                          testCheckpointTamperDetect,
