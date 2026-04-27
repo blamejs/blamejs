@@ -56,6 +56,7 @@ var urlSafe = require("./lib/url-safe");
 var authHeader = require("./lib/auth-header");
 var auth = {
   password: require("./lib/auth/password"),
+  totp:     require("./lib/auth/totp"),
 };
 
 module.exports = {

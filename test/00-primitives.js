@@ -647,6 +647,194 @@ function testAuthPasswordSurface() {
   check("DEFAULT_PARAMS.memoryCost = 64 MiB-in-KiB", p.DEFAULT_PARAMS.memoryCost === 65536);
 }
 
+// ---- auth.totp (RFC 6238) ----
+//
+// RFC 6238 Appendix B publishes test vectors for HMAC-SHA1, HMAC-SHA256,
+// and HMAC-SHA512 with K = ASCII("12345678901234567890") (a 20-byte key
+// → base32 "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"). Times are wall-clock
+// seconds since epoch; with stepSeconds=30 the timeStep = floor(T/30).
+
+var RFC6238_KEY_B32_SHA1 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+function _stepFromT(tSec, stepSec) {
+  return Math.floor(tSec / (stepSec || 30));
+}
+
+function testAuthTotpRfc6238Vectors() {
+  // Appendix B vectors (SHA-1, 8 digits — the RFC publishes 8-digit
+  // codes; our default is 6, but compute() takes digits via opts).
+  var t = b.auth.totp;
+  var vectors = [
+    { T:          59, code: "94287082" },
+    { T:  1111111109, code: "07081804" },
+    { T:  1111111111, code: "14050471" },
+    { T:  1234567890, code: "89005924" },
+    { T:  2000000000, code: "69279037" },
+    { T: 20000000000, code: "65353130" },
+  ];
+  for (var i = 0; i < vectors.length; i++) {
+    var v = vectors[i];
+    var got = t.compute(RFC6238_KEY_B32_SHA1, _stepFromT(v.T, 30), { digits: 8 });
+    check("RFC 6238 SHA-1 vector T=" + v.T + " → " + v.code,  got === v.code);
+  }
+}
+
+function testAuthTotpGenerateSecret() {
+  var t = b.auth.totp;
+  var s = t.generateSecret();
+  check("generateSecret returns string",                      typeof s === "string");
+  // 20 bytes → 32 base32 characters (no padding)
+  check("generateSecret default = 32 base32 chars (20 bytes)", s.length === 32);
+  check("generateSecret is base32 (A-Z 2-7)",                  /^[A-Z2-7]+$/.test(s));
+
+  // Two secrets are different (random source)
+  var s2 = t.generateSecret();
+  check("generateSecret produces unique secrets",              s !== s2);
+
+  // bytes < 20 rejected
+  var threw = null;
+  try { t.generateSecret({ bytes: 10 }); }
+  catch (e) { threw = e; }
+  check("generateSecret rejects bytes < 20",                   threw && threw.code === "auth-totp/bad-secret-length");
+}
+
+function testAuthTotpGenerateAndVerifyRoundTrip() {
+  var t = b.auth.totp;
+  var secret = t.generateSecret();
+  var code = t.generate(secret);
+  check("generate returns 6-digit string by default",          /^[0-9]{6}$/.test(code));
+
+  var step = t.verify(secret, code);
+  check("verify returns the matched step number (truthy)",     typeof step === "number" && step > 0);
+  check("verify rejects wrong code",                           t.verify(secret, "000000") === false);
+}
+
+function testAuthTotpDriftWindow() {
+  var t = b.auth.totp;
+  var secret = t.generateSecret();
+  var nowMs = Date.now();
+  var stepNow = Math.floor(nowMs / 1000 / 30);
+
+  // Compute the codes the authenticator would have shown 30s and 60s ago,
+  // and the codes for now and 30s in the future.
+  var codeMinus2 = t.compute(secret, stepNow - 2);
+  var codeMinus1 = t.compute(secret, stepNow - 1);
+  var codeNow    = t.compute(secret, stepNow);
+  var codePlus1  = t.compute(secret, stepNow + 1);
+  var codePlus2  = t.compute(secret, stepNow + 2);
+
+  // Default driftSteps = 1: ±1 step accepted, ±2 rejected
+  check("verify accepts current code",        t.verify(secret, codeNow,    { now: nowMs }) === stepNow);
+  check("verify accepts -1 step (drift=1)",   t.verify(secret, codeMinus1, { now: nowMs }) === stepNow - 1);
+  check("verify accepts +1 step (drift=1)",   t.verify(secret, codePlus1,  { now: nowMs }) === stepNow + 1);
+  check("verify rejects -2 step (default drift=1)",
+        t.verify(secret, codeMinus2, { now: nowMs }) === false);
+  check("verify rejects +2 step (default drift=1)",
+        t.verify(secret, codePlus2,  { now: nowMs }) === false);
+
+  // driftSteps=2 widens the window
+  check("verify accepts -2 step with driftSteps=2",
+        t.verify(secret, codeMinus2, { now: nowMs, driftSteps: 2 }) === stepNow - 2);
+}
+
+function testAuthTotpReplayProtection() {
+  var t = b.auth.totp;
+  var secret = t.generateSecret();
+  var nowMs = Date.now();
+  var stepNow = Math.floor(nowMs / 1000 / 30);
+  var codeNow = t.compute(secret, stepNow);
+
+  // First verify succeeds
+  var matched = t.verify(secret, codeNow, { now: nowMs });
+  check("first verify accepts code",                          matched === stepNow);
+
+  // Second verify with lastUsedStep=matched rejects (replay defense)
+  check("verify rejects replay at the same step",
+        t.verify(secret, codeNow, { now: nowMs, lastUsedStep: matched }) === false);
+
+  // Drift-window codes that are ALSO at-or-below lastUsedStep get rejected
+  var codeMinus1 = t.compute(secret, stepNow - 1);
+  check("verify rejects prior-step code under replay guard",
+        t.verify(secret, codeMinus1, { now: nowMs, lastUsedStep: matched }) === false);
+}
+
+function testAuthTotpVerifyMalformedInput() {
+  var t = b.auth.totp;
+  var secret = t.generateSecret();
+  // verify is tolerant — never throws on bad input, just returns false
+  check("verify(empty secret) → false",       t.verify("", "123456") === false);
+  check("verify(null secret) → false",        t.verify(null, "123456") === false);
+  check("verify(secret, null) → false",       t.verify(secret, null) === false);
+  check("verify(secret, undefined) → false",  t.verify(secret, undefined) === false);
+  // Non-numeric code that's the right length still doesn't match → false
+  check("verify(secret, 'abcdef') → false",   t.verify(secret, "abcdef") === false);
+}
+
+function testAuthTotpUriShape() {
+  var t = b.auth.totp;
+  var u = t.uri("JBSWY3DPEHPK3PXP", "alice@example.com", { issuer: "BlameJS" });
+  check("uri starts with otpauth://totp/",                   u.indexOf("otpauth://totp/") === 0);
+  check("uri label has Issuer:Account",                      u.indexOf("BlameJS:alice%40example.com") !== -1);
+  check("uri carries secret as query param",                 /[?&]secret=JBSWY3DPEHPK3PXP/.test(u));
+  check("uri carries issuer as query param",                 /[?&]issuer=BlameJS/.test(u));
+  check("uri carries algorithm=SHA1 (default uppercase)",    /[?&]algorithm=SHA1/.test(u));
+  check("uri carries digits=6 (default)",                    /[?&]digits=6/.test(u));
+  check("uri carries period=30 (default stepSeconds)",       /[?&]period=30/.test(u));
+
+  // Required-field errors
+  var threw = null;
+  try { t.uri("SECRET", "alice", {}); }
+  catch (e) { threw = e; }
+  check("uri without issuer throws AuthError",
+        threw && threw.code === "auth-totp/missing-issuer");
+
+  threw = null;
+  try { t.uri("", "alice", { issuer: "X" }); }
+  catch (e) { threw = e; }
+  check("uri with empty secret throws",
+        threw && threw.code === "auth-totp/missing-secret");
+}
+
+function testAuthTotpBackupCodes() {
+  var t = b.auth.totp;
+  var codes = t.generateBackupCodes();
+  check("default backup codes count = 10",      codes.length === 10);
+  check("default backup code length = 8 hex",   /^[0-9a-f]{8}$/.test(codes[0]));
+  // Codes are unique within the batch (random source)
+  var uniq = {};
+  for (var i = 0; i < codes.length; i++) uniq[codes[i]] = true;
+  check("default backup codes are unique",       Object.keys(uniq).length === 10);
+
+  // Configurable count + length
+  var custom = t.generateBackupCodes({ count: 3, bytesPerCode: 8 });
+  check("custom count honored",                  custom.length === 3);
+  check("custom bytesPerCode honored (8 → 16 hex chars)",
+        /^[0-9a-f]{16}$/.test(custom[0]));
+}
+
+function testAuthTotpBadAlgorithmRejected() {
+  var t = b.auth.totp;
+  var threw = null;
+  try { t.compute("ABCDEFGH", 0, { algorithm: "md5" }); }
+  catch (e) { threw = e; }
+  check("compute with unsupported alg throws",
+        threw && threw.code === "auth-totp/bad-alg");
+}
+
+function testAuthTotpSurface() {
+  var t = b.auth.totp;
+  check("auth.totp namespace present",                   typeof b.auth.totp === "object");
+  check("auth.totp.generateSecret is a function",        typeof t.generateSecret === "function");
+  check("auth.totp.generate is a function",              typeof t.generate === "function");
+  check("auth.totp.compute is a function",               typeof t.compute === "function");
+  check("auth.totp.verify is a function",                typeof t.verify === "function");
+  check("auth.totp.uri is a function",                   typeof t.uri === "function");
+  check("auth.totp.generateBackupCodes is a function",   typeof t.generateBackupCodes === "function");
+  check("auth.totp.DEFAULT_STEP_SECONDS = 30",           t.DEFAULT_STEP_SECONDS === 30);
+  check("auth.totp.DEFAULT_DIGITS = 6",                  t.DEFAULT_DIGITS === 6);
+  check("auth.totp.DEFAULT_ALGORITHM = sha1",            t.DEFAULT_ALGORITHM === "sha1");
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -3137,6 +3325,17 @@ async function run() {
   await testAuthPasswordVerifyMalformedHash();
   await testAuthPasswordHashRejectsBadInput();
   await testAuthPasswordNeedsRehash();
+  // auth.totp — RFC 6238 TOTP (Phase 3 slice 2)
+  testAuthTotpSurface();
+  testAuthTotpRfc6238Vectors();
+  testAuthTotpGenerateSecret();
+  testAuthTotpGenerateAndVerifyRoundTrip();
+  testAuthTotpDriftWindow();
+  testAuthTotpReplayProtection();
+  testAuthTotpVerifyMalformedInput();
+  testAuthTotpUriShape();
+  testAuthTotpBackupCodes();
+  testAuthTotpBadAlgorithmRejected();
   // handlers primitive
   await testHandlerEmitAndDrain();
   await testHandlerEmitDuringFlushNextCycle();
@@ -3265,6 +3464,16 @@ module.exports = {
   testAuthPasswordVerifyMalformedHash:       testAuthPasswordVerifyMalformedHash,
   testAuthPasswordHashRejectsBadInput:       testAuthPasswordHashRejectsBadInput,
   testAuthPasswordNeedsRehash:               testAuthPasswordNeedsRehash,
+  testAuthTotpSurface:                       testAuthTotpSurface,
+  testAuthTotpRfc6238Vectors:                testAuthTotpRfc6238Vectors,
+  testAuthTotpGenerateSecret:                testAuthTotpGenerateSecret,
+  testAuthTotpGenerateAndVerifyRoundTrip:    testAuthTotpGenerateAndVerifyRoundTrip,
+  testAuthTotpDriftWindow:                   testAuthTotpDriftWindow,
+  testAuthTotpReplayProtection:              testAuthTotpReplayProtection,
+  testAuthTotpVerifyMalformedInput:          testAuthTotpVerifyMalformedInput,
+  testAuthTotpUriShape:                      testAuthTotpUriShape,
+  testAuthTotpBackupCodes:                   testAuthTotpBackupCodes,
+  testAuthTotpBadAlgorithmRejected:          testAuthTotpBadAlgorithmRejected,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
