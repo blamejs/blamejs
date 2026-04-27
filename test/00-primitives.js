@@ -3078,6 +3078,228 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- cookies ----
+
+function _cookieFakeRes() {
+  var headers = {};
+  return {
+    headers: headers,
+    setHeader: function (k, v) { headers[k] = v; },
+    getHeader: function (k) { return headers[k]; },
+  };
+}
+
+function testCookiesSurface() {
+  check("b.cookies namespace present",            typeof b.cookies === "object");
+  check("b.cookies.create is a function",         typeof b.cookies.create === "function");
+  check("b.cookies.parse is a function",          typeof b.cookies.parse === "function");
+  check("b.cookies.serialize is a function",      typeof b.cookies.serialize === "function");
+  check("b.cookies.CookieError is a class",       typeof b.cookies.CookieError === "function");
+}
+
+function testCookiesParse() {
+  var jar1 = b.cookies.parse("a=1; b=2; c=3");
+  check("parse simple",                           jar1.a === "1" && jar1.b === "2" && jar1.c === "3");
+
+  // = inside a value
+  var jar2 = b.cookies.parse("session=abc=def=ghi; flag=on");
+  check("parse value containing =",               jar2.session === "abc=def=ghi" && jar2.flag === "on");
+
+  // URL-encoded value decoded
+  var jar3 = b.cookies.parse("greet=" + encodeURIComponent("hi there!"));
+  check("parse url-decodes value",                jar3.greet === "hi there!");
+
+  // Quoted value strips surrounding quotes
+  var jar4 = b.cookies.parse('q="quoted value"');
+  check("parse strips surrounding quotes",        jar4.q === "quoted value");
+
+  // Empty / malformed inputs
+  check("parse null → empty object",              Object.keys(b.cookies.parse(null)).length === 0);
+  check("parse '' → empty object",                Object.keys(b.cookies.parse("")).length === 0);
+  check("parse 'no-equals' ignored",              Object.keys(b.cookies.parse("noequals")).length === 0);
+
+  // Last write wins (RFC 6265 §5.4 fixup)
+  var jar5 = b.cookies.parse("a=1; a=2");
+  check("parse last-write-wins on duplicate",     jar5.a === "2");
+}
+
+function testCookiesSerialize() {
+  // Defaults: just name=value
+  var s1 = b.cookies.serialize("a", "1");
+  check("serialize bare cookie",                   s1 === "a=1");
+
+  // All attributes
+  var s2 = b.cookies.serialize("session", "abc", {
+    maxAge: 3600, path: "/", httpOnly: true, secure: true, sameSite: "Lax",
+  });
+  check("serialize includes Max-Age",              /Max-Age=3600/.test(s2));
+  check("serialize includes Path",                 /Path=\//.test(s2));
+  check("serialize includes HttpOnly",             /HttpOnly/.test(s2));
+  check("serialize includes Secure",               /Secure/.test(s2));
+  check("serialize includes SameSite=Lax",         /SameSite=Lax/.test(s2));
+
+  // Expires Date conversion
+  var s3 = b.cookies.serialize("a", "1", { expires: new Date("2030-01-01T00:00:00Z") });
+  check("serialize includes Expires UTC",          /Expires=.*GMT/.test(s3));
+
+  // SameSite normalization
+  var s4 = b.cookies.serialize("a", "1", { sameSite: "strict" });
+  check("serialize normalizes SameSite=Strict",    /SameSite=Strict/.test(s4));
+
+  // SameSite=None forces Secure
+  var s5 = b.cookies.serialize("a", "1", { sameSite: "None" });
+  check("SameSite=None forces Secure",             /SameSite=None/.test(s5) && /Secure/.test(s5));
+
+  // Value gets percent-encoded on the wire
+  var s6 = b.cookies.serialize("a", "hi there!");
+  check("serialize percent-encodes value",         s6 === "a=hi%20there!");
+
+  // Reject CRLF in value (header injection defense)
+  var threw;
+  threw = null; try { b.cookies.serialize("a", "x\r\ny"); } catch (e) { threw = e; }
+  check("serialize rejects CRLF in value",         threw && threw.code === "cookies/invalid-value");
+  threw = null; try { b.cookies.serialize("a", "x;y"); } catch (e) { threw = e; }
+  check("serialize rejects semicolon in value",    threw && threw.code === "cookies/invalid-value");
+  threw = null; try { b.cookies.serialize("bad name", "v"); } catch (e) { threw = e; }
+  check("serialize rejects space in name",         threw && threw.code === "cookies/invalid-name");
+  threw = null; try { b.cookies.serialize("a\r\nb", "v"); } catch (e) { threw = e; }
+  check("serialize rejects CRLF in name",          threw && threw.code === "cookies/invalid-name");
+
+  // Invalid attr values
+  threw = null; try { b.cookies.serialize("a", "1", { sameSite: "Loose" }); } catch (e) { threw = e; }
+  check("serialize rejects unknown sameSite",      threw && threw.code === "cookies/invalid-attr");
+  threw = null; try { b.cookies.serialize("a", "1", { maxAge: "forever" }); } catch (e) { threw = e; }
+  check("serialize rejects non-integer maxAge",    threw && threw.code === "cookies/invalid-attr");
+
+  // CRLF in domain/path is stripped (defense in depth, since these are
+  // operator-controlled but could come from config)
+  var s7 = b.cookies.serialize("a", "1", { domain: "evil.com\r\nX-Hack: 1", path: "/" });
+  check("serialize strips CRLF from domain",
+        s7.indexOf("\r") === -1 && s7.indexOf("\n") === -1 && /Domain=evil\.com/.test(s7));
+}
+
+function testCookiesInstanceDefaults() {
+  var jar = b.cookies.create({
+    defaults: { httpOnly: true, secure: true, sameSite: "Strict", path: "/", maxAge: 600 },
+  });
+  var s = jar.serialize("session", "abc");
+  check("instance applies defaults",
+        /HttpOnly/.test(s) && /Secure/.test(s) && /SameSite=Strict/.test(s) &&
+        /Path=\//.test(s) && /Max-Age=600/.test(s));
+
+  // Per-call attrs override defaults
+  var s2 = jar.serialize("session", "abc", { sameSite: "Lax", maxAge: 60 });
+  check("per-call attrs override defaults",
+        /SameSite=Lax/.test(s2) && /Max-Age=60/.test(s2));
+
+  // create's own defaults override the framework's bare defaults
+  // (framework default is httpOnly=true, secure=true, sameSite=Lax, path=/)
+  var jar2 = b.cookies.create({ defaults: { secure: false, sameSite: "None" } });
+  var s3 = jar2.serialize("a", "1");
+  // SameSite=None forces Secure regardless — verifies that path
+  check("SameSite=None forces Secure even when default secure=false",
+        /SameSite=None/.test(s3) && /Secure/.test(s3));
+}
+
+function testCookiesReadWrite() {
+  var jar = b.cookies.create({
+    defaults: { httpOnly: true, secure: false, sameSite: "Lax", path: "/" },
+  });
+  var req = { headers: { cookie: "blamejs_session=abc; theme=dark" } };
+  check("read returns cookie value",               jar.read(req, "blamejs_session") === "abc");
+  check("read missing cookie → null",              jar.read(req, "nope") === null);
+  check("read req without headers → null",         jar.read({}, "x") === null);
+
+  // Write builds the Set-Cookie array, preserving any existing entries
+  var res = _cookieFakeRes();
+  res.headers["Set-Cookie"] = ["existing=1; Path=/"];
+  jar.write(res, "blamejs_session", "newtoken", { maxAge: 60 });
+  var setCookie = res.headers["Set-Cookie"];
+  check("write appends to existing Set-Cookie",    Array.isArray(setCookie) && setCookie.length === 2);
+  check("written cookie has name+value",           /blamejs_session=newtoken/.test(setCookie[1]));
+  check("written cookie has Max-Age",              /Max-Age=60/.test(setCookie[1]));
+
+  // Clear → Max-Age=0
+  var res2 = _cookieFakeRes();
+  jar.clear(res2, "blamejs_session");
+  check("clear emits Max-Age=0",                   /Max-Age=0/.test(res2.headers["Set-Cookie"][0]));
+}
+
+function testCookiesSealedRoundTrip() {
+  // Real vault round-trip via the framework's own vault module. We use
+  // a temp dir so the key isn't shared with other tests.
+  var prevDataDir = process.env.BLAMEJS_DATA_DIR;
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cookies-test-"));
+  process.env.BLAMEJS_DATA_DIR = dir;
+  try {
+    b.vault._resetForTest();
+    b.vault.init({ mode: "plaintext", dataDir: dir });
+    var jar = b.cookies.create({
+      vault: b.vault,
+      defaults: { httpOnly: true, secure: false, sameSite: "Lax", path: "/" },
+    });
+
+    // writeSealed → cookie carries vault.seal of value (prefix stripped)
+    var res = _cookieFakeRes();
+    var sid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    jar.writeSealed(res, "blamejs_session", sid, { maxAge: 600 });
+    var setCookie = res.headers["Set-Cookie"][0];
+    check("sealed cookie wire format does not contain raw sid",
+          setCookie.indexOf(sid) === -1);
+    check("sealed cookie wire format does not contain vault: prefix",
+          setCookie.indexOf("vault:") === -1);
+
+    // Pull the cookie value off the Set-Cookie line and round-trip via readSealed
+    var nameEqValue = setCookie.split(";")[0];
+    var enc = nameEqValue.split("=")[1]; // url-encoded form
+    var req = { headers: { cookie: "blamejs_session=" + enc } };
+    var unsealed = jar.readSealed(req, "blamejs_session");
+    check("readSealed recovers the original sid",  unsealed === sid);
+
+    // Two seals of the same value produce DIFFERENT ciphertexts
+    // (XChaCha20 nonce randomization). The framework's encryption-as-
+    // access-gate posture relies on this — even an attacker who sees
+    // many cookies can't distill the wire format into a guessable value.
+    var resB = _cookieFakeRes();
+    jar.writeSealed(resB, "blamejs_session", sid, { maxAge: 600 });
+    var encB = resB.headers["Set-Cookie"][0].split(";")[0].split("=")[1];
+    check("two seals of same value produce different ciphertext",
+          enc !== encB);
+
+    // Tampered sealed cookie → readSealed returns null (no throw)
+    var tampered = enc.slice(0, -4) + "AAAA"; // mutate last 4 base64 chars
+    var reqT = { headers: { cookie: "blamejs_session=" + tampered } };
+    check("tampered sealed cookie → null (auth tag fails)",
+          jar.readSealed(reqT, "blamejs_session") === null);
+
+    // Sealed cookie carries the vault envelope intact — first byte of
+    // the decoded payload is the envelope magic (0xE1).
+    var decoded = Buffer.from(decodeURIComponent(enc), "base64");
+    check("sealed cookie payload starts with envelope magic 0xE1",
+          decoded[0] === b.constants.ENVELOPE_MAGIC);
+    // The 4-byte envelope header (magic + KEM + cipher + KDF) is the
+    // version-agility seam — algorithm rotation works even on cookies
+    // because vault.unseal dispatches on these bytes, not the active
+    // defaults.
+    check("envelope KEM byte matches ACTIVE.KEM",   decoded[1] === b.constants.ACTIVE.KEM);
+    check("envelope cipher byte matches ACTIVE.CIPHER",
+          decoded[2] === b.constants.ACTIVE.CIPHER);
+    check("envelope KDF byte matches ACTIVE.KDF",   decoded[3] === b.constants.ACTIVE.KDF);
+
+    // Sealed methods without a vault → throw
+    var noVault = b.cookies.create({});
+    var threw = null;
+    try { noVault.writeSealed(_cookieFakeRes(), "x", "y"); } catch (e) { threw = e; }
+    check("writeSealed without vault throws",      threw && threw.code === "cookies/no-vault");
+
+    b.vault._resetForTest();
+  } finally {
+    if (prevDataDir === undefined) delete process.env.BLAMEJS_DATA_DIR;
+    else process.env.BLAMEJS_DATA_DIR = prevDataDir;
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 // ---- errors-page ----
 //
 // A fake-res helper captures statusCode + Content-Type + body so each
@@ -6360,6 +6582,13 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // cookies — RFC 6265 cookie primitive + sealed-value access gate (Phase 6 slice 3)
+  testCookiesSurface();
+  testCookiesParse();
+  testCookiesSerialize();
+  testCookiesInstanceDefaults();
+  testCookiesReadWrite();
+  testCookiesSealedRoundTrip();
   // errors-page — router error handler with rich dev page + safe prod page (Phase 6 slice 2)
   testErrorsPageSurface();
   testErrorsPageProdHidesStackAndOriginalMessage();
@@ -6627,6 +6856,12 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testCookiesSurface:                        testCookiesSurface,
+  testCookiesParse:                          testCookiesParse,
+  testCookiesSerialize:                      testCookiesSerialize,
+  testCookiesInstanceDefaults:               testCookiesInstanceDefaults,
+  testCookiesReadWrite:                      testCookiesReadWrite,
+  testCookiesSealedRoundTrip:                testCookiesSealedRoundTrip,
   testErrorsPageSurface:                     testErrorsPageSurface,
   testErrorsPageProdHidesStackAndOriginalMessage: testErrorsPageProdHidesStackAndOriginalMessage,
   testErrorsPageDevShowsStackAndRequestInfo: testErrorsPageDevShowsStackAndRequestInfo,
