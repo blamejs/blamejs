@@ -2167,6 +2167,227 @@ function testStaticServeSurface() {
   check("create() rejects missing root",                threw && /does not exist/.test(threw.message));
 }
 
+// ---- forms (Phase 4 slice 4) ----
+
+function testFormsCsrfTokenGeneration() {
+  var f = b.forms;
+  var t = f.generateCsrfToken();
+  check("generateCsrfToken: 64 hex chars (32 bytes)",
+        typeof t === "string" && /^[0-9a-f]{64}$/.test(t));
+  // Two consecutive calls produce different tokens (random)
+  check("generateCsrfToken: non-deterministic",      f.generateCsrfToken() !== t);
+}
+
+function testFormsCsrfTokenVerify() {
+  var f = b.forms;
+  var t = f.generateCsrfToken();
+  check("verifyCsrfToken: same string accepts",      f.verifyCsrfToken(t, t) === true);
+  check("verifyCsrfToken: different strings reject", f.verifyCsrfToken(t, f.generateCsrfToken()) === false);
+  // Length-mismatch rejected (defense against length-oracle attacks)
+  check("verifyCsrfToken: length mismatch → false",  f.verifyCsrfToken(t, t + "X") === false);
+  // Empty / null / wrong-type → false (no throw)
+  check("verifyCsrfToken: empty → false",            f.verifyCsrfToken("", t) === false);
+  check("verifyCsrfToken: null → false",             f.verifyCsrfToken(null, t) === false);
+  check("verifyCsrfToken: number → false",           f.verifyCsrfToken(42, t) === false);
+}
+
+function testFormsEscapeAttribute() {
+  var f = b.forms;
+  // Escapes the same set as escapeHtml + ` and =
+  check("escapeAttribute: <, >, &",                  f.escapeAttribute("<&>") === "&lt;&amp;&gt;");
+  check("escapeAttribute: double-quote",             f.escapeAttribute('"x"') === "&quot;x&quot;");
+  check("escapeAttribute: single-quote",             f.escapeAttribute("'x'") === "&#x27;x&#x27;");
+  check("escapeAttribute: backtick",                 f.escapeAttribute("`x`") === "&#x60;x&#x60;");
+  check("escapeAttribute: equals sign",              f.escapeAttribute("a=b") === "a&#x3D;b");
+  check("escapeAttribute: null/undefined → empty",
+        f.escapeAttribute(null) === "" && f.escapeAttribute(undefined) === "");
+}
+
+function testFormsRenderBasic() {
+  var f = b.forms;
+  var html = f.render({
+    action: "/contact",
+    csrfToken: "abc123",
+    fields: [
+      { name: "email", type: "email", required: true, label: "Email" },
+      { name: "msg",   type: "textarea", label: "Message" },
+    ],
+  });
+  check("render: <form> wraps content",                html.indexOf("<form ") === 0 && html.indexOf("</form>") !== -1);
+  check("render: action attribute",                    html.indexOf('action="/contact"') !== -1);
+  check("render: method defaults to POST",             html.indexOf('method="POST"') !== -1);
+  check("render: hidden CSRF input",
+        html.indexOf('<input type="hidden" name="_csrf" value="abc123">') !== -1);
+  check("render: email input present",                 html.indexOf('type="email"') !== -1);
+  check("render: required attribute",                  html.indexOf("required") !== -1);
+  check("render: textarea element",                    html.indexOf("<textarea") !== -1);
+  check("render: auto-appended submit button",         html.indexOf("<button type=\"submit\">Submit</button>") !== -1);
+  check("render: label wraps non-hidden field",        html.indexOf("<label>Email") !== -1);
+}
+
+function testFormsRenderEscapesHostileInput() {
+  var f = b.forms;
+  // Operator (or attacker) tries to slip an attribute-breaking value
+  // into an action or option label
+  var html = f.render({
+    action: '/safe" onsubmit="alert(1)',
+    fields: [
+      { name: "color", type: "select", options: [
+        { value: 'red"><script>alert(1)</script>', label: '"label' },
+      ]},
+    ],
+  });
+  // The attacker payload must NOT appear as raw HTML
+  check("render: hostile action escaped",              html.indexOf('onsubmit="alert(1)') === -1);
+  check("render: hostile option value escaped",        html.indexOf("<script>") === -1);
+  check("render: option label HTML-escaped",
+        html.indexOf("&quot;label") !== -1);
+}
+
+function testFormsRenderSelectAndPreselection() {
+  var f = b.forms;
+  var html = f.render({
+    action: "/x",
+    csrfToken: "T",
+    fields: [{
+      name: "country",
+      type: "select",
+      value: "FR",
+      options: [
+        { value: "US", label: "United States" },
+        { value: "FR", label: "France" },
+      ],
+    }],
+  });
+  check("select renders all options",
+        html.indexOf("United States") !== -1 && html.indexOf("France") !== -1);
+  check("select pre-selects via value match",
+        /<option[^>]*value="FR"[^>]*selected[^>]*>France<\/option>/.test(html) === true);
+}
+
+function testFormsRenderSubmitOverride() {
+  var f = b.forms;
+  // When operator includes a submit field, no auto-button
+  var html = f.render({
+    action: "/x",
+    fields: [
+      { name: "n", type: "text" },
+      { name: "go", type: "submit", value: "Send Now" },
+    ],
+  });
+  check("explicit submit overrides auto-button",
+        html.indexOf('type="submit"') !== -1 &&
+        html.indexOf('value="Send Now"') !== -1 &&
+        html.indexOf("<button") === -1);
+}
+
+function testFormsRenderRejectsInvalidSpec() {
+  var f = b.forms;
+  var threw = null;
+  try { f.render({ fields: [] }); }
+  catch (e) { threw = e; }
+  check("render rejects missing action",               threw && /action is required/.test(threw.message));
+
+  threw = null;
+  try { f.render({ action: "/x" }); }
+  catch (e) { threw = e; }
+  check("render rejects missing fields",               threw && /fields must be an array/.test(threw.message));
+
+  threw = null;
+  try { f.render({ action: "/x", fields: [{ type: "text" }] }); }
+  catch (e) { threw = e; }
+  check("render rejects field without name",           threw && /name/.test(threw.message));
+
+  threw = null;
+  try { f.render({ action: "/x", fields: [{ name: "x", type: "wat" }] }); }
+  catch (e) { threw = e; }
+  check("render rejects unknown field type",           threw && /unsupported field type/.test(threw.message));
+}
+
+function testFormsValidateRequired() {
+  var f = b.forms;
+  var spec = { fields: [
+    { name: "email", type: "email", required: true, label: "Email" },
+    { name: "name",  type: "text" },
+  ]};
+
+  var r1 = f.validate(spec, {});
+  check("validate: missing required produces error",   r1.valid === false && r1.errors.email);
+  check("validate: error references field label",      /Email is required/.test(r1.errors.email));
+  check("validate: optional field not required",       !r1.errors.name);
+
+  var r2 = f.validate(spec, { email: "alice@example.com", name: "Alice" });
+  check("validate: all-present passes",                r2.valid === true && Object.keys(r2.errors).length === 0);
+  check("validate: values reflected back",             r2.values.email === "alice@example.com" && r2.values.name === "Alice");
+}
+
+function testFormsValidateTypes() {
+  var f = b.forms;
+
+  // Number
+  var r = f.validate({ fields: [{ name: "n", type: "number", min: 1, max: 10 }]}, { n: "5" });
+  check("validate: number coerces string → number",    r.valid === true && r.values.n === 5);
+
+  r = f.validate({ fields: [{ name: "n", type: "number" }]}, { n: "abc" });
+  check("validate: non-numeric number → error",        r.valid === false && /must be a number/.test(r.errors.n));
+
+  r = f.validate({ fields: [{ name: "n", type: "number", min: 5 }]}, { n: "1" });
+  check("validate: number below min → error",          r.valid === false && /≥ 5/.test(r.errors.n));
+
+  r = f.validate({ fields: [{ name: "n", type: "number", max: 10 }]}, { n: "100" });
+  check("validate: number above max → error",          r.valid === false && /≤ 10/.test(r.errors.n));
+
+  // Email
+  r = f.validate({ fields: [{ name: "e", type: "email" }]}, { e: "not-an-email" });
+  check("validate: bad email → error",                 r.valid === false && /valid email/.test(r.errors.e));
+
+  r = f.validate({ fields: [{ name: "e", type: "email" }]}, { e: "alice@example.com" });
+  check("validate: good email passes",                 r.valid === true);
+
+  // URL
+  r = f.validate({ fields: [{ name: "u", type: "url" }]}, { u: "not a url" });
+  check("validate: bad URL → error",                   r.valid === false && /valid URL/.test(r.errors.u));
+
+  r = f.validate({ fields: [{ name: "u", type: "url" }]}, { u: "https://example.com/x" });
+  check("validate: good URL passes",                   r.valid === true);
+
+  // Checkbox
+  r = f.validate({ fields: [{ name: "c", type: "checkbox" }]}, { c: "on" });
+  check("validate: checkbox 'on' → true",              r.valid === true && r.values.c === true);
+  r = f.validate({ fields: [{ name: "c", type: "checkbox" }]}, {});
+  check("validate: checkbox missing → false",          r.valid === true && r.values.c === false);
+
+  // Length bounds
+  r = f.validate({ fields: [{ name: "p", type: "text", minlength: 8, maxlength: 64 }]}, { p: "short" });
+  check("validate: text below minlength → error",      r.valid === false && /at least 8/.test(r.errors.p));
+  r = f.validate({ fields: [{ name: "p", type: "text", maxlength: 5 }]}, { p: "way too long" });
+  check("validate: text above maxlength → error",      r.valid === false && /at most 5/.test(r.errors.p));
+
+  // Pattern
+  r = f.validate({ fields: [{ name: "code", type: "text", pattern: "[A-Z]{3}-[0-9]{4}" }]}, { code: "ABC-1234" });
+  check("validate: pattern match passes",              r.valid === true);
+  r = f.validate({ fields: [{ name: "code", type: "text", pattern: "[A-Z]{3}-[0-9]{4}" }]}, { code: "abc-12" });
+  check("validate: pattern mismatch → error",          r.valid === false && /invalid format/.test(r.errors.code));
+
+  // Select / radio enum
+  r = f.validate({ fields: [
+    { name: "c", type: "select", options: [{ value: "US" }, { value: "FR" }]},
+  ]}, { c: "ZZ" });
+  check("validate: out-of-enum select → error",        r.valid === false && /invalid value/.test(r.errors.c));
+}
+
+function testFormsSurface() {
+  var f = b.forms;
+  check("b.forms namespace present",                   typeof b.forms === "object");
+  check("b.forms.generateCsrfToken is a function",     typeof f.generateCsrfToken === "function");
+  check("b.forms.verifyCsrfToken is a function",       typeof f.verifyCsrfToken === "function");
+  check("b.forms.render is a function",                typeof f.render === "function");
+  check("b.forms.validate is a function",              typeof f.validate === "function");
+  check("b.forms.escapeAttribute is a function",       typeof f.escapeAttribute === "function");
+  check("b.forms.escapeHtml === template.escapeHtml",  f.escapeHtml === b.template.escapeHtml);
+  check("b.forms.CSRF_TOKEN_BYTES = 32",                f.CSRF_TOKEN_BYTES === 32);
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -4719,6 +4940,18 @@ async function run() {
   await testStaticServeIndexFile();
   await testStaticServeMethodGuard();
   await testStaticServeIntegrityHelper();
+  // forms — CSRF tokens + HTML render + validation (Phase 4 slice 4)
+  testFormsSurface();
+  testFormsCsrfTokenGeneration();
+  testFormsCsrfTokenVerify();
+  testFormsEscapeAttribute();
+  testFormsRenderBasic();
+  testFormsRenderEscapesHostileInput();
+  testFormsRenderSelectAndPreselection();
+  testFormsRenderSubmitOverride();
+  testFormsRenderRejectsInvalidSpec();
+  testFormsValidateRequired();
+  testFormsValidateTypes();
   // auth.jwt — PQC-signed JWT (Phase 3 slice 5, final)
   testAuthJwtSurface();
   await testAuthJwtSignVerifyRoundTripDefault();
@@ -4918,6 +5151,17 @@ module.exports = {
   testStaticServeIndexFile:                  testStaticServeIndexFile,
   testStaticServeMethodGuard:                testStaticServeMethodGuard,
   testStaticServeIntegrityHelper:            testStaticServeIntegrityHelper,
+  testFormsSurface:                          testFormsSurface,
+  testFormsCsrfTokenGeneration:              testFormsCsrfTokenGeneration,
+  testFormsCsrfTokenVerify:                  testFormsCsrfTokenVerify,
+  testFormsEscapeAttribute:                  testFormsEscapeAttribute,
+  testFormsRenderBasic:                      testFormsRenderBasic,
+  testFormsRenderEscapesHostileInput:        testFormsRenderEscapesHostileInput,
+  testFormsRenderSelectAndPreselection:      testFormsRenderSelectAndPreselection,
+  testFormsRenderSubmitOverride:             testFormsRenderSubmitOverride,
+  testFormsRenderRejectsInvalidSpec:         testFormsRenderRejectsInvalidSpec,
+  testFormsValidateRequired:                 testFormsValidateRequired,
+  testFormsValidateTypes:                    testFormsValidateTypes,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,

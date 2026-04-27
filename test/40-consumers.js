@@ -1673,6 +1673,167 @@ async function testMiddlewareRateLimit() {
   } finally { teardownMW(); }
 }
 
+async function testMiddlewareCsrfProtect() {
+  // End-to-end via a real http server. Token is stored in a fake
+  // session under req.expectedCsrfToken so the middleware's tokenLookup
+  // can return it without dragging the real session module into this
+  // test fixture (which is about CSRF gating, not session lifecycle).
+  await setupTestDbForMW();
+  try {
+    var http = require("http");
+
+    var EXPECTED = b.forms.generateCsrfToken();
+
+    function _captureBody(req) {
+      return new Promise(function (resolve) {
+        var chunks = [];
+        req.on("data", function (c) { chunks.push(c); });
+        req.on("end", function () { resolve(Buffer.concat(chunks).toString("utf8")); });
+      });
+    }
+
+    var protect = b.middleware.csrfProtect({
+      tokenLookup: function (req) { return EXPECTED; },
+    });
+    var server = http.createServer(async function (req, res) {
+      // tokenLookup runs against the real EXPECTED so we can drive the
+      // verify path; the protected route writes a 200.
+      await new Promise(function (resolve) {
+        protect(req, res, function () {
+          res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": 2 });
+          res.end("ok");
+          resolve();
+        });
+      });
+    });
+    var port = await listenOnRandomPort(server);
+    try {
+      // 1. Safe method (GET) → middleware passes through, even with no token
+      var safe = await b.httpClient.request({
+        url: "http://127.0.0.1:" + port + "/protected",
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      });
+      check("csrfProtect: GET passes through",          safe.statusCode === 200);
+
+      // 2. POST without token → 403
+      var noTok = await b.httpClient.request({
+        method: "POST",
+        url: "http://127.0.0.1:" + port + "/protected",
+        body: Buffer.from(""),
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        errorClass: b.frameworkError.ObjectStoreError,
+      }).catch(function (e) { return e; });
+      check("csrfProtect: POST without token → 403",    noTok.statusCode === 403);
+
+      // 3. POST with token in X-CSRF-Token header → 200
+      var hdrOk = await b.httpClient.request({
+        method: "POST",
+        url: "http://127.0.0.1:" + port + "/protected",
+        headers: { "x-csrf-token": EXPECTED, "Content-Type": "application/json" },
+        body: Buffer.from("{}"),
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      });
+      check("csrfProtect: POST with header token → 200", hdrOk.statusCode === 200);
+
+      // 4. POST with token in urlencoded body → 200
+      var bodyOk = await b.httpClient.request({
+        method: "POST",
+        url: "http://127.0.0.1:" + port + "/protected",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: Buffer.from("_csrf=" + encodeURIComponent(EXPECTED) + "&name=Alice"),
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      });
+      check("csrfProtect: POST with urlencoded body token → 200", bodyOk.statusCode === 200);
+
+      // 5. POST with WRONG token → 403
+      var wrong = await b.httpClient.request({
+        method: "POST",
+        url: "http://127.0.0.1:" + port + "/protected",
+        headers: { "x-csrf-token": "wrong-token" },
+        body: Buffer.from(""),
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        errorClass: b.frameworkError.ObjectStoreError,
+      }).catch(function (e) { return e; });
+      check("csrfProtect: POST with wrong token → 403", wrong.statusCode === 403);
+    } finally { server.close(); }
+
+    // 6. Custom methods + custom headerName
+    var protectCustom = b.middleware.csrfProtect({
+      tokenLookup: function () { return EXPECTED; },
+      methods:     ["DELETE"],
+      headerName:  "X-My-CSRF",
+    });
+    var server2 = http.createServer(async function (req, res) {
+      await new Promise(function (resolve) {
+        protectCustom(req, res, function () {
+          res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": 2 });
+          res.end("ok");
+          resolve();
+        });
+      });
+    });
+    var port2 = await listenOnRandomPort(server2);
+    try {
+      // POST is now NOT in the protected methods → passes through
+      var postPass = await b.httpClient.request({
+        method: "POST",
+        url: "http://127.0.0.1:" + port2 + "/x",
+        body: Buffer.from(""),
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      });
+      check("csrfProtect: custom methods exclude POST",  postPass.statusCode === 200);
+
+      // DELETE without token → 403
+      var del403 = await b.httpClient.request({
+        method: "DELETE",
+        url: "http://127.0.0.1:" + port2 + "/x",
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        errorClass: b.frameworkError.ObjectStoreError,
+      }).catch(function (e) { return e; });
+      check("csrfProtect: DELETE in custom methods gated",  del403.statusCode === 403);
+
+      // DELETE with token in custom header → 200
+      var del200 = await b.httpClient.request({
+        method: "DELETE",
+        url: "http://127.0.0.1:" + port2 + "/x",
+        headers: { "x-my-csrf": EXPECTED },
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      });
+      check("csrfProtect: custom headerName honored",   del200.statusCode === 200);
+    } finally { server2.close(); }
+
+    // 7. tokenLookup returns null → 403 (no expected token to compare)
+    var protectNullLookup = b.middleware.csrfProtect({
+      tokenLookup: function () { return null; },
+    });
+    var server3 = http.createServer(async function (req, res) {
+      await new Promise(function (resolve) {
+        protectNullLookup(req, res, function () {
+          res.writeHead(200); res.end("should not reach"); resolve();
+        });
+      });
+    });
+    var port3 = await listenOnRandomPort(server3);
+    try {
+      var nullLookup = await b.httpClient.request({
+        method: "POST",
+        url: "http://127.0.0.1:" + port3 + "/x",
+        headers: { "x-csrf-token": EXPECTED },
+        body: Buffer.from(""),
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        errorClass: b.frameworkError.ObjectStoreError,
+      }).catch(function (e) { return e; });
+      check("csrfProtect: tokenLookup null → 403",       nullLookup.statusCode === 403);
+    } finally { server3.close(); }
+
+    // 8. Validation: tokenLookup required
+    var threw = null;
+    try { b.middleware.csrfProtect({}); }
+    catch (e) { threw = e; }
+    check("csrfProtect: tokenLookup is required",        threw && /tokenLookup is required/.test(threw.message));
+  } finally { teardownMW(); }
+}
+
 async function testMiddlewareAttachUser() {
   // attachUser populates req.user via session.verify + operator-supplied
   // userLoader. Validates token-source dispatch (cookie + Bearer header),
@@ -2040,6 +2201,7 @@ async function run() {
   await testMiddlewareRateLimit();
   await testMiddlewareAttachUser();
   await testMiddlewareRequireAuth();
+  await testMiddlewareCsrfProtect();
 
   // env-safe.load() — full lifecycle (depends on audit chain)
   await testEnvLoadDiffAndAudit();
@@ -2053,6 +2215,7 @@ module.exports = {
   testSession:                              testSession,
   testMiddlewareAttachUser:                 testMiddlewareAttachUser,
   testMiddlewareRequireAuth:                testMiddlewareRequireAuth,
+  testMiddlewareCsrfProtect:                testMiddlewareCsrfProtect,
   testDataResidency:                        testDataResidency,
   testStorage:                              testStorage,
   testMultiBackend:                         testMultiBackend,
