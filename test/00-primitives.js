@@ -669,8 +669,10 @@ function _stepFromT(tSec, stepSec) {
 }
 
 function testAuthTotpRfc6238Vectors() {
-  // Appendix B vectors at 8 digits — the RFC publishes 8-digit codes;
-  // our default is 6 but compute() takes digits via opts.
+  // Appendix B vectors at 8 digits — matches the RFC reference
+  // implementation AND the framework's new 8-digit default. The
+  // explicit `digits: 8` is redundant under the v0.1.57 default but
+  // kept here so the test stays valid even if the default ever shifts.
   var t = b.auth.totp;
   var sha256Vectors = [
     { T:          59, code: "46119246" },
@@ -706,30 +708,36 @@ function testAuthTotpGenerateSecret() {
   var t = b.auth.totp;
   var s = t.generateSecret();
   check("generateSecret returns string",                      typeof s === "string");
-  // 20 bytes → 32 base32 characters (no padding)
-  check("generateSecret default = 32 base32 chars (20 bytes)", s.length === 32);
-  check("generateSecret is base32 (A-Z 2-7)",                  /^[A-Z2-7]+$/.test(s));
+  // 128 bytes → 1024 bits → ceil(1024/5) = 205 base32 characters
+  check("generateSecret default = 205 base32 chars (128 bytes / SHA-512 block size)",
+        s.length === 205);
+  check("generateSecret is base32 (A-Z 2-7)",                 /^[A-Z2-7]+$/.test(s));
 
   // Two secrets are different (random source)
   var s2 = t.generateSecret();
-  check("generateSecret produces unique secrets",              s !== s2);
+  check("generateSecret produces unique secrets",             s !== s2);
 
-  // bytes < 20 rejected
+  // Operators can opt down to RFC 4226 §4 floor (20 bytes) for
+  // manual-entry-friendly authenticators
+  var sMin = t.generateSecret({ bytes: 20 });
+  check("generateSecret honors opts.bytes=20 (RFC 4226 floor)", sMin.length === 32);
+
+  // bytes < MIN_SECRET_BYTES rejected
   var threw = null;
   try { t.generateSecret({ bytes: 10 }); }
   catch (e) { threw = e; }
-  check("generateSecret rejects bytes < 20",                   threw && threw.code === "auth-totp/bad-secret-length");
+  check("generateSecret rejects bytes < 20",                  threw && threw.code === "auth-totp/bad-secret-length");
 }
 
 function testAuthTotpGenerateAndVerifyRoundTrip() {
   var t = b.auth.totp;
   var secret = t.generateSecret();
   var code = t.generate(secret);
-  check("generate returns 6-digit string by default",          /^[0-9]{6}$/.test(code));
+  check("generate returns 8-digit string by default",         /^[0-9]{8}$/.test(code));
 
   var step = t.verify(secret, code);
-  check("verify returns the matched step number (truthy)",     typeof step === "number" && step > 0);
-  check("verify rejects wrong code",                           t.verify(secret, "000000") === false);
+  check("verify returns the matched step number (truthy)",    typeof step === "number" && step > 0);
+  check("verify rejects wrong code",                          t.verify(secret, "00000000") === false);
 }
 
 function testAuthTotpDriftWindow() {
@@ -802,7 +810,7 @@ function testAuthTotpUriShape() {
   check("uri carries issuer as query param",                 /[?&]issuer=BlameJS/.test(u));
   check("uri carries algorithm=SHA512 (framework default)",  /[?&]algorithm=SHA512/.test(u));
   check("uri does NOT carry algorithm=SHA1",                 /[?&]algorithm=SHA1[^256512]/.test(u) === false);
-  check("uri carries digits=6 (default)",                    /[?&]digits=6/.test(u));
+  check("uri carries digits=8 (framework default)",          /[?&]digits=8/.test(u));
   check("uri carries period=30 (default stepSeconds)",       /[?&]period=30/.test(u));
 
   // Operators with SHA-256 authenticators opt in explicitly
@@ -869,8 +877,12 @@ function testAuthTotpSurface() {
   check("auth.totp.uri is a function",                   typeof t.uri === "function");
   check("auth.totp.generateBackupCodes is a function",   typeof t.generateBackupCodes === "function");
   check("auth.totp.DEFAULT_STEP_SECONDS = 30",           t.DEFAULT_STEP_SECONDS === 30);
-  check("auth.totp.DEFAULT_DIGITS = 6",                  t.DEFAULT_DIGITS === 6);
+  check("auth.totp.DEFAULT_DIGITS = 8",                  t.DEFAULT_DIGITS === 8);
   check("auth.totp.DEFAULT_ALGORITHM = sha512",          t.DEFAULT_ALGORITHM === "sha512");
+  check("auth.totp.DEFAULT_SECRET_BYTES = 128 (SHA-512 block size)",
+        t.DEFAULT_SECRET_BYTES === 128);
+  check("auth.totp.MIN_SECRET_BYTES = 20 (RFC 4226 §4 floor)",
+        t.MIN_SECRET_BYTES === 20);
   check("auth.totp.SUPPORTED_ALGORITHMS excludes sha1",
         t.SUPPORTED_ALGORITHMS.indexOf("sha1") === -1);
   check("auth.totp.SUPPORTED_ALGORITHMS = [sha256, sha512]",
@@ -3291,6 +3303,17 @@ function testCryptoAndModuleSurface() {
   // Token / random bytes
   check("generateToken default = 64 hex chars (32 bytes)", b.crypto.generateToken().length === 64);
   check("generateBytes returns 16 bytes",                  b.crypto.generateBytes(16).length === 16);
+  // Regression for the v0.1.57 fix: pre-fix, random() ran randomBytes
+  // through SHA3-512 (fixed 64-byte output) + subarray, which silently
+  // truncated requests > 64 bytes. The TOTP 128-byte secret surfaced
+  // it. Fixed by switching to SHAKE256 (XOF; arbitrary output length).
+  check("generateBytes(128) returns 128 bytes (no SHA3-512 cap)",
+        b.crypto.generateBytes(128).length === 128);
+  check("generateBytes(256) returns 256 bytes",
+        b.crypto.generateBytes(256).length === 256);
+  // Two calls produce different bytes (RNG, not deterministic)
+  check("generateBytes is non-deterministic",
+        !b.crypto.generateBytes(64).equals(b.crypto.generateBytes(64)));
 
   // SHA3-512 hash determinism
   var h1 = b.crypto.sha3Hash("blamejs");
