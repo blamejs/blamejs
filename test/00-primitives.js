@@ -3078,6 +3078,211 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- deprecate ----
+//
+// Tests manipulate process.env.BLAMEJS_DEPRECATIONS and
+// process.env.NODE_ENV directly, with cleanup in finally{} blocks so
+// they don't leak across tests.
+
+function _withEnv(overrides, fn) {
+  var saved = {};
+  var keys = Object.keys(overrides);
+  for (var i = 0; i < keys.length; i++) {
+    saved[keys[i]] = process.env[keys[i]];
+    if (overrides[keys[i]] === null) delete process.env[keys[i]];
+    else process.env[keys[i]] = overrides[keys[i]];
+  }
+  try { return fn(); }
+  finally {
+    for (var j = 0; j < keys.length; j++) {
+      if (saved[keys[j]] === undefined) delete process.env[keys[j]];
+      else process.env[keys[j]] = saved[keys[j]];
+    }
+  }
+}
+
+// Capture stderr writes during fn(), restore after.
+function _captureStderr(fn) {
+  var captured = [];
+  var orig = process.stderr.write;
+  process.stderr.write = function (chunk) {
+    captured.push(typeof chunk === "string" ? chunk : chunk.toString());
+    return true;
+  };
+  try { fn(); }
+  finally { process.stderr.write = orig; }
+  return captured.join("");
+}
+
+function testDeprecateSurface() {
+  check("b.deprecate namespace present",          typeof b.deprecate === "object");
+  check("warn is a function",                     typeof b.deprecate.warn === "function");
+  check("wrap is a function",                     typeof b.deprecate.wrap === "function");
+  check("alias is a function",                    typeof b.deprecate.alias === "function");
+  check("list is a function",                     typeof b.deprecate.list === "function");
+  check("reset is a function",                    typeof b.deprecate.reset === "function");
+  check("getMode is a function",                  typeof b.deprecate.getMode === "function");
+  check("DeprecationError is a class",            typeof b.deprecate.DeprecationError === "function");
+}
+
+function testDeprecateModeResolution() {
+  _withEnv({ BLAMEJS_DEPRECATIONS: null, NODE_ENV: null }, function () {
+    check("default (no env) → warn",                b.deprecate.getMode() === "warn");
+  });
+  _withEnv({ BLAMEJS_DEPRECATIONS: null, NODE_ENV: "production" }, function () {
+    check("NODE_ENV=production → silent",            b.deprecate.getMode() === "silent");
+  });
+  _withEnv({ BLAMEJS_DEPRECATIONS: "warn", NODE_ENV: "production" }, function () {
+    check("BLAMEJS_DEPRECATIONS overrides production", b.deprecate.getMode() === "warn");
+  });
+  _withEnv({ BLAMEJS_DEPRECATIONS: "ERROR" }, function () {
+    check("env value case-insensitive",              b.deprecate.getMode() === "error");
+  });
+  _withEnv({ BLAMEJS_DEPRECATIONS: "garbage" }, function () {
+    check("unrecognized env value falls back to default",
+          b.deprecate.getMode() === "silent" || b.deprecate.getMode() === "warn");
+  });
+}
+
+function testDeprecateWarnEmitsOnce() {
+  b.deprecate.reset();
+  _withEnv({ BLAMEJS_DEPRECATIONS: "warn" }, function () {
+    var stderr = _captureStderr(function () {
+      b.deprecate.warn("oldThing", {
+        since: "0.2.0", removeIn: "0.4.0",
+        message: "use newThing()",
+      });
+      b.deprecate.warn("oldThing", { since: "0.2.0", removeIn: "0.4.0" });
+      b.deprecate.warn("oldThing", { since: "0.2.0", removeIn: "0.4.0" });
+    });
+    check("warn writes one line for repeated calls",
+          (stderr.match(/blamejs:deprecated/g) || []).length === 1);
+    check("warn line contains name",                  /oldThing/.test(stderr));
+    check("warn line contains since",                  /since 0\.2\.0/.test(stderr));
+    check("warn line contains removeIn",               /removed in 0\.4\.0/.test(stderr));
+    check("warn line contains message",                /use newThing/.test(stderr));
+
+    var listed = b.deprecate.list();
+    check("list shows the deprecation",                listed.length === 1 && listed[0].name === "oldThing");
+    check("list reports correct callCount",            listed[0].callCount === 3);
+  });
+}
+
+function testDeprecateSilentMode() {
+  b.deprecate.reset();
+  _withEnv({ BLAMEJS_DEPRECATIONS: "silent" }, function () {
+    var stderr = _captureStderr(function () {
+      b.deprecate.warn("x", { since: "0.1.0", removeIn: "0.2.0" });
+    });
+    check("silent mode emits nothing on stderr",       stderr === "");
+    // But list() still tracks the call
+    check("silent mode still tracks call in list()",   b.deprecate.list().length === 1);
+  });
+}
+
+function testDeprecateErrorMode() {
+  b.deprecate.reset();
+  _withEnv({ BLAMEJS_DEPRECATIONS: "error" }, function () {
+    var threw = null;
+    try { b.deprecate.warn("oldX", { since: "0.1.0", removeIn: "0.2.0" }); }
+    catch (e) { threw = e; }
+    check("error mode throws on first use",            threw && threw.code === "deprecate/used-in-error-mode");
+    check("error mode error includes name",            threw && /oldX/.test(threw.message));
+  });
+}
+
+function testDeprecateDifferentSinceProducesNewLine() {
+  b.deprecate.reset();
+  _withEnv({ BLAMEJS_DEPRECATIONS: "warn" }, function () {
+    var stderr = _captureStderr(function () {
+      b.deprecate.warn("x", { since: "0.1.0", removeIn: "0.3.0" });
+      b.deprecate.warn("x", { since: "0.1.0", removeIn: "0.3.0" });    // dedup
+      b.deprecate.warn("x", { since: "0.2.0", removeIn: "0.4.0" });    // new since
+    });
+    check("dedupe is per (name, since)",                (stderr.match(/blamejs:deprecated/g) || []).length === 2);
+    check("list has two entries",                        b.deprecate.list().length === 2);
+  });
+}
+
+function testDeprecateWarnArgValidation() {
+  var threw;
+  threw = null; try { b.deprecate.warn(); } catch (e) { threw = e; }
+  check("warn rejects missing name",                   threw && threw.code === "deprecate/bad-name");
+
+  threw = null; try { b.deprecate.warn("x"); } catch (e) { threw = e; }
+  check("warn rejects missing opts",                   threw && threw.code === "deprecate/bad-opts");
+
+  threw = null; try { b.deprecate.warn("x", { since: "0.1.0" }); } catch (e) { threw = e; }
+  check("warn rejects missing removeIn",               threw && threw.code === "deprecate/bad-opts");
+
+  threw = null; try { b.deprecate.warn("x", { removeIn: "0.2.0" }); } catch (e) { threw = e; }
+  check("warn rejects missing since",                  threw && threw.code === "deprecate/bad-opts");
+}
+
+function testDeprecateWrap() {
+  b.deprecate.reset();
+  _withEnv({ BLAMEJS_DEPRECATIONS: "warn" }, function () {
+    var calls = [];
+    var newFn = function (a, b2) { calls.push([a, b2]); return a + b2; };
+    var oldFn = b.deprecate.wrap(newFn, "oldFn", {
+      since: "0.2.0", removeIn: "0.4.0", message: "renamed to newFn",
+    });
+
+    var stderr = _captureStderr(function () {
+      var r1 = oldFn(1, 2);
+      var r2 = oldFn(3, 4);
+      check("wrap delegates return value",                r1 === 3 && r2 === 7);
+      check("wrap delegates arguments",                   calls.length === 2 && calls[0][0] === 1 && calls[0][1] === 2);
+    });
+    check("wrap warns once for repeated calls",          (stderr.match(/blamejs:deprecated/g) || []).length === 1);
+    check("wrap warning carries new name",               /renamed to newFn/.test(stderr));
+  });
+}
+
+function testDeprecateWrapValidation() {
+  var threw;
+  threw = null; try { b.deprecate.wrap("not-a-function", "x", { since: "0.1.0", removeIn: "0.2.0" }); } catch (e) { threw = e; }
+  check("wrap rejects non-function target",            threw && threw.code === "deprecate/bad-target");
+
+  threw = null; try { b.deprecate.wrap(function () {}, "", { since: "0.1.0", removeIn: "0.2.0" }); } catch (e) { threw = e; }
+  check("wrap rejects empty name",                     threw && threw.code === "deprecate/bad-name");
+}
+
+function testDeprecateAlias() {
+  b.deprecate.reset();
+  _withEnv({ BLAMEJS_DEPRECATIONS: "warn" }, function () {
+    var target = { newKey: "value-via-new-key" };
+    b.deprecate.alias(target, "oldKey", "newKey", {
+      since: "0.2.0", removeIn: "0.4.0",
+    });
+    var stderr = _captureStderr(function () {
+      var v = target.oldKey;
+      check("alias get returns newKey value",            v === "value-via-new-key");
+      // Setter writes through to newKey
+      target.oldKey = "now-set-via-old";
+      check("alias set writes through to newKey",        target.newKey === "now-set-via-old");
+    });
+    check("alias warning emitted on access",             /blamejs:deprecated/.test(stderr));
+    check("alias message points to new key",             /'newKey' instead/.test(stderr));
+  });
+}
+
+function testDeprecateListAndReset() {
+  b.deprecate.reset();
+  _withEnv({ BLAMEJS_DEPRECATIONS: "silent" }, function () {
+    b.deprecate.warn("a", { since: "0.1.0", removeIn: "0.2.0" });
+    b.deprecate.warn("a", { since: "0.1.0", removeIn: "0.2.0" });
+    b.deprecate.warn("a", { since: "0.1.0", removeIn: "0.2.0" });
+    b.deprecate.warn("b", { since: "0.1.0", removeIn: "0.2.0" });
+    var listed = b.deprecate.list();
+    check("list returns all unique deprecations",        listed.length === 2);
+    check("list sorted by callCount desc",               listed[0].name === "a" && listed[0].callCount === 3 &&
+                                                          listed[1].name === "b" && listed[1].callCount === 1);
+    b.deprecate.reset();
+    check("reset clears everything",                      b.deprecate.list().length === 0);
+  });
+}
+
 // ---- restore + restore-rollback ----
 
 function _restoreFixture() {
@@ -10082,6 +10287,18 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // deprecate — runtime deprecation warnings + LTS-contract enforcement (Phase 8 slice 8a)
+  testDeprecateSurface();
+  testDeprecateModeResolution();
+  testDeprecateWarnEmitsOnce();
+  testDeprecateSilentMode();
+  testDeprecateErrorMode();
+  testDeprecateDifferentSinceProducesNewLine();
+  testDeprecateWarnArgValidation();
+  testDeprecateWrap();
+  testDeprecateWrapValidation();
+  testDeprecateAlias();
+  testDeprecateListAndReset();
   // restore-rollback + restore — atomic dataDir swap + storage-backed orchestrator (Phase 7 slice 7e)
   testRestoreRollbackSurface();
   testRestoreRollbackSwap();
@@ -10501,6 +10718,17 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testDeprecateSurface:                      testDeprecateSurface,
+  testDeprecateModeResolution:               testDeprecateModeResolution,
+  testDeprecateWarnEmitsOnce:                testDeprecateWarnEmitsOnce,
+  testDeprecateSilentMode:                   testDeprecateSilentMode,
+  testDeprecateErrorMode:                    testDeprecateErrorMode,
+  testDeprecateDifferentSinceProducesNewLine: testDeprecateDifferentSinceProducesNewLine,
+  testDeprecateWarnArgValidation:            testDeprecateWarnArgValidation,
+  testDeprecateWrap:                         testDeprecateWrap,
+  testDeprecateWrapValidation:               testDeprecateWrapValidation,
+  testDeprecateAlias:                        testDeprecateAlias,
+  testDeprecateListAndReset:                 testDeprecateListAndReset,
   testRestoreRollbackSurface:                testRestoreRollbackSurface,
   testRestoreRollbackSwap:                   testRestoreRollbackSwap,
   testRestoreRollbackRoundTrip:              testRestoreRollbackRoundTrip,

@@ -87,6 +87,7 @@ var restoreBundle = require("./lib/restore-bundle");
 var backup = require("./lib/backup");
 var restoreRollback = require("./lib/restore-rollback");
 var restore = require("./lib/restore");
+var deprecate = require("./lib/deprecate");
 
 module.exports = {
   crypto:           crypto,
@@ -156,6 +157,7 @@ module.exports = {
   backup:           backup,
   restoreRollback:  restoreRollback,
   restore:          restore,
+  deprecate:        deprecate,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
