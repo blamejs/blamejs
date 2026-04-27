@@ -3078,6 +3078,219 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- errors-page ----
+//
+// A fake-res helper captures statusCode + Content-Type + body so each
+// test can assert the response shape without a real http.Server.
+
+function _makeFakeRes() {
+  var res = {
+    statusCode:    null,
+    headers:       {},
+    body:          "",
+    writableEnded: false,
+    setHeader:     function (k, v) { this.headers[k] = v; },
+    end:           function (chunk) { if (chunk !== undefined) this.body += chunk; this.writableEnded = true; },
+    writeHead:     function (status, hdrs) {
+      this.statusCode = status;
+      if (hdrs) for (var k in hdrs) this.headers[k] = hdrs[k];
+    },
+  };
+  return res;
+}
+
+function testErrorsPageSurface() {
+  check("b.errorsPage namespace present",         typeof b.errorsPage === "object");
+  check("b.errorsPage.create is a function",      typeof b.errorsPage.create === "function");
+  check("b.errorsPage.STATUS_REASONS map present",
+        b.errorsPage.STATUS_REASONS[404] === "Not Found" &&
+        b.errorsPage.STATUS_REASONS[500] === "Internal Server Error");
+}
+
+function testErrorsPageProdHidesStackAndOriginalMessage() {
+  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
+  var res = _makeFakeRes();
+  // Generic Error — operator-private message must NOT leak.
+  handler(new Error("DB pwd: hunter2"), req, res);
+  check("prod 500 → 500 status",                   res.statusCode === 500);
+  check("prod 500 → text/html",                    /text\/html/.test(res.headers["Content-Type"]));
+  check("prod 500 hides operator message",         res.body.indexOf("hunter2") === -1);
+  check("prod 500 shows generic message",          res.body.indexOf("Internal Server Error") !== -1);
+  check("prod page does not include any stack",    res.body.indexOf(".js:") === -1 && res.body.indexOf("at ") === -1);
+}
+
+function testErrorsPageDevShowsStackAndRequestInfo() {
+  var handler = b.errorsPage.create({ mode: "dev", audit: false, brand: "blamejs-test" });
+  var req = {
+    method: "POST", url: "/api/widget?id=42",
+    headers: { accept: "text/html", "user-agent": "ua/1", cookie: "session=secret123" },
+    id: "req-zzz",
+  };
+  var res = _makeFakeRes();
+  handler(new Error("widget exploded"), req, res);
+  check("dev 500 → 500 status",                    res.statusCode === 500);
+  check("dev 500 shows operator message",          res.body.indexOf("widget exploded") !== -1);
+  check("dev 500 shows request method+url",
+        res.body.indexOf("POST") !== -1 && res.body.indexOf("/api/widget") !== -1);
+  check("dev 500 redacts cookie header",           res.body.indexOf("secret123") === -1);
+  check("dev 500 shows requestId when set",        res.body.indexOf("req-zzz") !== -1);
+  check("dev 500 includes a stack trace block",    res.body.indexOf("Stack") !== -1);
+  check("dev page brand reflects opts.brand",      res.body.indexOf("blamejs-test") !== -1);
+}
+
+function testErrorsPageJsonNegotiation() {
+  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var req = { method: "POST", url: "/api/x", headers: { accept: "application/json" } };
+  var res = _makeFakeRes();
+  var err = Object.assign(new Error("bad input"), {
+    isAppError: true, statusCode: 400, code: "VALIDATION_ERROR",
+  });
+  handler(err, req, res);
+  check("json 400 → 400 status",                   res.statusCode === 400);
+  check("json content-type",                       /application\/json/.test(res.headers["Content-Type"]));
+  var payload = JSON.parse(res.body);
+  check("json error message preserved on 4xx",     payload.error.message === "bad input");
+  check("json carries error code",                 payload.error.code === "VALIDATION_ERROR");
+  check("prod json 4xx has no stack",              payload.error.stack === undefined);
+}
+
+function testErrorsPageDevJsonIncludesStack() {
+  var handler = b.errorsPage.create({ mode: "dev", audit: false });
+  var req = { method: "POST", url: "/api/x", headers: { accept: "application/json" } };
+  var res = _makeFakeRes();
+  handler(new Error("kaboom"), req, res);
+  var payload = JSON.parse(res.body);
+  check("dev json 500 includes stack",             typeof payload.error.stack === "string" && /kaboom/.test(payload.error.stack));
+}
+
+function testErrorsPageAppErrorClassification() {
+  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
+
+  // 404
+  var res404 = _makeFakeRes();
+  handler(Object.assign(new Error("nothing here"), {
+    isAppError: true, statusCode: 404, code: "NOT_FOUND",
+  }), req, res404);
+  check("AppError 404 routes to 404 status",       res404.statusCode === 404);
+  check("AppError 404 message preserved on 4xx",   res404.body.indexOf("nothing here") !== -1);
+
+  // 401 — security code path
+  var res401 = _makeFakeRes();
+  handler(Object.assign(new Error("auth fail"), {
+    isAppError: true, statusCode: 401, code: "UNAUTH",
+  }), req, res401);
+  check("AppError 401 routes to 401 status",       res401.statusCode === 401);
+
+  // statusCode without isAppError still classifies
+  var res403 = _makeFakeRes();
+  handler({ statusCode: 403, code: "FORBID", message: "denied" }, req, res403);
+  check("statusCode-only error classified",        res403.statusCode === 403);
+  check("classified 4xx message preserved",        res403.body.indexOf("denied") !== -1);
+}
+
+function testErrorsPageNeverWritesWhenAlreadyEnded() {
+  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
+  var res = _makeFakeRes();
+  res.writableEnded = true;
+  res.end = function () { check("end called after writableEnded — must not happen", false); };
+  // Should NOT throw and NOT call res.end
+  handler(new Error("late"), req, res);
+  check("no write happens when writableEnded",     res.statusCode === null);
+}
+
+function testErrorsPageOnErrorHookCanTakeOver() {
+  var taken = [];
+  var handler = b.errorsPage.create({
+    mode: "prod", audit: false,
+    onError: function (err, req, res, info) {
+      taken.push({ status: info.status, code: info.code });
+      res.statusCode = 418;
+      res.end("im a teapot");
+      return true;
+    },
+  });
+  var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
+  var res = _makeFakeRes();
+  handler(Object.assign(new Error("bad"), { isAppError: true, statusCode: 400, code: "X" }), req, res);
+  check("onError hook ran",                        taken.length === 1 && taken[0].status === 400);
+  check("onError hook took over response",         res.statusCode === 418 && res.body === "im a teapot");
+}
+
+function testErrorsPageLogsViaInjectedLogger() {
+  var captured = [];
+  var fakeLog = {
+    warn:  function (msg, fields) { captured.push({ level: "warn", msg: msg, fields: fields }); },
+    error: function (msg, fields) { captured.push({ level: "error", msg: msg, fields: fields }); },
+  };
+  var handler = b.errorsPage.create({ mode: "prod", audit: false, log: fakeLog });
+  var req = { method: "GET", url: "/x", headers: {} };
+  var res500 = _makeFakeRes();
+  handler(new Error("kaboom"), req, res500);
+  check("500 logged at error level",               captured.length === 1 && captured[0].level === "error");
+  check("500 log fields include status + url",
+        captured[0].fields.status === 500 &&
+        captured[0].fields.url === "/x" &&
+        typeof captured[0].fields.stack === "string");
+
+  captured.length = 0;
+  var res404 = _makeFakeRes();
+  handler(Object.assign(new Error("missing"), { isAppError: true, statusCode: 404 }), req, res404);
+  check("404 logged at warn level",                captured.length === 1 && captured[0].level === "warn");
+  check("404 log has no stack noise",              captured[0].fields.stack === undefined);
+}
+
+function testErrorsPageDevEnvVarsHonorOptIn() {
+  var handler = b.errorsPage.create({ mode: "dev", audit: false }); // showEnvVars defaults false
+  var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
+  var res = _makeFakeRes();
+  handler(new Error("e"), req, res);
+  check("dev page omits Environment section by default",
+        res.body.indexOf("Environment") === -1);
+
+  var prevSecret = process.env.BLAMEJS_FAKE_SECRET;
+  var prevHarmless = process.env.BLAMEJS_FAKE_HARMLESS;
+  process.env.BLAMEJS_FAKE_SECRET = "leakme";
+  process.env.BLAMEJS_FAKE_HARMLESS = "publicvalue";
+  try {
+    var handlerOn = b.errorsPage.create({ mode: "dev", audit: false, showEnvVars: true });
+    var resOn = _makeFakeRes();
+    handlerOn(new Error("e"), req, resOn);
+    check("opt-in env shows non-secret keys",
+          resOn.body.indexOf("BLAMEJS_FAKE_HARMLESS") !== -1);
+    check("opt-in env still redacts SECRET-shaped keys",
+          resOn.body.indexOf("BLAMEJS_FAKE_SECRET") === -1 &&
+          resOn.body.indexOf("leakme") === -1);
+  } finally {
+    if (prevSecret === undefined) delete process.env.BLAMEJS_FAKE_SECRET;
+    else process.env.BLAMEJS_FAKE_SECRET = prevSecret;
+    if (prevHarmless === undefined) delete process.env.BLAMEJS_FAKE_HARMLESS;
+    else process.env.BLAMEJS_FAKE_HARMLESS = prevHarmless;
+  }
+}
+
+function testErrorsPageModeAutoDetectsFromNodeEnv() {
+  var prev = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = "production";
+    var prodHandler = b.errorsPage.create({ audit: false });
+    check("NODE_ENV=production → prod mode",         prodHandler.mode === "prod");
+
+    process.env.NODE_ENV = "development";
+    var devHandler = b.errorsPage.create({ audit: false });
+    check("NODE_ENV=development → dev mode",         devHandler.mode === "dev");
+
+    delete process.env.NODE_ENV;
+    var defaultHandler = b.errorsPage.create({ audit: false });
+    check("no NODE_ENV → dev mode (safe local default)", defaultHandler.mode === "dev");
+  } finally {
+    if (prev === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prev;
+  }
+}
+
 // ---- log ----
 //
 // Each test creates an instance with a captured-buffer destination so
@@ -6147,6 +6360,18 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // errors-page — router error handler with rich dev page + safe prod page (Phase 6 slice 2)
+  testErrorsPageSurface();
+  testErrorsPageProdHidesStackAndOriginalMessage();
+  testErrorsPageDevShowsStackAndRequestInfo();
+  testErrorsPageJsonNegotiation();
+  testErrorsPageDevJsonIncludesStack();
+  testErrorsPageAppErrorClassification();
+  testErrorsPageNeverWritesWhenAlreadyEnded();
+  testErrorsPageOnErrorHookCanTakeOver();
+  testErrorsPageLogsViaInjectedLogger();
+  testErrorsPageDevEnvVarsHonorOptIn();
+  testErrorsPageModeAutoDetectsFromNodeEnv();
   // log — structured JSON logging with request-id correlation (Phase 6 slice 1)
   testLogSurface();
   testLogEmitsJsonLineToStdout();
@@ -6402,6 +6627,17 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testErrorsPageSurface:                     testErrorsPageSurface,
+  testErrorsPageProdHidesStackAndOriginalMessage: testErrorsPageProdHidesStackAndOriginalMessage,
+  testErrorsPageDevShowsStackAndRequestInfo: testErrorsPageDevShowsStackAndRequestInfo,
+  testErrorsPageJsonNegotiation:             testErrorsPageJsonNegotiation,
+  testErrorsPageDevJsonIncludesStack:        testErrorsPageDevJsonIncludesStack,
+  testErrorsPageAppErrorClassification:      testErrorsPageAppErrorClassification,
+  testErrorsPageNeverWritesWhenAlreadyEnded: testErrorsPageNeverWritesWhenAlreadyEnded,
+  testErrorsPageOnErrorHookCanTakeOver:      testErrorsPageOnErrorHookCanTakeOver,
+  testErrorsPageLogsViaInjectedLogger:       testErrorsPageLogsViaInjectedLogger,
+  testErrorsPageDevEnvVarsHonorOptIn:        testErrorsPageDevEnvVarsHonorOptIn,
+  testErrorsPageModeAutoDetectsFromNodeEnv:  testErrorsPageModeAutoDetectsFromNodeEnv,
   testLogSurface:                            testLogSurface,
   testLogEmitsJsonLineToStdout:              testLogEmitsJsonLineToStdout,
   testLogRoutesErrorAndFatalToStderr:        testLogRoutesErrorAndFatalToStderr,
