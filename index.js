@@ -76,6 +76,7 @@ var cli = require("./lib/cli");
 var dev = require("./lib/dev");
 var bundler = require("./lib/bundler");
 var pqcGate = require("./lib/pqc-gate");
+var pqcAgent = require("./lib/pqc-agent");
 
 module.exports = {
   crypto:           crypto,
@@ -134,6 +135,7 @@ module.exports = {
   dev:              dev,
   bundler:          bundler,
   pqcGate:          pqcGate,
+  pqcAgent:         pqcAgent,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

@@ -3078,6 +3078,69 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- pqc-agent ----
+
+function testPqcAgentSurface() {
+  check("b.pqcAgent namespace present",          typeof b.pqcAgent === "object");
+  check("b.pqcAgent.create is a function",       typeof b.pqcAgent.create === "function");
+  check("b.pqcAgent.createHttp is a function",   typeof b.pqcAgent.createHttp === "function");
+  check("b.pqcAgent.enforced flag set",          b.pqcAgent.enforced === true);
+  check("DEFAULT_OPTS exposes keepAlive defaults",
+        b.pqcAgent.DEFAULT_OPTS.keepAlive === true &&
+        b.pqcAgent.DEFAULT_OPTS.maxSockets > 0);
+}
+
+function testPqcAgentCreateHasPqcPosture() {
+  var a = b.pqcAgent.create();
+  check("create returned an https.Agent",         a && a.constructor && a.constructor.name === "Agent");
+  check("agent's TLS opts pin TLS 1.3",            a.options.minVersion === "TLSv1.3");
+  check("agent's TLS opts pin PQC group preference",
+        a.options.ecdhCurve === b.constants.TLS_GROUP_CURVE_STR);
+  check("agent has keepAlive on by default",       a.keepAlive === true);
+}
+
+function testPqcAgentCannotWeakenCryptoPosture() {
+  // Operator passes weakened opts; the primitive ignores them and the
+  // framework defaults win. This is the primitive's whole point — it
+  // makes "accidentally shipped a downgraded agent" structurally
+  // impossible at the create() boundary.
+  var weakened = b.pqcAgent.create({
+    minVersion: "TLSv1.0",
+    ecdhCurve:  "P-256",
+    keepAlive:  false,    // pool tuning IS overridable
+  });
+  check("operator-supplied minVersion ignored",    weakened.options.minVersion === "TLSv1.3");
+  check("operator-supplied ecdhCurve ignored",     weakened.options.ecdhCurve === b.constants.TLS_GROUP_CURVE_STR);
+  check("operator-supplied keepAlive honored (pool tuning IS overridable)",
+        weakened.keepAlive === false);
+}
+
+function testPqcAgentDefaultIsLazy() {
+  // The default agent is a getter — accessing it builds the agent.
+  // Multiple accesses return the same instance.
+  var first  = b.pqcAgent.agent;
+  var second = b.pqcAgent.agent;
+  check("agent getter returns a non-null https.Agent",
+        first && first.constructor && first.constructor.name === "Agent");
+  check("agent getter is memoized (same instance on repeated access)",
+        first === second);
+  check("default agent has framework PQC posture",
+        first.options.minVersion === "TLSv1.3" &&
+        first.options.ecdhCurve === b.constants.TLS_GROUP_CURVE_STR);
+}
+
+function testPqcAgentCreateHttpHasNoTlsPosture() {
+  // createHttp returns an http.Agent (cleartext) — there's no TLS
+  // surface to enforce. Pool tuning still applies.
+  var hAgent = b.pqcAgent.createHttp({ maxSockets: 5 });
+  check("createHttp returns an http.Agent",        hAgent && hAgent.constructor && hAgent.constructor.name === "Agent");
+  check("createHttp honors pool opts",             hAgent.maxSockets === 5);
+  // http.Agent's options doesn't carry ecdhCurve/minVersion at all
+  check("createHttp has no minVersion / ecdhCurve",
+        hAgent.options.minVersion === undefined &&
+        hAgent.options.ecdhCurve === undefined);
+}
+
 // ---- pqc-gate ----
 //
 // Build a synthetic ClientHello buffer with a configurable supported_groups
@@ -7758,6 +7821,12 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // pqc-agent — outbound HTTPS agent locked to PQC group preference (Phase 7 slice 2)
+  testPqcAgentSurface();
+  testPqcAgentCreateHasPqcPosture();
+  testPqcAgentCannotWeakenCryptoPosture();
+  testPqcAgentDefaultIsLazy();
+  testPqcAgentCreateHttpHasNoTlsPosture();
   // pqc-gate — TCP-level PQC enforcement on ClientHello (Phase 7 slice 1)
   testPqcGateSurface();
   testClientHelloPqcDetection();
@@ -8074,6 +8143,11 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testPqcAgentSurface:                       testPqcAgentSurface,
+  testPqcAgentCreateHasPqcPosture:           testPqcAgentCreateHasPqcPosture,
+  testPqcAgentCannotWeakenCryptoPosture:     testPqcAgentCannotWeakenCryptoPosture,
+  testPqcAgentDefaultIsLazy:                 testPqcAgentDefaultIsLazy,
+  testPqcAgentCreateHttpHasNoTlsPosture:     testPqcAgentCreateHttpHasNoTlsPosture,
   testPqcGateSurface:                        testPqcGateSurface,
   testClientHelloPqcDetection:               testClientHelloPqcDetection,
   testPqcGateSocketLifecycle:                testPqcGateSocketLifecycle,
