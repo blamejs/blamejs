@@ -3078,6 +3078,222 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- api-snapshot ----
+
+function testApiSnapshotSurface() {
+  check("b.apiSnapshot namespace present",        typeof b.apiSnapshot === "object");
+  check("capture is a function",                  typeof b.apiSnapshot.capture === "function");
+  check("write is a function",                    typeof b.apiSnapshot.write === "function");
+  check("read is a function",                     typeof b.apiSnapshot.read === "function");
+  check("compare is a function",                  typeof b.apiSnapshot.compare === "function");
+  check("formatDiff is a function",               typeof b.apiSnapshot.formatDiff === "function");
+  check("ApiSnapshotError is a class",            typeof b.apiSnapshot.ApiSnapshotError === "function");
+  check("SNAPSHOT_FORMAT_VERSION is 1",           b.apiSnapshot.SNAPSHOT_FORMAT_VERSION === 1);
+}
+
+function testApiSnapshotCaptureCategorizes() {
+  var target = {
+    fn:    function (a, b) { return a + b; },
+    str:   "hello",
+    num:   42,
+    obj:   { nested: function () {}, count: 1 },
+    klass: new (class Widget { constructor() { this.x = 1; } })(),
+    _internal: function () {},
+  };
+  var snap = b.apiSnapshot.capture(target, { frameworkVersion: "0.0.0-test" });
+  check("snapshot has version 1",                 snap.version === 1);
+  check("snapshot has frameworkVersion",          snap.frameworkVersion === "0.0.0-test");
+  check("snapshot has createdAt ISO",
+        typeof snap.createdAt === "string" && /^\d{4}-/.test(snap.createdAt));
+
+  check("function captured with arity",
+        snap.exports.fn.type === "function" && snap.exports.fn.arity === 2);
+  check("string captured as primitive",
+        snap.exports.str.type === "primitive" && snap.exports.str.valueType === "string");
+  check("number captured as primitive",
+        snap.exports.num.type === "primitive" && snap.exports.num.valueType === "number");
+  check("nested object recurses",
+        snap.exports.obj.type === "object" &&
+        snap.exports.obj.members.nested.type === "function");
+  check("class instance captured as instance with constructor name",
+        snap.exports.klass.type === "instance" && snap.exports.klass.ctorName === "Widget");
+  check("underscore-prefixed members skipped by default",
+        snap.exports._internal === undefined);
+}
+
+function testApiSnapshotCaptureHandlesCycles() {
+  var a = {};
+  var bRef = { back: a };
+  a.forward = bRef;
+  // Cycle: a → forward → bRef → back → a → ...
+  var snap = b.apiSnapshot.capture({ a: a });
+  check("cycle short-circuits as type=cycle",
+        snap.exports.a.members.forward.members.back.type === "cycle");
+}
+
+function testApiSnapshotWriteAndRead() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-snap-"));
+  try {
+    var snap = b.apiSnapshot.capture({
+      fn: function () {},
+      val: "x",
+    });
+    var p = path.join(dir, "snap.json");
+    b.apiSnapshot.write(snap, p);
+    check("snapshot file exists",                   fs.existsSync(p));
+    var written = fs.readFileSync(p, "utf8");
+    check("written file has trailing newline",      written.charAt(written.length - 1) === "\n");
+
+    var loaded = b.apiSnapshot.read(p);
+    check("read returns same version",              loaded.version === snap.version);
+    check("read preserves exports tree",            loaded.exports.fn.type === "function");
+
+    // Bad path → missing
+    var threw = null;
+    try { b.apiSnapshot.read(path.join(dir, "nope.json")); } catch (e) { threw = e; }
+    check("read missing file rejects",              threw && threw.code === "api-snapshot/missing");
+
+    // Bad shape → bad-shape
+    fs.writeFileSync(path.join(dir, "bad.json"), JSON.stringify({ random: "garbage" }));
+    threw = null;
+    try { b.apiSnapshot.read(path.join(dir, "bad.json")); } catch (e) { threw = e; }
+    check("read bad-version snapshot rejects",      threw && threw.code === "api-snapshot/bad-version");
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+function testApiSnapshotCompareNoChange() {
+  var snap1 = b.apiSnapshot.capture({ fn: function () {}, val: "x" });
+  // Capture a fresh one with the same shape — should diff clean
+  var snap2 = b.apiSnapshot.capture({ fn: function () {}, val: "y" });
+  var diff = b.apiSnapshot.compare(snap1, snap2);
+  check("identical-shape snapshots: no breaking",  diff.breaking.length === 0);
+  check("identical-shape snapshots: no additive",  diff.additive.length === 0);
+  check("identical-shape snapshots: no typeChange", diff.typeChanged.length === 0);
+}
+
+function testApiSnapshotCompareDetectsRemoval() {
+  var snap1 = b.apiSnapshot.capture({
+    a: function () {}, b: { c: function () {}, d: "x" },
+  });
+  // Remove b.c
+  var snap2 = b.apiSnapshot.capture({
+    a: function () {}, b: { d: "x" },
+  });
+  var diff = b.apiSnapshot.compare(snap1, snap2);
+  check("removed nested member surfaces as breaking",
+        diff.breaking.length === 1 && diff.breaking[0].kind === "removed" &&
+        diff.breaking[0].path === "b.c");
+}
+
+function testApiSnapshotCompareDetectsTypeChange() {
+  var snap1 = b.apiSnapshot.capture({ x: function () {} });
+  var snap2 = b.apiSnapshot.capture({ x: { wasFunction: true } });
+  var diff = b.apiSnapshot.compare(snap1, snap2);
+  check("type change surfaces as breaking + typeChanged",
+        diff.breaking.length >= 1 && diff.typeChanged.length === 1);
+  check("typeChanged carries was/is",
+        diff.typeChanged[0].was === "function" && diff.typeChanged[0].is === "object");
+}
+
+function testApiSnapshotCompareDetectsArityDecrease() {
+  var snap1 = b.apiSnapshot.capture({ fn: function (a, b, c) {} });   // arity 3
+  var snap2 = b.apiSnapshot.capture({ fn: function (a) {} });         // arity 1
+  var diff = b.apiSnapshot.compare(snap1, snap2);
+  check("arity decrease surfaces as breaking",
+        diff.breaking.some(function (e) { return e.kind === "arity-decreased" && e.path === "fn"; }));
+}
+
+function testApiSnapshotCompareIgnoresArityIncrease() {
+  var snap1 = b.apiSnapshot.capture({ fn: function (a) {} });          // arity 1
+  var snap2 = b.apiSnapshot.capture({ fn: function (a, b, c) {} });    // arity 3
+  var diff = b.apiSnapshot.compare(snap1, snap2);
+  check("arity increase is NOT breaking (added optional params)",
+        diff.breaking.length === 0);
+}
+
+function testApiSnapshotCompareDetectsAdditive() {
+  var snap1 = b.apiSnapshot.capture({ a: function () {} });
+  var snap2 = b.apiSnapshot.capture({ a: function () {}, newOne: function () {} });
+  var diff = b.apiSnapshot.compare(snap1, snap2);
+  check("added member surfaces as additive (not breaking)",
+        diff.additive.length === 1 && diff.additive[0].path === "newOne" &&
+        diff.breaking.length === 0);
+}
+
+function testApiSnapshotFormatDiff() {
+  var snap1 = b.apiSnapshot.capture({ a: function () {}, b: function () {} });
+  var snap2 = b.apiSnapshot.capture({ a: function () {}, c: function () {} });
+  var out = b.apiSnapshot.formatDiff(b.apiSnapshot.compare(snap1, snap2));
+  check("formatDiff includes BREAKING header",      /BREAKING/.test(out));
+  check("formatDiff lists removed b",               /b/.test(out) && /removed/.test(out));
+  check("formatDiff lists additive c",              /\+ c/.test(out));
+
+  var noChange = b.apiSnapshot.formatDiff({ breaking: [], additive: [], typeChanged: [] });
+  check("formatDiff: no changes message",            /no changes/.test(noChange));
+}
+
+function testApiSnapshotOnFrameworkSurfaceCaptures() {
+  // Capture the actual framework's surface — verifies the walker
+  // handles real-world state including class instances, functions,
+  // version strings, etc.
+  var snap = b.apiSnapshot.capture(b);
+  check("framework snapshot captures top-level entries",
+        Object.keys(snap.exports).length > 30);
+  check("framework snapshot includes crypto namespace",
+        snap.exports.crypto && snap.exports.crypto.type === "object");
+  check("framework snapshot includes constants namespace",
+        snap.exports.constants && snap.exports.constants.type === "object");
+  check("framework snapshot includes version primitive",
+        snap.exports.version && snap.exports.version.type === "primitive");
+}
+
+async function testCliApiSnapshotCaptureAndCompare() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-snap-cli-"));
+  try {
+    // Capture using the CLI subcommand
+    var snapPath = path.join(dir, "snap.json");
+    var t1 = _cliCtx();
+    var rc1 = await b.cli.main(["api-snapshot", "capture", "--file", snapPath], t1.ctx);
+    check("api-snapshot capture exits 0",            rc1 === 0);
+    check("api-snapshot capture wrote file",          fs.existsSync(snapPath));
+    check("api-snapshot capture stdout mentions path",
+          t1.captured().out.indexOf(snapPath) !== -1);
+
+    // Compare against a fresh capture (same surface, no breaking changes)
+    var t2 = _cliCtx();
+    var rc2 = await b.cli.main(["api-snapshot", "compare", "--file", snapPath], t2.ctx);
+    check("api-snapshot compare exits 0 on no breaking changes", rc2 === 0);
+    check("api-snapshot compare prints no-changes-message OR diff summary",
+          /no changes/.test(t2.captured().out) ||
+          /BREAKING|additive/.test(t2.captured().out));
+
+    // Validate bad invocation
+    var t3 = _cliCtx();
+    var rc3 = await b.cli.main(["api-snapshot", "fly"], t3.ctx);
+    check("unknown api-snapshot subcommand exits 2", rc3 === 2);
+
+    var t4 = _cliCtx();
+    var rc4 = await b.cli.main(["api-snapshot"], t4.ctx);
+    check("bare api-snapshot exits 2 with usage",
+          rc4 === 2 && /Usage: blamejs api-snapshot/.test(t4.captured().err));
+
+    var t5 = _cliCtx();
+    var rc5 = await b.cli.main(["api-snapshot", "compare", "--file",
+      path.join(dir, "missing.json")], t5.ctx);
+    check("api-snapshot compare missing snapshot exits 1", rc5 === 1);
+
+    var t6 = _cliCtx();
+    var rc6 = await b.cli.main(["help", "api-snapshot"], t6.ctx);
+    check("help api-snapshot exits 0",                rc6 === 0);
+    check("help api-snapshot prints usage",
+          /Usage: blamejs api-snapshot/.test(t6.captured().out));
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 // ---- deprecate ----
 //
 // Tests manipulate process.env.BLAMEJS_DEPRECATIONS and
@@ -10287,6 +10503,20 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // api-snapshot — public-API surface walker + breaking-change detector (Phase 8 slice 8b)
+  testApiSnapshotSurface();
+  testApiSnapshotCaptureCategorizes();
+  testApiSnapshotCaptureHandlesCycles();
+  testApiSnapshotWriteAndRead();
+  testApiSnapshotCompareNoChange();
+  testApiSnapshotCompareDetectsRemoval();
+  testApiSnapshotCompareDetectsTypeChange();
+  testApiSnapshotCompareDetectsArityDecrease();
+  testApiSnapshotCompareIgnoresArityIncrease();
+  testApiSnapshotCompareDetectsAdditive();
+  testApiSnapshotFormatDiff();
+  testApiSnapshotOnFrameworkSurfaceCaptures();
+  await testCliApiSnapshotCaptureAndCompare();
   // deprecate — runtime deprecation warnings + LTS-contract enforcement (Phase 8 slice 8a)
   testDeprecateSurface();
   testDeprecateModeResolution();
@@ -10718,6 +10948,19 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testApiSnapshotSurface:                    testApiSnapshotSurface,
+  testApiSnapshotCaptureCategorizes:         testApiSnapshotCaptureCategorizes,
+  testApiSnapshotCaptureHandlesCycles:       testApiSnapshotCaptureHandlesCycles,
+  testApiSnapshotWriteAndRead:               testApiSnapshotWriteAndRead,
+  testApiSnapshotCompareNoChange:            testApiSnapshotCompareNoChange,
+  testApiSnapshotCompareDetectsRemoval:      testApiSnapshotCompareDetectsRemoval,
+  testApiSnapshotCompareDetectsTypeChange:   testApiSnapshotCompareDetectsTypeChange,
+  testApiSnapshotCompareDetectsArityDecrease: testApiSnapshotCompareDetectsArityDecrease,
+  testApiSnapshotCompareIgnoresArityIncrease: testApiSnapshotCompareIgnoresArityIncrease,
+  testApiSnapshotCompareDetectsAdditive:     testApiSnapshotCompareDetectsAdditive,
+  testApiSnapshotFormatDiff:                 testApiSnapshotFormatDiff,
+  testApiSnapshotOnFrameworkSurfaceCaptures: testApiSnapshotOnFrameworkSurfaceCaptures,
+  testCliApiSnapshotCaptureAndCompare:       testCliApiSnapshotCaptureAndCompare,
   testDeprecateSurface:                      testDeprecateSurface,
   testDeprecateModeResolution:               testDeprecateModeResolution,
   testDeprecateWarnEmitsOnce:                testDeprecateWarnEmitsOnce,

@@ -88,6 +88,7 @@ var backup = require("./lib/backup");
 var restoreRollback = require("./lib/restore-rollback");
 var restore = require("./lib/restore");
 var deprecate = require("./lib/deprecate");
+var apiSnapshot = require("./lib/api-snapshot");
 
 module.exports = {
   crypto:           crypto,
@@ -158,6 +159,7 @@ module.exports = {
   restoreRollback:  restoreRollback,
   restore:          restore,
   deprecate:        deprecate,
+  apiSnapshot:      apiSnapshot,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
