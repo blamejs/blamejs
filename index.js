@@ -89,6 +89,7 @@ var restoreRollback = require("./lib/restore-rollback");
 var restore = require("./lib/restore");
 var deprecate = require("./lib/deprecate");
 var apiSnapshot = require("./lib/api-snapshot");
+var auditTools = require("./lib/audit-tools");
 
 module.exports = {
   crypto:           crypto,
@@ -102,6 +103,7 @@ module.exports = {
   audit:            audit,
   auditChain:       auditChain,
   auditSign:        auditSign,
+  auditTools:       auditTools,
   consent:          consent,
   subject:          subject,
   session:          session,

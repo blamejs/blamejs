@@ -5020,6 +5020,339 @@ async function testBackupCryptoArgValidation() {
         threw && threw.code === "backup-crypto/bad-input");
 }
 
+// ---- audit-tools ----
+//
+// Operator tooling on top of the audit chain. Uses setupTestDb to stand
+// up a real audit_log + audit_checkpoints surface so the chain math can
+// be exercised end-to-end (a mock-driven test would let us shadow the
+// real chain semantics — defeats the point).
+
+async function _seedAuditRows(count) {
+  b.audit.registerNamespace("test");
+  for (var i = 0; i < count; i++) {
+    await b.audit.record({
+      actor:   { userId: "u-" + i },
+      action:  "test.seeded",
+      outcome: "success",
+      metadata: { i: i },
+    });
+  }
+}
+
+function _auditToolsFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-at-"));
+  var bundleDir = path.join(dir, "bundles");
+  return {
+    dir: dir,
+    bundleOut: function (name) { return path.join(bundleDir, name); },
+    cleanup: function () {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+  };
+}
+
+function testAuditToolsSurface() {
+  check("b.auditTools namespace present",       typeof b.auditTools === "object");
+  check("b.auditTools.archive is a function",   typeof b.auditTools.archive === "function");
+  check("b.auditTools.exportSlice is a function", typeof b.auditTools.exportSlice === "function");
+  check("b.auditTools.verifyBundle is a function", typeof b.auditTools.verifyBundle === "function");
+  check("b.auditTools.purge is a function",     typeof b.auditTools.purge === "function");
+  check("b.auditTools.AuditToolsError is a class", typeof b.auditTools.AuditToolsError === "function");
+  check("b.auditTools.BUNDLE_FORMAT is set",    b.auditTools.BUNDLE_FORMAT === "blamejs-audit-bundle-v1");
+}
+
+async function testAuditToolsArchiveAndVerify() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(5);
+    await b.audit.checkpoint(); // covering signature anchor
+
+    var out = fx.bundleOut("archive-1");
+    var r = await b.auditTools.archive({
+      before:     Date.now() + 1000, // archive everything we just wrote
+      out:        out,
+      passphrase: Buffer.from("operator-passphrase"),
+    });
+    check("archive produces a manifest",            r.manifest && r.manifest.format === "blamejs-audit-bundle-v1");
+    check("archive bundle kind=archive",            r.manifest.kind === "archive");
+    check("archive includes covering checkpoint",   !!r.manifest.checkpoint);
+    check("archive rowCount matches seeded rows",   r.rowCount === 5);
+    check("manifest.json written to disk",          fs.existsSync(path.join(out, "manifest.json")));
+    check("rows.enc written to disk",               fs.existsSync(path.join(out, "rows.enc")));
+    check("checkpoint.enc written to disk",         fs.existsSync(path.join(out, "checkpoint.enc")));
+
+    var v = await b.auditTools.verifyBundle({
+      in:         out,
+      passphrase: Buffer.from("operator-passphrase"),
+    });
+    check("verifyBundle of fresh archive: ok",      v.ok === true);
+    check("verifyBundle reports kind=archive",      v.kind === "archive");
+    check("verifyBundle rowsVerified matches",      v.rowsVerified === 5);
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
+async function testAuditToolsExportSliceAndVerify() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(4);
+
+    var out = fx.bundleOut("export-1");
+    var r = await b.auditTools.exportSlice({
+      from:       0,
+      to:         Date.now() + 1000,
+      out:        out,
+      passphrase: Buffer.from("auditor-passphrase"),
+    });
+    check("export bundle kind=export",              r.manifest.kind === "export");
+    check("export bundle has no checkpoint section", !r.manifest.checkpoint);
+    check("export rowCount > 0",                    r.rowCount > 0);
+
+    var v = await b.auditTools.verifyBundle({
+      in:         out,
+      passphrase: Buffer.from("auditor-passphrase"),
+    });
+    check("verifyBundle of export: ok",             v.ok === true);
+    check("verifyBundle export kind reported",      v.kind === "export");
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
+async function testAuditToolsVerifyBundleRejectsWrongPassphrase() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(3);
+    await b.audit.checkpoint();
+
+    var out = fx.bundleOut("archive-wrongpass");
+    await b.auditTools.archive({
+      before: Date.now() + 1000, out: out,
+      passphrase: Buffer.from("right-passphrase"),
+    });
+
+    var threw = null;
+    try {
+      await b.auditTools.verifyBundle({
+        in: out, passphrase: Buffer.from("wrong-passphrase"),
+      });
+    } catch (e) { threw = e; }
+    check("verifyBundle rejects wrong passphrase (decrypt error)",
+          threw !== null);
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
+async function testAuditToolsVerifyBundleDetectsTamperedRows() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(3);
+    await b.audit.checkpoint();
+
+    var out = fx.bundleOut("archive-tamper");
+    await b.auditTools.archive({
+      before: Date.now() + 1000, out: out,
+      passphrase: Buffer.from("pp"),
+    });
+
+    // Flip a byte deep inside rows.enc (past the salt/nonce header) so
+    // AEAD authentication catches the tamper.
+    var rowsPath = path.join(out, "rows.enc");
+    var buf = fs.readFileSync(rowsPath);
+    buf[buf.length - 4] = (buf[buf.length - 4] ^ 0xff) & 0xff;
+    fs.writeFileSync(rowsPath, buf);
+
+    var threw = null;
+    try {
+      await b.auditTools.verifyBundle({ in: out, passphrase: Buffer.from("pp") });
+    } catch (e) { threw = e; }
+    check("verifyBundle catches rows.enc tamper (checksum or AEAD)",
+          threw !== null);
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
+async function testAuditToolsArchiveRejectsWithoutCoveringCheckpoint() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(2);
+    // Deliberately skip b.audit.checkpoint() — no covering anchor.
+
+    var threw = null;
+    try {
+      await b.auditTools.archive({
+        before: Date.now() + 1000,
+        out:    fx.bundleOut("archive-no-ckpt"),
+        passphrase: Buffer.from("pp"),
+      });
+    } catch (e) { threw = e; }
+    check("archive without covering checkpoint rejects",
+          threw && threw.code === "audit-tools/no-covering-checkpoint");
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
+async function testAuditToolsArgValidation() {
+  var threw;
+
+  threw = null;
+  try { await b.auditTools.archive({}); } catch (e) { threw = e; }
+  check("archive: missing passphrase rejects",
+        threw && threw.code === "audit-tools/no-passphrase");
+
+  threw = null;
+  try { await b.auditTools.archive({ passphrase: "p" }); } catch (e) { threw = e; }
+  check("archive: missing out rejects",
+        threw && threw.code === "audit-tools/no-outdir");
+
+  threw = null;
+  try { await b.auditTools.archive({ passphrase: "p", out: "/nonexistent/xyz/qrs" }); } catch (e) { threw = e; }
+  check("archive: missing before rejects",
+        threw && threw.code === "audit-tools/no-before");
+
+  threw = null;
+  try { await b.auditTools.purge({ archive: "/nope" }); } catch (e) { threw = e; }
+  check("purge: missing confirm rejects",
+        threw && threw.code === "audit-tools/no-confirm");
+
+  threw = null;
+  try { await b.auditTools.purge({ confirm: true, passphrase: "p" }); } catch (e) { threw = e; }
+  check("purge: missing archive path rejects",
+        threw && threw.code === "audit-tools/no-archive");
+
+  threw = null;
+  try { await b.auditTools.verifyBundle({ passphrase: "p" }); } catch (e) { threw = e; }
+  check("verifyBundle: missing in rejects",
+        threw && threw.code === "audit-tools/no-indir");
+}
+
+async function testAuditToolsPurgeRoundTrip() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(5);
+    await b.audit.checkpoint();
+
+    var out = fx.bundleOut("archive-purge");
+    await b.auditTools.archive({
+      before: Date.now() + 1000, out: out,
+      passphrase: Buffer.from("pp"),
+    });
+
+    // Refuses without confirm:true even with a valid archive
+    var threw = null;
+    try {
+      await b.auditTools.purge({ archive: out, passphrase: Buffer.from("pp") });
+    } catch (e) { threw = e; }
+    check("purge without confirm:true refuses",
+          threw && threw.code === "audit-tools/no-confirm");
+
+    // Capture the lastCounter before purge
+    var before = await b.clusterStorage.executeAll("SELECT COUNT(*) as c FROM audit_log");
+    var beforeCount = Number(before[0].c);
+    check("audit_log non-empty before purge",       beforeCount >= 5);
+
+    var pres = await b.auditTools.purge({
+      archive: out, passphrase: Buffer.from("pp"), confirm: true,
+    });
+    check("purge succeeds with valid archive + confirm", pres.purged === true);
+    check("purge reports rowsDeleted > 0",          pres.rowsDeleted > 0);
+
+    // After purge, audit.verify still passes — the anchor anchors the
+    // chain origin to the post-purge starting point.
+    var verified = await b.audit.verify();
+    check("audit.verify still ok after purge (anchor wired)", verified.ok === true);
+
+    // Anchor row exists in _blamejs_audit_purge_anchor
+    var anchor = await b.clusterStorage.executeAll(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'"
+    );
+    check("purge wrote the chain-origin anchor",   anchor.length === 1);
+    check("anchor lastPurgedRowHash matches archive lastRowHash",
+          anchor[0].lastPurgedRowHash === pres.lastPurgedRowHash);
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
+async function testAuditToolsPurgeRejectsUnverifiedArchive() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(3);
+    await b.audit.checkpoint();
+
+    var out = fx.bundleOut("archive-tampered");
+    await b.auditTools.archive({
+      before: Date.now() + 1000, out: out,
+      passphrase: Buffer.from("pp"),
+    });
+
+    // Tamper the manifest's range so the chain proof breaks
+    var manifestPath = path.join(out, "manifest.json");
+    var m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    m.range.lastRowHash = "0".repeat(128);
+    fs.writeFileSync(manifestPath, JSON.stringify(m));
+
+    var threw = null;
+    try {
+      await b.auditTools.purge({
+        archive: out, passphrase: Buffer.from("pp"), confirm: true,
+      });
+    } catch (e) { threw = e; }
+    check("purge refuses tampered archive",
+          threw && threw.code === "audit-tools/archive-not-ok");
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
+async function testAuditCliVerifyBundleSubcommand() {
+  var fx = _auditToolsFixture();
+  try {
+    await setupTestDb(fx.dir);
+    await _seedAuditRows(3);
+    await b.audit.checkpoint();
+
+    var out = fx.bundleOut("cli-archive");
+    await b.auditTools.archive({
+      before: Date.now() + 1000, out: out,
+      passphrase: Buffer.from("op-pp"),
+    });
+
+    var captured = { out: "", err: "" };
+    var rc = await b.cli.main(
+      ["audit", "verify-bundle", "--in", out, "--passphrase", "op-pp"],
+      {
+        stdout: { write: function (s) { captured.out += s; } },
+        stderr: { write: function (s) { captured.err += s; } },
+        env: {}, cwd: process.cwd(),
+      }
+    );
+    check("CLI audit verify-bundle exit 0 on ok bundle",      rc === 0);
+    check("CLI audit verify-bundle output indicates OK",      /OK — bundle verified/.test(captured.out));
+  } finally {
+    await teardownTestDb(fx.dir);
+    fx.cleanup();
+  }
+}
+
 // ---- mtls-ca ----
 
 function _mtlsCaFixture() {
@@ -10839,6 +11172,17 @@ async function run() {
   await testBackupCryptoFreshSaltUnique();
   testBackupCryptoChecksumIsSha3_512();
   await testBackupCryptoArgValidation();
+  // audit-tools — operator tooling on the audit chain (Phase 7 deferred slice)
+  testAuditToolsSurface();
+  await testAuditToolsArchiveAndVerify();
+  await testAuditToolsExportSliceAndVerify();
+  await testAuditToolsVerifyBundleRejectsWrongPassphrase();
+  await testAuditToolsVerifyBundleDetectsTamperedRows();
+  await testAuditToolsArchiveRejectsWithoutCoveringCheckpoint();
+  await testAuditToolsArgValidation();
+  await testAuditToolsPurgeRoundTrip();
+  await testAuditToolsPurgeRejectsUnverifiedArchive();
+  await testAuditCliVerifyBundleSubcommand();
   // mtls-ca — CA file-management primitives + engine-pluggable issuance (Phase 7 slice 6)
   testMtlsCaSurface();
   testMtlsCaCreateValidation();
@@ -11281,6 +11625,16 @@ module.exports = {
   testBackupCryptoFreshSaltUnique:           testBackupCryptoFreshSaltUnique,
   testBackupCryptoChecksumIsSha3_512:        testBackupCryptoChecksumIsSha3_512,
   testBackupCryptoArgValidation:             testBackupCryptoArgValidation,
+  testAuditToolsSurface:                     testAuditToolsSurface,
+  testAuditToolsArchiveAndVerify:            testAuditToolsArchiveAndVerify,
+  testAuditToolsExportSliceAndVerify:        testAuditToolsExportSliceAndVerify,
+  testAuditToolsVerifyBundleRejectsWrongPassphrase: testAuditToolsVerifyBundleRejectsWrongPassphrase,
+  testAuditToolsVerifyBundleDetectsTamperedRows:    testAuditToolsVerifyBundleDetectsTamperedRows,
+  testAuditToolsArchiveRejectsWithoutCoveringCheckpoint: testAuditToolsArchiveRejectsWithoutCoveringCheckpoint,
+  testAuditToolsArgValidation:               testAuditToolsArgValidation,
+  testAuditToolsPurgeRoundTrip:              testAuditToolsPurgeRoundTrip,
+  testAuditToolsPurgeRejectsUnverifiedArchive: testAuditToolsPurgeRejectsUnverifiedArchive,
+  testAuditCliVerifyBundleSubcommand:        testAuditCliVerifyBundleSubcommand,
   testMtlsCaSurface:                         testMtlsCaSurface,
   testMtlsCaCreateValidation:                testMtlsCaCreateValidation,
   testMtlsCaParseGeneration:                 testMtlsCaParseGeneration,
