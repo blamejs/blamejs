@@ -74,6 +74,7 @@ var cookies = require("./lib/cookies");
 var migrations = require("./lib/migrations");
 var cli = require("./lib/cli");
 var dev = require("./lib/dev");
+var bundler = require("./lib/bundler");
 
 module.exports = {
   crypto:           crypto,
@@ -130,6 +131,7 @@ module.exports = {
   migrations:       migrations,
   cli:              cli,
   dev:              dev,
+  bundler:          bundler,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

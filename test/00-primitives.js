@@ -3078,6 +3078,218 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- bundler ----
+
+function _makeBundlerFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bundler-"));
+  var src = path.join(dir, "src");
+  var out = path.join(dir, "dist");
+  fs.mkdirSync(src, { recursive: true });
+  return {
+    dir: dir,
+    src: src,
+    out: out,
+    write: function (rel, content) {
+      var full = path.join(src, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+      return full;
+    },
+    cleanup: function () {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+  };
+}
+
+function testBundlerSurface() {
+  check("b.bundler namespace present",            typeof b.bundler === "object");
+  check("b.bundler.create is a function",         typeof b.bundler.create === "function");
+  check("b.bundler.BundlerError is a class",      typeof b.bundler.BundlerError === "function");
+}
+
+function testBundlerCreateValidation() {
+  var threw;
+  threw = null; try { b.bundler.create({}); } catch (e) { threw = e; }
+  check("missing entries rejected",               threw && threw.code === "bundler/no-entries");
+
+  threw = null; try { b.bundler.create({ entries: {} }); } catch (e) { threw = e; }
+  check("empty entries rejected",                 threw && threw.code === "bundler/no-entries");
+
+  threw = null;
+  try { b.bundler.create({ entries: { app: "./x.js" } }); } catch (e) { threw = e; }
+  check("missing outdir rejected",                threw && threw.code === "bundler/no-outdir");
+
+  threw = null;
+  try { b.bundler.create({ entries: { "../escape": "./x.js" }, outdir: "/tmp/x" }); }
+  catch (e) { threw = e; }
+  check("entry name with '..' rejected",          threw && threw.code === "bundler/bad-entry-name");
+
+  threw = null;
+  try { b.bundler.create({ entries: { "a/b": "./x.js" }, outdir: "/tmp/x" }); }
+  catch (e) { threw = e; }
+  check("entry name with separator rejected",     threw && threw.code === "bundler/bad-entry-name");
+}
+
+async function testBundlerBuildHashedOutput() {
+  var fx = _makeBundlerFixture();
+  try {
+    fx.write("app.js",    "console.log('hello bundler');\n");
+    fx.write("style.css", "body { color: red; }\n");
+
+    var bundler = b.bundler.create({
+      entries: {
+        app:   path.join(fx.src, "app.js"),
+        style: path.join(fx.src, "style.css"),
+      },
+      outdir: fx.out,
+    });
+    var result = await bundler.build();
+    check("build returned outputs",               result.outputs.length === 2);
+    check("each output has hash",                 result.outputs.every(function (o) { return /^[0-9a-f]{16}$/.test(o.hash); }));
+    check("each output file exists",              result.outputs.every(function (o) { return fs.existsSync(o.path); }));
+    check("output filename includes hash + ext",  /app\.[0-9a-f]{16}\.js$/.test(result.outputs[0].path) ||
+                                                  /app\.[0-9a-f]{16}\.js$/.test(result.outputs[1].path));
+    check("manifest written to outdir",           fs.existsSync(result.manifestPath));
+    var mf = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
+    check("manifest maps name → hashed filename",
+          /app\.[0-9a-f]{16}\.js$/.test(mf.app) &&
+          /style\.[0-9a-f]{16}\.css$/.test(mf.style));
+
+    // Same content → same hash on rebuild (deterministic, content-addressed)
+    var r2 = await bundler.build();
+    check("rebuild with unchanged content reuses hash",
+          r2.outputs[0].hash === result.outputs[0].hash);
+  } finally { fx.cleanup(); }
+}
+
+async function testBundlerHashChangesWithContent() {
+  var fx = _makeBundlerFixture();
+  try {
+    var srcPath = fx.write("app.js", "console.log('v1');\n");
+    var bundler = b.bundler.create({
+      entries: { app: srcPath },
+      outdir:  fx.out,
+    });
+    var r1 = await bundler.build();
+    var hash1 = r1.outputs[0].hash;
+
+    fs.writeFileSync(srcPath, "console.log('v2');\n");
+    var r2 = await bundler.build();
+    var hash2 = r2.outputs[0].hash;
+    check("changed content → new hash",            hash1 !== hash2);
+    check("new output filename has new hash",      r2.outputs[0].path.indexOf(hash2) !== -1);
+  } finally { fx.cleanup(); }
+}
+
+async function testBundlerHashOff() {
+  var fx = _makeBundlerFixture();
+  try {
+    fx.write("app.js", "noop");
+    var bundler = b.bundler.create({
+      entries:  { app: path.join(fx.src, "app.js") },
+      outdir:   fx.out,
+      hash:     false,
+      manifest: false,
+    });
+    var r = await bundler.build();
+    check("hash:false → no hash in filename",     r.outputs[0].path.endsWith("app.js"));
+    check("manifest:false → no manifest written", r.manifestPath === null);
+  } finally { fx.cleanup(); }
+}
+
+async function testBundlerCustomHashLen() {
+  var fx = _makeBundlerFixture();
+  try {
+    fx.write("app.js", "x");
+    var bundler = b.bundler.create({
+      entries: { app: path.join(fx.src, "app.js") },
+      outdir:  fx.out,
+      hashLen: 8,
+    });
+    var r = await bundler.build();
+    check("hashLen:8 → 8-char hash",              r.outputs[0].hash.length === 8);
+    check("output filename uses 8-char hash",     /app\.[0-9a-f]{8}\.js$/.test(r.outputs[0].path));
+  } finally { fx.cleanup(); }
+}
+
+async function testBundlerReadFailure() {
+  var fx = _makeBundlerFixture();
+  try {
+    var bundler = b.bundler.create({
+      entries: { app: path.join(fx.src, "does-not-exist.js") },
+      outdir:  fx.out,
+    });
+    var threw = null;
+    try { await bundler.build(); } catch (e) { threw = e; }
+    check("missing entry surfaces bundler/read-failed",
+          threw && threw.code === "bundler/read-failed");
+  } finally { fx.cleanup(); }
+}
+
+async function testBundlerWatchRebuilds() {
+  // Use the test seam to drive rebuild without real fs.watch.
+  var fx = _makeBundlerFixture();
+  try {
+    var entryPath = fx.write("app.js", "console.log('v1');\n");
+
+    // Capture watcher fires
+    var watcherListeners = [];
+    function fakeWatch(dirOrFile, wopts, listener) {
+      watcherListeners.push({ dir: dirOrFile, listener: listener });
+      return { close: function () {} };
+    }
+    var pendingTimers = [];
+    function fakeSetTimeout(fn) {
+      var t = { fn: fn, active: true };
+      pendingTimers.push(t);
+      return t;
+    }
+    function fakeClearTimeout(t) { if (t) t.active = false; }
+
+    var bundler = b.bundler.create({
+      entries: { app: entryPath },
+      outdir:  fx.out,
+      _watch:        fakeWatch,
+      _setTimeout:   fakeSetTimeout,
+      _clearTimeout: fakeClearTimeout,
+      graceMs:       50,
+    });
+    var initial = await bundler.build();
+    var hash1 = initial.outputs[0].hash;
+
+    var rebuilds = [];
+    bundler.watch(function (err, result) {
+      rebuilds.push({ err: err, result: result });
+    });
+    check("watch armed one watcher per entry",      watcherListeners.length === 1);
+
+    // Change content + fire the watcher
+    fs.writeFileSync(entryPath, "console.log('v2');\n");
+    watcherListeners[0].listener("change", path.basename(entryPath));
+    check("change fires a debounce timer",          pendingTimers.filter(function (t) { return t.active; }).length === 1);
+
+    // Drive the timer
+    var firedTimer = pendingTimers.find(function (t) { return t.active; });
+    firedTimer.active = false;
+    firedTimer.fn();
+    // wait for the async build to settle
+    await new Promise(function (r) { setImmediate(r); });
+    await new Promise(function (r) { setImmediate(r); });
+    await new Promise(function (r) { setImmediate(r); });
+    check("watch callback fired",                   rebuilds.length === 1);
+    check("rebuild produced new hash",
+          rebuilds[0].result && rebuilds[0].result.outputs[0].hash !== hash1);
+
+    // Events for unrelated filenames in the watched dir should be ignored
+    pendingTimers.length = 0;
+    watcherListeners[0].listener("change", "unrelated.txt");
+    check("unrelated filename does not schedule rebuild",
+          pendingTimers.filter(function (t) { return t.active; }).length === 0);
+
+    await bundler.close();
+  } finally { fx.cleanup(); }
+}
+
 // ---- dev ----
 //
 // Engine tests use fake spawn/watch/timer seams so we never actually
@@ -7344,6 +7556,15 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // bundler — content-hashed asset pipeline + manifest (Phase 6 slice 7)
+  testBundlerSurface();
+  testBundlerCreateValidation();
+  await testBundlerBuildHashedOutput();
+  await testBundlerHashChangesWithContent();
+  await testBundlerHashOff();
+  await testBundlerCustomHashLen();
+  await testBundlerReadFailure();
+  await testBundlerWatchRebuilds();
   // dev — file-watch + child-process restart engine (Phase 6 slice 6)
   testDevSurface();
   await testDevStartSpawnsChildAndArmsWatchers();
@@ -7646,6 +7867,14 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testBundlerSurface:                        testBundlerSurface,
+  testBundlerCreateValidation:               testBundlerCreateValidation,
+  testBundlerBuildHashedOutput:              testBundlerBuildHashedOutput,
+  testBundlerHashChangesWithContent:         testBundlerHashChangesWithContent,
+  testBundlerHashOff:                        testBundlerHashOff,
+  testBundlerCustomHashLen:                  testBundlerCustomHashLen,
+  testBundlerReadFailure:                    testBundlerReadFailure,
+  testBundlerWatchRebuilds:                  testBundlerWatchRebuilds,
   testDevSurface:                            testDevSurface,
   testDevStartSpawnsChildAndArmsWatchers:    testDevStartSpawnsChildAndArmsWatchers,
   testDevDebouncesBurstOfEventsToOneRestart: testDevDebouncesBurstOfEventsToOneRestart,
