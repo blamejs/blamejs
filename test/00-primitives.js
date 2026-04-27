@@ -1564,7 +1564,7 @@ function testTemplatePartialInclusion() {
     check("partials inlined + interpolated",
           out === "<header>T</header><main>B</main><footer>©</footer>");
 
-    // Missing partial → silent empty (matches hermitstash behavior)
+    // Missing partial → silent empty (forgiving render, no exception)
     _writeView(dir, "missing", "[{{> nope }}]");
     check("missing partial silently empty",  eng.render("missing", {}) === "[]");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -2594,7 +2594,189 @@ function testMailSurface() {
   check("b.mail.transports.console is a function",   typeof b.mail.transports.console === "function");
   check("b.mail.transports.memory is a function",    typeof b.mail.transports.memory === "function");
   check("b.mail.transports.smtp is a function",      typeof b.mail.transports.smtp === "function");
+  check("b.mail.transports.http is a function",      typeof b.mail.transports.http === "function");
   check("b.mail.transports.resend is a function",    typeof b.mail.transports.resend === "function");
+}
+
+function testMailHttpFactoryValidation() {
+  var threw = null;
+  try { b.mail.transports.http(); }
+  catch (e) { threw = e; }
+  check("http factory rejects missing endpoint",
+        threw && threw.code === "mail/http-misconfigured" && threw.isMailError === true);
+
+  threw = null;
+  try { b.mail.transports.http({ endpoint: "https://x" }); }
+  catch (e) { threw = e; }
+  check("http factory rejects missing serialize",
+        threw && threw.code === "mail/http-misconfigured");
+
+  var t = b.mail.transports.http({
+    endpoint:  "https://example.test/mail",
+    name:      "postmark",
+    serialize: function () { return { body: "{}" }; },
+  });
+  check("http factory honors custom name",            t && t.name === "postmark");
+  check("http factory returns send",                  typeof t.send === "function");
+
+  // Default name is "http" when not supplied
+  var t2 = b.mail.transports.http({
+    endpoint:  "https://example.test/",
+    serialize: function () { return { body: "{}" }; },
+  });
+  check("http factory defaults name to http",         t2 && t2.name === "http");
+}
+
+async function testMailHttpRoundTripWithCustomVendor() {
+  // Simulate a "Postmark-style" API: header X-Server-Token, body
+  // {From,To,Subject,HtmlBody,TextBody}, response {MessageID,ErrorCode}.
+  // Verifies that the generic http transport can drive any vendor that
+  // speaks JSON-over-HTTP without needing a framework-level preset.
+  var http = require("http");
+  var seen = null;
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      seen = {
+        method:  req.method,
+        url:     req.url,
+        headers: req.headers,
+        body:    JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ MessageID: "pm_test_xyz", ErrorCode: 0 }));
+    });
+  });
+  var port = await listenOnRandomPort(server);
+
+  try {
+    var transport = b.mail.transports.http({
+      name:             "postmark",
+      endpoint:         "http://127.0.0.1:" + port + "/email",
+      timeoutMs:        2000,
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      headers: {
+        "X-Postmark-Server-Token": "tok_test",
+        "Content-Type":            "application/json",
+        "Accept":                  "application/json",
+      },
+      serialize: function (message) {
+        var payload = {
+          From:     message.from,
+          To:       Array.isArray(message.to) ? message.to.join(", ") : message.to,
+          Subject:  message.subject,
+          HtmlBody: message.html,
+          TextBody: message.text,
+        };
+        return { body: JSON.stringify(payload) };
+      },
+      interpret: function (res) {
+        var data = JSON.parse(res.body.toString("utf8"));
+        if (data.ErrorCode !== 0) return { ok: false, reason: data.Message || ("err " + data.ErrorCode) };
+        return { ok: true, id: data.MessageID };
+      },
+    });
+
+    var result = await transport.send({
+      from: "sender@test.local", to: "rcpt@test.local",
+      subject: "Hi", html: "<p>Hi</p>", text: "Hi",
+    });
+    check("http transport happy path returns id from interpret",
+          result && result.transport === "postmark" && result.id === "pm_test_xyz");
+    check("http transport surfaces statusCode in result",
+          result && result.statusCode === 200);
+    check("http transport sent vendor-specific header",
+          seen && seen.headers["x-postmark-server-token"] === "tok_test");
+    check("http transport sent vendor-specific body shape",
+          seen && seen.body.From === "sender@test.local" &&
+          seen.body.HtmlBody === "<p>Hi</p>" && seen.body.TextBody === "Hi");
+  } finally {
+    await new Promise(function (resolve) { server.close(function () { resolve(); }); });
+  }
+}
+
+async function testMailHttpInterpretRejection() {
+  // interpret() returning {ok:false} surfaces as mail/<name>-rejected
+  // with the vendor's reason in the message.
+  var http = require("http");
+  var server = http.createServer(function (_req, res) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ErrorCode: 422, Message: "Invalid recipient" }));
+  });
+  var port = await listenOnRandomPort(server);
+
+  try {
+    var transport = b.mail.transports.http({
+      name:             "postmark",
+      endpoint:         "http://127.0.0.1:" + port + "/",
+      timeoutMs:        1500,
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      headers:   { "Content-Type": "application/json" },
+      serialize: function () { return { body: "{}" }; },
+      interpret: function (res) {
+        var data = JSON.parse(res.body.toString("utf8"));
+        if (data.ErrorCode !== 0) return { ok: false, reason: data.Message };
+        return { ok: true, id: data.MessageID };
+      },
+    });
+    var err = null;
+    try { await transport.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
+    catch (e) { err = e; }
+    check("http interpret-rejection surfaces mail/<name>-rejected",
+          err && err.code === "mail/postmark-rejected" && err.isMailError === true);
+    check("http interpret-rejection includes vendor reason",
+          err && /Invalid recipient/.test(err.message || ""));
+  } finally {
+    await new Promise(function (r) { server.close(function () { r(); }); });
+  }
+}
+
+async function testMailHttpInterpretThrows() {
+  // interpret() throwing a non-MailError surfaces as mail/<name>-interpret-failed.
+  var http = require("http");
+  var server = http.createServer(function (_req, res) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end("not json at all");
+  });
+  var port = await listenOnRandomPort(server);
+
+  try {
+    var transport = b.mail.transports.http({
+      name:             "vendor",
+      endpoint:         "http://127.0.0.1:" + port + "/",
+      timeoutMs:        1500,
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      headers:   { "Content-Type": "application/json" },
+      serialize: function () { return { body: "{}" }; },
+      interpret: function (res) { return { ok: !!JSON.parse(res.body.toString("utf8")).id }; },
+    });
+    var err = null;
+    try { await transport.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
+    catch (e) { err = e; }
+    check("http interpret-throws surfaces mail/<name>-interpret-failed",
+          err && err.code === "mail/vendor-interpret-failed" && err.isMailError === true);
+  } finally {
+    await new Promise(function (r) { server.close(function () { r(); }); });
+  }
+}
+
+function testMailHttpBadSerializer() {
+  // serialize() returning a non-object surfaces as mail/<name>-bad-serializer.
+  // (Async — but we can test the synchronous validation path via the
+  //  promise.) No network needed since the error happens before request.
+  var transport = b.mail.transports.http({
+    name:      "vendor",
+    endpoint:  "https://example.test/",
+    serialize: function () { return null; },
+  });
+  return transport.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }).then(
+    function () { check("http bad-serializer should reject", false); },
+    function (err) {
+      check("http bad-serializer returns mail/<name>-bad-serializer",
+            err && err.code === "mail/vendor-bad-serializer" && err.isMailError === true);
+    }
+  );
 }
 
 function testMailSmtpFactoryValidation() {
@@ -5460,8 +5642,13 @@ async function run() {
   await testMailConsoleTransportShape();
   testMailSmtpFactoryValidation();
   testMailResendFactoryValidation();
+  testMailHttpFactoryValidation();
   await testMailSmtpRoundTrip();
   await testMailSmtpStarttlsAccept();
+  await testMailHttpRoundTripWithCustomVendor();
+  await testMailHttpInterpretRejection();
+  await testMailHttpInterpretThrows();
+  await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
   // forms — CSRF tokens + HTML render + validation (Phase 4 slice 4)
@@ -5686,8 +5873,13 @@ module.exports = {
   testMailConsoleTransportShape:             testMailConsoleTransportShape,
   testMailSmtpFactoryValidation:             testMailSmtpFactoryValidation,
   testMailResendFactoryValidation:           testMailResendFactoryValidation,
+  testMailHttpFactoryValidation:             testMailHttpFactoryValidation,
   testMailSmtpRoundTrip:                     testMailSmtpRoundTrip,
   testMailSmtpStarttlsAccept:                testMailSmtpStarttlsAccept,
+  testMailHttpRoundTripWithCustomVendor:     testMailHttpRoundTripWithCustomVendor,
+  testMailHttpInterpretRejection:            testMailHttpInterpretRejection,
+  testMailHttpInterpretThrows:               testMailHttpInterpretThrows,
+  testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
   testFormsSurface:                          testFormsSurface,
