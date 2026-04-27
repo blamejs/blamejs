@@ -1070,6 +1070,347 @@ async function testAuthPasskeyCustomHints() {
         opts.hints.length === 1 && opts.hints[0] === "client-device");
 }
 
+// ---- auth.jwt (PQC-signed JWT) ----
+//
+// Most tests below use ML-DSA-87 keys so each sign/verify is sub-millisecond
+// — SLH-DSA-SHAKE-256f signs in ~76 ms, which would balloon test time
+// across the 25+ assertions. One round-trip uses the SLH-DSA default
+// to prove the default path works end-to-end; everything else exercises
+// behavior with the smaller-signature alg.
+
+function _jwtMlDsaKeypair() {
+  return require("crypto").generateKeyPairSync("ml-dsa-87", {
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+}
+
+function _jwtSlhDsaKeypair() {
+  return require("crypto").generateKeyPairSync("slh-dsa-shake-256f", {
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+}
+
+function testAuthJwtSurface() {
+  var j = b.auth.jwt;
+  check("auth.jwt namespace present",                typeof b.auth.jwt === "object");
+  check("auth.jwt.sign is a function",               typeof j.sign === "function");
+  check("auth.jwt.verify is a function",             typeof j.verify === "function");
+  check("auth.jwt.decode is a function",             typeof j.decode === "function");
+  check("auth.jwt.DEFAULT_ALGORITHM = SLH-DSA-SHAKE-256f",
+        j.DEFAULT_ALGORITHM === "SLH-DSA-SHAKE-256f");
+  check("auth.jwt.SUPPORTED_ALGORITHMS includes SLH-DSA-SHAKE-256f",
+        j.SUPPORTED_ALGORITHMS.indexOf("SLH-DSA-SHAKE-256f") !== -1);
+  check("auth.jwt.SUPPORTED_ALGORITHMS includes ML-DSA-87",
+        j.SUPPORTED_ALGORITHMS.indexOf("ML-DSA-87") !== -1);
+  check("auth.jwt.SUPPORTED_ALGORITHMS does NOT include classical algs",
+        j.SUPPORTED_ALGORITHMS.indexOf("RS256") === -1 &&
+        j.SUPPORTED_ALGORITHMS.indexOf("ES256") === -1 &&
+        j.SUPPORTED_ALGORITHMS.indexOf("HS256") === -1);
+}
+
+async function testAuthJwtSignVerifyRoundTripDefault() {
+  // Default algorithm = SLH-DSA-SHAKE-256f. Run one full round-trip
+  // to prove the default end-to-end despite the per-sign cost.
+  var j = b.auth.jwt;
+  var k = _jwtSlhDsaKeypair();
+  var token = await j.sign({ sub: "user-1", role: "admin" }, { privateKey: k.privateKey });
+  check("default-alg sign returns 3-part dotted string",
+        typeof token === "string" && token.split(".").length === 3);
+
+  var payload = await j.verify(token, { publicKey: k.publicKey });
+  check("default-alg verify returns payload",        payload && payload.sub === "user-1");
+  check("default-alg verify preserves custom claims", payload.role === "admin");
+  check("default-alg auto-adds iat",                 typeof payload.iat === "number");
+
+  // Decode (no-verify) returns header + payload + signature
+  var decoded = j.decode(token);
+  check("decode returns header.alg",                 decoded.header.alg === "SLH-DSA-SHAKE-256f");
+  check("decode returns header.typ",                 decoded.header.typ === "JWT");
+  check("decode returns payload.sub",                decoded.payload.sub === "user-1");
+  check("decode returns signature buffer",           Buffer.isBuffer(decoded.signature));
+  // SLH-DSA-SHAKE-256f signature size is ~50 KB
+  check("default-alg signature size matches FIPS 205 (~50 KB)",
+        decoded.signature.length > 49000 && decoded.signature.length < 51000);
+}
+
+async function testAuthJwtMlDsaOptIn() {
+  // ML-DSA-87 opt-in for throughput-sensitive paths.
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var token = await j.sign({ sub: "u-2" },
+                           { privateKey: k.privateKey, algorithm: "ML-DSA-87" });
+  var decoded = j.decode(token);
+  check("ML-DSA-87 token header carries alg",        decoded.header.alg === "ML-DSA-87");
+  check("ML-DSA-87 signature size matches FIPS 204 (~5 KB)",
+        decoded.signature.length > 4000 && decoded.signature.length < 6000);
+
+  var payload = await j.verify(token, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] });
+  check("ML-DSA-87 verify round-trip",               payload.sub === "u-2");
+}
+
+async function testAuthJwtAlgorithmAllowlist() {
+  // verify() defaults to allowing ONLY DEFAULT_ALGORITHM. A token
+  // signed with ML-DSA-87 must therefore be rejected unless the
+  // allowlist explicitly opts in.
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var token = await j.sign({ sub: "u" },
+                           { privateKey: k.privateKey, algorithm: "ML-DSA-87" });
+
+  var threw = null;
+  try { await j.verify(token, { publicKey: k.publicKey }); }
+  catch (e) { threw = e; }
+  check("verify default allowlist rejects ML-DSA-87 token",
+        threw && threw.code === "auth-jwt/algorithm-not-allowed");
+
+  // Explicit opt-in works
+  var ok = await j.verify(token, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] });
+  check("verify with ML-DSA-87 in allowlist accepts the token",  ok && ok.sub === "u");
+
+  // Typo in allowlist surfaces at verify time
+  var threwTypo = null;
+  try { await j.verify(token, { publicKey: k.publicKey, algorithms: ["MD5"] }); }
+  catch (e) { threwTypo = e; }
+  check("verify with typoed alg in allowlist throws unsupported-algorithm",
+        threwTypo && threwTypo.code === "auth-jwt/unsupported-algorithm");
+}
+
+async function testAuthJwtExpiration() {
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var nowMs = Date.now();
+
+  // expiresInSec=10 — token is valid now, expired 11s later
+  var token = await j.sign({ sub: "u" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    expiresInSec: 10, now: nowMs,
+  });
+  var decoded = j.decode(token);
+  check("expiresInSec sets exp claim",
+        typeof decoded.payload.exp === "number" &&
+        decoded.payload.exp === Math.floor(nowMs / 1000) + 10);
+
+  // Verify within window passes
+  var ok = await j.verify(token, {
+    publicKey: k.publicKey, algorithms: ["ML-DSA-87"], now: nowMs,
+  });
+  check("verify within exp window passes",          ok.sub === "u");
+
+  // Verify after exp throws expired
+  var threw = null;
+  try {
+    await j.verify(token, {
+      publicKey: k.publicKey, algorithms: ["ML-DSA-87"], now: nowMs + 11000,
+    });
+  } catch (e) { threw = e; }
+  check("verify past exp throws auth-jwt/expired",   threw && threw.code === "auth-jwt/expired");
+
+  // clockToleranceSec gives leeway
+  var ok2 = await j.verify(token, {
+    publicKey: k.publicKey, algorithms: ["ML-DSA-87"], now: nowMs + 11000,
+    clockToleranceSec: 5,
+  });
+  check("clockToleranceSec lets a barely-expired token through",  ok2.sub === "u");
+}
+
+async function testAuthJwtNotBefore() {
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var nowMs = Date.now();
+
+  // notBeforeSec=60 — token isn't valid until 60s from now
+  var token = await j.sign({ sub: "u" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    notBeforeSec: 60, now: nowMs,
+  });
+
+  // Verify before nbf throws
+  var threw = null;
+  try {
+    await j.verify(token, {
+      publicKey: k.publicKey, algorithms: ["ML-DSA-87"], now: nowMs,
+    });
+  } catch (e) { threw = e; }
+  check("verify before nbf throws auth-jwt/not-yet-valid",
+        threw && threw.code === "auth-jwt/not-yet-valid");
+
+  // Verify after nbf passes
+  var ok = await j.verify(token, {
+    publicKey: k.publicKey, algorithms: ["ML-DSA-87"], now: nowMs + 61000,
+  });
+  check("verify after nbf passes",                   ok.sub === "u");
+}
+
+async function testAuthJwtIssuerAudienceSubject() {
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var token = await j.sign({}, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    issuer:   "https://blamejs.example.com",
+    audience: ["api-a", "api-b"],
+    subject:  "user-42",
+  });
+  var decoded = j.decode(token);
+  check("issuer claim recorded",                     decoded.payload.iss === "https://blamejs.example.com");
+  check("audience claim recorded as array",          Array.isArray(decoded.payload.aud) &&
+                                                     decoded.payload.aud.length === 2);
+  check("subject claim recorded",                    decoded.payload.sub === "user-42");
+
+  var verifyOpts = { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] };
+
+  // Matching expectations pass
+  var ok = await j.verify(token, Object.assign({}, verifyOpts, {
+    issuer: "https://blamejs.example.com", audience: "api-a", subject: "user-42",
+  }));
+  check("matching iss/aud/sub passes",               ok.sub === "user-42");
+
+  // aud accepts string-OR-array on both sides; any-of match
+  var okMulti = await j.verify(token, Object.assign({}, verifyOpts, {
+    audience: ["api-c", "api-b"],
+  }));
+  check("audience any-of match passes",              okMulti.sub === "user-42");
+
+  // Issuer mismatch
+  var threw = null;
+  try { await j.verify(token, Object.assign({}, verifyOpts, { issuer: "evil.com" })); }
+  catch (e) { threw = e; }
+  check("issuer mismatch throws auth-jwt/iss-mismatch",
+        threw && threw.code === "auth-jwt/iss-mismatch");
+
+  // Audience mismatch
+  threw = null;
+  try { await j.verify(token, Object.assign({}, verifyOpts, { audience: "api-c" })); }
+  catch (e) { threw = e; }
+  check("audience mismatch throws auth-jwt/aud-mismatch",
+        threw && threw.code === "auth-jwt/aud-mismatch");
+
+  // Subject mismatch
+  threw = null;
+  try { await j.verify(token, Object.assign({}, verifyOpts, { subject: "user-99" })); }
+  catch (e) { threw = e; }
+  check("subject mismatch throws auth-jwt/sub-mismatch",
+        threw && threw.code === "auth-jwt/sub-mismatch");
+}
+
+async function testAuthJwtSignatureTampering() {
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var token = await j.sign({ sub: "u" }, { privateKey: k.privateKey, algorithm: "ML-DSA-87" });
+  var parts = token.split(".");
+
+  // Flip a character in the signature
+  var sigChar = parts[2][0] === "A" ? "B" : "A";
+  var tamperedSig = parts[0] + "." + parts[1] + "." + sigChar + parts[2].slice(1);
+  var threwSig = null;
+  try { await j.verify(tamperedSig, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threwSig = e; }
+  check("tampered signature → auth-jwt/invalid-signature",
+        threwSig && threwSig.code === "auth-jwt/invalid-signature");
+
+  // Tamper the payload — re-encode a different sub claim, keep the
+  // original signature. Verify should still fail because the signature
+  // was over the original signing input.
+  var alteredPayload = Buffer.from(JSON.stringify({ sub: "evil" })).toString("base64")
+    .replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  var tamperedPayload = parts[0] + "." + alteredPayload + "." + parts[2];
+  var threwPayload = null;
+  try { await j.verify(tamperedPayload, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threwPayload = e; }
+  check("tampered payload → auth-jwt/invalid-signature",
+        threwPayload && threwPayload.code === "auth-jwt/invalid-signature");
+
+  // Wrong public key → verify rejects (different ML-DSA-87 keypair)
+  var k2 = _jwtMlDsaKeypair();
+  var threwKey = null;
+  try { await j.verify(token, { publicKey: k2.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threwKey = e; }
+  check("wrong public key → auth-jwt/invalid-signature",
+        threwKey && threwKey.code === "auth-jwt/invalid-signature");
+}
+
+async function testAuthJwtMalformedTokens() {
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+
+  // decode + verify both reject malformed shapes
+  var bad = ["", "no-dots", "one.dot", "a.b.c.d", "🌶."];
+  for (var i = 0; i < bad.length; i++) {
+    var threw = null;
+    try { j.decode(bad[i]); }
+    catch (e) { threw = e; }
+    check("decode rejects '" + bad[i] + "' → malformed",
+          threw && threw.code === "auth-jwt/malformed");
+  }
+
+  // verify on garbage signing input → malformed (decode fails first)
+  var threwV = null;
+  try { await j.verify("garbage", { publicKey: k.publicKey }); }
+  catch (e) { threwV = e; }
+  check("verify on garbage → auth-jwt/malformed",
+        threwV && threwV.code === "auth-jwt/malformed");
+}
+
+async function testAuthJwtCritHeaderRejected() {
+  // RFC 7515 §4.1.11: any unrecognized critical header MUST cause the
+  // verifier to reject the token. We don't define any extensions, so
+  // any `crit` header → rejection.
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+
+  // Build a token with a crit header by bypassing the framework's sign.
+  // Header/payload encoded by hand; signature still produced by Node.
+  var header = { alg: "ML-DSA-87", typ: "JWT", crit: ["urn:example:future"] };
+  var headerB64 = Buffer.from(JSON.stringify(header)).toString("base64")
+    .replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  var payload = { sub: "u" };
+  var payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64")
+    .replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  var signingInput = headerB64 + "." + payloadB64;
+  var sig = require("crypto").sign(null, Buffer.from(signingInput, "ascii"),
+                                   require("crypto").createPrivateKey({ key: k.privateKey, format: "pem" }));
+  var sigB64 = sig.toString("base64").replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  var token = signingInput + "." + sigB64;
+
+  var threw = null;
+  try { await j.verify(token, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threw = e; }
+  check("verify rejects unknown crit header (RFC 7515 §4.1.11)",
+        threw && threw.code === "auth-jwt/unknown-crit");
+}
+
+async function testAuthJwtKidPropagation() {
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var token = await j.sign({ sub: "u" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    kid: "key-2026-04-26",
+  });
+  var decoded = j.decode(token);
+  check("kid embedded in header",                    decoded.header.kid === "key-2026-04-26");
+}
+
+async function testAuthJwtMissingKey() {
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+
+  // sign without privateKey
+  var threwS = null;
+  try { await j.sign({ sub: "u" }, { algorithm: "ML-DSA-87" }); }
+  catch (e) { threwS = e; }
+  check("sign without privateKey throws missing-key",
+        threwS && threwS.code === "auth-jwt/missing-key");
+
+  // verify without publicKey — sign a token first
+  var token = await j.sign({ sub: "u" }, { privateKey: k.privateKey, algorithm: "ML-DSA-87" });
+  var threwV = null;
+  try { await j.verify(token, { algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threwV = e; }
+  check("verify without publicKey throws missing-key",
+        threwV && threwV.code === "auth-jwt/missing-key");
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -3589,6 +3930,19 @@ async function run() {
   await testAuthPasskeyValidationErrors();
   await testAuthPasskeyExcludeCredentials();
   await testAuthPasskeyCustomHints();
+  // auth.jwt — PQC-signed JWT (Phase 3 slice 5, final)
+  testAuthJwtSurface();
+  await testAuthJwtSignVerifyRoundTripDefault();
+  await testAuthJwtMlDsaOptIn();
+  await testAuthJwtAlgorithmAllowlist();
+  await testAuthJwtExpiration();
+  await testAuthJwtNotBefore();
+  await testAuthJwtIssuerAudienceSubject();
+  await testAuthJwtSignatureTampering();
+  await testAuthJwtMalformedTokens();
+  await testAuthJwtCritHeaderRejected();
+  await testAuthJwtKidPropagation();
+  await testAuthJwtMissingKey();
   // handlers primitive
   await testHandlerEmitAndDrain();
   await testHandlerEmitDuringFlushNextCycle();
@@ -3733,6 +4087,18 @@ module.exports = {
   testAuthPasskeyValidationErrors:           testAuthPasskeyValidationErrors,
   testAuthPasskeyExcludeCredentials:         testAuthPasskeyExcludeCredentials,
   testAuthPasskeyCustomHints:                testAuthPasskeyCustomHints,
+  testAuthJwtSurface:                        testAuthJwtSurface,
+  testAuthJwtSignVerifyRoundTripDefault:     testAuthJwtSignVerifyRoundTripDefault,
+  testAuthJwtMlDsaOptIn:                     testAuthJwtMlDsaOptIn,
+  testAuthJwtAlgorithmAllowlist:             testAuthJwtAlgorithmAllowlist,
+  testAuthJwtExpiration:                     testAuthJwtExpiration,
+  testAuthJwtNotBefore:                      testAuthJwtNotBefore,
+  testAuthJwtIssuerAudienceSubject:          testAuthJwtIssuerAudienceSubject,
+  testAuthJwtSignatureTampering:             testAuthJwtSignatureTampering,
+  testAuthJwtMalformedTokens:                testAuthJwtMalformedTokens,
+  testAuthJwtCritHeaderRejected:             testAuthJwtCritHeaderRejected,
+  testAuthJwtKidPropagation:                 testAuthJwtKidPropagation,
+  testAuthJwtMissingKey:                     testAuthJwtMissingKey,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
