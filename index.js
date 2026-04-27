@@ -78,6 +78,7 @@ var bundler = require("./lib/bundler");
 var pqcGate = require("./lib/pqc-gate");
 var pqcAgent = require("./lib/pqc-agent");
 var vaultRotate = require("./lib/vault-rotate");
+var vaultPassphraseOps = require("./lib/vault-passphrase-ops");
 
 module.exports = {
   crypto:           crypto,
@@ -138,6 +139,7 @@ module.exports = {
   pqcGate:          pqcGate,
   pqcAgent:         pqcAgent,
   vaultRotate:      vaultRotate,
+  vaultPassphraseOps: vaultPassphraseOps,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

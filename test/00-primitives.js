@@ -3078,6 +3078,200 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- vault-passphrase-ops ----
+//
+// Real on-disk fixtures because the primitive's whole job is filesystem
+// hygiene (atomic rename + fsync + round-trip verify). Each test gets
+// a fresh tmp dataDir.
+
+function _passphraseOpsFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-vps-"));
+  return {
+    dir: dir,
+    cleanup: function () {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+    writePlaintext: function (content) {
+      fs.writeFileSync(path.join(dir, "vault.key"), content || JSON.stringify({ test: "keypair" }), { mode: 0o600 });
+    },
+  };
+}
+
+function testVaultPassphraseOpsSurface() {
+  check("b.vaultPassphraseOps namespace present",  typeof b.vaultPassphraseOps === "object");
+  check("preflightSealable is a function",         typeof b.vaultPassphraseOps.preflightSealable === "function");
+  check("preflightUnsealable is a function",       typeof b.vaultPassphraseOps.preflightUnsealable === "function");
+  check("seal is a function",                      typeof b.vaultPassphraseOps.seal === "function");
+  check("unseal is a function",                    typeof b.vaultPassphraseOps.unseal === "function");
+  check("rotate is a function",                    typeof b.vaultPassphraseOps.rotate === "function");
+  check("VaultPassphraseError is a class",         typeof b.vaultPassphraseOps.VaultPassphraseError === "function");
+}
+
+function testVaultPassphraseOpsPreflightChecks() {
+  var fx = _passphraseOpsFixture();
+  try {
+    // Sealable: needs plaintext present + sealed absent
+    var pre1 = b.vaultPassphraseOps.preflightSealable({ dataDir: fx.dir });
+    check("seal preflight without plaintext: not ok",
+          pre1.ok === false && /nothing to seal/.test(pre1.reason));
+
+    fx.writePlaintext();
+    var pre2 = b.vaultPassphraseOps.preflightSealable({ dataDir: fx.dir });
+    check("seal preflight with plaintext present: ok",  pre2.ok === true);
+
+    // Unsealable: needs sealed present + plaintext absent
+    var pre3 = b.vaultPassphraseOps.preflightUnsealable({ dataDir: fx.dir });
+    check("unseal preflight without sealed: not ok",
+          pre3.ok === false && /nothing to unseal/.test(pre3.reason));
+
+    // Stale .tmp blocks both
+    fs.writeFileSync(path.join(fx.dir, "vault.key.sealed.tmp"), "stale");
+    var pre4 = b.vaultPassphraseOps.preflightSealable({ dataDir: fx.dir });
+    check("stale sealed.tmp blocks seal preflight",
+          pre4.ok === false && /stale/.test(pre4.reason));
+  } finally { fx.cleanup(); }
+}
+
+async function testVaultPassphraseOpsSealUnsealRoundTrip() {
+  var fx = _passphraseOpsFixture();
+  try {
+    var keypairJson = JSON.stringify({ test: "keypair", version: 1 });
+    fx.writePlaintext(keypairJson);
+
+    var passphrase = Buffer.from("correct horse battery staple", "utf8");
+    var sealResult = await b.vaultPassphraseOps.seal({
+      dataDir: fx.dir, passphrase: passphrase,
+    });
+    check("seal returns sealedPath",                 typeof sealResult.sealedPath === "string");
+    check("seal: plaintext deleted by default",      sealResult.plaintextDeleted === true);
+    check("seal: vault.key removed",                 !fs.existsSync(path.join(fx.dir, "vault.key")));
+    check("seal: vault.key.sealed exists",           fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+    check("seal: no .tmp leftover",                  !fs.existsSync(path.join(fx.dir, "vault.key.sealed.tmp")));
+
+    var unsealResult = await b.vaultPassphraseOps.unseal({
+      dataDir: fx.dir, passphrase: passphrase,
+    });
+    check("unseal returns plaintextPath",            typeof unsealResult.plaintextPath === "string");
+    check("unseal: vault.key.sealed removed",        !fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+    check("unseal: vault.key restored",              fs.existsSync(path.join(fx.dir, "vault.key")));
+
+    var restored = fs.readFileSync(path.join(fx.dir, "vault.key"), "utf8");
+    check("unseal: plaintext bytes match original", restored === keypairJson);
+  } finally { fx.cleanup(); }
+}
+
+async function testVaultPassphraseOpsKeepPlaintext() {
+  var fx = _passphraseOpsFixture();
+  try {
+    fx.writePlaintext("keep-me");
+    var passphrase = Buffer.from("p", "utf8");
+    var r = await b.vaultPassphraseOps.seal({
+      dataDir: fx.dir, passphrase: passphrase, keepPlaintext: true,
+    });
+    check("seal keepPlaintext: returns plaintextDeleted=false",
+          r.plaintextDeleted === false);
+    check("seal keepPlaintext: plaintext still present",
+          fs.existsSync(path.join(fx.dir, "vault.key")));
+    check("seal keepPlaintext: sealed exists",
+          fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+  } finally { fx.cleanup(); }
+}
+
+async function testVaultPassphraseOpsWrongPassphraseRejected() {
+  var fx = _passphraseOpsFixture();
+  try {
+    fx.writePlaintext("data");
+    var p1 = Buffer.from("right", "utf8");
+    var p2 = Buffer.from("wrong", "utf8");
+    await b.vaultPassphraseOps.seal({ dataDir: fx.dir, passphrase: p1 });
+
+    var threw = null;
+    try { await b.vaultPassphraseOps.unseal({ dataDir: fx.dir, passphrase: p2 }); }
+    catch (e) { threw = e; }
+    check("unseal with wrong passphrase rejected",
+          threw && threw.code === "vault-passphrase/passphrase-rejected");
+    check("rejected unseal: vault.key.sealed unchanged",
+          fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+    check("rejected unseal: no plaintext leak",
+          !fs.existsSync(path.join(fx.dir, "vault.key")));
+  } finally { fx.cleanup(); }
+}
+
+async function testVaultPassphraseOpsRotate() {
+  var fx = _passphraseOpsFixture();
+  try {
+    var content = "secret-keypair-bytes";
+    fx.writePlaintext(content);
+    var oldP = Buffer.from("old passphrase", "utf8");
+    var newP = Buffer.from("new passphrase v2", "utf8");
+    await b.vaultPassphraseOps.seal({ dataDir: fx.dir, passphrase: oldP });
+
+    var rotResult = await b.vaultPassphraseOps.rotate({
+      dataDir: fx.dir, oldPassphrase: oldP, newPassphrase: newP,
+    });
+    check("rotate returns sealedPath",               typeof rotResult.sealedPath === "string");
+
+    // Old passphrase no longer unwraps
+    var threwOld = null;
+    try { await b.vaultPassphraseOps.unseal({ dataDir: fx.dir, passphrase: oldP }); }
+    catch (e) { threwOld = e; }
+    check("rotate: old passphrase rejected post-rotate",
+          threwOld && threwOld.code === "vault-passphrase/passphrase-rejected");
+
+    // New passphrase unwraps to original bytes
+    var unseal = await b.vaultPassphraseOps.unseal({ dataDir: fx.dir, passphrase: newP });
+    check("rotate: new passphrase unwraps to original bytes",
+          fs.readFileSync(unseal.plaintextPath, "utf8") === content);
+  } finally { fx.cleanup(); }
+}
+
+async function testVaultPassphraseOpsRotateRejectsBadOldPassphrase() {
+  var fx = _passphraseOpsFixture();
+  try {
+    fx.writePlaintext("x");
+    var p = Buffer.from("right", "utf8");
+    await b.vaultPassphraseOps.seal({ dataDir: fx.dir, passphrase: p });
+
+    var threw = null;
+    try {
+      await b.vaultPassphraseOps.rotate({
+        dataDir: fx.dir,
+        oldPassphrase: Buffer.from("wrong", "utf8"),
+        newPassphrase: Buffer.from("new", "utf8"),
+      });
+    } catch (e) { threw = e; }
+    check("rotate with wrong old passphrase rejected",
+          threw && threw.code === "vault-passphrase/passphrase-rejected");
+    check("rotate: sealed file unchanged after rejection",
+          fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+  } finally { fx.cleanup(); }
+}
+
+function testVaultPassphraseOpsArgValidation() {
+  var threw;
+  threw = null;
+  try { b.vaultPassphraseOps.preflightSealable({}); }
+  catch (e) { threw = e; }
+  check("missing dataDir rejected",                threw && threw.code === "vault-passphrase/no-datadir");
+
+  threw = null;
+  try { b.vaultPassphraseOps.preflightSealable({ dataDir: "/nonexistent-blamejs" }); }
+  catch (e) { threw = e; }
+  check("nonexistent dataDir rejected",            threw && threw.code === "vault-passphrase/no-datadir");
+}
+
+async function testVaultPassphraseOpsRequiresBufferPassphrase() {
+  var fx = _passphraseOpsFixture();
+  try {
+    fx.writePlaintext("x");
+    var threw = null;
+    try { await b.vaultPassphraseOps.seal({ dataDir: fx.dir, passphrase: "string-not-buffer" }); }
+    catch (e) { threw = e; }
+    check("string passphrase rejected (must be Buffer)",
+          threw && threw.code === "vault-passphrase/no-passphrase");
+  } finally { fx.cleanup(); }
+}
+
 // ---- vault-rotate (diagnostics) ----
 
 function _vaultRotateFixture() {
@@ -8188,6 +8382,16 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // vault-passphrase-ops — seal / unseal / rotate the vault passphrase wrap (Phase 7 slice 5)
+  testVaultPassphraseOpsSurface();
+  testVaultPassphraseOpsPreflightChecks();
+  await testVaultPassphraseOpsSealUnsealRoundTrip();
+  await testVaultPassphraseOpsKeepPlaintext();
+  await testVaultPassphraseOpsWrongPassphraseRejected();
+  await testVaultPassphraseOpsRotate();
+  await testVaultPassphraseOpsRotateRejectsBadOldPassphrase();
+  testVaultPassphraseOpsArgValidation();
+  await testVaultPassphraseOpsRequiresBufferPassphrase();
   // vault-rotate (diagnostics) — schema drift + round-trip verify (Phase 7 slice 3)
   testVaultRotateSurface();
   testVaultRotateValidateSchemaCleanCase();
@@ -8523,6 +8727,15 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testVaultPassphraseOpsSurface:             testVaultPassphraseOpsSurface,
+  testVaultPassphraseOpsPreflightChecks:     testVaultPassphraseOpsPreflightChecks,
+  testVaultPassphraseOpsSealUnsealRoundTrip: testVaultPassphraseOpsSealUnsealRoundTrip,
+  testVaultPassphraseOpsKeepPlaintext:       testVaultPassphraseOpsKeepPlaintext,
+  testVaultPassphraseOpsWrongPassphraseRejected: testVaultPassphraseOpsWrongPassphraseRejected,
+  testVaultPassphraseOpsRotate:              testVaultPassphraseOpsRotate,
+  testVaultPassphraseOpsRotateRejectsBadOldPassphrase: testVaultPassphraseOpsRotateRejectsBadOldPassphrase,
+  testVaultPassphraseOpsArgValidation:       testVaultPassphraseOpsArgValidation,
+  testVaultPassphraseOpsRequiresBufferPassphrase: testVaultPassphraseOpsRequiresBufferPassphrase,
   testVaultRotateSurface:                    testVaultRotateSurface,
   testVaultRotateValidateSchemaCleanCase:    testVaultRotateValidateSchemaCleanCase,
   testVaultRotateValidateMissingTable:       testVaultRotateValidateMissingTable,
