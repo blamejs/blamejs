@@ -1411,6 +1411,290 @@ async function testAuthJwtMissingKey() {
         threwV && threwV.code === "auth-jwt/missing-key");
 }
 
+// ---- template (Phase 4 slice 1 — eval-free interpreter) ----
+//
+// Each test sets up its own tmpdir + writes the views by hand so the
+// fixtures are inline + readable. No global state — every test creates
+// its own engine via template.create({ viewsDir }).
+
+function _writeView(dir, name, content) {
+  fs.mkdirSync(path.dirname(path.join(dir, name + ".html")), { recursive: true });
+  fs.writeFileSync(path.join(dir, name + ".html"), content);
+}
+
+function testTemplateEscapeHtml() {
+  var t = b.template;
+  check("escapeHtml: ampersand",                t.escapeHtml("a & b") === "a &amp; b");
+  check("escapeHtml: lt/gt",                    t.escapeHtml("<x>") === "&lt;x&gt;");
+  check("escapeHtml: double-quote",             t.escapeHtml('"x"') === "&quot;x&quot;");
+  check("escapeHtml: single-quote",             t.escapeHtml("'x'") === "&#x27;x&#x27;");
+  check("escapeHtml: null/undefined → empty",   t.escapeHtml(null) === "" && t.escapeHtml(undefined) === "");
+  check("escapeHtml: number → string-escaped",  t.escapeHtml(42) === "42");
+}
+
+function testTemplateBasicRender() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "hello", "<h1>{{ greeting }}, {{ name }}!</h1>");
+    var eng = b.template.create({ viewsDir: dir });
+    var out = eng.render("hello", { greeting: "Hi", name: "Alice" });
+    check("basic render substitutes + escapes",   out === "<h1>Hi, Alice!</h1>");
+
+    // Hostile input is escaped by default
+    var hostile = eng.render("hello", { greeting: "<script>alert(1)</script>", name: 'A"B' });
+    check("user values escaped in {{ }}",
+          hostile.indexOf("<script>") === -1 &&
+          hostile.indexOf("&lt;script&gt;alert(1)&lt;/script&gt;") !== -1 &&
+          hostile.indexOf("&quot;") !== -1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateRawExpression() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "raw", "<div>{{{ trustedHtml }}}</div>");
+    var eng = b.template.create({ viewsDir: dir });
+    var out = eng.render("raw", { trustedHtml: "<em>ok</em>" });
+    check("{{{ raw }}} bypasses escape",          out === "<div><em>ok</em></div>");
+
+    // null/undefined raw → empty (not "null"/"undefined")
+    var nullOut = eng.render("raw", { trustedHtml: null });
+    check("{{{ null }}} renders empty",           nullOut === "<div></div>");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateIfElse() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "cond",
+      "{% if loggedIn %}Welcome, {{ name }}{% else %}Please sign in{% endif %}");
+    var eng = b.template.create({ viewsDir: dir });
+    check("if-true branch",       eng.render("cond", { loggedIn: true, name: "A" }) === "Welcome, A");
+    check("if-false → else branch", eng.render("cond", { loggedIn: false }) === "Please sign in");
+
+    // Nested if
+    _writeView(dir, "nested",
+      "{% if a %}{% if b %}AB{% else %}A!B{% endif %}{% else %}!A{% endif %}");
+    check("nested if-true-true",  eng.render("nested", { a: true, b: true }) === "AB");
+    check("nested if-true-false", eng.render("nested", { a: true, b: false }) === "A!B");
+    check("nested if-false",      eng.render("nested", { a: false, b: true }) === "!A");
+
+    // if without else
+    _writeView(dir, "noelse", "[{% if v %}yes{% endif %}]");
+    check("if without else, true",  eng.render("noelse", { v: 1 }) === "[yes]");
+    check("if without else, false", eng.render("noelse", { v: 0 }) === "[]");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateForLoop() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "list", "<ul>{% for it in items %}<li>{{ it }}</li>{% endfor %}</ul>");
+    var eng = b.template.create({ viewsDir: dir });
+    var out = eng.render("list", { items: ["a", "b", "c"] });
+    check("for loop iterates array",
+          out === "<ul><li>a</li><li>b</li><li>c</li></ul>");
+
+    var empty = eng.render("list", { items: [] });
+    check("for over empty array yields no body",  empty === "<ul></ul>");
+
+    // Loop body has access to outer scope too
+    _writeView(dir, "list2",
+      "{% for x in xs %}{{ prefix }}-{{ x }} {% endfor %}");
+    var out2 = eng.render("list2", { xs: [1, 2], prefix: "id" });
+    check("loop body sees outer scope",            out2 === "id-1 id-2 ");
+
+    // Object iteration is NOT supported (operators map to entries first)
+    var nonIter = eng.render("list", { items: { a: 1 } });
+    check("non-array source renders no body (no iteration)",
+          nonIter === "<ul></ul>");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateExpressionGrammar() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    var eng = b.template.create({ viewsDir: dir });
+
+    // Member access + index
+    _writeView(dir, "member", "{{ user.name }} ({{ tags[0] }})");
+    check("dot-access + index",
+          eng.render("member", { user: { name: "A" }, tags: ["x", "y"] }) === "A (x)");
+
+    // Comparison + logical
+    _writeView(dir, "cmp", "{% if n > 0 && n < 10 %}small{% else %}other{% endif %}");
+    check("&& + comparison true",   eng.render("cmp", { n: 5 }) === "small");
+    check("&& + comparison false",  eng.render("cmp", { n: 50 }) === "other");
+
+    // Equality (=== and ==)
+    _writeView(dir, "eq", "{% if a === 'x' %}strict{% else %}other{% endif %}");
+    check("=== matches strictly",   eng.render("eq", { a: "x" }) === "strict");
+    check("=== rejects coercion",   eng.render("eq", { a: 1 }) === "other");
+
+    // Ternary
+    _writeView(dir, "tern", "{{ on ? 'YES' : 'NO' }}");
+    check("ternary true",           eng.render("tern", { on: true }) === "YES");
+    check("ternary false",          eng.render("tern", { on: false }) === "NO");
+
+    // Unary not
+    _writeView(dir, "neg", "{% if !done %}working{% else %}done{% endif %}");
+    check("unary !",                eng.render("neg", { done: false }) === "working");
+
+    // Function call (operator-supplied helper)
+    _writeView(dir, "call", "{{ helpers.upper(name) }}");
+    var helpers = { upper: function (s) { return String(s).toUpperCase(); } };
+    check("function call invokes operator-supplied helper",
+          eng.render("call", { helpers: helpers, name: "alice" }) === "ALICE");
+
+    // String + number literals
+    _writeView(dir, "lit", "{{ 'fixed-' + n }}");
+    check("literal + numeric concat",   eng.render("lit", { n: 7 }) === "fixed-7");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplatePartialInclusion() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    fs.mkdirSync(path.join(dir, "partials"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "partials", "header.html"), "<header>{{ title }}</header>");
+    fs.writeFileSync(path.join(dir, "partials", "footer.html"), "<footer>©</footer>");
+    _writeView(dir, "page", "{{> header }}<main>{{ body }}</main>{{> footer }}");
+    var eng = b.template.create({ viewsDir: dir });
+    var out = eng.render("page", { title: "T", body: "B" });
+    check("partials inlined + interpolated",
+          out === "<header>T</header><main>B</main><footer>©</footer>");
+
+    // Missing partial → silent empty (matches hermitstash behavior)
+    _writeView(dir, "missing", "[{{> nope }}]");
+    check("missing partial silently empty",  eng.render("missing", {}) === "[]");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateLayoutInheritance() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "base",
+      "<html><head><title>{% block title %}Default{% endblock %}</title></head>" +
+      "<body><div id='content'>{% block content %}<p>Default body</p>{% endblock %}</div></body></html>");
+    _writeView(dir, "child",
+      "{% extends \"base\" %}" +
+      "{% block title %}{{ pageTitle }}{% endblock %}" +
+      "{% block content %}<h1>{{ heading }}</h1>{% endblock %}");
+    var eng = b.template.create({ viewsDir: dir });
+    var out = eng.render("child", { pageTitle: "Hi", heading: "Welcome" });
+    check("child overrides title block",
+          out.indexOf("<title>Hi</title>") !== -1);
+    check("child overrides content block",
+          out.indexOf("<h1>Welcome</h1>") !== -1);
+    check("base wraps the child blocks",
+          out.indexOf("<html>") === 0 && out.indexOf("</html>") !== -1);
+
+    // Child that overrides only one block — other block keeps default
+    _writeView(dir, "partialOverride",
+      "{% extends \"base\" %}{% block title %}Only Title{% endblock %}");
+    var partial = eng.render("partialOverride", {});
+    check("child with partial override keeps base default for non-overridden block",
+          partial.indexOf("<title>Only Title</title>") !== -1 &&
+          partial.indexOf("<p>Default body</p>") !== -1);
+
+    // Multi-level: grandchild → child → base
+    _writeView(dir, "mid",
+      "{% extends \"base\" %}{% block content %}<p>mid</p>{% endblock %}");
+    _writeView(dir, "leaf",
+      "{% extends \"mid\" %}{% block title %}Leaf Title{% endblock %}");
+    var multi = eng.render("leaf", {});
+    check("multi-level inheritance: leaf title + mid content + base wrap",
+          multi.indexOf("<title>Leaf Title</title>") !== -1 &&
+          multi.indexOf("<p>mid</p>") !== -1 &&
+          multi.indexOf("<html>") === 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateContainmentDefenses() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "safe", "ok");
+    var eng = b.template.create({ viewsDir: dir });
+    check("clean view name renders",        eng.render("safe", {}) === "ok");
+
+    // Path-traversal markers rejected
+    var rejected = [
+      "../etc/passwd",
+      "../../../../etc/passwd",
+      "safe/../../escape",
+      "with\0null",
+    ];
+    for (var i = 0; i < rejected.length; i++) {
+      var threw = false;
+      try { eng.render(rejected[i], {}); } catch (_e) { threw = true; }
+      check("rejects path '" + rejected[i] + "'",   threw);
+    }
+
+    // Empty / non-string view name rejected
+    var threwEmpty = false;
+    try { eng.render("", {}); } catch (_e) { threwEmpty = true; }
+    check("rejects empty view name",         threwEmpty);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplatePrototypeSafety() {
+  // Member access must NOT walk the prototype chain — `{{ x.constructor }}`
+  // and `{{ x.__proto__ }}` should resolve to undefined, not Function/Object.
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "proto", "[{{ x.constructor }}][{{ x.__proto__ }}][{{ x.toString }}]");
+    var eng = b.template.create({ viewsDir: dir });
+    var out = eng.render("proto", { x: { y: 1 } });
+    // Each prototype-chain access renders empty
+    check("prototype-chain access yields undefined → empty escape",
+          out === "[][][]");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateCacheAndReset() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
+  try {
+    _writeView(dir, "v", "<p>v1: {{ x }}</p>");
+    var eng = b.template.create({ viewsDir: dir });
+    check("first render uses v1",            eng.render("v", { x: 1 }) === "<p>v1: 1</p>");
+
+    // Mutate the source on disk — cached engine still serves the old AST
+    _writeView(dir, "v", "<p>v2: {{ x }}</p>");
+    check("second render still uses cached v1 AST (cache=on default)",
+          eng.render("v", { x: 1 }) === "<p>v1: 1</p>");
+
+    // reset() drops the cache
+    eng.reset();
+    check("after reset, engine picks up v2",
+          eng.render("v", { x: 1 }) === "<p>v2: 1</p>");
+
+    // cache: false → always re-read
+    var engNoCache = b.template.create({ viewsDir: dir, cache: false });
+    _writeView(dir, "v", "<p>v3: {{ x }}</p>");
+    check("cache:false reflects latest source",
+          engNoCache.render("v", { x: 1 }) === "<p>v3: 1</p>");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testTemplateMissingViewsDir() {
+  var threw = null;
+  try { b.template.create({ viewsDir: path.join(os.tmpdir(), "blamejs-nope-" + Date.now()) }); }
+  catch (e) { threw = e; }
+  check("create() rejects missing viewsDir",   threw && /viewsDir does not exist/.test(threw.message));
+
+  threw = null;
+  try { b.template.create({}); }
+  catch (e) { threw = e; }
+  check("create() requires viewsDir",          threw && /viewsDir.*required/.test(threw.message));
+}
+
+function testTemplateSurface() {
+  check("b.template namespace present",        typeof b.template === "object");
+  check("b.template.create is a function",     typeof b.template.create === "function");
+  check("b.template.render is a function",     typeof b.template.render === "function");
+  check("b.template.escapeHtml is a function", typeof b.template.escapeHtml === "function");
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -3930,6 +4214,20 @@ async function run() {
   await testAuthPasskeyValidationErrors();
   await testAuthPasskeyExcludeCredentials();
   await testAuthPasskeyCustomHints();
+  // template — eval-free server-side HTML template engine (Phase 4 slice 1)
+  testTemplateSurface();
+  testTemplateEscapeHtml();
+  testTemplateBasicRender();
+  testTemplateRawExpression();
+  testTemplateIfElse();
+  testTemplateForLoop();
+  testTemplateExpressionGrammar();
+  testTemplatePartialInclusion();
+  testTemplateLayoutInheritance();
+  testTemplateContainmentDefenses();
+  testTemplatePrototypeSafety();
+  testTemplateCacheAndReset();
+  testTemplateMissingViewsDir();
   // auth.jwt — PQC-signed JWT (Phase 3 slice 5, final)
   testAuthJwtSurface();
   await testAuthJwtSignVerifyRoundTripDefault();
@@ -4099,6 +4397,19 @@ module.exports = {
   testAuthJwtCritHeaderRejected:             testAuthJwtCritHeaderRejected,
   testAuthJwtKidPropagation:                 testAuthJwtKidPropagation,
   testAuthJwtMissingKey:                     testAuthJwtMissingKey,
+  testTemplateSurface:                       testTemplateSurface,
+  testTemplateEscapeHtml:                    testTemplateEscapeHtml,
+  testTemplateBasicRender:                   testTemplateBasicRender,
+  testTemplateRawExpression:                 testTemplateRawExpression,
+  testTemplateIfElse:                        testTemplateIfElse,
+  testTemplateForLoop:                       testTemplateForLoop,
+  testTemplateExpressionGrammar:             testTemplateExpressionGrammar,
+  testTemplatePartialInclusion:              testTemplatePartialInclusion,
+  testTemplateLayoutInheritance:             testTemplateLayoutInheritance,
+  testTemplateContainmentDefenses:           testTemplateContainmentDefenses,
+  testTemplatePrototypeSafety:               testTemplatePrototypeSafety,
+  testTemplateCacheAndReset:                 testTemplateCacheAndReset,
+  testTemplateMissingViewsDir:               testTemplateMissingViewsDir,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,

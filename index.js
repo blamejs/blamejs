@@ -60,6 +60,7 @@ var auth = {
   passkey:  require("./lib/auth/passkey"),
   jwt:      require("./lib/auth/jwt"),
 };
+var template = require("./lib/template");
 
 module.exports = {
   crypto:           crypto,
@@ -102,6 +103,7 @@ module.exports = {
   urlSafe:          urlSafe,
   authHeader:       authHeader,
   auth:             auth,
+  template:         template,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
