@@ -3078,6 +3078,353 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- restore + restore-rollback ----
+
+function _restoreFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rs-"));
+  var dataDir = path.join(dir, "data");
+  var storageRoot = path.join(dir, "backups");
+  var rollbackRoot = path.join(dir, "rollbacks");
+  fs.mkdirSync(dataDir, { recursive: true });
+  // Seed dataDir with the same files we'll back up
+  fs.writeFileSync(path.join(dataDir, "db.enc"),     Buffer.from("ORIG-DB"));
+  fs.writeFileSync(path.join(dataDir, "db.key.enc"), "vault:orig-dbkey");
+  fs.writeFileSync(path.join(dataDir, "vault.key"),  '{"vault":"orig"}');
+  return {
+    root:         dir,
+    dataDir:      dataDir,
+    storageRoot:  storageRoot,
+    rollbackRoot: rollbackRoot,
+    cleanup: function () {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+  };
+}
+
+function testRestoreRollbackSurface() {
+  check("b.restoreRollback namespace present",   typeof b.restoreRollback === "object");
+  check("swap is a function",                    typeof b.restoreRollback.swap === "function");
+  check("rollback is a function",                typeof b.restoreRollback.rollback === "function");
+  check("list is a function",                    typeof b.restoreRollback.list === "function");
+  check("purge is a function",                   typeof b.restoreRollback.purge === "function");
+  check("RestoreRollbackError is a class",       typeof b.restoreRollback.RestoreRollbackError === "function");
+}
+
+function testRestoreRollbackSwap() {
+  var fx = _restoreFixture();
+  try {
+    // Build a staging dir
+    var stagingDir = path.join(fx.root, "staging");
+    fs.mkdirSync(stagingDir);
+    fs.writeFileSync(path.join(stagingDir, "db.enc"), Buffer.from("NEW-DB"));
+
+    var r = b.restoreRollback.swap({
+      stagingDir:   stagingDir,
+      dataDir:      fx.dataDir,
+      rollbackRoot: fx.rollbackRoot,
+      marker:       { bundleId: "test-bundle", reason: "test" },
+    });
+    check("swap returned a rollbackPath",         typeof r.rollbackPath === "string");
+    check("dataDir was replaced by staging",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc")).toString() === "NEW-DB");
+    check("dataDir does NOT have the original db.enc",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc")).toString() !== "ORIG-DB");
+    check("rollback path holds the original dataDir",
+          fs.readFileSync(path.join(r.rollbackPath, "db.enc")).toString() === "ORIG-DB");
+    check("marker file written",                  fs.existsSync(r.markerPath));
+    var marker = JSON.parse(fs.readFileSync(r.markerPath, "utf8"));
+    check("marker carries bundleId + reason",
+          marker.operator && marker.operator.bundleId === "test-bundle" &&
+          marker.operator.reason === "test");
+    check("staging dir consumed by swap",         !fs.existsSync(stagingDir));
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreRollbackRoundTrip() {
+  var fx = _restoreFixture();
+  try {
+    var stagingDir = path.join(fx.root, "staging");
+    fs.mkdirSync(stagingDir);
+    fs.writeFileSync(path.join(stagingDir, "db.enc"), Buffer.from("NEW-DB"));
+
+    var r = b.restoreRollback.swap({
+      stagingDir:   stagingDir,
+      dataDir:      fx.dataDir,
+      rollbackRoot: fx.rollbackRoot,
+    });
+
+    // Roll back — should restore the original dataDir
+    var rb = await b.restoreRollback.rollback({
+      dataDir:      fx.dataDir,
+      rollbackPath: r.rollbackPath,
+      rollbackRoot: fx.rollbackRoot,
+    });
+    check("rollback returns restoredFrom",         rb.restoredFrom === r.rollbackPath);
+    check("rolled-back dataDir has original bytes",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc")).toString() === "ORIG-DB");
+    check("rollback path is consumed (no longer at original location)",
+          !fs.existsSync(r.rollbackPath));
+    check("rollback removed marker file",          !fs.existsSync(r.markerPath));
+  } finally { fx.cleanup(); }
+}
+
+function testRestoreRollbackListAndPurge() {
+  var fx = _restoreFixture();
+  try {
+    // Create three rollback dirs by repeated swap+restore
+    var ids = [];
+    for (var i = 0; i < 3; i++) {
+      var stagingDir = path.join(fx.root, "stg-" + i);
+      fs.mkdirSync(stagingDir);
+      fs.writeFileSync(path.join(stagingDir, "db.enc"), Buffer.from("NEW-" + i));
+      var r = b.restoreRollback.swap({
+        stagingDir:   stagingDir,
+        dataDir:      fx.dataDir,
+        rollbackRoot: fx.rollbackRoot,
+      });
+      ids.push(r.rollbackPath);
+      // Yield enough time for unique ms timestamp
+      var end = Date.now() + 5;
+      while (Date.now() < end) { /* spin briefly */ }
+    }
+    var listed = b.restoreRollback.list({ rollbackRoot: fx.rollbackRoot });
+    check("list returns 3 rollback points",        listed.length === 3);
+    check("list newest first",                     listed[0].rollbackPath === ids[2]);
+
+    // Purge keeping 1
+    var purgeR = b.restoreRollback.purge({ rollbackRoot: fx.rollbackRoot, keep: 1 });
+    check("purge kept 1 newest, deleted 2",        purgeR.deleted.length === 2);
+    var listed2 = b.restoreRollback.list({ rollbackRoot: fx.rollbackRoot });
+    check("only the newest remains",               listed2.length === 1 && listed2[0].rollbackPath === ids[2]);
+  } finally { fx.cleanup(); }
+}
+
+function testRestoreRollbackHandlesEmptyDataDir() {
+  // First-ever restore: dataDir doesn't exist yet → swap should still work
+  var fx = _restoreFixture();
+  try {
+    fs.rmSync(fx.dataDir, { recursive: true, force: true });
+    var stagingDir = path.join(fx.root, "stg");
+    fs.mkdirSync(stagingDir);
+    fs.writeFileSync(path.join(stagingDir, "db.enc"), "FIRST-DB");
+
+    var r = b.restoreRollback.swap({
+      stagingDir:   stagingDir,
+      dataDir:      fx.dataDir,
+      rollbackRoot: fx.rollbackRoot,
+    });
+    check("swap with no existing dataDir: rollbackPath null",
+          r.rollbackPath === null);
+    check("dataDir created from staging",          fs.existsSync(path.join(fx.dataDir, "db.enc")));
+  } finally { fx.cleanup(); }
+}
+
+// --- restore (orchestrator) ---
+
+async function _seedBundle(fx, passphrase) {
+  var backup = b.backup.create({
+    dataDir:    fx.dataDir,
+    storage:    b.backup.localStorage({ root: fx.storageRoot }),
+    passphrase: passphrase,
+    files: [
+      { relativePath: "db.enc",       kind: "raw",          required: true },
+      { relativePath: "db.key.enc",   kind: "raw",          required: true },
+      { relativePath: "vault.key",    kind: "raw",          required: false },
+    ],
+    vaultKeyJson: '{"vault":"orig"}',
+    audit:        false,
+  });
+  var r = await backup.run();
+  return r.bundleId;
+}
+
+function testRestoreSurface() {
+  check("b.restore namespace present",            typeof b.restore === "object");
+  check("b.restore.create is a function",         typeof b.restore.create === "function");
+  check("RestoreError is a class",                typeof b.restore.RestoreError === "function");
+}
+
+function testRestoreCreateValidation() {
+  var fx = _restoreFixture();
+  try {
+    var threw;
+    threw = null; try { b.restore.create({}); } catch (e) { threw = e; }
+    check("missing dataDir rejected",               threw && threw.code === "restore/no-datadir");
+
+    threw = null;
+    try { b.restore.create({ dataDir: fx.dataDir }); } catch (e) { threw = e; }
+    check("missing storage rejected",               threw && threw.code === "restore/bad-storage");
+
+    threw = null;
+    try {
+      b.restore.create({
+        dataDir: fx.dataDir,
+        storage: { listBundles: function () {} },   // missing methods
+      });
+    } catch (e) { threw = e; }
+    check("incomplete storage rejected",            threw && threw.code === "restore/bad-storage");
+
+    threw = null;
+    try {
+      b.restore.create({
+        dataDir: fx.dataDir,
+        storage: b.backup.localStorage({ root: fx.storageRoot }),
+      });
+    } catch (e) { threw = e; }
+    check("missing passphrase rejected",            threw && threw.code === "restore/no-passphrase");
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreRunRoundTrip() {
+  var fx = _restoreFixture();
+  try {
+    var passphrase = Buffer.from("pp");
+    var bundleId = await _seedBundle(fx, passphrase);
+
+    // Mutate dataDir so we can prove restore actually replaced it
+    fs.writeFileSync(path.join(fx.dataDir, "db.enc"), "MUTATED");
+
+    var restore = b.restore.create({
+      dataDir:      fx.dataDir,
+      storage:      b.backup.localStorage({ root: fx.storageRoot }),
+      passphrase:   passphrase,
+      rollbackRoot: fx.rollbackRoot,
+      audit:        false,
+    });
+
+    var r = await restore.run({ bundleId: bundleId, marker: { reason: "test" } });
+    check("run returns bundleId",                    r.bundleId === bundleId);
+    check("run reports fileCount",                   r.fileCount === 3);
+    check("run reports rollbackPath",                typeof r.rollbackPath === "string");
+    check("run returns vaultKeyJson",                r.vaultKeyJson === '{"vault":"orig"}');
+
+    // dataDir was replaced — the bytes match the seeded ORIGINAL,
+    // not the post-mutation MUTATED value
+    check("dataDir restored to bundle bytes",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc")).toString() === "ORIG-DB");
+    // Mutation was preserved in the rollback
+    check("rollback holds the pre-restore (mutated) dataDir",
+          fs.readFileSync(path.join(r.rollbackPath, "db.enc")).toString() === "MUTATED");
+
+    // List + inspect work
+    var listed = await restore.list();
+    check("list shows the seeded bundle",            listed.some(function (e) { return e.bundleId === bundleId; }));
+    var manifest = await restore.inspect(bundleId);
+    check("inspect returns parsed manifest",         manifest && manifest.version === 1);
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreRollbackUndoesRun() {
+  var fx = _restoreFixture();
+  try {
+    var passphrase = Buffer.from("pp");
+    var bundleId = await _seedBundle(fx, passphrase);
+    fs.writeFileSync(path.join(fx.dataDir, "db.enc"), "MUTATED");
+
+    var restore = b.restore.create({
+      dataDir:      fx.dataDir,
+      storage:      b.backup.localStorage({ root: fx.storageRoot }),
+      passphrase:   passphrase,
+      rollbackRoot: fx.rollbackRoot,
+      audit:        false,
+    });
+    await restore.run({ bundleId: bundleId });
+
+    // Roll back: dataDir should now hold the MUTATED bytes (the
+    // pre-restore state we stashed in the rollback)
+    await restore.rollback();
+    check("rollback restored MUTATED dataDir",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc")).toString() === "MUTATED");
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreRunWithMissingBundle() {
+  var fx = _restoreFixture();
+  try {
+    fs.mkdirSync(fx.storageRoot);
+    var restore = b.restore.create({
+      dataDir:      fx.dataDir,
+      storage:      b.backup.localStorage({ root: fx.storageRoot }),
+      passphrase:   Buffer.from("pp"),
+      rollbackRoot: fx.rollbackRoot,
+      audit:        false,
+    });
+    var threw = null;
+    try { await restore.run({ bundleId: "2026-04-27T00-00-00-000Z-aaaaaaaa" }); }
+    catch (e) { threw = e; }
+    check("missing bundle surfaces bundle-not-found",
+          threw && threw.code === "restore/bundle-not-found");
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreRunWithWrongPassphrase() {
+  var fx = _restoreFixture();
+  try {
+    var bundleId = await _seedBundle(fx, Buffer.from("right"));
+    var restore = b.restore.create({
+      dataDir:      fx.dataDir,
+      storage:      b.backup.localStorage({ root: fx.storageRoot }),
+      passphrase:   Buffer.from("wrong"),
+      rollbackRoot: fx.rollbackRoot,
+      audit:        false,
+    });
+    var threw = null;
+    try { await restore.run({ bundleId: bundleId }); } catch (e) { threw = e; }
+    check("wrong passphrase surfaces decrypt-failed",
+          threw && threw.code === "restore/decrypt-failed");
+    // dataDir should remain untouched on failure
+    check("failed restore did NOT replace dataDir",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc")).toString() === "ORIG-DB");
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreListRollbacksAndPurge() {
+  var fx = _restoreFixture();
+  try {
+    var passphrase = Buffer.from("pp");
+    var bundleId = await _seedBundle(fx, passphrase);
+    var restore = b.restore.create({
+      dataDir:      fx.dataDir,
+      storage:      b.backup.localStorage({ root: fx.storageRoot }),
+      passphrase:   passphrase,
+      rollbackRoot: fx.rollbackRoot,
+      audit:        false,
+    });
+    // Two restores to create two rollback points
+    await restore.run({ bundleId: bundleId });
+    await new Promise(function (r) { setTimeout(r, 5); });
+    await restore.run({ bundleId: bundleId });
+
+    var rb = restore.listRollbacks();
+    check("listRollbacks shows 2 entries",          rb.length === 2);
+
+    var purged = restore.purgeRollbacks({ keep: 1 });
+    check("purgeRollbacks deleted the older one",   purged.deleted.length === 1);
+    check("only newest rollback remains",           restore.listRollbacks().length === 1);
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreInspectWithoutDecrypt() {
+  var fx = _restoreFixture();
+  try {
+    var bundleId = await _seedBundle(fx, Buffer.from("pp"));
+    var restore = b.restore.create({
+      dataDir:      fx.dataDir,
+      storage:      b.backup.localStorage({ root: fx.storageRoot }),
+      passphrase:   Buffer.from("any"),    // not used by inspect
+      rollbackRoot: fx.rollbackRoot,
+      audit:        false,
+    });
+    var manifest = await restore.inspect(bundleId);
+    check("inspect surfaces manifest without decrypting",
+          manifest.version === 1 && manifest.files.length === 3);
+
+    var threw = null;
+    try { await restore.inspect("2026-04-27T00-00-00-000Z-aaaaaaaa"); } catch (e) { threw = e; }
+    check("inspect of missing bundle rejects",     threw && threw.code === "restore/bundle-not-found");
+  } finally { fx.cleanup(); }
+}
+
 // ---- backup (orchestrator) ----
 
 function _backupFixture() {
@@ -9735,6 +10082,20 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // restore-rollback + restore — atomic dataDir swap + storage-backed orchestrator (Phase 7 slice 7e)
+  testRestoreRollbackSurface();
+  testRestoreRollbackSwap();
+  await testRestoreRollbackRoundTrip();
+  testRestoreRollbackListAndPurge();
+  testRestoreRollbackHandlesEmptyDataDir();
+  testRestoreSurface();
+  testRestoreCreateValidation();
+  await testRestoreRunRoundTrip();
+  await testRestoreRollbackUndoesRun();
+  await testRestoreRunWithMissingBundle();
+  await testRestoreRunWithWrongPassphrase();
+  await testRestoreListRollbacksAndPurge();
+  await testRestoreInspectWithoutDecrypt();
   // backup — operator-facing orchestration + retention + storage backend (Phase 7 slice 7d)
   testBackupSurface();
   testBackupCreateValidation();
@@ -10140,6 +10501,19 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testRestoreRollbackSurface:                testRestoreRollbackSurface,
+  testRestoreRollbackSwap:                   testRestoreRollbackSwap,
+  testRestoreRollbackRoundTrip:              testRestoreRollbackRoundTrip,
+  testRestoreRollbackListAndPurge:           testRestoreRollbackListAndPurge,
+  testRestoreRollbackHandlesEmptyDataDir:    testRestoreRollbackHandlesEmptyDataDir,
+  testRestoreSurface:                        testRestoreSurface,
+  testRestoreCreateValidation:               testRestoreCreateValidation,
+  testRestoreRunRoundTrip:                   testRestoreRunRoundTrip,
+  testRestoreRollbackUndoesRun:              testRestoreRollbackUndoesRun,
+  testRestoreRunWithMissingBundle:           testRestoreRunWithMissingBundle,
+  testRestoreRunWithWrongPassphrase:         testRestoreRunWithWrongPassphrase,
+  testRestoreListRollbacksAndPurge:          testRestoreListRollbacksAndPurge,
+  testRestoreInspectWithoutDecrypt:          testRestoreInspectWithoutDecrypt,
   testBackupSurface:                         testBackupSurface,
   testBackupCreateValidation:                testBackupCreateValidation,
   testBackupRunListReadDelete:               testBackupRunListReadDelete,
