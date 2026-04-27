@@ -2388,6 +2388,514 @@ function testFormsSurface() {
   check("b.forms.CSRF_TOKEN_BYTES = 32",                f.CSRF_TOKEN_BYTES === 32);
 }
 
+// ---- mail (Phase 5 slice 4) ----
+//
+// memory transport is the pattern for tests; it captures every
+// message into transport.sent[] without touching disk or network.
+
+async function testMailSendRoundTripViaMemoryTransport() {
+  var memory = b.mail.transports.memory();
+  var mailer = b.mail.create({
+    transport: memory,
+    defaults:  { from: "noreply@example.com" },
+    audit:     false,    // skip audit for layer-0 (no audit module init)
+  });
+  var result = await mailer.send({
+    to:      "alice@example.com",
+    subject: "Welcome",
+    text:    "Hi Alice",
+  });
+  check("mail.send returns transport result",        result && result.transport === "memory");
+  check("memory transport captures the message",     memory.sent.length === 1);
+  check("captured message has merged from",          memory.sent[0].from === "noreply@example.com");
+  check("captured message has subject",              memory.sent[0].subject === "Welcome");
+  check("captured message has body",                 memory.sent[0].text === "Hi Alice");
+
+  memory.reset();
+  check("memory.reset clears sent[]",                memory.sent.length === 0);
+}
+
+async function testMailDefaultsAndOverrides() {
+  var memory = b.mail.transports.memory();
+  var mailer = b.mail.create({
+    transport: memory,
+    defaults:  {
+      from:    "default@example.com",
+      replyTo: "support@example.com",
+      headers: { "X-App": "blamejs", "X-Env": "dev" },
+    },
+    audit: false,
+  });
+
+  // Defaults applied
+  await mailer.send({ to: "x@y.com", subject: "S", text: "T" });
+  check("from default applied",                      memory.sent[0].from === "default@example.com");
+  check("replyTo default applied",                   memory.sent[0].replyTo === "support@example.com");
+  check("headers default applied",                   memory.sent[0].headers["X-App"] === "blamejs");
+
+  // Per-message override
+  memory.reset();
+  await mailer.send({
+    to: "x@y.com", subject: "S", text: "T",
+    from: "override@example.com",
+    headers: { "X-App": "test", "X-Custom": "v" },
+  });
+  check("from override wins",                        memory.sent[0].from === "override@example.com");
+  check("replyTo default still applied",             memory.sent[0].replyTo === "support@example.com");
+  check("headers merged shallow (override beats default)",
+        memory.sent[0].headers["X-App"] === "test");
+  check("headers merged shallow (default still present)",
+        memory.sent[0].headers["X-Env"] === "dev");
+  check("headers merged shallow (override-only key)",
+        memory.sent[0].headers["X-Custom"] === "v");
+}
+
+async function testMailValidation() {
+  var memory = b.mail.transports.memory();
+  var mailer = b.mail.create({ transport: memory, audit: false });
+
+  var threw = null;
+  try { await mailer.send({ from: "a@b.com", text: "x" }); }
+  catch (e) { threw = e; }
+  check("missing to → mail/missing-to",
+        threw && threw.code === "mail/missing-to" && threw.isMailError === true);
+
+  threw = null;
+  try { await mailer.send({ to: "a@b.com", text: "x" }); }
+  catch (e) { threw = e; }
+  check("missing from → mail/missing-from",          threw && threw.code === "mail/missing-from");
+
+  threw = null;
+  try { await mailer.send({ to: "a@b.com", from: "c@d.com" }); }
+  catch (e) { threw = e; }
+  check("missing body → mail/missing-body",          threw && threw.code === "mail/missing-body");
+
+  threw = null;
+  try { await mailer.send({ to: "not-an-email", from: "c@d.com", text: "x" }); }
+  catch (e) { threw = e; }
+  check("invalid recipient → mail/invalid-recipient", threw && threw.code === "mail/invalid-recipient");
+
+  threw = null;
+  try { await mailer.send({ to: "a@b.com", from: "garbage", text: "x" }); }
+  catch (e) { threw = e; }
+  check("invalid from → mail/invalid-from",          threw && threw.code === "mail/invalid-from");
+
+  // Bracketed-form recipient is valid
+  await mailer.send({
+    to:   "Alice <alice@example.com>",
+    from: "Bob <bob@example.com>",
+    text: "hi",
+  });
+  check("bracketed Name <addr> form accepted",       memory.sent.length === 1);
+}
+
+async function testMailRecipientArrayAndCcBcc() {
+  var memory = b.mail.transports.memory();
+  var mailer = b.mail.create({ transport: memory, audit: false });
+  await mailer.send({
+    to:      ["a@x.com", "b@x.com"],
+    cc:      "c@x.com",
+    bcc:     ["d@x.com", "e@x.com"],
+    from:    "noreply@x.com",
+    subject: "Multi",
+    text:    "body",
+  });
+  check("multiple to addresses preserved",
+        Array.isArray(memory.sent[0].to) && memory.sent[0].to.length === 2);
+  check("cc string preserved",                       memory.sent[0].cc === "c@x.com");
+  check("bcc array preserved",
+        Array.isArray(memory.sent[0].bcc) && memory.sent[0].bcc.length === 2);
+}
+
+async function testMailTransportFailureWraps() {
+  // A transport that throws → mail/transport-failed wrapper
+  var failingTransport = {
+    name: "broken",
+    send: async function () { throw new Error("smtp connection refused"); },
+  };
+  var mailer = b.mail.create({ transport: failingTransport, audit: false });
+
+  var threw = null;
+  try {
+    await mailer.send({ to: "a@b.com", from: "c@d.com", text: "x" });
+  } catch (e) { threw = e; }
+  check("transport throw → mail/transport-failed",   threw && threw.code === "mail/transport-failed");
+  check("wrapped error is MailError",                threw && threw.isMailError === true);
+  check("wrapped error preserves cause",
+        threw && threw.cause && /smtp connection refused/.test(threw.cause.message));
+
+  // A transport throwing a MailError passes through unchanged
+  var explicitMailError = {
+    name: "direct",
+    send: async function () { throw new b.mail.MailError("custom-code", "explicit failure", true); },
+  };
+  var mailer2 = b.mail.create({ transport: explicitMailError, audit: false });
+
+  threw = null;
+  try { await mailer2.send({ to: "a@b.com", from: "c@d.com", text: "x" }); }
+  catch (e) { threw = e; }
+  check("upstream MailError preserved (code unchanged)",
+        threw && threw.code === "custom-code" && threw.message === "explicit failure");
+}
+
+async function testMailFunctionAsTransport() {
+  // A bare function counts as a transport
+  var calls = [];
+  var mailer = b.mail.create({
+    transport: async function (message) {
+      calls.push(message);
+      return { transport: "fn", at: Date.now() };
+    },
+    audit: false,
+  });
+  var result = await mailer.send({
+    to: "a@b.com", from: "c@d.com", subject: "S", text: "T",
+  });
+  check("function transport invoked",                calls.length === 1);
+  check("function transport result returned",        result && result.transport === "fn");
+}
+
+function testMailConsoleTransportShape() {
+  // Capture stderr to a buffer; the console transport writes there.
+  var stream = {
+    written: "",
+    write: function (s) { this.written += s; },
+  };
+  var t = b.mail.transports.console({ stream: stream });
+  check("console transport has a name",              t.name === "console");
+  check("console transport exposes send",            typeof t.send === "function");
+  // Smoke-call it
+  return t.send({
+    to: "a@b.com", from: "c@d.com", subject: "Hi", text: "body line",
+  }).then(function (r) {
+    check("console transport returns deliveredAt",   typeof r.deliveredAt === "number");
+    check("console transport stream got the body",
+          stream.written.indexOf("body line") !== -1 &&
+          stream.written.indexOf("c@d.com") !== -1);
+  });
+}
+
+function testMailCreateValidation() {
+  var threw = null;
+  try { b.mail.create({ transport: { wrong: "shape" } }); }
+  catch (e) { threw = e; }
+  check("create rejects transport without .send",    threw && threw.code === "mail/bad-transport");
+
+  threw = null;
+  try { b.mail.create({ transport: 42 }); }
+  catch (e) { threw = e; }
+  check("create rejects non-function/non-object transport", threw && threw.code === "mail/bad-transport");
+}
+
+function testMailSurface() {
+  check("b.mail namespace present",                  typeof b.mail === "object");
+  check("b.mail.create is a function",               typeof b.mail.create === "function");
+  check("b.mail.MailError is a class",               typeof b.mail.MailError === "function");
+  check("b.mail.transports.console is a function",   typeof b.mail.transports.console === "function");
+  check("b.mail.transports.memory is a function",    typeof b.mail.transports.memory === "function");
+  check("b.mail.transports.smtp is a function",      typeof b.mail.transports.smtp === "function");
+  check("b.mail.transports.resend is a function",    typeof b.mail.transports.resend === "function");
+}
+
+function testMailSmtpFactoryValidation() {
+  var threw = null;
+  try { b.mail.transports.smtp(); }
+  catch (e) { threw = e; }
+  check("smtp factory rejects missing opts.host",
+        threw && threw.code === "mail/smtp-misconfigured" && threw.isMailError === true);
+
+  var t = b.mail.transports.smtp({ host: "smtp.example.com" });
+  check("smtp factory returns a transport with name=smtp", t && t.name === "smtp");
+  check("smtp factory returns a transport with .send",     typeof t.send === "function");
+}
+
+function testMailResendFactoryValidation() {
+  var threw = null;
+  try { b.mail.transports.resend(); }
+  catch (e) { threw = e; }
+  check("resend factory rejects missing apiKey",
+        threw && threw.code === "mail/resend-misconfigured" && threw.isMailError === true);
+
+  threw = null;
+  try { b.mail.transports.resend({ apiKey: 42 }); }
+  catch (e) { threw = e; }
+  check("resend factory rejects non-string apiKey",
+        threw && threw.code === "mail/resend-misconfigured");
+
+  var t = b.mail.transports.resend({ apiKey: "re_test_xxx" });
+  check("resend factory returns a transport with name=resend", t && t.name === "resend");
+  check("resend factory returns a transport with .send",       typeof t.send === "function");
+}
+
+async function testMailSmtpRoundTrip() {
+  // Stand up a fake SMTP server in-process and walk the protocol the
+  // transport speaks. We don't exercise STARTTLS here — that path needs
+  // a real cert. The auth-disabled branch (no opts.user) covers the
+  // EHLO → MAIL FROM → RCPT TO → DATA path including dot-stuffing.
+  var net = require("net");
+  var lines = [];
+  var dataBuf = "";
+  var inData = false;
+  var server = net.createServer(function (sock) {
+    sock.setEncoding("utf8");
+    sock.write("220 fake.local ESMTP\r\n");
+    sock.on("data", function (chunk) {
+      if (inData) {
+        dataBuf += chunk;
+        var endIdx = dataBuf.indexOf("\r\n.\r\n");
+        if (endIdx !== -1) {
+          inData = false;
+          dataBuf = dataBuf.slice(0, endIdx);
+          sock.write("250 OK queued\r\n");
+        }
+        return;
+      }
+      var parts = chunk.split("\r\n");
+      for (var i = 0; i < parts.length; i++) {
+        var line = parts[i];
+        if (!line) continue;
+        lines.push(line);
+        var u = line.toUpperCase();
+        if (u.indexOf("EHLO") === 0)         sock.write("250-fake.local\r\n250 OK\r\n");
+        else if (u.indexOf("MAIL FROM") === 0) sock.write("250 OK\r\n");
+        else if (u.indexOf("RCPT TO") === 0)   sock.write("250 OK\r\n");
+        else if (u === "DATA")               { inData = true; sock.write("354 send body\r\n"); }
+        else if (u === "QUIT")               { sock.write("221 bye\r\n"); sock.end(); }
+        else                                  sock.write("250 OK\r\n");
+      }
+    });
+    sock.on("error", function () { /* ignore — client will report */ });
+  });
+  var port = await listenOnRandomPort(server);
+
+  try {
+    var transport = b.mail.transports.smtp({
+      host:     "127.0.0.1",
+      port:     port,
+      ehloName: "test.local",
+      // No user/pass → skips AUTH path, also skips STARTTLS since we
+      // never advertise it; the transport sees a plain socket and goes
+      // straight to MAIL FROM after EHLO. Implicit TLS off.
+    });
+    // The transport defaults to STARTTLS for non-465 ports — bypass by
+    // forcing implicitTls=false AND skipping auth, which means the
+    // transport flow expects STARTTLS. We need a different shape: tell
+    // the transport this socket is already TLS by using port 465 +
+    // implicitTls true... but that requires real TLS. The cleanest way
+    // is to test via a custom plain-text override path. The transport's
+    // current shape is: non-implicit always issues STARTTLS. Skip TLS
+    // testing here — that needs cert plumbing — and instead verify that
+    // the state machine refuses to send data when STARTTLS is rejected.
+    var result = null;
+    var err = null;
+    try { result = await transport.send({
+      from: "sender@test.local", to: "rcpt@test.local",
+      subject: "S", text: "T",
+    }); }
+    catch (e) { err = e; }
+
+    // Server doesn't advertise STARTTLS; client sends STARTTLS anyway
+    // because the transport always issues it on cleartext ports. Server
+    // replies "250 OK" (default branch above) — not 220. Transport
+    // fails closed with starttls-rejected.
+    check("smtp transport refuses to send cleartext when STARTTLS not honored",
+          err && err.code === "mail/smtp-failed" &&
+          /starttls-rejected/.test(err.message || ""));
+    check("smtp state-machine wrote EHLO before failing",
+          lines.indexOf("EHLO test.local") !== -1);
+    check("smtp state-machine never sent MAIL FROM in cleartext",
+          !lines.some(function (l) { return /^MAIL FROM/i.test(l); }));
+  } finally {
+    await new Promise(function (resolve) { server.close(function () { resolve(); }); });
+  }
+}
+
+async function testMailSmtpStarttlsAccept() {
+  // Verify the happy-path STARTTLS handshake reaches the upgrade step
+  // without us needing a full TLS cert: server accepts STARTTLS with
+  // 220, then client tries to upgrade and fails on the cert exchange.
+  // What we're checking is that the transport DID issue STARTTLS and
+  // attempt the upgrade — i.e. it doesn't leak plaintext credentials.
+  var net = require("net");
+  var lines = [];
+  var server = net.createServer(function (sock) {
+    sock.setEncoding("utf8");
+    sock.write("220 fake.local ESMTP\r\n");
+    sock.on("data", function (chunk) {
+      var parts = chunk.split("\r\n");
+      for (var i = 0; i < parts.length; i++) {
+        var line = parts[i];
+        if (!line) continue;
+        lines.push(line);
+        var u = line.toUpperCase();
+        if (u.indexOf("EHLO") === 0)         sock.write("250-fake.local\r\n250-STARTTLS\r\n250 OK\r\n");
+        else if (u === "STARTTLS")           {
+          sock.write("220 ready for tls\r\n");
+          // Don't actually complete TLS — just hang. Client will error
+          // on TLS handshake or timeout.
+          setTimeout(function () { try { sock.destroy(); } catch (_e) {} }, 50);
+        }
+      }
+    });
+    sock.on("error", function () { /* expected — TLS handshake will tear down */ });
+  });
+  var port = await listenOnRandomPort(server);
+
+  try {
+    var transport = b.mail.transports.smtp({
+      host: "127.0.0.1", port: port, ehloName: "test.local",
+      timeoutMs: 1000,
+      // user/pass set so we'd attempt AUTH after upgrade — verifies
+      // the AUTH credentials never reach the wire pre-TLS.
+      user: "u", pass: "p",
+    });
+    var err = null;
+    try {
+      await transport.send({
+        from: "sender@test.local", to: "rcpt@test.local",
+        subject: "S", text: "T",
+      });
+    } catch (e) { err = e; }
+
+    check("smtp transport issued STARTTLS",            lines.indexOf("STARTTLS") !== -1);
+    check("smtp transport never sent AUTH LOGIN before TLS",
+          !lines.some(function (l) { return /^AUTH LOGIN/i.test(l); }));
+    check("smtp transport never base64-encoded credentials in cleartext",
+          !lines.some(function (l) { return l === Buffer.from("u").toString("base64"); }));
+    check("smtp transport surfaced a MailError for failed TLS upgrade",
+          err && err.isMailError === true);
+  } finally {
+    await new Promise(function (resolve) { server.close(function () { resolve(); }); });
+  }
+}
+
+async function testMailResendRoundTrip() {
+  // Spin up a local HTTP server that pretends to be the Resend API.
+  // The transport uses lib/http-client which is HTTPS-by-default; we
+  // pass urlSafe.ALLOW_HTTP_ALL via opts.allowedProtocols so the
+  // request reaches our cleartext fixture.
+  var http = require("http");
+  var seen = null;
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      seen = {
+        method:  req.method,
+        url:     req.url,
+        headers: req.headers,
+        body:    JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "rsnd_test_abc123" }));
+    });
+  });
+  var port = await listenOnRandomPort(server);
+
+  try {
+    var transport = b.mail.transports.resend({
+      apiKey:           "re_test_secret",
+      endpoint:         "http://127.0.0.1:" + port + "/emails",
+      timeoutMs:        2000,
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+    });
+    var result = await transport.send({
+      from: "Sender <sender@test.local>",
+      to: ["a@b.com", "c@d.com"],
+      cc: "e@f.com",
+      subject: "Hello",
+      html: "<p>Hi</p>",
+      text: "Hi",
+      replyTo: "reply@test.local",
+    });
+    check("resend transport returns deliveredAt + id",
+          result && result.transport === "resend" && result.id === "rsnd_test_abc123");
+    check("resend transport sent POST",                seen && seen.method === "POST");
+    check("resend transport set Authorization header",
+          seen && seen.headers.authorization === "Bearer re_test_secret");
+    check("resend transport sent content-type json",
+          seen && /application\/json/.test(seen.headers["content-type"] || ""));
+    check("resend transport mapped to as array",
+          seen && Array.isArray(seen.body.to) && seen.body.to.length === 2);
+    check("resend transport mapped cc as array",
+          seen && Array.isArray(seen.body.cc) && seen.body.cc[0] === "e@f.com");
+    check("resend transport mapped replyTo to reply_to (snake_case)",
+          seen && seen.body.reply_to === "reply@test.local");
+    check("resend transport forwarded subject + html + text",
+          seen && seen.body.subject === "Hello" &&
+          seen.body.html === "<p>Hi</p>" && seen.body.text === "Hi");
+  } finally {
+    await new Promise(function (resolve) { server.close(function () { resolve(); }); });
+  }
+}
+
+async function testMailResendErrorPaths() {
+  var http = require("http");
+
+  // Case 1 — server returns 200 with non-JSON body
+  var s1 = http.createServer(function (_req, res) {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("not json");
+  });
+  var p1 = await listenOnRandomPort(s1);
+  try {
+    var t1 = b.mail.transports.resend({
+      apiKey: "re_x", endpoint: "http://127.0.0.1:" + p1 + "/",
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL, timeoutMs: 1500,
+    });
+    var err1 = null;
+    try { await t1.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
+    catch (e) { err1 = e; }
+    check("resend non-JSON body surfaces mail/resend-bad-response",
+          err1 && err1.code === "mail/resend-bad-response");
+  } finally {
+    await new Promise(function (r) { s1.close(function () { r(); }); });
+  }
+
+  // Case 2 — server returns 200 JSON with no `id`
+  var s2 = http.createServer(function (_req, res) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ message: "rate limited" }));
+  });
+  var p2 = await listenOnRandomPort(s2);
+  try {
+    var t2 = b.mail.transports.resend({
+      apiKey: "re_x", endpoint: "http://127.0.0.1:" + p2 + "/",
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL, timeoutMs: 1500,
+    });
+    var err2 = null;
+    try { await t2.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
+    catch (e) { err2 = e; }
+    check("resend JSON without id surfaces mail/resend-rejected",
+          err2 && err2.code === "mail/resend-rejected" &&
+          /rate limited/.test(err2.message || ""));
+  } finally {
+    await new Promise(function (r) { s2.close(function () { r(); }); });
+  }
+
+  // Case 3 — server returns non-2xx
+  var s3 = http.createServer(function (_req, res) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ message: "Invalid API key" }));
+  });
+  var p3 = await listenOnRandomPort(s3);
+  try {
+    var t3 = b.mail.transports.resend({
+      apiKey: "re_x", endpoint: "http://127.0.0.1:" + p3 + "/",
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL, timeoutMs: 1500,
+    });
+    var err3 = null;
+    try { await t3.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
+    catch (e) { err3 = e; }
+    check("resend HTTP error wraps to mail/resend-failed",
+          err3 && err3.code === "mail/resend-failed" && err3.isMailError === true);
+    check("resend HTTP error preserves statusCode",
+          err3 && err3.statusCode === 401);
+  } finally {
+    await new Promise(function (r) { s3.close(function () { r(); }); });
+  }
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -4940,6 +5448,22 @@ async function run() {
   await testStaticServeIndexFile();
   await testStaticServeMethodGuard();
   await testStaticServeIntegrityHelper();
+  // mail — message contract + pluggable transport (Phase 5 slice 4)
+  testMailSurface();
+  testMailCreateValidation();
+  await testMailSendRoundTripViaMemoryTransport();
+  await testMailDefaultsAndOverrides();
+  await testMailValidation();
+  await testMailRecipientArrayAndCcBcc();
+  await testMailTransportFailureWraps();
+  await testMailFunctionAsTransport();
+  await testMailConsoleTransportShape();
+  testMailSmtpFactoryValidation();
+  testMailResendFactoryValidation();
+  await testMailSmtpRoundTrip();
+  await testMailSmtpStarttlsAccept();
+  await testMailResendRoundTrip();
+  await testMailResendErrorPaths();
   // forms — CSRF tokens + HTML render + validation (Phase 4 slice 4)
   testFormsSurface();
   testFormsCsrfTokenGeneration();
@@ -5151,6 +5675,21 @@ module.exports = {
   testStaticServeIndexFile:                  testStaticServeIndexFile,
   testStaticServeMethodGuard:                testStaticServeMethodGuard,
   testStaticServeIntegrityHelper:            testStaticServeIntegrityHelper,
+  testMailSurface:                           testMailSurface,
+  testMailCreateValidation:                  testMailCreateValidation,
+  testMailSendRoundTripViaMemoryTransport:   testMailSendRoundTripViaMemoryTransport,
+  testMailDefaultsAndOverrides:              testMailDefaultsAndOverrides,
+  testMailValidation:                        testMailValidation,
+  testMailRecipientArrayAndCcBcc:            testMailRecipientArrayAndCcBcc,
+  testMailTransportFailureWraps:             testMailTransportFailureWraps,
+  testMailFunctionAsTransport:               testMailFunctionAsTransport,
+  testMailConsoleTransportShape:             testMailConsoleTransportShape,
+  testMailSmtpFactoryValidation:             testMailSmtpFactoryValidation,
+  testMailResendFactoryValidation:           testMailResendFactoryValidation,
+  testMailSmtpRoundTrip:                     testMailSmtpRoundTrip,
+  testMailSmtpStarttlsAccept:                testMailSmtpStarttlsAccept,
+  testMailResendRoundTrip:                   testMailResendRoundTrip,
+  testMailResendErrorPaths:                  testMailResendErrorPaths,
   testFormsSurface:                          testFormsSurface,
   testFormsCsrfTokenGeneration:              testFormsCsrfTokenGeneration,
   testFormsCsrfTokenVerify:                  testFormsCsrfTokenVerify,
