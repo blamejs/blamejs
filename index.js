@@ -92,6 +92,7 @@ var apiSnapshot = require("./lib/api-snapshot");
 var auditTools = require("./lib/audit-tools");
 var events = require("./lib/events");
 var safeSchema = require("./lib/safe-schema");
+var pagination = require("./lib/pagination");
 
 module.exports = {
   crypto:           crypto,
@@ -167,6 +168,7 @@ module.exports = {
   apiSnapshot:      apiSnapshot,
   safeJson:         safeJson,
   safeSchema:       safeSchema,
+  pagination:       pagination,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

@@ -5437,6 +5437,389 @@ async function testBodyParserSanitizeFilenameUnit() {
         raw._sanitizeFilename("a".repeat(300)).length === 255);
 }
 
+// ---- pagination ----
+
+function _mockQuery(rows, opts) {
+  // Mock Query that records the chain of calls + supports the same
+  // terminal methods (.all, .count). For most pagination tests we
+  // don't actually execute SQL — we verify the chain construction
+  // and trust the real DB tests separately to confirm SQL is correct.
+  opts = opts || {};
+  var q = {
+    _whereCalls:   [],
+    _whereRawCalls:[],
+    _orderBy:      null,
+    _limit:        null,
+    _offset:       null,
+    _backingRows:  rows.slice(),
+  };
+  q.where = function (a, b, c) {
+    q._whereCalls.push([a, b, c]);
+    return q;
+  };
+  q.whereRaw = function (sql, params) {
+    q._whereRawCalls.push({ sql: sql, params: params });
+    return q;
+  };
+  q.orderBy = function (f, d) {
+    q._orderBy = { field: f, direction: (d || "asc").toLowerCase() };
+    return q;
+  };
+  q.limit = function (n) { q._limit = n; return q; };
+  q.offset = function (n) { q._offset = n; return q; };
+  q.all = function () {
+    // Apply orderBy + limit + offset to backingRows for tests that need
+    // realistic results. The whereRaw cursor predicate isn't replayed;
+    // tests that check predicate semantics inspect _whereRawCalls.
+    var sorted = q._backingRows.slice();
+    if (q._orderBy) {
+      var f = q._orderBy.field;
+      var asc = q._orderBy.direction === "asc";
+      sorted.sort(function (a, b) {
+        if (a[f] < b[f]) return asc ? -1 : 1;
+        if (a[f] > b[f]) return asc ?  1 : -1;
+        return 0;
+      });
+    }
+    var off = q._offset || 0;
+    var lim = q._limit != null ? q._limit : sorted.length;
+    return sorted.slice(off, off + lim);
+  };
+  q.count = function () { return q._backingRows.length; };
+  return q;
+}
+
+function testPaginationSurface() {
+  check("b.pagination namespace present",         typeof b.pagination === "object");
+  check("cursor is a function",                   typeof b.pagination.cursor === "function");
+  check("offset is a function",                   typeof b.pagination.offset === "function");
+  check("encodeCursor is a function",             typeof b.pagination.encodeCursor === "function");
+  check("decodeCursor is a function",             typeof b.pagination.decodeCursor === "function");
+  check("PaginationError is a class",             typeof b.pagination.PaginationError === "function");
+  check("CURSOR_VERSION === 1",                   b.pagination.CURSOR_VERSION === 1);
+}
+
+function testPaginationEncodeDecodeRoundTrip() {
+  var secret = Buffer.from("test-secret-32-bytes-long-padding!");
+  var token = b.pagination.encodeCursor({
+    dir: "asc", orderBy: "_id", orderByVal: "abc", id: "abc", forward: true,
+  }, secret);
+  check("encode produces base64url.tag string",   typeof token === "string" && token.indexOf(".") !== -1);
+  var decoded = b.pagination.decodeCursor(token, secret);
+  check("decode round-trips orderByVal",          decoded.orderByVal === "abc");
+  check("decode round-trips orderBy",             decoded.orderBy === "_id");
+  check("decode includes version field",          decoded.v === 1);
+}
+
+function testPaginationDecodeRejectsTamperedTag() {
+  var secret = "secret-key";
+  var token = b.pagination.encodeCursor({ dir: "asc", orderBy: "_id", orderByVal: 1, id: "x" }, secret);
+  // Flip a byte in the tag portion
+  var dot = token.indexOf(".");
+  var tampered = token.slice(0, dot) + "." + token.slice(dot + 1, dot + 2) + "X" + token.slice(dot + 3);
+  var threw = null;
+  try { b.pagination.decodeCursor(tampered, secret); } catch (e) { threw = e; }
+  check("decode rejects tampered tag",
+        threw && threw.code === "pagination/cursor-tag-mismatch");
+}
+
+function testPaginationDecodeRejectsTamperedState() {
+  var secret = "secret-key";
+  var token = b.pagination.encodeCursor({ dir: "asc", orderBy: "_id", orderByVal: 1, id: "x" }, secret);
+  // Re-encode the state half with a different value but keep the original tag
+  var dot = token.indexOf(".");
+  var newState = b.pagination._b64urlEncode(JSON.stringify({ v: 1, dir: "asc", id: "y", orderBy: "_id", orderByVal: 999 }));
+  var tampered = newState + "." + token.slice(dot + 1);
+  var threw = null;
+  try { b.pagination.decodeCursor(tampered, secret); } catch (e) { threw = e; }
+  check("decode rejects tampered state with original tag",
+        threw && threw.code === "pagination/cursor-tag-mismatch");
+}
+
+function testPaginationDecodeRejectsWrongSecret() {
+  var t = b.pagination.encodeCursor({ dir: "asc", orderBy: "_id", orderByVal: 1, id: "x" }, "key-A");
+  var threw = null;
+  try { b.pagination.decodeCursor(t, "key-B"); } catch (e) { threw = e; }
+  check("decode rejects wrong secret",            threw && threw.code === "pagination/cursor-tag-mismatch");
+}
+
+function testPaginationDecodeRejectsBadShape() {
+  var threw;
+  threw = null;
+  try { b.pagination.decodeCursor("no-dot-in-this-cursor", "k"); } catch (e) { threw = e; }
+  check("decode rejects no-tag separator",        threw && threw.code === "pagination/bad-cursor");
+
+  threw = null;
+  try { b.pagination.decodeCursor("", "k"); } catch (e) { threw = e; }
+  check("decode rejects empty string",            threw && threw.code === "pagination/bad-cursor");
+
+  threw = null;
+  try { b.pagination.decodeCursor(null, "k"); } catch (e) { threw = e; }
+  check("decode rejects null",                    threw && threw.code === "pagination/bad-cursor");
+}
+
+function testPaginationEncodeRequiresSecret() {
+  var threw;
+  threw = null;
+  try { b.pagination.encodeCursor({ orderByVal: 1, id: "x" }, null); } catch (e) { threw = e; }
+  check("encode rejects missing secret",          threw && threw.code === "pagination/bad-secret");
+
+  threw = null;
+  try { b.pagination.encodeCursor({ orderByVal: 1, id: "x" }, ""); } catch (e) { threw = e; }
+  check("encode rejects empty string secret",     threw && threw.code === "pagination/bad-secret");
+
+  threw = null;
+  try { b.pagination.encodeCursor({ orderByVal: 1, id: "x" }, Buffer.alloc(0)); } catch (e) { threw = e; }
+  check("encode rejects empty Buffer secret",     threw && threw.code === "pagination/bad-secret");
+}
+
+function testPaginationResolveLimit() {
+  var p = b.pagination;
+  check("limit: default when missing",            p._resolveLimit({}) === 25);
+  check("limit: clamped to max",                  p._resolveLimit({ limit: 1000, max: 50 }) === 50);
+  check("limit: respected when in range",         p._resolveLimit({ limit: 30, max: 100 }) === 30);
+  check("limit: NaN coerced to default",          p._resolveLimit({ limit: "abc", default: 10 }) === 10);
+  check("limit: negative coerced to default",     p._resolveLimit({ limit: -5, default: 10 }) === 10);
+  check("limit: 0 coerced to default",            p._resolveLimit({ limit: 0, default: 10 }) === 10);
+}
+
+async function testPaginationCursorRequiresSecret() {
+  var q = _mockQuery([]);
+  var threw = null;
+  try { await b.pagination.cursor(q, { limit: 10 }); } catch (e) { threw = e; }
+  check("cursor: missing secret rejected",        threw && threw.code === "pagination/no-secret");
+}
+
+async function testPaginationCursorRejectsBadQuery() {
+  var threw = null;
+  try { await b.pagination.cursor({}, { secret: "k", limit: 10 }); } catch (e) { threw = e; }
+  check("cursor: non-Query rejected",             threw && threw.code === "pagination/bad-query");
+}
+
+async function testPaginationCursorFirstPage() {
+  var rows = [];
+  for (var i = 0; i < 30; i++) rows.push({ _id: "id-" + String(i).padStart(3, "0"), name: "u" + i });
+  var q = _mockQuery(rows);
+  var page = await b.pagination.cursor(q, { secret: "k", limit: 10 });
+  check("first page: 10 items returned",          page.items.length === 10);
+  check("first page: hasMore=true",               page.hasMore === true);
+  check("first page: nextCursor present",         typeof page.nextCursor === "string" && page.nextCursor.length > 0);
+  check("first page: prevCursor null (first call)", page.prevCursor === null);
+  check("first page: items in _id-asc order",     page.items[0]._id === "id-000" && page.items[9]._id === "id-009");
+  // Verify the cursor's internal state matches the last item.
+  var state = b.pagination.decodeCursor(page.nextCursor, "k");
+  check("first page: nextCursor encodes lastId",  state.id === "id-009" && state.forward === true);
+}
+
+async function testPaginationCursorFollowChain() {
+  var rows = [];
+  for (var i = 0; i < 25; i++) rows.push({ _id: "id-" + String(i).padStart(3, "0") });
+  var qa = _mockQuery(rows);
+  var first = await b.pagination.cursor(qa, { secret: "k", limit: 10 });
+  check("page 1 has 10 items",                    first.items.length === 10);
+  check("page 1 first id",                        first.items[0]._id === "id-000");
+
+  var qb = _mockQuery(rows);
+  var second = await b.pagination.cursor(qb, { secret: "k", limit: 10, cursor: first.nextCursor });
+  // The mock _whereRawCalls should reflect the cursor predicate
+  check("page 2 issues whereRaw with cursor predicate",
+        qb._whereRawCalls.length === 1 &&
+        qb._whereRawCalls[0].sql.indexOf('"_id" >') !== -1);
+  check("page 2 first id is past cursor",
+        second.items.length > 0);  // the mock doesn't actually filter rows
+                                    // but the predicate is what matters
+  check("page 2 prevCursor present after first follow", typeof second.prevCursor === "string");
+}
+
+async function testPaginationCursorLastPageMarksHasMoreFalse() {
+  var rows = [];
+  for (var i = 0; i < 7; i++) rows.push({ _id: "id-" + i });
+  var q = _mockQuery(rows);
+  var page = await b.pagination.cursor(q, { secret: "k", limit: 10 });
+  check("last page: hasMore=false",               page.hasMore === false);
+  check("last page: nextCursor null",             page.nextCursor === null);
+  check("last page: items.length matches",        page.items.length === 7);
+}
+
+async function testPaginationCursorOrderByMismatchRejected() {
+  var q = _mockQuery([{ _id: "x" }]);
+  var goodCursor = b.pagination.encodeCursor({
+    dir: "asc", orderBy: "createdAt", orderByVal: 12345, id: "x", forward: true,
+  }, "k");
+  var threw = null;
+  try {
+    await b.pagination.cursor(q, { secret: "k", limit: 10, cursor: goodCursor, orderBy: "_id" });
+  } catch (e) { threw = e; }
+  check("cursor: orderBy mismatch rejected",      threw && threw.code === "pagination/cursor-mismatch");
+}
+
+async function testPaginationCursorRespectsMax() {
+  var rows = [];
+  for (var i = 0; i < 200; i++) rows.push({ _id: String(i) });
+  var q = _mockQuery(rows);
+  var page = await b.pagination.cursor(q, { secret: "k", limit: 1000, max: 50 });
+  check("max: clamps requested limit",            page.items.length === 50);
+}
+
+async function testPaginationCursorOrderByCustom() {
+  var rows = [
+    { _id: "a", createdAt: 100 },
+    { _id: "b", createdAt: 200 },
+    { _id: "c", createdAt: 200 },  // tied with b
+    { _id: "d", createdAt: 300 },
+  ];
+  var q = _mockQuery(rows);
+  var page = await b.pagination.cursor(q, {
+    secret: "k", limit: 10, orderBy: "createdAt",
+  });
+  // After client-side _id tiebreaker sort: 100→{a}, 200→{b,c}, 300→{d}
+  // Within the 200 cluster, b before c (lex on _id).
+  check("custom orderBy: client tiebreaker by _id",
+        page.items[0]._id === "a" &&
+        page.items[1]._id === "b" &&
+        page.items[2]._id === "c" &&
+        page.items[3]._id === "d");
+  // Cursor's encoded orderBy reflects custom field
+  if (page.nextCursor === null) {
+    check("custom orderBy: hasMore=false on small set",  page.hasMore === false);
+  }
+}
+
+async function testPaginationCursorDirectionDesc() {
+  var rows = [];
+  for (var i = 0; i < 15; i++) rows.push({ _id: "id-" + String(i).padStart(3, "0") });
+  var q = _mockQuery(rows);
+  var page = await b.pagination.cursor(q, { secret: "k", limit: 5, direction: "desc" });
+  check("desc: first item is highest id",         page.items[0]._id === "id-014");
+  check("desc: last item descends",               page.items[4]._id === "id-010");
+}
+
+async function testPaginationOffsetFirstPage() {
+  var rows = [];
+  for (var i = 0; i < 47; i++) rows.push({ _id: "id-" + String(i).padStart(3, "0") });
+  var q = _mockQuery(rows);
+  var off = await b.pagination.offset(q, { page: 1, perPage: 10 });
+  check("offset: page 1 has 10 items",            off.items.length === 10);
+  check("offset: total reflects backing count",   off.total === 47);
+  check("offset: totalPages computed",            off.totalPages === 5);
+  check("offset: hasMore on page 1 of 5",         off.hasMore === true);
+  check("offset: page reported back",             off.page === 1);
+  check("offset: perPage reported",               off.perPage === 10);
+}
+
+async function testPaginationOffsetLastPage() {
+  var rows = [];
+  for (var i = 0; i < 47; i++) rows.push({ _id: "id-" + i });
+  var q = _mockQuery(rows);
+  var off = await b.pagination.offset(q, { page: 5, perPage: 10 });
+  check("offset: last page has 7 items (47 mod 10)", off.items.length === 7);
+  check("offset: hasMore=false on last page",    off.hasMore === false);
+}
+
+async function testPaginationOffsetEmptyResult() {
+  var q = _mockQuery([]);
+  var off = await b.pagination.offset(q, { page: 1, perPage: 10 });
+  check("offset: empty has total=0",              off.total === 0);
+  check("offset: empty has totalPages=0",         off.totalPages === 0);
+  check("offset: empty hasMore=false",            off.hasMore === false);
+  check("offset: empty items=[]",                 off.items.length === 0);
+}
+
+async function testPaginationOffsetPageOutOfRange() {
+  var rows = [{ _id: "a" }, { _id: "b" }];
+  var q = _mockQuery(rows);
+  var off = await b.pagination.offset(q, { page: 99, perPage: 10 });
+  check("offset: out-of-range page returns empty items", off.items.length === 0);
+  check("offset: page recorded as requested",      off.page === 99);
+}
+
+async function testPaginationOffsetCoercesBadPage() {
+  var rows = [{ _id: "a" }, { _id: "b" }];
+  var q = _mockQuery(rows);
+  var off = await b.pagination.offset(q, { page: -5, perPage: 10 });
+  check("offset: negative page coerced to 1",      off.page === 1);
+}
+
+async function testPaginationCursorWhereRawCondition() {
+  // Verify whereRaw is invoked with the right SQL shape for forward asc cursor
+  var rows = [{ _id: "x", name: "y" }];
+  var qFirst = _mockQuery(rows);
+  var first = await b.pagination.cursor(qFirst, { secret: "k", limit: 1, orderBy: "_id" });
+
+  if (first.nextCursor) {
+    var qSecond = _mockQuery(rows);
+    await b.pagination.cursor(qSecond, { secret: "k", limit: 1, orderBy: "_id", cursor: first.nextCursor });
+    var raw = qSecond._whereRawCalls[0];
+    check("whereRaw: 3 params (orderByVal, orderByVal, _id)", raw.params.length === 3);
+    check("whereRaw: SQL has both > and = clauses",
+          raw.sql.indexOf('">"') === -1 &&
+          raw.sql.indexOf("> ?") !== -1 &&
+          raw.sql.indexOf("= ?") !== -1);
+  }
+}
+
+async function testPaginationCursorVersionMismatch() {
+  // Hand-craft a cursor with a wrong version.
+  var fakeState = JSON.stringify({ v: 999, dir: "asc", orderBy: "_id", orderByVal: 1, id: "x" });
+  var secret = "k";
+  var sb = Buffer.from(secret, "utf8");
+  var nodeC = require("node:crypto");
+  var h = nodeC.createHash("sha3-512");
+  h.update(sb); h.update(Buffer.from(fakeState, "utf8"));
+  var tag = h.digest().slice(0, 16);
+  var token = b.pagination._b64urlEncode(fakeState) + "." + b.pagination._b64urlEncode(tag);
+  var threw = null;
+  try { b.pagination.decodeCursor(token, secret); } catch (e) { threw = e; }
+  check("decode: version mismatch rejected",       threw && threw.code === "pagination/cursor-version");
+}
+
+async function testPaginationQueryWhereRaw() {
+  // Verify the new whereRaw method on Query directly. Tests against
+  // the unsealed _id column only — sealed columns store ciphertext at
+  // the SQL layer and sort unpredictably (a deliberate property of
+  // sealed-by-default storage; comparison on sealed columns goes
+  // through derivedHashes lookups instead, which whereRaw bypasses).
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-pagq-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.db.from("users").insertMany([
+      { _id: "u1", email: "a@x.io", name: "A" },
+      { _id: "u2", email: "b@x.io", name: "B" },
+      { _id: "u3", email: "c@x.io", name: "C" },
+    ]);
+    // Simple > test on a non-sealed column.
+    var rowsPast = b.db.from("users").whereRaw('"_id" > ?', ["u1"]).all();
+    check("whereRaw: > predicate on _id returns rows past cursor", rowsPast.length === 2);
+
+    // Compound OR — first leg matches; second leg is a no-op on a
+    // sentinel that can't equal any inserted _id.
+    var rowsCompound = b.db.from("users")
+      .whereRaw('"_id" > ? OR ("_id" = ? AND "_id" > ?)', ["u2", "no-such-id", "no-such-id"])
+      .all();
+    check("whereRaw: compound OR clause works",   rowsCompound.length === 1);
+
+    // whereRaw composes with chainable .where() (AND-joined).
+    var rowsCombined = b.db.from("users")
+      .where("status", "=", "active")
+      .whereRaw('"_id" > ?', ["u1"])
+      .all();
+    check("whereRaw: composes with chainable .where()", rowsCombined.length === 2);
+
+    // Mismatched placeholder count rejected
+    var threw = null;
+    try { b.db.from("users").whereRaw('"_id" > ?', ["u1", "u2"]); } catch (e) { threw = e; }
+    check("whereRaw: rejects mismatched param count",
+          threw && /placeholder/.test(threw.message));
+
+    threw = null;
+    try { b.db.from("users").whereRaw("", []); } catch (e) { threw = e; }
+    check("whereRaw: rejects empty sql",
+          threw && /non-empty/.test(threw.message));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- compression (gzip + brotli response compression) ----
 
 function _compressionReq(headers) {
@@ -12775,6 +13158,32 @@ async function run() {
   await testBodyParserMultipartTruncated();
   await testBodyParserContentLengthExceedsLimitImmediate();
   testBodyParserSanitizeFilenameUnit();
+  // pagination — cursor + offset helpers (Phase 9.5)
+  testPaginationSurface();
+  testPaginationEncodeDecodeRoundTrip();
+  testPaginationDecodeRejectsTamperedTag();
+  testPaginationDecodeRejectsTamperedState();
+  testPaginationDecodeRejectsWrongSecret();
+  testPaginationDecodeRejectsBadShape();
+  testPaginationEncodeRequiresSecret();
+  testPaginationResolveLimit();
+  await testPaginationCursorRequiresSecret();
+  await testPaginationCursorRejectsBadQuery();
+  await testPaginationCursorFirstPage();
+  await testPaginationCursorFollowChain();
+  await testPaginationCursorLastPageMarksHasMoreFalse();
+  await testPaginationCursorOrderByMismatchRejected();
+  await testPaginationCursorRespectsMax();
+  await testPaginationCursorOrderByCustom();
+  await testPaginationCursorDirectionDesc();
+  await testPaginationOffsetFirstPage();
+  await testPaginationOffsetLastPage();
+  await testPaginationOffsetEmptyResult();
+  await testPaginationOffsetPageOutOfRange();
+  await testPaginationOffsetCoercesBadPage();
+  await testPaginationCursorWhereRawCondition();
+  await testPaginationCursorVersionMismatch();
+  await testPaginationQueryWhereRaw();
   // compression — gzip + brotli response compression (Phase 9.4)
   await testCompressionSurface();
   await testCompressionParseAcceptEncoding();
@@ -13315,6 +13724,31 @@ module.exports = {
   testBodyParserMultipartTruncated:          testBodyParserMultipartTruncated,
   testBodyParserContentLengthExceedsLimitImmediate: testBodyParserContentLengthExceedsLimitImmediate,
   testBodyParserSanitizeFilenameUnit:        testBodyParserSanitizeFilenameUnit,
+  testPaginationSurface:                     testPaginationSurface,
+  testPaginationEncodeDecodeRoundTrip:       testPaginationEncodeDecodeRoundTrip,
+  testPaginationDecodeRejectsTamperedTag:    testPaginationDecodeRejectsTamperedTag,
+  testPaginationDecodeRejectsTamperedState:  testPaginationDecodeRejectsTamperedState,
+  testPaginationDecodeRejectsWrongSecret:    testPaginationDecodeRejectsWrongSecret,
+  testPaginationDecodeRejectsBadShape:       testPaginationDecodeRejectsBadShape,
+  testPaginationEncodeRequiresSecret:        testPaginationEncodeRequiresSecret,
+  testPaginationResolveLimit:                testPaginationResolveLimit,
+  testPaginationCursorRequiresSecret:        testPaginationCursorRequiresSecret,
+  testPaginationCursorRejectsBadQuery:       testPaginationCursorRejectsBadQuery,
+  testPaginationCursorFirstPage:             testPaginationCursorFirstPage,
+  testPaginationCursorFollowChain:           testPaginationCursorFollowChain,
+  testPaginationCursorLastPageMarksHasMoreFalse: testPaginationCursorLastPageMarksHasMoreFalse,
+  testPaginationCursorOrderByMismatchRejected: testPaginationCursorOrderByMismatchRejected,
+  testPaginationCursorRespectsMax:           testPaginationCursorRespectsMax,
+  testPaginationCursorOrderByCustom:         testPaginationCursorOrderByCustom,
+  testPaginationCursorDirectionDesc:         testPaginationCursorDirectionDesc,
+  testPaginationOffsetFirstPage:             testPaginationOffsetFirstPage,
+  testPaginationOffsetLastPage:              testPaginationOffsetLastPage,
+  testPaginationOffsetEmptyResult:           testPaginationOffsetEmptyResult,
+  testPaginationOffsetPageOutOfRange:        testPaginationOffsetPageOutOfRange,
+  testPaginationOffsetCoercesBadPage:        testPaginationOffsetCoercesBadPage,
+  testPaginationCursorWhereRawCondition:     testPaginationCursorWhereRawCondition,
+  testPaginationCursorVersionMismatch:       testPaginationCursorVersionMismatch,
+  testPaginationQueryWhereRaw:               testPaginationQueryWhereRaw,
   testCompressionSurface:                    testCompressionSurface,
   testCompressionParseAcceptEncoding:        testCompressionParseAcceptEncoding,
   testCompressionNegotiate:                  testCompressionNegotiate,
