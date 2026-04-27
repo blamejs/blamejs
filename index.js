@@ -67,6 +67,7 @@ var forms = require("./lib/forms");
 var app = require("./lib/app");
 var jobs = require("./lib/jobs");
 var mail = require("./lib/mail");
+var scheduler = require("./lib/scheduler");
 
 module.exports = {
   crypto:           crypto,
@@ -116,6 +117,7 @@ module.exports = {
   createApp:        app.createApp,
   jobs:             jobs,
   mail:             mail,
+  scheduler:        scheduler,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

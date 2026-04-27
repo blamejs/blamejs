@@ -3078,6 +3078,282 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- scheduler ----
+
+function testSchedulerSurface() {
+  check("b.scheduler namespace present",          typeof b.scheduler === "object");
+  check("b.scheduler.create is a function",       typeof b.scheduler.create === "function");
+  check("b.scheduler.parseCron is a function",    typeof b.scheduler.parseCron === "function");
+  check("b.scheduler.nextCronFire is a function", typeof b.scheduler.nextCronFire === "function");
+  check("b.scheduler.SchedulerError is a class",  typeof b.scheduler.SchedulerError === "function");
+}
+
+function testSchedulerCronParser() {
+  var p1 = b.scheduler.parseCron("0 2 * * *");
+  check("cron parses minute=0",                   p1.minute.has(0) && p1.minute.size === 1);
+  check("cron parses hour=2",                     p1.hour.has(2) && p1.hour.size === 1);
+  check("cron expands * for dom",                 p1.dom.size === 31);
+  check("cron expands * for month",               p1.month.size === 12);
+  check("cron expands * for dow",                 p1.dow.size === 7);
+
+  var p2 = b.scheduler.parseCron("*/15 9-17 * * 1-5");
+  check("cron */15 expands to 0,15,30,45",
+        p2.minute.has(0) && p2.minute.has(15) && p2.minute.has(30) && p2.minute.has(45) && p2.minute.size === 4);
+  check("cron 9-17 expands inclusively",          p2.hour.size === 9 && p2.hour.has(9) && p2.hour.has(17));
+  check("cron 1-5 dow expands to weekdays",       p2.dow.size === 5 && !p2.dow.has(0) && !p2.dow.has(6));
+  check("cron dowRestricted set",                 p2.dowRestricted === true);
+  check("cron domRestricted unset on *",          p2.domRestricted === false);
+
+  var p3 = b.scheduler.parseCron("@daily");
+  check("@daily shorthand → 0 0 * * *",
+        p3.minute.has(0) && p3.minute.size === 1 &&
+        p3.hour.has(0) && p3.hour.size === 1);
+
+  var p4 = b.scheduler.parseCron("0,30 * * * 7"); // 7 = Sunday alias
+  check("cron dow=7 normalized to 0",             p4.dow.has(0) && !p4.dow.has(7));
+  check("cron list 0,30",                         p4.minute.has(0) && p4.minute.has(30) && p4.minute.size === 2);
+
+  // Errors
+  var threw;
+  threw = null; try { b.scheduler.parseCron(""); } catch (e) { threw = e; }
+  check("cron empty rejects",                     threw && threw.code === "scheduler/invalid-cron");
+  threw = null; try { b.scheduler.parseCron("0 0 0 0 0"); } catch (e) { threw = e; }
+  check("cron value out of range rejects",        threw && threw.code === "scheduler/invalid-cron");
+  threw = null; try { b.scheduler.parseCron("60 * * * *"); } catch (e) { threw = e; }
+  check("cron minute=60 rejects",                 threw && threw.code === "scheduler/invalid-cron");
+  threw = null; try { b.scheduler.parseCron("0 0 * *"); } catch (e) { threw = e; }
+  check("cron 4-field rejects",                   threw && threw.code === "scheduler/invalid-cron");
+  threw = null; try { b.scheduler.parseCron("*/0 * * * *"); } catch (e) { threw = e; }
+  check("cron */0 step rejects",                  threw && threw.code === "scheduler/invalid-cron");
+}
+
+function testSchedulerNextCronFire() {
+  // 02:00 every day — with no timezone, server-local
+  var cron = b.scheduler.parseCron("0 2 * * *");
+  var anchor = new Date("2026-04-15T01:30:00Z");
+  // Find next fire — server-local; just verify it lands on minute=0, hour=2
+  var t = b.scheduler.nextCronFire(cron, anchor, null);
+  var d = new Date(t);
+  check("cron next-fire lands on minute=0",       d.getMinutes() === 0);
+  check("cron next-fire lands on hour=2",         d.getHours() === 2);
+  check("cron next-fire is in the future",        t > anchor.getTime());
+
+  // */15 means within the next 15 minutes, there must be a fire
+  var cron2 = b.scheduler.parseCron("*/15 * * * *");
+  var t2 = b.scheduler.nextCronFire(cron2, anchor, null);
+  check("cron */15 next-fire within 15min",       t2 - anchor.getTime() <= 15 * 60 * 1000 + 60000);
+
+  // Timezone-aware: 09:00 in UTC
+  var cron3 = b.scheduler.parseCron("0 9 * * *");
+  var anchorUtc = new Date("2026-04-15T08:30:00Z");
+  var t3 = b.scheduler.nextCronFire(cron3, anchorUtc, "UTC");
+  // Wall-clock in UTC at t3 must be 09:00
+  var fmt = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", hour: "2-digit", minute: "2-digit", hour12: false });
+  var parts = {}; fmt.formatToParts(new Date(t3)).forEach(function (p) { parts[p.type] = p.value; });
+  var hr = parseInt(parts.hour, 10); if (hr === 24) hr = 0;
+  check("cron tz-aware fires at 09:00 UTC wall-clock",
+        hr === 9 && parseInt(parts.minute, 10) === 0);
+
+  // Timezone validation
+  var threw = null;
+  try {
+    var sched = b.scheduler.create();
+    sched.schedule({ name: "x", cron: "0 0 * * *", timezone: "Not/A_Zone", run: function () {} });
+  } catch (e) { threw = e; }
+  check("scheduler rejects invalid IANA timezone",
+        threw && threw.code === "scheduler/invalid-timezone");
+}
+
+async function testSchedulerScheduleValidation() {
+  var sched = b.scheduler.create();
+  var threw;
+
+  threw = null; try { sched.schedule(); } catch (e) { threw = e; }
+  check("schedule rejects missing spec",          threw && threw.code === "INVALID_SPEC");
+
+  threw = null; try { sched.schedule({}); } catch (e) { threw = e; }
+  check("schedule rejects missing name",          threw && threw.code === "INVALID_NAME");
+
+  threw = null;
+  try { sched.schedule({ name: "x" }); } catch (e) { threw = e; }
+  check("schedule rejects missing cron+every",    threw && threw.code === "INVALID_SPEC");
+
+  threw = null;
+  try { sched.schedule({ name: "x", cron: "0 0 * * *", every: 60000, run: function () {} }); }
+  catch (e) { threw = e; }
+  check("schedule rejects both cron and every",   threw && threw.code === "INVALID_SPEC");
+
+  threw = null;
+  try { sched.schedule({ name: "x", every: 60000 }); } catch (e) { threw = e; }
+  check("schedule rejects missing job+run",       threw && threw.code === "INVALID_SPEC");
+
+  threw = null;
+  try { sched.schedule({ name: "x", every: 500, run: function () {} }); }
+  catch (e) { threw = e; }
+  check("schedule rejects every<1000ms",          threw && threw.code === "INVALID_SPEC");
+
+  threw = null;
+  try { sched.schedule({ name: "x", every: 60000, job: "needs-jobs" }); }
+  catch (e) { threw = e; }
+  check("schedule with job= rejects when jobs unwired",
+        threw && threw.code === "INVALID_SPEC" && /requires opts.jobs/.test(threw.message));
+
+  // Happy path — sets up a task
+  sched.schedule({ name: "ok", every: 60000, run: function () {} });
+  var listed = sched.list();
+  check("schedule populates list()",              listed.length === 1 && listed[0].name === "ok");
+  check("listed task has nextRun",                typeof listed[0].nextRun === "string");
+
+  // Duplicate name rejected
+  threw = null;
+  try { sched.schedule({ name: "ok", every: 60000, run: function () {} }); }
+  catch (e) { threw = e; }
+  check("schedule rejects duplicate name",        threw && threw.code === "DUPLICATE_NAME");
+
+  await sched.stop();
+}
+
+async function testSchedulerDirectFnFires() {
+  // Use _fireOnce to drive a deterministic single fire — start() arms a
+  // setTimeout we'd otherwise have to wait for. The test verifies the
+  // dispatch path (run callback invoked, lastRun set, success audited).
+  var fired = 0;
+  var sched = b.scheduler.create({ audit: false });
+  sched.schedule({
+    name:  "tick",
+    every: 60000,
+    run:   async function () { fired++; },
+  });
+  sched._fireOnce("tick");
+  // Wait one microtask cycle for the promise to settle
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("direct-fn fire ran",                     fired === 1);
+  var listed = sched.list();
+  check("fire updates lastRun",                   typeof listed[0].lastRun === "string");
+  check("fire updates lastFinish",                typeof listed[0].lastFinish === "string");
+  check("fire counted in fires",                  listed[0].fires === 1);
+  check("running=false after settle",             listed[0].running === false);
+  await sched.stop();
+}
+
+async function testSchedulerJobDispatch() {
+  // Plug a fake jobs-shaped object — schedule { job: "name", payload }
+  // should call jobs.enqueue with the right args.
+  var calls = [];
+  var fakeJobs = {
+    enqueue: async function (name, payload, opts) {
+      calls.push({ name: name, payload: payload, opts: opts });
+      return { jobId: "j-1" };
+    },
+  };
+  var sched = b.scheduler.create({ jobs: fakeJobs, audit: false });
+  sched.schedule({
+    name:        "nightly",
+    every:       60000,
+    job:         "cleanup",
+    payload:     { scope: "all" },
+    enqueueOpts: { maxAttempts: 5 },
+  });
+  sched._fireOnce("nightly");
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("scheduler dispatched via jobs.enqueue",  calls.length === 1);
+  check("dispatched job name correct",            calls[0].name === "cleanup");
+  check("dispatched payload forwarded",           calls[0].payload && calls[0].payload.scope === "all");
+  check("enqueueOpts forwarded",                  calls[0].opts && calls[0].opts.maxAttempts === 5);
+  await sched.stop();
+}
+
+async function testSchedulerSkipsWhenStillRunning() {
+  // If a previous fire is still in-flight, the next fire should be
+  // skipped (counted as a miss) rather than running concurrently.
+  var concurrent = 0;
+  var maxConcurrent = 0;
+  var release;
+  var releasePromise = new Promise(function (r) { release = r; });
+  var sched = b.scheduler.create({ audit: false });
+  sched.schedule({
+    name:  "slow",
+    every: 60000,
+    run:   async function () {
+      concurrent++;
+      if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+      await releasePromise;
+      concurrent--;
+    },
+  });
+  sched._fireOnce("slow"); // arm — promise pending until release()
+  await new Promise(function (r) { setImmediate(r); });
+  sched._fireOnce("slow"); // should skip
+  sched._fireOnce("slow"); // should skip
+  var listed = sched.list();
+  check("overlap fires counted as misses",        listed[0].misses === 2);
+  check("max concurrent in-flight stays at 1",    maxConcurrent === 1);
+  release(); // let the in-flight finish
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  await sched.stop();
+}
+
+async function testSchedulerLeaderGate() {
+  // When opts.cluster reports non-leader, fires must be skipped
+  // (counted as nonLeaderSkips) and the run callback must not execute.
+  var fired = 0;
+  var leader = false;
+  var fakeCluster = { isLeader: function () { return leader; } };
+  var sched = b.scheduler.create({ cluster: fakeCluster, audit: false });
+  sched.schedule({
+    name:  "leader-only",
+    every: 60000,
+    run:   async function () { fired++; },
+  });
+
+  sched._fireOnce("leader-only");
+  await new Promise(function (r) { setImmediate(r); });
+  check("non-leader fire skipped",                fired === 0);
+  check("non-leader skip counted",                sched.list()[0].nonLeaderSkips === 1);
+
+  leader = true;
+  sched._fireOnce("leader-only");
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("leader fire ran",                        fired === 1);
+  check("fires counter reflects leader run",      sched.list()[0].fires === 1);
+  await sched.stop();
+}
+
+async function testSchedulerErrorRecorded() {
+  var sched = b.scheduler.create({ audit: false });
+  sched.schedule({
+    name:  "boom",
+    every: 60000,
+    run:   async function () { throw new Error("kaboom"); },
+  });
+  sched._fireOnce("boom");
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  var listed = sched.list();
+  check("failed fire records lastError",          listed[0].lastError === "kaboom");
+  check("failed fire still clears running",       listed[0].running === false);
+  await sched.stop();
+}
+
+function testSchedulerStartStopIdempotent() {
+  var sched = b.scheduler.create({ audit: false });
+  sched.schedule({ name: "x", every: 60000, run: function () {} });
+  // start/stop pair completes without throwing
+  return sched.start().then(function () {
+    return sched.start(); // idempotent
+  }).then(function () {
+    return sched.stop();
+  }).then(function () {
+    return sched.stop(); // idempotent
+  }).then(function () {
+    check("scheduler start/stop idempotent",      true);
+  });
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -5651,6 +5927,17 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // scheduler — cron + interval over jobs (Phase 5 slice 5)
+  testSchedulerSurface();
+  testSchedulerCronParser();
+  testSchedulerNextCronFire();
+  await testSchedulerScheduleValidation();
+  await testSchedulerDirectFnFires();
+  await testSchedulerJobDispatch();
+  await testSchedulerSkipsWhenStillRunning();
+  await testSchedulerLeaderGate();
+  await testSchedulerErrorRecorded();
+  await testSchedulerStartStopIdempotent();
   // forms — CSRF tokens + HTML render + validation (Phase 4 slice 4)
   testFormsSurface();
   testFormsCsrfTokenGeneration();
@@ -5882,6 +6169,16 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testSchedulerSurface:                      testSchedulerSurface,
+  testSchedulerCronParser:                   testSchedulerCronParser,
+  testSchedulerNextCronFire:                 testSchedulerNextCronFire,
+  testSchedulerScheduleValidation:           testSchedulerScheduleValidation,
+  testSchedulerDirectFnFires:                testSchedulerDirectFnFires,
+  testSchedulerJobDispatch:                  testSchedulerJobDispatch,
+  testSchedulerSkipsWhenStillRunning:        testSchedulerSkipsWhenStillRunning,
+  testSchedulerLeaderGate:                   testSchedulerLeaderGate,
+  testSchedulerErrorRecorded:                testSchedulerErrorRecorded,
+  testSchedulerStartStopIdempotent:          testSchedulerStartStopIdempotent,
   testFormsSurface:                          testFormsSurface,
   testFormsCsrfTokenGeneration:              testFormsCsrfTokenGeneration,
   testFormsCsrfTokenVerify:                  testFormsCsrfTokenVerify,
