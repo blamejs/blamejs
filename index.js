@@ -57,6 +57,7 @@ var authHeader = require("./lib/auth-header");
 var auth = {
   password: require("./lib/auth/password"),
   totp:     require("./lib/auth/totp"),
+  passkey:  require("./lib/auth/passkey"),
 };
 
 module.exports = {

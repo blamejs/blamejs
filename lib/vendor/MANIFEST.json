@@ -40,6 +40,24 @@
       ],
       "bundler": "esbuild --format=cjs --platform=node (inlines @phc/format + node-gyp-build)",
       "bundledAt": "2026-04-25"
+    },
+    "@simplewebauthn/server": {
+      "version": "13.3.0",
+      "license": "MIT",
+      "author": "Matthew Miller",
+      "source": "https://github.com/MasterKale/SimpleWebAuthn",
+      "exports": [
+        "generateRegistrationOptions",
+        "verifyRegistrationResponse",
+        "generateAuthenticationOptions",
+        "verifyAuthenticationResponse",
+        "MetadataService"
+      ],
+      "files": {
+        "server": "lib/vendor/simplewebauthn-server.cjs"
+      },
+      "bundler": "esbuild --format=cjs --minify --platform=node --external:crypto --external:node:crypto",
+      "bundledAt": "2026-04-26"
     }
   }
 }

@@ -891,6 +891,185 @@ function testAuthTotpSurface() {
         t.SUPPORTED_ALGORITHMS.indexOf("sha512") !== -1);
 }
 
+// ---- auth.passkey (WebAuthn) ----
+//
+// Registration and authentication are end-to-end ceremonies between
+// the server and a real authenticator (Touch ID / YubiKey / 1Password
+// /etc.) — no built-in mock authenticator ships with the framework.
+// These tests cover what we CAN cover without one:
+//
+//   - module surface (exports + auth namespace wiring)
+//   - input validation (each required field surfaces as AuthError
+//     with a code that matches the framework's other auth.* primitives)
+//   - generated registration / authentication options have RFC-shaped
+//     fields the browser API needs (challenge, rp, user, pubKeyCredParams,
+//     timeout)
+//   - hints default ["client-device", "hybrid"] so platform AND
+//     cross-device authenticators surface
+//
+// The verify* paths rely on real signed assertions; round-tripping
+// without an authenticator would mean stubbing the simplewebauthn
+// internals, which would test our stub more than our wrapper.
+// Operators get full ceremony coverage at the integration layer.
+
+async function testAuthPasskeySurface() {
+  var p = b.auth.passkey;
+  check("auth.passkey namespace present",                typeof b.auth.passkey === "object");
+  check("auth.passkey.startRegistration is a function",  typeof p.startRegistration === "function");
+  check("auth.passkey.verifyRegistration is a function", typeof p.verifyRegistration === "function");
+  check("auth.passkey.startAuthentication is a function", typeof p.startAuthentication === "function");
+  check("auth.passkey.verifyAuthentication is a function", typeof p.verifyAuthentication === "function");
+
+  // Vendor bundle loads + exports the four core entry points
+  var v = require("../lib/vendor/simplewebauthn-server.cjs");
+  check("vendor exports generateRegistrationOptions",    typeof v.generateRegistrationOptions === "function");
+  check("vendor exports verifyRegistrationResponse",     typeof v.verifyRegistrationResponse === "function");
+  check("vendor exports generateAuthenticationOptions",  typeof v.generateAuthenticationOptions === "function");
+  check("vendor exports verifyAuthenticationResponse",   typeof v.verifyAuthenticationResponse === "function");
+}
+
+async function testAuthPasskeyStartRegistrationOptions() {
+  var p = b.auth.passkey;
+  var opts = await p.startRegistration({
+    rpName:           "BlameJS",
+    rpId:             "example.com",
+    userName:         "alice@example.com",
+    userDisplayName:  "Alice",
+  });
+  check("registration options has challenge",            typeof opts.challenge === "string" && opts.challenge.length > 0);
+  check("registration options has rp.name",              opts.rp && opts.rp.name === "BlameJS");
+  check("registration options has rp.id",                opts.rp && opts.rp.id === "example.com");
+  check("registration options has user.name",            opts.user && opts.user.name === "alice@example.com");
+  check("registration options has user.displayName",     opts.user && opts.user.displayName === "Alice");
+  check("registration options has user.id (random)",     typeof opts.user.id === "string" && opts.user.id.length > 0);
+  check("registration options has pubKeyCredParams",     Array.isArray(opts.pubKeyCredParams) && opts.pubKeyCredParams.length > 0);
+  check("registration options has timeout",              typeof opts.timeout === "number" && opts.timeout > 0);
+  check("registration options attestation = 'none'",     opts.attestation === "none");
+  check("registration options residentKey = 'preferred'",
+        opts.authenticatorSelection && opts.authenticatorSelection.residentKey === "preferred");
+  check("registration options userVerification = 'preferred'",
+        opts.authenticatorSelection.userVerification === "preferred");
+  check("registration options hints = client-device + hybrid",
+        Array.isArray(opts.hints) &&
+        opts.hints.indexOf("client-device") !== -1 &&
+        opts.hints.indexOf("hybrid") !== -1);
+
+  // Two consecutive calls produce different challenges (random)
+  var opts2 = await p.startRegistration({
+    rpName: "BlameJS", rpId: "example.com", userName: "alice@example.com",
+  });
+  check("registration challenge is non-deterministic",   opts.challenge !== opts2.challenge);
+}
+
+async function testAuthPasskeyStartAuthenticationOptions() {
+  var p = b.auth.passkey;
+  var opts = await p.startAuthentication({
+    rpId: "example.com",
+  });
+  check("auth options has challenge",                    typeof opts.challenge === "string" && opts.challenge.length > 0);
+  check("auth options has rpId",                         opts.rpId === "example.com");
+  check("auth options has timeout",                      typeof opts.timeout === "number");
+  check("auth options userVerification = 'preferred'",   opts.userVerification === "preferred");
+  check("auth options hints = client-device + hybrid",
+        Array.isArray(opts.hints) &&
+        opts.hints.indexOf("client-device") !== -1 &&
+        opts.hints.indexOf("hybrid") !== -1);
+}
+
+async function testAuthPasskeyValidationErrors() {
+  var p = b.auth.passkey;
+
+  // startRegistration — missing fields
+  var threw = null;
+  try { await p.startRegistration({}); }
+  catch (e) { threw = e; }
+  check("startRegistration({}) throws missing-rpName",
+        threw && threw.code === "auth-passkey/missing-rpName");
+
+  threw = null;
+  try { await p.startRegistration({ rpName: "X" }); }
+  catch (e) { threw = e; }
+  check("startRegistration without rpId throws missing-rpId",
+        threw && threw.code === "auth-passkey/missing-rpId");
+
+  threw = null;
+  try { await p.startRegistration({ rpName: "X", rpId: "x.test" }); }
+  catch (e) { threw = e; }
+  check("startRegistration without userName throws missing-userName",
+        threw && threw.code === "auth-passkey/missing-userName");
+
+  // startAuthentication — missing rpId
+  threw = null;
+  try { await p.startAuthentication({}); }
+  catch (e) { threw = e; }
+  check("startAuthentication({}) throws missing-rpId",
+        threw && threw.code === "auth-passkey/missing-rpId");
+
+  // verifyRegistration — missing fields
+  threw = null;
+  try { await p.verifyRegistration({}); }
+  catch (e) { threw = e; }
+  check("verifyRegistration({}) throws missing-response",
+        threw && threw.code === "auth-passkey/missing-response");
+
+  threw = null;
+  try { await p.verifyRegistration({ response: {} }); }
+  catch (e) { threw = e; }
+  check("verifyRegistration without expectedChallenge throws",
+        threw && threw.code === "auth-passkey/missing-expectedChallenge");
+
+  // verifyAuthentication — missing credential
+  threw = null;
+  try {
+    await p.verifyAuthentication({
+      response: {},
+      expectedChallenge: "c",
+      expectedOrigin:    "https://x.test",
+      expectedRPID:      "x.test",
+    });
+  } catch (e) { threw = e; }
+  check("verifyAuthentication without credential throws",
+        threw && threw.code === "auth-passkey/missing-credential");
+
+  // All errors are AuthError with permanent=true
+  check("auth-passkey errors are AuthError",             threw && threw.isAuthError === true);
+  check("auth-passkey errors are permanent",             threw && threw.permanent === true);
+}
+
+async function testAuthPasskeyExcludeCredentials() {
+  // Registration options can carry an excludeCredentials list so the
+  // browser refuses to register a key that's already enrolled.
+  var p = b.auth.passkey;
+  var opts = await p.startRegistration({
+    rpName: "BlameJS",
+    rpId:   "example.com",
+    userName: "alice@example.com",
+    excludeCredentials: [
+      { id: "AAAA", transports: ["internal"] },
+      { id: "BBBB" },
+    ],
+  });
+  check("excludeCredentials propagates",
+        Array.isArray(opts.excludeCredentials) &&
+        opts.excludeCredentials.length === 2);
+  check("excludeCredentials preserves transports",
+        opts.excludeCredentials[0].transports &&
+        opts.excludeCredentials[0].transports.indexOf("internal") !== -1);
+}
+
+async function testAuthPasskeyCustomHints() {
+  // Operators can override the default hints (e.g. force platform-only)
+  var p = b.auth.passkey;
+  var opts = await p.startRegistration({
+    rpName: "BlameJS",
+    rpId: "example.com",
+    userName: "alice@example.com",
+    hints: ["client-device"],
+  });
+  check("custom hints override default",
+        opts.hints.length === 1 && opts.hints[0] === "client-device");
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -3403,6 +3582,13 @@ async function run() {
   testAuthTotpUriShape();
   testAuthTotpBackupCodes();
   testAuthTotpBadAlgorithmRejected();
+  // auth.passkey — WebAuthn (Phase 3 slice 3)
+  await testAuthPasskeySurface();
+  await testAuthPasskeyStartRegistrationOptions();
+  await testAuthPasskeyStartAuthenticationOptions();
+  await testAuthPasskeyValidationErrors();
+  await testAuthPasskeyExcludeCredentials();
+  await testAuthPasskeyCustomHints();
   // handlers primitive
   await testHandlerEmitAndDrain();
   await testHandlerEmitDuringFlushNextCycle();
@@ -3541,6 +3727,12 @@ module.exports = {
   testAuthTotpUriShape:                      testAuthTotpUriShape,
   testAuthTotpBackupCodes:                   testAuthTotpBackupCodes,
   testAuthTotpBadAlgorithmRejected:          testAuthTotpBadAlgorithmRejected,
+  testAuthPasskeySurface:                    testAuthPasskeySurface,
+  testAuthPasskeyStartRegistrationOptions:   testAuthPasskeyStartRegistrationOptions,
+  testAuthPasskeyStartAuthenticationOptions: testAuthPasskeyStartAuthenticationOptions,
+  testAuthPasskeyValidationErrors:           testAuthPasskeyValidationErrors,
+  testAuthPasskeyExcludeCredentials:         testAuthPasskeyExcludeCredentials,
+  testAuthPasskeyCustomHints:                testAuthPasskeyCustomHints,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
