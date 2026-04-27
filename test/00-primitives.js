@@ -10023,6 +10023,159 @@ function testFrameworkError() {
   catch (e) {
     check("SqlSafeError: extends FrameworkError",   e instanceof fe.FrameworkError);
   }
+
+  // defineClass — factory for the standard FrameworkError-subclass shape
+  check("defineClass is a function",                typeof fe.defineClass === "function");
+
+  var Plain = fe.defineClass("PlainError");
+  var p = new Plain("p/code", "plain message", true);
+  check("defineClass: name",                        p.name === "PlainError");
+  check("defineClass: code",                        p.code === "p/code");
+  check("defineClass: message",                     p.message === "plain message");
+  check("defineClass: permanent flag",              p.permanent === true);
+  check("defineClass: legacy isXError flag",        p.isPlainError === true);
+  check("defineClass: extends FrameworkError",      p instanceof fe.FrameworkError);
+  check("defineClass: extends Error",               p instanceof Error);
+  check("defineClass: constructor.name set",        Plain.name === "PlainError");
+
+  var pNo = new Plain("p/code", "plain message");
+  check("defineClass: permanent default false",     pNo.permanent === false);
+
+  var Status = fe.defineClass("StatusError", { withStatusCode: true });
+  var s = new Status("s/x", "msg", true, 404);
+  check("defineClass withStatusCode: statusCode set", s.statusCode === 404);
+  check("defineClass withStatusCode: still permanent", s.permanent === true);
+
+  var Always = fe.defineClass("AlwaysError", { alwaysPermanent: true });
+  var a = new Always("a/x", "msg");
+  check("defineClass alwaysPermanent: permanent=true",  a.permanent === true);
+  // Even if caller passes false, alwaysPermanent wins (it's the contract)
+  var a2 = new Always("a/x", "msg", false);
+  check("defineClass alwaysPermanent: caller can't override", a2.permanent === true);
+
+  var WithCause = fe.defineClass("CauseError", { withCause: true });
+  var underlying = new Error("upstream");
+  var c = new WithCause("c/x", "wrapped", underlying);
+  check("defineClass withCause: cause set",         c.cause === underlying);
+
+  // alwaysPermanent + (withStatusCode|withCause) is mutually exclusive
+  var threw = null;
+  try { fe.defineClass("X", { alwaysPermanent: true, withStatusCode: true }); }
+  catch (e) { threw = e; }
+  check("defineClass: alwaysPermanent + withStatusCode rejected",
+        threw && /mutually exclusive/.test(threw.message));
+
+  threw = null;
+  try { fe.defineClass(""); } catch (e) { threw = e; }
+  check("defineClass: empty name rejected",         threw && /name must be a non-empty string/.test(threw.message));
+
+  // The framework's existing ObjectStoreError is now built via defineClass.
+  // Verify the migration didn't break the constructor signature.
+  var ose2 = new fe.ObjectStoreError("X", "msg", true, 502);
+  check("ObjectStoreError post-migration: statusCode", ose2.statusCode === 502);
+  check("ObjectStoreError post-migration: permanent",  ose2.permanent === true);
+  check("ObjectStoreError post-migration: legacy flag",ose2.isObjectStoreError === true);
+
+  var auth2 = new fe.AuthError("AUTH", "no");
+  check("AuthError post-migration: alwaysPermanent",  auth2.permanent === true);
+}
+
+function testAtomicFileNewHelpers() {
+  // ensureDir / fsync / fsyncDir / copyDirRecursive / pathTimestamp —
+  // the lifted helpers
+  check("ensureDir is a function",                  typeof b.atomicFile.ensureDir === "function");
+  check("fsync is a function",                      typeof b.atomicFile.fsync === "function");
+  check("fsyncDir is a function",                   typeof b.atomicFile.fsyncDir === "function");
+  check("copyDirRecursive is a function",           typeof b.atomicFile.copyDirRecursive === "function");
+  check("pathTimestamp is a function",              typeof b.atomicFile.pathTimestamp === "function");
+
+  // pathTimestamp shape
+  var t = b.atomicFile.pathTimestamp();
+  check("pathTimestamp matches FS-safe ISO format",
+        /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(t));
+  check("pathTimestamp has no colons",              t.indexOf(":") === -1);
+  check("pathTimestamp has no dots",                t.indexOf(".") === -1);
+  // Pinned date round-trip
+  var t2 = b.atomicFile.pathTimestamp(new Date(0));
+  check("pathTimestamp(Date 0) → 1970",             t2 === "1970-01-01T00-00-00-000Z");
+  // String-sort gives chronological order
+  var early = b.atomicFile.pathTimestamp(new Date(1000000));
+  var late  = b.atomicFile.pathTimestamp(new Date(2000000));
+  check("pathTimestamp string-sorts chronologically", early < late);
+
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-aflift-"));
+  try {
+    // ensureDir creates with default 0o700, recursive
+    var nested = path.join(dir, "a", "b", "c");
+    b.atomicFile.ensureDir(nested);
+    check("ensureDir creates nested directories",   fs.existsSync(nested));
+    // Idempotent — calling twice doesn't throw
+    b.atomicFile.ensureDir(nested);
+    check("ensureDir is idempotent",                 fs.existsSync(nested));
+
+    // ensureDir with custom mode (verified by file existence; mode bits
+    // are platform-specific so we don't strict-check them)
+    var customMode = path.join(dir, "publicish");
+    b.atomicFile.ensureDir(customMode, 0o755);
+    check("ensureDir honors custom mode (dir created)", fs.existsSync(customMode));
+
+    // ensureDir rejects bad path
+    var threw = null;
+    try { b.atomicFile.ensureDir(""); } catch (e) { threw = e; }
+    check("ensureDir empty path rejected",          threw && threw.code === "atomic-file/bad-path");
+
+    // copyDirRecursive: build a small tree and copy
+    var src = path.join(dir, "src");
+    var dst = path.join(dir, "dst");
+    fs.mkdirSync(src, { recursive: true });
+    fs.mkdirSync(path.join(src, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(src, "a.txt"), "alpha");
+    fs.writeFileSync(path.join(src, "sub", "b.txt"), "bravo");
+    var r = b.atomicFile.copyDirRecursive(src, dst);
+    check("copyDirRecursive returns fileCount",     r.fileCount === 2);
+    check("copyDirRecursive returns byteCount",     r.byteCount === ("alpha".length + "bravo".length));
+    check("copyDirRecursive: top-level file copied",
+          fs.readFileSync(path.join(dst, "a.txt"), "utf8") === "alpha");
+    check("copyDirRecursive: nested file copied",
+          fs.readFileSync(path.join(dst, "sub", "b.txt"), "utf8") === "bravo");
+
+    // copyDirRecursive: refuses overwrite by default (COPYFILE_EXCL)
+    threw = null;
+    try { b.atomicFile.copyDirRecursive(src, dst); } catch (e) { threw = e; }
+    check("copyDirRecursive: refuses overwrite by default", threw !== null);
+
+    // copyDirRecursive with overwrite=true succeeds
+    fs.writeFileSync(path.join(src, "a.txt"), "alpha-v2");
+    var r2 = b.atomicFile.copyDirRecursive(src, dst, { overwrite: true });
+    check("copyDirRecursive overwrite=true succeeds", r2.fileCount === 2);
+    check("copyDirRecursive overwrite=true wrote new bytes",
+          fs.readFileSync(path.join(dst, "a.txt"), "utf8") === "alpha-v2");
+
+    // copyDirRecursive: src must exist
+    threw = null;
+    try { b.atomicFile.copyDirRecursive(path.join(dir, "nope"), path.join(dir, "dst2")); }
+    catch (e) { threw = e; }
+    check("copyDirRecursive missing src rejected", threw && threw.code === "atomic-file/missing-src");
+
+    // fsync / fsyncDir don't throw (best-effort)
+    var fp = path.join(dir, "fsync-target.txt");
+    fs.writeFileSync(fp, "data");
+    var fd = fs.openSync(fp, "r+");
+    try {
+      b.atomicFile.fsync(fd);
+      check("fsync on real fd succeeds (no throw)", true);
+    } finally { fs.closeSync(fd); }
+    b.atomicFile.fsyncDir(dir);
+    check("fsyncDir on real dir succeeds (no throw)", true);
+
+    // fsync / fsyncDir swallow errors (bad fd / nonexistent path)
+    b.atomicFile.fsync(99999);
+    b.atomicFile.fsyncDir(path.join(dir, "absent-dir"));
+    check("fsync on bad fd does not throw",         true);
+    check("fsyncDir on missing path does not throw", true);
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+  }
 }
 
 function testLazyRequire() {
@@ -10811,6 +10964,7 @@ async function run() {
   await testAtomicFile();
   await testAtomicFileLock();
   await testAtomicFileListDir();
+  testAtomicFileNewHelpers();
   // parsers/* primitives (independent of framework state)
   testXmlParse();
   testXmlSecurityRejections();
@@ -11201,6 +11355,7 @@ module.exports = {
   testJsonValidateCollect:                   testJsonValidateCollect,
   testJsonFormats:                           testJsonFormats,
   testAtomicFile:                            testAtomicFile,
+  testAtomicFileNewHelpers:                  testAtomicFileNewHelpers,
   testAtomicFileLock:                        testAtomicFileLock,
   testAtomicFileListDir:                     testAtomicFileListDir,
   testXmlParse:                              testXmlParse,
