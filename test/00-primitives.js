@@ -5020,6 +5020,436 @@ async function testBackupCryptoArgValidation() {
         threw && threw.code === "backup-crypto/bad-input");
 }
 
+// ---- safe-schema (declarative input validator) ----
+
+function testSafeSchemaSurface() {
+  var s = b.safeSchema;
+  check("b.safeSchema namespace present",          typeof s === "object");
+  check("string is a function",                    typeof s.string === "function");
+  check("number is a function",                    typeof s.number === "function");
+  check("boolean is a function",                   typeof s.boolean === "function");
+  check("literal is a function",                   typeof s.literal === "function");
+  check("enum_ is a function",                     typeof s.enum_ === "function");
+  check("oneOf is enum_ alias",                    s.oneOf === s.enum_);
+  check("null_ is a function",                     typeof s.null_ === "function");
+  check("undefined_ is a function",                typeof s.undefined_ === "function");
+  check("any is a function",                       typeof s.any === "function");
+  check("unknown is a function",                   typeof s.unknown === "function");
+  check("object is a function",                    typeof s.object === "function");
+  check("array is a function",                     typeof s.array === "function");
+  check("tuple is a function",                     typeof s.tuple === "function");
+  check("union is a function",                     typeof s.union === "function");
+  check("discriminatedUnion is a function",        typeof s.discriminatedUnion === "function");
+  check("record is a function",                    typeof s.record === "function");
+  check("lazy is a function",                      typeof s.lazy === "function");
+  check("preprocess is a function",                typeof s.preprocess === "function");
+  check("optional helper is a function",           typeof s.optional === "function");
+  check("nullable helper is a function",           typeof s.nullable === "function");
+  check("SafeSchemaError is a class",              typeof s.SafeSchemaError === "function");
+}
+
+function testSafeSchemaStringPrimitive() {
+  var s = b.safeSchema;
+  check("string accepts a string",                 s.string().parse("hello") === "hello");
+
+  var threw = null;
+  try { s.string().parse(42); } catch (e) { threw = e; }
+  check("string rejects a number",                 threw && threw.code === "safe-schema/invalid");
+  check("string error has issues array",           threw && Array.isArray(threw.issues) && threw.issues[0].code === "type");
+
+  check("string().min(3) accepts 'abc'",           s.string().min(3).parse("abc") === "abc");
+  var sp = s.string().min(3).safeParse("ab");
+  check("string().min(3) rejects 'ab' via safeParse", sp.ok === false && sp.errors[0].code === "string/too-short");
+
+  check("string().max(3) rejects 'abcd'",          s.string().max(3).safeParse("abcd").ok === false);
+  check("string().length(3) accepts 'abc'",        s.string().length(3).parse("abc") === "abc");
+  check("string().length(3) rejects 'abcd'",       s.string().length(3).safeParse("abcd").ok === false);
+  check("string().nonempty rejects ''",            s.string().nonempty().safeParse("").ok === false);
+
+  check("string().regex matches",                  s.string().regex(/^foo/).parse("foobar") === "foobar");
+  check("string().regex rejects",                  s.string().regex(/^foo/).safeParse("bar").ok === false);
+
+  check("string().email accepts valid",            s.string().email().parse("a@b.co") === "a@b.co");
+  check("string().email rejects invalid",          s.string().email().safeParse("not-an-email").ok === false);
+
+  check("string().url accepts https",              s.string().url().parse("https://x.io") === "https://x.io");
+  check("string().url rejects bare",               s.string().url().safeParse("x.io").ok === false);
+
+  check("string().uuid accepts v4",                s.string().uuid().parse("123e4567-e89b-42d3-a456-426614174000") === "123e4567-e89b-42d3-a456-426614174000");
+  check("string().uuid rejects invalid",           s.string().uuid().safeParse("not-a-uuid").ok === false);
+
+  check("string().date accepts YYYY-MM-DD",        s.string().date().parse("2026-04-27") === "2026-04-27");
+  check("string().date rejects datetime",          s.string().date().safeParse("2026-04-27T00:00:00Z").ok === false);
+
+  check("string().datetime accepts ISO-8601 Z",    s.string().datetime().parse("2026-04-27T12:00:00Z") === "2026-04-27T12:00:00Z");
+  check("string().datetime accepts +offset",       s.string().datetime().parse("2026-04-27T12:00:00+10:00") === "2026-04-27T12:00:00+10:00");
+  check("string().datetime rejects no tz",         s.string().datetime().safeParse("2026-04-27T12:00:00").ok === false);
+
+  check("string().ipv4 accepts",                   s.string().ipv4().parse("192.168.1.1") === "192.168.1.1");
+  check("string().ipv4 rejects ipv6",              s.string().ipv4().safeParse("::1").ok === false);
+  check("string().ipv6 accepts ::1",               s.string().ipv6().parse("::1") === "::1");
+  check("string().ipv6 accepts full",              s.string().ipv6().parse("2001:0db8:85a3:0000:0000:8a2e:0370:7334") === "2001:0db8:85a3:0000:0000:8a2e:0370:7334");
+  check("string().ip accepts both",                s.string().ip().parse("192.168.1.1") === "192.168.1.1" &&
+                                                     s.string().ip().parse("::1") === "::1");
+
+  check("string().cuid accepts",                   s.string().cuid().parse("clx1234567890abcdefghijkl") === "clx1234567890abcdefghijkl");
+  check("string().cuid rejects",                   s.string().cuid().safeParse("not-cuid").ok === false);
+
+  check("string().ulid accepts",                   s.string().ulid().parse("01ARZ3NDEKTSV4RRFFQ69G5FAV") === "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+  check("string().ulid rejects",                   s.string().ulid().safeParse("not-ulid").ok === false);
+
+  check("string().base64 accepts",                 s.string().base64().parse("SGVsbG8=") === "SGVsbG8=");
+  check("string().base64 rejects garbage",         s.string().base64().safeParse("not!base64").ok === false);
+
+  check("string().startsWith accepts",             s.string().startsWith("foo").parse("foobar") === "foobar");
+  check("string().startsWith rejects",             s.string().startsWith("foo").safeParse("barfoo").ok === false);
+  check("string().endsWith accepts",               s.string().endsWith("bar").parse("foobar") === "foobar");
+  check("string().endsWith rejects",               s.string().endsWith("bar").safeParse("foob").ok === false);
+  check("string().includes accepts",               s.string().includes("oo").parse("foobar") === "foobar");
+  check("string().includes rejects",               s.string().includes("xx").safeParse("foobar").ok === false);
+
+  // Coercion-via-transform helpers
+  check("string().trim trims whitespace",          s.string().trim().parse("  hi  ") === "hi");
+  check("string().trim().min(3) sees trimmed",     s.string().trim().min(3).parse("  hello  ") === "hello");
+  check("string().toLowerCase converts",           s.string().toLowerCase().parse("ABC") === "abc");
+  check("string().toUpperCase converts",           s.string().toUpperCase().parse("abc") === "ABC");
+}
+
+function testSafeSchemaNumberPrimitive() {
+  var s = b.safeSchema;
+  check("number accepts 42",                       s.number().parse(42) === 42);
+  check("number rejects '42'",                     s.number().safeParse("42").ok === false);
+  check("number rejects NaN",                      s.number().safeParse(NaN).ok === false);
+
+  check("number().int accepts 42",                 s.number().int().parse(42) === 42);
+  check("number().int rejects 1.5",                s.number().int().safeParse(1.5).ok === false);
+
+  check("number().min(0) accepts 5",               s.number().min(0).parse(5) === 5);
+  check("number().min(0) rejects -1",              s.number().min(0).safeParse(-1).ok === false);
+  check("number().max(10) rejects 11",             s.number().max(10).safeParse(11).ok === false);
+  check("number().gt(0) rejects 0",                s.number().gt(0).safeParse(0).ok === false);
+  check("number().lt(10) rejects 10",              s.number().lt(10).safeParse(10).ok === false);
+
+  check("number().positive rejects 0",             s.number().positive().safeParse(0).ok === false);
+  check("number().positive accepts 0.1",           s.number().positive().parse(0.1) === 0.1);
+  check("number().negative rejects 0",             s.number().negative().safeParse(0).ok === false);
+  check("number().nonnegative accepts 0",          s.number().nonnegative().parse(0) === 0);
+  check("number().nonpositive accepts 0",          s.number().nonpositive().parse(0) === 0);
+
+  check("number().finite rejects Infinity",        s.number().finite().safeParse(Infinity).ok === false);
+  check("number().multipleOf accepts",             s.number().multipleOf(5).parse(15) === 15);
+  check("number().multipleOf rejects",             s.number().multipleOf(5).safeParse(7).ok === false);
+
+  check("number().safe accepts safe int",          s.number().safe().parse(42) === 42);
+  check("number().safe rejects beyond 2^53",       s.number().safe().safeParse(Number.MAX_SAFE_INTEGER + 2).ok === false);
+}
+
+function testSafeSchemaBooleanLiteralEnum() {
+  var s = b.safeSchema;
+  check("boolean accepts true",                    s.boolean().parse(true) === true);
+  check("boolean rejects 'true' string",           s.boolean().safeParse("true").ok === false);
+
+  check("literal accepts exact value",             s.literal("yes").parse("yes") === "yes");
+  check("literal rejects other value",             s.literal("yes").safeParse("no").ok === false);
+  check("literal accepts 0",                       s.literal(0).parse(0) === 0);
+
+  var color = s.enum_(["red", "green", "blue"]);
+  check("enum_ accepts member",                    color.parse("red") === "red");
+  check("enum_ rejects non-member",                color.safeParse("yellow").ok === false);
+
+  var threw = null;
+  try { s.enum_([]); } catch (e) { threw = e; }
+  check("enum_ rejects empty array",               threw && threw.code === "safe-schema/bad-enum");
+}
+
+function testSafeSchemaNullUndefinedAny() {
+  var s = b.safeSchema;
+  check("null_ accepts null",                      s.null_().parse(null) === null);
+  check("null_ rejects undefined",                 s.null_().safeParse(undefined).ok === false);
+  check("null_ rejects 0",                         s.null_().safeParse(0).ok === false);
+
+  // any() accepts anything including undefined and null because of its
+  // built-in optional+nullable flags.
+  check("any accepts string",                      s.any().parse("x") === "x");
+  check("any accepts number",                      s.any().parse(42) === 42);
+  check("any accepts null",                        s.any().parse(null) === null);
+  check("any accepts undefined",                   s.any().parse(undefined) === undefined);
+  check("unknown is alias of any",                 s.unknown().parse(42) === 42);
+}
+
+function testSafeSchemaModifiers() {
+  var s = b.safeSchema;
+  // .optional()
+  check("optional accepts undefined",              s.string().optional().parse(undefined) === undefined);
+  check("optional accepts string",                 s.string().optional().parse("x") === "x");
+  check("optional rejects null without nullable",  s.string().optional().safeParse(null).ok === false);
+
+  // .nullable()
+  check("nullable accepts null",                   s.string().nullable().parse(null) === null);
+  check("nullable rejects undefined without optional", s.string().nullable().safeParse(undefined).ok === false);
+
+  // .default(v)
+  check("default substitutes for undefined",       s.number().default(42).parse(undefined) === 42);
+  check("default ignored when value present",      s.number().default(42).parse(7) === 7);
+
+  // .default(fn) — function form for "fresh value per parse"
+  var counter = 0;
+  var schema = s.number().default(function () { counter++; return counter; });
+  check("default fn called once per undefined parse 1", schema.parse(undefined) === 1);
+  check("default fn called once per undefined parse 2", schema.parse(undefined) === 2);
+
+  // .catch(v) — substitutes on ANY failure
+  check("catch substitutes on type failure",       s.number().catch(0).parse("not-a-number") === 0);
+  check("catch leaves valid alone",                s.number().catch(0).parse(42) === 42);
+
+  // Top-level helpers compose identically
+  check("optional() helper matches .optional()",   b.safeSchema.optional(s.string()).parse(undefined) === undefined);
+  check("nullable() helper matches .nullable()",   b.safeSchema.nullable(s.string()).parse(null) === null);
+}
+
+function testSafeSchemaObject() {
+  var s = b.safeSchema;
+  var schema = s.object({
+    name: s.string(),
+    age:  s.number().int().min(0),
+    tags: s.array(s.string()).optional(),
+  });
+  var ok = schema.parse({ name: "Alice", age: 30, tags: ["a", "b"] });
+  check("object parse returns clean shape",        ok.name === "Alice" && ok.age === 30 && ok.tags.length === 2);
+
+  var optResult = schema.parse({ name: "Bob", age: 22 });
+  check("object missing optional key — value undefined", optResult.tags === undefined);
+
+  var bad = schema.safeParse({ name: "X", age: -1 });
+  check("object surfaces nested issue path",       bad.ok === false &&
+                                                     bad.errors[0].path[0] === "age" &&
+                                                     bad.errors[0].code === "number/too-small");
+
+  // Strict by default — unknown keys rejected
+  var strictBad = schema.safeParse({ name: "X", age: 1, extra: 1 });
+  check("strict mode: unknown key rejected",       strictBad.ok === false);
+  var unknownIssue = strictBad.errors.find(function (e) { return e.code === "object/unknown-key"; });
+  check("strict mode: unknown-key issue surfaced", !!unknownIssue);
+
+  // Passthrough retains unknown keys
+  var pt = schema.passthrough().parse({ name: "X", age: 1, extra: "kept" });
+  check("passthrough retains unknown keys",        pt.extra === "kept");
+
+  // Nested objects produce nested error paths
+  var deep = s.object({
+    user: s.object({ profile: s.object({ name: s.string() }) }),
+  });
+  var deepBad = deep.safeParse({ user: { profile: { name: 42 } } });
+  check("nested error path includes user.profile.name",
+        deepBad.errors[0].path.join(".") === "user.profile.name");
+}
+
+function testSafeSchemaObjectPickOmitExtendPartial() {
+  var s = b.safeSchema;
+  var base = s.object({ a: s.string(), b: s.number(), c: s.boolean() });
+
+  var picked = base.pick(["a", "c"]);
+  check("pick narrows to listed keys",             picked.parse({ a: "x", c: true }).a === "x");
+  check("pick rejects originally-required omitted key in input as unknown",
+        picked.safeParse({ a: "x", c: true, b: 5 }).ok === false);
+
+  var omitted = base.omit(["b"]);
+  var omRes = omitted.parse({ a: "x", c: true });
+  check("omit drops listed keys, others required", omRes.a === "x" && omRes.c === true);
+
+  var extended = base.extend({ d: s.string() });
+  check("extend adds new key",                     extended.parse({ a: "x", b: 1, c: true, d: "y" }).d === "y");
+
+  var partial = base.partial();
+  check("partial accepts empty object",            Object.keys(partial.parse({})).length === 0);
+  check("partial accepts subset",                  partial.parse({ a: "x" }).a === "x");
+
+  var requiredAgain = partial.required();
+  check("required() inverse of partial",           requiredAgain.safeParse({ a: "x" }).ok === false);
+  check("required() accepts full shape",           requiredAgain.parse({ a: "x", b: 1, c: true }).a === "x");
+}
+
+function testSafeSchemaArrayTupleUnionRecord() {
+  var s = b.safeSchema;
+  // array
+  check("array(string) parses",                    s.array(s.string()).parse(["a", "b"]).length === 2);
+  check("array rejects non-array",                 s.array(s.string()).safeParse("not-array").ok === false);
+  check("array surfaces per-index error path",     s.array(s.string()).safeParse(["a", 42]).errors[0].path[0] === 1);
+  check("array.min rejects under",                 s.array(s.string()).min(2).safeParse(["a"]).ok === false);
+  check("array.max rejects over",                  s.array(s.string()).max(1).safeParse(["a", "b"]).ok === false);
+  check("array.length exact",                      s.array(s.string()).length(2).parse(["a", "b"]).length === 2);
+  check("array.nonempty rejects []",               s.array(s.string()).nonempty().safeParse([]).ok === false);
+
+  // tuple
+  var pair = s.tuple([s.string(), s.number()]);
+  check("tuple accepts matching shape",            JSON.stringify(pair.parse(["x", 1])) === '["x",1]');
+  check("tuple rejects wrong length",              pair.safeParse(["x", 1, 2]).ok === false);
+  check("tuple rejects wrong types",               pair.safeParse([1, "x"]).ok === false);
+
+  // tuple.rest — variadic tail
+  var verbAndArgs = s.tuple([s.string()]).rest(s.number());
+  check("tuple.rest accepts head + variadic tail", JSON.stringify(verbAndArgs.parse(["sum", 1, 2, 3])) === '["sum",1,2,3]');
+  check("tuple.rest accepts head only",            JSON.stringify(verbAndArgs.parse(["init"])) === '["init"]');
+  check("tuple.rest rejects bad tail item",        verbAndArgs.safeParse(["sum", 1, "bad"]).ok === false);
+  check("tuple.rest rejects head shorter than fixed", verbAndArgs.safeParse([]).ok === false);
+
+  // union
+  var stringOrNumber = s.union([s.string(), s.number()]);
+  check("union accepts string",                    stringOrNumber.parse("x") === "x");
+  check("union accepts number",                    stringOrNumber.parse(42) === 42);
+  check("union rejects neither",                   stringOrNumber.safeParse(true).ok === false);
+
+  // discriminatedUnion
+  var event = s.discriminatedUnion("kind", [
+    s.object({ kind: s.literal("created"), at: s.string() }),
+    s.object({ kind: s.literal("deleted"), reason: s.string() }),
+  ]);
+  check("discUnion routes 'created'",              event.parse({ kind: "created", at: "now" }).kind === "created");
+  check("discUnion routes 'deleted'",              event.parse({ kind: "deleted", reason: "spam" }).kind === "deleted");
+  check("discUnion rejects unknown discriminator", event.safeParse({ kind: "other", x: 1 }).ok === false);
+  check("discUnion rejects missing discriminator", event.safeParse({}).ok === false);
+
+  // discriminatedUnion construction validation
+  var threw = null;
+  try { s.discriminatedUnion("", [s.object({ kind: s.literal("a") })]); } catch (e) { threw = e; }
+  check("discUnion rejects empty discriminator",   threw && threw.code === "safe-schema/bad-discriminator");
+
+  threw = null;
+  try { s.discriminatedUnion("kind", [s.string()]); } catch (e) { threw = e; }
+  check("discUnion rejects non-object option",     threw && threw.code === "safe-schema/bad-discriminated-option");
+
+  // record
+  var rec = s.record(s.number());
+  check("record accepts string-keyed numbers",     rec.parse({ a: 1, b: 2 }).a === 1);
+  check("record rejects non-number value",         rec.safeParse({ a: "x" }).ok === false);
+
+  // record with key schema
+  var recK = s.record(s.string().min(3), s.number());
+  check("record(keySchema) accepts long keys",     recK.parse({ abc: 1, defg: 2 }).abc === 1);
+  check("record(keySchema) rejects short key",     recK.safeParse({ a: 1 }).ok === false);
+}
+
+function testSafeSchemaRefineTransform() {
+  var s = b.safeSchema;
+  // Chained .refine
+  var even = s.number().refine(function (n) { return n % 2 === 0; }, { code: "even", message: "must be even" });
+  check("refine accepts passing predicate",        even.parse(4) === 4);
+  var bad = even.safeParse(3);
+  check("refine fails with custom code",           bad.ok === false && bad.errors[0].code === "even");
+
+  // refine with predicate that throws
+  var throwing = s.number().refine(function () { throw new Error("oops"); });
+  check("refine swallows throw, surfaces issue",   throwing.safeParse(1).ok === false);
+
+  // Chained .transform
+  var doubled = s.number().transform(function (n) { return n * 2; });
+  check("transform applies fn to validated value", doubled.parse(5) === 10);
+
+  // Compose: type check → refine → transform
+  var pipeline = s.number().min(0).refine(function (n) { return n < 100; }).transform(function (n) { return "n=" + n; });
+  check("pipeline transforms valid input",         pipeline.parse(5) === "n=5");
+  check("pipeline rejects per refine",             pipeline.safeParse(200).ok === false);
+
+  // .pipe() — feed transformed output through a second schema
+  var port = s.string().regex(/^\d+$/).transform(function (v) { return Number(v); }).pipe(
+    s.number().int().min(1).max(65535)
+  );
+  check("pipe: valid string-digit-port parses",    port.parse("8080") === 8080);
+  check("pipe: out-of-range fails downstream",     port.safeParse("99999").ok === false);
+  check("pipe: non-numeric fails upstream",        port.safeParse("abc").ok === false);
+}
+
+function testSafeSchemaLazyAndPreprocess() {
+  var s = b.safeSchema;
+
+  // lazy — recursive shape
+  var nodeSchema = s.object({
+    id:       s.string(),
+    children: s.array(s.lazy(function () { return nodeSchema; })),
+  });
+  var tree = { id: "root", children: [{ id: "leaf-1", children: [] }, { id: "leaf-2", children: [] }] };
+  var parsed = nodeSchema.parse(tree);
+  check("lazy parses recursive shape",             parsed.children.length === 2);
+  check("lazy parses nested",                      parsed.children[0].id === "leaf-1");
+
+  var bad = nodeSchema.safeParse({ id: "r", children: [{ id: 42, children: [] }] });
+  check("lazy surfaces deep error",                bad.ok === false &&
+                                                     bad.errors[0].path.join(".") === "children.0.id");
+
+  // preprocess — query-string number
+  var port = s.preprocess(function (v) { return Number(v); }, s.number().int().min(1).max(65535));
+  check("preprocess converts string to number",    port.parse("8080") === 8080);
+  check("preprocess + downstream check rejects",   port.safeParse("99999").ok === false);
+
+  // preprocess fn throws → preprocess issue
+  var throwing = s.preprocess(function () { throw new Error("bad"); }, s.string());
+  check("preprocess throw surfaces as issue",      throwing.safeParse("x").ok === false);
+}
+
+function testSafeSchemaPrototypePollutionDefense() {
+  var s = b.safeSchema;
+  // 1. Construction-time: a shape built via Object.fromEntries with a
+  // POISONED key is rejected. (Object-literal {"__proto__": ...} syntax
+  // sets the prototype rather than creating such a key at all, so
+  // operators who hit this defense did so via fromEntries / defineProperty.)
+  var threw = null;
+  try { s.object(Object.fromEntries([["__proto__", s.string()]])); } catch (e) { threw = e; }
+  check("object() rejects __proto__ key in shape (fromEntries)",
+        threw && threw.code === "safe-schema/poisoned-shape-key");
+
+  threw = null;
+  try { s.object(Object.fromEntries([["constructor", s.string()]])); } catch (e) { threw = e; }
+  check("object() rejects constructor key in shape", threw && threw.code === "safe-schema/poisoned-shape-key");
+
+  threw = null;
+  try { s.object(Object.fromEntries([["prototype", s.string()]])); } catch (e) { threw = e; }
+  check("object() rejects prototype key in shape", threw && threw.code === "safe-schema/poisoned-shape-key");
+
+  // 2. Parse-time: input object with __proto__ as a regular key is rejected
+  var schema = s.object({ a: s.string() }).passthrough();
+  var malicious = JSON.parse('{"a":"ok","__proto__":{"polluted":true}}');
+  var r = schema.safeParse(malicious);
+  check("passthrough rejects __proto__ in input",  r.ok === false);
+  var pIssue = r.errors.find(function (e) { return e.code === "object/poisoned-key"; });
+  check("issue code is object/poisoned-key",       !!pIssue);
+
+  // 3. record() rejects __proto__ keys
+  var rec = s.record(s.string());
+  var recBad = rec.safeParse(JSON.parse('{"a":"x","__proto__":"poison"}'));
+  check("record rejects __proto__ in input",       recBad.ok === false);
+  var recIssue = recBad.errors.find(function (e) { return e.code === "record/poisoned-key"; });
+  check("record issue code is record/poisoned-key", !!recIssue);
+
+  // 4. Object.prototype is intact after parse attempt
+  check("Object.prototype not polluted by parse",  ({}).polluted === undefined);
+
+  // 5. discriminatedUnion rejects __proto__ as discriminator name
+  threw = null;
+  try { s.discriminatedUnion("__proto__", [s.object({ kind: s.literal("a") })]); } catch (e) { threw = e; }
+  check("discUnion rejects __proto__ discriminator", threw && threw.code === "safe-schema/poisoned-discriminator");
+}
+
+function testSafeSchemaErrorIssues() {
+  var s = b.safeSchema;
+  var threw = null;
+  try {
+    s.object({ a: s.string(), b: s.number() }).parse({ a: 1, b: "x" });
+  } catch (e) { threw = e; }
+  check("parse() throws SafeSchemaError",          threw && threw.name === "SafeSchemaError");
+  check("error carries issues array",              threw && Array.isArray(threw.issues) && threw.issues.length === 2);
+  check("issues have path/code/message",
+        threw && threw.issues[0].path && threw.issues[0].code && threw.issues[0].message);
+}
+
+function testSafeSchemaImmutability() {
+  var s = b.safeSchema;
+  var base = s.string();
+  var withMin = base.min(3);
+  // Original schema should NOT have been mutated to add the min check.
+  check("original schema accepts ''",              base.parse("") === "");
+  check("derived schema rejects ''",               withMin.safeParse("").ok === false);
+}
+
 // ---- events (breach-detection bus) ----
 
 function testEventsSurface() {
@@ -11248,6 +11678,21 @@ async function run() {
   await testBackupCryptoFreshSaltUnique();
   testBackupCryptoChecksumIsSha3_512();
   await testBackupCryptoArgValidation();
+  // safe-schema — declarative input validation (Phase 9.1)
+  testSafeSchemaSurface();
+  testSafeSchemaStringPrimitive();
+  testSafeSchemaNumberPrimitive();
+  testSafeSchemaBooleanLiteralEnum();
+  testSafeSchemaNullUndefinedAny();
+  testSafeSchemaModifiers();
+  testSafeSchemaObject();
+  testSafeSchemaObjectPickOmitExtendPartial();
+  testSafeSchemaArrayTupleUnionRecord();
+  testSafeSchemaRefineTransform();
+  testSafeSchemaLazyAndPreprocess();
+  testSafeSchemaPrototypePollutionDefense();
+  testSafeSchemaErrorIssues();
+  testSafeSchemaImmutability();
   // events — framework breach-detection signal bus (Phase 7 deferred slice B)
   testEventsSurface();
   testEventsListenerFires();
@@ -11709,6 +12154,20 @@ module.exports = {
   testBackupCryptoFreshSaltUnique:           testBackupCryptoFreshSaltUnique,
   testBackupCryptoChecksumIsSha3_512:        testBackupCryptoChecksumIsSha3_512,
   testBackupCryptoArgValidation:             testBackupCryptoArgValidation,
+  testSafeSchemaSurface:                     testSafeSchemaSurface,
+  testSafeSchemaStringPrimitive:             testSafeSchemaStringPrimitive,
+  testSafeSchemaNumberPrimitive:             testSafeSchemaNumberPrimitive,
+  testSafeSchemaBooleanLiteralEnum:          testSafeSchemaBooleanLiteralEnum,
+  testSafeSchemaNullUndefinedAny:            testSafeSchemaNullUndefinedAny,
+  testSafeSchemaModifiers:                   testSafeSchemaModifiers,
+  testSafeSchemaObject:                      testSafeSchemaObject,
+  testSafeSchemaObjectPickOmitExtendPartial: testSafeSchemaObjectPickOmitExtendPartial,
+  testSafeSchemaArrayTupleUnionRecord:       testSafeSchemaArrayTupleUnionRecord,
+  testSafeSchemaRefineTransform:             testSafeSchemaRefineTransform,
+  testSafeSchemaLazyAndPreprocess:           testSafeSchemaLazyAndPreprocess,
+  testSafeSchemaPrototypePollutionDefense:   testSafeSchemaPrototypePollutionDefense,
+  testSafeSchemaErrorIssues:                 testSafeSchemaErrorIssues,
+  testSafeSchemaImmutability:                testSafeSchemaImmutability,
   testEventsSurface:                         testEventsSurface,
   testEventsListenerFires:                   testEventsListenerFires,
   testEventsMultipleListeners:               testEventsMultipleListeners,
