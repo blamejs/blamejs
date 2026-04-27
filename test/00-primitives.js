@@ -3078,6 +3078,285 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- dev ----
+//
+// Engine tests use fake spawn/watch/timer seams so we never actually
+// fork processes. The engine logic — debounce, restart sequencing,
+// queue coalescing, watcher-event filtering — is what we want to
+// verify; integration with real child_process is out of scope here.
+
+function _makeDevHarness() {
+  // Fake child: emits an exit event when .kill() is called. The test
+  // can drive an unexpected exit by calling fakeChild.crash().
+  function makeChild(pid) {
+    var listeners = {};
+    var killed = false;
+    return {
+      pid: pid,
+      kill: function (_signal) {
+        if (killed) return;
+        killed = true;
+        // Emit on next tick so the kill() caller can attach listeners
+        setImmediate(function () {
+          (listeners.exit || []).forEach(function (cb) { cb(0, null); });
+        });
+      },
+      on:   function (ev, cb) { (listeners[ev] = listeners[ev] || []).push(cb); return this; },
+      once: function (ev, cb) {
+        var wrap = function (a, b) {
+          listeners[ev] = (listeners[ev] || []).filter(function (x) { return x !== wrap; });
+          cb(a, b);
+        };
+        return this.on(ev, wrap);
+      },
+      crash: function (code) {
+        (listeners.exit || []).forEach(function (cb) { cb(code, null); });
+      },
+    };
+  }
+
+  var spawnCalls = [];
+  var pidCounter = 1000;
+  function spawnFn(cmd, args, sopts) {
+    var c = makeChild(++pidCounter);
+    spawnCalls.push({ cmd: cmd, args: args.slice(), sopts: sopts, child: c });
+    return c;
+  }
+
+  // Fake watcher: each call returns an emitter the test can fire events into
+  var watchers = [];
+  function watchFn(dir, wopts, listener) {
+    var w = {
+      dir: dir,
+      closed: false,
+      _listener: listener,
+      on:    function () { return this; },
+      close: function () { this.closed = true; },
+      fire:  function (eventType, filename) { listener(eventType, filename); },
+    };
+    watchers.push(w);
+    return w;
+  }
+
+  // Fake timers — tests drive ticks explicitly
+  var timers = [];
+  function setTimeoutFn(fn, ms) {
+    var t = { fn: fn, ms: ms, active: true, unref: function () { return this; } };
+    timers.push(t);
+    return t;
+  }
+  function clearTimeoutFn(t) { if (t) t.active = false; }
+  function fireTimers() {
+    var fired = 0;
+    var pending = timers.slice();
+    timers.length = 0;
+    for (var i = 0; i < pending.length; i++) {
+      if (pending[i].active) { pending[i].fn(); fired++; }
+    }
+    return fired;
+  }
+
+  return {
+    spawnCalls: spawnCalls,
+    watchers:   watchers,
+    timers:     timers,
+    fireTimers: fireTimers,
+    fakes: {
+      _spawn:        spawnFn,
+      _watch:        watchFn,
+      _setTimeout:   setTimeoutFn,
+      _clearTimeout: clearTimeoutFn,
+    },
+  };
+}
+
+function testDevSurface() {
+  check("b.dev namespace present",                typeof b.dev === "object");
+  check("b.dev.create is a function",             typeof b.dev.create === "function");
+  check("b.dev.DevError is a class",              typeof b.dev.DevError === "function");
+  check("DEFAULT_IGNORE includes node_modules",
+        Array.isArray(b.dev.DEFAULT_IGNORE) &&
+        b.dev.DEFAULT_IGNORE.some(function (p) { return p instanceof RegExp && p.test("node_modules"); }));
+
+  var threw = null;
+  try { b.dev.create({}); } catch (e) { threw = e; }
+  check("create rejects missing command",         threw && threw.code === "dev/no-command");
+}
+
+async function testDevStartSpawnsChildAndArmsWatchers() {
+  var h = _makeDevHarness();
+  var d = b.dev.create({
+    command: "node",
+    args:    ["./server.js"],
+    watch:   ["./routes", "./views"],
+    cwd:     "/repo",
+    _spawn:        h.fakes._spawn,
+    _watch:        h.fakes._watch,
+    _setTimeout:   h.fakes._setTimeout,
+    _clearTimeout: h.fakes._clearTimeout,
+  });
+  await d.start();
+  check("start spawns child once",                h.spawnCalls.length === 1);
+  check("spawn args forwarded",                   h.spawnCalls[0].cmd === "node" &&
+                                                  h.spawnCalls[0].args[0] === "./server.js");
+  check("watchers armed for each dir",            h.watchers.length === 2);
+  check("stats reports running + pid",
+        d.stats().running === true && typeof d.stats().pid === "number" &&
+        d.stats().restarts === 0);
+  await d.stop();
+  check("stop clears watchers",                   h.watchers.every(function (w) { return w.closed; }));
+}
+
+async function testDevDebouncesBurstOfEventsToOneRestart() {
+  var h = _makeDevHarness();
+  var d = b.dev.create({
+    command: "node", args: ["./s.js"],
+    watch:   ["./routes"],
+    cwd:     "/repo",
+    graceMs: 250,
+    _spawn:        h.fakes._spawn,
+    _watch:        h.fakes._watch,
+    _setTimeout:   h.fakes._setTimeout,
+    _clearTimeout: h.fakes._clearTimeout,
+  });
+  await d.start();
+  check("baseline: 1 spawn after start",          h.spawnCalls.length === 1);
+
+  // Five events in rapid succession before the debounce window fires
+  var w = h.watchers[0];
+  for (var i = 0; i < 5; i++) w.fire("change", "route" + i + ".js");
+  check("debounce schedules exactly 1 active timer",
+        h.timers.filter(function (t) { return t.active; }).length === 1);
+
+  // Fire the debounce timer → triggers restart
+  h.fireTimers();
+  // Wait for the kill+respawn to complete
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  // The kill timer (if any) is harmless; restart also fires after kill.
+  check("after debounce: child respawned exactly once",
+        h.spawnCalls.length === 2);
+  check("stats.restarts incremented",             d.stats().restarts === 1);
+  check("lastRestartAt set",                      typeof d.stats().lastRestartAt === "string");
+  await d.stop();
+}
+
+async function testDevIgnoresMatchingPaths() {
+  var h = _makeDevHarness();
+  var d = b.dev.create({
+    command: "node", args: ["./s.js"],
+    watch:   ["./routes"],
+    cwd:     "/repo",
+    graceMs: 50,
+    ignore:  [/should-ignore/],
+    _spawn:        h.fakes._spawn,
+    _watch:        h.fakes._watch,
+    _setTimeout:   h.fakes._setTimeout,
+    _clearTimeout: h.fakes._clearTimeout,
+  });
+  await d.start();
+  var w = h.watchers[0];
+
+  // node_modules in DEFAULT_IGNORE — ignored
+  w.fire("change", "node_modules/x/index.js");
+  check("DEFAULT_IGNORE: node_modules events drop",
+        h.timers.filter(function (t) { return t.active; }).length === 0);
+
+  // Custom ignore pattern
+  w.fire("change", "should-ignore-me.js");
+  check("Custom ignore pattern drops events",
+        h.timers.filter(function (t) { return t.active; }).length === 0);
+
+  // .db file ignored by default (sqlite WAL files would otherwise loop)
+  w.fire("change", "blamejs.db");
+  w.fire("change", "blamejs.db-wal");
+  check("DEFAULT_IGNORE: .db files drop",
+        h.timers.filter(function (t) { return t.active; }).length === 0);
+
+  // Real source change → debounce armed
+  w.fire("change", "routes/users.js");
+  check("source-file change schedules a restart",
+        h.timers.filter(function (t) { return t.active; }).length === 1);
+
+  await d.stop();
+}
+
+async function testDevRestartCoalescesQueuedRestart() {
+  // Restart-while-already-restarting queues one more, never more.
+  // Easier to drive via the public restart() method which short-
+  // circuits the debounce path.
+  var h = _makeDevHarness();
+  var d = b.dev.create({
+    command: "node", args: ["./s.js"],
+    watch:   ["./routes"],
+    cwd:     "/repo",
+    _spawn:        h.fakes._spawn,
+    _watch:        h.fakes._watch,
+    _setTimeout:   h.fakes._setTimeout,
+    _clearTimeout: h.fakes._clearTimeout,
+  });
+  await d.start();
+
+  // Three concurrent restart() calls. The first runs to completion; the
+  // 2nd and 3rd both arrive while it's restarting, but they coalesce to
+  // a single queued followup.
+  var p1 = d.restart();
+  var p2 = d.restart();
+  var p3 = d.restart();
+  await Promise.all([p1, p2, p3]);
+  // Wait for the queued tail-call to drain
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+
+  // Initial spawn + 1st restart + 1 coalesced follow-up = 3 total
+  check("3 concurrent restarts collapse to 2 respawns",
+        h.spawnCalls.length === 3);
+  check("stats.restarts = 2",                     d.stats().restarts === 2);
+  await d.stop();
+}
+
+async function testDevStopKillsAndDisarms() {
+  var h = _makeDevHarness();
+  var d = b.dev.create({
+    command: "node", args: ["./s.js"],
+    watch:   ["./routes", "./views"],
+    cwd:     "/repo",
+    _spawn:        h.fakes._spawn,
+    _watch:        h.fakes._watch,
+    _setTimeout:   h.fakes._setTimeout,
+    _clearTimeout: h.fakes._clearTimeout,
+  });
+  await d.start();
+  await d.stop();
+  check("stats.running false after stop",         d.stats().running === false);
+  check("watchers closed",                        h.watchers.every(function (w) { return w.closed; }));
+  // Subsequent stop is idempotent (no throw)
+  await d.stop();
+  check("second stop() is a no-op",               d.stats().running === false);
+}
+
+async function testDevUnexpectedExitDoesNotRespawn() {
+  var h = _makeDevHarness();
+  var d = b.dev.create({
+    command: "node", args: ["./s.js"],
+    watch:   ["./routes"],
+    cwd:     "/repo",
+    _spawn:        h.fakes._spawn,
+    _watch:        h.fakes._watch,
+    _setTimeout:   h.fakes._setTimeout,
+    _clearTimeout: h.fakes._clearTimeout,
+  });
+  await d.start();
+  // Simulate the child crashing on its own (not via kill())
+  h.spawnCalls[0].child.crash(1);
+  await new Promise(function (r) { setImmediate(r); });
+  // No new spawn — operator must edit a file to retry
+  check("crash without restart context: no respawn",
+        h.spawnCalls.length === 1);
+  await d.stop();
+}
+
 // ---- cli ----
 
 function _cliCtx() {
@@ -3272,6 +3551,20 @@ async function testCliMigrateDownReportsNoOpCleanly() {
     check("no-op down exits 0",                   rc === 0);
     check("no-op down reports nothing to revert", /nothing to revert/.test(t.captured().out));
   } finally { fx.cleanup(); }
+}
+
+async function testCliDevValidation() {
+  // Missing --command exits 2 with usage on stderr
+  var t = _cliCtx();
+  var rc = await b.cli.main(["dev"], t.ctx);
+  check("dev without --command exits 2",          rc === 2);
+  check("dev usage written on missing --command", t.captured().err.indexOf("--command") !== -1);
+
+  // help dev prints usage
+  var t2 = _cliCtx();
+  var rc2 = await b.cli.main(["help", "dev"], t2.ctx);
+  check("help dev exits 0",                       rc2 === 0);
+  check("help dev prints usage",                  t2.captured().out.indexOf("blamejs dev") !== -1);
 }
 
 async function testCliMigrateUpFailureExits1() {
@@ -7051,6 +7344,14 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // dev — file-watch + child-process restart engine (Phase 6 slice 6)
+  testDevSurface();
+  await testDevStartSpawnsChildAndArmsWatchers();
+  await testDevDebouncesBurstOfEventsToOneRestart();
+  await testDevIgnoresMatchingPaths();
+  await testDevRestartCoalescesQueuedRestart();
+  await testDevStopKillsAndDisarms();
+  await testDevUnexpectedExitDoesNotRespawn();
   // cli — `blamejs <cmd>` dispatch + migrate subcommand (Phase 6 slice 5)
   testCliSurface();
   testCliArgParser();
@@ -7060,6 +7361,7 @@ async function run() {
   await testCliMigrateValidationErrors();
   await testCliMigrateDownReportsNoOpCleanly();
   await testCliMigrateUpFailureExits1();
+  await testCliDevValidation();
   // migrations — public migration runner with up/down/status (Phase 6 slice 4)
   testMigrationsSurface();
   testMigrationsUpAppliesPending();
@@ -7344,6 +7646,13 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testDevSurface:                            testDevSurface,
+  testDevStartSpawnsChildAndArmsWatchers:    testDevStartSpawnsChildAndArmsWatchers,
+  testDevDebouncesBurstOfEventsToOneRestart: testDevDebouncesBurstOfEventsToOneRestart,
+  testDevIgnoresMatchingPaths:               testDevIgnoresMatchingPaths,
+  testDevRestartCoalescesQueuedRestart:      testDevRestartCoalescesQueuedRestart,
+  testDevStopKillsAndDisarms:                testDevStopKillsAndDisarms,
+  testDevUnexpectedExitDoesNotRespawn:       testDevUnexpectedExitDoesNotRespawn,
   testCliSurface:                            testCliSurface,
   testCliArgParser:                          testCliArgParser,
   testCliVersionAndHelp:                     testCliVersionAndHelp,
@@ -7352,6 +7661,7 @@ module.exports = {
   testCliMigrateValidationErrors:            testCliMigrateValidationErrors,
   testCliMigrateDownReportsNoOpCleanly:      testCliMigrateDownReportsNoOpCleanly,
   testCliMigrateUpFailureExits1:             testCliMigrateUpFailureExits1,
+  testCliDevValidation:                      testCliDevValidation,
   testMigrationsSurface:                     testMigrationsSurface,
   testMigrationsUpAppliesPending:            testMigrationsUpAppliesPending,
   testMigrationsStatus:                      testMigrationsStatus,

@@ -73,6 +73,7 @@ var errorsPage = require("./lib/errors-page");
 var cookies = require("./lib/cookies");
 var migrations = require("./lib/migrations");
 var cli = require("./lib/cli");
+var dev = require("./lib/dev");
 
 module.exports = {
   crypto:           crypto,
@@ -128,6 +129,7 @@ module.exports = {
   cookies:          cookies,
   migrations:       migrations,
   cli:              cli,
+  dev:              dev,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
