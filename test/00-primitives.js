@@ -3078,6 +3078,220 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- cli ----
+
+function _cliCtx() {
+  var out = "", err = "";
+  return {
+    captured: function () { return { out: out, err: err }; },
+    ctx: {
+      stdout: { write: function (s) { out += s; } },
+      stderr: { write: function (s) { err += s; } },
+      env:    {},
+      cwd:    os.tmpdir(),
+    },
+  };
+}
+
+function testCliSurface() {
+  check("b.cli namespace present",                typeof b.cli === "object");
+  check("b.cli.main is a function",               typeof b.cli.main === "function");
+  check("b.cli._parseArgs is a function",         typeof b.cli._parseArgs === "function");
+  check("TOP_USAGE present",                      typeof b.cli.TOP_USAGE === "string" && b.cli.TOP_USAGE.length > 0);
+}
+
+function testCliArgParser() {
+  var p1 = b.cli._parseArgs(["a", "b", "--flag", "value"]);
+  check("parser collects positional args",        p1.pos.length === 2 && p1.pos[0] === "a" && p1.pos[1] === "b");
+  check("parser parses --flag value",             p1.flags.flag === "value");
+
+  // Trailing flag with no value → boolean
+  var pBool = b.cli._parseArgs(["--only-flag"]);
+  check("parser treats trailing flag as boolean", pBool.flags["only-flag"] === true);
+
+  var p2 = b.cli._parseArgs(["--key=val", "--num=5"]);
+  check("parser parses --key=val form",           p2.flags.key === "val");
+  check("parser parses --key=val with numbers",   p2.flags.num === "5");
+
+  var p3 = b.cli._parseArgs(["--", "--ignored", "x"]);
+  check("parser stops at --",                     p3.pos.length === 2 && p3.pos[0] === "--ignored" && p3.flags["--ignored"] === undefined);
+
+  var p4 = b.cli._parseArgs(["-v"]);
+  check("parser handles short flags as boolean",  p4.flags.v === true);
+}
+
+async function testCliVersionAndHelp() {
+  var t1 = _cliCtx();
+  var rc1 = await b.cli.main(["version"], t1.ctx);
+  check("version exits 0",                        rc1 === 0);
+  check("version prints constants.version",       t1.captured().out.trim() === b.constants.version);
+
+  var t2 = _cliCtx();
+  var rc2 = await b.cli.main(["--version"], t2.ctx);
+  check("--version flag also prints version",     rc2 === 0 && t2.captured().out.trim() === b.constants.version);
+
+  var t3 = _cliCtx();
+  var rc3 = await b.cli.main(["help"], t3.ctx);
+  check("help exits 0",                           rc3 === 0);
+  check("help prints top usage",                  t3.captured().out.indexOf("blamejs <command>") !== -1);
+
+  var t4 = _cliCtx();
+  var rc4 = await b.cli.main([], t4.ctx);
+  check("no args prints help and exits 0",        rc4 === 0 && t4.captured().out.indexOf("blamejs <command>") !== -1);
+
+  var t5 = _cliCtx();
+  var rc5 = await b.cli.main(["help", "migrate"], t5.ctx);
+  check("help <subcommand> prints subcommand usage",
+        rc5 === 0 && t5.captured().out.indexOf("blamejs migrate") !== -1);
+
+  var t6 = _cliCtx();
+  var rc6 = await b.cli.main(["unknown-cmd"], t6.ctx);
+  check("unknown command exits 2",                rc6 === 2);
+  check("unknown command writes to stderr",       t6.captured().err.indexOf("unknown command") !== -1);
+}
+
+async function testCliMigrateStatus() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-x.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE t1 (id INTEGER)\"); }, down: function (db) { db['exec'](\"DROP TABLE t1\"); } };");
+    fx.write("0002-y.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE t2 (id INTEGER)\"); }, down: function (db) { db['exec'](\"DROP TABLE t2\"); } };");
+    fx.db.close(); // CLI opens its own handle
+
+    var t = _cliCtx();
+    var rc = await b.cli.main([
+      "migrate", "status",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+    ], t.ctx);
+    check("status exits 0",                       rc === 0);
+    check("status reports 0 applied initially",   /applied: 0 \/ 2/.test(t.captured().out));
+    check("status lists pending migrations",
+          t.captured().out.indexOf("0001-x.js") !== -1 &&
+          t.captured().out.indexOf("0002-y.js") !== -1);
+  } finally { fx.cleanup(); }
+}
+
+async function testCliMigrateUpDown() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-create-foo.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE foo (id INTEGER)\"); }, down: function (db) { db['exec'](\"DROP TABLE foo\"); } };");
+    fx.write("0002-create-bar.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE bar (id INTEGER)\"); }, down: function (db) { db['exec'](\"DROP TABLE bar\"); } };");
+    fx.db.close();
+
+    // up
+    var t1 = _cliCtx();
+    var rc1 = await b.cli.main([
+      "migrate", "up",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+    ], t1.ctx);
+    check("up exits 0",                           rc1 === 0);
+    check("up reports applied count",             /applied 2 migration/.test(t1.captured().out));
+
+    // up again → no-op
+    var t2 = _cliCtx();
+    var rc2 = await b.cli.main([
+      "migrate", "up",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+    ], t2.ctx);
+    check("up again exits 0",                     rc2 === 0);
+    check("up again reports no pending",          /no pending migrations/.test(t2.captured().out));
+
+    // down --steps 1
+    var t3 = _cliCtx();
+    var rc3 = await b.cli.main([
+      "migrate", "down",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+      "--steps", "1",
+    ], t3.ctx);
+    check("down --steps 1 exits 0",               rc3 === 0);
+    check("down --steps 1 reverts most recent",
+          /reverted 1 migration/.test(t3.captured().out) &&
+          t3.captured().out.indexOf("0002-create-bar.js") !== -1);
+
+    // down without --steps → defaults to 1
+    var t4 = _cliCtx();
+    var rc4 = await b.cli.main([
+      "migrate", "down",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+    ], t4.ctx);
+    check("down default --steps reverts 1 more", rc4 === 0 &&
+          t4.captured().out.indexOf("0001-create-foo.js") !== -1);
+  } finally { fx.cleanup(); }
+}
+
+async function testCliMigrateValidationErrors() {
+  // Missing --db
+  var t1 = _cliCtx();
+  var rc1 = await b.cli.main(["migrate", "status"], t1.ctx);
+  check("missing --db exits 2",                   rc1 === 2);
+  check("missing --db error mentions flag",       t1.captured().err.indexOf("--db") !== -1);
+
+  // Unknown subcommand
+  var t2 = _cliCtx();
+  var rc2 = await b.cli.main(["migrate", "fly"], t2.ctx);
+  check("unknown migrate subcommand exits 2",     rc2 === 2);
+  check("unknown subcommand writes usage to stderr", t2.captured().err.indexOf("Usage: blamejs migrate") !== -1);
+
+  // No subcommand (just `blamejs migrate`)
+  var t3 = _cliCtx();
+  var rc3 = await b.cli.main(["migrate"], t3.ctx);
+  check("bare `migrate` exits 2",                 rc3 === 2);
+  check("bare `migrate` writes usage",            t3.captured().err.indexOf("Usage: blamejs migrate") !== -1);
+
+  // --steps validation in down
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.db.close();
+    var t4 = _cliCtx();
+    var rc4 = await b.cli.main([
+      "migrate", "down",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+      "--steps", "0",
+    ], t4.ctx);
+    check("invalid --steps exits 2",              rc4 === 2);
+    check("invalid --steps writes error",         t4.captured().err.indexOf("--steps") !== -1);
+  } finally { fx.cleanup(); }
+}
+
+async function testCliMigrateDownReportsNoOpCleanly() {
+  // Empty migrations dir + clean db → down is a no-op, exit 0.
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.db.close();
+    var t = _cliCtx();
+    var rc = await b.cli.main([
+      "migrate", "down",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+    ], t.ctx);
+    check("no-op down exits 0",                   rc === 0);
+    check("no-op down reports nothing to revert", /nothing to revert/.test(t.captured().out));
+  } finally { fx.cleanup(); }
+}
+
+async function testCliMigrateUpFailureExits1() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-broken.js", "module.exports = { up: function () { throw new Error('intentional'); } };");
+    fx.db.close();
+    var t = _cliCtx();
+    var rc = await b.cli.main([
+      "migrate", "up",
+      "--db", path.join(fx.dir, "test.db"),
+      "--dir", fx.migDir,
+    ], t.ctx);
+    check("failing up exits 1",                   rc === 1);
+    check("failing up surfaces error code+message",
+          /migrations\/up-failed/.test(t.captured().err) &&
+          /intentional/.test(t.captured().err));
+  } finally { fx.cleanup(); }
+}
+
 // ---- migrations ----
 
 function _makeMigrationsFixture() {
@@ -6837,6 +7051,15 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // cli — `blamejs <cmd>` dispatch + migrate subcommand (Phase 6 slice 5)
+  testCliSurface();
+  testCliArgParser();
+  await testCliVersionAndHelp();
+  await testCliMigrateStatus();
+  await testCliMigrateUpDown();
+  await testCliMigrateValidationErrors();
+  await testCliMigrateDownReportsNoOpCleanly();
+  await testCliMigrateUpFailureExits1();
   // migrations — public migration runner with up/down/status (Phase 6 slice 4)
   testMigrationsSurface();
   testMigrationsUpAppliesPending();
@@ -7121,6 +7344,14 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testCliSurface:                            testCliSurface,
+  testCliArgParser:                          testCliArgParser,
+  testCliVersionAndHelp:                     testCliVersionAndHelp,
+  testCliMigrateStatus:                      testCliMigrateStatus,
+  testCliMigrateUpDown:                      testCliMigrateUpDown,
+  testCliMigrateValidationErrors:            testCliMigrateValidationErrors,
+  testCliMigrateDownReportsNoOpCleanly:      testCliMigrateDownReportsNoOpCleanly,
+  testCliMigrateUpFailureExits1:             testCliMigrateUpFailureExits1,
   testMigrationsSurface:                     testMigrationsSurface,
   testMigrationsUpAppliesPending:            testMigrationsUpAppliesPending,
   testMigrationsStatus:                      testMigrationsStatus,
