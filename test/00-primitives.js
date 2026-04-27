@@ -3078,6 +3078,287 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- restore-bundle ----
+//
+// Reuses _bundleFixture + builds an actual encrypted bundle via
+// backupBundle.create, then restores it through restoreBundle.extract.
+// This verifies the two halves of the round-trip in concert.
+
+async function _buildSampleBundle(fx, passphrase, files) {
+  var outDir = path.join(fx.root, "bundle-" + Math.random().toString(36).slice(2, 8));
+  for (var i = 0; i < files.length; i++) {
+    if (files[i].content !== undefined) fx.write(files[i].relativePath, files[i].content);
+  }
+  await b.backupBundle.create({
+    dataDir:      fx.dataDir,
+    outDir:       outDir,
+    passphrase:   passphrase,
+    vaultKeyJson: '{"vault":"sample-keypair"}',
+    files:        files.filter(function (f) { return f.content !== undefined; }).map(function (f) {
+      return { relativePath: f.relativePath, kind: f.kind || "raw", required: true };
+    }),
+  });
+  return outDir;
+}
+
+function testRestoreBundleSurface() {
+  check("b.restoreBundle namespace present",      typeof b.restoreBundle === "object");
+  check("extract is a function",                  typeof b.restoreBundle.extract === "function");
+  check("inspect is a function",                  typeof b.restoreBundle.inspect === "function");
+  check("RestoreBundleError is a class",          typeof b.restoreBundle.RestoreBundleError === "function");
+}
+
+async function testRestoreBundleRoundTrip() {
+  var fx = _bundleFixture();
+  try {
+    var passphrase = Buffer.from("operator-passphrase");
+    var bundleDir = await _buildSampleBundle(fx, passphrase, [
+      { relativePath: "db.enc",          content: Buffer.from("ENCRYPTED-DB"),  kind: "raw" },
+      { relativePath: "db.key.enc",      content: "vault:wrapped",              kind: "raw" },
+      { relativePath: "tls/privkey.pem", content: "PEM-BYTES",                  kind: "vault-sealed" },
+    ]);
+    var stagingDir = path.join(fx.root, "staging");
+    var events = [];
+    var r = await b.restoreBundle.extract({
+      bundleDir:        bundleDir,
+      stagingDir:       stagingDir,
+      passphrase:       passphrase,
+      progressCallback: function (e) { events.push(e.phase); },
+    });
+    check("extract.fileCount = 3",                  r.fileCount === 3);
+    check("extract returned vaultKeyJson",          r.vaultKeyJson === '{"vault":"sample-keypair"}');
+    check("staging has db.enc",                     fs.existsSync(path.join(stagingDir, "db.enc")));
+    check("staging has db.key.enc",                 fs.existsSync(path.join(stagingDir, "db.key.enc")));
+    check("staging recreated tls/ subdir",          fs.existsSync(path.join(stagingDir, "tls/privkey.pem")));
+    check("restored db.enc matches original",
+          fs.readFileSync(path.join(stagingDir, "db.enc")).toString() === "ENCRYPTED-DB");
+    check("restored db.key.enc matches original",
+          fs.readFileSync(path.join(stagingDir, "db.key.enc"), "utf8") === "vault:wrapped");
+    check("restored tls/privkey.pem matches original",
+          fs.readFileSync(path.join(stagingDir, "tls/privkey.pem"), "utf8") === "PEM-BYTES");
+    check("progress phases include unwrap_vault_key + decrypt + done",
+          events.indexOf("unwrap_vault_key") !== -1 &&
+          events.indexOf("decrypt") !== -1 &&
+          events.indexOf("done") !== -1);
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreBundleFilterSubset() {
+  var fx = _bundleFixture();
+  try {
+    var passphrase = Buffer.from("p");
+    var bundleDir = await _buildSampleBundle(fx, passphrase, [
+      { relativePath: "db.enc",          content: "DB" },
+      { relativePath: "tls/privkey.pem", content: "PEM" },
+    ]);
+    var stagingDir = path.join(fx.root, "staging");
+    var r = await b.restoreBundle.extract({
+      bundleDir:  bundleDir,
+      stagingDir: stagingDir,
+      passphrase: passphrase,
+      filter: function (entry) { return entry.relativePath === "db.enc"; },
+    });
+    check("filter restored only matching entries",   r.fileCount === 1);
+    check("staging has db.enc",                       fs.existsSync(path.join(stagingDir, "db.enc")));
+    check("staging does NOT have tls/privkey.pem",   !fs.existsSync(path.join(stagingDir, "tls/privkey.pem")));
+    // Vault key still recovered even when filter rejects everything
+    check("filter still recovers vaultKeyJson",      typeof r.vaultKeyJson === "string");
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreBundleWrongPassphrase() {
+  var fx = _bundleFixture();
+  try {
+    var p = Buffer.from("right");
+    var bundleDir = await _buildSampleBundle(fx, p, [
+      { relativePath: "db.enc", content: "DB" },
+    ]);
+    var threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  bundleDir,
+        stagingDir: path.join(fx.root, "staging-wrong"),
+        passphrase: Buffer.from("wrong"),
+      });
+    } catch (e) { threw = e; }
+    check("wrong passphrase surfaces decrypt-failed",
+          threw && threw.code === "restore-bundle/decrypt-failed");
+    check("staging dir cleaned up after failure",
+          !fs.existsSync(path.join(fx.root, "staging-wrong")));
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreBundleTamperedBlobDetected() {
+  var fx = _bundleFixture();
+  try {
+    var p = Buffer.from("p");
+    var bundleDir = await _buildSampleBundle(fx, p, [
+      { relativePath: "db.enc", content: "DB-BYTES" },
+    ]);
+    // Locate the encrypted blob and flip a byte AFTER the nonce
+    var blobPath = path.join(bundleDir, "files/db.enc.enc");
+    var b2 = fs.readFileSync(blobPath);
+    b2[b.backupCrypto.NONCE_BYTES + 1] ^= 0x01;
+    fs.writeFileSync(blobPath, b2);
+
+    var threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  bundleDir,
+        stagingDir: path.join(fx.root, "staging-tamper"),
+        passphrase: p,
+      });
+    } catch (e) { threw = e; }
+    check("tampered blob surfaces decrypt-failed",  threw && threw.code === "restore-bundle/decrypt-failed");
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreBundleChecksumMismatchDetected() {
+  // Tampering with a blob fails the AEAD check first. To exercise the
+  // checksum-mismatch path, we modify the manifest's declared checksum
+  // for a blob whose contents are still intact — the post-decrypt
+  // sha3 will then disagree with the manifest.
+  var fx = _bundleFixture();
+  try {
+    var p = Buffer.from("p");
+    var bundleDir = await _buildSampleBundle(fx, p, [
+      { relativePath: "db.enc", content: "DB" },
+    ]);
+    var manifestPath = path.join(bundleDir, "manifest.json");
+    var m = b.backupManifest.parse(fs.readFileSync(manifestPath, "utf8"));
+    m.files[0].checksum = "0".repeat(128);   // wrong but valid-shape
+    fs.writeFileSync(manifestPath, b.backupManifest.serialize(m));
+
+    var threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  bundleDir,
+        stagingDir: path.join(fx.root, "staging-checksum"),
+        passphrase: p,
+      });
+    } catch (e) { threw = e; }
+    check("checksum mismatch surfaces clearly",     threw && threw.code === "restore-bundle/checksum-mismatch");
+    check("staging cleaned up after checksum failure",
+          !fs.existsSync(path.join(fx.root, "staging-checksum")));
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreBundleMissingBlobDetected() {
+  var fx = _bundleFixture();
+  try {
+    var p = Buffer.from("p");
+    var bundleDir = await _buildSampleBundle(fx, p, [
+      { relativePath: "db.enc", content: "DB" },
+    ]);
+    // Delete the blob the manifest references
+    fs.unlinkSync(path.join(bundleDir, "files/db.enc.enc"));
+
+    var threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  bundleDir,
+        stagingDir: path.join(fx.root, "staging-missing"),
+        passphrase: p,
+      });
+    } catch (e) { threw = e; }
+    check("missing blob surfaces missing-blob",     threw && threw.code === "restore-bundle/missing-blob");
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreBundleEncryptedSizeMismatchDetected() {
+  var fx = _bundleFixture();
+  try {
+    var p = Buffer.from("p");
+    var bundleDir = await _buildSampleBundle(fx, p, [
+      { relativePath: "db.enc", content: "DB" },
+    ]);
+    // Append junk bytes to the blob — encryptedSize will mismatch
+    var blobPath = path.join(bundleDir, "files/db.enc.enc");
+    fs.appendFileSync(blobPath, Buffer.from([0xAA, 0xBB]));
+
+    var threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  bundleDir,
+        stagingDir: path.join(fx.root, "staging-size"),
+        passphrase: p,
+      });
+    } catch (e) { threw = e; }
+    check("encryptedSize mismatch surfaces size-mismatch",
+          threw && threw.code === "restore-bundle/size-mismatch");
+  } finally { fx.cleanup(); }
+}
+
+function testRestoreBundleInspectReturnsManifest() {
+  var fx = _bundleFixture();
+  try {
+    // Build a minimal valid bundle manually so inspect doesn't need the encrypt path
+    var bundleDir = path.join(fx.root, "inspect-bundle");
+    fs.mkdirSync(bundleDir);
+    fs.mkdirSync(path.join(bundleDir, "files"));
+    var m = b.backupManifest.create({
+      vaultKeySalt: "11".repeat(32),
+      vaultKeyEnc:  Buffer.from("x").toString("base64"),
+      files: [{
+        relativePath:  "db.enc",
+        encryptedPath: "files/db.enc.enc",
+        size:          10,
+        encryptedSize: 50,
+        checksum:      "a".repeat(128),
+        salt:          "ff".repeat(32),
+        kind:          "raw",
+      }],
+    });
+    fs.writeFileSync(path.join(bundleDir, "manifest.json"), b.backupManifest.serialize(m));
+    var inspected = b.restoreBundle.inspect({ bundleDir: bundleDir });
+    check("inspect returns parsed manifest",        inspected && inspected.version === 1);
+    check("inspect doesn't need passphrase",        inspected.files.length === 1);
+  } finally { fx.cleanup(); }
+}
+
+async function testRestoreBundleArgValidation() {
+  var fx = _bundleFixture();
+  try {
+    var threw;
+    threw = null; try { await b.restoreBundle.extract({}); } catch (e) { threw = e; }
+    check("missing bundleDir rejected",             threw && threw.code === "restore-bundle/no-bundle");
+
+    threw = null;
+    try { await b.restoreBundle.extract({ bundleDir: fx.root }); } catch (e) { threw = e; }
+    check("missing stagingDir rejected",            threw && threw.code === "restore-bundle/no-staging");
+
+    fs.mkdirSync(path.join(fx.root, "exists-stag"));
+    threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  fx.root,
+        stagingDir: path.join(fx.root, "exists-stag"),
+        passphrase: Buffer.from("p"),
+      });
+    } catch (e) { threw = e; }
+    check("existing stagingDir rejected",           threw && threw.code === "restore-bundle/staging-exists");
+
+    threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  fx.root,
+        stagingDir: path.join(fx.root, "fresh-stag"),
+      });
+    } catch (e) { threw = e; }
+    check("missing passphrase rejected",            threw && threw.code === "restore-bundle/no-passphrase");
+
+    threw = null;
+    try {
+      await b.restoreBundle.extract({
+        bundleDir:  fx.dataDir,
+        stagingDir: path.join(fx.root, "fresh-stag-2"),
+        passphrase: Buffer.from("p"),
+      });
+    } catch (e) { threw = e; }
+    check("bundleDir without manifest rejected",    threw && threw.code === "restore-bundle/missing-manifest");
+  } finally { fx.cleanup(); }
+}
+
 // ---- backup-bundle ----
 //
 // End-to-end fixture: build a tmp dataDir with a few files, encrypt
@@ -9205,6 +9486,17 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // restore-bundle — extract an encrypted backup bundle to staging (Phase 7 slice 7c)
+  testRestoreBundleSurface();
+  await testRestoreBundleRoundTrip();
+  await testRestoreBundleFilterSubset();
+  await testRestoreBundleWrongPassphrase();
+  await testRestoreBundleTamperedBlobDetected();
+  await testRestoreBundleChecksumMismatchDetected();
+  await testRestoreBundleMissingBlobDetected();
+  await testRestoreBundleEncryptedSizeMismatchDetected();
+  testRestoreBundleInspectReturnsManifest();
+  await testRestoreBundleArgValidation();
   // backup-bundle — encrypted backup bundle producer (Phase 7 slice 7b)
   testBackupBundleSurface();
   await testBackupBundleCreateEndToEnd();
@@ -9589,6 +9881,16 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testRestoreBundleSurface:                  testRestoreBundleSurface,
+  testRestoreBundleRoundTrip:                testRestoreBundleRoundTrip,
+  testRestoreBundleFilterSubset:             testRestoreBundleFilterSubset,
+  testRestoreBundleWrongPassphrase:          testRestoreBundleWrongPassphrase,
+  testRestoreBundleTamperedBlobDetected:     testRestoreBundleTamperedBlobDetected,
+  testRestoreBundleChecksumMismatchDetected: testRestoreBundleChecksumMismatchDetected,
+  testRestoreBundleMissingBlobDetected:      testRestoreBundleMissingBlobDetected,
+  testRestoreBundleEncryptedSizeMismatchDetected: testRestoreBundleEncryptedSizeMismatchDetected,
+  testRestoreBundleInspectReturnsManifest:   testRestoreBundleInspectReturnsManifest,
+  testRestoreBundleArgValidation:            testRestoreBundleArgValidation,
   testBackupBundleSurface:                   testBackupBundleSurface,
   testBackupBundleCreateEndToEnd:            testBackupBundleCreateEndToEnd,
   testBackupBundlePathTraversalRejected:     testBackupBundlePathTraversalRejected,

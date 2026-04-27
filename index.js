@@ -83,6 +83,7 @@ var mtlsCa = require("./lib/mtls-ca");
 var backupCrypto = require("./lib/backup-crypto");
 var backupManifest = require("./lib/backup-manifest");
 var backupBundle = require("./lib/backup-bundle");
+var restoreBundle = require("./lib/restore-bundle");
 
 module.exports = {
   crypto:           crypto,
@@ -148,6 +149,7 @@ module.exports = {
   backupCrypto:     backupCrypto,
   backupManifest:   backupManifest,
   backupBundle:     backupBundle,
+  restoreBundle:    restoreBundle,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
