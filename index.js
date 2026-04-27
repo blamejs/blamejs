@@ -61,6 +61,7 @@ var auth = {
   jwt:      require("./lib/auth/jwt"),
 };
 var template = require("./lib/template");
+var render = require("./lib/render");
 
 module.exports = {
   crypto:           crypto,
@@ -104,6 +105,7 @@ module.exports = {
   authHeader:       authHeader,
   auth:             auth,
   template:         template,
+  render:           render,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

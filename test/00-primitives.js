@@ -1695,6 +1695,158 @@ function testTemplateSurface() {
   check("b.template.escapeHtml is a function", typeof b.template.escapeHtml === "function");
 }
 
+// ---- render (Phase 4 slice 2 — response helpers) ----
+
+function _captureRes() {
+  // Mock res with the same shape b.middleware.errorHandler / cors etc.
+  // expect: writeHead(status, headers), end(body), writableEnded.
+  // _captured() returns { status, headers, body, ended }.
+  var headers = {};
+  var status = null;
+  var body = "";
+  var ended = false;
+  return {
+    writableEnded: false,
+    writeHead: function (s, h) { status = s; if (h) for (var k in h) headers[k.toLowerCase()] = h[k]; },
+    setHeader: function (k, v) { headers[k.toLowerCase()] = v; },
+    end:       function (b) { if (b !== undefined && b !== null) body += b; ended = true; this.writableEnded = true; },
+    _captured: function () { return { status: status, headers: headers, body: body, ended: ended }; },
+  };
+}
+
+function testRenderJson() {
+  var res = _captureRes();
+  b.render.json(res, { ok: true, n: 42 });
+  var c = res._captured();
+  check("render.json: 200 default",                  c.status === 200);
+  check("render.json: Content-Type application/json",
+        c.headers["content-type"].indexOf("application/json") === 0);
+  check("render.json: body is JSON-stringified",     c.body === '{"ok":true,"n":42}');
+  check("render.json: Content-Length matches body",
+        Number(c.headers["content-length"]) === Buffer.byteLength(c.body));
+
+  // Custom status + extra headers
+  var res2 = _captureRes();
+  b.render.json(res2, { error: "bad" }, { status: 400, headers: { "X-Custom": "v" } });
+  var c2 = res2._captured();
+  check("render.json: custom status",                c2.status === 400);
+  check("render.json: extra headers merged",         c2.headers["x-custom"] === "v");
+}
+
+function testRenderText() {
+  var res = _captureRes();
+  b.render.text(res, "hello");
+  var c = res._captured();
+  check("render.text: 200 default",                  c.status === 200);
+  check("render.text: Content-Type text/plain",
+        c.headers["content-type"].indexOf("text/plain") === 0);
+  check("render.text: body is the string",           c.body === "hello");
+
+  // Null/undefined body is empty string, not "null"/"undefined"
+  var res2 = _captureRes();
+  b.render.text(res2, null);
+  check("render.text: null → empty body",            res2._captured().body === "");
+}
+
+function testRenderHtmlString() {
+  var res = _captureRes();
+  b.render.htmlString(res, "<h1>Hi</h1>");
+  var c = res._captured();
+  check("render.htmlString: Content-Type text/html",
+        c.headers["content-type"].indexOf("text/html") === 0);
+  check("render.htmlString: body intact",            c.body === "<h1>Hi</h1>");
+}
+
+function testRenderRedirect() {
+  var res = _captureRes();
+  b.render.redirect(res, "/login");
+  var c = res._captured();
+  check("render.redirect: 302 default",              c.status === 302);
+  check("render.redirect: Location header",          c.headers.location === "/login");
+  check("render.redirect: empty body",               c.body === "");
+
+  // Permanent redirect (301) opt-in
+  var res2 = _captureRes();
+  b.render.redirect(res2, "/new-home", { status: 301 });
+  check("render.redirect: 301 status honored",       res2._captured().status === 301);
+
+  // Non-3xx status rejected
+  var threw = false;
+  try { b.render.redirect(_captureRes(), "/x", { status: 200 }); }
+  catch (_e) { threw = true; }
+  check("render.redirect: rejects non-3xx status",   threw);
+
+  // Empty location rejected
+  threw = false;
+  try { b.render.redirect(_captureRes(), ""); }
+  catch (_e) { threw = true; }
+  check("render.redirect: rejects empty location",   threw);
+}
+
+function testRenderDoesNotDoubleWrite() {
+  // Mid-stream double-writes (route already responded then a stray
+  // helper fires) must NOT corrupt the wire — second write is a no-op.
+  var res = _captureRes();
+  b.render.json(res, { ok: 1 });
+  var firstStatus = res._captured().status;
+  b.render.json(res, { ok: 2 });    // should be a no-op
+  var c = res._captured();
+  check("render: silent no-op when res already finished",
+        c.status === firstStatus && c.body === '{"ok":1}');
+}
+
+function testRenderCreateWithEngine() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-render-"));
+  try {
+    fs.writeFileSync(path.join(dir, "page.html"), "<h1>{{ title }}</h1>");
+    var engine = b.template.create({ viewsDir: dir });
+    var r = b.render.create({ engine: engine });
+    check("create returns html method",                typeof r.html === "function");
+    check("create returns json/text/redirect too",
+          typeof r.json === "function" && typeof r.text === "function" && typeof r.redirect === "function");
+    check("create exposes the engine",                 r.engine === engine);
+
+    var res = _captureRes();
+    r.html(res, "page", { title: "Hi" });
+    var c = res._captured();
+    check("instance.html renders + writes correct body",
+          c.body === "<h1>Hi</h1>" && c.headers["content-type"].indexOf("text/html") === 0);
+
+    // Render error from a missing view propagates (operator catches via
+    // middleware.errorHandler downstream)
+    var threw = false;
+    try { r.html(_captureRes(), "nope-not-real", {}); }
+    catch (_e) { threw = true; }
+    check("instance.html propagates render errors",    threw);
+
+    // Custom status (e.g. 404 page render)
+    var res2 = _captureRes();
+    r.html(res2, "page", { title: "404" }, { status: 404 });
+    check("instance.html honors opts.status",           res2._captured().status === 404);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function testRenderCreateValidation() {
+  var threw = null;
+  try { b.render.create({}); }
+  catch (e) { threw = e; }
+  check("create({}) requires engine",                  threw && /engine\.render/.test(threw.message));
+
+  threw = null;
+  try { b.render.create({ engine: { not: "an engine" } }); }
+  catch (e) { threw = e; }
+  check("create with non-engine object rejected",      threw && /engine\.render/.test(threw.message));
+}
+
+function testRenderSurface() {
+  check("b.render namespace present",                  typeof b.render === "object");
+  check("b.render.create is a function",               typeof b.render.create === "function");
+  check("b.render.json is a function",                 typeof b.render.json === "function");
+  check("b.render.text is a function",                 typeof b.render.text === "function");
+  check("b.render.htmlString is a function",           typeof b.render.htmlString === "function");
+  check("b.render.redirect is a function",             typeof b.render.redirect === "function");
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -4228,6 +4380,15 @@ async function run() {
   testTemplatePrototypeSafety();
   testTemplateCacheAndReset();
   testTemplateMissingViewsDir();
+  // render — response helpers paired with the template engine (Phase 4 slice 2)
+  testRenderSurface();
+  testRenderJson();
+  testRenderText();
+  testRenderHtmlString();
+  testRenderRedirect();
+  testRenderDoesNotDoubleWrite();
+  testRenderCreateWithEngine();
+  testRenderCreateValidation();
   // auth.jwt — PQC-signed JWT (Phase 3 slice 5, final)
   testAuthJwtSurface();
   await testAuthJwtSignVerifyRoundTripDefault();
@@ -4410,6 +4571,14 @@ module.exports = {
   testTemplatePrototypeSafety:               testTemplatePrototypeSafety,
   testTemplateCacheAndReset:                 testTemplateCacheAndReset,
   testTemplateMissingViewsDir:               testTemplateMissingViewsDir,
+  testRenderSurface:                         testRenderSurface,
+  testRenderJson:                            testRenderJson,
+  testRenderText:                            testRenderText,
+  testRenderHtmlString:                      testRenderHtmlString,
+  testRenderRedirect:                        testRenderRedirect,
+  testRenderDoesNotDoubleWrite:              testRenderDoesNotDoubleWrite,
+  testRenderCreateWithEngine:                testRenderCreateWithEngine,
+  testRenderCreateValidation:                testRenderCreateValidation,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
