@@ -5437,6 +5437,348 @@ async function testBodyParserSanitizeFilenameUnit() {
         raw._sanitizeFilename("a".repeat(300)).length === 255);
 }
 
+// ---- compression (gzip + brotli response compression) ----
+
+function _compressionReq(headers) {
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method  = "GET";
+  req.url     = "/";
+  req.headers = headers || {};
+  req.socket  = { remoteAddress: "127.0.0.1" };
+  return req;
+}
+
+// Stream-shaped res that captures the bytes that would have gone on
+// the wire. Lets compression tests verify Content-Encoding header AND
+// the actual compressed payload (decompress + check).
+function _compressionRes() {
+  var EE = require("node:events").EventEmitter;
+  var res = new EE();
+  res._chunks = [];
+  res._headers = {};
+  res._statusCode = 200;
+  res.headersSent = false;
+  res.writeHead = function (status, statusMsgOrHeaders, headersIfMsg) {
+    res._statusCode = status;
+    res.headersSent = true;
+    var h = null;
+    if (headersIfMsg && typeof headersIfMsg === "object") h = headersIfMsg;
+    else if (statusMsgOrHeaders && typeof statusMsgOrHeaders === "object" && !Array.isArray(statusMsgOrHeaders)) h = statusMsgOrHeaders;
+    if (h) {
+      var keys = Object.keys(h);
+      for (var i = 0; i < keys.length; i++) res._headers[keys[i].toLowerCase()] = h[keys[i]];
+    }
+  };
+  res.setHeader = function (k, v) { res._headers[k.toLowerCase()] = v; };
+  res.getHeader = function (k) { return res._headers[k.toLowerCase()]; };
+  res.removeHeader = function (k) { delete res._headers[k.toLowerCase()]; };
+  res.write = function (chunk) {
+    if (Buffer.isBuffer(chunk)) res._chunks.push(chunk);
+    else if (typeof chunk === "string") res._chunks.push(Buffer.from(chunk));
+    return true;
+  };
+  res.end = function (chunk) {
+    if (chunk != null) res.write(chunk);
+    res.emit("finish");
+    return res;
+  };
+  res._captured = function () { return Buffer.concat(res._chunks); };
+  return res;
+}
+
+function _runCompression(mw, req, res, handler) {
+  return new Promise(function (resolve) {
+    var resolved = false;
+    res.on("finish", function () { if (!resolved) { resolved = true; resolve(); } });
+    mw(req, res, function () {
+      try { handler(res); }
+      catch (e) { resolved = true; resolve(e); }
+    });
+  });
+}
+
+async function testCompressionSurface() {
+  check("b.middleware.compression is a function",   typeof b.middleware.compression === "function");
+  var raw = b.middleware._modules.compression;
+  check("CompressionError exposed",                 typeof raw.CompressionError === "function");
+  check("SUPPORTED_ENCODINGS exposed",              raw.SUPPORTED_ENCODINGS instanceof Set);
+  check("br supported",                             raw.SUPPORTED_ENCODINGS.has("br"));
+  check("gzip supported",                           raw.SUPPORTED_ENCODINGS.has("gzip"));
+}
+
+async function testCompressionParseAcceptEncoding() {
+  var raw = b.middleware._modules.compression;
+  var p = raw._parseAcceptEncoding("gzip, br;q=0.9");
+  check("parse: extracts both encodings",          p.length === 2);
+  check("parse: q=1 default for unspecified",      p[0].encoding === "gzip" && p[0].q === 1);
+  check("parse: q-value parsed",                   p[1].encoding === "br" && p[1].q === 0.9);
+
+  var pZero = raw._parseAcceptEncoding("br;q=0, gzip;q=1");
+  check("parse: q=0 retained (caller filters)",    pZero.find(function (x) { return x.encoding === "br"; }).q === 0);
+
+  var pStar = raw._parseAcceptEncoding("*;q=0.5");
+  check("parse: wildcard captured",                pStar[0].encoding === "*" && pStar[0].q === 0.5);
+
+  var pEmpty = raw._parseAcceptEncoding("");
+  check("parse: empty header → wildcard",          pEmpty[0].encoding === "*");
+
+  var pAbsent = raw._parseAcceptEncoding(undefined);
+  check("parse: absent header → wildcard",         pAbsent[0].encoding === "*");
+}
+
+async function testCompressionNegotiate() {
+  var raw = b.middleware._modules.compression;
+  var pickBr = raw._negotiateEncoding(
+    raw._parseAcceptEncoding("gzip, br"),
+    ["br", "gzip"]);
+  check("negotiate: brotli picked when client + server both list",  pickBr === "br");
+
+  var pickGzip = raw._negotiateEncoding(
+    raw._parseAcceptEncoding("gzip"),
+    ["br", "gzip"]);
+  check("negotiate: gzip picked when br absent client-side",        pickGzip === "gzip");
+
+  var pickNothing = raw._negotiateEncoding(
+    raw._parseAcceptEncoding("identity;q=1, *;q=0"),
+    ["br", "gzip"]);
+  check("negotiate: q=0 wildcard rejects all server-supported",     pickNothing === null);
+
+  // q=0 explicit on br — gzip wins
+  var pickGzipExplicit = raw._negotiateEncoding(
+    raw._parseAcceptEncoding("br;q=0, gzip"),
+    ["br", "gzip"]);
+  check("negotiate: q=0 excludes the named encoding",               pickGzipExplicit === "gzip");
+
+  // wildcard with positive q lets either through
+  var pickBrViaStar = raw._negotiateEncoding(
+    raw._parseAcceptEncoding("*"),
+    ["br", "gzip"]);
+  check("negotiate: '*' lets the server pick its preferred",        pickBrViaStar === "br");
+}
+
+async function testCompressionTypeMatches() {
+  var raw = b.middleware._modules.compression;
+  check("type: exact match",                        raw._typeMatches("text/html", ["text/html"]));
+  check("type: prefix wildcard",                    raw._typeMatches("text/css", ["text/*"]));
+  check("type: prefix wildcard ignores params",     raw._typeMatches("text/html; charset=utf-8", ["text/*"]));
+  check("type: no match for unrelated",             !raw._typeMatches("image/jpeg", ["text/*"]));
+  check("type: undefined input",                    !raw._typeMatches(undefined, ["text/*"]));
+}
+
+async function testCompressionAppendVary() {
+  var raw = b.middleware._modules.compression;
+  check("vary: empty → token",                      raw._appendVary("", "Accept-Encoding") === "Accept-Encoding");
+  check("vary: undefined → token",                  raw._appendVary(undefined, "Accept-Encoding") === "Accept-Encoding");
+  check("vary: append to existing",
+        raw._appendVary("Cookie", "Accept-Encoding").indexOf("Accept-Encoding") !== -1 &&
+        raw._appendVary("Cookie", "Accept-Encoding").indexOf("Cookie") !== -1);
+  check("vary: don't duplicate",
+        raw._appendVary("Accept-Encoding", "Accept-Encoding") === "Accept-Encoding");
+  check("vary: '*' stays '*'",
+        raw._appendVary("*", "Accept-Encoding") === "*");
+}
+
+async function testCompressionGzipRoundTrip() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  var payload = "x".repeat(2000); // > 1024 threshold
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  check("gzip: Content-Encoding set",                res._headers["content-encoding"] === "gzip");
+  check("gzip: Content-Length removed",              res._headers["content-length"] === undefined);
+  check("gzip: Vary includes Accept-Encoding",       String(res._headers["vary"]).indexOf("Accept-Encoding") !== -1);
+  // Decompress and verify
+  var zlib = require("node:zlib");
+  var decompressed = zlib.gunzipSync(res._captured()).toString("utf8");
+  check("gzip: round-trip preserves bytes",          decompressed === payload);
+}
+
+async function testCompressionBrotliRoundTrip() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "br" });
+  var res = _compressionRes();
+  var payload = "y".repeat(2000);
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  check("brotli: Content-Encoding set",              res._headers["content-encoding"] === "br");
+  var zlib = require("node:zlib");
+  var decompressed = zlib.brotliDecompressSync(res._captured()).toString("utf8");
+  check("brotli: round-trip preserves bytes",        decompressed === payload);
+}
+
+async function testCompressionPrefersBrotliOverGzip() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip, br" });
+  var res = _compressionRes();
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": "2000" });
+    res.end("z".repeat(2000));
+  });
+  check("preference: brotli chosen when both supported", res._headers["content-encoding"] === "br");
+}
+
+async function testCompressionSkipsBelowThreshold() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  var payload = "small";
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  check("threshold: small body NOT compressed",      res._headers["content-encoding"] === undefined);
+  check("threshold: body bytes pass through verbatim", res._captured().toString("utf8") === payload);
+}
+
+async function testCompressionSkipsImageContentType() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  var payload = Buffer.alloc(2000, 0xff);
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "image/jpeg", "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  check("type-skip: image/jpeg not compressed",      res._headers["content-encoding"] === undefined);
+}
+
+async function testCompressionSkipsAlreadyEncoded() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, {
+      "Content-Type":     "text/plain",
+      "Content-Encoding": "gzip", // already done
+      "Content-Length":   "2000",
+    });
+    res.end("z".repeat(2000));
+  });
+  // The pre-existing Content-Encoding stays exactly as the operator set it.
+  check("already-encoded: middleware doesn't double-compress",
+        res._headers["content-encoding"] === "gzip");
+}
+
+async function testCompressionSkipsWhenClientDoesntAccept() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "identity;q=1, *;q=0" });
+  var res = _compressionRes();
+  var payload = "z".repeat(2000);
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  check("client-rejects: no Content-Encoding set",   res._headers["content-encoding"] === undefined);
+  check("client-rejects: bytes pass through",         res._captured().toString("utf8") === payload);
+}
+
+async function testCompressionSkipsNoBodyStatus() {
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(204, { "Content-Type": "text/plain" });
+    res.end();
+  });
+  check("no-body-status: 204 not compressed",        res._headers["content-encoding"] === undefined);
+}
+
+async function testCompressionFilterReturnsFalse() {
+  var compress = b.middleware.compression({
+    filter: function () { return false; },
+  });
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  var payload = "z".repeat(2000);
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  check("filter-skip: filter false → no compression", res._headers["content-encoding"] === undefined);
+}
+
+async function testCompressionFilterThrowFailsClosed() {
+  var compress = b.middleware.compression({
+    filter: function () { throw new Error("boom"); },
+  });
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  var payload = "z".repeat(2000);
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  // Filter throw → middleware skips compression (fail-closed; the
+  // alternative is half-applied compression which would corrupt output).
+  check("filter-throw: skips compression",            res._headers["content-encoding"] === undefined);
+}
+
+async function testCompressionStreamingWritesNoContentLength() {
+  // Handler writes incrementally without setting Content-Length.
+  // Compression should still happen — we assume "large enough" when CL absent.
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    for (var i = 0; i < 50; i++) res.write("chunk-" + i + "-data\n");
+    res.end();
+  });
+  check("streaming: Content-Encoding set",           res._headers["content-encoding"] === "gzip");
+  var zlib = require("node:zlib");
+  var decompressed = zlib.gunzipSync(res._captured()).toString("utf8");
+  check("streaming: bytes preserved across chunks",  decompressed.indexOf("chunk-49-data") !== -1);
+}
+
+async function testCompressionImplicitWriteHeadPath() {
+  // Handler calls res.write before res.writeHead — Node implicitly
+  // writes head with status 200. Middleware must handle this path
+  // without losing compression.
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  await _runCompression(compress, req, res, function () {
+    res.setHeader("Content-Type", "text/plain");
+    res.write("a".repeat(2000));
+    res.end();
+  });
+  check("implicit-head: Content-Encoding set",       res._headers["content-encoding"] === "gzip");
+}
+
+async function testCompressionInvalidEncodingRejectedAtCreate() {
+  var threw = null;
+  try { b.middleware.compression({ encodings: ["zstd"] }); }
+  catch (e) { threw = e; }
+  check("create: unsupported encoding rejected",     threw && threw.code === "compression/bad-encoding");
+}
+
+async function testCompressionDoesntDoubleCompressViaWrappedWrite() {
+  // Regression: an earlier implementation could feed compressor output
+  // back through res.write (the wrapped one), causing recursive
+  // compression. Verify the Content-Encoding is set exactly once and
+  // the output is one-pass compressed.
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+  var payload = "test-double-encoding-guard-" + "x".repeat(2000);
+  await _runCompression(compress, req, res, function () {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(payload);
+  });
+  var zlib = require("node:zlib");
+  // Single gunzip should yield the original; if double-compressed, the
+  // outer gunzip would yield gzip-magic-bytes + ciphertext rather than text.
+  var out = zlib.gunzipSync(res._captured()).toString("utf8");
+  check("no double encode: single gunzip yields plaintext",
+        out === payload);
+}
+
 // ---- health (probe primitive) ----
 
 function _healthReq(method, url) {
@@ -12433,6 +12775,26 @@ async function run() {
   await testBodyParserMultipartTruncated();
   await testBodyParserContentLengthExceedsLimitImmediate();
   testBodyParserSanitizeFilenameUnit();
+  // compression — gzip + brotli response compression (Phase 9.4)
+  await testCompressionSurface();
+  await testCompressionParseAcceptEncoding();
+  await testCompressionNegotiate();
+  await testCompressionTypeMatches();
+  await testCompressionAppendVary();
+  await testCompressionGzipRoundTrip();
+  await testCompressionBrotliRoundTrip();
+  await testCompressionPrefersBrotliOverGzip();
+  await testCompressionSkipsBelowThreshold();
+  await testCompressionSkipsImageContentType();
+  await testCompressionSkipsAlreadyEncoded();
+  await testCompressionSkipsWhenClientDoesntAccept();
+  await testCompressionSkipsNoBodyStatus();
+  await testCompressionFilterReturnsFalse();
+  await testCompressionFilterThrowFailsClosed();
+  await testCompressionStreamingWritesNoContentLength();
+  await testCompressionImplicitWriteHeadPath();
+  await testCompressionInvalidEncodingRejectedAtCreate();
+  await testCompressionDoesntDoubleCompressViaWrappedWrite();
   // health — liveness/readiness/startup probe primitive (Phase 9.3)
   await testHealthSurface();
   await testHealthDefaultLiveness();
@@ -12953,6 +13315,25 @@ module.exports = {
   testBodyParserMultipartTruncated:          testBodyParserMultipartTruncated,
   testBodyParserContentLengthExceedsLimitImmediate: testBodyParserContentLengthExceedsLimitImmediate,
   testBodyParserSanitizeFilenameUnit:        testBodyParserSanitizeFilenameUnit,
+  testCompressionSurface:                    testCompressionSurface,
+  testCompressionParseAcceptEncoding:        testCompressionParseAcceptEncoding,
+  testCompressionNegotiate:                  testCompressionNegotiate,
+  testCompressionTypeMatches:                testCompressionTypeMatches,
+  testCompressionAppendVary:                 testCompressionAppendVary,
+  testCompressionGzipRoundTrip:              testCompressionGzipRoundTrip,
+  testCompressionBrotliRoundTrip:            testCompressionBrotliRoundTrip,
+  testCompressionPrefersBrotliOverGzip:      testCompressionPrefersBrotliOverGzip,
+  testCompressionSkipsBelowThreshold:        testCompressionSkipsBelowThreshold,
+  testCompressionSkipsImageContentType:      testCompressionSkipsImageContentType,
+  testCompressionSkipsAlreadyEncoded:        testCompressionSkipsAlreadyEncoded,
+  testCompressionSkipsWhenClientDoesntAccept: testCompressionSkipsWhenClientDoesntAccept,
+  testCompressionSkipsNoBodyStatus:          testCompressionSkipsNoBodyStatus,
+  testCompressionFilterReturnsFalse:         testCompressionFilterReturnsFalse,
+  testCompressionFilterThrowFailsClosed:     testCompressionFilterThrowFailsClosed,
+  testCompressionStreamingWritesNoContentLength: testCompressionStreamingWritesNoContentLength,
+  testCompressionImplicitWriteHeadPath:      testCompressionImplicitWriteHeadPath,
+  testCompressionInvalidEncodingRejectedAtCreate: testCompressionInvalidEncodingRejectedAtCreate,
+  testCompressionDoesntDoubleCompressViaWrappedWrite: testCompressionDoesntDoubleCompressViaWrappedWrite,
   testHealthSurface:                         testHealthSurface,
   testHealthDefaultLiveness:                 testHealthDefaultLiveness,
   testHealthDefaultReadiness:                testHealthDefaultReadiness,
