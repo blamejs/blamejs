@@ -650,32 +650,55 @@ function testAuthPasswordSurface() {
 // ---- auth.totp (RFC 6238) ----
 //
 // RFC 6238 Appendix B publishes test vectors for HMAC-SHA1, HMAC-SHA256,
-// and HMAC-SHA512 with K = ASCII("12345678901234567890") (a 20-byte key
-// → base32 "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"). Times are wall-clock
-// seconds since epoch; with stepSeconds=30 the timeStep = floor(T/30).
+// and HMAC-SHA512. SHA-1 is NOT supported by this framework (see
+// lib/totp.js docstring), so the test below covers the SHA-256 and
+// SHA-512 vectors only — confirming the implementation matches the RFC
+// for both supported algorithms.
+//
+// Per RFC, each algorithm uses a different key (the test K is
+// "12345678…" repeated to fill the algorithm's HMAC block size):
+//   SHA-256: K = ASCII("12345678901234567890123456789012") (32 bytes)
+//   SHA-512: K = ASCII("1234567890…1234") (64 bytes)
+// Below are the precomputed base32 encodings of those keys.
 
-var RFC6238_KEY_B32_SHA1 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+var RFC6238_KEY_B32_SHA256 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA";
+var RFC6238_KEY_B32_SHA512 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA";
 
 function _stepFromT(tSec, stepSec) {
   return Math.floor(tSec / (stepSec || 30));
 }
 
 function testAuthTotpRfc6238Vectors() {
-  // Appendix B vectors (SHA-1, 8 digits — the RFC publishes 8-digit
-  // codes; our default is 6, but compute() takes digits via opts).
+  // Appendix B vectors at 8 digits — the RFC publishes 8-digit codes;
+  // our default is 6 but compute() takes digits via opts.
   var t = b.auth.totp;
-  var vectors = [
-    { T:          59, code: "94287082" },
-    { T:  1111111109, code: "07081804" },
-    { T:  1111111111, code: "14050471" },
-    { T:  1234567890, code: "89005924" },
-    { T:  2000000000, code: "69279037" },
-    { T: 20000000000, code: "65353130" },
+  var sha256Vectors = [
+    { T:          59, code: "46119246" },
+    { T:  1111111109, code: "68084774" },
+    { T:  1111111111, code: "67062674" },
+    { T:  1234567890, code: "91819424" },
+    { T:  2000000000, code: "90698825" },
+    { T: 20000000000, code: "77737706" },
   ];
-  for (var i = 0; i < vectors.length; i++) {
-    var v = vectors[i];
-    var got = t.compute(RFC6238_KEY_B32_SHA1, _stepFromT(v.T, 30), { digits: 8 });
-    check("RFC 6238 SHA-1 vector T=" + v.T + " → " + v.code,  got === v.code);
+  var sha512Vectors = [
+    { T:          59, code: "90693936" },
+    { T:  1111111109, code: "25091201" },
+    { T:  1111111111, code: "99943326" },
+    { T:  1234567890, code: "93441116" },
+    { T:  2000000000, code: "38618901" },
+    { T: 20000000000, code: "47863826" },
+  ];
+  for (var i = 0; i < sha256Vectors.length; i++) {
+    var v = sha256Vectors[i];
+    var got = t.compute(RFC6238_KEY_B32_SHA256, _stepFromT(v.T, 30),
+                        { digits: 8, algorithm: "sha256" });
+    check("RFC 6238 SHA-256 vector T=" + v.T + " → " + v.code,  got === v.code);
+  }
+  for (var j = 0; j < sha512Vectors.length; j++) {
+    var w = sha512Vectors[j];
+    var got2 = t.compute(RFC6238_KEY_B32_SHA512, _stepFromT(w.T, 30),
+                         { digits: 8, algorithm: "sha512" });
+    check("RFC 6238 SHA-512 vector T=" + w.T + " → " + w.code,  got2 === w.code);
   }
 }
 
@@ -777,9 +800,15 @@ function testAuthTotpUriShape() {
   check("uri label has Issuer:Account",                      u.indexOf("BlameJS:alice%40example.com") !== -1);
   check("uri carries secret as query param",                 /[?&]secret=JBSWY3DPEHPK3PXP/.test(u));
   check("uri carries issuer as query param",                 /[?&]issuer=BlameJS/.test(u));
-  check("uri carries algorithm=SHA1 (default uppercase)",    /[?&]algorithm=SHA1/.test(u));
+  check("uri carries algorithm=SHA512 (framework default)",  /[?&]algorithm=SHA512/.test(u));
+  check("uri does NOT carry algorithm=SHA1",                 /[?&]algorithm=SHA1[^256512]/.test(u) === false);
   check("uri carries digits=6 (default)",                    /[?&]digits=6/.test(u));
   check("uri carries period=30 (default stepSeconds)",       /[?&]period=30/.test(u));
+
+  // Operators with SHA-256 authenticators opt in explicitly
+  var u256 = t.uri("JBSWY3DPEHPK3PXP", "alice@example.com",
+                   { issuer: "BlameJS", algorithm: "sha256" });
+  check("uri honors explicit algorithm=sha256 opt-in",       /[?&]algorithm=SHA256/.test(u256));
 
   // Required-field errors
   var threw = null;
@@ -819,6 +848,15 @@ function testAuthTotpBadAlgorithmRejected() {
   catch (e) { threw = e; }
   check("compute with unsupported alg throws",
         threw && threw.code === "auth-totp/bad-alg");
+
+  // SHA-1 is explicitly rejected — framework posture deviates from
+  // RFC 6238's default to enforce stronger HMAC. See lib/totp.js
+  // docstring for rationale.
+  var threwSha1 = null;
+  try { t.compute("ABCDEFGH", 0, { algorithm: "sha1" }); }
+  catch (e) { threwSha1 = e; }
+  check("compute with sha1 is rejected (framework posture)",
+        threwSha1 && threwSha1.code === "auth-totp/bad-alg");
 }
 
 function testAuthTotpSurface() {
@@ -832,7 +870,13 @@ function testAuthTotpSurface() {
   check("auth.totp.generateBackupCodes is a function",   typeof t.generateBackupCodes === "function");
   check("auth.totp.DEFAULT_STEP_SECONDS = 30",           t.DEFAULT_STEP_SECONDS === 30);
   check("auth.totp.DEFAULT_DIGITS = 6",                  t.DEFAULT_DIGITS === 6);
-  check("auth.totp.DEFAULT_ALGORITHM = sha1",            t.DEFAULT_ALGORITHM === "sha1");
+  check("auth.totp.DEFAULT_ALGORITHM = sha512",          t.DEFAULT_ALGORITHM === "sha512");
+  check("auth.totp.SUPPORTED_ALGORITHMS excludes sha1",
+        t.SUPPORTED_ALGORITHMS.indexOf("sha1") === -1);
+  check("auth.totp.SUPPORTED_ALGORITHMS = [sha256, sha512]",
+        t.SUPPORTED_ALGORITHMS.length === 2 &&
+        t.SUPPORTED_ALGORITHMS.indexOf("sha256") !== -1 &&
+        t.SUPPORTED_ALGORITHMS.indexOf("sha512") !== -1);
 }
 
 // ---- handlers ----
