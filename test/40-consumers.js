@@ -1673,6 +1673,192 @@ async function testMiddlewareRateLimit() {
   } finally { teardownMW(); }
 }
 
+async function testMiddlewareAttachUser() {
+  // attachUser populates req.user via session.verify + operator-supplied
+  // userLoader. Validates token-source dispatch (cookie + Bearer header),
+  // graceful failure modes (no token / invalid token / userLoader nulls /
+  // userLoader throws), and that the middleware never throws or
+  // short-circuits — gating is downstream's job.
+  await setupTestDbForMW();
+  try {
+    // Create a real session; we'll exercise verify through the middleware.
+    var s = await b.session.create({ userId: "u-1", data: { role: "member" } });
+    var goodToken = s.token;
+
+    var loaderCalls = [];
+    var userLoader = async function (verified) {
+      loaderCalls.push(verified.userId);
+      if (verified.userId === "u-1") return { _id: "u-1", email: "alice@example.com" };
+      if (verified.userId === "u-suspended") return null;       // user record exists but loader rejects
+      if (verified.userId === "u-throws") throw new Error("DB blew up");
+      return null;
+    };
+
+    // userLoader is required
+    var threw = null;
+    try { b.middleware.attachUser({}); }
+    catch (e) { threw = e; }
+    check("attachUser: throws when userLoader missing",
+          threw && /userLoader is required/.test(threw.message));
+
+    var mw = b.middleware.attachUser({ userLoader: userLoader });
+
+    // 1. No token in either source → req.user = null, next() called
+    var req1 = _mockReq();
+    var res1 = _mockRes();
+    var n1 = false;
+    await mw(req1, res1, function () { n1 = true; });
+    check("attachUser: no token → next() called",          n1 === true);
+    check("attachUser: no token → req.user is null",       req1.user === null);
+    check("attachUser: no token → res not written",        res1._captured().ended === false);
+
+    // 2. Valid cookie token → req.user populated, req.session set
+    var req2 = _mockReq({ headers: { cookie: "blamejs_session=" + goodToken } });
+    var res2 = _mockRes();
+    var n2 = false;
+    await mw(req2, res2, function () { n2 = true; });
+    check("attachUser: valid cookie → next() called",      n2 === true);
+    check("attachUser: valid cookie → req.user set",       req2.user && req2.user._id === "u-1");
+    check("attachUser: valid cookie → req.session set",    req2.session && req2.session.userId === "u-1");
+
+    // 3. Valid Bearer header → req.user populated
+    var req3 = _mockReq({ headers: { authorization: "Bearer " + goodToken } });
+    var res3 = _mockRes();
+    await mw(req3, res3, function () {});
+    check("attachUser: valid Bearer → req.user set",       req3.user && req3.user._id === "u-1");
+
+    // 4. Cookie wins over Bearer when both present (cookie tried first)
+    var anotherSession = await b.session.create({ userId: "u-1" });
+    var req4 = _mockReq({ headers: {
+      cookie: "blamejs_session=" + goodToken + "; foo=bar",
+      authorization: "Bearer " + anotherSession.token,
+    } });
+    var res4 = _mockRes();
+    await mw(req4, res4, function () {});
+    check("attachUser: cookie precedes Bearer when both present",
+          req4.user && req4.user._id === "u-1");
+
+    // 5. Invalid token → req.user = null
+    var req5 = _mockReq({ headers: { authorization: "Bearer not-a-real-token" } });
+    var res5 = _mockRes();
+    var n5 = false;
+    await mw(req5, res5, function () { n5 = true; });
+    check("attachUser: invalid token → next() called",     n5 === true);
+    check("attachUser: invalid token → req.user is null",  req5.user === null);
+
+    // 6. Valid session but userLoader returns null (deleted/suspended)
+    var sSuspended = await b.session.create({ userId: "u-suspended" });
+    var req6 = _mockReq({ headers: { authorization: "Bearer " + sSuspended.token } });
+    var res6 = _mockRes();
+    await mw(req6, res6, function () {});
+    check("attachUser: userLoader returns null → req.user is null",
+          req6.user === null);
+
+    // 7. userLoader throws → req.user = null, no propagation
+    var sThrows = await b.session.create({ userId: "u-throws" });
+    var req7 = _mockReq({ headers: { authorization: "Bearer " + sThrows.token } });
+    var res7 = _mockRes();
+    var n7 = false;
+    await mw(req7, res7, function () { n7 = true; });
+    check("attachUser: userLoader throw → next() still called", n7 === true);
+    check("attachUser: userLoader throw → req.user is null",    req7.user === null);
+
+    // 8. tokenFrom 'cookie' ignores Bearer
+    var mwCookieOnly = b.middleware.attachUser({ userLoader: userLoader, tokenFrom: "cookie" });
+    var req8 = _mockReq({ headers: { authorization: "Bearer " + goodToken } });
+    await mwCookieOnly(req8, _mockRes(), function () {});
+    check("attachUser: tokenFrom='cookie' ignores Bearer header",
+          req8.user === null);
+
+    // 9. tokenFrom 'header' ignores cookie
+    var mwHeaderOnly = b.middleware.attachUser({ userLoader: userLoader, tokenFrom: "header" });
+    var req9 = _mockReq({ headers: { cookie: "blamejs_session=" + goodToken } });
+    await mwHeaderOnly(req9, _mockRes(), function () {});
+    check("attachUser: tokenFrom='header' ignores cookie",
+          req9.user === null);
+  } finally { teardownMW(); }
+}
+
+async function testMiddlewareRequireAuth() {
+  // requireAuth gates routes. With req.user populated, next() runs.
+  // Without it: 401 JSON, 401 text, or 302 redirect depending on
+  // request shape + opts.
+  await setupTestDbForMW();
+  try {
+    var mw = b.middleware.requireAuth();
+
+    // 1. Authenticated request → next() called, no response written
+    var req1 = _mockReq();
+    req1.user = { _id: "u-1" };
+    var res1 = _mockRes();
+    var n1 = false;
+    mw(req1, res1, function () { n1 = true; });
+    check("requireAuth: authenticated → next() called",    n1 === true);
+    check("requireAuth: authenticated → res not written",  res1._captured().ended === false);
+
+    // 2. Unauthenticated JSON-preferring request → 401 JSON
+    var req2 = _mockReq({ headers: { accept: "application/json" } });
+    var res2 = _mockRes();
+    var n2 = false;
+    mw(req2, res2, function () { n2 = true; });
+    var cap2 = res2._captured();
+    check("requireAuth: unauth + JSON → next() NOT called", n2 === false);
+    check("requireAuth: unauth + JSON → 401 status",        cap2.status === 401);
+    check("requireAuth: unauth + JSON → Content-Type JSON",
+          cap2.headers["content-type"].indexOf("application/json") === 0);
+    var body2 = JSON.parse(cap2.body);
+    check("requireAuth: unauth + JSON → error body",        body2.error === "Authentication required.");
+
+    // 3. Unauthenticated XHR (X-Requested-With) → 401 JSON
+    var req3 = _mockReq({ headers: { "x-requested-with": "XMLHttpRequest" } });
+    var res3 = _mockRes();
+    mw(req3, res3, function () {});
+    check("requireAuth: unauth + XHR → 401 status",        res3._captured().status === 401);
+
+    // 4. Unauthenticated browser-y request → 401 text/plain
+    var req4 = _mockReq({ headers: { accept: "text/html" } });
+    var res4 = _mockRes();
+    mw(req4, res4, function () {});
+    var cap4 = res4._captured();
+    check("requireAuth: unauth browser → 401 status",      cap4.status === 401);
+    check("requireAuth: unauth browser → text/plain",
+          cap4.headers["content-type"].indexOf("text/plain") === 0);
+
+    // 5. Unauthenticated browser-y request WITH redirectTo → 302
+    var mwRedirect = b.middleware.requireAuth({ redirectTo: "/auth/login" });
+    var req5 = _mockReq({ headers: { accept: "text/html" } });
+    var res5 = _mockRes();
+    mwRedirect(req5, res5, function () {});
+    var cap5 = res5._captured();
+    check("requireAuth: unauth + redirectTo → 302 status",  cap5.status === 302);
+    check("requireAuth: unauth + redirectTo → Location set",
+          cap5.headers.location === "/auth/login");
+
+    // 6. JSON-preferring still gets 401 JSON even with redirectTo set
+    var req6 = _mockReq({ headers: { accept: "application/json" } });
+    var res6 = _mockRes();
+    mwRedirect(req6, res6, function () {});
+    check("requireAuth: JSON-prefer + redirectTo → 401 (not redirect)",
+          res6._captured().status === 401);
+
+    // 7. Custom errorMessage propagates
+    var mwCustom = b.middleware.requireAuth({ errorMessage: "Sign in to continue." });
+    var req7 = _mockReq({ headers: { accept: "application/json" } });
+    var res7 = _mockRes();
+    mwCustom(req7, res7, function () {});
+    check("requireAuth: custom errorMessage propagates",
+          JSON.parse(res7._captured().body).error === "Sign in to continue.");
+
+    // 8. Custom prefersJson override
+    var mwForce = b.middleware.requireAuth({ prefersJson: function () { return false; } });
+    var req8 = _mockReq({ headers: { accept: "application/json" } });   // would normally be JSON
+    var res8 = _mockRes();
+    mwForce(req8, res8, function () {});
+    check("requireAuth: prefersJson override forces text/plain",
+          res8._captured().headers["content-type"].indexOf("text/plain") === 0);
+  } finally { teardownMW(); }
+}
+
 function testEnvLoadDiffAndAudit() {
   // Use real file I/O via atomicFile — exercises load() end-to-end.
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-env-"));
@@ -1852,6 +2038,8 @@ async function run() {
   await testMiddlewareBotGuard();
   await testMiddlewareCors();
   await testMiddlewareRateLimit();
+  await testMiddlewareAttachUser();
+  await testMiddlewareRequireAuth();
 
   // env-safe.load() — full lifecycle (depends on audit chain)
   await testEnvLoadDiffAndAudit();
@@ -1863,6 +2051,8 @@ module.exports = {
   name: "Layer 4 — consumers (session, storage, queue, log-stream, external-db, middleware, env-load)",
   run:  run,
   testSession:                              testSession,
+  testMiddlewareAttachUser:                 testMiddlewareAttachUser,
+  testMiddlewareRequireAuth:                testMiddlewareRequireAuth,
   testDataResidency:                        testDataResidency,
   testStorage:                              testStorage,
   testMultiBackend:                         testMultiBackend,
