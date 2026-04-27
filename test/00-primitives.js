@@ -5437,6 +5437,320 @@ async function testBodyParserSanitizeFilenameUnit() {
         raw._sanitizeFilename("a".repeat(300)).length === 255);
 }
 
+// ---- health (probe primitive) ----
+
+function _healthReq(method, url) {
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method  = method || "GET";
+  req.url     = url;
+  req.headers = {};
+  req.socket  = { remoteAddress: "127.0.0.1" };
+  return req;
+}
+
+function _runHealthMiddleware(mw, req, res) {
+  return new Promise(function (resolve) {
+    var nextCalled = false;
+    var resolved = false;
+    function done(payload) { if (resolved) return; resolved = true; resolve(payload); }
+    res.on("finish", function () { if (!nextCalled) done({ next: false, status: res._endedStatus, body: res._captured }); });
+    mw(req, res, function () { nextCalled = true; done({ next: true }); });
+  });
+}
+
+async function testHealthSurface() {
+  check("b.middleware.health is a function",     typeof b.middleware.health === "function");
+  var raw = b.middleware._modules.health;
+  check("HealthError class exposed",              typeof raw.HealthError === "function");
+  check("TIERS exposed",                          Array.isArray(raw.TIERS) && raw.TIERS.length === 3);
+  check("TIERS contains liveness/readiness/startup",
+        raw.TIERS.indexOf("liveness") !== -1 &&
+        raw.TIERS.indexOf("readiness") !== -1 &&
+        raw.TIERS.indexOf("startup") !== -1);
+  var hc = b.middleware.health();
+  check("create returns object with registerCheck", typeof hc.registerCheck === "function");
+  check("create returns object with middleware",  typeof hc.middleware === "function");
+  check("create returns object with markShuttingDown", typeof hc.markShuttingDown === "function");
+  check("create returns object with runChecks",   typeof hc.runChecks === "function");
+}
+
+async function testHealthDefaultLiveness() {
+  // No checks registered — /healthz returns 200 by default.
+  var hc = b.middleware.health();
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/healthz"), res);
+  check("default /healthz: status 200",           r.status === 200);
+  check("default /healthz: body contains ok",     /\"status\":\"ok\"/.test(r.body));
+}
+
+async function testHealthDefaultReadiness() {
+  // No checks registered — /readyz returns 200 by default too.
+  var hc = b.middleware.health();
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  check("default /readyz: status 200",            r.status === 200);
+}
+
+async function testHealthUnmatchedPathFallsThrough() {
+  var hc = b.middleware.health();
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/something-else"), res);
+  check("unmatched path: next() called",          r.next === true);
+}
+
+async function testHealthNonGetFallsThrough() {
+  var hc = b.middleware.health();
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("POST", "/healthz"), res);
+  check("POST /healthz: next() called (only GET/HEAD intercept)", r.next === true);
+}
+
+async function testHealthCriticalFailReturns503() {
+  var hc = b.middleware.health();
+  hc.registerCheck("db", function () { return false; }, { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  check("critical fail: status 503",              r.status === 503);
+  check("critical fail: body has fail status",    /\"status\":\"fail\"/.test(r.body));
+}
+
+async function testHealthNonCriticalFailIsDegraded() {
+  var hc = b.middleware.health();
+  hc.registerCheck("optional", function () { return false; },
+    { tier: "readiness", critical: false });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  // Degraded keeps 200 — service is still serving, the failed check is informational.
+  check("non-critical fail: status 200",          r.status === 200);
+  check("non-critical fail: body status=degraded", /\"status\":\"degraded\"/.test(r.body));
+}
+
+async function testHealthDetailedResponse() {
+  var hc = b.middleware.health({ detailLevel: "detailed" });
+  hc.registerCheck("db", function () { return { ok: true, latencyMs: 5 }; },
+    { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  // Detailed mode includes the per-check breakdown
+  check("detailed mode: response includes checks", res._captured.indexOf("\"db\"") !== -1);
+  check("detailed mode: response includes latencyMs",
+        res._captured.indexOf("\"latencyMs\"") !== -1);
+  check("detailed mode: response includes uptime", res._captured.indexOf("\"uptime\"") !== -1);
+}
+
+async function testHealthMinimalHidesDetail() {
+  var hc = b.middleware.health({ detailLevel: "minimal" });
+  hc.registerCheck("db", function () { return { ok: true, secret: "top-secret-internal" }; },
+    { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  check("minimal mode: no check breakdown",       res._captured.indexOf("\"db\"") === -1);
+  check("minimal mode: no internal secret leaked", res._captured.indexOf("top-secret-internal") === -1);
+  // Should still surface the top-level status, just nothing more
+  check("minimal mode: status field present",     /\"status\":\"ok\"/.test(res._captured));
+}
+
+async function testHealthDetailPredicate() {
+  // Detail predicate runs per-request; emits detailed only when predicate returns true.
+  var hc = b.middleware.health({
+    detailLevel:     "minimal",
+    detailPredicate: function (req) { return req.headers["x-internal"] === "1"; },
+  });
+  hc.registerCheck("db", function () { return { ok: true, latencyMs: 7 }; },
+    { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+
+  // Request without auth header → minimal
+  var resPub = _mockBodyRes();
+  var reqPub = _healthReq("GET", "/readyz");
+  await _runHealthMiddleware(mw, reqPub, resPub);
+  check("predicate false: minimal response",      resPub._captured.indexOf("\"db\"") === -1);
+
+  // Request with auth header → detailed
+  var resAuth = _mockBodyRes();
+  var reqAuth = _healthReq("GET", "/readyz");
+  reqAuth.headers["x-internal"] = "1";
+  await _runHealthMiddleware(mw, reqAuth, resAuth);
+  check("predicate true: detailed response",      resAuth._captured.indexOf("\"db\"") !== -1);
+}
+
+async function testHealthDetailPredicateThrowFailsClosed() {
+  var hc = b.middleware.health({
+    detailLevel:     "minimal",
+    detailPredicate: function () { throw new Error("boom"); },
+  });
+  hc.registerCheck("db", function () { return { ok: true, latencyMs: 7 }; },
+    { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  // Predicate throw → fails closed (minimal response).
+  check("predicate throws: minimal response",     res._captured.indexOf("\"db\"") === -1);
+}
+
+async function testHealthShuttingDownFlipsReadiness() {
+  var hc = b.middleware.health();
+  hc.registerCheck("db", function () { return true; }, { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+
+  // Before markShuttingDown: 200
+  var resBefore = _mockBodyRes();
+  var rBefore = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), resBefore);
+  check("before shutdown: /readyz 200",           rBefore.status === 200);
+
+  hc.markShuttingDown();
+  check("isShuttingDown reports true after mark", hc.isShuttingDown() === true);
+
+  // After: 503 with shutting-down status
+  var resAfter = _mockBodyRes();
+  var rAfter = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), resAfter);
+  check("after shutdown: /readyz 503",            rAfter.status === 503);
+  check("after shutdown: body shutting-down",     /\"status\":\"shutting-down\"/.test(rAfter.body));
+
+  // Liveness UNAFFECTED — orchestrator must not kill us mid-drain
+  var resLive = _mockBodyRes();
+  var rLive = await _runHealthMiddleware(mw, _healthReq("GET", "/healthz"), resLive);
+  check("after shutdown: /healthz still 200",     rLive.status === 200);
+}
+
+async function testHealthMultiTierRegistration() {
+  var hc = b.middleware.health();
+  var calls = 0;
+  hc.registerCheck("multi", function () { calls++; return true; },
+    { tier: ["readiness", "startup"], critical: true });
+
+  // Hit /readyz — counts the check
+  await _runHealthMiddleware(hc.middleware(), _healthReq("GET", "/readyz"), _mockBodyRes());
+  check("multi-tier check fires on /readyz",      calls === 1);
+
+  // Hit /startupz — counts the check
+  await _runHealthMiddleware(hc.middleware(), _healthReq("GET", "/startupz"), _mockBodyRes());
+  check("multi-tier check fires on /startupz",    calls === 2);
+
+  // Hit /healthz — does NOT count (no liveness tier)
+  await _runHealthMiddleware(hc.middleware(), _healthReq("GET", "/healthz"), _mockBodyRes());
+  check("multi-tier check skipped on /healthz",   calls === 2);
+}
+
+async function testHealthCheckTimeout() {
+  var hc = b.middleware.health();
+  hc.registerCheck("slow", function () {
+    return new Promise(function () { /* never resolves */ });
+  }, { tier: "readiness", critical: true, timeoutMs: 50 });
+  hc.registerCheck("fast", function () { return true; }, { tier: "readiness", critical: false });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var t0 = Date.now();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  var elapsed = Date.now() - t0;
+  check("timeout: response arrives within 200ms", elapsed < 200);
+  check("timeout: critical timeout → 503",        r.status === 503);
+}
+
+async function testHealthCheckCacheRespected() {
+  var calls = 0;
+  var hc = b.middleware.health({ cacheMs: 1000 });
+  hc.registerCheck("counter", function () { calls++; return true; },
+    { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+  await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), _mockBodyRes());
+  await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), _mockBodyRes());
+  await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), _mockBodyRes());
+  check("cache: check fn called once across 3 probes within window", calls === 1);
+}
+
+async function testHealthShutdownBypassesCache() {
+  var hc = b.middleware.health({ cacheMs: 60000 });
+  hc.registerCheck("db", function () { return true; }, { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+
+  // Warm the cache with a 200
+  await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), _mockBodyRes());
+
+  // Mark shutting down — cache should NOT serve the cached 200
+  hc.markShuttingDown();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  check("shutdown bypasses cache: 503 immediate", r.status === 503);
+}
+
+async function testHealthHeadMethod() {
+  var hc = b.middleware.health();
+  hc.registerCheck("db", function () { return true; }, { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("HEAD", "/readyz"), res);
+  check("HEAD /readyz: status 200",               r.status === 200);
+  check("HEAD /readyz: empty body",               r.body === "");
+}
+
+async function testHealthInvalidArgs() {
+  var threw;
+
+  threw = null;
+  try { b.middleware.health({ detailLevel: "weird" }); } catch (e) { threw = e; }
+  check("create: bad detailLevel rejected",       threw && threw.code === "health/bad-detail-level");
+
+  var hc = b.middleware.health();
+
+  threw = null;
+  try { hc.registerCheck("", function () {}); } catch (e) { threw = e; }
+  check("registerCheck: empty name rejected",     threw && threw.code === "health/bad-name");
+
+  threw = null;
+  try { hc.registerCheck("x", "not-a-fn"); } catch (e) { threw = e; }
+  check("registerCheck: non-function fn rejected", threw && threw.code === "health/bad-fn");
+
+  threw = null;
+  try { hc.registerCheck("x", function () {}, { tier: "weird" }); } catch (e) { threw = e; }
+  check("registerCheck: bad tier rejected",       threw && threw.code === "health/bad-tier");
+
+  // Duplicate within same tier
+  hc.registerCheck("dup", function () { return true; }, { tier: "readiness" });
+  threw = null;
+  try { hc.registerCheck("dup", function () { return true; }, { tier: "readiness" }); } catch (e) { threw = e; }
+  check("registerCheck: duplicate name in same tier rejected",
+        threw && threw.code === "health/duplicate-check");
+
+  // Same name in DIFFERENT tier is fine — operator may have a "db" check
+  // for both readiness (full health) and startup (init-finished).
+  hc.registerCheck("dup", function () { return true; }, { tier: "startup" });
+  check("registerCheck: same name in different tier allowed",
+        true);
+}
+
+async function testHealthCheckThrowFails() {
+  var hc = b.middleware.health();
+  hc.registerCheck("explodes", function () { throw new Error("kaboom"); },
+    { tier: "readiness", critical: true });
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
+  check("check throws: critical fail → 503",      r.status === 503);
+}
+
+async function testHealthCacheControlHeader() {
+  var hc = b.middleware.health();
+  var mw = hc.middleware();
+  var res = _mockBodyRes();
+  // Capture the writeHead headers explicitly
+  var capturedHeaders = null;
+  var origWriteHead = res.writeHead;
+  res.writeHead = function (s, h) { capturedHeaders = h; return origWriteHead.call(res, s, h); };
+  await _runHealthMiddleware(mw, _healthReq("GET", "/healthz"), res);
+  check("Cache-Control: no-store on health response",
+        capturedHeaders && capturedHeaders["Cache-Control"] === "no-store");
+}
+
 // ---- safe-schema (declarative input validator) ----
 
 function testSafeSchemaSurface() {
@@ -12119,6 +12433,27 @@ async function run() {
   await testBodyParserMultipartTruncated();
   await testBodyParserContentLengthExceedsLimitImmediate();
   testBodyParserSanitizeFilenameUnit();
+  // health — liveness/readiness/startup probe primitive (Phase 9.3)
+  await testHealthSurface();
+  await testHealthDefaultLiveness();
+  await testHealthDefaultReadiness();
+  await testHealthUnmatchedPathFallsThrough();
+  await testHealthNonGetFallsThrough();
+  await testHealthCriticalFailReturns503();
+  await testHealthNonCriticalFailIsDegraded();
+  await testHealthDetailedResponse();
+  await testHealthMinimalHidesDetail();
+  await testHealthDetailPredicate();
+  await testHealthDetailPredicateThrowFailsClosed();
+  await testHealthShuttingDownFlipsReadiness();
+  await testHealthMultiTierRegistration();
+  await testHealthCheckTimeout();
+  await testHealthCheckCacheRespected();
+  await testHealthShutdownBypassesCache();
+  await testHealthHeadMethod();
+  await testHealthInvalidArgs();
+  await testHealthCheckThrowFails();
+  await testHealthCacheControlHeader();
   // safe-schema — declarative input validation (Phase 9.1)
   testSafeSchemaSurface();
   testSafeSchemaStringPrimitive();
@@ -12618,6 +12953,26 @@ module.exports = {
   testBodyParserMultipartTruncated:          testBodyParserMultipartTruncated,
   testBodyParserContentLengthExceedsLimitImmediate: testBodyParserContentLengthExceedsLimitImmediate,
   testBodyParserSanitizeFilenameUnit:        testBodyParserSanitizeFilenameUnit,
+  testHealthSurface:                         testHealthSurface,
+  testHealthDefaultLiveness:                 testHealthDefaultLiveness,
+  testHealthDefaultReadiness:                testHealthDefaultReadiness,
+  testHealthUnmatchedPathFallsThrough:       testHealthUnmatchedPathFallsThrough,
+  testHealthNonGetFallsThrough:              testHealthNonGetFallsThrough,
+  testHealthCriticalFailReturns503:          testHealthCriticalFailReturns503,
+  testHealthNonCriticalFailIsDegraded:       testHealthNonCriticalFailIsDegraded,
+  testHealthDetailedResponse:                testHealthDetailedResponse,
+  testHealthMinimalHidesDetail:              testHealthMinimalHidesDetail,
+  testHealthDetailPredicate:                 testHealthDetailPredicate,
+  testHealthDetailPredicateThrowFailsClosed: testHealthDetailPredicateThrowFailsClosed,
+  testHealthShuttingDownFlipsReadiness:      testHealthShuttingDownFlipsReadiness,
+  testHealthMultiTierRegistration:           testHealthMultiTierRegistration,
+  testHealthCheckTimeout:                    testHealthCheckTimeout,
+  testHealthCheckCacheRespected:             testHealthCheckCacheRespected,
+  testHealthShutdownBypassesCache:           testHealthShutdownBypassesCache,
+  testHealthHeadMethod:                      testHealthHeadMethod,
+  testHealthInvalidArgs:                     testHealthInvalidArgs,
+  testHealthCheckThrowFails:                 testHealthCheckThrowFails,
+  testHealthCacheControlHeader:              testHealthCacheControlHeader,
   testSafeSchemaSurface:                     testSafeSchemaSurface,
   testSafeSchemaStringPrimitive:             testSafeSchemaStringPrimitive,
   testSafeSchemaNumberPrimitive:             testSafeSchemaNumberPrimitive,
