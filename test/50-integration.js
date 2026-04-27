@@ -28,6 +28,7 @@ var setupTestDb               = helpers.setupTestDb;
 var teardownTestDb            = helpers.teardownTestDb;
 var _setupClusterGateFixture  = helpers._setupClusterGateFixture;
 var _expectNotLeaderError     = helpers._expectNotLeaderError;
+var listenOnRandomPort        = helpers.listenOnRandomPort;
 
 async function testClusterGatesAuditAndConsent() {
   var fx = await _setupClusterGateFixture();
@@ -156,6 +157,229 @@ async function testClusterGatesObjectStoreLocal() {
   }
 }
 
+// ---- createApp (Phase 5 slice 1) ----
+
+async function _appGet(port, urlPath) {
+  return await b.httpClient.request({
+    url: "http://127.0.0.1:" + port + urlPath,
+    allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+  });
+}
+
+async function testCreateAppMinimalBoot() {
+  // Verification gate from blamejs-roadmap.md: "createApp() with a
+  // minimal config boots in under 1s and serves a 200 OK response."
+  // Time the full boot + listen + first 200 response.
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-"));
+  var t0 = Date.now();
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    middleware: { botGuard: false },     // bot-guard refuses non-browser-y test clients
+    routes:  function (r) {
+      r.get("/", function (req, res) { b.render.text(res, "OK"); });
+    },
+  });
+  var bootMs = Date.now() - t0;
+  check("createApp boot time under 1s",                bootMs < 1000);
+
+  var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    check("listen returns port",                       typeof addr.port === "number" && addr.port > 0);
+    check("listen returns server reference",           addr.server && typeof addr.server === "object");
+    check("address() reflects bound port",             app.address().port === addr.port);
+
+    var resp = await _appGet(addr.port, "/");
+    check("minimal createApp serves 200",              resp.statusCode === 200);
+    check("response body matches handler",             resp.body.toString("utf8") === "OK");
+  } finally {
+    await app.shutdown();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function testCreateAppDefaultMiddleware() {
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-"));
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    routes:  function (r) {
+      r.get("/healthz", function (req, res) { b.render.json(res, { ok: true }); });
+    },
+  });
+  var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    // Default middleware stack includes botGuard, which rejects requests
+    // without browser-y fingerprints (no Accept-Language, no
+    // Sec-Fetch-Mode). Send those headers so the request reaches the
+    // route handler — the test verifies upstream middleware (requestId,
+    // securityHeaders) ran, not that bot-guard's defaults pass for
+    // arbitrary clients.
+    var resp = await b.httpClient.request({
+      url: "http://127.0.0.1:" + addr.port + "/healthz",
+      headers: {
+        "Accept-Language": "en-US",
+        "Sec-Fetch-Mode":  "navigate",
+        "User-Agent":      "Mozilla/5.0 blamejs-test",
+      },
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+    });
+    // requestId middleware sets X-Request-Id by default
+    check("default middleware: X-Request-Id set",
+          typeof resp.headers["x-request-id"] === "string" &&
+          resp.headers["x-request-id"].length > 0);
+    // securityHeaders sets a CSP / HSTS-equivalent
+    check("default middleware: security headers present",
+          typeof resp.headers["x-content-type-options"] === "string");
+  } finally {
+    await app.shutdown();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function testCreateAppMiddlewareDisableable() {
+  // Operator opts out of requestId — no X-Request-Id on the response.
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-"));
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    middleware: { requestId: false, securityHeaders: false, botGuard: false },
+    routes:  function (r) {
+      r.get("/x", function (req, res) { b.render.text(res, "x"); });
+    },
+  });
+  var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    var resp = await _appGet(addr.port, "/x");
+    check("middleware: requestId opted out → no X-Request-Id",
+          resp.headers["x-request-id"] === undefined);
+  } finally {
+    await app.shutdown();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function testCreateAppRoutesCallback() {
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-"));
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    middleware: { botGuard: false },
+    routes:  function (r) {
+      r.get("/users/:id", function (req, res) {
+        b.render.json(res, { id: req.params.id });
+      });
+      r.post("/echo", function (req, res) {
+        b.render.json(res, { method: req.method });
+      });
+    },
+  });
+  var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    var got = await _appGet(addr.port, "/users/42");
+    check("routes callback: GET param parsed",
+          JSON.parse(got.body.toString("utf8")).id === "42");
+
+    var posted = await b.httpClient.request({
+      method: "POST",
+      url: "http://127.0.0.1:" + addr.port + "/echo",
+      body:  Buffer.from(""),
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+    });
+    check("routes callback: POST handler runs",
+          JSON.parse(posted.body.toString("utf8")).method === "POST");
+  } finally {
+    await app.shutdown();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function testCreateAppShutdown() {
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-"));
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    middleware: { botGuard: false },
+    routes:  function (r) { r.get("/", function (req, res) { b.render.text(res, "OK"); }); },
+  });
+  var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+
+  // Confirm reachable
+  var beforeResp = await _appGet(addr.port, "/");
+  check("shutdown: reachable before",                  beforeResp.statusCode === 200);
+
+  await app.shutdown();
+  check("shutdown: address() returns null after",      app.address() === null);
+
+  // Connection should be refused now (server closed)
+  var connectionRefused = false;
+  try { await _appGet(addr.port, "/"); }
+  catch (_e) { connectionRefused = true; }
+  check("shutdown: connection refused after close",     connectionRefused);
+
+  // Idempotent — calling shutdown twice is safe
+  await app.shutdown();
+  check("shutdown: idempotent (second call is a no-op)", true);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+}
+
+async function testCreateAppValidation() {
+  var threw = null;
+  try { await b.createApp(); }
+  catch (e) { threw = e; }
+  check("createApp(): no opts → throws",               threw && /opts object is required/.test(threw.message));
+
+  threw = null;
+  try { await b.createApp({}); }
+  catch (e) { threw = e; }
+  check("createApp({}): missing dataDir → throws",     threw && /dataDir is required/.test(threw.message));
+}
+
+function testCreateAppSurface() {
+  check("b.createApp is a function",                   typeof b.createApp === "function");
+}
+
 // ---- run() ----
 
 async function run() {
@@ -165,6 +389,16 @@ async function run() {
   await testClusterGatesSubject();
   await testClusterGatesQueue();
   await testClusterGatesObjectStoreLocal();
+
+  // createApp — Phase 5 slice 1 — orchestrates vault → externalDb →
+  // cluster → frameworkSchema → db → router → middleware → routes.
+  testCreateAppSurface();
+  await testCreateAppValidation();
+  await testCreateAppMinimalBoot();
+  await testCreateAppDefaultMiddleware();
+  await testCreateAppMiddlewareDisableable();
+  await testCreateAppRoutesCallback();
+  await testCreateAppShutdown();
 }
 
 module.exports = {
@@ -175,4 +409,11 @@ module.exports = {
   testClusterGatesSubject:            testClusterGatesSubject,
   testClusterGatesQueue:              testClusterGatesQueue,
   testClusterGatesObjectStoreLocal:   testClusterGatesObjectStoreLocal,
+  testCreateAppSurface:               testCreateAppSurface,
+  testCreateAppValidation:            testCreateAppValidation,
+  testCreateAppMinimalBoot:           testCreateAppMinimalBoot,
+  testCreateAppDefaultMiddleware:     testCreateAppDefaultMiddleware,
+  testCreateAppMiddlewareDisableable: testCreateAppMiddlewareDisableable,
+  testCreateAppRoutesCallback:        testCreateAppRoutesCallback,
+  testCreateAppShutdown:              testCreateAppShutdown,
 };

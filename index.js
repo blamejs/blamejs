@@ -64,6 +64,7 @@ var template = require("./lib/template");
 var render = require("./lib/render");
 var staticServe = require("./lib/static");
 var forms = require("./lib/forms");
+var app = require("./lib/app");
 
 module.exports = {
   crypto:           crypto,
@@ -110,6 +111,7 @@ module.exports = {
   render:           render,
   staticServe:      staticServe,
   forms:            forms,
+  createApp:        app.createApp,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
