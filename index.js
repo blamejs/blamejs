@@ -54,6 +54,9 @@ var httpClient = require("./lib/http-client");
 var websocket = require("./lib/websocket");
 var urlSafe = require("./lib/url-safe");
 var authHeader = require("./lib/auth-header");
+var auth = {
+  password: require("./lib/auth/password"),
+};
 
 module.exports = {
   crypto:           crypto,
@@ -95,6 +98,7 @@ module.exports = {
   websocket:        websocket,
   urlSafe:          urlSafe,
   authHeader:       authHeader,
+  auth:             auth,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

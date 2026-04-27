@@ -532,6 +532,121 @@ function testAuthHeaderFromConfig() {
         threw && threw.code === "auth-header/unknown-method");
 }
 
+// ---- auth.password (Argon2id) ----
+//
+// All tests below use deliberately weak Argon2 params (memoryCost=1024
+// KiB / timeCost=1 / parallelism=1) so each hash/verify takes ~10ms
+// instead of ~250-500ms with defaults. The defaults are exercised
+// indirectly by the surface check (DEFAULT_PARAMS) and by the integration
+// path (vault-wrap uses comparable params). The point of these tests is
+// behavior + boundaries, not benchmarking.
+
+var FAST_ARGON_PARAMS = { memoryCost: 1024, timeCost: 1, parallelism: 1 };
+
+async function testAuthPasswordHashShape() {
+  var p = b.auth.password;
+  var h = await p.hash("hunter2", FAST_ARGON_PARAMS);
+  check("auth.password.hash returns string",        typeof h === "string");
+  check("auth.password.hash starts with $argon2id$", h.indexOf("$argon2id$") === 0);
+  check("auth.password.hash includes m/t/p params",
+        /\$m=1024,t=1,p=1\$/.test(h));
+
+  // Same plain → different hash (random salt)
+  var h2 = await p.hash("hunter2", FAST_ARGON_PARAMS);
+  check("auth.password.hash uses random salt (hashes differ)",  h !== h2);
+}
+
+async function testAuthPasswordVerifyRoundTrip() {
+  var p = b.auth.password;
+  var stored = await p.hash("correct horse battery staple", FAST_ARGON_PARAMS);
+  check("verify accepts correct password",
+        (await p.verify(stored, "correct horse battery staple")) === true);
+  check("verify rejects wrong password",
+        (await p.verify(stored, "wrong horse battery staple")) === false);
+  check("verify rejects empty plain",       (await p.verify(stored, "")) === false);
+  check("verify rejects null plain",        (await p.verify(stored, null)) === false);
+}
+
+async function testAuthPasswordVerifyTamperedHash() {
+  var p = b.auth.password;
+  var stored = await p.hash("hunter2", FAST_ARGON_PARAMS);
+  // Flip one base64 char in the hash portion (after the last $)
+  var lastDollar = stored.lastIndexOf("$");
+  var head = stored.slice(0, lastDollar + 1);
+  var tail = stored.slice(lastDollar + 1);
+  var tampered = head + (tail[0] === "A" ? "B" : "A") + tail.slice(1);
+  check("verify rejects tampered hash",     (await p.verify(tampered, "hunter2")) === false);
+}
+
+async function testAuthPasswordVerifyMalformedHash() {
+  var p = b.auth.password;
+  check("verify rejects empty hash",        (await p.verify("", "hunter2")) === false);
+  check("verify rejects null hash",         (await p.verify(null, "hunter2")) === false);
+  check("verify rejects non-id variant",
+        (await p.verify("$argon2i$v=19$m=1024,t=1,p=1$AAAA$BBBB", "x")) === false);
+  check("verify rejects garbage hash",
+        (await p.verify("not-a-hash", "x")) === false);
+  check("verify rejects truncated PHC",
+        (await p.verify("$argon2id$v=19", "x")) === false);
+}
+
+async function testAuthPasswordHashRejectsBadInput() {
+  var p = b.auth.password;
+  var threw = null;
+  try { await p.hash("", FAST_ARGON_PARAMS); }
+  catch (e) { threw = e; }
+  check("hash rejects empty plain",         threw && threw.code === "auth-password/invalid-plain");
+  check("hash error is AuthError",          threw && threw.isAuthError === true);
+  check("hash error is permanent",          threw && threw.permanent === true);
+
+  threw = null;
+  try { await p.hash(123, FAST_ARGON_PARAMS); }
+  catch (e) { threw = e; }
+  check("hash rejects non-string plain",    threw && threw.code === "auth-password/invalid-plain");
+
+  threw = null;
+  // 5000-byte string > 4096 cap
+  var huge = "x".repeat(5000);
+  try { await p.hash(huge, FAST_ARGON_PARAMS); }
+  catch (e) { threw = e; }
+  check("hash rejects oversize plain",      threw && threw.code === "auth-password/plain-too-large");
+
+  threw = null;
+  try { await p.hash("ok", { memoryCost: 0 }); }
+  catch (e) { threw = e; }
+  check("hash rejects bad memoryCost param", threw && threw.code === "auth-password/bad-params");
+}
+
+async function testAuthPasswordNeedsRehash() {
+  var p = b.auth.password;
+  var stored = await p.hash("hunter2", FAST_ARGON_PARAMS);
+
+  // Same params → no rehash needed
+  check("needsRehash false for same params",
+        p.needsRehash(stored, FAST_ARGON_PARAMS) === false);
+
+  // Stronger params → rehash needed
+  check("needsRehash true when memory bumped",
+        p.needsRehash(stored, { memoryCost: 4096, timeCost: 1, parallelism: 1 }) === true);
+  check("needsRehash true when time bumped",
+        p.needsRehash(stored, { memoryCost: 1024, timeCost: 5, parallelism: 1 }) === true);
+
+  // Malformed / non-id hashes always need rehash
+  check("needsRehash true for empty hash",        p.needsRehash("") === true);
+  check("needsRehash true for argon2i hash",      p.needsRehash("$argon2i$...") === true);
+  check("needsRehash true for garbage hash",      p.needsRehash("not-a-hash") === true);
+}
+
+function testAuthPasswordSurface() {
+  var p = b.auth.password;
+  check("auth namespace present",                  typeof b.auth === "object");
+  check("auth.password.hash is a function",        typeof p.hash === "function");
+  check("auth.password.verify is a function",      typeof p.verify === "function");
+  check("auth.password.needsRehash is a function", typeof p.needsRehash === "function");
+  check("auth.password.DEFAULT_PARAMS frozen",     Object.isFrozen(p.DEFAULT_PARAMS));
+  check("DEFAULT_PARAMS.memoryCost = 64 MiB-in-KiB", p.DEFAULT_PARAMS.memoryCost === 65536);
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -3014,6 +3129,14 @@ async function run() {
   testAuthHeaderBearer();
   testAuthHeaderBasic();
   testAuthHeaderFromConfig();
+  // auth.password — Argon2id app-password hashing (Phase 3 slice 1)
+  testAuthPasswordSurface();
+  await testAuthPasswordHashShape();
+  await testAuthPasswordVerifyRoundTrip();
+  await testAuthPasswordVerifyTamperedHash();
+  await testAuthPasswordVerifyMalformedHash();
+  await testAuthPasswordHashRejectsBadInput();
+  await testAuthPasswordNeedsRehash();
   // handlers primitive
   await testHandlerEmitAndDrain();
   await testHandlerEmitDuringFlushNextCycle();
@@ -3135,6 +3258,13 @@ module.exports = {
   testAuthHeaderBearer:                      testAuthHeaderBearer,
   testAuthHeaderBasic:                       testAuthHeaderBasic,
   testAuthHeaderFromConfig:                  testAuthHeaderFromConfig,
+  testAuthPasswordSurface:                   testAuthPasswordSurface,
+  testAuthPasswordHashShape:                 testAuthPasswordHashShape,
+  testAuthPasswordVerifyRoundTrip:           testAuthPasswordVerifyRoundTrip,
+  testAuthPasswordVerifyTamperedHash:        testAuthPasswordVerifyTamperedHash,
+  testAuthPasswordVerifyMalformedHash:       testAuthPasswordVerifyMalformedHash,
+  testAuthPasswordHashRejectsBadInput:       testAuthPasswordHashRejectsBadInput,
+  testAuthPasswordNeedsRehash:               testAuthPasswordNeedsRehash,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
