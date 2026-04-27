@@ -394,7 +394,7 @@ async function testAsyncSafeSleepUnrefOptIn() {
   // returns, node's loop has only the unref'd timer, so it should exit
   // cleanly within ~100ms. 5s wall clock fails fast on regression.
   var { spawn } = require("child_process");
-  var asyncSafePath = path.resolve(__dirname, "..", "lib", "async-safe.js").replace(/\\/g, "\\\\");
+  var asyncSafePath = path.resolve(__dirname, "..", "lib", "safe-async.js").replace(/\\/g, "\\\\");
   var script =
     'var as = require("' + asyncSafePath + '");' +
     'as.sleep(60000, { unref: true });' +    // pending unref'd sleep, no await
@@ -421,7 +421,7 @@ async function testAsyncSafeSleepDefaultRefd() {
   // sleep(150)` then a final console.log — without the ref, node exits
   // before sleep completes and "post-sleep" never prints.
   var { spawn } = require("child_process");
-  var asyncSafePath = path.resolve(__dirname, "..", "lib", "async-safe.js").replace(/\\/g, "\\\\");
+  var asyncSafePath = path.resolve(__dirname, "..", "lib", "safe-async.js").replace(/\\/g, "\\\\");
   var script =
     'var as = require("' + asyncSafePath + '");' +
     '(async function() { await as.sleep(150); console.log("post-sleep"); })()' +
@@ -9136,7 +9136,7 @@ function testUrlSafeDefaultIsHttpsOnly() {
   check("url-safe: http rejected by default",         rejected !== null);
   check("url-safe: rejection is UrlSafeError",        rejected instanceof u.UrlSafeError);
   check("url-safe: rejection code = protocol-disallowed",
-        rejected.code === "url-safe/protocol-disallowed");
+        rejected.code === "safe-url/protocol-disallowed");
 
   // https:// accepted by default
   var ok = u.parse("https://example.com/x");
@@ -9167,13 +9167,13 @@ function testUrlSafeMalformed() {
   try { u.parse("not-a-url"); }
   catch (e) { malformed = e; }
   check("url-safe: malformed rejects",       malformed !== null);
-  check("url-safe: malformed code",          malformed.code === "url-safe/malformed");
+  check("url-safe: malformed code",          malformed.code === "safe-url/malformed");
 
   var missing = null;
   try { u.parse(""); }
   catch (e) { missing = e; }
   check("url-safe: empty rejects",           missing !== null);
-  check("url-safe: empty code = missing",    missing.code === "url-safe/missing");
+  check("url-safe: empty code = missing",    missing.code === "safe-url/missing");
 
   var nullMissing = null;
   try { u.parse(null); }
@@ -9198,7 +9198,7 @@ function testUrlSafeErrorClassInjection() {
   check("url-safe: errorClass injection returns custom class",
         rejected instanceof b.frameworkError.ObjectStoreError);
   check("url-safe: injected error carries protocol-disallowed code",
-        rejected.code === "url-safe/protocol-disallowed");
+        rejected.code === "safe-url/protocol-disallowed");
   // Operational errors get permanent=true (retry won't help fix a bad URL)
   check("url-safe: injected error is permanent",
         rejected.permanent === true);
