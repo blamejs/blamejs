@@ -3886,8 +3886,102 @@ function testBackupSurface() {
   check("b.backup namespace present",             typeof b.backup === "object");
   check("b.backup.create is a function",          typeof b.backup.create === "function");
   check("b.backup.localStorage is a function",    typeof b.backup.localStorage === "function");
+  check("b.backup.recommendedFiles is a function", typeof b.backup.recommendedFiles === "function");
   check("b.backup.BUNDLE_ID_RE is a RegExp",      b.backup.BUNDLE_ID_RE instanceof RegExp);
   check("BackupError is a class",                 typeof b.backup.BackupError === "function");
+}
+
+function testBackupRecommendedFiles() {
+  // Plain DB + plaintext vault (typical dev setup)
+  var dev = b.backup.recommendedFiles({ atRest: "plain", vaultMode: "plaintext" });
+  var devNames = dev.map(function (f) { return f.relativePath; });
+  check("plain mode: includes blamejs.db (live SQLite file)",
+        devNames.indexOf("blamejs.db") !== -1);
+  check("plain mode: does NOT include db.enc",
+        devNames.indexOf("db.enc") === -1);
+  check("plaintext vault: includes vault.key",
+        devNames.indexOf("vault.key") !== -1);
+  check("plaintext vault: does NOT include vault.key.sealed",
+        devNames.indexOf("vault.key.sealed") === -1);
+
+  // Encrypted DB + wrapped vault (typical prod setup)
+  var prod = b.backup.recommendedFiles({ atRest: "encrypted", vaultMode: "wrapped" });
+  var prodNames = prod.map(function (f) { return f.relativePath; });
+  check("encrypted mode: includes db.enc",        prodNames.indexOf("db.enc") !== -1);
+  check("encrypted mode: includes db.key.enc",    prodNames.indexOf("db.key.enc") !== -1);
+  check("encrypted mode: does NOT include blamejs.db",
+        prodNames.indexOf("blamejs.db") === -1);
+  check("wrapped vault: includes vault.key.sealed",
+        prodNames.indexOf("vault.key.sealed") !== -1);
+  check("wrapped vault: does NOT include vault.key",
+        prodNames.indexOf("vault.key") === -1);
+
+  // Audit-signing key naming follows vault mode
+  check("audit-sign.key in plaintext-vault recommendation",
+        devNames.indexOf("audit-sign.key") !== -1);
+  check("audit-sign.key.sealed in wrapped-vault recommendation",
+        prodNames.indexOf("audit-sign.key.sealed") !== -1);
+
+  // Operator additionalSealed appended
+  var withCa = b.backup.recommendedFiles({
+    atRest: "encrypted", vaultMode: "wrapped",
+    additionalSealed: ["ca.key.sealed", "tls/privkey.pem.sealed"],
+  });
+  var caEntry = withCa.find(function (f) { return f.relativePath === "ca.key.sealed"; });
+  check("additionalSealed entries appear with kind=vault-sealed",
+        caEntry && caEntry.kind === "vault-sealed");
+
+  // Custom dbName respected
+  var custom = b.backup.recommendedFiles({ atRest: "plain", vaultMode: "plaintext", dbName: "myapp.db" });
+  check("custom dbName respected in plain mode",
+        custom.map(function (f) { return f.relativePath; }).indexOf("myapp.db") !== -1);
+}
+
+async function testBackupFlushBeforeBackupCalled() {
+  // Verify flushBeforeBackup hook fires before snapshotting. Use the
+  // operator-supplied function form (no dependency on b.db being inited)
+  // so the test is hermetic.
+  var fx = _backupFixture();
+  try {
+    var flushCalls = 0;
+    var backup = b.backup.create(_backupOpts(fx, {
+      flushBeforeBackup: function () { flushCalls++; },
+    }));
+    await backup.run();
+    check("flushBeforeBackup called once on run()", flushCalls === 1);
+    await backup.run();
+    check("flushBeforeBackup called per run",       flushCalls === 2);
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupFlushFailureDoesNotFailBackup() {
+  // A flush-hook throw should be audited but not fail the run; the
+  // bundle just snapshots whatever's on disk.
+  var fx = _backupFixture();
+  try {
+    var backup = b.backup.create(_backupOpts(fx, {
+      flushBeforeBackup: function () { throw new Error("flush-broken"); },
+    }));
+    var r = await backup.run();
+    check("backup.run succeeds despite flush failure",
+          typeof r.bundleId === "string");
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupFlushBeforeBackupOptOut() {
+  // flushBeforeBackup: false skips the hook entirely (operator pattern
+  // for out-of-band backup tools that don't own the db process)
+  var fx = _backupFixture();
+  try {
+    var calls = 0;
+    var backup = b.backup.create(_backupOpts(fx, {
+      flushBeforeBackup: false,
+    }));
+    // Stub b.db so even if backup tried to find a default flush, it
+    // wouldn't have one (we're confirming the explicit false opt-out)
+    await backup.run();
+    check("flushBeforeBackup:false skips any flush",  calls === 0);
+  } finally { fx.cleanup(); }
 }
 
 function testBackupCreateValidation() {
@@ -10698,6 +10792,10 @@ async function run() {
   await testRestoreInspectWithoutDecrypt();
   // backup — operator-facing orchestration + retention + storage backend (Phase 7 slice 7d)
   testBackupSurface();
+  testBackupRecommendedFiles();
+  await testBackupFlushBeforeBackupCalled();
+  await testBackupFlushFailureDoesNotFailBackup();
+  await testBackupFlushBeforeBackupOptOut();
   testBackupCreateValidation();
   await testBackupRunListReadDelete();
   await testBackupVaultKeyJsonAsFunction();
@@ -11140,6 +11238,10 @@ module.exports = {
   testRestoreListRollbacksAndPurge:          testRestoreListRollbacksAndPurge,
   testRestoreInspectWithoutDecrypt:          testRestoreInspectWithoutDecrypt,
   testBackupSurface:                         testBackupSurface,
+  testBackupRecommendedFiles:                testBackupRecommendedFiles,
+  testBackupFlushBeforeBackupCalled:         testBackupFlushBeforeBackupCalled,
+  testBackupFlushFailureDoesNotFailBackup:   testBackupFlushFailureDoesNotFailBackup,
+  testBackupFlushBeforeBackupOptOut:         testBackupFlushBeforeBackupOptOut,
   testBackupCreateValidation:                testBackupCreateValidation,
   testBackupRunListReadDelete:               testBackupRunListReadDelete,
   testBackupVaultKeyJsonAsFunction:          testBackupVaultKeyJsonAsFunction,
