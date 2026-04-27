@@ -42,12 +42,12 @@ var listenOnRandomPort = helpers.listenOnRandomPort;
 // httpClient tests stand up local http://127.0.0.1 mock servers. The
 // framework default is HTTPS-only; tests opt in to cleartext the same
 // way an operator with an internal cleartext endpoint would —
-// `allowedProtocols: urlSafe.ALLOW_HTTP_ALL`. Wrapping it in this thin
+// `allowedProtocols: safeUrl.ALLOW_HTTP_ALL`. Wrapping it in this thin
 // helper keeps the tests focused on what they're verifying without
 // repeating the opt-in 18 times.
 function httpReq(opts) {
   return b.httpClient.request(Object.assign(
-    { allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL },
+    { allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL },
     opts
   ));
 }
@@ -56,10 +56,10 @@ function httpReq(opts) {
 
 function testSqlSafeIdentifierValidation() {
   // Good shape
-  check("sqlSafe.validateIdentifier accepts valid name",
-        b.sqlSafe.validateIdentifier("audit_log") === "audit_log");
-  check("sqlSafe.validateIdentifier accepts leading underscore",
-        b.sqlSafe.validateIdentifier("_blamejs_audit_log") === "_blamejs_audit_log");
+  check("safeSql.validateIdentifier accepts valid name",
+        b.safeSql.validateIdentifier("audit_log") === "audit_log");
+  check("safeSql.validateIdentifier accepts leading underscore",
+        b.safeSql.validateIdentifier("_blamejs_audit_log") === "_blamejs_audit_log");
   // Bad shape
   var badRejects = [
     ["empty",            ""],
@@ -75,50 +75,50 @@ function testSqlSafeIdentifierValidation() {
     var label = badRejects[i][0];
     var input = badRejects[i][1];
     var threw = false;
-    try { b.sqlSafe.validateIdentifier(input); }
-    catch (e) { threw = !!e.isSqlSafeError; }
-    check("sqlSafe rejects bad identifier (" + label + ")", threw);
+    try { b.safeSql.validateIdentifier(input); }
+    catch (e) { threw = !!e.isSafeSqlError; }
+    check("safeSql rejects bad identifier (" + label + ")", threw);
   }
   // Reserved word
   var threwReserved = false;
-  try { b.sqlSafe.validateIdentifier("SELECT"); }
+  try { b.safeSql.validateIdentifier("SELECT"); }
   catch (e) { threwReserved = e.code === "sql/reserved-word"; }
-  check("sqlSafe rejects SQL reserved word",                threwReserved);
+  check("safeSql rejects SQL reserved word",                threwReserved);
   // sqlite_ prefix
   var threwInternal = false;
-  try { b.sqlSafe.validateIdentifier("sqlite_master"); }
+  try { b.safeSql.validateIdentifier("sqlite_master"); }
   catch (e) { threwInternal = e.code === "sql/internal-prefix"; }
-  check("sqlSafe rejects sqlite_-prefixed identifier",      threwInternal);
+  check("safeSql rejects sqlite_-prefixed identifier",      threwInternal);
   // Length cap
   var threwLong = false;
-  try { b.sqlSafe.validateIdentifier("a".repeat(70)); }
+  try { b.safeSql.validateIdentifier("a".repeat(70)); }
   catch (e) { threwLong = e.code === "sql/too-long"; }
-  check("sqlSafe rejects over-long identifier",             threwLong);
+  check("safeSql rejects over-long identifier",             threwLong);
 }
 
 function testSqlSafeQuoteIdentifier() {
   check("quoteIdentifier sqlite uses double-quote",
-        b.sqlSafe.quoteIdentifier("audit_log", "sqlite") === '"audit_log"');
+        b.safeSql.quoteIdentifier("audit_log", "sqlite") === '"audit_log"');
   check("quoteIdentifier postgres uses double-quote",
-        b.sqlSafe.quoteIdentifier("audit_log", "postgres") === '"audit_log"');
+        b.safeSql.quoteIdentifier("audit_log", "postgres") === '"audit_log"');
   check("quoteIdentifier mysql uses backtick",
-        b.sqlSafe.quoteIdentifier("audit_log", "mysql") === "`audit_log`");
+        b.safeSql.quoteIdentifier("audit_log", "mysql") === "`audit_log`");
   var threw = false;
-  try { b.sqlSafe.quoteIdentifier("foo;DROP"); }
-  catch (e) { threw = !!e.isSqlSafeError; }
+  try { b.safeSql.quoteIdentifier("foo;DROP"); }
+  catch (e) { threw = !!e.isSafeSqlError; }
   check("quoteIdentifier rejects bad name",                 threw);
 }
 
 function testSqlSafeAssertOneOf() {
   var allow = new Set(["audit_log", "consent_log"]);
   check("assertOneOf passes when in allowlist",
-        b.sqlSafe.assertOneOf("audit_log", allow) === "audit_log");
+        b.safeSql.assertOneOf("audit_log", allow) === "audit_log");
   var threw = false;
-  try { b.sqlSafe.assertOneOf("users", allow); }
+  try { b.safeSql.assertOneOf("users", allow); }
   catch (e) { threw = e.code === "sql/not-allowed"; }
   check("assertOneOf rejects non-allowlisted",              threw);
   check("assertOneOf accepts array allowlist",
-        b.sqlSafe.assertOneOf("a", ["a", "b"]) === "a");
+        b.safeSql.assertOneOf("a", ["a", "b"]) === "a");
 }
 
 // ---- chain-writer ----
@@ -178,14 +178,14 @@ async function testChainWriterRaceSafetyConcurrentAppends() {
 // ---- async-safe ----
 
 async function testAsyncSafeWithTimeoutResolves() {
-  var v = await b.asyncSafe.withTimeout(Promise.resolve("ok"), 100);
+  var v = await b.safeAsync.withTimeout(Promise.resolve("ok"), 100);
   check("withTimeout: resolves with value when fast",       v === "ok");
 }
 
 async function testAsyncSafeWithTimeoutRejects() {
   var threw = null;
   try {
-    await b.asyncSafe.withTimeout(new Promise(function () {}), 20, { name: "test-op" });
+    await b.safeAsync.withTimeout(new Promise(function () {}), 20, { name: "test-op" });
   } catch (e) { threw = e; }
   check("withTimeout: rejects on timeout",                  threw && threw.code === "async/timeout");
   check("withTimeout: timeout error names operation",       threw && threw.message.indexOf("test-op") >= 0);
@@ -193,7 +193,7 @@ async function testAsyncSafeWithTimeoutRejects() {
 
 async function testAsyncSafeWithTimeoutAbort() {
   var ctrl = new AbortController();
-  var p = b.asyncSafe.withTimeout(new Promise(function () {}), 10000, { signal: ctrl.signal });
+  var p = b.safeAsync.withTimeout(new Promise(function () {}), 10000, { signal: ctrl.signal });
   setTimeout(function () { ctrl.abort(); }, 10);
   var threw = null;
   try { await p; } catch (e) { threw = e; }
@@ -203,20 +203,20 @@ async function testAsyncSafeWithTimeoutAbort() {
 async function testAsyncSafeWithTimeoutPropagatesError() {
   var threw = null;
   try {
-    await b.asyncSafe.withTimeout(Promise.reject(new Error("boom")), 100);
+    await b.safeAsync.withTimeout(Promise.reject(new Error("boom")), 100);
   } catch (e) { threw = e; }
   check("withTimeout: propagates underlying rejection",     threw && threw.message === "boom");
 }
 
 async function testAsyncSafeSafeAwait() {
-  var ok = await b.asyncSafe.safeAwait(Promise.resolve(42));
+  var ok = await b.safeAsync.safeAwait(Promise.resolve(42));
   check("safeAwait: success returns [null, value]",         ok[0] === null && ok[1] === 42);
-  var fail = await b.asyncSafe.safeAwait(Promise.reject(new Error("nope")));
+  var fail = await b.safeAsync.safeAwait(Promise.reject(new Error("nope")));
   check("safeAwait: failure returns [error, null]",         fail[0] && fail[0].message === "nope" && fail[1] === null);
 }
 
 async function testAsyncSafeMutexSerializes() {
-  var m = new b.asyncSafe.Mutex();
+  var m = new b.safeAsync.Mutex();
   var order = [];
   async function task(label, durMs) {
     return m.runExclusive(async function () {
@@ -235,7 +235,7 @@ async function testAsyncSafeMutexSerializes() {
 }
 
 async function testAsyncSafeMutexReleaseOnThrow() {
-  var m = new b.asyncSafe.Mutex();
+  var m = new b.safeAsync.Mutex();
   var threw = null;
   try {
     await m.runExclusive(async function () { throw new Error("inner"); });
@@ -245,7 +245,7 @@ async function testAsyncSafeMutexReleaseOnThrow() {
 }
 
 async function testAsyncSafeMutexAbortableAcquire() {
-  var m = new b.asyncSafe.Mutex();
+  var m = new b.safeAsync.Mutex();
   await m.acquire();
   var ctrl = new AbortController();
   var p = m.acquire({ signal: ctrl.signal });
@@ -258,7 +258,7 @@ async function testAsyncSafeMutexAbortableAcquire() {
 }
 
 async function testAsyncSafeSemaphoreBoundedConcurrency() {
-  var s = new b.asyncSafe.Semaphore(2);
+  var s = new b.safeAsync.Semaphore(2);
   var concurrent = 0;
   var maxConcurrent = 0;
   async function task() {
@@ -274,7 +274,7 @@ async function testAsyncSafeSemaphoreBoundedConcurrency() {
 }
 
 async function testAsyncSafeSemaphoreAbortableAcquire() {
-  var s = new b.asyncSafe.Semaphore(1);
+  var s = new b.safeAsync.Semaphore(1);
   await s.acquire();
   var ctrl = new AbortController();
   var p = s.acquire({ signal: ctrl.signal });
@@ -287,7 +287,7 @@ async function testAsyncSafeSemaphoreAbortableAcquire() {
 
 async function testAsyncSafeOnceSingleFlight() {
   var calls = 0;
-  var once = new b.asyncSafe.Once(async function () {
+  var once = new b.safeAsync.Once(async function () {
     calls += 1;
     await new Promise(function (r) { setTimeout(r, 10); });
     return "result-" + calls;
@@ -299,7 +299,7 @@ async function testAsyncSafeOnceSingleFlight() {
 }
 
 async function testAsyncSafeOnceCachesFailure() {
-  var once = new b.asyncSafe.Once(async function () { throw new Error("init failed"); });
+  var once = new b.safeAsync.Once(async function () { throw new Error("init failed"); });
   var first = null, second = null;
   try { await once.invoke(); } catch (e) { first = e; }
   try { await once.invoke(); } catch (e) { second = e; }
@@ -309,7 +309,7 @@ async function testAsyncSafeOnceCachesFailure() {
 
 async function testAsyncSafeOnceReset() {
   var calls = 0;
-  var once = new b.asyncSafe.Once(async function () {
+  var once = new b.safeAsync.Once(async function () {
     calls += 1;
     if (calls === 1) throw new Error("transient");
     return "ok";
@@ -323,7 +323,7 @@ async function testAsyncSafeOnceReset() {
 }
 
 async function testAsyncSafeCircuitBreakerStateTransitions() {
-  var br = new b.asyncSafe.CircuitBreaker("test", { failureThreshold: 2, cooldownMs: 30, successThreshold: 1 });
+  var br = new b.safeAsync.CircuitBreaker("test", { failureThreshold: 2, cooldownMs: 30, successThreshold: 1 });
   check("CircuitBreaker: starts closed",                    br.getState() === "closed");
   for (var i = 0; i < 2; i++) {
     try { await br.wrap(async function () { throw new Error("fail"); }); } catch (_e) {}
@@ -341,26 +341,26 @@ async function testAsyncSafeCircuitBreakerStateTransitions() {
 
 async function testAsyncSafeSleepBasic() {
   var t0 = Date.now();
-  await b.asyncSafe.sleep(40);
+  await b.safeAsync.sleep(40);
   var elapsed = Date.now() - t0;
   check("sleep: resolves after delay", elapsed >= 35 && elapsed < 200);
 }
 
 async function testAsyncSafeSleepZeroResolvesImmediately() {
   var t0 = Date.now();
-  await b.asyncSafe.sleep(0);
-  await b.asyncSafe.sleep(-5);
+  await b.safeAsync.sleep(0);
+  await b.safeAsync.sleep(-5);
   var elapsed = Date.now() - t0;
   check("sleep: ms<=0 resolves immediately", elapsed < 20);
 }
 
 async function testAsyncSafeSleepBadArg() {
   var threw = null;
-  try { await b.asyncSafe.sleep("nope"); }
+  try { await b.safeAsync.sleep("nope"); }
   catch (e) { threw = e; }
   check("sleep: non-numeric ms rejects", threw && threw.code === "async/bad-arg");
   threw = null;
-  try { await b.asyncSafe.sleep(Infinity); }
+  try { await b.safeAsync.sleep(Infinity); }
   catch (e) { threw = e; }
   check("sleep: non-finite ms rejects",  threw && threw.code === "async/bad-arg");
 }
@@ -370,7 +370,7 @@ async function testAsyncSafeSleepAbort() {
   var t0 = Date.now();
   setTimeout(function () { ac.abort(new Error("user cancel")); }, 20);
   var threw = null;
-  try { await b.asyncSafe.sleep(5000, { signal: ac.signal }); }
+  try { await b.safeAsync.sleep(5000, { signal: ac.signal }); }
   catch (e) { threw = e; }
   var elapsed = Date.now() - t0;
   check("sleep: abort cancels mid-sleep",  threw && threw.code === "async/aborted");
@@ -380,7 +380,7 @@ async function testAsyncSafeSleepAbort() {
   var preAborted = new AbortController();
   preAborted.abort(new Error("already gone"));
   var threwPre = null;
-  try { await b.asyncSafe.sleep(5000, { signal: preAborted.signal }); }
+  try { await b.safeAsync.sleep(5000, { signal: preAborted.signal }); }
   catch (e) { threwPre = e; }
   check("sleep: pre-aborted signal rejects", threwPre && threwPre.code === "async/aborted");
 }
@@ -394,9 +394,9 @@ async function testAsyncSafeSleepUnrefOptIn() {
   // returns, node's loop has only the unref'd timer, so it should exit
   // cleanly within ~100ms. 5s wall clock fails fast on regression.
   var { spawn } = require("child_process");
-  var asyncSafePath = path.resolve(__dirname, "..", "lib", "safe-async.js").replace(/\\/g, "\\\\");
+  var safeAsyncPath = path.resolve(__dirname, "..", "lib", "safe-async.js").replace(/\\/g, "\\\\");
   var script =
-    'var as = require("' + asyncSafePath + '");' +
+    'var as = require("' + safeAsyncPath + '");' +
     'as.sleep(60000, { unref: true });' +    // pending unref'd sleep, no await
     'console.log("script-end");';
   var child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
@@ -421,9 +421,9 @@ async function testAsyncSafeSleepDefaultRefd() {
   // sleep(150)` then a final console.log — without the ref, node exits
   // before sleep completes and "post-sleep" never prints.
   var { spawn } = require("child_process");
-  var asyncSafePath = path.resolve(__dirname, "..", "lib", "safe-async.js").replace(/\\/g, "\\\\");
+  var safeAsyncPath = path.resolve(__dirname, "..", "lib", "safe-async.js").replace(/\\/g, "\\\\");
   var script =
-    'var as = require("' + asyncSafePath + '");' +
+    'var as = require("' + safeAsyncPath + '");' +
     '(async function() { await as.sleep(150); console.log("post-sleep"); })()' +
     '  .catch(function (e) { console.error("FAIL", e.message); process.exit(2); });';
   var child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
@@ -438,7 +438,7 @@ async function testAsyncSafeSleepDefaultRefd() {
 }
 
 function testAsyncSafeWithTimeoutSignalCases() {
-  var as = b.asyncSafe;
+  var as = b.safeAsync;
 
   // 1. null + no ms → null (caller's "no signal needed" path)
   check("withTimeoutSignal: null+0 returns null", as.withTimeoutSignal(null, 0) === null);
@@ -467,7 +467,7 @@ function testAsyncSafeWithTimeoutSignalCases() {
 }
 
 async function testAsyncSafeWithTimeoutSignalTimeoutFires() {
-  var sig = b.asyncSafe.withTimeoutSignal(null, 30);
+  var sig = b.safeAsync.withTimeoutSignal(null, 30);
   await new Promise(function (r) { setTimeout(r, 80); });
   check("withTimeoutSignal: timeout-only signal fires after ms", sig.aborted === true);
 }
@@ -1856,7 +1856,7 @@ async function _httpGet(port, urlPath, headers) {
   return await b.httpClient.request({
     url: "http://127.0.0.1:" + port + urlPath,
     headers: headers || {},
-    allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+    allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
   });
 }
 
@@ -1865,7 +1865,7 @@ async function _httpReq(port, method, urlPath, headers) {
     method: method,
     url: "http://127.0.0.1:" + port + urlPath,
     headers: headers || {},
-    allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+    allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
   });
 }
 
@@ -1961,7 +1961,7 @@ async function testStaticServeEtagAnd304() {
       await b.httpClient.request({
         url: "http://127.0.0.1:" + port + "/f.txt",
         headers: { "If-None-Match": etag },
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
         errorClass: b.frameworkError.ObjectStoreError,
       });
     } catch (e) { second = e; }
@@ -2024,7 +2024,7 @@ async function testStaticServeContainmentDefenses() {
       try {
         resp = await b.httpClient.request({
           url: "http://127.0.0.1:" + port + rejected[i],
-          allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+          allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
           errorClass: b.frameworkError.ObjectStoreError,
         });
       } catch (e) { resp = e; }
@@ -2074,7 +2074,7 @@ async function testStaticServeIndexFile() {
     try {
       var noIdx = await b.httpClient.request({
         url: "http://127.0.0.1:" + port2 + "/",
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
         errorClass: b.frameworkError.ObjectStoreError,
       }).catch(function (e) { return e; });
       check("static: indexFile=null → falls through to next()",
@@ -2105,7 +2105,7 @@ async function testStaticServeMethodGuard() {
       method: "POST",
       url: "http://127.0.0.1:" + port + "/f.txt",
       body: Buffer.from("nope"),
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       errorClass: b.frameworkError.ObjectStoreError,
     }).catch(function (e) { return e; });
     check("static: POST falls through (next() called)",  nextCalls === 1);
@@ -2655,7 +2655,7 @@ async function testMailHttpRoundTripWithCustomVendor() {
       name:             "postmark",
       endpoint:         "http://127.0.0.1:" + port + "/email",
       timeoutMs:        2000,
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       headers: {
         "X-Postmark-Server-Token": "tok_test",
         "Content-Type":            "application/json",
@@ -2711,7 +2711,7 @@ async function testMailHttpInterpretRejection() {
       name:             "postmark",
       endpoint:         "http://127.0.0.1:" + port + "/",
       timeoutMs:        1500,
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       headers:   { "Content-Type": "application/json" },
       serialize: function () { return { body: "{}" }; },
       interpret: function (res) {
@@ -2746,7 +2746,7 @@ async function testMailHttpInterpretThrows() {
       name:             "vendor",
       endpoint:         "http://127.0.0.1:" + port + "/",
       timeoutMs:        1500,
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       headers:   { "Content-Type": "application/json" },
       serialize: function () { return { body: "{}" }; },
       interpret: function (res) { return { ok: !!JSON.parse(res.body.toString("utf8")).id }; },
@@ -2954,7 +2954,7 @@ async function testMailSmtpStarttlsAccept() {
 async function testMailResendRoundTrip() {
   // Spin up a local HTTP server that pretends to be the Resend API.
   // The transport uses lib/http-client which is HTTPS-by-default; we
-  // pass urlSafe.ALLOW_HTTP_ALL via opts.allowedProtocols so the
+  // pass safeUrl.ALLOW_HTTP_ALL via opts.allowedProtocols so the
   // request reaches our cleartext fixture.
   var http = require("http");
   var seen = null;
@@ -2979,7 +2979,7 @@ async function testMailResendRoundTrip() {
       apiKey:           "re_test_secret",
       endpoint:         "http://127.0.0.1:" + port + "/emails",
       timeoutMs:        2000,
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
     });
     var result = await transport.send({
       from: "Sender <sender@test.local>",
@@ -3023,7 +3023,7 @@ async function testMailResendErrorPaths() {
   try {
     var t1 = b.mail.transports.resend({
       apiKey: "re_x", endpoint: "http://127.0.0.1:" + p1 + "/",
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL, timeoutMs: 1500,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, timeoutMs: 1500,
     });
     var err1 = null;
     try { await t1.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
@@ -3043,7 +3043,7 @@ async function testMailResendErrorPaths() {
   try {
     var t2 = b.mail.transports.resend({
       apiKey: "re_x", endpoint: "http://127.0.0.1:" + p2 + "/",
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL, timeoutMs: 1500,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, timeoutMs: 1500,
     });
     var err2 = null;
     try { await t2.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
@@ -3064,7 +3064,7 @@ async function testMailResendErrorPaths() {
   try {
     var t3 = b.mail.transports.resend({
       apiKey: "re_x", endpoint: "http://127.0.0.1:" + p3 + "/",
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL, timeoutMs: 1500,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, timeoutMs: 1500,
     });
     var err3 = null;
     try { await t3.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
@@ -5408,7 +5408,7 @@ function _vaultRotateFixture() {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
       // Each test resets the field-crypto registry so they don't leak
       // table registrations into each other.
-      b.fieldCrypto.clearForTest();
+      b.cryptoField.clearForTest();
     },
   };
 }
@@ -5435,7 +5435,7 @@ function testVaultRotateValidateSchemaCleanCase() {
   var fx = _vaultRotateFixture();
   try {
     fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT, emailHash TEXT, createdAt TEXT)");
-    b.fieldCrypto.registerTable("users", {
+    b.cryptoField.registerTable("users", {
       sealedFields:  ["email"],
       derivedHashes: { emailHash: { from: "email" } },
     });
@@ -5456,7 +5456,7 @@ function testVaultRotateValidateMissingTable() {
   var fx = _vaultRotateFixture();
   try {
     // Schema declares 'users' but live DB has no such table
-    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+    b.cryptoField.registerTable("users", { sealedFields: ["email"] });
     var r = b.vaultRotate.validateSchemaMatch(fx.db, { tables: ["users"] });
     check("missing table → warning",                r.warnings.length === 1);
     check("warning kind = table_missing",           r.warnings[0].kind === "table_missing");
@@ -5469,7 +5469,7 @@ function testVaultRotateValidateSealedColMissing() {
   try {
     // Live table has no 'phone' column even though schema declares it sealed
     fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
-    b.fieldCrypto.registerTable("users", { sealedFields: ["email", "phone"] });
+    b.cryptoField.registerTable("users", { sealedFields: ["email", "phone"] });
     var r = b.vaultRotate.validateSchemaMatch(fx.db);
     var miss = r.warnings.find(function (w) { return w.kind === "sealed_col_missing"; });
     check("sealed-col-missing surfaces as warning", miss && miss.column === "phone");
@@ -5482,7 +5482,7 @@ function testVaultRotateValidateDriftDetection() {
   try {
     // 'secret' is NOT declared sealed in schema, but rows have a vault-prefixed value
     fx.db.exec("CREATE TABLE rec (_id TEXT PRIMARY KEY, name TEXT, secret TEXT)");
-    b.fieldCrypto.registerTable("rec", { sealedFields: ["name"] });
+    b.cryptoField.registerTable("rec", { sealedFields: ["name"] });
 
     var keys = _genKeys();
     fx.db.prepare("INSERT INTO rec (_id, name, secret) VALUES (?, ?, ?)").run(
@@ -5503,7 +5503,7 @@ function testVaultRotateValidateInfraColumnsAllowlist() {
     // 'audit_meta' is a framework column that legitimately holds vault-prefixed
     // values without being in sealedFields. Operator passes infraColumns.
     fx.db.exec("CREATE TABLE _blamejs_audit (_id TEXT PRIMARY KEY, audit_meta TEXT)");
-    b.fieldCrypto.registerTable("_blamejs_audit", { sealedFields: [] });
+    b.cryptoField.registerTable("_blamejs_audit", { sealedFields: [] });
 
     var keys = _genKeys();
     fx.db.prepare("INSERT INTO _blamejs_audit (_id, audit_meta) VALUES (?, ?)").run(
@@ -5524,7 +5524,7 @@ function testVaultRotateVerifyRoundTrip() {
   try {
     var keys = _genKeys();
     fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
-    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+    b.cryptoField.registerTable("users", { sealedFields: ["email"] });
     for (var i = 0; i < 10; i++) {
       fx.db.prepare("INSERT INTO users (_id, email) VALUES (?, ?)").run(
         "u-" + i, _seal("user" + i + "@b.com", keys));
@@ -5543,7 +5543,7 @@ function testVaultRotateVerifyDetectsTampering() {
     var keys     = _genKeys();
     var wrongKeys = _genKeys();
     fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
-    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+    b.cryptoField.registerTable("users", { sealedFields: ["email"] });
     for (var i = 0; i < 10; i++) {
       fx.db.prepare("INSERT INTO users (_id, email) VALUES (?, ?)").run(
         "u-" + i, _seal("user" + i + "@b.com", keys));
@@ -5568,7 +5568,7 @@ function testVaultRotateVerifyRegressionWithOldKeys() {
     var oldKeys = _genKeys();
     var newKeys = _genKeys();
     fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
-    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+    b.cryptoField.registerTable("users", { sealedFields: ["email"] });
 
     // 5 unrotated rows — still encrypted with oldKeys
     for (var i = 0; i < 5; i++) {
@@ -5628,8 +5628,8 @@ async function testVaultRotateRotateEndToEnd() {
       b.crypto.encryptPacked(plainBytes, dbKey));
 
     // Register the schema before rotation so the rotator knows which columns are sealed
-    b.fieldCrypto.clearForTest();
-    b.fieldCrypto.registerTable("users", { sealedFields: ["email", "name"] });
+    b.cryptoField.clearForTest();
+    b.cryptoField.registerTable("users", { sealedFields: ["email", "name"] });
 
     var ageBefore = fs.statSync(path.join(dataDir, "db.enc")).mtimeMs;
 
@@ -5702,7 +5702,7 @@ async function testVaultRotateRotateEndToEnd() {
     var ageAfter = fs.statSync(path.join(dataDir, "db.enc")).mtimeMs;
     check("rotate did NOT mutate dataDir/db.enc",   ageAfter === ageBefore);
 
-    b.fieldCrypto.clearForTest();
+    b.cryptoField.clearForTest();
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
   }
@@ -7243,15 +7243,15 @@ function _makeFakeRes() {
 }
 
 function testErrorsPageSurface() {
-  check("b.errorsPage namespace present",         typeof b.errorsPage === "object");
-  check("b.errorsPage.create is a function",      typeof b.errorsPage.create === "function");
-  check("b.errorsPage.STATUS_REASONS map present",
-        b.errorsPage.STATUS_REASONS[404] === "Not Found" &&
-        b.errorsPage.STATUS_REASONS[500] === "Internal Server Error");
+  check("b.errorPage namespace present",         typeof b.errorPage === "object");
+  check("b.errorPage.create is a function",      typeof b.errorPage.create === "function");
+  check("b.errorPage.STATUS_REASONS map present",
+        b.errorPage.STATUS_REASONS[404] === "Not Found" &&
+        b.errorPage.STATUS_REASONS[500] === "Internal Server Error");
 }
 
 function testErrorsPageProdHidesStackAndOriginalMessage() {
-  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var handler = b.errorPage.create({ mode: "prod", audit: false });
   var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
   var res = _makeFakeRes();
   // Generic Error — operator-private message must NOT leak.
@@ -7264,7 +7264,7 @@ function testErrorsPageProdHidesStackAndOriginalMessage() {
 }
 
 function testErrorsPageDevShowsStackAndRequestInfo() {
-  var handler = b.errorsPage.create({ mode: "dev", audit: false, brand: "blamejs-test" });
+  var handler = b.errorPage.create({ mode: "dev", audit: false, brand: "blamejs-test" });
   var req = {
     method: "POST", url: "/api/widget?id=42",
     headers: { accept: "text/html", "user-agent": "ua/1", cookie: "session=secret123" },
@@ -7283,7 +7283,7 @@ function testErrorsPageDevShowsStackAndRequestInfo() {
 }
 
 function testErrorsPageJsonNegotiation() {
-  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var handler = b.errorPage.create({ mode: "prod", audit: false });
   var req = { method: "POST", url: "/api/x", headers: { accept: "application/json" } };
   var res = _makeFakeRes();
   var err = Object.assign(new Error("bad input"), {
@@ -7299,7 +7299,7 @@ function testErrorsPageJsonNegotiation() {
 }
 
 function testErrorsPageDevJsonIncludesStack() {
-  var handler = b.errorsPage.create({ mode: "dev", audit: false });
+  var handler = b.errorPage.create({ mode: "dev", audit: false });
   var req = { method: "POST", url: "/api/x", headers: { accept: "application/json" } };
   var res = _makeFakeRes();
   handler(new Error("kaboom"), req, res);
@@ -7308,7 +7308,7 @@ function testErrorsPageDevJsonIncludesStack() {
 }
 
 function testErrorsPageAppErrorClassification() {
-  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var handler = b.errorPage.create({ mode: "prod", audit: false });
   var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
 
   // 404
@@ -7334,7 +7334,7 @@ function testErrorsPageAppErrorClassification() {
 }
 
 function testErrorsPageNeverWritesWhenAlreadyEnded() {
-  var handler = b.errorsPage.create({ mode: "prod", audit: false });
+  var handler = b.errorPage.create({ mode: "prod", audit: false });
   var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
   var res = _makeFakeRes();
   res.writableEnded = true;
@@ -7346,7 +7346,7 @@ function testErrorsPageNeverWritesWhenAlreadyEnded() {
 
 function testErrorsPageOnErrorHookCanTakeOver() {
   var taken = [];
-  var handler = b.errorsPage.create({
+  var handler = b.errorPage.create({
     mode: "prod", audit: false,
     onError: function (err, req, res, info) {
       taken.push({ status: info.status, code: info.code });
@@ -7368,7 +7368,7 @@ function testErrorsPageLogsViaInjectedLogger() {
     warn:  function (msg, fields) { captured.push({ level: "warn", msg: msg, fields: fields }); },
     error: function (msg, fields) { captured.push({ level: "error", msg: msg, fields: fields }); },
   };
-  var handler = b.errorsPage.create({ mode: "prod", audit: false, log: fakeLog });
+  var handler = b.errorPage.create({ mode: "prod", audit: false, log: fakeLog });
   var req = { method: "GET", url: "/x", headers: {} };
   var res500 = _makeFakeRes();
   handler(new Error("kaboom"), req, res500);
@@ -7386,7 +7386,7 @@ function testErrorsPageLogsViaInjectedLogger() {
 }
 
 function testErrorsPageDevEnvVarsHonorOptIn() {
-  var handler = b.errorsPage.create({ mode: "dev", audit: false }); // showEnvVars defaults false
+  var handler = b.errorPage.create({ mode: "dev", audit: false }); // showEnvVars defaults false
   var req = { method: "GET", url: "/x", headers: { accept: "text/html" } };
   var res = _makeFakeRes();
   handler(new Error("e"), req, res);
@@ -7398,7 +7398,7 @@ function testErrorsPageDevEnvVarsHonorOptIn() {
   process.env.BLAMEJS_FAKE_SECRET = "leakme";
   process.env.BLAMEJS_FAKE_HARMLESS = "publicvalue";
   try {
-    var handlerOn = b.errorsPage.create({ mode: "dev", audit: false, showEnvVars: true });
+    var handlerOn = b.errorPage.create({ mode: "dev", audit: false, showEnvVars: true });
     var resOn = _makeFakeRes();
     handlerOn(new Error("e"), req, resOn);
     check("opt-in env shows non-secret keys",
@@ -7418,15 +7418,15 @@ function testErrorsPageModeAutoDetectsFromNodeEnv() {
   var prev = process.env.NODE_ENV;
   try {
     process.env.NODE_ENV = "production";
-    var prodHandler = b.errorsPage.create({ audit: false });
+    var prodHandler = b.errorPage.create({ audit: false });
     check("NODE_ENV=production → prod mode",         prodHandler.mode === "prod");
 
     process.env.NODE_ENV = "development";
-    var devHandler = b.errorsPage.create({ audit: false });
+    var devHandler = b.errorPage.create({ audit: false });
     check("NODE_ENV=development → dev mode",         devHandler.mode === "dev");
 
     delete process.env.NODE_ENV;
-    var defaultHandler = b.errorsPage.create({ audit: false });
+    var defaultHandler = b.errorPage.create({ audit: false });
     check("no NODE_ENV → dev mode (safe local default)", defaultHandler.mode === "dev");
   } finally {
     if (prev === undefined) delete process.env.NODE_ENV;
@@ -8076,105 +8076,105 @@ async function testHandlerBackpressureDrop() {
 // ---- json-safe ----
 
 function testJsonModuleSurface() {
-  check("jsonSafe namespace present",        typeof b.jsonSafe === "object");
-  check("jsonSafe.parse is a function",      typeof b.jsonSafe.parse === "function");
-  check("jsonSafe.validate is a function",   typeof b.jsonSafe.validate === "function");
-  check("jsonSafe.canonical is a function",  typeof b.jsonSafe.canonical === "function");
-  check("jsonSafe.JsonSafeError exists",     typeof b.jsonSafe.JsonSafeError === "function");
+  check("safeJson namespace present",        typeof b.safeJson === "object");
+  check("safeJson.parse is a function",      typeof b.safeJson.parse === "function");
+  check("safeJson.validate is a function",   typeof b.safeJson.validate === "function");
+  check("safeJson.canonical is a function",  typeof b.safeJson.canonical === "function");
+  check("safeJson.SafeJsonError exists",     typeof b.safeJson.SafeJsonError === "function");
 }
 
 function testJsonParse() {
   // Basic round-trip
-  var v = b.jsonSafe.parse('{"a":1,"b":"hello","c":null,"d":[1,2,3],"e":true}');
+  var v = b.safeJson.parse('{"a":1,"b":"hello","c":null,"d":[1,2,3],"e":true}');
   check("parse round-trips object",   v.a === 1 && v.b === "hello" && v.c === null);
   check("parse round-trips array",    Array.isArray(v.d) && v.d.length === 3);
 
   // BOM tolerated
-  var bom = b.jsonSafe.parse("﻿{\"x\":1}");
+  var bom = b.safeJson.parse("﻿{\"x\":1}");
   check("parse strips BOM",           bom.x === 1);
 
   // Size limit
   var bigInput = '{"x":"' + "a".repeat(200) + '"}';
   var sizeRejected = false;
-  try { b.jsonSafe.parse(bigInput, { maxBytes: 100 }); }
+  try { b.safeJson.parse(bigInput, { maxBytes: 100 }); }
   catch (e) { sizeRejected = e.code === "json/too-large"; }
   check("parse rejects oversized input",                  sizeRejected);
 
   // Depth limit
   var deep = '{"a":'.repeat(10) + 'null' + '}'.repeat(10);
   var depthRejected = false;
-  try { b.jsonSafe.parse(deep, { maxDepth: 3 }); }
+  try { b.safeJson.parse(deep, { maxDepth: 3 }); }
   catch (e) { depthRejected = e.code === "json/too-deep"; }
   check("parse rejects too-deep input",                   depthRejected);
 
   // Proto pollution
-  var poisoned = b.jsonSafe.parse('{"__proto__":{"isAdmin":true},"name":"alice"}');
+  var poisoned = b.safeJson.parse('{"__proto__":{"isAdmin":true},"name":"alice"}');
   check("parse strips __proto__ key",                     !("__proto__" in poisoned) || poisoned.__proto__ === Object.prototype);
   check("parse does not pollute Object.prototype",        !({}.isAdmin));
 
-  var ctorPoisoned = b.jsonSafe.parse('{"constructor":{"prototype":{"x":1}}}');
+  var ctorPoisoned = b.safeJson.parse('{"constructor":{"prototype":{"x":1}}}');
   check("parse strips constructor key",                   !("constructor" in ctorPoisoned) || ctorPoisoned.constructor === Object);
 
   // Syntax error
   var syntaxRejected = false;
-  try { b.jsonSafe.parse("{not-json}"); }
+  try { b.safeJson.parse("{not-json}"); }
   catch (e) { syntaxRejected = e.code === "json/syntax"; }
   check("parse reports syntax errors with code",          syntaxRejected);
 
   // Wrong input type
   var typeRejected = false;
-  try { b.jsonSafe.parse(123); }
+  try { b.safeJson.parse(123); }
   catch (e) { typeRejected = e.code === "json/wrong-input-type"; }
   check("parse rejects non-string/Buffer input",          typeRejected);
 
   // parseOrDefault
-  check("parseOrDefault returns fallback on bad input",   b.jsonSafe.parseOrDefault("not-json", { fallback: true }).fallback === true);
-  check("parseOrDefault returns parsed on good input",    b.jsonSafe.parseOrDefault('{"x":1}', null).x === 1);
+  check("parseOrDefault returns fallback on bad input",   b.safeJson.parseOrDefault("not-json", { fallback: true }).fallback === true);
+  check("parseOrDefault returns parsed on good input",    b.safeJson.parseOrDefault('{"x":1}', null).x === 1);
 
   // Buffer input
-  var fromBuf = b.jsonSafe.parse(Buffer.from('{"y":2}', "utf8"));
+  var fromBuf = b.safeJson.parse(Buffer.from('{"y":2}', "utf8"));
   check("parse accepts Buffer input",                     fromBuf.y === 2);
 }
 
 function testJsonStringify() {
-  var s = b.jsonSafe.stringify({ a: 1, b: [1, 2, 3] });
+  var s = b.safeJson.stringify({ a: 1, b: [1, 2, 3] });
   check("stringify produces valid JSON",                  JSON.parse(s).a === 1);
 
-  var stripped = JSON.parse(b.jsonSafe.stringify({ __proto__: { x: 1 }, name: "alice" }));
+  var stripped = JSON.parse(b.safeJson.stringify({ __proto__: { x: 1 }, name: "alice" }));
   check("stringify strips __proto__",                     !("__proto__" in stripped) || stripped.__proto__ === Object.prototype);
 
   var circular = { a: 1 };
   circular.self = circular;
   var circRejected = false;
-  try { b.jsonSafe.stringify(circular); }
+  try { b.safeJson.stringify(circular); }
   catch (e) { circRejected = e.code === "json/circular"; }
   check("stringify throws on circular ref",               circRejected);
 
   // Replace mode
-  var replaced = b.jsonSafe.stringify(circular, { onCircular: "replace", circularReplacement: "<circular>" });
+  var replaced = b.safeJson.stringify(circular, { onCircular: "replace", circularReplacement: "<circular>" });
   check("stringify circular replace mode works",          /<circular>/.test(replaced));
 }
 
 function testJsonCanonical() {
-  var c1 = b.jsonSafe.canonical({ b: 2, a: 1, c: 3 });
-  var c2 = b.jsonSafe.canonical({ a: 1, c: 3, b: 2 });
+  var c1 = b.safeJson.canonical({ b: 2, a: 1, c: 3 });
+  var c2 = b.safeJson.canonical({ a: 1, c: 3, b: 2 });
   check("canonical: identical content same key order → identical bytes",  c1 === c2);
   check("canonical: keys sorted alphabetically",          c1 === '{"a":1,"b":2,"c":3}');
 
-  var nested = b.jsonSafe.canonical({ z: { y: 1, x: 2 }, a: [3, 1, 2] });
+  var nested = b.safeJson.canonical({ z: { y: 1, x: 2 }, a: [3, 1, 2] });
   check("canonical: nested objects also sorted",          nested === '{"a":[3,1,2],"z":{"x":2,"y":1}}');
 
   var nfRejected = false;
-  try { b.jsonSafe.canonical({ x: NaN }); }
+  try { b.safeJson.canonical({ x: NaN }); }
   catch (e) { nfRejected = e.code === "json/non-finite"; }
   check("canonical: NaN rejected",                        nfRejected);
 }
 
 function testJsonValidate() {
-  b.jsonSafe.validate("hello", { type: "string" });
+  b.safeJson.validate("hello", { type: "string" });
   check("validate type-pass returns silently", true);
   var typeRejected = false;
-  try { b.jsonSafe.validate(42, { type: "string" }); }
+  try { b.safeJson.validate(42, { type: "string" }); }
   catch (e) { typeRejected = e.code === "json/validation" && /expected string/.test(e.message); }
   check("validate type mismatch throws with path",         typeRejected);
 
@@ -8189,38 +8189,38 @@ function testJsonValidate() {
     additionalProperties: false,
   };
 
-  b.jsonSafe.validate({ email: "alice@example.com", age: 30, role: "admin" }, schema);
+  b.safeJson.validate({ email: "alice@example.com", age: 30, role: "admin" }, schema);
   check("validate good object passes silently", true);
 
   var emailRejected = false;
-  try { b.jsonSafe.validate({ email: "not-email", age: 30 }, schema); }
+  try { b.safeJson.validate({ email: "not-email", age: 30 }, schema); }
   catch (e) { emailRejected = e.code === "json/validation" && /format 'email'/.test(e.message); }
   check("validate bad email format throws",                emailRejected);
 
   var requiredRejected = false;
-  try { b.jsonSafe.validate({ email: "a@b.com" }, schema); }
+  try { b.safeJson.validate({ email: "a@b.com" }, schema); }
   catch (e) { requiredRejected = /missing required key 'age'/.test(e.message); }
   check("validate missing required throws",                requiredRejected);
 
   var rangeRejected = false;
-  try { b.jsonSafe.validate({ email: "a@b.com", age: -1 }, schema); }
+  try { b.safeJson.validate({ email: "a@b.com", age: -1 }, schema); }
   catch (e) { rangeRejected = /minimum/.test(e.message); }
   check("validate range violation throws",                 rangeRejected);
 
   var enumRejected = false;
-  try { b.jsonSafe.validate({ email: "a@b.com", age: 30, role: "superuser" }, schema); }
+  try { b.safeJson.validate({ email: "a@b.com", age: 30, role: "superuser" }, schema); }
   catch (e) { enumRejected = /not in enum/.test(e.message); }
   check("validate enum violation throws",                  enumRejected);
 
   var unknownKeyRejected = false;
-  try { b.jsonSafe.validate({ email: "a@b.com", age: 30, hax: 1 }, schema); }
+  try { b.safeJson.validate({ email: "a@b.com", age: 30, hax: 1 }, schema); }
   catch (e) { unknownKeyRejected = /unknown key 'hax'/.test(e.message); }
   check("validate unknown key with additionalProperties:false throws", unknownKeyRejected);
 
   var arrSchema = { type: "array", minItems: 1, items: { type: "integer" } };
-  b.jsonSafe.validate([1, 2, 3], arrSchema);
+  b.safeJson.validate([1, 2, 3], arrSchema);
   var arrItemRejected = false;
-  try { b.jsonSafe.validate([1, "two", 3], arrSchema); }
+  try { b.safeJson.validate([1, "two", 3], arrSchema); }
   catch (e) { arrItemRejected = e.path === "$[1]" && /expected integer/.test(e.message); }
   check("validate array item path is reported",            arrItemRejected);
 }
@@ -8237,7 +8237,7 @@ function testJsonValidateCollect() {
     },
   };
   var bad = { email: "not-email", age: -5, name: "", role: "superuser" };
-  var result = b.jsonSafe.validate(bad, schema, { collectErrors: true });
+  var result = b.safeJson.validate(bad, schema, { collectErrors: true });
   check("collectErrors returns { ok, value, errors }",      typeof result === "object" && result.ok === false);
   check("collectErrors collects multiple errors",           result.errors.length >= 4);
   check("collectErrors errors have .path",                  result.errors.every(function (e) { return typeof e.path === "string"; }));
@@ -8247,54 +8247,54 @@ function testJsonValidateCollect() {
   check("collectErrors errors include enum failure",        result.errors.some(function (e) { return /not in enum/.test(e.message); }));
 
   var good = { email: "a@b.com", age: 30, name: "Alice" };
-  var goodResult = b.jsonSafe.validate(good, schema, { collectErrors: true });
+  var goodResult = b.safeJson.validate(good, schema, { collectErrors: true });
   check("collectErrors ok=true on valid input",             goodResult.ok === true && goodResult.errors.length === 0);
 
-  var parseResult = b.jsonSafe.parse(JSON.stringify(bad), { schema: schema, collectErrors: true });
+  var parseResult = b.safeJson.parse(JSON.stringify(bad), { schema: schema, collectErrors: true });
   check("parse + collectErrors returns { ok, value, errors[] }",
         typeof parseResult === "object" && parseResult.ok === false && parseResult.errors.length >= 4);
 }
 
 function testJsonFormats() {
-  check("format email: valid passes",        b.jsonSafe.formats.email("alice@example.com"));
-  check("format email: missing @ fails",     !b.jsonSafe.formats.email("not-email"));
-  check("format url: https passes",          b.jsonSafe.formats.url("https://example.com/path"));
-  check("format url: ftp fails (not in allowlist)", !b.jsonSafe.formats.url("ftp://example.com"));
-  check("format uuid: valid passes",         b.jsonSafe.formats.uuid("550e8400-e29b-41d4-a716-446655440000"));
-  check("format uuid: too-short fails",      !b.jsonSafe.formats.uuid("550e8400"));
-  check("format ulid: valid passes",         b.jsonSafe.formats.ulid("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
-  check("format ipv4: valid passes",         b.jsonSafe.formats.ipv4("192.168.1.1"));
-  check("format ipv4: out of range fails",   !b.jsonSafe.formats.ipv4("192.168.1.256"));
-  check("format ipv4: leading zero fails",   !b.jsonSafe.formats.ipv4("192.168.001.1"));
-  check("ipv6: full 8 groups",                          b.jsonSafe.formats.ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334"));
-  check("ipv6: lowercase",                              b.jsonSafe.formats.ipv6("2001:db8::1"));
-  check("ipv6: mixed case",                             b.jsonSafe.formats.ipv6("2001:DB8::1"));
-  check("ipv6: loopback ::1",                           b.jsonSafe.formats.ipv6("::1"));
-  check("ipv6: unspecified ::",                         b.jsonSafe.formats.ipv6("::"));
-  check("ipv6: trailing :: (1::)",                      b.jsonSafe.formats.ipv6("1::"));
-  check("ipv6: link-local fe80::1",                     b.jsonSafe.formats.ipv6("fe80::1"));
-  check("ipv6: IPv4-mapped ::ffff:192.168.1.1",         b.jsonSafe.formats.ipv6("::ffff:192.168.1.1"));
-  check("ipv6: IPv4-mapped uppercase",                  b.jsonSafe.formats.ipv6("::FFFF:192.168.1.1"));
-  check("ipv6: longer IPv4-mapped form",                b.jsonSafe.formats.ipv6("2001:db8::192.0.2.1"));
-  check("ipv6: rejects > 8 groups",                     !b.jsonSafe.formats.ipv6("1:2:3:4:5:6:7:8:9"));
-  check("ipv6: rejects multiple ::",                    !b.jsonSafe.formats.ipv6("1::2::3"));
-  check("ipv6: rejects non-hex chars",                  !b.jsonSafe.formats.ipv6("g::"));
-  check("ipv6: rejects > 4 hex per group",              !b.jsonSafe.formats.ipv6("12345::"));
-  check("ipv6: rejects zone IDs",                       !b.jsonSafe.formats.ipv6("fe80::1%eth0"));
-  check("ipv6: rejects empty string",                   !b.jsonSafe.formats.ipv6(""));
-  check("ipv6: rejects too long",                       !b.jsonSafe.formats.ipv6("a".repeat(46)));
-  check("ipv6: rejects bad IPv4-mapped",                !b.jsonSafe.formats.ipv6("::ffff:999.168.1.1"));
-  check("format hex: valid passes",          b.jsonSafe.formats.hex("dead beef".replace(" ", "")));
-  check("format slug: valid passes",         b.jsonSafe.formats.slug("my-blog-post"));
-  check("format slug: uppercase fails",      !b.jsonSafe.formats.slug("MyBlogPost"));
-  check("format iso8601-date: valid passes", b.jsonSafe.formats["iso8601-date"]("2026-04-25"));
-  check("format iso8601-date: invalid fails",!b.jsonSafe.formats["iso8601-date"]("2026-13-01"));
+  check("format email: valid passes",        b.safeJson.formats.email("alice@example.com"));
+  check("format email: missing @ fails",     !b.safeJson.formats.email("not-email"));
+  check("format url: https passes",          b.safeJson.formats.url("https://example.com/path"));
+  check("format url: ftp fails (not in allowlist)", !b.safeJson.formats.url("ftp://example.com"));
+  check("format uuid: valid passes",         b.safeJson.formats.uuid("550e8400-e29b-41d4-a716-446655440000"));
+  check("format uuid: too-short fails",      !b.safeJson.formats.uuid("550e8400"));
+  check("format ulid: valid passes",         b.safeJson.formats.ulid("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+  check("format ipv4: valid passes",         b.safeJson.formats.ipv4("192.168.1.1"));
+  check("format ipv4: out of range fails",   !b.safeJson.formats.ipv4("192.168.1.256"));
+  check("format ipv4: leading zero fails",   !b.safeJson.formats.ipv4("192.168.001.1"));
+  check("ipv6: full 8 groups",                          b.safeJson.formats.ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334"));
+  check("ipv6: lowercase",                              b.safeJson.formats.ipv6("2001:db8::1"));
+  check("ipv6: mixed case",                             b.safeJson.formats.ipv6("2001:DB8::1"));
+  check("ipv6: loopback ::1",                           b.safeJson.formats.ipv6("::1"));
+  check("ipv6: unspecified ::",                         b.safeJson.formats.ipv6("::"));
+  check("ipv6: trailing :: (1::)",                      b.safeJson.formats.ipv6("1::"));
+  check("ipv6: link-local fe80::1",                     b.safeJson.formats.ipv6("fe80::1"));
+  check("ipv6: IPv4-mapped ::ffff:192.168.1.1",         b.safeJson.formats.ipv6("::ffff:192.168.1.1"));
+  check("ipv6: IPv4-mapped uppercase",                  b.safeJson.formats.ipv6("::FFFF:192.168.1.1"));
+  check("ipv6: longer IPv4-mapped form",                b.safeJson.formats.ipv6("2001:db8::192.0.2.1"));
+  check("ipv6: rejects > 8 groups",                     !b.safeJson.formats.ipv6("1:2:3:4:5:6:7:8:9"));
+  check("ipv6: rejects multiple ::",                    !b.safeJson.formats.ipv6("1::2::3"));
+  check("ipv6: rejects non-hex chars",                  !b.safeJson.formats.ipv6("g::"));
+  check("ipv6: rejects > 4 hex per group",              !b.safeJson.formats.ipv6("12345::"));
+  check("ipv6: rejects zone IDs",                       !b.safeJson.formats.ipv6("fe80::1%eth0"));
+  check("ipv6: rejects empty string",                   !b.safeJson.formats.ipv6(""));
+  check("ipv6: rejects too long",                       !b.safeJson.formats.ipv6("a".repeat(46)));
+  check("ipv6: rejects bad IPv4-mapped",                !b.safeJson.formats.ipv6("::ffff:999.168.1.1"));
+  check("format hex: valid passes",          b.safeJson.formats.hex("dead beef".replace(" ", "")));
+  check("format slug: valid passes",         b.safeJson.formats.slug("my-blog-post"));
+  check("format slug: uppercase fails",      !b.safeJson.formats.slug("MyBlogPost"));
+  check("format iso8601-date: valid passes", b.safeJson.formats["iso8601-date"]("2026-04-25"));
+  check("format iso8601-date: invalid fails",!b.safeJson.formats["iso8601-date"]("2026-13-01"));
 
-  b.jsonSafe.registerFormat("us-zip", function (v) { return /^\d{5}(-\d{4})?$/.test(v); });
-  check("custom format registered + works",  b.jsonSafe.formats["us-zip"]("12345"));
-  b.jsonSafe.validate("90210", { type: "string", format: "us-zip" });
+  b.safeJson.registerFormat("us-zip", function (v) { return /^\d{5}(-\d{4})?$/.test(v); });
+  check("custom format registered + works",  b.safeJson.formats["us-zip"]("12345"));
+  b.safeJson.validate("90210", { type: "string", format: "us-zip" });
   var customRejected = false;
-  try { b.jsonSafe.validate("ABCDE", { type: "string", format: "us-zip" }); }
+  try { b.safeJson.validate("ABCDE", { type: "string", format: "us-zip" }); }
   catch (e) { customRejected = /format 'us-zip'/.test(e.message); }
   check("custom format used by validate",    customRejected);
 }
@@ -8770,7 +8770,7 @@ function testTomlSecurityRejections() {
   // Unterminated string
   var threwUnterm = false;
   try { b.parsers.toml.parse("a = \"unterminated\nb = 1"); }
-  catch (e) { threwUnterm = !!e.isTomlSafeError; }
+  catch (e) { threwUnterm = !!e.isSafeTomlError; }
   check("toml: unterminated string rejected",      threwUnterm);
 
   // Multi-line basic string
@@ -8910,7 +8910,7 @@ function testYamlSecurityRejections() {
 
   var threwUnterm = false;
   try { b.parsers.yaml.parse("a: \"unterminated"); }
-  catch (e) { threwUnterm = !!e.isYamlSafeError; }
+  catch (e) { threwUnterm = !!e.isSafeYamlError; }
   check("yaml: unterminated string rejected",      threwUnterm);
 }
 
@@ -9006,8 +9006,8 @@ function testEnvParseSecurityRejections() {
 }
 
 function testBufferSafeNormalizeText() {
-  var bs = b.bufferSafe;
-  check("bufferSafe.normalizeText is a function", typeof bs.normalizeText === "function");
+  var bs = b.safeBuffer;
+  check("safeBuffer.normalizeText is a function", typeof bs.normalizeText === "function");
 
   // string passthrough
   check("normalizeText: string passthrough", bs.normalizeText("hello") === "hello");
@@ -9057,8 +9057,8 @@ function testBufferSafeNormalizeText() {
 }
 
 function testBufferSafeToBuffer() {
-  var bs = b.bufferSafe;
-  check("bufferSafe.toBuffer is a function", typeof bs.toBuffer === "function");
+  var bs = b.safeBuffer;
+  check("safeBuffer.toBuffer is a function", typeof bs.toBuffer === "function");
 
   // Buffer passthrough (same instance)
   var orig = Buffer.from("hello", "utf8");
@@ -9087,8 +9087,8 @@ function testBufferSafeToBuffer() {
 }
 
 function testBufferSafeBoundedChunkCollector() {
-  var bs = b.bufferSafe;
-  check("bufferSafe.boundedChunkCollector is a function",
+  var bs = b.safeBuffer;
+  check("safeBuffer.boundedChunkCollector is a function",
         typeof bs.boundedChunkCollector === "function");
 
   // Happy path
@@ -9128,13 +9128,13 @@ function testBufferSafeBoundedChunkCollector() {
 // ---- url-safe ----
 
 function testUrlSafeDefaultIsHttpsOnly() {
-  var u = b.urlSafe;
+  var u = b.safeUrl;
   // Default allowlist = ALLOW_HTTP_TLS (https only). http:// rejected.
   var rejected = null;
   try { u.parse("http://example.com/x"); }
   catch (e) { rejected = e; }
   check("url-safe: http rejected by default",         rejected !== null);
-  check("url-safe: rejection is UrlSafeError",        rejected instanceof u.UrlSafeError);
+  check("url-safe: rejection is SafeUrlError",        rejected instanceof u.SafeUrlError);
   check("url-safe: rejection code = protocol-disallowed",
         rejected.code === "safe-url/protocol-disallowed");
 
@@ -9144,7 +9144,7 @@ function testUrlSafeDefaultIsHttpsOnly() {
 }
 
 function testUrlSafeCustomAllowlist() {
-  var u = b.urlSafe;
+  var u = b.safeUrl;
   // ALLOW_HTTP_ALL accepts both http: and https:
   var http  = u.parse("http://example.com/",  { allowedProtocols: u.ALLOW_HTTP_ALL });
   var https = u.parse("https://example.com/", { allowedProtocols: u.ALLOW_HTTP_ALL });
@@ -9162,7 +9162,7 @@ function testUrlSafeCustomAllowlist() {
 }
 
 function testUrlSafeMalformed() {
-  var u = b.urlSafe;
+  var u = b.safeUrl;
   var malformed = null;
   try { u.parse("not-a-url"); }
   catch (e) { malformed = e; }
@@ -9182,7 +9182,7 @@ function testUrlSafeMalformed() {
 }
 
 function testUrlSafeUrlInstancePassThrough() {
-  var u = b.urlSafe;
+  var u = b.safeUrl;
   var { URL } = require("url");
   var input = new URL("https://example.com/already-parsed");
   var out = u.parse(input);
@@ -9190,7 +9190,7 @@ function testUrlSafeUrlInstancePassThrough() {
 }
 
 function testUrlSafeErrorClassInjection() {
-  var u = b.urlSafe;
+  var u = b.safeUrl;
   var rejected = null;
   try {
     u.parse("ftp://example.com/", { errorClass: b.frameworkError.ObjectStoreError });
@@ -9205,7 +9205,7 @@ function testUrlSafeErrorClassInjection() {
 }
 
 function testUrlSafeAllowAny() {
-  var u = b.urlSafe;
+  var u = b.safeUrl;
   var schemes = ["http://h/", "https://h/", "ws://h/", "wss://h/"];
   for (var i = 0; i < schemes.length; i++) {
     var ok = u.parse(schemes[i], { allowedProtocols: u.ALLOW_ANY });
@@ -10014,14 +10014,14 @@ function testFrameworkError() {
   check("QueueError: legacy flag",               qerr.isQueueError === true);
 
   // Existing *SafeError classes now also pass instanceof FrameworkError
-  try { b.jsonSafe.parse("{not-json}"); }
+  try { b.safeJson.parse("{not-json}"); }
   catch (e) {
-    check("JsonSafeError: extends FrameworkError",  e instanceof fe.FrameworkError);
-    check("JsonSafeError: legacy flag preserved",   e.isJsonSafeError === true);
+    check("SafeJsonError: extends FrameworkError",  e instanceof fe.FrameworkError);
+    check("SafeJsonError: legacy flag preserved",   e.isSafeJsonError === true);
   }
-  try { b.sqlSafe.validateIdentifier("123"); }
+  try { b.safeSql.validateIdentifier("123"); }
   catch (e) {
-    check("SqlSafeError: extends FrameworkError",   e instanceof fe.FrameworkError);
+    check("SafeSqlError: extends FrameworkError",   e instanceof fe.FrameworkError);
   }
 
   // defineClass — factory for the standard FrameworkError-subclass shape
@@ -10221,8 +10221,8 @@ function testLazyRequire() {
 }
 
 function testBufferSafeSecureZero() {
-  var bs = b.bufferSafe;
-  check("bufferSafe.secureZero is a function", typeof bs.secureZero === "function");
+  var bs = b.safeBuffer;
+  check("safeBuffer.secureZero is a function", typeof bs.secureZero === "function");
 
   var buf = Buffer.from("secret-passphrase", "utf8");
   bs.secureZero(buf);
@@ -10397,14 +10397,14 @@ function testCryptoAndModuleSurface() {
   check("constants namespace present",  typeof b.constants === "object");
   check("vault namespace present",      typeof b.vault === "object");
   check("vaultWrap namespace present",  typeof b.vaultWrap === "object");
-  check("passphraseSource present",     typeof b.passphraseSource === "object");
+  check("vaultPassphraseSource present",     typeof b.vaultPassphraseSource === "object");
   check("version is a string",          typeof b.version === "string");
   check("version matches package.json", b.version === require("../package.json").version);
   check("db namespace present",         typeof b.db === "object");
   check("db.from is a function",        typeof b.db.from === "function");
   check("db.transaction is a function", typeof b.db.transaction === "function");
   check("db.hashFor is a function",     typeof b.db.hashFor === "function");
-  check("fieldCrypto namespace present", typeof b.fieldCrypto === "object");
+  check("cryptoField namespace present", typeof b.cryptoField === "object");
   check("audit namespace present",      typeof b.audit === "object");
   check("auditChain namespace present", typeof b.auditChain === "object");
   check("consent namespace present",    typeof b.consent === "object");
@@ -10414,16 +10414,16 @@ function testCryptoAndModuleSurface() {
   check("storage namespace present",    typeof b.storage === "object");
   check("session.create is a function", typeof b.session.create === "function");
   check("storage.saveFile is a function", typeof b.storage.saveFile === "function");
-  check("urlSafe namespace present",    typeof b.urlSafe === "object");
-  check("urlSafe.parse is a function",  typeof b.urlSafe.parse === "function");
-  check("urlSafe.ALLOW_HTTP_TLS frozen", Object.isFrozen(b.urlSafe.ALLOW_HTTP_TLS));
+  check("safeUrl namespace present",    typeof b.safeUrl === "object");
+  check("safeUrl.parse is a function",  typeof b.safeUrl.parse === "function");
+  check("safeUrl.ALLOW_HTTP_TLS frozen", Object.isFrozen(b.safeUrl.ALLOW_HTTP_TLS));
   check("authHeader namespace present", typeof b.authHeader === "object");
   check("authHeader.bearer is a function",     typeof b.authHeader.bearer === "function");
   check("authHeader.basic is a function",      typeof b.authHeader.basic === "function");
   check("authHeader.fromConfig is a function", typeof b.authHeader.fromConfig === "function");
-  check("asyncSafe.sleep is a function",       typeof b.asyncSafe.sleep === "function");
-  check("asyncSafe.withTimeoutSignal is a function",
-        typeof b.asyncSafe.withTimeoutSignal === "function");
+  check("safeAsync.sleep is a function",       typeof b.safeAsync.sleep === "function");
+  check("safeAsync.withTimeoutSignal is a function",
+        typeof b.safeAsync.withTimeoutSignal === "function");
 
   // Constants surface
   check("ENVELOPE_MAGIC = 0xE1",        b.constants.ENVELOPE_MAGIC === 0xE1);
@@ -10445,12 +10445,12 @@ function testCryptoAndModuleSurface() {
         b.vaultWrap.DEFAULT_ARGON2 && b.vaultWrap.DEFAULT_ARGON2.memoryCost > 0);
 
   // passphrase-source env var names follow BLAMEJS_ prefix
-  check("passphraseSource ENV_PASSPHRASE = BLAMEJS_VAULT_PASSPHRASE",
-        b.passphraseSource.ENV_PASSPHRASE === "BLAMEJS_VAULT_PASSPHRASE");
-  check("passphraseSource ENV_PASSPHRASE_FILE = BLAMEJS_VAULT_PASSPHRASE_FILE",
-        b.passphraseSource.ENV_PASSPHRASE_FILE === "BLAMEJS_VAULT_PASSPHRASE_FILE");
-  check("passphraseSource ENV_PASSPHRASE_SRC = BLAMEJS_VAULT_PASSPHRASE_SOURCE",
-        b.passphraseSource.ENV_PASSPHRASE_SRC === "BLAMEJS_VAULT_PASSPHRASE_SOURCE");
+  check("vaultPassphraseSource ENV_PASSPHRASE = BLAMEJS_VAULT_PASSPHRASE",
+        b.vaultPassphraseSource.ENV_PASSPHRASE === "BLAMEJS_VAULT_PASSPHRASE");
+  check("vaultPassphraseSource ENV_PASSPHRASE_FILE = BLAMEJS_VAULT_PASSPHRASE_FILE",
+        b.vaultPassphraseSource.ENV_PASSPHRASE_FILE === "BLAMEJS_VAULT_PASSPHRASE_FILE");
+  check("vaultPassphraseSource ENV_PASSPHRASE_SRC = BLAMEJS_VAULT_PASSPHRASE_SOURCE",
+        b.vaultPassphraseSource.ENV_PASSPHRASE_SRC === "BLAMEJS_VAULT_PASSPHRASE_SOURCE");
 
   // Envelope encrypt/decrypt round-trip
   var keys = b.crypto.generateEncryptionKeyPair();
@@ -10924,7 +10924,7 @@ async function run() {
   testFrameworkError();
   // url-safe primitive (validates scheme + shape at outbound boundary —
   // declared as a prerequisite for httpClient since httpClient routes
-  // every URL through urlSafe.parse)
+  // every URL through safeUrl.parse)
   testUrlSafeDefaultIsHttpsOnly();
   testUrlSafeCustomAllowlist();
   testUrlSafeMalformed();

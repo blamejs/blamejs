@@ -5,7 +5,7 @@
  * The Node framework that owns its stack.
  *
  * Public surface lives on the exported object: crypto, router, vault,
- * db, fieldCrypto, audit, consent, subject, session, storage, queue,
+ * db, cryptoField, audit, consent, subject, session, storage, queue,
  * objectStore, externalDb, logStream, middleware, parsers, atomic-file,
  * ntp-check, redact, cluster (leader election + write-side gates), and
  * the version-stable `constants` namespace.
@@ -18,16 +18,16 @@ var router = require("./lib/router");
 var constants = require("./lib/constants");
 var vault = require("./lib/vault");
 var vaultWrap = require("./lib/vault-wrap");
-var passphraseSource = require("./lib/vault-passphrase-source");
+var vaultPassphraseSource = require("./lib/vault-passphrase-source");
 var db = require("./lib/db");
-var fieldCrypto = require("./lib/crypto-field");
+var cryptoField = require("./lib/crypto-field");
 var audit = require("./lib/audit");
 var auditChain = require("./lib/audit-chain");
 var consent = require("./lib/consent");
 var subject = require("./lib/subject");
 var session = require("./lib/session");
 var storage = require("./lib/storage");
-var jsonSafe = require("./lib/safe-json");
+var safeJson = require("./lib/safe-json");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
@@ -42,17 +42,17 @@ var parsers = require("./lib/parsers");
 var cluster = require("./lib/cluster");
 var frameworkSchema = require("./lib/framework-schema");
 var clusterStorage = require("./lib/cluster-storage");
-var asyncSafe = require("./lib/safe-async");
+var safeAsync = require("./lib/safe-async");
 var handlers = require("./lib/handlers");
-var sqlSafe = require("./lib/safe-sql");
+var safeSql = require("./lib/safe-sql");
 var chainWriter = require("./lib/chain-writer");
-var bufferSafe = require("./lib/safe-buffer");
+var safeBuffer = require("./lib/safe-buffer");
 var lazyRequire = require("./lib/lazy-require");
 var frameworkError = require("./lib/framework-error");
 var logger = require("./lib/logger");
 var httpClient = require("./lib/http-client");
 var websocket = require("./lib/websocket");
-var urlSafe = require("./lib/safe-url");
+var safeUrl = require("./lib/safe-url");
 var authHeader = require("./lib/auth-header");
 var auth = {
   password: require("./lib/auth/password"),
@@ -69,7 +69,7 @@ var jobs = require("./lib/jobs");
 var mail = require("./lib/mail");
 var scheduler = require("./lib/scheduler");
 var log = require("./lib/log");
-var errorsPage = require("./lib/error-page");
+var errorPage = require("./lib/error-page");
 var cookies = require("./lib/cookies");
 var migrations = require("./lib/migrations");
 var cli = require("./lib/cli");
@@ -96,9 +96,9 @@ module.exports = {
   constants:        constants,
   vault:            vault,
   vaultWrap:        vaultWrap,
-  passphraseSource: passphraseSource,
+  vaultPassphraseSource: vaultPassphraseSource,
   db:               db,
-  fieldCrypto:      fieldCrypto,
+  cryptoField:      cryptoField,
   audit:            audit,
   auditChain:       auditChain,
   auditSign:        auditSign,
@@ -118,17 +118,17 @@ module.exports = {
   cluster:          cluster,
   frameworkSchema:  frameworkSchema,
   clusterStorage:   clusterStorage,
-  asyncSafe:        asyncSafe,
+  safeAsync:        safeAsync,
   handlers:         handlers,
-  sqlSafe:          sqlSafe,
+  safeSql:          safeSql,
   chainWriter:      chainWriter,
-  bufferSafe:       bufferSafe,
+  safeBuffer:       safeBuffer,
   lazyRequire:      lazyRequire,
   frameworkError:   frameworkError,
   logger:           logger,
   httpClient:       httpClient,
   websocket:        websocket,
-  urlSafe:          urlSafe,
+  safeUrl:          safeUrl,
   authHeader:       authHeader,
   auth:             auth,
   template:         template,
@@ -140,7 +140,7 @@ module.exports = {
   mail:             mail,
   scheduler:        scheduler,
   log:              log,
-  errorsPage:       errorsPage,
+  errorPage:       errorPage,
   cookies:          cookies,
   migrations:       migrations,
   cli:              cli,
@@ -160,7 +160,7 @@ module.exports = {
   restore:          restore,
   deprecate:        deprecate,
   apiSnapshot:      apiSnapshot,
-  jsonSafe:         jsonSafe,
+  safeJson:         safeJson,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

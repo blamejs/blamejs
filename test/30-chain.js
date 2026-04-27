@@ -221,7 +221,7 @@ async function testClusterEndpointInitValidation() {
       externalDbBackend: "ops",
       dialect:           "sqlite",
       endpoint:          "http://node1.internal:8080",
-      allowedProtocols:  b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols:  b.safeUrl.ALLOW_HTTP_ALL,
       leaseTtl:          b.constants.TIME.seconds(30),
       heartbeatInterval: b.constants.TIME.seconds(10),
     });

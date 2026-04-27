@@ -64,10 +64,10 @@ async function testVaultWrapRoundTrip() {
 
 async function testPassphraseEnv() {
   process.env.BLAMEJS_VAULT_PASSPHRASE = "smoke-test-passphrase";
-  var buf = await b.passphraseSource.fromEnv();
-  check("passphraseSource.fromEnv returns Buffer",  Buffer.isBuffer(buf));
-  check("passphraseSource.fromEnv preserves bytes", buf.toString("utf8") === "smoke-test-passphrase");
-  check("passphraseSource.fromEnv strips env var",  !("BLAMEJS_VAULT_PASSPHRASE" in process.env));
+  var buf = await b.vaultPassphraseSource.fromEnv();
+  check("vaultPassphraseSource.fromEnv returns Buffer",  Buffer.isBuffer(buf));
+  check("vaultPassphraseSource.fromEnv preserves bytes", buf.toString("utf8") === "smoke-test-passphrase");
+  check("vaultPassphraseSource.fromEnv strips env var",  !("BLAMEJS_VAULT_PASSPHRASE" in process.env));
 }
 
 async function testVaultPlaintextRoundTrip() {

@@ -577,7 +577,7 @@ async function testSigv4MockServer() {
       accessKeyId:      "AKIAIOSFODNN7EXAMPLE",
       secretAccessKey:  "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
       pathStyle:        true,   // 127.0.0.1 doesn't support virtual-hosted
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,   // local mock — opt in to cleartext
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,   // local mock — opt in to cleartext
     });
 
     // PUT
@@ -732,7 +732,7 @@ async function testGcsMockServer() {
       serviceAccount:   sa,
       endpoint:         "http://127.0.0.1:" + port,
       tokenEndpoint:    "http://127.0.0.1:" + port + "/token",
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
     });
 
     var content = Buffer.from("gcs test payload " + Date.now(), "utf8");
@@ -857,7 +857,7 @@ async function testAzureBlobMockServer() {
       accountKey:       Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "utf8").toString("base64"),
       container:        "test-container",
       endpoint:         "http://127.0.0.1:" + port,
-      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
     });
 
     var content = Buffer.from("azure test payload " + Date.now(), "utf8");
@@ -1261,7 +1261,7 @@ async function testLogStreamWebhook() {
             maxBatchAgeMs:    100,
             bodyShape:        "array",
             retry:            { maxAttempts: 1 },
-            allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+            allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
           },
         },
       });
@@ -1637,13 +1637,13 @@ async function testMiddlewareErrorHandler() {
     var b2 = JSON.parse(c2.body);
     check("errorHandler: 4xx exposes message",           b2.error.message === "not found");
 
-    // JsonSafeError → 400 + path
-    var jse = new b.jsonSafe.JsonSafeError("validation failed", "json/validation", "$.email");
+    // SafeJsonError → 400 + path
+    var jse = new b.safeJson.SafeJsonError("validation failed", "json/validation", "$.email");
     var req3 = _mockReq();
     var res3 = _mockRes();
     mw(jse, req3, res3, function () {});
     var c3 = res3._captured();
-    check("errorHandler: JsonSafeError → 400",           c3.status === 400);
+    check("errorHandler: SafeJsonError → 400",           c3.status === 400);
     var b3 = JSON.parse(c3.body);
     check("errorHandler: 400 body includes path",        b3.error.path === "$.email");
 
@@ -1835,7 +1835,7 @@ async function testMiddlewareCsrfProtect() {
       // 1. Safe method (GET) → middleware passes through, even with no token
       var safe = await b.httpClient.request({
         url: "http://127.0.0.1:" + port + "/protected",
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       });
       check("csrfProtect: GET passes through",          safe.statusCode === 200);
 
@@ -1844,7 +1844,7 @@ async function testMiddlewareCsrfProtect() {
         method: "POST",
         url: "http://127.0.0.1:" + port + "/protected",
         body: Buffer.from(""),
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
         errorClass: b.frameworkError.ObjectStoreError,
       }).catch(function (e) { return e; });
       check("csrfProtect: POST without token → 403",    noTok.statusCode === 403);
@@ -1855,7 +1855,7 @@ async function testMiddlewareCsrfProtect() {
         url: "http://127.0.0.1:" + port + "/protected",
         headers: { "x-csrf-token": EXPECTED, "Content-Type": "application/json" },
         body: Buffer.from("{}"),
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       });
       check("csrfProtect: POST with header token → 200", hdrOk.statusCode === 200);
 
@@ -1865,7 +1865,7 @@ async function testMiddlewareCsrfProtect() {
         url: "http://127.0.0.1:" + port + "/protected",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: Buffer.from("_csrf=" + encodeURIComponent(EXPECTED) + "&name=Alice"),
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       });
       check("csrfProtect: POST with urlencoded body token → 200", bodyOk.statusCode === 200);
 
@@ -1875,7 +1875,7 @@ async function testMiddlewareCsrfProtect() {
         url: "http://127.0.0.1:" + port + "/protected",
         headers: { "x-csrf-token": "wrong-token" },
         body: Buffer.from(""),
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
         errorClass: b.frameworkError.ObjectStoreError,
       }).catch(function (e) { return e; });
       check("csrfProtect: POST with wrong token → 403", wrong.statusCode === 403);
@@ -1903,7 +1903,7 @@ async function testMiddlewareCsrfProtect() {
         method: "POST",
         url: "http://127.0.0.1:" + port2 + "/x",
         body: Buffer.from(""),
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       });
       check("csrfProtect: custom methods exclude POST",  postPass.statusCode === 200);
 
@@ -1911,7 +1911,7 @@ async function testMiddlewareCsrfProtect() {
       var del403 = await b.httpClient.request({
         method: "DELETE",
         url: "http://127.0.0.1:" + port2 + "/x",
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
         errorClass: b.frameworkError.ObjectStoreError,
       }).catch(function (e) { return e; });
       check("csrfProtect: DELETE in custom methods gated",  del403.statusCode === 403);
@@ -1921,7 +1921,7 @@ async function testMiddlewareCsrfProtect() {
         method: "DELETE",
         url: "http://127.0.0.1:" + port2 + "/x",
         headers: { "x-my-csrf": EXPECTED },
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
       });
       check("csrfProtect: custom headerName honored",   del200.statusCode === 200);
     } finally { server2.close(); }
@@ -1944,7 +1944,7 @@ async function testMiddlewareCsrfProtect() {
         url: "http://127.0.0.1:" + port3 + "/x",
         headers: { "x-csrf-token": EXPECTED },
         body: Buffer.from(""),
-        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
         errorClass: b.frameworkError.ObjectStoreError,
       }).catch(function (e) { return e; });
       check("csrfProtect: tokenLookup null → 403",       nullLookup.statusCode === 403);
