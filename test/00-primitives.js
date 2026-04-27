@@ -3078,6 +3078,224 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- backup-bundle ----
+//
+// End-to-end fixture: build a tmp dataDir with a few files, encrypt
+// the bundle, verify each blob round-trips through backup-crypto.
+
+function _bundleFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bundle-"));
+  var dataDir = path.join(dir, "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  return {
+    root:    dir,
+    dataDir: dataDir,
+    cleanup: function () {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+    write: function (rel, content) {
+      var full = path.join(dataDir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+      return full;
+    },
+  };
+}
+
+function testBackupBundleSurface() {
+  check("b.backupBundle namespace present",       typeof b.backupBundle === "object");
+  check("b.backupBundle.create is a function",    typeof b.backupBundle.create === "function");
+  check("BackupBundleError is a class",           typeof b.backupBundle.BackupBundleError === "function");
+}
+
+async function testBackupBundleCreateEndToEnd() {
+  var fx = _bundleFixture();
+  try {
+    fx.write("db.enc",        Buffer.from("ENCRYPTED-DB-BYTES"));
+    fx.write("db.key.enc",    "vault:wrapped-db-key");
+    fx.write("vault.key",     '{"keypair":"json"}');
+    fx.write("tls/privkey.pem", "PEM-BYTES");
+
+    var passphrase = Buffer.from("operator-passphrase");
+    var vaultKeyJson = '{"vault":"keypair-bytes"}';
+    var outDir = path.join(fx.root, "bundle");
+
+    var events = [];
+    var result = await b.backupBundle.create({
+      dataDir:      fx.dataDir,
+      outDir:       outDir,
+      passphrase:   passphrase,
+      vaultKeyJson: vaultKeyJson,
+      files: [
+        { relativePath: "db.enc",          kind: "raw",          required: true },
+        { relativePath: "db.key.enc",      kind: "raw",          required: true },
+        { relativePath: "vault.key",       kind: "raw",          required: false },
+        { relativePath: "tls/privkey.pem", kind: "vault-sealed", required: false },
+        { relativePath: "missing-optional",kind: "raw",          required: false },
+      ],
+      metadata:     { reason: "test-end-to-end" },
+      progressCallback: function (e) { events.push(e.phase); },
+    });
+
+    check("result.fileCount = 4 (missing skipped)", result.fileCount === 4);
+    check("result.manifestPath under outDir",
+          result.manifestPath === path.join(outDir, "manifest.json"));
+    check("manifest exists on disk",                fs.existsSync(result.manifestPath));
+    check("progress fired wrap_vault_key + done",
+          events.indexOf("wrap_vault_key") !== -1 && events.indexOf("done") !== -1);
+    check("progress fired skip_missing for optional",
+          events.indexOf("skip_missing") !== -1);
+
+    // Manifest is parseable + structurally valid
+    var raw = fs.readFileSync(result.manifestPath, "utf8");
+    var m = b.backupManifest.parse(raw);
+    check("emitted manifest is parse-valid",        m.version === 1);
+    check("manifest has 4 file entries",            m.files.length === 4);
+    check("manifest carries operator metadata",     m.metadata && m.metadata.reason === "test-end-to-end");
+
+    // Vault key round-trip — decrypt with passphrase + bundled salt
+    var vkBytes = await b.backupCrypto.decryptWithPassphrase(
+      Buffer.from(m.vaultKeyEnc, "base64"), passphrase, m.vaultKeySalt);
+    check("vaultKeyEnc decrypts to original JSON",  vkBytes.toString("utf8") === vaultKeyJson);
+
+    // Each file's blob exists and decrypts to the original bytes
+    // matching the manifest's plaintext checksum.
+    for (var i = 0; i < m.files.length; i++) {
+      var entry = m.files[i];
+      var blobPath = path.join(outDir, entry.encryptedPath);
+      check("blob exists for " + entry.relativePath,  fs.existsSync(blobPath));
+      var blob = fs.readFileSync(blobPath);
+      check("blob size matches manifest.encryptedSize for " + entry.relativePath,
+            blob.length === entry.encryptedSize);
+      var dec = await b.backupCrypto.decryptWithPassphrase(blob, passphrase, entry.salt);
+      var origPath = path.join(fx.dataDir, entry.relativePath);
+      var orig = fs.readFileSync(origPath);
+      check("decrypted blob matches original plaintext for " + entry.relativePath,
+            Buffer.compare(dec, orig) === 0);
+      check("plaintext sha3-512 matches manifest checksum for " + entry.relativePath,
+            b.backupCrypto.checksum(orig) === entry.checksum);
+    }
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupBundlePathTraversalRejected() {
+  var fx = _bundleFixture();
+  try {
+    var threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir:      fx.dataDir,
+        outDir:       path.join(fx.root, "bundle"),
+        passphrase:   Buffer.from("p"),
+        vaultKeyJson: "{}",
+        files: [{ relativePath: "../escape", kind: "raw", required: true }],
+      });
+    } catch (e) { threw = e; }
+    check("'..' in relativePath rejected",          threw && threw.code === "backup-bundle/bad-include");
+
+    threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir:      fx.dataDir,
+        outDir:       path.join(fx.root, "bundle2"),
+        passphrase:   Buffer.from("p"),
+        vaultKeyJson: "{}",
+        files: [{ relativePath: "/abs/path", kind: "raw", required: true }],
+      });
+    } catch (e) { threw = e; }
+    check("absolute path in relativePath rejected", threw && threw.code === "backup-bundle/bad-include");
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupBundleRequiredMissing() {
+  var fx = _bundleFixture();
+  try {
+    var threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir:      fx.dataDir,
+        outDir:       path.join(fx.root, "bundle"),
+        passphrase:   Buffer.from("p"),
+        vaultKeyJson: "{}",
+        files: [{ relativePath: "not-here", kind: "raw", required: true }],
+      });
+    } catch (e) { threw = e; }
+    check("missing required file surfaces missing-required",
+          threw && threw.code === "backup-bundle/missing-required");
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupBundleEmptyBundleRejected() {
+  var fx = _bundleFixture();
+  try {
+    // All entries optional and missing → no files written → reject
+    var threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir:      fx.dataDir,
+        outDir:       path.join(fx.root, "bundle"),
+        passphrase:   Buffer.from("p"),
+        vaultKeyJson: "{}",
+        files: [{ relativePath: "absent", kind: "raw", required: false }],
+      });
+    } catch (e) { threw = e; }
+    check("empty bundle rejected",                  threw && threw.code === "backup-bundle/empty");
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupBundleArgValidation() {
+  var fx = _bundleFixture();
+  try {
+    var threw;
+
+    threw = null;
+    try { await b.backupBundle.create({}); } catch (e) { threw = e; }
+    check("missing dataDir rejected",               threw && threw.code === "backup-bundle/no-datadir");
+
+    threw = null;
+    try { await b.backupBundle.create({ dataDir: fx.dataDir }); } catch (e) { threw = e; }
+    check("missing outDir rejected",                threw && threw.code === "backup-bundle/no-outdir");
+
+    fs.mkdirSync(path.join(fx.root, "exists"));
+    threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir: fx.dataDir, outDir: path.join(fx.root, "exists"),
+        passphrase: Buffer.from("p"), vaultKeyJson: "{}",
+        files: [{ relativePath: "x" }],
+      });
+    } catch (e) { threw = e; }
+    check("existing outDir rejected",               threw && threw.code === "backup-bundle/outdir-exists");
+
+    threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir: fx.dataDir, outDir: path.join(fx.root, "bundle"),
+        vaultKeyJson: "{}", files: [{ relativePath: "x" }],
+      });
+    } catch (e) { threw = e; }
+    check("missing passphrase rejected",            threw && threw.code === "backup-bundle/no-passphrase");
+
+    threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir: fx.dataDir, outDir: path.join(fx.root, "bundle2"),
+        passphrase: Buffer.from("p"), files: [{ relativePath: "x" }],
+      });
+    } catch (e) { threw = e; }
+    check("missing vaultKeyJson rejected",          threw && threw.code === "backup-bundle/no-vault-key-json");
+
+    threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir: fx.dataDir, outDir: path.join(fx.root, "bundle3"),
+        passphrase: Buffer.from("p"), vaultKeyJson: "{}", files: [],
+      });
+    } catch (e) { threw = e; }
+    check("empty files list rejected",              threw && threw.code === "backup-bundle/no-files");
+  } finally { fx.cleanup(); }
+}
+
 // ---- backup-manifest ----
 
 function _validFileEntry(over) {
@@ -8987,6 +9205,13 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // backup-bundle — encrypted backup bundle producer (Phase 7 slice 7b)
+  testBackupBundleSurface();
+  await testBackupBundleCreateEndToEnd();
+  await testBackupBundlePathTraversalRejected();
+  await testBackupBundleRequiredMissing();
+  await testBackupBundleEmptyBundleRejected();
+  await testBackupBundleArgValidation();
   // backup-manifest — bundle schema + create/validate/parse/serialize (Phase 7 slice 7a)
   testBackupManifestSurface();
   testBackupManifestCreateAndSerialize();
@@ -9364,6 +9589,12 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testBackupBundleSurface:                   testBackupBundleSurface,
+  testBackupBundleCreateEndToEnd:            testBackupBundleCreateEndToEnd,
+  testBackupBundlePathTraversalRejected:     testBackupBundlePathTraversalRejected,
+  testBackupBundleRequiredMissing:           testBackupBundleRequiredMissing,
+  testBackupBundleEmptyBundleRejected:       testBackupBundleEmptyBundleRejected,
+  testBackupBundleArgValidation:             testBackupBundleArgValidation,
   testBackupManifestSurface:                 testBackupManifestSurface,
   testBackupManifestCreateAndSerialize:      testBackupManifestCreateAndSerialize,
   testBackupManifestValidateRejectsBadFields: testBackupManifestValidateRejectsBadFields,

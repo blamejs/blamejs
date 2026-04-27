@@ -82,6 +82,7 @@ var vaultPassphraseOps = require("./lib/vault-passphrase-ops");
 var mtlsCa = require("./lib/mtls-ca");
 var backupCrypto = require("./lib/backup-crypto");
 var backupManifest = require("./lib/backup-manifest");
+var backupBundle = require("./lib/backup-bundle");
 
 module.exports = {
   crypto:           crypto,
@@ -146,6 +147,7 @@ module.exports = {
   mtlsCa:           mtlsCa,
   backupCrypto:     backupCrypto,
   backupManifest:   backupManifest,
+  backupBundle:     backupBundle,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
