@@ -3078,6 +3078,150 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- backup-crypto ----
+
+function testBackupCryptoSurface() {
+  check("b.backupCrypto namespace present",       typeof b.backupCrypto === "object");
+  check("deriveKey is a function",                typeof b.backupCrypto.deriveKey === "function");
+  check("encryptWithPassphrase is a function",    typeof b.backupCrypto.encryptWithPassphrase === "function");
+  check("decryptWithPassphrase is a function",    typeof b.backupCrypto.decryptWithPassphrase === "function");
+  check("encryptWithFreshSalt is a function",     typeof b.backupCrypto.encryptWithFreshSalt === "function");
+  check("checksum is a function",                 typeof b.backupCrypto.checksum === "function");
+  check("BackupCryptoError is a class",           typeof b.backupCrypto.BackupCryptoError === "function");
+  check("ARGON2_OPTS is frozen with type=2 (argon2id)",
+        b.backupCrypto.ARGON2_OPTS.type === 2 &&
+        Object.isFrozen(b.backupCrypto.ARGON2_OPTS));
+  check("SALT_BYTES is 32",                       b.backupCrypto.SALT_BYTES === 32);
+  check("NONCE_BYTES is 24",                      b.backupCrypto.NONCE_BYTES === 24);
+}
+
+async function testBackupCryptoDeriveKeyDeterministic() {
+  // Same passphrase + same salt → same key (across calls).
+  // Use a small salt for speed; argon2 with default opts is slow.
+  var salt = "0011223344556677889900112233445566778899001122334455667788990011";
+  var k1 = await b.backupCrypto.deriveKey(Buffer.from("hunter2"), salt);
+  var k2 = await b.backupCrypto.deriveKey(Buffer.from("hunter2"), salt);
+  check("deriveKey deterministic across calls",   Buffer.compare(k1, k2) === 0);
+  check("deriveKey produces 32-byte key",         k1.length === 32);
+
+  // Different passphrase → different key
+  var k3 = await b.backupCrypto.deriveKey(Buffer.from("different"), salt);
+  check("deriveKey differs on different passphrase", Buffer.compare(k1, k3) !== 0);
+}
+
+async function testBackupCryptoRoundTrip() {
+  var salt = "ff".repeat(32);
+  var passphrase = Buffer.from("correct horse battery staple");
+  var plain = Buffer.from("the secret data");
+  var enc = await b.backupCrypto.encryptWithPassphrase(plain, passphrase, salt);
+  check("encrypted length = nonce + ciphertext + 16-byte tag",
+        enc.length === b.backupCrypto.NONCE_BYTES + plain.length + 16);
+  var dec = await b.backupCrypto.decryptWithPassphrase(enc, passphrase, salt);
+  check("decrypt round-trip recovers plaintext bytes",
+        Buffer.compare(dec, plain) === 0);
+}
+
+async function testBackupCryptoStringPlaintext() {
+  // String plaintext should be UTF-8 encoded
+  var salt = "aa".repeat(32);
+  var passphrase = Buffer.from("p");
+  var enc = await b.backupCrypto.encryptWithPassphrase("hello — utf8 ñ", passphrase, salt);
+  var dec = await b.backupCrypto.decryptWithPassphrase(enc, passphrase, salt);
+  check("string plaintext round-trips as utf8",
+        dec.toString("utf8") === "hello — utf8 ñ");
+}
+
+async function testBackupCryptoWrongPassphraseFails() {
+  var salt = "11".repeat(32);
+  var enc = await b.backupCrypto.encryptWithPassphrase(
+    Buffer.from("data"), Buffer.from("right"), salt);
+  var threw = null;
+  try {
+    await b.backupCrypto.decryptWithPassphrase(enc, Buffer.from("wrong"), salt);
+  } catch (e) { threw = e; }
+  check("wrong passphrase surfaces decrypt-failed",
+        threw && threw.code === "backup-crypto/decrypt-failed");
+}
+
+async function testBackupCryptoTamperedCiphertextFails() {
+  var salt = "22".repeat(32);
+  var enc = await b.backupCrypto.encryptWithPassphrase(
+    Buffer.from("data"), Buffer.from("p"), salt);
+  // Flip one byte after the nonce
+  var tampered = Buffer.from(enc);
+  tampered[b.backupCrypto.NONCE_BYTES + 2] ^= 0x01;
+  var threw = null;
+  try { await b.backupCrypto.decryptWithPassphrase(tampered, Buffer.from("p"), salt); }
+  catch (e) { threw = e; }
+  check("tampered ciphertext surfaces decrypt-failed",
+        threw && threw.code === "backup-crypto/decrypt-failed");
+}
+
+async function testBackupCryptoFreshSaltUnique() {
+  // Two encryptWithFreshSalt calls produce DIFFERENT salts and
+  // DIFFERENT ciphertexts even with identical plaintext + passphrase.
+  var p = Buffer.from("p");
+  var r1 = await b.backupCrypto.encryptWithFreshSalt("x", p);
+  var r2 = await b.backupCrypto.encryptWithFreshSalt("x", p);
+  check("encryptWithFreshSalt: salts unique across calls",
+        r1.salt !== r2.salt);
+  check("encryptWithFreshSalt: ciphertexts unique across calls",
+        Buffer.compare(r1.encrypted, r2.encrypted) !== 0);
+  check("encryptWithFreshSalt: salt is 64 hex chars (32 bytes)",
+        r1.salt.length === 64 && /^[0-9a-f]{64}$/.test(r1.salt));
+
+  // Round-trip via the bundled salt
+  var dec = await b.backupCrypto.decryptWithPassphrase(r1.encrypted, p, r1.salt);
+  check("encryptWithFreshSalt + decrypt with bundled salt round-trips",
+        dec.toString("utf8") === "x");
+}
+
+function testBackupCryptoChecksumIsSha3_512() {
+  // SHA3-512 of "abc" is a known test vector (FIPS 202 Appendix B):
+  // "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e
+  //  10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0"
+  var v = b.backupCrypto.checksum("abc");
+  check("checksum('abc') matches SHA3-512 test vector",
+        v === "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0");
+
+  // Buffer input also accepted
+  var v2 = b.backupCrypto.checksum(Buffer.from("abc"));
+  check("checksum accepts Buffer input",          v2 === v);
+
+  var threw = null;
+  try { b.backupCrypto.checksum(123); } catch (e) { threw = e; }
+  check("checksum rejects non-Buffer/non-string", threw && threw.code === "backup-crypto/bad-input");
+}
+
+async function testBackupCryptoArgValidation() {
+  var threw;
+  threw = null; try { await b.backupCrypto.deriveKey("p", "not-hex"); } catch (e) { threw = e; }
+  check("deriveKey rejects non-hex salt",         threw && threw.code === "backup-crypto/bad-salt");
+
+  threw = null; try { await b.backupCrypto.deriveKey("p", "abc"); } catch (e) { threw = e; }
+  check("deriveKey rejects odd-length hex salt",  threw && threw.code === "backup-crypto/bad-salt");
+
+  threw = null; try { await b.backupCrypto.deriveKey("", "ab"); } catch (e) { threw = e; }
+  check("deriveKey rejects empty passphrase",     threw && threw.code === "backup-crypto/bad-passphrase");
+
+  threw = null; try { await b.backupCrypto.encryptWithPassphrase(123, "p", "ab"); } catch (e) { threw = e; }
+  check("encryptWithPassphrase rejects non-Buffer/non-string plaintext",
+        threw && threw.code === "backup-crypto/bad-plaintext");
+
+  threw = null; try { await b.backupCrypto.decryptWithPassphrase("not-a-buffer", "p", "ab"); } catch (e) { threw = e; }
+  check("decryptWithPassphrase rejects non-Buffer encrypted arg",
+        threw && threw.code === "backup-crypto/bad-input");
+
+  // Encrypted buffer too short to contain nonce + tag
+  threw = null;
+  try {
+    await b.backupCrypto.decryptWithPassphrase(
+      Buffer.from([1,2,3]), Buffer.from("p"), "ab".repeat(16));
+  } catch (e) { threw = e; }
+  check("decryptWithPassphrase rejects short buffers",
+        threw && threw.code === "backup-crypto/bad-input");
+}
+
 // ---- mtls-ca ----
 
 function _mtlsCaFixture() {
@@ -8655,6 +8799,16 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // backup-crypto — Argon2id KDF + XChaCha20-Poly1305 for backup files (Phase 7 slice 7)
+  testBackupCryptoSurface();
+  await testBackupCryptoDeriveKeyDeterministic();
+  await testBackupCryptoRoundTrip();
+  await testBackupCryptoStringPlaintext();
+  await testBackupCryptoWrongPassphraseFails();
+  await testBackupCryptoTamperedCiphertextFails();
+  await testBackupCryptoFreshSaltUnique();
+  testBackupCryptoChecksumIsSha3_512();
+  await testBackupCryptoArgValidation();
   // mtls-ca — CA file-management primitives + engine-pluggable issuance (Phase 7 slice 6)
   testMtlsCaSurface();
   testMtlsCaCreateValidation();
@@ -9015,6 +9169,15 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testBackupCryptoSurface:                   testBackupCryptoSurface,
+  testBackupCryptoDeriveKeyDeterministic:    testBackupCryptoDeriveKeyDeterministic,
+  testBackupCryptoRoundTrip:                 testBackupCryptoRoundTrip,
+  testBackupCryptoStringPlaintext:           testBackupCryptoStringPlaintext,
+  testBackupCryptoWrongPassphraseFails:      testBackupCryptoWrongPassphraseFails,
+  testBackupCryptoTamperedCiphertextFails:   testBackupCryptoTamperedCiphertextFails,
+  testBackupCryptoFreshSaltUnique:           testBackupCryptoFreshSaltUnique,
+  testBackupCryptoChecksumIsSha3_512:        testBackupCryptoChecksumIsSha3_512,
+  testBackupCryptoArgValidation:             testBackupCryptoArgValidation,
   testMtlsCaSurface:                         testMtlsCaSurface,
   testMtlsCaCreateValidation:                testMtlsCaCreateValidation,
   testMtlsCaParseGeneration:                 testMtlsCaParseGeneration,
