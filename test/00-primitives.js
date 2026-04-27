@@ -3078,6 +3078,210 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- vault-rotate (diagnostics) ----
+
+function _vaultRotateFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-vrot-"));
+  var dbPath = path.join(dir, "test.db");
+  var { DatabaseSync } = require("node:sqlite");
+  var db = new DatabaseSync(dbPath);
+  return {
+    dir: dir,
+    db:  db,
+    cleanup: function () {
+      try { db.close(); } catch (_e) {}
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+      // Each test resets the field-crypto registry so they don't leak
+      // table registrations into each other.
+      b.fieldCrypto.clearForTest();
+    },
+  };
+}
+
+// Build a real vault keypair for verify() round-trip tests. cryptoLib
+// is exposed via b.crypto.
+function _genKeys() { return b.crypto.generateEncryptionKeyPair(); }
+
+// Build a vault-prefixed value by encrypting plaintext with the
+// supplied keypair. Avoids needing vault.init for tests.
+function _seal(plaintext, keys) {
+  return b.constants.VAULT_PREFIX + b.crypto.encrypt(plaintext, keys);
+}
+
+function testVaultRotateSurface() {
+  check("b.vaultRotate namespace present",        typeof b.vaultRotate === "object");
+  check("validateSchemaMatch is a function",      typeof b.vaultRotate.validateSchemaMatch === "function");
+  check("formatValidationResult is a function",   typeof b.vaultRotate.formatValidationResult === "function");
+  check("verify is a function",                   typeof b.vaultRotate.verify === "function");
+  check("VaultRotateError is a class",            typeof b.vaultRotate.VaultRotateError === "function");
+}
+
+function testVaultRotateValidateSchemaCleanCase() {
+  var fx = _vaultRotateFixture();
+  try {
+    fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT, emailHash TEXT, createdAt TEXT)");
+    b.fieldCrypto.registerTable("users", {
+      sealedFields:  ["email"],
+      derivedHashes: { emailHash: { from: "email" } },
+    });
+    // Seed one row with a properly-sealed email
+    var keys = _genKeys();
+    fx.db.prepare("INSERT INTO users (_id, email, emailHash, createdAt) VALUES (?, ?, ?, ?)").run(
+      "u-1", _seal("a@b.com", keys), "hash-of-email", new Date().toISOString());
+
+    var r = b.vaultRotate.validateSchemaMatch(fx.db);
+    check("clean schema: 0 errors",                 r.errors.length === 0);
+    check("clean schema: 0 warnings",               r.warnings.length === 0);
+    check("formatValidationResult: OK",
+          /schema match: OK/.test(b.vaultRotate.formatValidationResult(r)));
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateValidateMissingTable() {
+  var fx = _vaultRotateFixture();
+  try {
+    // Schema declares 'users' but live DB has no such table
+    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+    var r = b.vaultRotate.validateSchemaMatch(fx.db, { tables: ["users"] });
+    check("missing table → warning",                r.warnings.length === 1);
+    check("warning kind = table_missing",           r.warnings[0].kind === "table_missing");
+    check("missing table is non-fatal (no errors)", r.errors.length === 0);
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateValidateSealedColMissing() {
+  var fx = _vaultRotateFixture();
+  try {
+    // Live table has no 'phone' column even though schema declares it sealed
+    fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
+    b.fieldCrypto.registerTable("users", { sealedFields: ["email", "phone"] });
+    var r = b.vaultRotate.validateSchemaMatch(fx.db);
+    var miss = r.warnings.find(function (w) { return w.kind === "sealed_col_missing"; });
+    check("sealed-col-missing surfaces as warning", miss && miss.column === "phone");
+    check("non-fatal: 0 errors",                    r.errors.length === 0);
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateValidateDriftDetection() {
+  var fx = _vaultRotateFixture();
+  try {
+    // 'secret' is NOT declared sealed in schema, but rows have a vault-prefixed value
+    fx.db.exec("CREATE TABLE rec (_id TEXT PRIMARY KEY, name TEXT, secret TEXT)");
+    b.fieldCrypto.registerTable("rec", { sealedFields: ["name"] });
+
+    var keys = _genKeys();
+    fx.db.prepare("INSERT INTO rec (_id, name, secret) VALUES (?, ?, ?)").run(
+      "r-1", _seal("Alice", keys), _seal("ssn-123-45-6789", keys));
+
+    var r = b.vaultRotate.validateSchemaMatch(fx.db);
+    var drift = r.errors.find(function (e) { return e.kind === "drift" && e.column === "secret"; });
+    check("drift detected on undeclared sealed column",
+          drift && drift.table === "rec" && drift.column === "secret");
+    check("formatValidationResult marks rotation refused",
+          /rotation refused/.test(b.vaultRotate.formatValidationResult(r)));
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateValidateInfraColumnsAllowlist() {
+  var fx = _vaultRotateFixture();
+  try {
+    // 'audit_meta' is a framework column that legitimately holds vault-prefixed
+    // values without being in sealedFields. Operator passes infraColumns.
+    fx.db.exec("CREATE TABLE _blamejs_audit (_id TEXT PRIMARY KEY, audit_meta TEXT)");
+    b.fieldCrypto.registerTable("_blamejs_audit", { sealedFields: [] });
+
+    var keys = _genKeys();
+    fx.db.prepare("INSERT INTO _blamejs_audit (_id, audit_meta) VALUES (?, ?)").run(
+      "a-1", _seal("framework-internal", keys));
+
+    var rNo = b.vaultRotate.validateSchemaMatch(fx.db);
+    check("without infraColumns: drift error raised",
+          rNo.errors.some(function (e) { return e.kind === "drift" && e.column === "audit_meta"; }));
+
+    var rWith = b.vaultRotate.validateSchemaMatch(fx.db, { infraColumns: ["audit_meta"] });
+    check("with infraColumns: drift error suppressed",
+          !rWith.errors.some(function (e) { return e.kind === "drift" && e.column === "audit_meta"; }));
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateVerifyRoundTrip() {
+  var fx = _vaultRotateFixture();
+  try {
+    var keys = _genKeys();
+    fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
+    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+    for (var i = 0; i < 10; i++) {
+      fx.db.prepare("INSERT INTO users (_id, email) VALUES (?, ?)").run(
+        "u-" + i, _seal("user" + i + "@b.com", keys));
+    }
+    var r = b.vaultRotate.verify({ keys: keys, db: fx.db });
+    check("verify ok with correct keys",            r.ok === true);
+    check("verify reports passed entries",          r.passed.length === 1 && r.passed[0].table === "users");
+    check("verify shows sampled rows verified",     r.passed[0].verified === r.passed[0].sampled);
+    check("verify: 0 failures",                      r.failures.length === 0);
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateVerifyDetectsTampering() {
+  var fx = _vaultRotateFixture();
+  try {
+    var keys     = _genKeys();
+    var wrongKeys = _genKeys();
+    fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
+    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+    for (var i = 0; i < 10; i++) {
+      fx.db.prepare("INSERT INTO users (_id, email) VALUES (?, ?)").run(
+        "u-" + i, _seal("user" + i + "@b.com", keys));
+    }
+    // Verifying with wrong keys → all rows fail to decrypt
+    var r = b.vaultRotate.verify({ keys: wrongKeys, db: fx.db, sampleMin: 10 });
+    check("verify with wrong keys: not ok",         r.ok === false);
+    check("verify with wrong keys: failures recorded",
+          r.failures.length > 0);
+    check("verify failure rows include table+column+_id",
+          r.failures[0].table === "users" && r.failures[0].column === "email" &&
+          typeof r.failures[0]._id === "string");
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateVerifyRegressionWithOldKeys() {
+  // Simulate a partial rotation: insert some rows under newKeys, others
+  // still under oldKeys. Verify with newKeys + oldKeys passed should
+  // record regressions for the unrotated rows.
+  var fx = _vaultRotateFixture();
+  try {
+    var oldKeys = _genKeys();
+    var newKeys = _genKeys();
+    fx.db.exec("CREATE TABLE users (_id TEXT PRIMARY KEY, email TEXT)");
+    b.fieldCrypto.registerTable("users", { sealedFields: ["email"] });
+
+    // 5 unrotated rows — still encrypted with oldKeys
+    for (var i = 0; i < 5; i++) {
+      fx.db.prepare("INSERT INTO users (_id, email) VALUES (?, ?)").run(
+        "old-" + i, _seal("user" + i + "@b.com", oldKeys));
+    }
+    // 5 rotated rows — encrypted with newKeys
+    for (var j = 0; j < 5; j++) {
+      fx.db.prepare("INSERT INTO users (_id, email) VALUES (?, ?)").run(
+        "new-" + j, _seal("user-new" + j + "@b.com", newKeys));
+    }
+    var r = b.vaultRotate.verify({ keys: newKeys, db: fx.db, oldKeys: oldKeys, sampleMin: 10 });
+    // The 5 old-rotation rows fail to decrypt with newKeys → failures
+    check("partial rotation: failures recorded for unrotated rows",
+          r.failures.length === 5);
+    check("ok=false because failures present",      r.ok === false);
+  } finally { fx.cleanup(); }
+}
+
+function testVaultRotateVerifyRequiresKeysAndDb() {
+  var threw;
+  threw = null; try { b.vaultRotate.verify({}); } catch (e) { threw = e; }
+  check("verify without keys throws",             threw && threw.code === "vault-rotate/no-keys");
+
+  threw = null; try { b.vaultRotate.verify({ keys: {} }); } catch (e) { threw = e; }
+  check("verify without db throws",               threw && threw.code === "vault-rotate/no-db");
+}
+
 // ---- pqc-agent ----
 
 function testPqcAgentSurface() {
@@ -7821,6 +8025,17 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // vault-rotate (diagnostics) — schema drift + round-trip verify (Phase 7 slice 3)
+  testVaultRotateSurface();
+  testVaultRotateValidateSchemaCleanCase();
+  testVaultRotateValidateMissingTable();
+  testVaultRotateValidateSealedColMissing();
+  testVaultRotateValidateDriftDetection();
+  testVaultRotateValidateInfraColumnsAllowlist();
+  testVaultRotateVerifyRoundTrip();
+  testVaultRotateVerifyDetectsTampering();
+  testVaultRotateVerifyRegressionWithOldKeys();
+  testVaultRotateVerifyRequiresKeysAndDb();
   // pqc-agent — outbound HTTPS agent locked to PQC group preference (Phase 7 slice 2)
   testPqcAgentSurface();
   testPqcAgentCreateHasPqcPosture();
@@ -8143,6 +8358,16 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testVaultRotateSurface:                    testVaultRotateSurface,
+  testVaultRotateValidateSchemaCleanCase:    testVaultRotateValidateSchemaCleanCase,
+  testVaultRotateValidateMissingTable:       testVaultRotateValidateMissingTable,
+  testVaultRotateValidateSealedColMissing:   testVaultRotateValidateSealedColMissing,
+  testVaultRotateValidateDriftDetection:     testVaultRotateValidateDriftDetection,
+  testVaultRotateValidateInfraColumnsAllowlist: testVaultRotateValidateInfraColumnsAllowlist,
+  testVaultRotateVerifyRoundTrip:            testVaultRotateVerifyRoundTrip,
+  testVaultRotateVerifyDetectsTampering:     testVaultRotateVerifyDetectsTampering,
+  testVaultRotateVerifyRegressionWithOldKeys: testVaultRotateVerifyRegressionWithOldKeys,
+  testVaultRotateVerifyRequiresKeysAndDb:    testVaultRotateVerifyRequiresKeysAndDb,
   testPqcAgentSurface:                       testPqcAgentSurface,
   testPqcAgentCreateHasPqcPosture:           testPqcAgentCreateHasPqcPosture,
   testPqcAgentCannotWeakenCryptoPosture:     testPqcAgentCannotWeakenCryptoPosture,
