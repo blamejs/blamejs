@@ -3078,6 +3078,279 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- mtls-ca ----
+
+function _mtlsCaFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtlsca-"));
+  return {
+    dir: dir,
+    cleanup: function () {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+  };
+}
+
+// Mock vault for sealed-mode tests — round-trip via base64 plus a
+// constant prefix marker. Honest enough for the file-handling tests
+// since the real vault-seal format is opaque to mtls-ca anyway.
+function _mockVault() {
+  var prefix = "mockseal:";
+  return {
+    seal:   function (s) { return prefix + Buffer.from(s).toString("base64"); },
+    unseal: function (s) {
+      if (typeof s !== "string" || s.indexOf(prefix) !== 0) return null;
+      return Buffer.from(s.substring(prefix.length), "base64").toString("utf8");
+    },
+  };
+}
+
+function testMtlsCaSurface() {
+  check("b.mtlsCa namespace present",            typeof b.mtlsCa === "object");
+  check("b.mtlsCa.create is a function",         typeof b.mtlsCa.create === "function");
+  check("b.mtlsCa.parseGeneration is a function", typeof b.mtlsCa.parseGeneration === "function");
+  check("b.mtlsCa.MtlsCaError is a class",       typeof b.mtlsCa.MtlsCaError === "function");
+  check("DEFAULT_PATHS exposes ca.key/ca.crt names",
+        b.mtlsCa.DEFAULT_PATHS.caKey === "ca.key" &&
+        b.mtlsCa.DEFAULT_PATHS.caCert === "ca.crt");
+}
+
+function testMtlsCaCreateValidation() {
+  var threw;
+  threw = null; try { b.mtlsCa.create({}); } catch (e) { threw = e; }
+  check("create rejects missing dataDir",         threw && threw.code === "mtls-ca/no-datadir");
+
+  threw = null;
+  try { b.mtlsCa.create({ dataDir: "/tmp/x", caKeySealedMode: "loud" }); } catch (e) { threw = e; }
+  check("create rejects bad caKeySealedMode",     threw && threw.code === "mtls-ca/bad-mode");
+}
+
+function testMtlsCaParseGeneration() {
+  check("parseGeneration empty → 0",              b.mtlsCa.parseGeneration("") === 0);
+  check("parseGeneration null → 0",               b.mtlsCa.parseGeneration(null) === 0);
+  check("parseGeneration non-PEM → 0",            b.mtlsCa.parseGeneration("not a cert") === 0);
+  check("parseGeneration malformed PEM → 0",
+        b.mtlsCa.parseGeneration("-----BEGIN CERTIFICATE-----\nINVALID\n-----END CERTIFICATE-----") === 0);
+}
+
+function testMtlsCaExistsAndStatusWhenAbsent() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({ dataDir: fx.dir });
+    check("keyExists false on empty dir",          ca.keyExists() === false);
+    check("exists false on empty dir",             ca.exists() === false);
+    var s = ca.status();
+    check("status: exists=false",                  s.exists === false);
+    check("status: generation=0",                  s.generation === 0);
+    check("status: current=create's generation",   s.current === 1);
+    check("status: isLegacy=false (no CA → no legacy concern)",
+          s.isLegacy === false);
+  } finally { fx.cleanup(); }
+}
+
+function testMtlsCaLoadFailures() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({ dataDir: fx.dir });
+    var threw;
+    threw = null; try { ca.loadKey(); } catch (e) { threw = e; }
+    check("loadKey on empty dir throws missing-key",
+          threw && threw.code === "mtls-ca/missing-key");
+
+    threw = null; try { ca.loadCert(); } catch (e) { threw = e; }
+    check("loadCert on empty dir throws missing-cert",
+          threw && threw.code === "mtls-ca/missing-cert");
+  } finally { fx.cleanup(); }
+}
+
+function testMtlsCaCommitAndLoadPlaintext() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "disabled" });
+    var keyPem  = "-----BEGIN PRIVATE KEY-----\nFAKE-CA-KEY-BYTES\n-----END PRIVATE KEY-----\n";
+    var certPem = "-----BEGIN CERTIFICATE-----\nFAKE-CA-CERT-BYTES\n-----END CERTIFICATE-----\n";
+
+    var r = ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
+    check("commit returned keyPath ending in ca.key",  /ca\.key$/.test(r.keyPath));
+    check("commit returned certPath ending in ca.crt", /ca\.crt$/.test(r.certPath));
+    check("commit sealed=false in 'disabled' mode",     r.sealed === false);
+    check("ca.key file exists post-commit",             fs.existsSync(path.join(fx.dir, "ca.key")));
+    check("ca.crt file exists post-commit",             fs.existsSync(path.join(fx.dir, "ca.crt")));
+    check("no .tmp files leftover",
+          !fs.existsSync(path.join(fx.dir, "ca.key.tmp")) &&
+          !fs.existsSync(path.join(fx.dir, "ca.crt.tmp")));
+
+    var loadedKey  = ca.loadKey().toString("utf8");
+    var loadedCert = ca.loadCert().toString("utf8");
+    check("loadKey returns committed PEM",              loadedKey  === keyPem);
+    check("loadCert returns committed PEM",             loadedCert === certPem);
+
+    check("exists=true after commit",                   ca.exists() === true);
+  } finally { fx.cleanup(); }
+}
+
+function testMtlsCaSealedRequiredMode() {
+  var fx = _mtlsCaFixture();
+  try {
+    var v = _mockVault();
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "required", vault: v });
+    var keyPem  = "-----BEGIN PRIVATE KEY-----\nSEALED-KEY\n-----END PRIVATE KEY-----\n";
+    var certPem = "-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----\n";
+
+    var r = ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
+    check("required mode: sealed=true",                r.sealed === true);
+    check("required mode: keyPath ends in ca.key.sealed",
+          /ca\.key\.sealed$/.test(r.keyPath));
+    // Plaintext key file must NOT be created
+    check("required mode: ca.key NOT written",
+          !fs.existsSync(path.join(fx.dir, "ca.key")));
+    check("required mode: ca.key.sealed written",
+          fs.existsSync(path.join(fx.dir, "ca.key.sealed")));
+
+    // Round-trip: loadKey unseals via vault
+    var loaded = ca.loadKey().toString("utf8");
+    check("required mode: loadKey returns unsealed PEM bytes", loaded === keyPem);
+
+    // Without vault, sealed-required mode rejects
+    var caNoVault = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "required" });
+    var threw = null;
+    try { caNoVault.loadKey(); } catch (e) { threw = e; }
+    check("required mode without vault: load throws no-vault",
+          threw && threw.code === "mtls-ca/no-vault");
+  } finally { fx.cleanup(); }
+}
+
+function testMtlsCaSealedDisabledRefusesSealedFile() {
+  var fx = _mtlsCaFixture();
+  try {
+    // Pre-place a sealed file but caKeySealedMode='disabled'
+    fs.writeFileSync(path.join(fx.dir, "ca.key.sealed"), "mockseal:abc");
+    fs.writeFileSync(path.join(fx.dir, "ca.crt"), "cert");
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "disabled" });
+    var threw = null;
+    try { ca.loadKey(); } catch (e) { threw = e; }
+    check("disabled mode: refuses to load with no plaintext key",
+          threw && threw.code === "mtls-ca/plain-required");
+  } finally { fx.cleanup(); }
+}
+
+function testMtlsCaSealedRequiredRefusesPlaintextFile() {
+  var fx = _mtlsCaFixture();
+  try {
+    fs.writeFileSync(path.join(fx.dir, "ca.key"), "plain-key");
+    fs.writeFileSync(path.join(fx.dir, "ca.crt"), "cert");
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "required", vault: _mockVault() });
+    var threw = null;
+    try { ca.loadKey(); } catch (e) { threw = e; }
+    check("required mode: refuses to load when only plaintext present",
+          threw && threw.code === "mtls-ca/sealed-required");
+  } finally { fx.cleanup(); }
+}
+
+function testMtlsCaIssuanceRequiresEngine() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({ dataDir: fx.dir });
+    var threw;
+    threw = null;
+    ca.initCA().catch(function (e) { threw = e; }).then(function () {
+      check("initCA without engine throws no-engine",
+            threw && threw.code === "mtls-ca/no-engine");
+    });
+    return ca.initCA().then(
+      function () { check("initCA without engine should have rejected", false); },
+      function (e) {
+        check("initCA without engine throws no-engine",
+              e && e.code === "mtls-ca/no-engine" &&
+              /vendored/.test(e.message));
+      }
+    );
+  } finally { fx.cleanup(); }
+}
+
+async function testMtlsCaInitCaWithEngineGeneratesAndCommits() {
+  var fx = _mtlsCaFixture();
+  try {
+    var generated = false;
+    var engine = {
+      generateCa: async function (opts) {
+        generated = true;
+        return {
+          caCertPem: "-----BEGIN CERTIFICATE-----\nENGINE-CA-CERT-gen=" + opts.generation +
+            "\n-----END CERTIFICATE-----\n",
+          caKeyPem:  "-----BEGIN PRIVATE KEY-----\nENGINE-CA-KEY\n-----END PRIVATE KEY-----\n",
+        };
+      },
+    };
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, generation: 2, engine: engine });
+    var first = await ca.initCA();
+    check("first initCA called engine.generateCa",      generated === true);
+    check("first initCA returned engine output",        /ENGINE-CA-CERT-gen=2/.test(first.caCertPem));
+    check("first initCA wrote ca.key",                  fs.existsSync(path.join(fx.dir, "ca.key")));
+    check("first initCA wrote ca.crt",                  fs.existsSync(path.join(fx.dir, "ca.crt")));
+
+    // Second call should NOT regenerate — existing CA is returned
+    generated = false;
+    var second = await ca.initCA();
+    check("second initCA reused existing CA (no regen)", generated === false);
+    check("second initCA returned same cert",            second.caCertPem === first.caCertPem);
+  } finally { fx.cleanup(); }
+}
+
+async function testMtlsCaInitCaRejectsBadEngineOutput() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({
+      dataDir: fx.dir,
+      engine: { generateCa: async function () { return { caCertPem: "ok" /* missing key */ }; } },
+    });
+    var threw = null;
+    try { await ca.initCA(); } catch (e) { threw = e; }
+    check("initCA rejects engine output missing caKeyPem",
+          threw && threw.code === "mtls-ca/bad-engine-output");
+  } finally { fx.cleanup(); }
+}
+
+async function testMtlsCaGenerateClientCertDelegates() {
+  var fx = _mtlsCaFixture();
+  try {
+    var seenArgs = null;
+    var engine = {
+      generateCa: async function () {
+        return {
+          caCertPem: "-----BEGIN CERTIFICATE-----\nENGINE-CA\n-----END CERTIFICATE-----\n",
+          caKeyPem:  "-----BEGIN PRIVATE KEY-----\nENGINE-KEY\n-----END PRIVATE KEY-----\n",
+        };
+      },
+      signClientCert: async function (args) {
+        seenArgs = args;
+        return {
+          cert:      "-----BEGIN CERTIFICATE-----\nCLIENT-CERT-cn=" + args.cn + "\n-----END CERTIFICATE-----\n",
+          key:       "-----BEGIN PRIVATE KEY-----\nCLIENT-KEY\n-----END PRIVATE KEY-----\n",
+          ca:        args.caCertPem,
+          issuedAt:  "now", expiresAt: "later",
+        };
+      },
+    };
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, engine: engine });
+    var client = await ca.generateClientCert({ cn: "alice", validityDays: 90 });
+    check("signClientCert called with cn forwarded",   seenArgs && seenArgs.cn === "alice");
+    check("signClientCert received caCertPem",          /ENGINE-CA/.test(seenArgs.caCertPem));
+    check("signClientCert received caKeyPem",           /ENGINE-KEY/.test(seenArgs.caKeyPem));
+    check("client cert returned with cn embedded",      /cn=alice/.test(client.cert));
+  } finally { fx.cleanup(); }
+}
+
+async function testMtlsCaGenerateClientP12Validation() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, engine: { generateCa: async function () { return { caCertPem: "x", caKeyPem: "y" }; } } });
+    var threw = null;
+    try { await ca.generateClientP12({ cn: "alice" }); } catch (e) { threw = e; }
+    check("generateClientP12 without password rejected",
+          threw && threw.code === "mtls-ca/no-password");
+  } finally { fx.cleanup(); }
+}
+
 // ---- vault-passphrase-ops ----
 //
 // Real on-disk fixtures because the primitive's whole job is filesystem
@@ -8382,6 +8655,21 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // mtls-ca — CA file-management primitives + engine-pluggable issuance (Phase 7 slice 6)
+  testMtlsCaSurface();
+  testMtlsCaCreateValidation();
+  testMtlsCaParseGeneration();
+  testMtlsCaExistsAndStatusWhenAbsent();
+  testMtlsCaLoadFailures();
+  testMtlsCaCommitAndLoadPlaintext();
+  testMtlsCaSealedRequiredMode();
+  testMtlsCaSealedDisabledRefusesSealedFile();
+  testMtlsCaSealedRequiredRefusesPlaintextFile();
+  await testMtlsCaIssuanceRequiresEngine();
+  await testMtlsCaInitCaWithEngineGeneratesAndCommits();
+  await testMtlsCaInitCaRejectsBadEngineOutput();
+  await testMtlsCaGenerateClientCertDelegates();
+  await testMtlsCaGenerateClientP12Validation();
   // vault-passphrase-ops — seal / unseal / rotate the vault passphrase wrap (Phase 7 slice 5)
   testVaultPassphraseOpsSurface();
   testVaultPassphraseOpsPreflightChecks();
@@ -8727,6 +9015,20 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testMtlsCaSurface:                         testMtlsCaSurface,
+  testMtlsCaCreateValidation:                testMtlsCaCreateValidation,
+  testMtlsCaParseGeneration:                 testMtlsCaParseGeneration,
+  testMtlsCaExistsAndStatusWhenAbsent:       testMtlsCaExistsAndStatusWhenAbsent,
+  testMtlsCaLoadFailures:                    testMtlsCaLoadFailures,
+  testMtlsCaCommitAndLoadPlaintext:          testMtlsCaCommitAndLoadPlaintext,
+  testMtlsCaSealedRequiredMode:              testMtlsCaSealedRequiredMode,
+  testMtlsCaSealedDisabledRefusesSealedFile: testMtlsCaSealedDisabledRefusesSealedFile,
+  testMtlsCaSealedRequiredRefusesPlaintextFile: testMtlsCaSealedRequiredRefusesPlaintextFile,
+  testMtlsCaIssuanceRequiresEngine:          testMtlsCaIssuanceRequiresEngine,
+  testMtlsCaInitCaWithEngineGeneratesAndCommits: testMtlsCaInitCaWithEngineGeneratesAndCommits,
+  testMtlsCaInitCaRejectsBadEngineOutput:    testMtlsCaInitCaRejectsBadEngineOutput,
+  testMtlsCaGenerateClientCertDelegates:     testMtlsCaGenerateClientCertDelegates,
+  testMtlsCaGenerateClientP12Validation:     testMtlsCaGenerateClientP12Validation,
   testVaultPassphraseOpsSurface:             testVaultPassphraseOpsSurface,
   testVaultPassphraseOpsPreflightChecks:     testVaultPassphraseOpsPreflightChecks,
   testVaultPassphraseOpsSealUnsealRoundTrip: testVaultPassphraseOpsSealUnsealRoundTrip,

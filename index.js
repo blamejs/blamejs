@@ -79,6 +79,7 @@ var pqcGate = require("./lib/pqc-gate");
 var pqcAgent = require("./lib/pqc-agent");
 var vaultRotate = require("./lib/vault-rotate");
 var vaultPassphraseOps = require("./lib/vault-passphrase-ops");
+var mtlsCa = require("./lib/mtls-ca");
 
 module.exports = {
   crypto:           crypto,
@@ -140,6 +141,7 @@ module.exports = {
   pqcAgent:         pqcAgent,
   vaultRotate:      vaultRotate,
   vaultPassphraseOps: vaultPassphraseOps,
+  mtlsCa:           mtlsCa,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,
