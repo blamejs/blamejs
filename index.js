@@ -90,6 +90,7 @@ var restore = require("./lib/restore");
 var deprecate = require("./lib/deprecate");
 var apiSnapshot = require("./lib/api-snapshot");
 var auditTools = require("./lib/audit-tools");
+var events = require("./lib/events");
 
 module.exports = {
   crypto:           crypto,
@@ -104,6 +105,7 @@ module.exports = {
   auditChain:       auditChain,
   auditSign:        auditSign,
   auditTools:       auditTools,
+  events:           events,
   consent:          consent,
   subject:          subject,
   session:          session,
