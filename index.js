@@ -68,6 +68,7 @@ var app = require("./lib/app");
 var jobs = require("./lib/jobs");
 var mail = require("./lib/mail");
 var scheduler = require("./lib/scheduler");
+var log = require("./lib/log");
 
 module.exports = {
   crypto:           crypto,
@@ -118,6 +119,7 @@ module.exports = {
   jobs:             jobs,
   mail:             mail,
   scheduler:        scheduler,
+  log:              log,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

@@ -3078,6 +3078,226 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- log ----
+//
+// Each test creates an instance with a captured-buffer destination so
+// the global log stream stays clean and assertions are deterministic.
+
+function _makeCapturingLog(extraOpts) {
+  var captured = { stdout: [], stderr: [] };
+  var log = b.log.create(Object.assign({
+    destination:      { write: function (line) { captured.stdout.push(line); } },
+    errorDestination: { write: function (line) { captured.stderr.push(line); } },
+    base:             {},
+    redact:           false, // tests bypass redaction unless they opt in
+  }, extraOpts || {}));
+  return { log: log, captured: captured };
+}
+
+function _parseLines(arr) { return arr.map(function (l) { return JSON.parse(l); }); }
+
+function testLogSurface() {
+  check("b.log namespace present",                typeof b.log === "object");
+  check("b.log.create is a function",             typeof b.log.create === "function");
+  check("b.log.LogError is a class",              typeof b.log.LogError === "function");
+  check("b.log.LEVELS exposes 5 levels",
+        b.log.LEVELS.debug === 0 && b.log.LEVELS.fatal === 4);
+  check("b.log.getRequestId is a function",       typeof b.log.getRequestId === "function");
+  check("b.log.runWithRequestId is a function",   typeof b.log.runWithRequestId === "function");
+}
+
+function testLogEmitsJsonLineToStdout() {
+  var t = _makeCapturingLog();
+  t.log.info("user logged in", { userId: "u-1" });
+  check("info writes one line to stdout",           t.captured.stdout.length === 1);
+  check("info does not touch stderr",               t.captured.stderr.length === 0);
+  var entry = JSON.parse(t.captured.stdout[0]);
+  check("entry has level=info",                     entry.level === "info");
+  check("entry has message",                        entry.message === "user logged in");
+  check("entry has timestamp ISO-8601",
+        typeof entry.timestamp === "string" &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(entry.timestamp));
+  check("entry merged extras",                      entry.userId === "u-1");
+  check("line ends with newline",                   /\n$/.test(t.captured.stdout[0]));
+}
+
+function testLogRoutesErrorAndFatalToStderr() {
+  var t = _makeCapturingLog();
+  t.log.warn("approaching limit");
+  t.log.error("payment failed");
+  t.log.fatal("oom");
+  var stdout = _parseLines(t.captured.stdout);
+  var stderr = _parseLines(t.captured.stderr);
+  check("warn routes to stdout",                    stdout.length === 1 && stdout[0].level === "warn");
+  check("error routes to stderr",                   stderr.length === 2);
+  check("fatal routes to stderr",                   stderr[1].level === "fatal");
+}
+
+function testLogLevelGate() {
+  var t = _makeCapturingLog({ level: "warn" });
+  t.log.debug("d");
+  t.log.info("i");
+  t.log.warn("w");
+  t.log.error("e");
+  check("level=warn drops debug",                   t.captured.stdout.every(function (l) { return JSON.parse(l).level !== "debug"; }));
+  check("level=warn drops info",                    t.captured.stdout.every(function (l) { return JSON.parse(l).level !== "info"; }));
+  check("level=warn keeps warn",                    _parseLines(t.captured.stdout).filter(function (e) { return e.level === "warn"; }).length === 1);
+  check("level=warn keeps error",                   _parseLines(t.captured.stderr).filter(function (e) { return e.level === "error"; }).length === 1);
+  check("isLevelEnabled('warn') = true",            t.log.isLevelEnabled("warn") === true);
+  check("isLevelEnabled('info') = false",           t.log.isLevelEnabled("info") === false);
+
+  // Dynamic level change
+  t.log.setLevel("debug");
+  check("getLevel reflects setLevel",               t.log.getLevel() === "debug");
+  t.captured.stdout.length = 0;
+  t.log.debug("now-allowed");
+  check("setLevel('debug') unblocks debug emits",   t.captured.stdout.length === 1);
+}
+
+function testLogBindAddsBoundContext() {
+  var t = _makeCapturingLog({ base: { service: "myapp" } });
+  var auth = t.log.bind({ component: "auth" });
+  var detail = auth.bind({ subcomponent: "totp" });
+
+  t.log.info("root msg");
+  auth.info("auth msg");
+  detail.info("detail msg", { extra: "x" });
+
+  var lines = _parseLines(t.captured.stdout);
+  check("root has base context",                    lines[0].service === "myapp" && lines[0].component === undefined);
+  check("auth child adds component",                lines[1].component === "auth" && lines[1].service === "myapp");
+  check("nested child preserves ancestor context",
+        lines[2].component === "auth" && lines[2].subcomponent === "totp" && lines[2].service === "myapp");
+  check("nested child still merges extras",         lines[2].extra === "x");
+
+  // bind validation
+  var threw = null;
+  try { t.log.bind(null); } catch (e) { threw = e; }
+  check("bind(null) rejects",                       threw && threw.code === "log/bad-bind");
+}
+
+function testLogCoreFieldsCannotBeOverwritten() {
+  var t = _makeCapturingLog();
+  t.log.info("hi", { level: "STOLEN", message: "STOLEN", timestamp: "STOLEN", userId: "u-1" });
+  var entry = JSON.parse(t.captured.stdout[0]);
+  check("extras cannot overwrite level",            entry.level === "info");
+  check("extras cannot overwrite message",          entry.message === "hi");
+  check("extras cannot overwrite timestamp",        entry.timestamp !== "STOLEN");
+  check("non-core extras still merged",             entry.userId === "u-1");
+  check("clobber attempt flagged",                  entry._overwriteAttempt === true);
+}
+
+async function testLogRequestIdViaAls() {
+  var t = _makeCapturingLog();
+  await t.log.runWithRequestId("req-abc", async function () {
+    t.log.info("inside");
+    check("getRequestId returns bound id",          t.log.getRequestId() === "req-abc");
+    await new Promise(function (r) { setImmediate(r); });
+    t.log.info("after-microtask");
+  });
+  t.log.info("outside");
+  var lines = _parseLines(t.captured.stdout);
+  check("inside-request line carries requestId",     lines[0].requestId === "req-abc");
+  check("requestId persists across microtask",       lines[1].requestId === "req-abc");
+  check("outside-request line has no requestId",     lines[2].requestId === undefined);
+}
+
+async function testLogMiddlewareSetsRequestId() {
+  var t = _makeCapturingLog();
+  var mw = t.log.middleware();
+
+  // Simulate a request without an inbound X-Request-Id — middleware
+  // generates one and binds it for the entire request callback.
+  var setHeaderCalls = [];
+  var req1 = { headers: {} };
+  var res1 = { setHeader: function (k, v) { setHeaderCalls.push([k, v]); } };
+  var calledNext1 = false;
+  await new Promise(function (resolve) {
+    mw(req1, res1, function () {
+      calledNext1 = true;
+      t.log.info("during req1");
+      resolve();
+    });
+  });
+  check("middleware called next",                   calledNext1);
+  check("middleware set req.id",                    typeof req1.id === "string" && req1.id.length === 16);
+  check("middleware set X-Request-Id header",
+        setHeaderCalls.length === 1 && setHeaderCalls[0][0] === "X-Request-Id" && setHeaderCalls[0][1] === req1.id);
+  var entry1 = JSON.parse(t.captured.stdout[0]);
+  check("log line during request carries requestId", entry1.requestId === req1.id);
+
+  // Inbound X-Request-Id header is honored
+  t.captured.stdout.length = 0;
+  var req2 = { headers: { "x-request-id": "client-supplied-id" } };
+  var res2 = { setHeader: function () {} };
+  await new Promise(function (resolve) {
+    mw(req2, res2, function () { t.log.info("during req2"); resolve(); });
+  });
+  check("middleware honors inbound x-request-id",   req2.id === "client-supplied-id");
+  var entry2 = JSON.parse(t.captured.stdout[0]);
+  check("inbound id propagates to log line",        entry2.requestId === "client-supplied-id");
+
+  // CRLF in inbound header is stripped (header injection defense)
+  t.captured.stdout.length = 0;
+  var req3 = { headers: { "x-request-id": "ev\r\nil" } };
+  var res3 = { setHeader: function () {} };
+  await new Promise(function (resolve) {
+    mw(req3, res3, function () { t.log.info("during req3"); resolve(); });
+  });
+  check("middleware strips CRLF from inbound id",   req3.id === "evil");
+}
+
+function testLogRedactsExtras() {
+  var t = _makeCapturingLog({ redact: true });
+  t.log.info("login", {
+    userId:   "u-1",
+    password: "should-be-hidden",
+    token:    "should-be-hidden",
+  });
+  var entry = JSON.parse(t.captured.stdout[0]);
+  check("redact masks password field",              entry.password === "[REDACTED]");
+  check("redact masks token field",                 entry.token === "[REDACTED]");
+  check("redact preserves non-sensitive field",     entry.userId === "u-1");
+}
+
+function testLogEnvLevelOverride() {
+  // When LOG_LEVEL is set, it overrides opts.level. Restore after.
+  var prev = process.env.LOG_LEVEL;
+  process.env.LOG_LEVEL = "error";
+  try {
+    var t = _makeCapturingLog({ level: "debug" });
+    t.log.info("dropped");
+    t.log.error("kept");
+    check("env LOG_LEVEL beats opts.level",
+          t.captured.stdout.length === 0 &&
+          t.captured.stderr.length === 1);
+  } finally {
+    if (prev === undefined) delete process.env.LOG_LEVEL;
+    else process.env.LOG_LEVEL = prev;
+  }
+}
+
+function testLogConfigValidation() {
+  var threw;
+  threw = null; try { b.log.create({ level: "loud" }); } catch (e) { threw = e; }
+  check("bad level rejects",                        threw && threw.code === "log/bad-level");
+  threw = null; try { b.log.create({ level: 99 }); } catch (e) { threw = e; }
+  check("numeric level out of range rejects",       threw && threw.code === "log/bad-level");
+  threw = null; try { b.log.create({ format: "logfmt" }); } catch (e) { threw = e; }
+  check("unsupported format rejects",               threw && threw.code === "log/bad-format");
+  threw = null; try { b.log.create({ destination: 42 }); } catch (e) { threw = e; }
+  check("non-stream destination rejects",           threw && threw.code === "log/bad-destination");
+}
+
+function testLogHandlesUnserializableExtras() {
+  var t = _makeCapturingLog();
+  var circular = {}; circular.self = circular;
+  t.log.info("trouble", { circular: circular });
+  var entry = JSON.parse(t.captured.stdout[0]);
+  check("circular extras surface as _logError",     entry._logError === "extras not serializable");
+  check("core fields still emitted",                entry.message === "trouble" && entry.level === "info");
+}
+
 // ---- scheduler ----
 
 function testSchedulerSurface() {
@@ -5927,6 +6147,19 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // log — structured JSON logging with request-id correlation (Phase 6 slice 1)
+  testLogSurface();
+  testLogEmitsJsonLineToStdout();
+  testLogRoutesErrorAndFatalToStderr();
+  testLogLevelGate();
+  testLogBindAddsBoundContext();
+  testLogCoreFieldsCannotBeOverwritten();
+  await testLogRequestIdViaAls();
+  await testLogMiddlewareSetsRequestId();
+  testLogRedactsExtras();
+  testLogEnvLevelOverride();
+  testLogConfigValidation();
+  testLogHandlesUnserializableExtras();
   // scheduler — cron + interval over jobs (Phase 5 slice 5)
   testSchedulerSurface();
   testSchedulerCronParser();
@@ -6169,6 +6402,18 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testLogSurface:                            testLogSurface,
+  testLogEmitsJsonLineToStdout:              testLogEmitsJsonLineToStdout,
+  testLogRoutesErrorAndFatalToStderr:        testLogRoutesErrorAndFatalToStderr,
+  testLogLevelGate:                          testLogLevelGate,
+  testLogBindAddsBoundContext:               testLogBindAddsBoundContext,
+  testLogCoreFieldsCannotBeOverwritten:      testLogCoreFieldsCannotBeOverwritten,
+  testLogRequestIdViaAls:                    testLogRequestIdViaAls,
+  testLogMiddlewareSetsRequestId:            testLogMiddlewareSetsRequestId,
+  testLogRedactsExtras:                      testLogRedactsExtras,
+  testLogEnvLevelOverride:                   testLogEnvLevelOverride,
+  testLogConfigValidation:                   testLogConfigValidation,
+  testLogHandlesUnserializableExtras:        testLogHandlesUnserializableExtras,
   testSchedulerSurface:                      testSchedulerSurface,
   testSchedulerCronParser:                   testSchedulerCronParser,
   testSchedulerNextCronFire:                 testSchedulerNextCronFire,
