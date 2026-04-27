@@ -81,6 +81,7 @@ var vaultRotate = require("./lib/vault-rotate");
 var vaultPassphraseOps = require("./lib/vault-passphrase-ops");
 var mtlsCa = require("./lib/mtls-ca");
 var backupCrypto = require("./lib/backup-crypto");
+var backupManifest = require("./lib/backup-manifest");
 
 module.exports = {
   crypto:           crypto,
@@ -144,6 +145,7 @@ module.exports = {
   vaultPassphraseOps: vaultPassphraseOps,
   mtlsCa:           mtlsCa,
   backupCrypto:     backupCrypto,
+  backupManifest:   backupManifest,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

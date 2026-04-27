@@ -3078,6 +3078,194 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- backup-manifest ----
+
+function _validFileEntry(over) {
+  return Object.assign({
+    relativePath:  "db.enc",
+    encryptedPath: "files/db.enc.bin",
+    size:          12345,
+    encryptedSize: 12369,
+    checksum:      "a".repeat(128),     // sha3-512 hex
+    salt:          "ff".repeat(32),
+    kind:          "raw",
+  }, over || {});
+}
+
+function _validManifestArgs() {
+  return {
+    vaultKeySalt: "11".repeat(32),
+    vaultKeyEnc:  Buffer.from("fakekey").toString("base64"),
+    files:        [_validFileEntry()],
+    metadata:     { reason: "test" },
+  };
+}
+
+function testBackupManifestSurface() {
+  check("b.backupManifest namespace present",     typeof b.backupManifest === "object");
+  check("create is a function",                   typeof b.backupManifest.create === "function");
+  check("validate is a function",                 typeof b.backupManifest.validate === "function");
+  check("serialize is a function",                typeof b.backupManifest.serialize === "function");
+  check("parse is a function",                    typeof b.backupManifest.parse === "function");
+  check("FORMAT_VERSION = 1",                     b.backupManifest.FORMAT_VERSION === 1);
+  check("FRAMEWORK_NAME = blamejs",               b.backupManifest.FRAMEWORK_NAME === "blamejs");
+  check("VALID_KINDS includes raw/vault-sealed/plaintext",
+        b.backupManifest.VALID_KINDS["raw"] === 1 &&
+        b.backupManifest.VALID_KINDS["vault-sealed"] === 1 &&
+        b.backupManifest.VALID_KINDS["plaintext"] === 1);
+}
+
+function testBackupManifestCreateAndSerialize() {
+  var m = b.backupManifest.create(_validManifestArgs());
+  check("create assigns version 1",               m.version === 1);
+  check("create assigns framework=blamejs",       m.framework === "blamejs");
+  check("create assigns frameworkVersion from constants",
+        typeof m.frameworkVersion === "string" && m.frameworkVersion === b.constants.version);
+  check("create assigns ISO createdAt",           /^\d{4}-\d{2}-\d{2}T/.test(m.createdAt));
+  check("create copies metadata",                 m.metadata && m.metadata.reason === "test");
+  check("create files length matches input",      m.files.length === 1);
+
+  var s = b.backupManifest.serialize(m);
+  check("serialize returns string",               typeof s === "string");
+  check("serialize ends with newline",            s.charAt(s.length - 1) === "\n");
+  // Round-trip via parse
+  var parsed = b.backupManifest.parse(s);
+  check("parse + serialize round-trips key fields",
+        parsed.version === m.version &&
+        parsed.framework === m.framework &&
+        parsed.frameworkVersion === m.frameworkVersion &&
+        parsed.files.length === 1 &&
+        parsed.files[0].relativePath === "db.enc");
+}
+
+function testBackupManifestValidateRejectsBadFields() {
+  var bad;
+
+  // Missing version
+  bad = _validManifestArgs();
+  delete bad.vaultKeySalt;
+  var threw = null;
+  try { b.backupManifest.create(bad); } catch (e) { threw = e; }
+  check("create without vaultKeySalt rejected",   threw && threw.code === "backup-manifest/invalid");
+
+  // Bad checksum length
+  var m = b.backupManifest.create(_validManifestArgs());
+  m.files[0].checksum = "short";
+  var v = b.backupManifest.validate(m);
+  check("validate flags short checksum",          v.ok === false &&
+        v.errors.some(function (e) { return /checksum/.test(e); }));
+
+  // Path traversal
+  m = b.backupManifest.create(_validManifestArgs());
+  m.files[0].relativePath = "../escape";
+  v = b.backupManifest.validate(m);
+  check("validate flags '..' in relativePath",    v.ok === false &&
+        v.errors.some(function (e) { return /relativePath/.test(e) && /\.\./.test(e); }));
+
+  // Leading separator
+  m = b.backupManifest.create(_validManifestArgs());
+  m.files[0].relativePath = "/abs";
+  v = b.backupManifest.validate(m);
+  check("validate flags absolute relativePath",   v.ok === false);
+
+  // Bad kind
+  m = b.backupManifest.create(_validManifestArgs());
+  m.files[0].kind = "wat";
+  v = b.backupManifest.validate(m);
+  check("validate flags unknown kind",            v.ok === false &&
+        v.errors.some(function (e) { return /kind/.test(e); }));
+
+  // Negative size
+  m = b.backupManifest.create(_validManifestArgs());
+  m.files[0].size = -1;
+  v = b.backupManifest.validate(m);
+  check("validate flags negative size",           v.ok === false);
+
+  // Non-base64 vaultKeyEnc
+  m = b.backupManifest.create(_validManifestArgs());
+  m.vaultKeyEnc = "not base64 !@#$";
+  v = b.backupManifest.validate(m);
+  check("validate flags non-base64 vaultKeyEnc",  v.ok === false);
+
+  // Bad ISO createdAt
+  m = b.backupManifest.create(_validManifestArgs());
+  m.createdAt = "yesterday";
+  v = b.backupManifest.validate(m);
+  check("validate flags non-ISO createdAt",       v.ok === false);
+
+  // Wrong format version
+  m = b.backupManifest.create(_validManifestArgs());
+  m.version = 2;
+  v = b.backupManifest.validate(m);
+  check("validate flags wrong version",           v.ok === false);
+
+  // Wrong framework name
+  m = b.backupManifest.create(_validManifestArgs());
+  m.framework = "elsewhere";
+  v = b.backupManifest.validate(m);
+  check("validate flags wrong framework name",    v.ok === false);
+}
+
+function testBackupManifestRejectsDuplicatePaths() {
+  var args = _validManifestArgs();
+  args.files = [
+    _validFileEntry({ relativePath: "a", encryptedPath: "files/a.bin" }),
+    _validFileEntry({ relativePath: "a", encryptedPath: "files/b.bin" }),
+  ];
+  var threw = null;
+  try { b.backupManifest.create(args); } catch (e) { threw = e; }
+  check("duplicate relativePath rejected",        threw && /duplicate/.test(threw.message));
+
+  args.files = [
+    _validFileEntry({ relativePath: "a", encryptedPath: "files/x.bin" }),
+    _validFileEntry({ relativePath: "b", encryptedPath: "files/x.bin" }),
+  ];
+  threw = null;
+  try { b.backupManifest.create(args); } catch (e) { threw = e; }
+  check("duplicate encryptedPath rejected",       threw && /duplicate/.test(threw.message));
+}
+
+function testBackupManifestParseRejectsCorruption() {
+  var threw;
+
+  // Not JSON
+  threw = null; try { b.backupManifest.parse("not json"); } catch (e) { threw = e; }
+  check("parse non-JSON rejects",                 threw && threw.code === "backup-manifest/bad-json");
+
+  // Wrong type for argument
+  threw = null; try { b.backupManifest.parse(42); } catch (e) { threw = e; }
+  check("parse non-string non-Buffer rejects",    threw && threw.code === "backup-manifest/bad-input");
+
+  // Valid JSON but wrong shape
+  threw = null;
+  try { b.backupManifest.parse(JSON.stringify({ random: "garbage" })); }
+  catch (e) { threw = e; }
+  check("parse valid-JSON-but-wrong-shape rejects", threw && threw.code === "backup-manifest/invalid");
+
+  // Buffer input also accepted
+  var ok = b.backupManifest.parse(Buffer.from(b.backupManifest.serialize(b.backupManifest.create(_validManifestArgs()))));
+  check("parse accepts Buffer input",             ok && ok.version === 1);
+}
+
+function testBackupManifestSerializeIsCanonical() {
+  // Same logical manifest serializes to the same bytes regardless of
+  // how the input object was assembled (key insertion order).
+  var m1 = b.backupManifest.create(_validManifestArgs());
+  // Build a manifest with the same values via direct assignment in
+  // different key order, then validate + serialize via the public API.
+  var m2 = {
+    metadata:         { reason: "test" },
+    files:            [_validFileEntry()],
+    createdAt:        m1.createdAt,
+    vaultKeyEnc:      m1.vaultKeyEnc,
+    vaultKeySalt:     m1.vaultKeySalt,
+    frameworkVersion: m1.frameworkVersion,
+    framework:        "blamejs",
+    version:          1,
+  };
+  check("serialize is order-independent",         b.backupManifest.serialize(m1) === b.backupManifest.serialize(m2));
+}
+
 // ---- backup-crypto ----
 
 function testBackupCryptoSurface() {
@@ -8799,6 +8987,13 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // backup-manifest — bundle schema + create/validate/parse/serialize (Phase 7 slice 7a)
+  testBackupManifestSurface();
+  testBackupManifestCreateAndSerialize();
+  testBackupManifestValidateRejectsBadFields();
+  testBackupManifestRejectsDuplicatePaths();
+  testBackupManifestParseRejectsCorruption();
+  testBackupManifestSerializeIsCanonical();
   // backup-crypto — Argon2id KDF + XChaCha20-Poly1305 for backup files (Phase 7 slice 7)
   testBackupCryptoSurface();
   await testBackupCryptoDeriveKeyDeterministic();
@@ -9169,6 +9364,12 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testBackupManifestSurface:                 testBackupManifestSurface,
+  testBackupManifestCreateAndSerialize:      testBackupManifestCreateAndSerialize,
+  testBackupManifestValidateRejectsBadFields: testBackupManifestValidateRejectsBadFields,
+  testBackupManifestRejectsDuplicatePaths:   testBackupManifestRejectsDuplicatePaths,
+  testBackupManifestParseRejectsCorruption:  testBackupManifestParseRejectsCorruption,
+  testBackupManifestSerializeIsCanonical:    testBackupManifestSerializeIsCanonical,
   testBackupCryptoSurface:                   testBackupCryptoSurface,
   testBackupCryptoDeriveKeyDeterministic:    testBackupCryptoDeriveKeyDeterministic,
   testBackupCryptoRoundTrip:                 testBackupCryptoRoundTrip,
