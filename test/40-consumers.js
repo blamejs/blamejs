@@ -427,7 +427,7 @@ async function testRetryAndBreaker() {
 }
 
 function testSigv4Primitives() {
-  var sigv4 = require("../lib/object-store-sigv4");
+  var sigv4 = require("../lib/object-store/sigv4");
 
   // AWS-published test vector for signing-key derivation
   // (https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html)
@@ -501,7 +501,7 @@ function testSigv4Primitives() {
 
 async function testSigv4MockServer() {
   var http = require("http");
-  var sigv4 = require("../lib/object-store-sigv4");
+  var sigv4 = require("../lib/object-store/sigv4");
 
   // In-process mock S3 server. Validates request shape (Authorization +
   // x-amz-date + x-amz-content-sha256) and stores PUT bodies in memory
@@ -609,7 +609,7 @@ async function testSigv4MockServer() {
 }
 
 function testGcsPrimitives() {
-  var gcs = require("../lib/object-store-gcs");
+  var gcs = require("../lib/object-store/gcs");
 
   // base64url encoding (no padding, '+'→'-', '/'→'_')
   var b1 = gcs._base64UrlEncode(Buffer.from("hello"));
@@ -637,7 +637,7 @@ function testGcsPrimitives() {
 async function testGcsMockServer() {
   var http = require("http");
   var url = require("url");
-  var gcs = require("../lib/object-store-gcs");
+  var gcs = require("../lib/object-store/gcs");
   var sa = _makeFakeServiceAccount();
 
   var stored = {};
@@ -760,7 +760,7 @@ async function testGcsMockServer() {
 }
 
 function testAzureBlobPrimitives() {
-  var az = require("../lib/object-store-azure-blob");
+  var az = require("../lib/object-store/azure-blob");
 
   // signRequest produces SharedKey-format Authorization
   var s = az.signRequest({
@@ -797,7 +797,7 @@ function testAzureBlobPrimitives() {
 
 async function testAzureBlobMockServer() {
   var http = require("http");
-  var az = require("../lib/object-store-azure-blob");
+  var az = require("../lib/object-store/azure-blob");
 
   var stored = {};
   var server = http.createServer(function (req, res) {

@@ -3338,7 +3338,7 @@ function testDeprecateSurface() {
   check("list is a function",                     typeof b.deprecate.list === "function");
   check("reset is a function",                    typeof b.deprecate.reset === "function");
   check("getMode is a function",                  typeof b.deprecate.getMode === "function");
-  check("DeprecationError is a class",            typeof b.deprecate.DeprecationError === "function");
+  check("DeprecateError is a class",            typeof b.deprecate.DeprecateError === "function");
 }
 
 function testDeprecateModeResolution() {

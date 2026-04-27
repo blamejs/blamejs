@@ -129,7 +129,7 @@ async function testClusterGatesQueue() {
 async function testClusterGatesObjectStoreLocal() {
   var fx = await _setupClusterGateFixture();
   try {
-    var localProto = require(path.join(__dirname, "..", "lib", "object-store-local"));
+    var localProto = require(path.join(__dirname, "..", "lib", "object-store/local"));
     var rootDir = path.join(fx.tmpDir, "obj");
     var backend = localProto.create({ rootDir: rootDir });
 
