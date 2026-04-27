@@ -3078,6 +3078,208 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- pqc-gate ----
+//
+// Build a synthetic ClientHello buffer with a configurable supported_groups
+// list. Lets us exercise the parser without standing up real TLS.
+
+function _makeClientHello(groupIds) {
+  // Body layout we control:
+  //   version(2) random(32) sessionId(0+1) cipherSuites(2+2) comp(1+1)
+  //     extensions(2 + supported_groups extension)
+  //
+  // supported_groups extension:
+  //   type=0x000A length(2)  list_length(2)  group_ids(2 each)
+  var groupsBytes = Buffer.alloc(2 + groupIds.length * 2);
+  groupsBytes.writeUInt16BE(groupIds.length * 2, 0);
+  for (var i = 0; i < groupIds.length; i++) {
+    groupsBytes.writeUInt16BE(groupIds[i], 2 + i * 2);
+  }
+  var extInner = Buffer.concat([
+    Buffer.from([0x00, 0x0A]),                          // type
+    (function () { var b = Buffer.alloc(2); b.writeUInt16BE(groupsBytes.length, 0); return b; })(),
+    groupsBytes,
+  ]);
+  var extensions = Buffer.concat([
+    (function () { var b = Buffer.alloc(2); b.writeUInt16BE(extInner.length, 0); return b; })(),
+    extInner,
+  ]);
+
+  var ciphers = Buffer.concat([
+    Buffer.from([0x00, 0x02]), // 2 bytes of cipher data
+    Buffer.from([0x13, 0x01]), // TLS_AES_128_GCM_SHA256 (one cipher)
+  ]);
+  var compression = Buffer.from([0x01, 0x00]); // 1 method, null
+
+  var body = Buffer.concat([
+    Buffer.from([0x03, 0x03]),                  // version: TLS 1.2 record-level
+    Buffer.alloc(32, 0xAA),                     // random: 32 bytes
+    Buffer.from([0x00]),                        // session id length 0
+    ciphers,
+    compression,
+    extensions,
+  ]);
+
+  // Handshake header: type=0x01 (ClientHello), length=body.length (3 bytes)
+  var hsHeader = Buffer.alloc(4);
+  hsHeader[0] = 0x01;
+  hsHeader.writeUIntBE(body.length, 1, 3);
+
+  // Record header: type=0x16 (handshake), version=0x0303, length=hsHeader.length+body.length
+  var recordPayload = Buffer.concat([hsHeader, body]);
+  var recordHeader = Buffer.alloc(5);
+  recordHeader[0] = 0x16;
+  recordHeader[1] = 0x03;
+  recordHeader[2] = 0x03;
+  recordHeader.writeUInt16BE(recordPayload.length, 3);
+
+  return Buffer.concat([recordHeader, recordPayload]);
+}
+
+function testPqcGateSurface() {
+  check("b.pqcGate namespace present",            typeof b.pqcGate === "object");
+  check("b.pqcGate.create is a function",         typeof b.pqcGate.create === "function");
+  check("b.pqcGate.clientHelloHasPQC is a function",
+        typeof b.pqcGate.clientHelloHasPQC === "function");
+  check("PQC_GROUP_IDS is a Set with framework groups",
+        b.pqcGate.PQC_GROUP_IDS instanceof Set &&
+        b.pqcGate.PQC_GROUP_IDS.has(b.constants.PQC_GROUPS.X25519MLKEM768) &&
+        b.pqcGate.PQC_GROUP_IDS.has(b.constants.PQC_GROUPS.SecP384r1MLKEM1024));
+
+  var threw = null;
+  try { b.pqcGate.create({}); } catch (e) { threw = e; }
+  check("create rejects missing internalPort",   threw && /internalPort/.test(threw.message));
+
+  threw = null;
+  try { b.pqcGate.create({ internalPort: 99999 }); } catch (e) { threw = e; }
+  check("create rejects out-of-range port",      threw && /internalPort/.test(threw.message));
+}
+
+function testClientHelloPqcDetection() {
+  // A ClientHello with ONLY PQC hybrid groups → accepted
+  var heroPQ = _makeClientHello([b.constants.PQC_GROUPS.SecP384r1MLKEM1024]);
+  check("ClientHello with PQC group → accepted",  b.pqcGate.clientHelloHasPQC(heroPQ) === true);
+
+  // A ClientHello with both PQC + classical → accepted (PQC present is what matters)
+  var heroMix = _makeClientHello([0x0017 /* secp256r1 */, b.constants.PQC_GROUPS.X25519MLKEM768]);
+  check("ClientHello with mixed groups → accepted (PQC present)",
+        b.pqcGate.clientHelloHasPQC(heroMix) === true);
+
+  // A ClientHello with ONLY classical groups → rejected
+  var heroClassical = _makeClientHello([0x0017, 0x0018, 0x001D /* x25519 */]);
+  check("ClientHello with only classical groups → rejected",
+        b.pqcGate.clientHelloHasPQC(heroClassical) === false);
+
+  // Empty supported_groups (degenerate but well-formed) → rejected
+  var heroEmpty = _makeClientHello([]);
+  check("ClientHello with empty supported_groups → rejected",
+        b.pqcGate.clientHelloHasPQC(heroEmpty) === false);
+
+  // Garbage / non-handshake → rejected
+  check("non-handshake first byte → rejected",   b.pqcGate.clientHelloHasPQC(Buffer.from([0x14, 0x03, 0x03, 0x00, 0x05])) === false);
+  check("too-short buffer → rejected",            b.pqcGate.clientHelloHasPQC(Buffer.alloc(10)) === false);
+  check("null input → rejected",                  b.pqcGate.clientHelloHasPQC(null) === false);
+}
+
+function testPqcGateSocketLifecycle() {
+  // Drive the connection handler with a fake socket — verifies the
+  // pause/resume + accept-vs-reject logic without standing up a real TCP server.
+  var dataListeners = [];
+  var emittedWrites = [];
+  var destroyed = false;
+  var socket = {
+    remoteAddress: "203.0.113.5",
+    paused: true,
+    resume:  function () { this.paused = false; },
+    pause:   function () { this.paused = true; },
+    pipe:    function (other) { return other; },
+    write:   function (chunk, cb) { emittedWrites.push(chunk); if (cb) cb(); return true; },
+    destroy: function () { destroyed = true; },
+    on:      function (ev, fn) { if (ev === "data") dataListeners.push(fn); return this; },
+    removeListener: function (ev, fn) {
+      if (ev === "data") {
+        var idx = dataListeners.indexOf(fn);
+        if (idx !== -1) dataListeners.splice(idx, 1);
+      }
+    },
+  };
+
+  // Capture the on-connection handler the gate would register
+  var connectionHandler;
+  var fakeServer = {
+    listen:  function () {},
+    close:   function (cb) { if (cb) cb(); },
+    on:      function () { return this; },
+  };
+  var pendingTimers = [];
+  var gate = b.pqcGate.create({
+    internalPort: 1234,
+    bypass:       [], // no localhost bypass for this test
+    _server: function (sopts, cb) { connectionHandler = cb; return fakeServer; },
+    _connect: function () {
+      // Return a dummy 'internal' socket — we never actually pipe in this test
+      var internal = { destroy: function () {}, write: function () {}, on: function () { return this; }, pipe: function () { return internal; } };
+      return internal;
+    },
+    _setTimeout:   function (fn) { var t = { fn: fn, active: true }; pendingTimers.push(t); return t; },
+    _clearTimeout: function (t) { if (t) t.active = false; },
+  });
+  check("create returns a server-shaped object",  gate === fakeServer);
+
+  connectionHandler(socket);
+  check("gate resumes the socket after attach",   socket.paused === false);
+
+  // Feed a non-PQC ClientHello — should write the TLS alert and destroy
+  var classical = _makeClientHello([0x0017, 0x001D]);
+  dataListeners.forEach(function (fn) { fn(classical); });
+  check("non-PQC ClientHello triggers TLS alert", emittedWrites.length === 1 &&
+                                                  emittedWrites[0][0] === 0x15 &&
+                                                  emittedWrites[0][6] === 0x28);
+  check("non-PQC ClientHello destroys socket",    destroyed === true);
+}
+
+function testPqcGateBypassesLocalhost() {
+  var localSocket = {
+    remoteAddress: "127.0.0.1",
+    resumed: false,
+    resume: function () { this.resumed = true; },
+    pause:  function () {},
+    pipe:   function () {},
+    on:     function () { return this; },
+    destroy: function () {},
+    write:   function () {},
+  };
+  var connectionHandler;
+  var fakeServer = { on: function () { return this; } };
+  var connectArgs = null;
+  // Defer the connect cb to next tick so the parent's `internal`
+  // assignment happens first (mirrors real net.createConnection).
+  var deferredCb = null;
+  b.pqcGate.create({
+    internalPort: 5555,
+    _server: function (s, cb) { connectionHandler = cb; return fakeServer; },
+    _connect: function (cOpts, cb) {
+      connectArgs = cOpts;
+      deferredCb = cb;
+      return {
+        destroy: function () {},
+        write:   function () {},
+        on:      function () { return this; },
+        pipe:    function () { return this; },
+      };
+    },
+  });
+
+  connectionHandler(localSocket);
+  check("localhost bypass: connectFn called with internalPort",
+        connectArgs && connectArgs.port === 5555);
+  // Now fire the connect callback — after the gate has finished setting
+  // up `internal`. The bypass path calls socket.resume() inside the cb.
+  if (deferredCb) deferredCb();
+  check("localhost bypass: socket resumed after pipe setup",
+        localSocket.resumed === true);
+}
+
 // ---- bundler ----
 
 function _makeBundlerFixture() {
@@ -7556,6 +7758,11 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // pqc-gate — TCP-level PQC enforcement on ClientHello (Phase 7 slice 1)
+  testPqcGateSurface();
+  testClientHelloPqcDetection();
+  testPqcGateSocketLifecycle();
+  testPqcGateBypassesLocalhost();
   // bundler — content-hashed asset pipeline + manifest (Phase 6 slice 7)
   testBundlerSurface();
   testBundlerCreateValidation();
@@ -7867,6 +8074,10 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testPqcGateSurface:                        testPqcGateSurface,
+  testClientHelloPqcDetection:               testClientHelloPqcDetection,
+  testPqcGateSocketLifecycle:                testPqcGateSocketLifecycle,
+  testPqcGateBypassesLocalhost:              testPqcGateBypassesLocalhost,
   testBundlerSurface:                        testBundlerSurface,
   testBundlerCreateValidation:               testBundlerCreateValidation,
   testBundlerBuildHashedOutput:              testBundlerBuildHashedOutput,
