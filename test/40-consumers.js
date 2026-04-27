@@ -1060,6 +1060,130 @@ async function testQueueShutdown() {
   }
 }
 
+async function testJobsDefineAndEnqueue() {
+  // Surface tests + a single-job round-trip. Uses the framework's
+  // built-in 'local' queue protocol (SQLite via the framework DB).
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-jobs-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    var jobs = b.jobs.create();
+    var processed = [];
+    jobs.define("welcome", async function (job) {
+      processed.push(job.payload.userId);
+    });
+
+    // stats() pre-start
+    var s0 = jobs.stats();
+    check("jobs.stats: defined names listed",          s0.defined.length === 1 && s0.defined[0] === "welcome");
+    check("jobs.stats: started=false before start",    s0.started === false);
+
+    // enqueue before start is fine — queue persists rows
+    var enq = await jobs.enqueue("welcome", { userId: "u-1" });
+    check("jobs.enqueue returns jobId",                typeof enq.jobId === "string");
+
+    await jobs.start();
+    check("jobs.stats: started=true after start",      jobs.stats().started === true);
+
+    // Wait for the consumer to drain
+    var t0 = Date.now();
+    while (processed.length === 0 && Date.now() - t0 < 5000) {
+      await new Promise(function (r) { setTimeout(r, 50); });
+    }
+    check("jobs: handler ran for enqueued job",        processed.length === 1 && processed[0] === "u-1");
+
+    await jobs.shutdown({ timeoutMs: 2000 });
+    check("jobs.shutdown: started=false after",         jobs.stats().started === false);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testJobsValidation() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-jobs-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    var jobs = b.jobs.create();
+
+    // Invalid name / handler
+    var threw = null;
+    try { jobs.define("", async function () {}); } catch (e) { threw = e; }
+    check("jobs.define: empty name rejected",          threw && threw.code === "INVALID_NAME");
+
+    threw = null;
+    try { jobs.define("x", "not-a-fn"); } catch (e) { threw = e; }
+    check("jobs.define: non-function handler rejected", threw && threw.code === "INVALID_HANDLER");
+
+    // Duplicate
+    jobs.define("dup", async function () {});
+    threw = null;
+    try { jobs.define("dup", async function () {}); } catch (e) { threw = e; }
+    check("jobs.define: duplicate name rejected",      threw && threw.code === "DUPLICATE_NAME");
+
+    // enqueue without define
+    threw = null;
+    try { await jobs.enqueue("never-defined", {}); } catch (e) { threw = e; }
+    check("jobs.enqueue: undefined name rejected",     threw && threw.code === "UNDEFINED_NAME");
+
+    // allowUnregistered: true bypasses
+    var permissive = b.jobs.create({ allowUnregisteredEnqueue: true });
+    var enqOk = await permissive.enqueue("late-binding", { x: 1 });
+    check("jobs.enqueue: allowUnregistered passes",    typeof enqOk.jobId === "string");
+
+    // define after start rejected
+    await jobs.start();
+    threw = null;
+    try { jobs.define("post-start", async function () {}); } catch (e) { threw = e; }
+    check("jobs.define after start rejected",          threw && threw.code === "ALREADY_STARTED");
+
+    await jobs.shutdown({ timeoutMs: 2000 });
+    await permissive.shutdown({ timeoutMs: 2000 });
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testJobsMultipleHandlers() {
+  // Two handlers, each consuming its own queue, dispatched correctly.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-jobs-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    var jobs = b.jobs.create({
+      consumerDefaults: { pollIntervalMs: 30, fastPollMs: 10 },
+    });
+    var emails = [];
+    var rebuilds = [];
+    jobs.define("send-email",     async function (job) { emails.push(job.payload.to); });
+    jobs.define("rebuild-index",  async function (job) { rebuilds.push(job.payload.what); });
+
+    await jobs.start();
+    await jobs.enqueue("send-email",     { to: "alice@example.com" });
+    await jobs.enqueue("send-email",     { to: "bob@example.com" });
+    await jobs.enqueue("rebuild-index",  { what: "users" });
+
+    var t0 = Date.now();
+    while ((emails.length < 2 || rebuilds.length < 1) && Date.now() - t0 < 5000) {
+      await new Promise(function (r) { setTimeout(r, 50); });
+    }
+    check("jobs: both email handlers ran",             emails.length === 2);
+    check("jobs: rebuild handler ran",                 rebuilds.length === 1);
+    // Cross-handler isolation
+    check("jobs: email handler didn't see rebuild payload",
+          emails.indexOf("users") === -1);
+
+    await jobs.shutdown({ timeoutMs: 2000 });
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+function testJobsSurface() {
+  check("b.jobs namespace present",                    typeof b.jobs === "object");
+  check("b.jobs.create is a function",                 typeof b.jobs.create === "function");
+}
+
 async function testLogStreamLocal() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-log-"));
   try {
@@ -2179,6 +2303,10 @@ async function run() {
   await testQueueRetryAndFail();
   await testQueueLeaseExpiry();
   await testQueueShutdown();
+  testJobsSurface();
+  await testJobsDefineAndEnqueue();
+  await testJobsValidation();
+  await testJobsMultipleHandlers();
 
   // log-stream
   await testLogStreamLocal();
@@ -2233,6 +2361,10 @@ module.exports = {
   testQueueRetryAndFail:                    testQueueRetryAndFail,
   testQueueLeaseExpiry:                     testQueueLeaseExpiry,
   testQueueShutdown:                        testQueueShutdown,
+  testJobsSurface:                          testJobsSurface,
+  testJobsDefineAndEnqueue:                 testJobsDefineAndEnqueue,
+  testJobsValidation:                       testJobsValidation,
+  testJobsMultipleHandlers:                 testJobsMultipleHandlers,
   testLogStreamLocal:                       testLogStreamLocal,
   testLogStreamWebhook:                     testLogStreamWebhook,
   testLogStreamBidirectional:               testLogStreamBidirectional,

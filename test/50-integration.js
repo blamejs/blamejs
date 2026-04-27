@@ -326,6 +326,65 @@ async function testCreateAppRoutesCallback() {
   }
 }
 
+async function testCreateAppWithJobs() {
+  // createApp's opts.jobs callback wires the jobs registry. Verifies
+  // that handlers defined inside the callback actually consume
+  // post-listen, and that shutdown drains in-flight jobs cleanly.
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-jobs-"));
+  var processed = [];
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    middleware: { botGuard: false },
+    jobs: function (j) {
+      j.define("send-welcome", async function (job) {
+        processed.push(job.payload.userId);
+      });
+    },
+    jobsOptions: {
+      consumerDefaults: { pollIntervalMs: 30, fastPollMs: 10 },
+    },
+    routes: function (r) {
+      r.post("/users", async function (req, res) {
+        var enq = await app.jobs.enqueue("send-welcome", { userId: "u-from-route" });
+        b.render.json(res, { jobId: enq.jobId });
+      });
+    },
+  });
+  check("createApp: jobs instance exposed",            app.jobs && typeof app.jobs.enqueue === "function");
+  check("createApp: jobs registry knows the handler",  app.jobs.stats().defined.indexOf("send-welcome") !== -1);
+  check("createApp: jobs already started after createApp",  app.jobs.stats().started === true);
+
+  var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    var posted = await b.httpClient.request({
+      method: "POST",
+      url: "http://127.0.0.1:" + addr.port + "/users",
+      body: Buffer.from(""),
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+    });
+    check("route enqueues + responds",                 posted.statusCode === 200);
+
+    var t0 = Date.now();
+    while (processed.length === 0 && Date.now() - t0 < 5000) {
+      await new Promise(function (r) { setTimeout(r, 50); });
+    }
+    check("createApp+jobs: handler fired for the route-enqueued job",
+          processed.length === 1 && processed[0] === "u-from-route");
+  } finally {
+    await app.shutdown();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
 async function testCreateAppShutdown() {
   process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
   process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
@@ -398,6 +457,7 @@ async function run() {
   await testCreateAppDefaultMiddleware();
   await testCreateAppMiddlewareDisableable();
   await testCreateAppRoutesCallback();
+  await testCreateAppWithJobs();
   await testCreateAppShutdown();
 }
 
@@ -415,5 +475,6 @@ module.exports = {
   testCreateAppDefaultMiddleware:     testCreateAppDefaultMiddleware,
   testCreateAppMiddlewareDisableable: testCreateAppMiddlewareDisableable,
   testCreateAppRoutesCallback:        testCreateAppRoutesCallback,
+  testCreateAppWithJobs:              testCreateAppWithJobs,
   testCreateAppShutdown:              testCreateAppShutdown,
 };
