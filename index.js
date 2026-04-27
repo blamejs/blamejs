@@ -84,6 +84,7 @@ var backupCrypto = require("./lib/backup-crypto");
 var backupManifest = require("./lib/backup-manifest");
 var backupBundle = require("./lib/backup-bundle");
 var restoreBundle = require("./lib/restore-bundle");
+var backup = require("./lib/backup");
 
 module.exports = {
   crypto:           crypto,
@@ -150,6 +151,7 @@ module.exports = {
   backupManifest:   backupManifest,
   backupBundle:     backupBundle,
   restoreBundle:    restoreBundle,
+  backup:           backup,
   jsonSafe:         jsonSafe,
   ntpCheck:         ntpCheck,
   version:          constants.version,

@@ -3078,6 +3078,255 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- backup (orchestrator) ----
+
+function _backupFixture() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bk-"));
+  var dataDir = path.join(dir, "data");
+  var storageRoot = path.join(dir, "backups");
+  fs.mkdirSync(dataDir, { recursive: true });
+  // Seed a tiny dataDir
+  fs.writeFileSync(path.join(dataDir, "db.enc"),     Buffer.from("ENCRYPTED-DB"));
+  fs.writeFileSync(path.join(dataDir, "db.key.enc"), "vault:dbkey");
+  fs.writeFileSync(path.join(dataDir, "vault.key"),  '{"vault":"keypair"}');
+  return {
+    root:        dir,
+    dataDir:     dataDir,
+    storageRoot: storageRoot,
+    cleanup: function () {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+    },
+  };
+}
+
+function _backupOpts(fx, override) {
+  return Object.assign({
+    dataDir:    fx.dataDir,
+    storage:    b.backup.localStorage({ root: fx.storageRoot }),
+    passphrase: Buffer.from("operator-passphrase"),
+    files: [
+      { relativePath: "db.enc",       kind: "raw",          required: true },
+      { relativePath: "db.key.enc",   kind: "raw",          required: true },
+      { relativePath: "vault.key",    kind: "raw",          required: false },
+    ],
+    vaultKeyJson: '{"vault":"keypair"}',
+    audit:        false,
+  }, override || {});
+}
+
+function testBackupSurface() {
+  check("b.backup namespace present",             typeof b.backup === "object");
+  check("b.backup.create is a function",          typeof b.backup.create === "function");
+  check("b.backup.localStorage is a function",    typeof b.backup.localStorage === "function");
+  check("b.backup.BUNDLE_ID_RE is a RegExp",      b.backup.BUNDLE_ID_RE instanceof RegExp);
+  check("BackupError is a class",                 typeof b.backup.BackupError === "function");
+}
+
+function testBackupCreateValidation() {
+  var fx = _backupFixture();
+  try {
+    var threw;
+    threw = null; try { b.backup.create({}); } catch (e) { threw = e; }
+    check("missing dataDir rejected",               threw && threw.code === "backup/no-datadir");
+
+    threw = null;
+    try { b.backup.create({ dataDir: fx.dataDir }); } catch (e) { threw = e; }
+    check("missing storage rejected",               threw && threw.code === "backup/bad-storage");
+
+    threw = null;
+    try {
+      b.backup.create({
+        dataDir: fx.dataDir,
+        storage: { writeBundle: function () {} },  // missing other methods
+        passphrase: Buffer.from("p"),
+        files: [{ relativePath: "x" }],
+        vaultKeyJson: "{}",
+      });
+    } catch (e) { threw = e; }
+    check("incomplete storage rejected",            threw && threw.code === "backup/bad-storage");
+
+    threw = null;
+    try {
+      b.backup.create({
+        dataDir: fx.dataDir,
+        storage: b.backup.localStorage({ root: fx.storageRoot }),
+        files: [{ relativePath: "x" }],
+        vaultKeyJson: "{}",
+      });
+    } catch (e) { threw = e; }
+    check("missing passphrase rejected",            threw && threw.code === "backup/no-passphrase");
+
+    threw = null;
+    try {
+      b.backup.create({
+        dataDir: fx.dataDir,
+        storage: b.backup.localStorage({ root: fx.storageRoot }),
+        passphrase: Buffer.from("p"),
+        files: [],
+        vaultKeyJson: "{}",
+      });
+    } catch (e) { threw = e; }
+    check("empty files list rejected",              threw && threw.code === "backup/no-files");
+
+    threw = null;
+    try {
+      b.backup.create({
+        dataDir: fx.dataDir,
+        storage: b.backup.localStorage({ root: fx.storageRoot }),
+        passphrase: Buffer.from("p"),
+        files: [{ relativePath: "x" }],
+        // no vaultKeyJson
+      });
+    } catch (e) { threw = e; }
+    check("missing vaultKeyJson rejected",          threw && threw.code === "backup/no-vault-key-json");
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupRunListReadDelete() {
+  var fx = _backupFixture();
+  try {
+    var backup = b.backup.create(_backupOpts(fx));
+    var r1 = await backup.run({ metadata: { reason: "first" } });
+    check("run returns bundleId in framework format",
+          b.backup.BUNDLE_ID_RE.test(r1.bundleId));
+    check("run reports fileCount = 3",              r1.fileCount === 3);
+    check("run reports bundleSize > 0",             r1.bundleSize > 0);
+    check("run reports durationMs",                 typeof r1.durationMs === "number");
+
+    // list
+    var listed = await backup.list();
+    check("list shows the new bundle",              listed.length === 1 && listed[0].bundleId === r1.bundleId);
+    check("list entry has size + createdAt",        listed[0].size > 0 && typeof listed[0].createdAt === "string");
+
+    // read pulls the bundle out without decrypting
+    var pullDir = path.join(fx.root, "pull");
+    await backup.read(r1.bundleId, pullDir);
+    check("read pulls manifest.json",               fs.existsSync(path.join(pullDir, "manifest.json")));
+    check("read pulls files/ subdir",               fs.existsSync(path.join(pullDir, "files")));
+
+    // The pulled bundle is a real bundle: restore-bundle.extract
+    // recovers it (end-to-end backup → storage → restore loop)
+    var restoreDir = path.join(fx.root, "restored");
+    var rr = await b.restoreBundle.extract({
+      bundleDir:  pullDir,
+      stagingDir: restoreDir,
+      passphrase: Buffer.from("operator-passphrase"),
+    });
+    check("backup → restore round-trip recovers all 3 files",
+          rr.fileCount === 3);
+    check("restore recovered db.enc bytes",
+          fs.readFileSync(path.join(restoreDir, "db.enc")).toString() === "ENCRYPTED-DB");
+
+    // delete
+    await backup.delete(r1.bundleId);
+    var listed2 = await backup.list();
+    check("delete removed the bundle",              listed2.length === 0);
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupVaultKeyJsonAsFunction() {
+  var fx = _backupFixture();
+  try {
+    var calls = 0;
+    var backup = b.backup.create(_backupOpts(fx, {
+      vaultKeyJson: function () { calls++; return '{"from":"function"}'; },
+    }));
+    await backup.run();
+    await backup.run();
+    check("vaultKeyJson function called per run",   calls === 2);
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupVaultKeyJsonAsAsyncFunction() {
+  var fx = _backupFixture();
+  try {
+    var backup = b.backup.create(_backupOpts(fx, {
+      vaultKeyJson: async function () { return '{"async":"works"}'; },
+    }));
+    var r = await backup.run();
+    check("async vaultKeyJson resolves",            typeof r.bundleId === "string");
+
+    // Verify the async-resolved JSON ended up in the bundle
+    var pullDir = path.join(fx.root, "pull-async");
+    await backup.read(r.bundleId, pullDir);
+    var rr = await b.restoreBundle.extract({
+      bundleDir:  pullDir,
+      stagingDir: path.join(fx.root, "restored-async"),
+      passphrase: Buffer.from("operator-passphrase"),
+    });
+    check("async vaultKeyJson surfaced in restore", rr.vaultKeyJson === '{"async":"works"}');
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupRetentionPurgeOlder() {
+  var fx = _backupFixture();
+  try {
+    var backup = b.backup.create(_backupOpts(fx));
+    // Run 4 backups with small delay so timestamps differ
+    var ids = [];
+    for (var i = 0; i < 4; i++) {
+      var r = await backup.run();
+      ids.push(r.bundleId);
+      await new Promise(function (rr) { setTimeout(rr, 5); });
+    }
+    var listed = await backup.list();
+    check("4 bundles before purge",                 listed.length === 4);
+    check("list returns newest first",              listed[0].bundleId === ids[3]);
+
+    var purged = await backup.purgeOlder({ keep: 2 });
+    check("purgeOlder kept 2 newest",               purged.kept === 2);
+    check("purgeOlder deleted 2 oldest",            purged.deleted.length === 2);
+    var afterList = await backup.list();
+    check("list shows 2 remaining",                 afterList.length === 2);
+    check("retained bundles are the 2 newest",
+          afterList[0].bundleId === ids[3] && afterList[1].bundleId === ids[2]);
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupRetentionAutoSweepOnRun() {
+  var fx = _backupFixture();
+  try {
+    var backup = b.backup.create(_backupOpts(fx, { retention: { keep: 2 } }));
+    var ids = [];
+    for (var i = 0; i < 4; i++) {
+      var r = await backup.run();
+      ids.push(r.bundleId);
+      await new Promise(function (rr) { setTimeout(rr, 5); });
+    }
+    // After 4 runs with retention=2, only the 2 newest should remain
+    var listed = await backup.list();
+    check("retention auto-sweep keeps only 2",      listed.length === 2);
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupBundleIdValidation() {
+  var fx = _backupFixture();
+  try {
+    var backup = b.backup.create(_backupOpts(fx));
+    var threw;
+    threw = null;
+    try { await backup.delete("not-a-valid-id"); } catch (e) { threw = e; }
+    check("delete rejects bad bundleId",            threw && threw.code === "backup/bad-bundle-id");
+
+    threw = null;
+    try { await backup.read("not-a-valid-id", path.join(fx.root, "x")); } catch (e) { threw = e; }
+    check("read rejects bad bundleId",              threw && threw.code === "backup/bad-bundle-id");
+  } finally { fx.cleanup(); }
+}
+
+async function testBackupLocalStorageRejectsExistingDest() {
+  var fx = _backupFixture();
+  try {
+    var backup = b.backup.create(_backupOpts(fx));
+    var r = await backup.run();
+    var dest = path.join(fx.root, "exists-pre");
+    fs.mkdirSync(dest);
+    var threw = null;
+    try { await backup.read(r.bundleId, dest); } catch (e) { threw = e; }
+    check("read rejects existing destDir",          threw && threw.code === "backup/dest-exists");
+  } finally { fx.cleanup(); }
+}
+
 // ---- restore-bundle ----
 //
 // Reuses _bundleFixture + builds an actual encrypted bundle via
@@ -9486,6 +9735,16 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+  // backup — operator-facing orchestration + retention + storage backend (Phase 7 slice 7d)
+  testBackupSurface();
+  testBackupCreateValidation();
+  await testBackupRunListReadDelete();
+  await testBackupVaultKeyJsonAsFunction();
+  await testBackupVaultKeyJsonAsAsyncFunction();
+  await testBackupRetentionPurgeOlder();
+  await testBackupRetentionAutoSweepOnRun();
+  await testBackupBundleIdValidation();
+  await testBackupLocalStorageRejectsExistingDest();
   // restore-bundle — extract an encrypted backup bundle to staging (Phase 7 slice 7c)
   testRestoreBundleSurface();
   await testRestoreBundleRoundTrip();
@@ -9881,6 +10140,15 @@ module.exports = {
   testMailHttpBadSerializer:                 testMailHttpBadSerializer,
   testMailResendRoundTrip:                   testMailResendRoundTrip,
   testMailResendErrorPaths:                  testMailResendErrorPaths,
+  testBackupSurface:                         testBackupSurface,
+  testBackupCreateValidation:                testBackupCreateValidation,
+  testBackupRunListReadDelete:               testBackupRunListReadDelete,
+  testBackupVaultKeyJsonAsFunction:          testBackupVaultKeyJsonAsFunction,
+  testBackupVaultKeyJsonAsAsyncFunction:     testBackupVaultKeyJsonAsAsyncFunction,
+  testBackupRetentionPurgeOlder:             testBackupRetentionPurgeOlder,
+  testBackupRetentionAutoSweepOnRun:         testBackupRetentionAutoSweepOnRun,
+  testBackupBundleIdValidation:              testBackupBundleIdValidation,
+  testBackupLocalStorageRejectsExistingDest: testBackupLocalStorageRejectsExistingDest,
   testRestoreBundleSurface:                  testRestoreBundleSurface,
   testRestoreBundleRoundTrip:                testRestoreBundleRoundTrip,
   testRestoreBundleFilterSubset:             testRestoreBundleFilterSubset,
