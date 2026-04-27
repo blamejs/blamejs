@@ -456,6 +456,194 @@ async function testClusterSessionsSharedAcrossNodes() {
   }
 }
 
+async function testClusterConsentTipFencing() {
+  // Mirror of testClusterAuditTipFencing but for the consent chain:
+  // verify the canonical fencing-token guard on _blamejs_consent_tip
+  // through direct upserts (3, 3, 8, 5 token sequence).
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cf-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    await b.cluster.init({
+      nodeId:            "consent-fence-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    async function upsert(counter, hash, signedAt, token) {
+      var result = await b.clusterStorage.execute(
+        "INSERT INTO _blamejs_consent_tip " +
+        "  (scope, atMonotonicCounter, rowHash, signedAt, fencingToken) " +
+        "VALUES ('consent', ?, ?, ?, ?) " +
+        "ON CONFLICT (scope) DO UPDATE SET " +
+        "  atMonotonicCounter = EXCLUDED.atMonotonicCounter, " +
+        "  rowHash            = EXCLUDED.rowHash, " +
+        "  signedAt           = EXCLUDED.signedAt, " +
+        "  fencingToken       = EXCLUDED.fencingToken " +
+        "WHERE _blamejs_consent_tip.fencingToken <= EXCLUDED.fencingToken " +
+        "RETURNING fencingToken",
+        [counter, hash, signedAt, token]
+      );
+      return result.rows.length > 0;
+    }
+
+    check("consent-tip: first write at token=3 accepted",
+          (await upsert(1, "h1", "1", 3)) === true);
+    check("consent-tip: same-token rewrite at token=3 accepted",
+          (await upsert(2, "h2", "2", 3)) === true);
+    check("consent-tip: higher-token write at token=8 accepted",
+          (await upsert(3, "h3", "3", 8)) === true);
+    check("consent-tip: lower-token write at token=5 rejected (fenced)",
+          (await upsert(4, "h4", "4", 5)) === false);
+
+    var stored = await b.clusterStorage.executeOne(
+      "SELECT fencingToken, rowHash FROM _blamejs_consent_tip WHERE scope = 'consent'"
+    );
+    check("consent-tip: stored token unchanged after rejected write",
+          Number(stored.fencingToken) === 8);
+    check("consent-tip: stored rowHash unchanged after rejected write",
+          stored.rowHash === "h3");
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function testClusterConsentTipUpdatedOnGrant() {
+  // The actual integration: consent.grant in cluster mode writes the
+  // chain row AND upserts _blamejs_consent_tip. After a grant, the
+  // tip should record the row's monotonicCounter and rowHash.
+  b.cluster._resetForTest();
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ct-grant-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    await setupTestDb(tmpDir);
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    await b.cluster.init({
+      nodeId:            "consent-grant-1",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+      leaseTtl:          b.constants.TIME.seconds(30),
+      heartbeatInterval: b.constants.TIME.seconds(10),
+    });
+
+    var grantResult = await b.consent.grant({
+      subjectId:   "subj-1",
+      purpose:     "marketing.email",
+      lawfulBasis: "consent",
+      channel:     "ui",
+    });
+    check("consent.grant returned a row with monotonicCounter",
+          grantResult && typeof grantResult.monotonicCounter === "number");
+
+    // Consent tip should now reflect the grant
+    var tip = await b.externalDb.query(
+      "SELECT atMonotonicCounter, rowHash FROM _blamejs_consent_tip WHERE scope='consent'",
+      [], { backend: "ops" }
+    );
+    check("consent-tip: row exists after first grant",
+          tip.rows.length === 1);
+    check("consent-tip: counter matches grant's monotonicCounter",
+          Number(tip.rows[0].atMonotonicCounter) === Number(grantResult.monotonicCounter));
+    check("consent-tip: rowHash matches grant's rowHash",
+          tip.rows[0].rowHash === grantResult.rowHash);
+
+    // Second grant advances the tip
+    var grant2 = await b.consent.grant({
+      subjectId:   "subj-2",
+      purpose:     "marketing.email",
+      lawfulBasis: "consent",
+      channel:     "ui",
+    });
+    var tip2 = await b.externalDb.query(
+      "SELECT atMonotonicCounter, rowHash FROM _blamejs_consent_tip WHERE scope='consent'",
+      [], { backend: "ops" }
+    );
+    check("consent-tip: counter advanced on second grant",
+          Number(tip2.rows[0].atMonotonicCounter) === Number(grant2.monotonicCounter));
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    driver._close();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testClusterConsentRollbackDetected() {
+  // Pre-seed consent-tip with counter=999 + empty consent_log; spawn
+  // a child that runs cluster.init and verify it exits 1 with the
+  // generalized "consent-log rollback detected" message.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cr-detect-"));
+  var dbPath = path.join(tmpDir, "ext.db");
+  var driver = _makeSqliteDriver(dbPath);
+  try {
+    b.externalDb.init({
+      backends: { "ops": { connect: driver.connect, query: driver.query, close: driver.close } },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+    await b.externalDb.query(
+      "INSERT INTO _blamejs_consent_tip (scope, atMonotonicCounter, rowHash, signedAt, fencingToken) " +
+      "VALUES ('consent', 999, 'rolled-hash', '0', 5)"
+    );
+    await b.externalDb.shutdown();
+    driver._close();
+
+    var spawnSync = require("child_process").spawnSync;
+    var indexPath = path.resolve(__dirname, "..", "index.js").replace(/\\/g, "/");
+    var dbPathForChild = dbPath.replace(/\\/g, "/");
+    var childScript =
+      "var b = require('" + indexPath + "');\n" +
+      "var sqlite = require('node:sqlite');\n" +
+      "var conn = new sqlite.DatabaseSync('" + dbPathForChild + "');\n" +
+      "var driver = {\n" +
+      "  connect: async function () { return { id: 'c1' }; },\n" +
+      "  query:   async function (_c, sql, params) {\n" +
+      "    var stmt = conn.prepare(sql);\n" +
+      "    if (/^\\s*SELECT/i.test(sql) || /\\bRETURNING\\b/i.test(sql)) {\n" +
+      "      return { rows: stmt.all.apply(stmt, params || []), rowCount: 0 };\n" +
+      "    }\n" +
+      "    var info = stmt.run.apply(stmt, params || []);\n" +
+      "    return { rows: [], rowCount: info.changes };\n" +
+      "  },\n" +
+      "  close:   async function () {},\n" +
+      "};\n" +
+      "(async function () {\n" +
+      "  b.externalDb.init({ backends: { ops: driver } });\n" +
+      "  await b.cluster.init({ nodeId: 'cr-child', externalDbBackend: 'ops', dialect: 'sqlite', leaseTtl: 30000, heartbeatInterval: 10000 });\n" +
+      "  console.log('UNEXPECTED-BOOT');\n" +
+      "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
+    var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
+    check("consent-rollback boot exits with code 1",
+          result.status === 1);
+    check("consent-rollback boot logs the consent-chain message",
+          /consent-log rollback detected/i.test(result.stderr || ""));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function testClusterQueueJobsSharedAcrossNodes() {
   // Queue jobs migrated to external-db in v0.1.51 — enqueue from the
   // leader writes to external-db; lease + complete observe the same
@@ -1635,6 +1823,14 @@ async function run() {
   // the same state via reads
   await testClusterQueueJobsSharedAcrossNodes();
 
+  // cluster-mode consent integrity: _blamejs_consent_tip is the
+  // canonical fencing-token-guarded coordination row, updated on
+  // every consent.grant / consent.withdraw, checked at boot for
+  // rollback detection — same protections as audit_log
+  await testClusterConsentTipFencing();
+  await testClusterConsentTipUpdatedOnGrant();
+  await testClusterConsentRollbackDetected();
+
   // audit chain + verify (now exercises chain-writer transitively)
   await testAuditChain();
   await testAuditChainBreak();
@@ -1680,6 +1876,9 @@ module.exports = {
   testClusterVaultKeyMismatchDetected:                 testClusterVaultKeyMismatchDetected,
   testClusterSessionsSharedAcrossNodes:                testClusterSessionsSharedAcrossNodes,
   testClusterQueueJobsSharedAcrossNodes:               testClusterQueueJobsSharedAcrossNodes,
+  testClusterConsentTipFencing:                        testClusterConsentTipFencing,
+  testClusterConsentTipUpdatedOnGrant:                 testClusterConsentTipUpdatedOnGrant,
+  testClusterConsentRollbackDetected:                  testClusterConsentRollbackDetected,
   testAuditChain:                                      testAuditChain,
   testAuditChainBreak:                                 testAuditChainBreak,
   testAuditSelfLogging:                                testAuditSelfLogging,
