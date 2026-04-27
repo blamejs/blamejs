@@ -1847,6 +1847,326 @@ function testRenderSurface() {
   check("b.render.redirect is a function",             typeof b.render.redirect === "function");
 }
 
+// ---- staticServe (Phase 4 slice 3) ----
+//
+// Each test sets up its own root dir with fixture files; ends-to-end
+// via a real http server + the framework's listenOnRandomPort helper.
+
+async function _httpGet(port, urlPath, headers) {
+  return await b.httpClient.request({
+    url: "http://127.0.0.1:" + port + urlPath,
+    headers: headers || {},
+    allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+  });
+}
+
+async function _httpReq(port, method, urlPath, headers) {
+  return await b.httpClient.request({
+    method: method,
+    url: "http://127.0.0.1:" + port + urlPath,
+    headers: headers || {},
+    allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+  });
+}
+
+function _writeFile(dir, name, content) {
+  fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+  fs.writeFileSync(path.join(dir, name), content);
+}
+
+async function testStaticServeBasic() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "hello.txt", "hello world");
+  _writeFile(dir, "page.html", "<h1>X</h1>");
+  b.staticServe._resetCacheForTest();
+
+  var http = require("http");
+  var mw = b.staticServe.create({ root: dir });
+  var server = http.createServer(function (req, res) {
+    mw(req, res, function () {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("not found");
+    });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    var got = await _httpGet(port, "/hello.txt");
+    check("static: GET 200",                            got.statusCode === 200);
+    check("static: body bytes intact",                  got.body.toString("utf8") === "hello world");
+    check("static: Content-Type from extension",
+          got.headers["content-type"].indexOf("text/plain") === 0);
+    check("static: Cache-Control public + max-age",
+          /public, max-age=\d+/.test(got.headers["cache-control"]));
+    check("static: ETag is a quoted string",            /^"[^"]+"$/.test(got.headers["etag"]));
+    check("static: X-Integrity is sha384-…",
+          /^sha384-[A-Za-z0-9+/=]+$/.test(got.headers["x-integrity"]));
+
+    // HTML extension picks up text/html
+    var html = await _httpGet(port, "/page.html");
+    check("static: .html → text/html",
+          html.headers["content-type"].indexOf("text/html") === 0);
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testStaticServeImmutableForHashedPaths() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "app.css", "body { color: red; }");
+  _writeFile(dir, "app.abc123ef.css", "body { color: blue; }");
+  b.staticServe._resetCacheForTest();
+
+  var http = require("http");
+  var mw = b.staticServe.create({ root: dir });
+  var server = http.createServer(function (req, res) {
+    mw(req, res, function () { res.writeHead(404); res.end(); });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    var plain = await _httpGet(port, "/app.css");
+    check("static: non-hashed path uses default max-age",
+          /max-age=3600/.test(plain.headers["cache-control"]) &&
+          plain.headers["cache-control"].indexOf("immutable") === -1);
+
+    var hashed = await _httpGet(port, "/app.abc123ef.css");
+    check("static: hashed path uses immutable cache",
+          /max-age=31536000/.test(hashed.headers["cache-control"]) &&
+          /immutable/.test(hashed.headers["cache-control"]));
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testStaticServeEtagAnd304() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "f.txt", "hello");
+  b.staticServe._resetCacheForTest();
+
+  var http = require("http");
+  var mw = b.staticServe.create({ root: dir });
+  var server = http.createServer(function (req, res) { mw(req, res, function () { res.writeHead(404); res.end(); }); });
+  var port = await listenOnRandomPort(server);
+  try {
+    var first = await _httpGet(port, "/f.txt");
+    check("static: 200 first request",                 first.statusCode === 200);
+    var etag = first.headers["etag"];
+
+    // Conditional GET with matching If-None-Match → 304. httpClient
+    // rejects on non-2xx (treats 3xx/4xx/5xx alike), so the 304 path
+    // surfaces as a thrown error with statusCode 304.
+    var second = null;
+    try {
+      await b.httpClient.request({
+        url: "http://127.0.0.1:" + port + "/f.txt",
+        headers: { "If-None-Match": etag },
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        errorClass: b.frameworkError.ObjectStoreError,
+      });
+    } catch (e) { second = e; }
+    check("static: matching If-None-Match → 304",      second && second.statusCode === 304);
+
+    // Conditional GET with mismatched If-None-Match → 200
+    var third = await _httpGet(port, "/f.txt", { "If-None-Match": '"not-the-real-etag"' });
+    check("static: mismatched If-None-Match → 200",    third.statusCode === 200);
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testStaticServeHead() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "f.txt", "hello world");
+  b.staticServe._resetCacheForTest();
+
+  var http = require("http");
+  var mw = b.staticServe.create({ root: dir });
+  var server = http.createServer(function (req, res) { mw(req, res, function () { res.writeHead(404); res.end(); }); });
+  var port = await listenOnRandomPort(server);
+  try {
+    var head = await _httpReq(port, "HEAD", "/f.txt");
+    check("static: HEAD returns 200",                   head.statusCode === 200);
+    check("static: HEAD body is empty",                 head.body.length === 0);
+    check("static: HEAD carries Content-Length",
+          Number(head.headers["content-length"]) === Buffer.byteLength("hello world"));
+    check("static: HEAD carries ETag",                  /^"[^"]+"$/.test(head.headers["etag"]));
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testStaticServeContainmentDefenses() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "ok.txt", "ok");
+  // Sibling directory outside root that we might leak via traversal
+  var siblingDir = dir + "-sibling";
+  fs.mkdirSync(siblingDir, { recursive: true });
+  fs.writeFileSync(path.join(siblingDir, "secret.txt"), "secret");
+  b.staticServe._resetCacheForTest();
+
+  var http = require("http");
+  var mw = b.staticServe.create({ root: dir });
+  var server = http.createServer(function (req, res) { mw(req, res, function () {
+    res.writeHead(404); res.end("not found");
+  }); });
+  var port = await listenOnRandomPort(server);
+  try {
+    var rejected = [
+      "/../" + path.basename(siblingDir) + "/secret.txt",
+      "/..%2f..%2fetc%2fpasswd",
+      "/ok.txt%00.png",   // null byte
+    ];
+    for (var i = 0; i < rejected.length; i++) {
+      var resp = null;
+      try {
+        resp = await b.httpClient.request({
+          url: "http://127.0.0.1:" + port + rejected[i],
+          allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+          errorClass: b.frameworkError.ObjectStoreError,
+        });
+      } catch (e) { resp = e; }
+      // Either falls through to the operator's 404 OR errors at HTTP layer.
+      // Either way, the secret file content must not appear in the body.
+      var body = resp && resp.body ? resp.body.toString("utf8") : "";
+      check("static: rejects '" + rejected[i] + "' (no leak of secret content)",
+            body.indexOf("secret") === -1);
+    }
+
+    // Sanity: legitimate request still works
+    var ok = await _httpGet(port, "/ok.txt");
+    check("static: legitimate request still served",   ok.body.toString("utf8") === "ok");
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(siblingDir, { recursive: true, force: true });
+  }
+}
+
+async function testStaticServeIndexFile() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "index.html", "<h1>root</h1>");
+  _writeFile(dir, "sub/index.html", "<h1>sub</h1>");
+  b.staticServe._resetCacheForTest();
+
+  var http = require("http");
+  var mw = b.staticServe.create({ root: dir });
+  var server = http.createServer(function (req, res) { mw(req, res, function () {
+    res.writeHead(404); res.end();
+  }); });
+  var port = await listenOnRandomPort(server);
+  try {
+    var rootGet = await _httpGet(port, "/");
+    check("static: dir / serves indexFile",            rootGet.body.toString("utf8") === "<h1>root</h1>");
+
+    var subGet = await _httpGet(port, "/sub/");
+    check("static: nested dir serves its indexFile",    subGet.body.toString("utf8") === "<h1>sub</h1>");
+
+    // Disable indexFile → directory falls through to next()
+    b.staticServe._resetCacheForTest();
+    var mw2 = b.staticServe.create({ root: dir, indexFile: null });
+    var server2 = http.createServer(function (req, res) { mw2(req, res, function () {
+      res.writeHead(404); res.end("no index");
+    }); });
+    var port2 = await listenOnRandomPort(server2);
+    try {
+      var noIdx = await b.httpClient.request({
+        url: "http://127.0.0.1:" + port2 + "/",
+        allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+        errorClass: b.frameworkError.ObjectStoreError,
+      }).catch(function (e) { return e; });
+      check("static: indexFile=null → falls through to next()",
+            (noIdx.statusCode || noIdx.statusCode) === 404);
+    } finally { server2.close(); }
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testStaticServeMethodGuard() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "f.txt", "x");
+  b.staticServe._resetCacheForTest();
+
+  var http = require("http");
+  var nextCalls = 0;
+  var mw = b.staticServe.create({ root: dir });
+  var server = http.createServer(function (req, res) { mw(req, res, function () {
+    nextCalls += 1;
+    res.writeHead(405, { "Content-Type": "text/plain", "Allow": "GET, HEAD" });
+    res.end("method not allowed");
+  }); });
+  var port = await listenOnRandomPort(server);
+  try {
+    var post = await b.httpClient.request({
+      method: "POST",
+      url: "http://127.0.0.1:" + port + "/f.txt",
+      body: Buffer.from("nope"),
+      allowedProtocols: b.urlSafe.ALLOW_HTTP_ALL,
+      errorClass: b.frameworkError.ObjectStoreError,
+    }).catch(function (e) { return e; });
+    check("static: POST falls through (next() called)",  nextCalls === 1);
+    check("static: POST returns operator's 405",         post.statusCode === 405);
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testStaticServeIntegrityHelper() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  _writeFile(dir, "asset.css", "body { color: green; }");
+  b.staticServe._resetCacheForTest();
+  try {
+    var sri = await b.staticServe.integrity(path.join(dir, "asset.css"));
+    check("integrity returns sha384- prefix",          /^sha384-/.test(sri));
+    check("integrity is base64-shaped",                /^sha384-[A-Za-z0-9+/=]+$/.test(sri));
+    // Same file → same hash (cached or not)
+    var sri2 = await b.staticServe.integrity(path.join(dir, "asset.css"));
+    check("integrity is deterministic on same content", sri === sri2);
+
+    // Modified file → different hash
+    fs.writeFileSync(path.join(dir, "asset.css"), "body { color: red; }");
+    // Bump mtime so cache invalidates
+    var future = (Date.now() + 5000) / 1000;
+    fs.utimesSync(path.join(dir, "asset.css"), future, future);
+    var sri3 = await b.staticServe.integrity(path.join(dir, "asset.css"));
+    check("integrity reflects content change",          sri3 !== sri);
+
+    // Missing file
+    var threw = null;
+    try { await b.staticServe.integrity(path.join(dir, "missing.css")); }
+    catch (e) { threw = e; }
+    check("integrity throws on missing file",          threw && /not found/i.test(threw.message));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function testStaticServeSurface() {
+  check("b.staticServe namespace present",             typeof b.staticServe === "object");
+  check("b.staticServe.create is a function",          typeof b.staticServe.create === "function");
+  check("b.staticServe.integrity is a function",       typeof b.staticServe.integrity === "function");
+  check("b.staticServe.IMMUTABLE_MAX_AGE_SEC = 1y",
+        b.staticServe.IMMUTABLE_MAX_AGE_SEC === 31536000);
+  check("b.staticServe.DEFAULT_MAX_AGE_SEC = 1h",
+        b.staticServe.DEFAULT_MAX_AGE_SEC === 3600);
+
+  // create() validation
+  var threw = null;
+  try { b.staticServe.create({}); }
+  catch (e) { threw = e; }
+  check("create({}) requires root",                     threw && /root/.test(threw.message));
+
+  threw = null;
+  try { b.staticServe.create({ root: path.join(os.tmpdir(), "blamejs-nope-" + Date.now()) }); }
+  catch (e) { threw = e; }
+  check("create() rejects missing root",                threw && /does not exist/.test(threw.message));
+}
+
 // ---- handlers ----
 
 async function testHandlerEmitAndDrain() {
@@ -4389,6 +4709,16 @@ async function run() {
   testRenderDoesNotDoubleWrite();
   testRenderCreateWithEngine();
   testRenderCreateValidation();
+  // staticServe — file serving + ETag + SRI (Phase 4 slice 3)
+  testStaticServeSurface();
+  await testStaticServeBasic();
+  await testStaticServeImmutableForHashedPaths();
+  await testStaticServeEtagAnd304();
+  await testStaticServeHead();
+  await testStaticServeContainmentDefenses();
+  await testStaticServeIndexFile();
+  await testStaticServeMethodGuard();
+  await testStaticServeIntegrityHelper();
   // auth.jwt — PQC-signed JWT (Phase 3 slice 5, final)
   testAuthJwtSurface();
   await testAuthJwtSignVerifyRoundTripDefault();
@@ -4579,6 +4909,15 @@ module.exports = {
   testRenderDoesNotDoubleWrite:              testRenderDoesNotDoubleWrite,
   testRenderCreateWithEngine:                testRenderCreateWithEngine,
   testRenderCreateValidation:                testRenderCreateValidation,
+  testStaticServeSurface:                    testStaticServeSurface,
+  testStaticServeBasic:                      testStaticServeBasic,
+  testStaticServeImmutableForHashedPaths:    testStaticServeImmutableForHashedPaths,
+  testStaticServeEtagAnd304:                 testStaticServeEtagAnd304,
+  testStaticServeHead:                       testStaticServeHead,
+  testStaticServeContainmentDefenses:        testStaticServeContainmentDefenses,
+  testStaticServeIndexFile:                  testStaticServeIndexFile,
+  testStaticServeMethodGuard:                testStaticServeMethodGuard,
+  testStaticServeIntegrityHelper:            testStaticServeIntegrityHelper,
   testHandlerEmitAndDrain:                   testHandlerEmitAndDrain,
   testHandlerEmitDuringFlushNextCycle:       testHandlerEmitDuringFlushNextCycle,
   testHandlerRetryOnFlushFailure:            testHandlerRetryOnFlushFailure,
