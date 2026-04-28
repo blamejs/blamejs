@@ -390,6 +390,240 @@ async function testAzureSasPresigning() {
   }
 }
 
+async function testPresignedUploadPolicySigv4() {
+  // SigV4 POST policy: builds an AWS S3-style policy document with a
+  // content-length-range condition, base64-encodes, signs with the
+  // HMAC chain. Server rejects bodies outside the declared range.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    b.storage.init({
+      backends: { "s3": SIGV4_CONFIG },
+      defaultClassification: "operational",
+    });
+
+    var fixed = new Date("2026-04-27T12:34:56Z");
+    var policy = b.storage.presignedUploadPolicy("uploads/big.bin", {
+      classification: "operational",
+      expiresIn:      900,
+      maxBytes:       10 * 1024 * 1024,    // 10 MiB
+      contentType:    "image/png",
+      date:           fixed,
+    });
+
+    check("sigv4 policy: method = POST",         policy.method === "POST");
+    check("sigv4 policy: maxBytes echoed",       policy.maxBytes === 10 * 1024 * 1024);
+    check("sigv4 policy: enforcement = content-length-range",
+                                                  policy.enforcement === "content-length-range");
+    check("sigv4 policy: fields object present", typeof policy.fields === "object" && policy.fields !== null);
+
+    var f = policy.fields;
+    check("sigv4 policy: key field",             f.key === "uploads/big.bin");
+    check("sigv4 policy: x-amz-algorithm",       f["x-amz-algorithm"] === "AWS4-HMAC-SHA256");
+    check("sigv4 policy: x-amz-credential",      (f["x-amz-credential"] || "").indexOf("AKIAIOSFODNN7EXAMPLE/") === 0);
+    check("sigv4 policy: x-amz-date",            f["x-amz-date"] === "20260427T123456Z");
+    check("sigv4 policy: content-type",          f["content-type"] === "image/png");
+    check("sigv4 policy: signature is hex",      /^[0-9a-f]{64}$/.test(f["x-amz-signature"]));
+    check("sigv4 policy: policy is base64",      typeof f.policy === "string" && f.policy.length > 0);
+
+    // Decode the policy document and confirm the conditions are correct.
+    var policyJson = Buffer.from(f.policy, "base64").toString("utf8");
+    var policyDoc = JSON.parse(policyJson);
+    check("sigv4 policy: expiration is ISO",     /^\d{4}-\d{2}-\d{2}T/.test(policyDoc.expiration));
+    check("sigv4 policy: conditions array",      Array.isArray(policyDoc.conditions));
+    var hasRange = policyDoc.conditions.some(function (c) {
+      return Array.isArray(c) && c[0] === "content-length-range" && c[2] === 10 * 1024 * 1024;
+    });
+    check("sigv4 policy: content-length-range condition present", hasRange);
+    var hasBucket = policyDoc.conditions.some(function (c) {
+      return c && typeof c === "object" && !Array.isArray(c) && c.bucket === "blamejs-test";
+    });
+    check("sigv4 policy: bucket condition",      hasBucket);
+
+    // Verify the signature: HMAC-SHA256(signingKey, policyB64)
+    var nodeCrypto = require("crypto");
+    var signingKey = sigv4Internal.deriveSigningKey(
+      SIGV4_CONFIG.secretAccessKey,
+      "20260427",
+      SIGV4_CONFIG.region,
+      "s3"
+    );
+    var expected = nodeCrypto.createHmac("sha256", signingKey).update(f.policy).digest("hex");
+    check("sigv4 policy: signature reconstructs", f["x-amz-signature"] === expected);
+  } finally {
+    b.storage._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testPresignedUploadPolicyMaxBytesRequired() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    b.storage.init({
+      backends: { "s3": SIGV4_CONFIG },
+      defaultClassification: "operational",
+    });
+
+    var threw = null;
+    try { b.storage.presignedUploadPolicy("k.bin", {}); } catch (e) { threw = e; }
+    check("policy: missing maxBytes rejected",   threw && threw.code === "INVALID_MAX_BYTES");
+
+    threw = null;
+    try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: 0 }); } catch (e) { threw = e; }
+    check("policy: maxBytes = 0 rejected",       threw && threw.code === "INVALID_MAX_BYTES");
+
+    threw = null;
+    try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: -1 }); } catch (e) { threw = e; }
+    check("policy: negative maxBytes rejected",  threw && threw.code === "INVALID_MAX_BYTES");
+  } finally {
+    b.storage._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testPresignedUploadPolicyGcs() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    var keys = nodeCrypto.generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding:  { type: "spki",  format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    var sa = {
+      client_email: "blamejs-test@example.iam.gserviceaccount.com",
+      private_key:  keys.privateKey,
+      project_id:   "blamejs-test",
+    };
+    b.storage.init({
+      backends: {
+        "gcs": {
+          protocol:        "gcs",
+          bucket:          "blamejs-test-bucket",
+          serviceAccount:  sa,
+          classifications: ["operational"],
+        },
+      },
+      defaultClassification: "operational",
+    });
+
+    var fixed = new Date("2026-04-27T12:34:56Z");
+    var policy = b.storage.presignedUploadPolicy("uploads/g.bin", {
+      classification: "operational",
+      expiresIn:      900,
+      maxBytes:       5 * 1024 * 1024,
+      contentType:    "application/octet-stream",
+      date:           fixed,
+    });
+
+    check("gcs policy: method = POST",            policy.method === "POST");
+    check("gcs policy: enforcement",              policy.enforcement === "content-length-range");
+    check("gcs policy: maxBytes echoed",          policy.maxBytes === 5 * 1024 * 1024);
+
+    var f = policy.fields;
+    check("gcs policy: x-goog-algorithm",         f["x-goog-algorithm"] === "GOOG4-RSA-SHA256");
+    check("gcs policy: x-goog-credential",        (f["x-goog-credential"] || "").indexOf(sa.client_email + "/") === 0);
+    check("gcs policy: signature is hex (RSA-SHA256/2048 = 512 hex chars)",
+                                                  /^[0-9a-f]{512}$/.test(f["x-goog-signature"]));
+
+    // Verify RSA signature: signed value is the base64 policy.
+    var verifier = nodeCrypto.createVerify("RSA-SHA256");
+    verifier.update(f.policy);
+    verifier.end();
+    var ok = verifier.verify(keys.publicKey, Buffer.from(f["x-goog-signature"], "hex"));
+    check("gcs policy: RSA signature verifies",   ok === true);
+
+    // Decode the policy and check content-length-range
+    var policyDoc = JSON.parse(Buffer.from(f.policy, "base64").toString("utf8"));
+    var hasRange = policyDoc.conditions.some(function (c) {
+      return Array.isArray(c) && c[0] === "content-length-range" && c[2] === 5 * 1024 * 1024;
+    });
+    check("gcs policy: content-length-range condition", hasRange);
+  } finally {
+    b.storage._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testPresignedUploadPolicyAzureClientOnly() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    var accountKey = nodeCrypto.randomBytes(32).toString("base64");
+    b.storage.init({
+      backends: {
+        "az": {
+          protocol:        "azure-blob",
+          accountName:     "blamejstest",
+          accountKey:      accountKey,
+          container:       "uploads",
+          classifications: ["operational"],
+        },
+      },
+      defaultClassification: "operational",
+    });
+
+    var policy = b.storage.presignedUploadPolicy("a.bin", {
+      classification: "operational",
+      expiresIn:      600,
+      maxBytes:       2 * 1024 * 1024,
+      contentType:    "image/jpeg",
+    });
+    check("azure policy: method = PUT (SAS)",     policy.method === "PUT");
+    check("azure policy: fields = null",          policy.fields === null);
+    check("azure policy: enforcement = client-only", policy.enforcement === "client-only");
+    check("azure policy: enforcementNote present",
+                                                  typeof policy.enforcementNote === "string" &&
+                                                  policy.enforcementNote.length > 0);
+    check("azure policy: SAS URL with sig param", /[?&]sig=/.test(policy.url));
+  } finally {
+    b.storage._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testPresignedUploadPolicyLocalAndHttpPutThrow() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    b.storage.init({ backend: "local", uploadDir: path.join(tmpDir, "uploads") });
+
+    var threw = null;
+    try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: 1024 }); } catch (e) { threw = e; }
+    check("policy: local backend rejects",        threw && threw.code === "PRESIGN_NOT_SUPPORTED");
+
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    b.storage.init({
+      backends: {
+        "edge": {
+          protocol:        "http-put",
+          baseUrl:         "https://upload.example.com",
+          classifications: ["operational"],
+        },
+      },
+      defaultClassification: "operational",
+    });
+    threw = null;
+    try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: 1024 }); } catch (e) { threw = e; }
+    check("policy: http-put backend rejects",     threw && threw.code === "PRESIGN_NOT_SUPPORTED");
+  } finally {
+    b.storage._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testAuditEventEmitted() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
   try {
@@ -425,6 +659,11 @@ async function run() {
   await testSigv4PresignedDownloadUrl();
   await testGcsV4Presigning();
   await testAzureSasPresigning();
+  await testPresignedUploadPolicyMaxBytesRequired();
+  await testPresignedUploadPolicySigv4();
+  await testPresignedUploadPolicyGcs();
+  await testPresignedUploadPolicyAzureClientOnly();
+  await testPresignedUploadPolicyLocalAndHttpPutThrow();
   await testAuditEventEmitted();
 }
 
