@@ -212,6 +212,78 @@ async function testListForOwner() {
 
 // ---- getById ----
 
+async function testEnvelopeFormatPersisted() {
+  var keys = b.apiKey.create({ namespace: "envelope-shape" });
+  var issued = await keys.issue({ ownerId: "u1" });
+  // Read the row directly to confirm what's stored
+  var rec = await keys.getById(issued.id);
+  // The scrubbed record doesn't expose secretHash, so reach into the
+  // verify path's behavior: re-issue same secret would get a different
+  // envelope (random salt-free but the secret IS the same so SHAKE256
+  // is deterministic — we'll inspect format another way).
+  var inspect = b.credentialHash.inspect;
+  // We need the raw secretHash; pull from cluster-storage directly.
+  var row = await b.clusterStorage.executeOne(
+    "SELECT secretHash FROM _blamejs_api_keys WHERE id = ?",
+    [(rec.namespace || "envelope-shape") + ":" + rec.id]
+  );
+  // After unsealing... actually secretHash is NOT sealed (it's already a hash);
+  // it's stored raw. So row.secretHash IS the envelope string.
+  var info = inspect(row.secretHash);
+  check("envelope: stored as base64 envelope",       info !== null);
+  check("envelope: algoId is SHAKE256 (0x01)",       info.algoId === 0x01);
+  check("envelope: algoName is shake256",            info.algoName === "shake256");
+  check("envelope: payload is 128 bytes by default", info.payloadBytes === 128);
+}
+
+async function testLegacyRawHexFallback() {
+  var keys = b.apiKey.create({ namespace: "legacy-fallback" });
+  // Manually craft a legacy-style row: raw hex SHA3-512 (no envelope).
+  // Issue normally to populate the row, then overwrite secretHash with
+  // a raw-hex SHA3-512 of a known plaintext to simulate a v0.2.27 row.
+  var legacySecret = "deadbeefcafe1234567890abcdef0123";
+  var legacyHex = b.crypto.sha3Hash(legacySecret);    // 128 hex chars
+  var issued = await keys.issue({ ownerId: "u1" });
+  // Overwrite directly via cluster-storage
+  await b.clusterStorage.execute(
+    "UPDATE _blamejs_api_keys SET secretHash = ? WHERE id = ?",
+    [legacyHex, "legacy-fallback:" + issued.id]
+  );
+  // Build a key with the legacy secret
+  var legacyKey = "bk_legacy-fallback_" + issued.id + "_" + legacySecret;
+  var record = await keys.verify(legacyKey);
+  check("legacy fallback: raw-hex SHA3-512 verifies",
+        record !== null && record.id === issued.id);
+
+  // Negative: wrong secret against the legacy row → null
+  var wrongKey = "bk_legacy-fallback_" + issued.id + "_" + "0".repeat(32);
+  var wrongResult = await keys.verify(wrongKey);
+  check("legacy fallback: wrong secret returns null", wrongResult === null);
+}
+
+async function testHashAlgoOptArgon2id() {
+  // Argon2id costs ~250ms per verify — keep this test small (issue +
+  // verify only; no rotation, no purge sweep).
+  var keys = b.apiKey.create({
+    namespace: "argon2id",
+    hashAlgo:  "argon2id",
+  });
+  var issued = await keys.issue({ ownerId: "u1" });
+  var record = await keys.verify(issued.key);
+  check("argon2id: roundtrip verifies", record !== null && record.id === issued.id);
+
+  var row = await b.clusterStorage.executeOne(
+    "SELECT secretHash FROM _blamejs_api_keys WHERE id = ?",
+    ["argon2id:" + issued.id]
+  );
+  var info = b.credentialHash.inspect(row.secretHash);
+  check("argon2id: envelope algoId 0x02",   info.algoId === 0x02);
+  check("argon2id: envelope algoName argon2id", info.algoName === "argon2id");
+
+  var wrong = await keys.verify("bk_argon2id_" + issued.id + "_" + "0".repeat(32));
+  check("argon2id: wrong secret returns null", wrong === null);
+}
+
 async function testGetById() {
   var keys = b.apiKey.create({ namespace: "get-test" });
   var issued = await keys.issue({ ownerId: "u1" });
@@ -444,6 +516,9 @@ async function run() {
     await testExpired();
     await testRotate();
     await testRotateNotFoundOrRevoked();
+    await testEnvelopeFormatPersisted();
+    await testLegacyRawHexFallback();
+    await testHashAlgoOptArgon2id();
     await testListForOwner();
     await testGetById();
     await testTrackLastUsedAt();
