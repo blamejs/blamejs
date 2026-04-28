@@ -1,6 +1,6 @@
 "use strict";
 /**
- * csp-nonce — per-request CSP nonce + render integration (Phase 9.6).
+ * csp-nonce — per-request CSP nonce + render integration.
  *
  * Run standalone: `node test/layer-0-primitives/csp-nonce.test.js`
  * Or via smoke:   `node test/smoke.js`

@@ -1,6 +1,6 @@
 "use strict";
 /**
- * queue — DLQ + extendLease (Phase 9.11a + 9.11h).
+ * queue — DLQ + extendLease.
  *
  * 9.11h: handler context exposes ctx.extendLease(ms) so long-running
  *        jobs can push their lease forward atomically before the

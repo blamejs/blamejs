@@ -1,6 +1,6 @@
 "use strict";
 /**
- * scheduler — exactly-once-globally tick-claim (Phase 9.11e).
+ * scheduler — exactly-once-globally tick-claim.
  *
  * When opts.cluster is wired, every fire must INSERT a row into
  * _blamejs_scheduler_ticks keyed on (taskName, scheduledAtUnix). The

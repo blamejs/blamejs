@@ -62,7 +62,7 @@ async function testClusterGatesAuditAndConsent() {
 async function testClusterGatesSession() {
   var fx = await _setupClusterGateFixture();
   try {
-    // session.* are async since v0.1.50 (cluster-storage dispatch).
+    // session.* are async since the cluster-storage migration (cluster-storage dispatch).
     // _expectNotLeaderError awaits the returned promise when fn returns
     // one — but the call-site await is what makes the assertion sequence
     // before the next statement runs.
@@ -157,7 +157,7 @@ async function testClusterGatesObjectStoreLocal() {
   }
 }
 
-// ---- createApp (Phase 5 slice 1) ----
+// ---- createApp ----
 
 async function _appGet(port, urlPath) {
   return await b.httpClient.request({
@@ -449,8 +449,8 @@ async function run() {
   await testClusterGatesQueue();
   await testClusterGatesObjectStoreLocal();
 
-  // createApp — Phase 5 slice 1 — orchestrates vault → externalDb →
-  // cluster → frameworkSchema → db → router → middleware → routes.
+  // createApp — orchestrates vault → externalDb → cluster →
+  // frameworkSchema → db → router → middleware → routes.
   testCreateAppSurface();
   await testCreateAppValidation();
   await testCreateAppMinimalBoot();

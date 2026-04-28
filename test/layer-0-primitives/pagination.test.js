@@ -1,6 +1,6 @@
 "use strict";
 /**
- * pagination — cursor + offset helpers (Phase 9.5).
+ * pagination — cursor + offset helpers.
  *
  * Run standalone: `node test/layer-0-primitives/pagination.test.js`
  * Or via smoke:   `node test/smoke.js`

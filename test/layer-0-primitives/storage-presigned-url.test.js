@@ -1,6 +1,6 @@
 "use strict";
 /**
- * storage — presigned upload URL (Phase 9.11k).
+ * storage — presigned upload URL.
  *
  * Operators handing browser/mobile clients a direct path to object
  * storage need a signed PUT URL the client can use without holding

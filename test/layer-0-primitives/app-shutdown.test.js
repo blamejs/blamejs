@@ -1,6 +1,6 @@
 "use strict";
 /**
- * app-shutdown — graceful-shutdown orchestrator (Phase 9.9).
+ * app-shutdown — graceful-shutdown orchestrator.
  *
  * Run standalone: `node test/layer-0-primitives/app-shutdown.test.js`
  * Or via smoke:   `node test/smoke.js`

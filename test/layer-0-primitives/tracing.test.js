@@ -1,6 +1,6 @@
 "use strict";
 /**
- * tracing — OpenTelemetry seam (Phase 9.8).
+ * tracing — OpenTelemetry seam.
  *
  * Run standalone: `node test/layer-0-primitives/tracing.test.js`
  * Or via smoke:   `node test/smoke.js`

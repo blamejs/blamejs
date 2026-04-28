@@ -1,6 +1,6 @@
 "use strict";
 /**
- * rate-limit — cluster-shared backend (Phase 9.11g).
+ * rate-limit — cluster-shared backend.
  *
  * The middleware now exposes a backend seam:
  *   - 'memory' (default) — token bucket, in-process, sync take().

@@ -384,7 +384,7 @@ async function testClusterAuditTipFencing() {
 }
 
 async function testClusterSessionsSharedAcrossNodes() {
-  // Sessions migrated to external-db in v0.1.50 — a session created on
+  // Sessions migrated to external-db when migrated to external-db — a session created on
   // the leader must be verifiable by reading the SAME external-db row.
   // We can't truly stand up two node processes in-test, so we simulate
   // the cluster-shared-storage property by:
@@ -645,7 +645,7 @@ async function testClusterConsentRollbackDetected() {
 }
 
 async function testClusterQueueJobsSharedAcrossNodes() {
-  // Queue jobs migrated to external-db in v0.1.51 — enqueue from the
+  // Queue jobs migrated to external-db when migrated to external-db — enqueue from the
   // leader writes to external-db; lease + complete observe the same
   // shared row. Mirrors the session-cluster test's structure: one
   // node process, but verifies storage-routing properties.
@@ -1029,7 +1029,7 @@ async function testClusterAuditTipRowHashMismatch() {
 }
 
 async function testClusterAuditFlushNoRecursionHang() {
-  // Regression test for v0.1.46:
+  // Regression test for :
   // Before the fix, audit.flush() in cluster mode hung forever because
   // each drained event wrote through external-db, externalDb.query
   // emitted a system.externaldb.query audit event back into the same
@@ -1243,7 +1243,7 @@ async function testAuditChainBreak() {
     var v1 = await b.audit.verify();
     check("chain ok before tampering", v1.ok === true);
 
-    // Manually corrupt a row's reason field. As of v0.0.7 the audit_log
+    // Manually corrupt a row's reason field. Currently the audit_log
     // table has BEFORE-UPDATE/DELETE triggers blocking direct mutation —
     // simulating a raw-DB-file tamper that bypassed those guards by
     // dropping the triggers around the corruption.
@@ -1614,7 +1614,7 @@ async function testTableMetadata() {
 
 async function testAuditSignDefaultsToSlhDsa() {
   // First-run plaintext init in a fresh data directory should generate
-  // an SLH-DSA-SHAKE-256f keypair (the v0.1.54 default), and the
+  // an SLH-DSA-SHAKE-256f keypair (the current default), and the
   // on-disk file should record `algorithm: "slh-dsa-shake-256f"` so
   // future loads dispatch correctly without re-detection.
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-asd-"));
@@ -1691,7 +1691,7 @@ async function testAuditSignMlDsaOptIn() {
 }
 
 async function testAuditSignLegacyFileBackcompat() {
-  // Legacy audit-sign.key files (pre-v0.1.54) have no `algorithm`
+  // Legacy audit-sign.key files (pre-migration) have no `algorithm`
   // field. Treat them as ml-dsa-87 — the previous implicit default —
   // so existing deployments keep verifying their checkpoint chain
   // after upgrade. Forge a legacy file by hand and verify the load
@@ -2013,7 +2013,7 @@ async function run() {
   await testForeignKeys();
   await testTableMetadata();
 
-  // audit-sign algorithm-agility (v0.1.54)
+  // audit-sign algorithm-agility
   await testAuditSignDefaultsToSlhDsa();
   await testAuditSignMlDsaOptIn();
   await testAuditSignLegacyFileBackcompat();

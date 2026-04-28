@@ -26,7 +26,7 @@
  *
  * Pending migration (still in smoke.js):
  *   - atomic-file / parsers (xml, csv, toml, yaml, env-parse) /
- *     redact (v0.1.19)
+ *     redact
  */
 
 var helpers = require("./_helpers");
@@ -671,7 +671,7 @@ function _stepFromT(tSec, stepSec) {
 function testAuthTotpRfc6238Vectors() {
   // Appendix B vectors at 8 digits — matches the RFC reference
   // implementation AND the framework's new 8-digit default. The
-  // explicit `digits: 8` is redundant under the v0.1.57 default but
+  // explicit `digits: 8` is redundant under the current default but
   // kept here so the test stays valid even if the default ever shifts.
   var t = b.auth.totp;
   var sha256Vectors = [
@@ -1411,7 +1411,7 @@ async function testAuthJwtMissingKey() {
         threwV && threwV.code === "auth-jwt/missing-key");
 }
 
-// ---- template (Phase 4 slice 1 — eval-free interpreter) ----
+// ---- template — eval-free interpreter ----
 //
 // Each test sets up its own tmpdir + writes the views by hand so the
 // fixtures are inline + readable. No global state — every test creates
@@ -1695,7 +1695,7 @@ function testTemplateSurface() {
   check("b.template.escapeHtml is a function", typeof b.template.escapeHtml === "function");
 }
 
-// ---- render (Phase 4 slice 2 — response helpers) ----
+// ---- render — response helpers ----
 
 function _captureRes() {
   // Mock res with the same shape b.middleware.errorHandler / cors etc.
@@ -1847,7 +1847,7 @@ function testRenderSurface() {
   check("b.render.redirect is a function",             typeof b.render.redirect === "function");
 }
 
-// ---- staticServe (Phase 4 slice 3) ----
+// ---- staticServe ----
 //
 // Each test sets up its own root dir with fixture files; ends-to-end
 // via a real http server + the framework's listenOnRandomPort helper.
@@ -2167,7 +2167,7 @@ function testStaticServeSurface() {
   check("create() rejects missing root",                threw && /does not exist/.test(threw.message));
 }
 
-// ---- forms (Phase 4 slice 4) ----
+// ---- forms ----
 
 function testFormsCsrfTokenGeneration() {
   var f = b.forms;
@@ -2388,7 +2388,7 @@ function testFormsSurface() {
   check("b.forms.CSRF_TOKEN_BYTES = 32",                f.CSRF_TOKEN_BYTES === 32);
 }
 
-// ---- mail (Phase 5 slice 4) ----
+// ---- mail ----
 //
 // memory transport is the pattern for tests; it captures every
 // message into transport.sent[] without touching disk or network.
@@ -9434,7 +9434,7 @@ async function testCliMigrateUpFailureExits1() {
   } finally { fx.cleanup(); }
 }
 
-// ---- Phase 9.11b — session fixation rotation ----
+// ---- session fixation rotation ----
 
 async function testSessionRotateBasic() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-srot-"));
@@ -9677,7 +9677,7 @@ function testMigrationsDownRollback() {
   } finally { fx.cleanup(); }
 }
 
-// ---- Phase 9.11j — migrations advisory lock ----
+// ---- migrations advisory lock ----
 
 function testMigrationsLockReleasedAfterUp() {
   var fx = _makeMigrationsFixture();
@@ -13419,7 +13419,7 @@ function testCryptoAndModuleSurface() {
   // Token / random bytes
   check("generateToken default = 64 hex chars (32 bytes)", b.crypto.generateToken().length === 64);
   check("generateBytes returns 16 bytes",                  b.crypto.generateBytes(16).length === 16);
-  // Regression for the v0.1.57 fix: pre-fix, random() ran randomBytes
+  // Regression check:: pre-fix, random() ran randomBytes
   // through SHA3-512 (fixed 64-byte output) + subarray, which silently
   // truncated requests > 64 bytes. The TOTP 128-byte secret surfaced
   // it. Fixed by switching to SHAKE256 (XOF; arbitrary output length).
@@ -13500,7 +13500,7 @@ async function run() {
   testAuthHeaderBearer();
   testAuthHeaderBasic();
   testAuthHeaderFromConfig();
-  // auth.password — Argon2id app-password hashing (Phase 3 slice 1)
+  // auth.password — Argon2id app-password hashing
   testAuthPasswordSurface();
   await testAuthPasswordHashShape();
   await testAuthPasswordVerifyRoundTrip();
@@ -13508,7 +13508,7 @@ async function run() {
   await testAuthPasswordVerifyMalformedHash();
   await testAuthPasswordHashRejectsBadInput();
   await testAuthPasswordNeedsRehash();
-  // auth.totp — RFC 6238 TOTP (Phase 3 slice 2)
+  // auth.totp — RFC 6238 TOTP
   testAuthTotpSurface();
   testAuthTotpRfc6238Vectors();
   testAuthTotpGenerateSecret();
@@ -13519,14 +13519,14 @@ async function run() {
   testAuthTotpUriShape();
   testAuthTotpBackupCodes();
   testAuthTotpBadAlgorithmRejected();
-  // auth.passkey — WebAuthn (Phase 3 slice 3)
+  // auth.passkey — WebAuthn
   await testAuthPasskeySurface();
   await testAuthPasskeyStartRegistrationOptions();
   await testAuthPasskeyStartAuthenticationOptions();
   await testAuthPasskeyValidationErrors();
   await testAuthPasskeyExcludeCredentials();
   await testAuthPasskeyCustomHints();
-  // template — eval-free server-side HTML template engine (Phase 4 slice 1)
+  // template — eval-free server-side HTML template engine
   testTemplateSurface();
   testTemplateEscapeHtml();
   testTemplateBasicRender();
@@ -13540,7 +13540,7 @@ async function run() {
   testTemplatePrototypeSafety();
   testTemplateCacheAndReset();
   testTemplateMissingViewsDir();
-  // render — response helpers paired with the template engine (Phase 4 slice 2)
+  // render — response helpers paired with the template engine
   testRenderSurface();
   testRenderJson();
   testRenderText();
@@ -13549,7 +13549,7 @@ async function run() {
   testRenderDoesNotDoubleWrite();
   testRenderCreateWithEngine();
   testRenderCreateValidation();
-  // staticServe — file serving + ETag + SRI (Phase 4 slice 3)
+  // staticServe — file serving + ETag + SRI
   testStaticServeSurface();
   await testStaticServeBasic();
   await testStaticServeImmutableForHashedPaths();
@@ -13559,7 +13559,7 @@ async function run() {
   await testStaticServeIndexFile();
   await testStaticServeMethodGuard();
   await testStaticServeIntegrityHelper();
-  // mail — message contract + pluggable transport (Phase 5 slice 4)
+  // mail — message contract + pluggable transport
   testMailSurface();
   testMailCreateValidation();
   await testMailSendRoundTripViaMemoryTransport();
@@ -13580,7 +13580,7 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
-  // api-snapshot — public-API surface walker + breaking-change detector (Phase 8 slice 8b)
+  // api-snapshot — public-API surface walker + breaking-change detector
   testApiSnapshotSurface();
   testApiSnapshotCaptureCategorizes();
   testApiSnapshotCaptureHandlesCycles();
@@ -13594,7 +13594,7 @@ async function run() {
   testApiSnapshotFormatDiff();
   testApiSnapshotOnFrameworkSurfaceCaptures();
   await testCliApiSnapshotCaptureAndCompare();
-  // deprecate — runtime deprecation warnings + LTS-contract enforcement (Phase 8 slice 8a)
+  // deprecate — runtime deprecation warnings + LTS-contract enforcement
   testDeprecateSurface();
   testDeprecateModeResolution();
   testDeprecateWarnEmitsOnce();
@@ -13606,7 +13606,7 @@ async function run() {
   testDeprecateWrapValidation();
   testDeprecateAlias();
   testDeprecateListAndReset();
-  // restore-rollback + restore — atomic dataDir swap + storage-backed orchestrator (Phase 7 slice 7e)
+  // restore-rollback + restore — atomic dataDir swap + storage-backed orchestrator
   testRestoreRollbackSurface();
   testRestoreRollbackSwap();
   await testRestoreRollbackRoundTrip();
@@ -13620,7 +13620,7 @@ async function run() {
   await testRestoreRunWithWrongPassphrase();
   await testRestoreListRollbacksAndPurge();
   await testRestoreInspectWithoutDecrypt();
-  // backup — operator-facing orchestration + retention + storage backend (Phase 7 slice 7d)
+  // backup — operator-facing orchestration + retention + storage backend
   testBackupSurface();
   testBackupRecommendedFiles();
   await testBackupFlushBeforeBackupCalled();
@@ -13634,7 +13634,7 @@ async function run() {
   await testBackupRetentionAutoSweepOnRun();
   await testBackupBundleIdValidation();
   await testBackupLocalStorageRejectsExistingDest();
-  // restore-bundle — extract an encrypted backup bundle to staging (Phase 7 slice 7c)
+  // restore-bundle — extract an encrypted backup bundle to staging
   testRestoreBundleSurface();
   await testRestoreBundleRoundTrip();
   await testRestoreBundleFilterSubset();
@@ -13645,21 +13645,21 @@ async function run() {
   await testRestoreBundleEncryptedSizeMismatchDetected();
   testRestoreBundleInspectReturnsManifest();
   await testRestoreBundleArgValidation();
-  // backup-bundle — encrypted backup bundle producer (Phase 7 slice 7b)
+  // backup-bundle — encrypted backup bundle producer
   testBackupBundleSurface();
   await testBackupBundleCreateEndToEnd();
   await testBackupBundlePathTraversalRejected();
   await testBackupBundleRequiredMissing();
   await testBackupBundleEmptyBundleRejected();
   await testBackupBundleArgValidation();
-  // backup-manifest — bundle schema + create/validate/parse/serialize (Phase 7 slice 7a)
+  // backup-manifest — bundle schema + create/validate/parse/serialize
   testBackupManifestSurface();
   testBackupManifestCreateAndSerialize();
   testBackupManifestValidateRejectsBadFields();
   testBackupManifestRejectsDuplicatePaths();
   testBackupManifestParseRejectsCorruption();
   testBackupManifestSerializeIsCanonical();
-  // backup-crypto — Argon2id KDF + XChaCha20-Poly1305 for backup files (Phase 7 slice 7)
+  // backup-crypto — Argon2id KDF + XChaCha20-Poly1305 for backup files
   testBackupCryptoSurface();
   await testBackupCryptoDeriveKeyDeterministic();
   await testBackupCryptoRoundTrip();
@@ -13669,7 +13669,7 @@ async function run() {
   await testBackupCryptoFreshSaltUnique();
   testBackupCryptoChecksumIsSha3_512();
   await testBackupCryptoArgValidation();
-  // body-parser — request-body buffering + dispatch (Phase 9.2)
+  // body-parser — request-body buffering + dispatch
   await testBodyParserSurface();
   await testBodyParserGetSkipped();
   await testBodyParserJsonHappy();
@@ -13693,7 +13693,7 @@ async function run() {
   await testBodyParserMultipartTruncated();
   await testBodyParserContentLengthExceedsLimitImmediate();
   testBodyParserSanitizeFilenameUnit();
-  // auth.oauth — OAuth 2 / OIDC client (Phase 9.10)
+  // auth.oauth — OAuth 2 / OIDC client
   testOAuthSurface();
   testOAuthCreateValidates();
   testOAuthPkceGenerator();
@@ -13709,7 +13709,7 @@ async function run() {
   testOAuthVerifyParamsForAlg();
   // AppShutdown — moved to test/layer-0-primitives/
   // Tracing — moved to test/layer-0-primitives/
-  // metrics — Prometheus-format counters / gauges / histograms (Phase 9.7)
+  // metrics — Prometheus-format counters / gauges / histograms
   testMetricsSurface();
   testMetricsCounterBasic();
   testMetricsCounterRefusesNegative();
@@ -13731,7 +13731,7 @@ async function run() {
   testMetricsResetClearsValues();
   // CspNonce — moved to test/layer-0-primitives/
   // pagination — moved to test/layer-0-primitives/pagination.test.js
-  // compression — gzip + brotli response compression (Phase 9.4)
+  // compression — gzip + brotli response compression
   await testCompressionSurface();
   await testCompressionParseAcceptEncoding();
   await testCompressionNegotiate();
@@ -13751,7 +13751,7 @@ async function run() {
   await testCompressionImplicitWriteHeadPath();
   await testCompressionInvalidEncodingRejectedAtCreate();
   await testCompressionDoesntDoubleCompressViaWrappedWrite();
-  // health — liveness/readiness/startup probe primitive (Phase 9.3)
+  // health — liveness/readiness/startup probe primitive
   await testHealthSurface();
   await testHealthDefaultLiveness();
   await testHealthDefaultReadiness();
@@ -13772,7 +13772,7 @@ async function run() {
   await testHealthInvalidArgs();
   await testHealthCheckThrowFails();
   await testHealthCacheControlHeader();
-  // safe-schema — declarative input validation (Phase 9.1)
+  // safe-schema — declarative input validation
   testSafeSchemaSurface();
   testSafeSchemaStringPrimitive();
   testSafeSchemaNumberPrimitive();
@@ -13788,7 +13788,7 @@ async function run() {
   testSafeSchemaErrorIssues();
   testSafeSchemaImmutability();
   // events — moved to test/layer-0-primitives/events.test.js
-  // audit-tools — operator tooling on the audit chain (Phase 7 deferred slice)
+  // audit-tools — operator tooling on the audit chain
   testAuditToolsSurface();
   await testAuditToolsArchiveAndVerify();
   await testAuditToolsExportSliceAndVerify();
@@ -13799,7 +13799,7 @@ async function run() {
   await testAuditToolsPurgeRoundTrip();
   await testAuditToolsPurgeRejectsUnverifiedArchive();
   await testAuditCliVerifyBundleSubcommand();
-  // mtls-ca — CA file-management primitives + engine-pluggable issuance (Phase 7 slice 6)
+  // mtls-ca — CA file-management primitives + engine-pluggable issuance
   testMtlsCaSurface();
   testMtlsCaCreateValidation();
   testMtlsCaParseGeneration();
@@ -13814,7 +13814,7 @@ async function run() {
   await testMtlsCaInitCaRejectsBadEngineOutput();
   await testMtlsCaGenerateClientCertDelegates();
   await testMtlsCaGenerateClientP12Validation();
-  // vault-passphrase-ops — seal / unseal / rotate the vault passphrase wrap (Phase 7 slice 5)
+  // vault-passphrase-ops — seal / unseal / rotate the vault passphrase wrap
   testVaultPassphraseOpsSurface();
   testVaultPassphraseOpsPreflightChecks();
   await testVaultPassphraseOpsSealUnsealRoundTrip();
@@ -13824,7 +13824,7 @@ async function run() {
   await testVaultPassphraseOpsRotateRejectsBadOldPassphrase();
   testVaultPassphraseOpsArgValidation();
   await testVaultPassphraseOpsRequiresBufferPassphrase();
-  // vault-rotate (diagnostics) — schema drift + round-trip verify (Phase 7 slice 3)
+  // vault-rotate (diagnostics) — schema drift + round-trip verify
   testVaultRotateSurface();
   testVaultRotateValidateSchemaCleanCase();
   testVaultRotateValidateMissingTable();
@@ -13837,18 +13837,18 @@ async function run() {
   testVaultRotateVerifyRequiresKeysAndDb();
   await testVaultRotateRotateEndToEnd();
   await testVaultRotateRotateValidation();
-  // pqc-agent — outbound HTTPS agent locked to PQC group preference (Phase 7 slice 2)
+  // pqc-agent — outbound HTTPS agent locked to PQC group preference
   testPqcAgentSurface();
   testPqcAgentCreateHasPqcPosture();
   testPqcAgentCannotWeakenCryptoPosture();
   testPqcAgentDefaultIsLazy();
   testPqcAgentCreateHttpHasNoTlsPosture();
-  // pqc-gate — TCP-level PQC enforcement on ClientHello (Phase 7 slice 1)
+  // pqc-gate — TCP-level PQC enforcement on ClientHello
   testPqcGateSurface();
   testClientHelloPqcDetection();
   testPqcGateSocketLifecycle();
   testPqcGateBypassesLocalhost();
-  // bundler — content-hashed asset pipeline + manifest (Phase 6 slice 7)
+  // bundler — content-hashed asset pipeline + manifest
   testBundlerSurface();
   testBundlerCreateValidation();
   await testBundlerBuildHashedOutput();
@@ -13857,7 +13857,7 @@ async function run() {
   await testBundlerCustomHashLen();
   await testBundlerReadFailure();
   await testBundlerWatchRebuilds();
-  // dev — file-watch + child-process restart engine (Phase 6 slice 6)
+  // dev — file-watch + child-process restart engine
   testDevSurface();
   await testDevStartSpawnsChildAndArmsWatchers();
   await testDevDebouncesBurstOfEventsToOneRestart();
@@ -13865,7 +13865,7 @@ async function run() {
   await testDevRestartCoalescesQueuedRestart();
   await testDevStopKillsAndDisarms();
   await testDevUnexpectedExitDoesNotRespawn();
-  // cli — `blamejs <cmd>` dispatch + migrate subcommand (Phase 6 slice 5)
+  // cli — `blamejs <cmd>` dispatch + migrate subcommand
   testCliSurface();
   testCliArgParser();
   await testCliVersionAndHelp();
@@ -13875,7 +13875,7 @@ async function run() {
   await testCliMigrateDownReportsNoOpCleanly();
   await testCliMigrateUpFailureExits1();
   await testCliDevValidation();
-  // migrations — public migration runner with up/down/status (Phase 6 slice 4)
+  // migrations — public migration runner with up/down/status
   testMigrationsSurface();
   testMigrationsUpAppliesPending();
   testMigrationsStatus();
@@ -13885,26 +13885,26 @@ async function run() {
   testMigrationsRejectsRollbackWithoutDown();
   testMigrationsUpFailureRollsBackTransaction();
   testMigrationsRejectsMalformedFiles();
-  // Phase 9.11j — migrations advisory lock
+  // migrations advisory lock
   testMigrationsLockReleasedAfterUp();
   testMigrationsLockBlocksConcurrent();
   testMigrationsLockStaleReplace();
   testMigrationsLockReleasedAfterFailure();
-  // Phase 9.11b — session fixation rotation
+  // session fixation rotation
   await testSessionRotateBasic();
   await testSessionRotateReplacesData();
   await testSessionRotateRefreshesTtl();
   await testSessionRotateExpiredReturnsNull();
   await testSessionRotateUnknownReturnsNull();
   await testSessionRotateLifecycleAuditEmit();
-  // cookies — RFC 6265 cookie primitive + sealed-value access gate (Phase 6 slice 3)
+  // cookies — RFC 6265 cookie primitive + sealed-value access gate
   testCookiesSurface();
   testCookiesParse();
   testCookiesSerialize();
   testCookiesInstanceDefaults();
   testCookiesReadWrite();
   testCookiesSealedRoundTrip();
-  // errors-page — router error handler with rich dev page + safe prod page (Phase 6 slice 2)
+  // errors-page — router error handler with rich dev page + safe prod page
   testErrorsPageSurface();
   testErrorsPageProdHidesStackAndOriginalMessage();
   testErrorsPageDevShowsStackAndRequestInfo();
@@ -13916,7 +13916,7 @@ async function run() {
   testErrorsPageLogsViaInjectedLogger();
   testErrorsPageDevEnvVarsHonorOptIn();
   testErrorsPageModeAutoDetectsFromNodeEnv();
-  // log — structured JSON logging with request-id correlation (Phase 6 slice 1)
+  // log — structured JSON logging with request-id correlation
   testLogSurface();
   testLogEmitsJsonLineToStdout();
   testLogRoutesErrorAndFatalToStderr();
@@ -13929,7 +13929,7 @@ async function run() {
   testLogEnvLevelOverride();
   testLogConfigValidation();
   testLogHandlesUnserializableExtras();
-  // scheduler — cron + interval over jobs (Phase 5 slice 5)
+  // scheduler — cron + interval over jobs
   testSchedulerSurface();
   testSchedulerCronParser();
   testSchedulerNextCronFire();
@@ -13940,7 +13940,7 @@ async function run() {
   await testSchedulerLeaderGate();
   await testSchedulerErrorRecorded();
   await testSchedulerStartStopIdempotent();
-  // forms — CSRF tokens + HTML render + validation (Phase 4 slice 4)
+  // forms — CSRF tokens + HTML render + validation
   testFormsSurface();
   testFormsCsrfTokenGeneration();
   testFormsCsrfTokenVerify();
@@ -13952,7 +13952,7 @@ async function run() {
   testFormsRenderRejectsInvalidSpec();
   testFormsValidateRequired();
   testFormsValidateTypes();
-  // auth.jwt — PQC-signed JWT (Phase 3 slice 5, final)
+  // auth.jwt — PQC-signed JWT
   testAuthJwtSurface();
   await testAuthJwtSignVerifyRoundTripDefault();
   await testAuthJwtMlDsaOptIn();

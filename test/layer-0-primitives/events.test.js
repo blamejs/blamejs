@@ -1,6 +1,6 @@
 "use strict";
 /**
- * events — framework breach-detection signal bus (Phase 7 slice B).
+ * events — framework breach-detection signal bus.
  *
  * Run standalone: `node test/layer-0-primitives/events.test.js`
  * Or via smoke:   `node test/smoke.js`
