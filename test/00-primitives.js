@@ -10730,6 +10730,107 @@ async function testCliMigrateUpFailureExits1() {
   } finally { fx.cleanup(); }
 }
 
+// ---- Phase 9.11b — session fixation rotation ----
+
+async function testSessionRotateBasic() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-srot-"));
+  try {
+    await setupTestDb(tmpDir);
+    var s = await b.session.create({ userId: "u-1", data: { role: "user" } });
+    var rotated = await b.session.rotate(s.token);
+    check("rotate: returns new token",                typeof rotated.token === "string");
+    check("rotate: new token differs from old",       rotated.token !== s.token);
+    check("rotate: expiresAt preserved by default",   rotated.expiresAt === s.expiresAt);
+    // Old token should no longer verify
+    var oldVerify = await b.session.verify(s.token);
+    check("rotate: old token invalid after rotate",   oldVerify === null);
+    // New token verifies and returns same userId
+    var newVerify = await b.session.verify(rotated.token);
+    check("rotate: new token verifies",                newVerify !== null);
+    check("rotate: new token has same userId",         newVerify.userId === "u-1");
+    check("rotate: new token has same data",           newVerify.data && newVerify.data.role === "user");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testSessionRotateReplacesData() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-srot-"));
+  try {
+    await setupTestDb(tmpDir);
+    var s = await b.session.create({ userId: "u-2", data: { role: "user" } });
+    var rotated = await b.session.rotate(s.token, { data: { role: "admin", mfa: true } });
+    var v = await b.session.verify(rotated.token);
+    check("rotate w/data: new data persisted",        v.data && v.data.role === "admin");
+    check("rotate w/data: nested fields preserved",    v.data && v.data.mfa === true);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testSessionRotateRefreshesTtl() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-srot-"));
+  try {
+    await setupTestDb(tmpDir);
+    var s = await b.session.create({ userId: "u-3", ttlMs: 1000 });
+    // Rotate with a much larger TTL
+    var rotated = await b.session.rotate(s.token, { ttlMs: 60 * 60 * 1000 });
+    check("rotate: new expiresAt > original",          rotated.expiresAt > s.expiresAt);
+    var v = await b.session.verify(rotated.token);
+    check("rotate: verified expiresAt matches",         v.expiresAt === rotated.expiresAt);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testSessionRotateExpiredReturnsNull() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-srot-"));
+  try {
+    await setupTestDb(tmpDir);
+    var s = await b.session.create({ userId: "u-4", ttlMs: 1 }); // 1ms TTL
+    await new Promise(function (r) { setTimeout(r, 30); });
+    var rotated = await b.session.rotate(s.token);
+    check("rotate: expired session returns null",       rotated === null);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testSessionRotateUnknownReturnsNull() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-srot-"));
+  try {
+    await setupTestDb(tmpDir);
+    var rotated = await b.session.rotate("definitely-not-a-real-token-" + "x".repeat(40));
+    check("rotate: unknown token returns null",         rotated === null);
+    var rotatedEmpty = await b.session.rotate("");
+    check("rotate: empty token returns null",           rotatedEmpty === null);
+    var rotatedNonString = await b.session.rotate(null);
+    check("rotate: null token returns null",            rotatedNonString === null);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testSessionRotateLifecycleAuditEmit() {
+  // Verify the audit chain captures the rotation event.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-srot-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.audit.registerNamespace("auth"); // 'auth.session.rotate' lives here
+    var s = await b.session.create({ userId: "u-5" });
+    await b.session.rotate(s.token, { reason: "mfa-verified" });
+    await b.audit.flush();
+    var events = await b.audit.query({ action: "auth.session.rotate" });
+    check("rotate: audit event emitted",                events.length === 1);
+    // metadata.reason captured
+    var meta = events[0].metadata;
+    if (typeof meta === "string") meta = JSON.parse(meta);
+    check("rotate: audit metadata captures reason",     meta && meta.reason === "mfa-verified");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- migrations ----
 
 function _makeMigrationsFixture() {
@@ -10869,6 +10970,92 @@ function testMigrationsDownRollback() {
     var st2 = migs.status();
     check("status: nothing applied, both pending",
           st2.applied.length === 0 && st2.pending.length === 2);
+  } finally { fx.cleanup(); }
+}
+
+// ---- Phase 9.11j — migrations advisory lock ----
+
+function testMigrationsLockReleasedAfterUp() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-a.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE a (id INTEGER)\"); } };");
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    migs.up();
+    // Lock table exists but row is gone (released after successful up)
+    var rows = fx.db.prepare("SELECT * FROM " + b.migrations.LOCK_TABLE).all();
+    check("lock released after successful up",     rows.length === 0);
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsLockBlocksConcurrent() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-a.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE a (id INTEGER)\"); } };");
+    // Manually plant a lock row simulating a concurrent process holding the lock.
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    fx.db["exec"](
+      "CREATE TABLE IF NOT EXISTS " + b.migrations.LOCK_TABLE + " (" +
+      "  scope     TEXT PRIMARY KEY," +
+      "  lockedAt  INTEGER NOT NULL," +
+      "  lockedBy  TEXT NOT NULL," +
+      "  CHECK (scope = 'lock')" +
+      ")"
+    );
+    fx.db.prepare(
+      "INSERT INTO " + b.migrations.LOCK_TABLE +
+      " (scope, lockedAt, lockedBy) VALUES ('lock', ?, ?)"
+    ).run(Date.now(), "fake-other-process@host");
+
+    var threw = null;
+    try { migs.up(); } catch (e) { threw = e; }
+    check("up: blocked by existing lock",          threw && threw.code === "migrations/lock-held");
+    check("up: error names the holder",            threw && threw.message.indexOf("fake-other-process") !== -1);
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsLockStaleReplace() {
+  var fx = _makeMigrationsFixture();
+  try {
+    fx.write("0001-a.js", "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE a (id INTEGER)\"); } };");
+    var migs = b.migrations.create({
+      db: fx.db, dir: fx.migDir, staleAfterMs: 100,
+    });
+    fx.db["exec"](
+      "CREATE TABLE IF NOT EXISTS " + b.migrations.LOCK_TABLE + " (" +
+      "  scope     TEXT PRIMARY KEY," +
+      "  lockedAt  INTEGER NOT NULL," +
+      "  lockedBy  TEXT NOT NULL," +
+      "  CHECK (scope = 'lock')" +
+      ")"
+    );
+    // Plant a stale lock (100s ago)
+    fx.db.prepare(
+      "INSERT INTO " + b.migrations.LOCK_TABLE +
+      " (scope, lockedAt, lockedBy) VALUES ('lock', ?, ?)"
+    ).run(Date.now() - 100000, "ghost-process@host");
+
+    var r = migs.up();
+    check("up: succeeds when stale lock force-replaced", r.applied.length === 1);
+    var lockRows = fx.db.prepare("SELECT * FROM " + b.migrations.LOCK_TABLE).all();
+    check("up: lock cleaned up after success",      lockRows.length === 0);
+  } finally { fx.cleanup(); }
+}
+
+function testMigrationsLockReleasedAfterFailure() {
+  var fx = _makeMigrationsFixture();
+  try {
+    // A migration that throws should still release the lock.
+    fx.write("0001-bad.js", [
+      "module.exports = {",
+      "  up: function (db) { throw new Error('intentional-fail'); },",
+      "};",
+    ].join("\n"));
+    var migs = b.migrations.create({ db: fx.db, dir: fx.migDir });
+    var threw = null;
+    try { migs.up(); } catch (e) { threw = e; }
+    check("up failure surfaces error",             threw && threw.code === "migrations/up-failed");
+    var rows = fx.db.prepare("SELECT * FROM " + b.migrations.LOCK_TABLE).all();
+    check("lock released even after failure",       rows.length === 0);
   } finally { fx.cleanup(); }
 }
 
@@ -15030,6 +15217,18 @@ async function run() {
   testMigrationsRejectsRollbackWithoutDown();
   testMigrationsUpFailureRollsBackTransaction();
   testMigrationsRejectsMalformedFiles();
+  // Phase 9.11j — migrations advisory lock
+  testMigrationsLockReleasedAfterUp();
+  testMigrationsLockBlocksConcurrent();
+  testMigrationsLockStaleReplace();
+  testMigrationsLockReleasedAfterFailure();
+  // Phase 9.11b — session fixation rotation
+  await testSessionRotateBasic();
+  await testSessionRotateReplacesData();
+  await testSessionRotateRefreshesTtl();
+  await testSessionRotateExpiredReturnsNull();
+  await testSessionRotateUnknownReturnsNull();
+  await testSessionRotateLifecycleAuditEmit();
   // cookies — RFC 6265 cookie primitive + sealed-value access gate (Phase 6 slice 3)
   testCookiesSurface();
   testCookiesParse();
@@ -15664,6 +15863,16 @@ module.exports = {
   testMigrationsRejectsRollbackWithoutDown:  testMigrationsRejectsRollbackWithoutDown,
   testMigrationsUpFailureRollsBackTransaction: testMigrationsUpFailureRollsBackTransaction,
   testMigrationsRejectsMalformedFiles:       testMigrationsRejectsMalformedFiles,
+  testMigrationsLockReleasedAfterUp:         testMigrationsLockReleasedAfterUp,
+  testMigrationsLockBlocksConcurrent:        testMigrationsLockBlocksConcurrent,
+  testMigrationsLockStaleReplace:            testMigrationsLockStaleReplace,
+  testMigrationsLockReleasedAfterFailure:    testMigrationsLockReleasedAfterFailure,
+  testSessionRotateBasic:                    testSessionRotateBasic,
+  testSessionRotateReplacesData:             testSessionRotateReplacesData,
+  testSessionRotateRefreshesTtl:             testSessionRotateRefreshesTtl,
+  testSessionRotateExpiredReturnsNull:       testSessionRotateExpiredReturnsNull,
+  testSessionRotateUnknownReturnsNull:       testSessionRotateUnknownReturnsNull,
+  testSessionRotateLifecycleAuditEmit:       testSessionRotateLifecycleAuditEmit,
   testCookiesSurface:                        testCookiesSurface,
   testCookiesParse:                          testCookiesParse,
   testCookiesSerialize:                      testCookiesSerialize,
