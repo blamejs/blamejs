@@ -33,8 +33,8 @@ function testApiKeySurface() {
         b.apiKey.DEFAULTS.trackLastUsedAt === true);
   check("DEFAULTS.auditFailures true (security default)",
         b.apiKey.DEFAULTS.auditFailures === true);
-  check("DEFAULTS.auditSuccess false (noise control)",
-        b.apiKey.DEFAULTS.auditSuccess === false);
+  check("DEFAULTS.auditSuccess true (compliance trail when audit wired)",
+        b.apiKey.DEFAULTS.auditSuccess === true);
 }
 
 function testParseFormat() {
@@ -488,6 +488,149 @@ async function testPurgeAuditEmission() {
         purgeEvents[0].resource.id === "purge-audit");
 }
 
+async function testFiveWsAuditPropagation() {
+  var captured = [];
+  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var keys = b.apiKey.create({ namespace: "five-ws", audit: auditShim });
+
+  // Simulate a request with all 5 W's populated
+  var fakeReq = {
+    ip: "203.0.113.42",
+    headers: {
+      "user-agent": "test-client/1.0",
+      "x-request-id": "req-abc-123",
+    },
+    sessionId: "sess-xyz",
+    method: "POST",
+    url: "/admin/keys/issue",
+    user: { id: "admin-7" },
+  };
+
+  captured.length = 0;
+  var issued = await keys.issue({
+    ownerId: "u1",
+    req: fakeReq,
+  });
+  var issueEvent = captured.find(function (e) { return e.action === "apikey.issue"; });
+  check("5 W's: issue audit has actor",
+        issueEvent && issueEvent.actor && typeof issueEvent.actor === "object");
+  check("5 W's: issue actor.userId (WHO)",      issueEvent.actor.userId === "u1");
+  check("5 W's: issue actor.ip (WHERE)",        issueEvent.actor.ip === "203.0.113.42");
+  check("5 W's: issue actor.userAgent (HOW)",   issueEvent.actor.userAgent === "test-client/1.0");
+  check("5 W's: issue actor.sessionId",         issueEvent.actor.sessionId === "sess-xyz");
+  check("5 W's: issue actor.requestId",         issueEvent.actor.requestId === "req-abc-123");
+  check("5 W's: issue actor.method",            issueEvent.actor.method === "POST");
+  check("5 W's: issue actor.route",             issueEvent.actor.route === "/admin/keys/issue");
+
+  // Verify path also propagates context
+  captured.length = 0;
+  var verifyReq = Object.assign({}, fakeReq, { url: "/api/data", method: "GET" });
+  await keys.verify(issued.key, { req: verifyReq });
+  var verifyEvent = captured.find(function (e) { return e.action === "apikey.verify"; });
+  check("5 W's: verify audit has WHO (ownerId from row)",
+        verifyEvent.actor.userId === "u1");
+  check("5 W's: verify audit has WHERE (ip)",
+        verifyEvent.actor.ip === "203.0.113.42");
+  check("5 W's: verify audit has HOW (route)",
+        verifyEvent.actor.route === "/api/data");
+  check("5 W's: verify audit has HOW (method)",
+        verifyEvent.actor.method === "GET");
+
+  // List + getById propagate too
+  captured.length = 0;
+  await keys.listForOwner("u1", { req: fakeReq });
+  await keys.getById(issued.id, { req: fakeReq });
+  var listEvent = captured.find(function (e) { return e.action === "apikey.list"; });
+  var getEvent  = captured.find(function (e) { return e.action === "apikey.get"; });
+  check("5 W's: list audit has full context",
+        listEvent.actor.ip === "203.0.113.42" && listEvent.actor.requestId === "req-abc-123");
+  check("5 W's: get audit has full context",
+        getEvent.actor.ip === "203.0.113.42" && getEvent.actor.requestId === "req-abc-123");
+
+  // Explicit context override beats req fields
+  captured.length = 0;
+  await keys.revoke(issued.id, {
+    req: fakeReq,
+    context: { ip: "10.0.0.1", requestId: "manual-override" },
+  });
+  var revokeEvent = captured.find(function (e) { return e.action === "apikey.revoke"; });
+  check("5 W's: explicit context.ip overrides req.ip",
+        revokeEvent.actor.ip === "10.0.0.1");
+  check("5 W's: explicit context.requestId overrides",
+        revokeEvent.actor.requestId === "manual-override");
+  check("5 W's: non-overridden fields still come from req",
+        revokeEvent.actor.method === "POST" && revokeEvent.actor.route === "/admin/keys/issue");
+}
+
+async function testReadAccessAudit() {
+  var captured = [];
+  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var keys = b.apiKey.create({ namespace: "read-audit", audit: auditShim });
+  var k1 = await keys.issue({ ownerId: "u1" });
+  var k2 = await keys.issue({ ownerId: "u1" });
+
+  captured.length = 0;             // drain issue events
+  await keys.getById(k1.id);
+  await keys.getById("0000000000000000");
+  await keys.listForOwner("u1");
+
+  var actions = captured.map(function (e) { return e.action; });
+  check("read audit: getById emits apikey.get",
+        actions.indexOf("apikey.get") !== -1);
+  check("read audit: listForOwner emits apikey.list",
+        actions.indexOf("apikey.list") !== -1);
+
+  var getEvents = captured.filter(function (e) { return e.action === "apikey.get"; });
+  check("read audit: get includes both calls (hit + miss)",
+        getEvents.length === 2);
+  check("read audit: hit event has found=true",
+        getEvents.some(function (e) { return e.metadata && e.metadata.found === true; }));
+  check("read audit: miss event has found=false",
+        getEvents.some(function (e) { return e.metadata && e.metadata.found === false; }));
+
+  var listEvent = captured.find(function (e) { return e.action === "apikey.list"; });
+  check("read audit: list metadata has ownerId",
+        listEvent.metadata.ownerId === "u1");
+  check("read audit: list metadata has count",
+        listEvent.metadata.count === 2);
+  check("read audit: list metadata has observedIds",
+        Array.isArray(listEvent.metadata.observedIds) &&
+        listEvent.metadata.observedIds.length === 2 &&
+        listEvent.metadata.observedIds.indexOf(k1.id) !== -1 &&
+        listEvent.metadata.observedIds.indexOf(k2.id) !== -1);
+}
+
+async function testReadAuditOptOut() {
+  var captured = [];
+  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var keys = b.apiKey.create({
+    namespace: "read-audit-off",
+    audit: auditShim,
+    auditSuccess: false,            // operator opt-out for extreme volume
+  });
+  var issued = await keys.issue({ ownerId: "u1" });
+  captured.length = 0;
+  await keys.getById(issued.id);
+  await keys.listForOwner("u1");
+  var actions = captured.map(function (e) { return e.action; });
+  check("opt-out: getById not audited",   actions.indexOf("apikey.get") === -1);
+  check("opt-out: listForOwner not audited", actions.indexOf("apikey.list") === -1);
+}
+
+async function testVerifySuccessAudit() {
+  var captured = [];
+  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var keys = b.apiKey.create({ namespace: "verify-audit", audit: auditShim });
+  var issued = await keys.issue({ ownerId: "u1" });
+  captured.length = 0;
+  await keys.verify(issued.key);
+  var actions = captured.map(function (e) { return e.action; });
+  check("verify success now audited by default",
+        actions.indexOf("apikey.verify") !== -1);
+  var verifyEvent = captured.find(function (e) { return e.action === "apikey.verify"; });
+  check("verify success outcome label",        verifyEvent.outcome === "success");
+}
+
 async function testReadObservability() {
   var captured = [];
   var originalTap = b.metrics.tap;
@@ -570,6 +713,10 @@ async function run() {
     await testPurgeExpired();
     await testIssueTierA();
     await testPurgeAuditEmission();
+    await testFiveWsAuditPropagation();
+    await testReadAccessAudit();
+    await testReadAuditOptOut();
+    await testVerifySuccessAudit();
     await testReadObservability();
     await testAuditEmission();
   } finally {

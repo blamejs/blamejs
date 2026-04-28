@@ -368,6 +368,50 @@ async function testAuditSuccessOptOut() {
         actions.indexOf("permissions.check.success") === -1);
 }
 
+// ---- 5 W's audit propagation ----
+
+async function testFiveWsAuditPropagation() {
+  var captured = [];
+  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var p = b.permissions.create({
+    roles: { editor: ["users:read"], viewer: ["*:read"] },
+    audit: auditShim,
+  });
+
+  var req = _mockReq();
+  req.url = "/admin/users/42";
+  req.method = "GET";
+  req.ip = "203.0.113.99";
+  req.headers["user-agent"] = "compliance-test/1.0";
+  req.headers["x-request-id"] = "req-perm-001";
+  req.user = { id: "admin-7", roles: ["editor"] };
+
+  // Success path
+  await _runMiddleware(p.require("users:read"), req);
+  var success = captured.find(function (e) { return e.action === "permissions.check.success"; });
+  check("perms 5 W's: success has WHO (userId)",     success.actor.userId === "admin-7");
+  check("perms 5 W's: success has WHERE (ip)",       success.actor.ip === "203.0.113.99");
+  check("perms 5 W's: success has HOW (userAgent)",  success.actor.userAgent === "compliance-test/1.0");
+  check("perms 5 W's: success has HOW (route)",      success.actor.route === "/admin/users/42");
+  check("perms 5 W's: success has HOW (requestId)",  success.actor.requestId === "req-perm-001");
+  check("perms 5 W's: success has roles preserved",
+        Array.isArray(success.actor.roles) && success.actor.roles.indexOf("editor") !== -1);
+
+  // Deny path
+  captured.length = 0;
+  var denyReq = _mockReq();
+  denyReq.url = "/admin/users/42/delete";
+  denyReq.method = "DELETE";
+  denyReq.ip = "203.0.113.99";
+  denyReq.user = { id: "viewer-9", roles: ["viewer"] };
+  await _runMiddleware(p.require("users:write"), denyReq);
+  var deny = captured.find(function (e) { return e.action === "permissions.check.deny"; });
+  check("perms 5 W's: deny has WHO",       deny.actor.userId === "viewer-9");
+  check("perms 5 W's: deny has WHERE",     deny.actor.ip === "203.0.113.99");
+  check("perms 5 W's: deny has HOW (route)", deny.actor.route === "/admin/users/42/delete");
+  check("perms 5 W's: deny has HOW (method)", deny.actor.method === "DELETE");
+}
+
 // ---- Tier-A validation ----
 
 function testTierA() {
@@ -444,6 +488,7 @@ async function run() {
   await testAuditAndObservabilityEmission();
   await testAuditDefaults();
   await testAuditSuccessOptOut();
+  await testFiveWsAuditPropagation();
   testTierA();
 }
 
