@@ -141,6 +141,7 @@ var webhook = require("./lib/webhook");
 var apiKey = require("./lib/api-key");
 var credentialHash = require("./lib/credential-hash");
 var permissions = require("./lib/permissions");
+var cache = require("./lib/cache");
 
 module.exports = {
   crypto:           crypto,
@@ -232,6 +233,7 @@ module.exports = {
   apiKey:           apiKey,
   credentialHash:   credentialHash,
   permissions:      permissions,
+  cache:            cache,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
