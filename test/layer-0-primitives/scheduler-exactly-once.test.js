@@ -139,6 +139,69 @@ async function testClusterLoserSkipsAndCounts() {
   }
 }
 
+async function testPruneRemovesOldRows() {
+  // Operator-callable pruneTickClaims must remove rows older than the
+  // retention threshold and emit system.scheduler.tick.pruned.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-sched-eo-"));
+  try {
+    await setupTestDb(tmpDir);
+    var fakeCluster = {
+      isLeader:      function () { return true; },
+      currentNodeId: function () { return "pruner" ; },
+    };
+    var sched = b.scheduler.create({
+      cluster:         fakeCluster,
+      audit:           true,
+      tickRetentionMs: 1000,           // 1 second
+      pruneIntervalMs: 60 * 60 * 1000, // never auto-prune in this test
+    });
+
+    var now = Date.now();
+    // Old rows (> retention) should be pruned.
+    await b.clusterStorage.execute(
+      "INSERT INTO _blamejs_scheduler_ticks (tickKey, name, scheduledAtUnix, claimedAtUnix, claimedBy) VALUES (?, ?, ?, ?, ?)",
+      ["old:1", "old", now - 5000, now - 5000, "n1"]
+    );
+    await b.clusterStorage.execute(
+      "INSERT INTO _blamejs_scheduler_ticks (tickKey, name, scheduledAtUnix, claimedAtUnix, claimedBy) VALUES (?, ?, ?, ?, ?)",
+      ["old:2", "old", now - 4000, now - 4000, "n1"]
+    );
+    // Recent row should stay.
+    await b.clusterStorage.execute(
+      "INSERT INTO _blamejs_scheduler_ticks (tickKey, name, scheduledAtUnix, claimedAtUnix, claimedBy) VALUES (?, ?, ?, ?, ?)",
+      ["new:1", "new", now - 100, now - 100, "n1"]
+    );
+
+    var removed = await sched.pruneTickClaims();
+    check("pruneTickClaims removed 2 old rows",      removed === 2);
+    var remaining = b.db.prepare("SELECT COUNT(*) AS n FROM _blamejs_scheduler_ticks").get();
+    check("recent row remains after prune",          remaining.n === 1);
+
+    await b.audit.flush();
+    var prunedRows = await b.audit.query({ action: "system.scheduler.tick.pruned" });
+    check("system.scheduler.tick.pruned emitted",    prunedRows.length === 1);
+    var meta = typeof prunedRows[0].metadata === "string"
+      ? JSON.parse(prunedRows[0].metadata) : prunedRows[0].metadata;
+    check("audit metadata carries rowsDeleted = 2",  meta && meta.rowsDeleted === 2);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testPruneNoOpWithoutCluster() {
+  // Single-node scheduler (no cluster) writes no tick rows, so prune is
+  // a no-op returning 0.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-sched-eo-"));
+  try {
+    await setupTestDb(tmpDir);
+    var sched = b.scheduler.create({ audit: false });
+    var removed = await sched.pruneTickClaims();
+    check("single-node prune is a no-op",            removed === 0);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testListExposesTickClaimLost() {
   // The list() projection must surface tickClaimLost so operators can
   // observe contention without needing to read the table directly.
@@ -160,6 +223,8 @@ async function run() {
   await testSingleNodeNoTickClaim();
   await testClusterWinnerInsertsTickRow();
   await testClusterLoserSkipsAndCounts();
+  await testPruneRemovesOldRows();
+  await testPruneNoOpWithoutCluster();
   await testListExposesTickClaimLost();
 }
 
