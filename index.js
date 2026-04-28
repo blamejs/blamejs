@@ -70,6 +70,7 @@ var jobs = require("./lib/jobs");
 var mail = require("./lib/mail");
 var mailBounce = require("./lib/mail-bounce");
 var websocketChannels = require("./lib/websocket-channels");
+var nonceStore = require("./lib/nonce-store");
 var scheduler = require("./lib/scheduler");
 var log = require("./lib/log");
 var errorPage = require("./lib/error-page");
@@ -152,6 +153,7 @@ module.exports = {
   mail:             mail,
   mailBounce:       mailBounce,
   websocketChannels: websocketChannels,
+  nonceStore:        nonceStore,
   scheduler:        scheduler,
   log:              log,
   errorPage:       errorPage,
