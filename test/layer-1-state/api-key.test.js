@@ -449,6 +449,77 @@ async function testIssueTierA() {
 
 // ---- Audit emission ----
 
+async function testPurgeAuditEmission() {
+  var fakeNow = 5_000_000_000_000;
+  var clockState = { current: fakeNow };
+  var captured = [];
+  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var keys = b.apiKey.create({
+    namespace: "purge-audit",
+    purgeAfterMs: C.TIME.minutes(1),
+    audit: auditShim,
+    clock: function () { return clockState.current; },
+  });
+  var k1 = await keys.issue({ ownerId: "u1", expiresAt: fakeNow - C.TIME.minutes(5) });
+  var k2 = await keys.issue({ ownerId: "u2" });
+  await keys.revoke(k2.id);
+  // Fast-forward so both rows are past purgeAfterMs
+  clockState.current = fakeNow + C.TIME.minutes(10);
+
+  // Drain audit captures from the issue/revoke setup so we only assert
+  // on the purge emission.
+  captured.length = 0;
+  var deleted = await keys.purgeExpired();
+  check("purge: returned count matches",      deleted === 2);
+
+  var purgeEvents = captured.filter(function (e) { return e.action === "apikey.purge"; });
+  check("purge: emits apikey.purge audit",    purgeEvents.length === 1);
+  check("purge: audit metadata.count matches", purgeEvents[0].metadata.count === 2);
+  check("purge: audit metadata has purgedIds array",
+        Array.isArray(purgeEvents[0].metadata.purgedIds) &&
+        purgeEvents[0].metadata.purgedIds.length === 2);
+  check("purge: purgedIds contain k1.id",
+        purgeEvents[0].metadata.purgedIds.indexOf(k1.id) !== -1);
+  check("purge: purgedIds contain k2.id",
+        purgeEvents[0].metadata.purgedIds.indexOf(k2.id) !== -1);
+  check("purge: resource kind is apikey-namespace",
+        purgeEvents[0].resource && purgeEvents[0].resource.kind === "apikey-namespace");
+  check("purge: resource id is the namespace",
+        purgeEvents[0].resource.id === "purge-audit");
+}
+
+async function testReadObservability() {
+  var captured = [];
+  var originalTap = b.metrics.tap;
+  b.metrics.tap = function (name, value, labels) {
+    captured.push({ name: name, value: value, labels: labels || {} });
+  };
+  try {
+    var keys = b.apiKey.create({ namespace: "read-obs" });
+    var issued = await keys.issue({ ownerId: "u1" });
+    await keys.getById(issued.id);
+    await keys.getById("0000000000000000");          // miss
+    await keys.listForOwner("u1");
+    await keys.purgeExpired();                        // 0 rows but should emit
+  } finally {
+    b.metrics.tap = originalTap;
+  }
+  var names = captured.map(function (c) { return c.name; });
+  check("emits apikey.get",                   names.indexOf("apikey.get") !== -1);
+  check("emits apikey.list",                  names.indexOf("apikey.list") !== -1);
+  check("emits apikey.purge (zero-count)",    names.indexOf("apikey.purge") !== -1);
+
+  var getEvents = captured.filter(function (c) { return c.name === "apikey.get"; });
+  var hasFound = getEvents.some(function (e) { return e.labels.found === true; });
+  var hasMiss  = getEvents.some(function (e) { return e.labels.found === false; });
+  check("apikey.get emits found=true label",  hasFound === true);
+  check("apikey.get emits found=false label", hasMiss === true);
+
+  var listEvent = captured.find(function (c) { return c.name === "apikey.list"; });
+  check("apikey.list has count label",
+        listEvent && typeof listEvent.labels.count === "number");
+}
+
 async function testAuditEmission() {
   // Build a capture-only audit shim with the same surface as b.audit
   var captured = [];
@@ -498,6 +569,8 @@ async function run() {
     await testTrackLastUsedAt();
     await testPurgeExpired();
     await testIssueTierA();
+    await testPurgeAuditEmission();
+    await testReadObservability();
     await testAuditEmission();
   } finally {
     await teardownTestDb(tmp);
