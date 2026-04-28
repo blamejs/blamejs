@@ -138,6 +138,7 @@ var requestHelpers = require("./lib/request-helpers");
 var appShutdown = require("./lib/app-shutdown");
 var slug = require("./lib/slug");
 var webhook = require("./lib/webhook");
+var apiKey = require("./lib/api-key");
 
 module.exports = {
   crypto:           crypto,
@@ -226,6 +227,7 @@ module.exports = {
   appShutdown:      appShutdown,
   slug:             slug,
   webhook:          webhook,
+  apiKey:           apiKey,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

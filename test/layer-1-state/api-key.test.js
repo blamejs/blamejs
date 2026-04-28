@@ -1,0 +1,465 @@
+"use strict";
+/**
+ * b.apiKey — operator-facing API key registry.
+ *
+ * Run standalone: `node test/layer-1-state/api-key.test.js`
+ * Or via smoke:   `node test/smoke.js`
+ */
+
+var fs = require("fs");
+var os = require("os");
+var path = require("path");
+var helpers = require("../helpers");
+var b               = helpers.b;
+var check           = helpers.check;
+var C               = b.constants;
+var setupTestDb     = helpers.setupTestDb;
+var teardownTestDb  = helpers.teardownTestDb;
+
+function _tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-apikey-")); }
+
+// ---- Surface ----
+
+function testApiKeySurface() {
+  check("b.apiKey namespace present",      typeof b.apiKey === "object");
+  check("b.apiKey.create is a function",   typeof b.apiKey.create === "function");
+  check("b.apiKey.parseFormat is a fn",    typeof b.apiKey.parseFormat === "function");
+  check("ApiKeyError class",               typeof b.apiKey.ApiKeyError === "function");
+  check("DEFAULTS frozen",                 Object.isFrozen(b.apiKey.DEFAULTS));
+  check("DEFAULTS.prefix",                 b.apiKey.DEFAULTS.prefix === "bk");
+  check("DEFAULTS.idBytes",                b.apiKey.DEFAULTS.idBytes === 8);
+  check("DEFAULTS.secretBytes",            b.apiKey.DEFAULTS.secretBytes === 16);
+  check("DEFAULTS.trackLastUsedAt true (security default)",
+        b.apiKey.DEFAULTS.trackLastUsedAt === true);
+  check("DEFAULTS.auditFailures true (security default)",
+        b.apiKey.DEFAULTS.auditFailures === true);
+  check("DEFAULTS.auditSuccess false (noise control)",
+        b.apiKey.DEFAULTS.auditSuccess === false);
+}
+
+function testParseFormat() {
+  var pf = b.apiKey.parseFormat;
+  var parts = pf("bk_live_abcd1234_deadbeefcafe1234");
+  check("parseFormat: returns 4-part object",
+        parts && parts.prefix === "bk" && parts.namespace === "live" &&
+        parts.idHex === "abcd1234" && parts.secretHex === "deadbeefcafe1234");
+  check("parseFormat: rejects empty",      pf("") === null);
+  check("parseFormat: rejects undefined",  pf(undefined) === null);
+  check("parseFormat: rejects too-few parts", pf("bk_live_abc") === null);
+  check("parseFormat: rejects too-many parts", pf("a_b_c_d_e") === null);
+  check("parseFormat: rejects non-hex idHex", pf("bk_live_NOT-HEX_deadbeef") === null);
+  check("parseFormat: rejects non-hex secret", pf("bk_live_abcd_NOT-HEX") === null);
+}
+
+// ---- Issue / verify roundtrip ----
+
+async function testIssueAndVerifyRoundtrip(tmpDir) {
+  var keys = b.apiKey.create({ namespace: "live" });
+  var issued = await keys.issue({
+    ownerId:  "user-42",
+    scopes:   ["read:users", "write:posts"],
+    metadata: { name: "Test app" },
+  });
+  check("issue: returns id",               typeof issued.id === "string" && issued.id.length === 16);
+  check("issue: returns secret",           typeof issued.secret === "string" && issued.secret.length === 32);
+  check("issue: returns full key",         typeof issued.key === "string");
+  check("issue: key parses back",
+        b.apiKey.parseFormat(issued.key).idHex === issued.id);
+  check("issue: returns scopes",           Array.isArray(issued.scopes) && issued.scopes.length === 2);
+  check("issue: createdAt set",            typeof issued.createdAt === "number");
+  check("issue: expiresAt null when not set", issued.expiresAt === null);
+
+  var verified = await keys.verify(issued.key);
+  check("verify: returns record",          verified !== null);
+  check("verify: id matches",              verified.id === issued.id);
+  check("verify: ownerId unsealed",        verified.ownerId === "user-42");
+  check("verify: scopes restored",
+        verified.scopes.length === 2 && verified.scopes[0] === "read:users");
+  check("verify: metadata restored",
+        verified.metadata && verified.metadata.name === "Test app");
+  check("verify: namespace returned",      verified.namespace === "live");
+  check("verify: no secret in record",     verified.secret === undefined);
+  check("verify: no secretHash in record", verified.secretHash === undefined);
+}
+
+async function testVerifyMalformed() {
+  var keys = b.apiKey.create({ namespace: "live" });
+  check("verify(undefined) → null",        (await keys.verify(undefined)) === null);
+  check("verify(null) → null",             (await keys.verify(null)) === null);
+  check("verify('') → null",               (await keys.verify("")) === null);
+  check("verify(garbage) → null",          (await keys.verify("not-a-key")) === null);
+  check("verify(wrong-prefix) → null",     (await keys.verify("xx_live_abcd1234_deadbeefcafe1234")) === null);
+  check("verify(wrong-namespace) → null",  (await keys.verify("bk_test_abcd1234_deadbeefcafe1234")) === null);
+  check("verify(unknown id) → null",       (await keys.verify("bk_live_0123456789abcdef_00112233445566778899aabbccddeeff")) === null);
+}
+
+async function testVerifyWrongSecret() {
+  var keys = b.apiKey.create({ namespace: "live" });
+  var issued = await keys.issue({ ownerId: "u1" });
+  // Build a key with the same id but a different secret
+  var parts = b.apiKey.parseFormat(issued.key);
+  var bogusKey = parts.prefix + "_" + parts.namespace + "_" + parts.idHex + "_" +
+                 "00112233445566778899aabbccddeeff";
+  var result = await keys.verify(bogusKey);
+  check("verify: wrong secret → null", result === null);
+}
+
+// ---- Revocation ----
+
+async function testRevoke() {
+  var keys = b.apiKey.create({ namespace: "live" });
+  var issued = await keys.issue({ ownerId: "u1" });
+  var pre = await keys.verify(issued.key);
+  check("revoke: pre-state verifies",      pre !== null);
+
+  var revoked = await keys.revoke(issued.id);
+  check("revoke: returns true on first",   revoked === true);
+
+  var post = await keys.verify(issued.key);
+  check("revoke: verify returns null after revoke", post === null);
+
+  var revokedAgain = await keys.revoke(issued.id);
+  check("revoke: idempotent (no row newly touched)", revokedAgain === false);
+
+  var revokedMissing = await keys.revoke("0000000000000000");
+  check("revoke: missing id returns false", revokedMissing === false);
+}
+
+// ---- Expiry ----
+
+async function testExpired() {
+  var fakeNow = 2_000_000_000_000;
+  var keys = b.apiKey.create({
+    namespace: "live",
+    clock: function () { return fakeNow; },
+  });
+  var issued = await keys.issue({ ownerId: "u1", expiresAt: fakeNow - C.TIME.seconds(1) });
+  var result = await keys.verify(issued.key);
+  check("verify: expired key returns null", result === null);
+
+  var keysFuture = b.apiKey.create({
+    namespace: "live2",
+    clock: function () { return fakeNow; },
+  });
+  var future = await keysFuture.issue({ ownerId: "u1", expiresAt: fakeNow + C.TIME.minutes(1) });
+  var fresh = await keysFuture.verify(future.key);
+  check("verify: not-yet-expired returns record", fresh !== null);
+}
+
+// ---- Rotate ----
+
+async function testRotate() {
+  var keys = b.apiKey.create({ namespace: "live" });
+  var issued = await keys.issue({ ownerId: "u1", scopes: ["read:x"] });
+  var rotated = await keys.rotate(issued.id);
+  check("rotate: returns new key",         typeof rotated.key === "string" && rotated.key !== issued.key);
+  check("rotate: returns new secret",      rotated.secret !== issued.secret);
+
+  // Old secret stops working
+  var oldResult = await keys.verify(issued.key);
+  check("rotate: old secret no longer verifies", oldResult === null);
+
+  // New secret works, scopes preserved
+  var newResult = await keys.verify(rotated.key);
+  check("rotate: new secret verifies",     newResult !== null);
+  check("rotate: id unchanged",            newResult.id === issued.id);
+  check("rotate: scopes preserved",
+        newResult.scopes.length === 1 && newResult.scopes[0] === "read:x");
+}
+
+async function testRotateNotFoundOrRevoked() {
+  var keys = b.apiKey.create({ namespace: "live" });
+  var threw = null;
+  try { await keys.rotate("0000000000000000"); } catch (e) { threw = e; }
+  check("rotate: missing id throws NOT_FOUND",
+        threw && threw.code === "NOT_FOUND");
+
+  var issued = await keys.issue({ ownerId: "u1" });
+  await keys.revoke(issued.id);
+  threw = null;
+  try { await keys.rotate(issued.id); } catch (e) { threw = e; }
+  check("rotate: revoked id throws REVOKED",
+        threw && threw.code === "REVOKED");
+}
+
+// ---- listForOwner ----
+
+async function testListForOwner() {
+  var keys = b.apiKey.create({ namespace: "list-test" });
+  var k1 = await keys.issue({ ownerId: "owner-A", scopes: ["a"] });
+  var k2 = await keys.issue({ ownerId: "owner-A", scopes: ["b"] });
+  var k3 = await keys.issue({ ownerId: "owner-B", scopes: ["c"] });
+  await keys.revoke(k2.id);
+
+  var listA = await keys.listForOwner("owner-A");
+  check("listForOwner: filters to owner",   listA.length === 1);
+  check("listForOwner: excludes revoked by default",
+        listA[0].id === k1.id);
+
+  var listAWithRevoked = await keys.listForOwner("owner-A", { includeRevoked: true });
+  check("listForOwner: includes revoked when asked",
+        listAWithRevoked.length === 2);
+
+  var listB = await keys.listForOwner("owner-B");
+  check("listForOwner: different owner",     listB.length === 1 && listB[0].id === k3.id);
+
+  // No secret in scrubbed records
+  for (var i = 0; i < listA.length; i++) {
+    check("listForOwner: no secretHash leaked",
+          listA[i].secretHash === undefined && listA[i].secret === undefined);
+  }
+}
+
+// ---- getById ----
+
+async function testGetById() {
+  var keys = b.apiKey.create({ namespace: "get-test" });
+  var issued = await keys.issue({ ownerId: "u1" });
+  var record = await keys.getById(issued.id);
+  check("getById: returns record",         record !== null);
+  check("getById: id matches",             record.id === issued.id);
+  check("getById: ownerId unsealed",       record.ownerId === "u1");
+  check("getById: no secret",              record.secret === undefined);
+
+  var missing = await keys.getById("0000000000000000");
+  check("getById: missing returns null",   missing === null);
+
+  check("getById: empty string returns null", (await keys.getById("")) === null);
+}
+
+// ---- trackLastUsedAt ----
+
+async function testTrackLastUsedAt() {
+  // Default ON (security default per CLAUDE.md rule #3)
+  var keysOn = b.apiKey.create({ namespace: "track-on" });
+  var iOn = await keysOn.issue({ ownerId: "u1" });
+  await keysOn.verify(iOn.key);
+  await new Promise(function (r) { setTimeout(r, 30); });
+  var recOn = await keysOn.getById(iOn.id);
+  check("trackLastUsedAt default ON: lastUsedAt set",
+        typeof recOn.lastUsedAt === "number" && recOn.lastUsedAt > 0);
+
+  // Operator opt-out
+  var keysOff = b.apiKey.create({ namespace: "track-off", trackLastUsedAt: false });
+  var iOff = await keysOff.issue({ ownerId: "u1" });
+  await keysOff.verify(iOff.key);
+  var recOff = await keysOff.getById(iOff.id);
+  check("trackLastUsedAt explicit false: stays null",
+        recOff.lastUsedAt === null);
+}
+
+async function testGracefulRotation() {
+  var fakeNow = 4_000_000_000_000;
+  var clockState = { current: fakeNow };
+  var keys = b.apiKey.create({
+    namespace: "graceful",
+    clock: function () { return clockState.current; },
+  });
+  var issued = await keys.issue({ ownerId: "u1" });
+  var rotated = await keys.rotate(issued.id, { graceful: true });
+  check("graceful rotate: returns gracePeriodMs",
+        rotated.gracePeriodMs > 0);
+  check("graceful rotate: returns secondaryExpiresAt",
+        typeof rotated.secondaryExpiresAt === "number");
+
+  // BOTH secrets should verify during the grace window
+  var oldStillWorks = await keys.verify(issued.key);
+  check("graceful rotate: old secret still verifies", oldStillWorks !== null);
+  check("graceful rotate: usedSecondary flag set on old",
+        oldStillWorks.usedSecondary === true);
+
+  var newWorks = await keys.verify(rotated.key);
+  check("graceful rotate: new secret verifies",       newWorks !== null);
+  check("graceful rotate: usedSecondary false on new",
+        newWorks.usedSecondary === false);
+
+  // After grace expires, old stops working but new keeps going
+  clockState.current = rotated.secondaryExpiresAt + C.TIME.seconds(1);
+  var oldExpired = await keys.verify(issued.key);
+  check("graceful rotate: old secret stops after grace",
+        oldExpired === null);
+  var newAfter = await keys.verify(rotated.key);
+  check("graceful rotate: new secret still works after grace",
+        newAfter !== null);
+}
+
+async function testGracefulRotationExplicitMs() {
+  var fakeNow = 4_500_000_000_000;
+  var clockState = { current: fakeNow };
+  var keys = b.apiKey.create({
+    namespace: "graceful-explicit",
+    clock: function () { return clockState.current; },
+  });
+  var issued = await keys.issue({ ownerId: "u1" });
+  var rotated = await keys.rotate(issued.id, { gracePeriodMs: C.TIME.minutes(1) });
+  check("graceful rotate: explicit gracePeriodMs honored",
+        rotated.gracePeriodMs === C.TIME.minutes(1));
+  check("graceful rotate: secondaryExpiresAt = now + 60s",
+        rotated.secondaryExpiresAt === fakeNow + C.TIME.minutes(1));
+}
+
+async function testHardRotateClearsSecondary() {
+  var keys = b.apiKey.create({ namespace: "hard-rotate" });
+  var issued = await keys.issue({ ownerId: "u1" });
+  var graceful = await keys.rotate(issued.id, { graceful: true });
+  // Now do a hard rotation; secondary should be cleared
+  var hard = await keys.rotate(issued.id);
+  check("hard rotate: gracePeriodMs is 0",     hard.gracePeriodMs === 0);
+  check("hard rotate: secondaryExpiresAt null", hard.secondaryExpiresAt === null);
+
+  // The previous (graceful) key should NOT verify anymore — hard rotation
+  // wiped the secondary slot.
+  var prev = await keys.verify(graceful.key);
+  // The current primary IS the graceful's hash (now bumped to secondary,
+  // then cleared). Wait — let me trace this carefully:
+  //   issue:           primary = secret_orig
+  //   rotate(graceful): primary = secret_graceful, secondary = secret_orig (with expiry)
+  //   rotate(hard):    primary = secret_hard,     secondary = NULL
+  //   So secret_graceful is no longer accepted (it was primary, replaced).
+  check("hard rotate: previous graceful key no longer works",
+        prev === null);
+  var newOne = await keys.verify(hard.key);
+  check("hard rotate: new key works", newOne !== null);
+}
+
+// ---- purgeExpired ----
+
+async function testPurgeExpired() {
+  var fakeNow = 3_000_000_000_000;
+  var clock = { current: fakeNow };
+  var keys = b.apiKey.create({
+    namespace: "purge",
+    purgeAfterMs: C.TIME.minutes(1),
+    clock: function () { return clock.current; },
+  });
+  var fresh = await keys.issue({ ownerId: "u1", expiresAt: fakeNow + C.TIME.hours(1) });
+  var oldExpired = await keys.issue({ ownerId: "u2", expiresAt: fakeNow - C.TIME.minutes(5) });
+  var oldRevoked = await keys.issue({ ownerId: "u3" });
+  await keys.revoke(oldRevoked.id);
+  // Fast-forward
+  clock.current = fakeNow + C.TIME.minutes(10);
+
+  var deleted = await keys.purgeExpired();
+  check("purgeExpired: deletes expired + revoked old rows", deleted >= 2);
+
+  var freshStillThere = await keys.getById(fresh.id);
+  check("purgeExpired: keeps fresh row",  freshStillThere !== null);
+
+  var purgedExpiredGone = await keys.getById(oldExpired.id);
+  check("purgeExpired: removes expired row", purgedExpiredGone === null);
+}
+
+// ---- Tier-A validation ----
+
+function testTierA() {
+  function expect(label, fn, code) {
+    var threw = null;
+    try { fn(); } catch (e) { threw = e; }
+    check(label, threw && threw.code === code);
+  }
+
+  expect("create: missing namespace",
+    function () { b.apiKey.create({}); }, "BAD_OPT");
+  expect("create: namespace with underscore",
+    function () { b.apiKey.create({ namespace: "bad_ns" }); }, "BAD_OPT");
+  expect("create: namespace with whitespace",
+    function () { b.apiKey.create({ namespace: "bad ns" }); }, "BAD_OPT");
+  expect("create: prefix with underscore",
+    function () { b.apiKey.create({ namespace: "ok", prefix: "bad_x" }); }, "BAD_OPT");
+  expect("create: bad idBytes",
+    function () { b.apiKey.create({ namespace: "ok", idBytes: 0 }); }, "BAD_OPT");
+  expect("create: bad audit shape",
+    function () { b.apiKey.create({ namespace: "ok", audit: {} }); }, "BAD_OPT");
+}
+
+async function testIssueTierA() {
+  var keys = b.apiKey.create({ namespace: "issue-tier-a" });
+  function expect(label, p, code) {
+    return p.then(
+      function () { check(label + " — should have thrown", false); },
+      function (e) { check(label, e && e.code === code); }
+    );
+  }
+  await expect("issue: missing ownerId",
+    keys.issue({}),
+    "MISSING_OWNER");
+  await expect("issue: empty ownerId",
+    keys.issue({ ownerId: "" }),
+    "MISSING_OWNER");
+  await expect("issue: scopes not array",
+    keys.issue({ ownerId: "u", scopes: "read" }),
+    "BAD_SCOPES");
+  await expect("issue: scopes contains non-string",
+    keys.issue({ ownerId: "u", scopes: ["ok", 42] }),
+    "BAD_SCOPES");
+  await expect("issue: metadata not object",
+    keys.issue({ ownerId: "u", metadata: "notobj" }),
+    "BAD_METADATA");
+  await expect("issue: bad expiresAt",
+    keys.issue({ ownerId: "u", expiresAt: "soon" }),
+    "BAD_OPT");
+}
+
+// ---- Audit emission ----
+
+async function testAuditEmission() {
+  // Build a capture-only audit shim with the same surface as b.audit
+  var captured = [];
+  var auditShim = {
+    safeEmit: function (event) { captured.push(event); },
+  };
+  var keys = b.apiKey.create({ namespace: "audit-test", audit: auditShim });
+  var issued = await keys.issue({ ownerId: "u1", scopes: ["x"] });
+  await keys.revoke(issued.id);
+  // Fresh issue for rotate
+  var second = await keys.issue({ ownerId: "u2" });
+  await keys.rotate(second.id);
+
+  var actions = captured.map(function (e) { return e.action; });
+  check("audit: apikey.issue emitted",     actions.indexOf("apikey.issue") !== -1);
+  check("audit: apikey.revoke emitted",    actions.indexOf("apikey.revoke") !== -1);
+  check("audit: apikey.rotate emitted",    actions.indexOf("apikey.rotate") !== -1);
+
+  var issueEvent = captured.find(function (e) { return e.action === "apikey.issue"; });
+  check("audit: issue event has resource",
+        issueEvent.resource && issueEvent.resource.kind === "apikey");
+  check("audit: issue event has scope metadata",
+        issueEvent.metadata && Array.isArray(issueEvent.metadata.scopes));
+}
+
+// ---- Run ----
+
+async function run() {
+  testApiKeySurface();
+  testParseFormat();
+  testTierA();
+
+  var tmp = _tmp();
+  await setupTestDb(tmp);
+  try {
+    await testIssueAndVerifyRoundtrip(tmp);
+    await testVerifyMalformed();
+    await testVerifyWrongSecret();
+    await testRevoke();
+    await testExpired();
+    await testRotate();
+    await testRotateNotFoundOrRevoked();
+    await testListForOwner();
+    await testGetById();
+    await testTrackLastUsedAt();
+    await testPurgeExpired();
+    await testIssueTierA();
+    await testAuditEmission();
+  } finally {
+    await teardownTestDb(tmp);
+  }
+}
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  run().then(
+    function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
+    function (e) { console.error("FAIL:", e.message); process.exit(1); }
+  );
+}

@@ -10,6 +10,7 @@ var http = require("http");
 var helpers = require("../helpers");
 var b         = helpers.b;
 var check     = helpers.check;
+var C         = b.constants;
 var _bodyRes  = helpers._bodyRes;
 
 // ---- Surface ----
@@ -23,8 +24,8 @@ function testWebhookSurface() {
   check("ALGOS.PQC_PEM",                       b.webhook.ALGOS.PQC_PEM === "pqc-pem");
   check("HEADER.SIGNATURE",                    b.webhook.HEADER.SIGNATURE === "Webhook-Signature");
   check("DEFAULTS frozen",                     Object.isFrozen(b.webhook.DEFAULTS));
-  check("DEFAULTS.toleranceMs",                b.webhook.DEFAULTS.toleranceMs === 5 * 60 * 1000);
-  check("DEFAULTS.clockSkewMs",                b.webhook.DEFAULTS.clockSkewMs === 60 * 1000);
+  check("DEFAULTS.toleranceMs",                b.webhook.DEFAULTS.toleranceMs === C.TIME.minutes(5));
+  check("DEFAULTS.clockSkewMs",                b.webhook.DEFAULTS.clockSkewMs === C.TIME.minutes(1));
   check("WebhookError class",                  typeof b.webhook.WebhookError === "function");
 }
 
@@ -123,8 +124,8 @@ async function testTimestampExpired() {
   var v = b.webhook.verifier({
     algo: "hmac-sha3-512",
     keys: { v1: "s" },
-    toleranceMs: 60 * 1000,    // 1 min
-    now: function () { return fakeNow + 5 * 60 * 1000; },   // 5 min later
+    toleranceMs: C.TIME.minutes(1),
+    now: function () { return fakeNow + C.TIME.minutes(5); },
   });
   var signed = s.sign("body");
   var threw = null;
@@ -138,12 +139,12 @@ async function testTimestampFuture() {
   var s = b.webhook.signer({
     algo: "hmac-sha3-512",
     keys: { v1: "s" },
-    now: function () { return fakeNow + 10 * 60 * 1000; },     // 10 min in the "future"
+    now: function () { return fakeNow + C.TIME.minutes(10); },
   });
   var v = b.webhook.verifier({
     algo: "hmac-sha3-512",
     keys: { v1: "s" },
-    clockSkewMs: 60 * 1000,
+    clockSkewMs: C.TIME.minutes(1),
     now: function () { return fakeNow; },
   });
   var signed = s.sign("body");
