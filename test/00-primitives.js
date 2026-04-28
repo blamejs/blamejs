@@ -10752,28 +10752,38 @@ async function testSchedulerSkipsWhenStillRunning() {
 async function testSchedulerLeaderGate() {
   // When opts.cluster reports non-leader, fires must be skipped
   // (counted as nonLeaderSkips) and the run callback must not execute.
-  var fired = 0;
-  var leader = false;
-  var fakeCluster = { isLeader: function () { return leader; } };
-  var sched = b.scheduler.create({ cluster: fakeCluster, audit: false });
-  sched.schedule({
-    name:  "leader-only",
-    every: 60000,
-    run:   async function () { fired++; },
-  });
+  // Cluster-wired schedulers also race on a tick-claim INSERT before
+  // firing, so this test needs a DB so the claim has a table to write.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-sched-lg-"));
+  try {
+    await setupTestDb(tmpDir);
+    var fired = 0;
+    var leader = false;
+    var fakeCluster = { isLeader: function () { return leader; } };
+    var sched = b.scheduler.create({ cluster: fakeCluster, audit: false });
+    sched.schedule({
+      name:  "leader-only",
+      every: 60000,
+      run:   async function () { fired++; },
+    });
 
-  sched._fireOnce("leader-only");
-  await new Promise(function (r) { setImmediate(r); });
-  check("non-leader fire skipped",                fired === 0);
-  check("non-leader skip counted",                sched.list()[0].nonLeaderSkips === 1);
+    sched._fireOnce("leader-only");
+    await new Promise(function (r) { setImmediate(r); });
+    check("non-leader fire skipped",                fired === 0);
+    check("non-leader skip counted",                sched.list()[0].nonLeaderSkips === 1);
 
-  leader = true;
-  sched._fireOnce("leader-only");
-  await new Promise(function (r) { setImmediate(r); });
-  await new Promise(function (r) { setImmediate(r); });
-  check("leader fire ran",                        fired === 1);
-  check("fires counter reflects leader run",      sched.list()[0].fires === 1);
-  await sched.stop();
+    leader = true;
+    sched._fireOnce("leader-only");
+    // Multiple microtasks: tick-claim INSERT, then _runFire's promise chain.
+    for (var i = 0; i < 8; i++) {
+      await new Promise(function (r) { setImmediate(r); });
+    }
+    check("leader fire ran",                        fired === 1);
+    check("fires counter reflects leader run",      sched.list()[0].fires === 1);
+    await sched.stop();
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
 }
 
 async function testSchedulerErrorRecorded() {
