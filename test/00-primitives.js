@@ -12831,6 +12831,7 @@ function testConstantsReferenceIntegrity() {
 function testLogger() {
   check("logger namespace present",        typeof b.logger === "object");
   check("logger.createLogger is function", typeof b.logger.createLogger === "function");
+  check("log.boot is the canonical entry", typeof b.log.boot === "function");
 
   // Capture console output by stubbing
   var origLog = console.log;
@@ -12838,6 +12839,15 @@ function testLogger() {
   var captured = { log: [], error: [] };
   console.log   = function (msg) { captured.log.push(msg); };
   console.error = function (msg) { captured.error.push(msg); };
+
+  // Boot logger is TTY-aware: in a terminal the format is the
+  // human-readable "[blamejs:<name>] <msg>" line; piped to a log
+  // aggregator it switches to JSON. Pin both flags for the duration
+  // of the prefixed-text checks.
+  var origStdoutTty = process.stdout.isTTY;
+  var origStderrTty = process.stderr.isTTY;
+  process.stdout.isTTY = true;
+  process.stderr.isTTY = true;
 
   try {
     var log = b.logger.createLogger("testmod");
@@ -12869,9 +12879,36 @@ function testLogger() {
     var threw2 = false;
     try { b.logger.createLogger(null); } catch (_e) { threw2 = true; }
     check("logger: rejects non-string name", threw2);
+
+    // Non-TTY → JSON line. Reset captured + flip flags.
+    captured.log.length = 0;
+    captured.error.length = 0;
+    process.stdout.isTTY = false;
+    process.stderr.isTTY = false;
+    var jsonLog = b.log.boot("piped");
+    jsonLog("ready");
+    var parsed = JSON.parse(captured.log[0]);
+    check("log.boot non-TTY emits JSON",      parsed && parsed.message === "ready");
+    check("log.boot JSON carries component",  parsed.component === "piped");
+    check("log.boot JSON marks boot:true",    parsed.boot === true);
+    check("log.boot JSON carries level",      parsed.level === "info");
+
+    jsonLog.warn("ouch");
+    var parsedWarn = JSON.parse(captured.error[0]);
+    check("log.boot non-TTY warn → stderr JSON", parsedWarn.level === "warn" && parsedWarn.message === "ouch");
+
+    // log.boot and logger.createLogger return the same shape
+    var direct = b.log.boot("direct");
+    check("log.boot returns callable",        typeof direct === "function");
+    check("log.boot returns .info / .warn / .error",
+          typeof direct.info === "function" &&
+          typeof direct.warn === "function" &&
+          typeof direct.error === "function");
   } finally {
     console.log = origLog;
     console.error = origErr;
+    process.stdout.isTTY = origStdoutTty;
+    process.stderr.isTTY = origStderrTty;
   }
 }
 
