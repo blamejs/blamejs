@@ -392,7 +392,7 @@ async function testFrameworkSchemaEnsure() {
       externalDbBackend: "ops",
       dialect:           "sqlite",
     });
-    check("ensureSchema returns 14 tables",         result.tables.length === 14);
+    check("ensureSchema returns 16 tables",         result.tables.length === 16);
     check("ensureSchema includes _blamejs_audit_log",
           result.tables.indexOf("_blamejs_audit_log") !== -1);
     check("ensureSchema includes _blamejs_consent_log",
@@ -417,6 +417,10 @@ async function testFrameworkSchemaEnsure() {
           result.tables.indexOf("_blamejs_ws_messages") !== -1);
     check("ensureSchema includes _blamejs_cache",
           result.tables.indexOf("_blamejs_cache") !== -1);
+    check("ensureSchema includes _blamejs_seeders",
+          result.tables.indexOf("_blamejs_seeders") !== -1);
+    check("ensureSchema includes _blamejs_seeders_lock",
+          result.tables.indexOf("_blamejs_seeders_lock") !== -1);
 
     // Each table is queryable
     var auditEmpty = await b.externalDb.query("SELECT COUNT(*) AS n FROM _blamejs_audit_log");
@@ -439,7 +443,7 @@ async function testFrameworkSchemaEnsure() {
       externalDbBackend: "ops",
       dialect:           "sqlite",
     });
-    check("ensureSchema is idempotent",             second.tables.length === 14);
+    check("ensureSchema is idempotent",             second.tables.length === 16);
 
     // Indexes exist
     var idxRow = await b.externalDb.query(
