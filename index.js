@@ -95,6 +95,7 @@ var safeSchema = require("./lib/safe-schema");
 var pagination = require("./lib/pagination");
 var metrics = require("./lib/metrics");
 var tracing = require("./lib/tracing");
+var appShutdown = require("./lib/app-shutdown");
 
 module.exports = {
   crypto:           crypto,
@@ -173,6 +174,7 @@ module.exports = {
   pagination:       pagination,
   metrics:          metrics,
   tracing:          tracing,
+  appShutdown:      appShutdown,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
