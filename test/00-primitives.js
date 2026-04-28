@@ -5603,6 +5603,27 @@ async function testOAuthAuthorizationUrlOidc() {
         auth.url.indexOf("scope=openid+email+profile") !== -1);
 }
 
+async function testOAuthAuthorizationUrlGenericPreset() {
+  // The 'generic' preset is the documented escape for non-vendor IdPs —
+  // operator passes endpoints manually but selects provider:'generic' to
+  // be explicit. Verifies the preset is wired in PRESETS so the call
+  // does not throw "unknown provider preset".
+  var oa = b.auth.oauth.create({
+    provider:    "generic",
+    clientId:    "abc",
+    clientSecret: "secret",
+    redirectUri: "https://app/cb",
+    authorizationEndpoint: "https://idp.example.com/authorize",
+    tokenEndpoint:         "https://idp.example.com/token",
+    isOidc:                false,
+  });
+  var auth = await oa.authorizationUrl();
+  check("authUrl: generic preset accepted as provider value",
+        auth.url.indexOf("https://idp.example.com/authorize") === 0);
+  check("authUrl: generic preset uses operator-supplied client_id",
+        auth.url.indexOf("client_id=abc") !== -1);
+}
+
 async function testOAuthAuthorizationUrlExtraParams() {
   var oa = b.auth.oauth.create({
     clientId: "x", redirectUri: "https://app/cb",
@@ -13752,6 +13773,7 @@ async function run() {
   testOAuthPkceGenerator();
   await testOAuthAuthorizationUrlPreset();
   await testOAuthAuthorizationUrlOidc();
+  await testOAuthAuthorizationUrlGenericPreset();
   await testOAuthAuthorizationUrlExtraParams();
   await testOAuthExchangeCodeRequiresVerifier();
   await testOAuthExchangeCodeRoundTrip();
@@ -14337,6 +14359,7 @@ module.exports = {
   testOAuthPkceGenerator:                    testOAuthPkceGenerator,
   testOAuthAuthorizationUrlPreset:           testOAuthAuthorizationUrlPreset,
   testOAuthAuthorizationUrlOidc:             testOAuthAuthorizationUrlOidc,
+  testOAuthAuthorizationUrlGenericPreset:    testOAuthAuthorizationUrlGenericPreset,
   testOAuthAuthorizationUrlExtraParams:      testOAuthAuthorizationUrlExtraParams,
   testOAuthExchangeCodeRequiresVerifier:     testOAuthExchangeCodeRequiresVerifier,
   testOAuthExchangeCodeRoundTrip:            testOAuthExchangeCodeRoundTrip,
