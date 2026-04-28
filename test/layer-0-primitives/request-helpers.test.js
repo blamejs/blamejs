@@ -7,17 +7,9 @@
  */
 
 var helpers = require("../helpers");
-var b     = helpers.b;
-var check = helpers.check;
-
-function _fakeRes() {
-  var EE = require("node:events").EventEmitter;
-  var res = new EE();
-  res.statusCode = 200;
-  res.writeHead = function () {};
-  res.end = function () { res.emit("finish"); };
-  return res;
-}
+var b         = helpers.b;
+var check     = helpers.check;
+var _bodyRes  = helpers._bodyRes;
 
 function testSurface() {
   check("b.requestHelpers exposed",                  typeof b.requestHelpers === "object");
@@ -53,7 +45,7 @@ function testResolveRouteIgnoresEmptyRoutePattern() {
 }
 
 async function testCaptureStatusFromWriteHead() {
-  var res = _fakeRes();
+  var res = _bodyRes();
   var captured = null;
   b.requestHelpers.captureResponseStatus(res, function (status) { captured = status; });
   await new Promise(function (resolve) {
@@ -65,7 +57,7 @@ async function testCaptureStatusFromWriteHead() {
 }
 
 async function testCaptureStatusFromStatusCode() {
-  var res = _fakeRes();
+  var res = _bodyRes();
   var captured = null;
   b.requestHelpers.captureResponseStatus(res, function (status) { captured = status; });
   await new Promise(function (resolve) {
@@ -78,7 +70,7 @@ async function testCaptureStatusFromStatusCode() {
 }
 
 async function testCaptureStatusDefaults200() {
-  var res = _fakeRes();
+  var res = _bodyRes();
   var captured = null;
   b.requestHelpers.captureResponseStatus(res, function (status) { captured = status; });
   await new Promise(function (resolve) {
@@ -91,7 +83,7 @@ async function testCaptureStatusDefaults200() {
 }
 
 async function testCaptureStatusOnEndThrowDoesntBreakResponse() {
-  var res = _fakeRes();
+  var res = _bodyRes();
   b.requestHelpers.captureResponseStatus(res, function () {
     throw new Error("instrumentation bug");
   });
@@ -108,7 +100,7 @@ async function testCaptureStatusOnEndThrowDoesntBreakResponse() {
 
 function testCaptureStatusValidatesArgs() {
   var threwNoOnEnd = null;
-  try { b.requestHelpers.captureResponseStatus(_fakeRes()); }
+  try { b.requestHelpers.captureResponseStatus(_bodyRes()); }
   catch (e) { threwNoOnEnd = e; }
   check("captureResponseStatus: rejects missing onEnd", threwNoOnEnd !== null);
 }

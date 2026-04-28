@@ -7,55 +7,9 @@
  */
 
 var helpers = require("../helpers");
-var b     = helpers.b;
-var check = helpers.check;
-
-// Minimal fake OTel api so we can verify the tracing path without
-// shelling out to a real exporter — same pattern as tracing.test.js.
-function _makeFakeOtelApi() {
-  var spans = [];
-  var activeSpan = null;
-  function makeSpan(name) {
-    return {
-      _name: name, _attrs: {}, _ended: false,
-      spanContext: function () { return { traceId: "a".repeat(32), spanId: "b".repeat(16), traceFlags: 1, isRemote: false }; },
-      setAttribute:    function (k, v) { this._attrs[k] = v; return this; },
-      setAttributes:   function (a) { Object.assign(this._attrs, a || {}); return this; },
-      addEvent:        function () { return this; },
-      recordException: function () { return this; },
-      setStatus:       function () { return this; },
-      updateName:      function (n) { this._name = n; return this; },
-      end:             function () { this._ended = true; if (activeSpan === this) activeSpan = null; },
-    };
-  }
-  return {
-    trace: {
-      getTracer: function () {
-        return {
-          startSpan: function (name, opts) {
-            var s = makeSpan(name);
-            if (opts && opts.attributes) Object.assign(s._attrs, opts.attributes);
-            spans.push(s);
-            activeSpan = s;
-            return s;
-          },
-        };
-      },
-      getActiveSpan: function () { return activeSpan; },
-      setSpan: function (_ctx, span) { return { _activeSpan: span }; },
-    },
-    context: {
-      active: function () { return { _stub: true }; },
-      with: function (ctx, fn) {
-        var prev = activeSpan;
-        if (ctx && ctx._activeSpan) activeSpan = ctx._activeSpan;
-        try { return fn(); } finally { activeSpan = prev; }
-      },
-    },
-    SpanKind: { INTERNAL: 0, SERVER: 1 },
-    _spans: spans,
-  };
-}
+var b               = helpers.b;
+var check           = helpers.check;
+var makeFakeOtelApi = helpers.makeFakeOtelApi;
 
 function _resetRegistries() {
   b.metrics._resetForTest();
@@ -98,16 +52,6 @@ async function testObservabilityTapAsyncReturn() {
 function testObservabilityTapMetricsFiresOnSuccess() {
   _resetRegistries();
   var m = b.metrics.create();
-  // Pre-register a counter under the tap name so we can read it back.
-  var c = m.counter("smoke_op_total", { labelNames: ["k"] });
-  // Observability routes metrics.tap calls into the registry's _tapHandler,
-  // which dispatches by name. Since "smoke.op" isn't a built-in tap name,
-  // tap won't route automatically — for THIS test we install our own
-  // _activeTap via metrics.tap directly to verify the call shape.
-  var calls = [];
-  var savedTap = b.metrics.tap;
-  // Spy by reading back via the existing _activeTap-driven counters:
-  // simpler approach — use a known built-in tap name.
   b.observability.tap("audit.record",
     { action: "test.action", outcome: "success" },
     function () { return "ok"; });
@@ -152,7 +96,7 @@ async function testObservabilityTapMetricsFiresOnAsyncRejection() {
 
 function testObservabilityTapTracingProducesSpan() {
   _resetRegistries();
-  var fake = _makeFakeOtelApi();
+  var fake = makeFakeOtelApi();
   b.tracing._setOtelForTest(fake);
   var t = b.tracing.create();
   b.observability.tap("smoke.span",
@@ -167,8 +111,6 @@ function testObservabilityTapTracingProducesSpan() {
 function testObservabilityEventRoutesIntoMetricsOnly() {
   _resetRegistries();
   var m = b.metrics.create();
-  // event() = pure metrics tap, no span. Use a built-in tap name so
-  // we can verify it routed.
   b.observability.event("queue.enqueue", 1, { queueName: "outbox" });
   var counter = m.metrics.get("framework_queue_enqueue_total");
   check("event: metrics counter incremented",

@@ -7,64 +7,10 @@
  */
 
 var helpers = require("../helpers");
-var b         = helpers.b;
-var check     = helpers.check;
-var _bodyRes  = helpers._bodyRes;
-
-function _makeFakeOtelApi() {
-  // Minimal fake of @opentelemetry/api — just enough to verify the
-  // framework routes through it instead of the pass-through path.
-  var spans = [];
-  var activeSpan = null;
-  function makeSpan(name) {
-    var s = {
-      _name: name,
-      _attrs: {},
-      _events: [],
-      _exceptions: [],
-      _ended: false,
-      _status: null,
-      spanContext: function () { return { traceId: "a".repeat(32), spanId: "b".repeat(16), traceFlags: 1, isRemote: false }; },
-      setAttribute:    function (k, v) { this._attrs[k] = v; return this; },
-      setAttributes:   function (attrs) { Object.assign(this._attrs, attrs || {}); return this; },
-      addEvent:        function (n) { this._events.push(n); return this; },
-      recordException: function (e) { this._exceptions.push(e); return this; },
-      setStatus:       function (st) { this._status = st; return this; },
-      updateName:      function (n) { this._name = n; return this; },
-      end:             function () { this._ended = true; if (activeSpan === this) activeSpan = null; },
-    };
-    return s;
-  }
-  return {
-    trace: {
-      getTracer: function () {
-        return {
-          startSpan: function (name, opts) {
-            var s = makeSpan(name);
-            if (opts && opts.attributes) Object.assign(s._attrs, opts.attributes);
-            spans.push(s);
-            activeSpan = s;
-            return s;
-          },
-        };
-      },
-      getActiveSpan: function () { return activeSpan; },
-      setSpan: function (_ctx, span) { return { _activeSpan: span }; },
-    },
-    context: {
-      active: function () { return { _stub: true }; },
-      with: function (ctx, fn) {
-        var prev = activeSpan;
-        if (ctx && ctx._activeSpan) activeSpan = ctx._activeSpan;
-        try { return fn(); }
-        finally { activeSpan = prev; }
-      },
-    },
-    SpanKind: { INTERNAL: 0, SERVER: 1, CLIENT: 2, PRODUCER: 3, CONSUMER: 4 },
-    _spans:   spans,
-    _activeSpan: function () { return activeSpan; },
-  };
-}
+var b                = helpers.b;
+var check            = helpers.check;
+var _bodyRes         = helpers._bodyRes;
+var _makeFakeOtelApi = helpers.makeFakeOtelApi;
 
 function testTracingSurface() {
   check("b.tracing namespace present",      typeof b.tracing === "object");

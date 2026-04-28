@@ -27,6 +27,7 @@ var _drivers  = require("./drivers");
 var _mocks    = require("./mocks");
 var _cluster  = require("./cluster");
 var _http     = require("./http");
+var _otel     = require("./otel");
 
 module.exports = {
   // Framework binding + Node stdlib re-exports for ergonomics.
@@ -64,4 +65,7 @@ module.exports = {
 
   // HTTP helpers
   listenOnRandomPort: _http.listenOnRandomPort,
+
+  // OTel fake (for tracing + observability tests)
+  makeFakeOtelApi:    _otel.makeFakeOtelApi,
 };

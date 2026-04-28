@@ -10,6 +10,7 @@ var helpers = require("../helpers");
 var b         = helpers.b;
 var check     = helpers.check;
 var _bodyRes  = helpers._bodyRes;
+var _mockReq  = helpers._mockReq;
 
 function testAppShutdownSurface() {
   check("b.appShutdown namespace present",     typeof b.appShutdown === "object");
@@ -113,11 +114,7 @@ async function testAppShutdownMiddleware503DuringDrain() {
     phases: [{ name: "x", run: function () { return new Promise(function (r) { setTimeout(r, 100); }); } }],
   });
   var mw = o.middleware();
-  var EE = require("node:events").EventEmitter;
-  var req1 = new EE();
-  req1.method = "GET";
-  req1.url = "/";
-  req1.headers = {};
+  var req1 = _mockReq();
   var res1 = _bodyRes();
   var passed = false;
   // res1.end emits "finish" synchronously inside next(); register a
@@ -128,7 +125,7 @@ async function testAppShutdownMiddleware503DuringDrain() {
   check("middleware: pre-drain pass-through",   passed === true);
 
   var sp = o.shutdown();
-  var req2 = new EE(); req2.method = "GET"; req2.url = "/"; req2.headers = {};
+  var req2 = _mockReq();
   var res2 = _bodyRes();
   var nextCalled = false;
   mw(req2, res2, function () { nextCalled = true; });
@@ -141,16 +138,14 @@ async function testAppShutdownMiddleware503DuringDrain() {
 async function testAppShutdownInFlightTracking() {
   var o = b.appShutdown.create({ phases: [] });
   var mw = o.middleware();
-  var EE = require("node:events").EventEmitter;
   var resolveReq;
-  var req = new EE();
-  req.method = "GET"; req.url = "/"; req.headers = {};
+  var req = _mockReq();
   var res = _bodyRes();
   mw(req, res, function () {
     check("inFlight: counted while in flight", o.inFlight() === 1);
     resolveReq = function () { res.end(); };
   });
-  var req2 = new EE(); req2.method = "GET"; req2.url = "/"; req2.headers = {};
+  var req2 = _mockReq();
   var res2 = _bodyRes();
   mw(req2, res2, function () {});
   check("inFlight: counted across multiple requests", o.inFlight() === 2);
@@ -172,8 +167,7 @@ async function testAppShutdownDrainPhaseWaitsForInFlight() {
     timeoutMs: 500,
   });
   var mw = o.middleware();
-  var EE = require("node:events").EventEmitter;
-  var req = new EE(); req.method = "GET"; req.url = "/"; req.headers = {};
+  var req = _mockReq();
   var res = _bodyRes();
   mw(req, res, function () {});
   setTimeout(function () { res.end(); }, 80);
@@ -196,8 +190,7 @@ async function testAppShutdownDrainTimeoutWhenInFlightStuck() {
     timeoutMs: 80,
   });
   var mw = o.middleware();
-  var EE = require("node:events").EventEmitter;
-  var req = new EE(); req.method = "GET"; req.url = "/"; req.headers = {};
+  var req = _mockReq();
   var res = _bodyRes();
   mw(req, res, function () {});
   var result = await o.shutdown();

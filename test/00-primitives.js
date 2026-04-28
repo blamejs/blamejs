@@ -5022,38 +5022,11 @@ async function testBackupCryptoArgValidation() {
 
 // ---- body-parser ----
 
-function _mockBodyReq(method, headers, body) {
-  var EE = require("node:events").EventEmitter;
-  var req = new EE();
-  req.method = method;
-  req.url = "/";
-  req.headers = Object.assign({}, headers || {});
-  req.socket = { remoteAddress: "127.0.0.1" };
-  req.destroy = function () { /* mock — no-op */ };
-  setImmediate(function () {
-    if (Buffer.isBuffer(body)) req.emit("data", body);
-    else if (typeof body === "string") req.emit("data", Buffer.from(body));
-    req.emit("end");
-  });
-  return req;
-}
-
-function _mockBodyRes() {
-  var EE = require("node:events").EventEmitter;
-  var res = new EE();
-  res.statusCode = null;
-  res.headersSent = false;
-  res._captured = "";
-  res._endedStatus = null;
-  res.writeHead = function (s, h) {
-    res.statusCode = s;
-    res._endedStatus = s;
-    res.headersSent = true;
-    res._headers = h;
-  };
-  res.end = function (body) { if (body) res._captured += body; res.emit("finish"); };
-  return res;
-}
+// Aliases for the shared helpers — kept locally because 70+ call sites
+// in this file reference them. Identical to _bodyReq / _bodyRes from
+// test/helpers/mocks.js.
+var _mockBodyReq = helpers._bodyReq;
+var _mockBodyRes = helpers._bodyRes;
 
 function _runBodyParser(bp, req, res) {
   return new Promise(function (resolve) {
