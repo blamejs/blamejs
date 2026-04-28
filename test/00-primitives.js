@@ -13486,6 +13486,35 @@ function testCryptoAndModuleSurface() {
   check("BYTES.kib(4) = 4096",          b.constants.BYTES.kib(4) === 4096);
   check("TLS prefers PQ hybrid first",  b.constants.TLS_GROUP_PREFERENCE[0] === "SecP384r1MLKEM1024");
 
+  // Tier A validation: TIME / BYTES throw on bad input. Operators
+  // hitting `C.TIME.minutes(opts.x)` with opts.x undefined catch the
+  // typo at boot, not as a silent 0ms or NaN-cap downstream.
+  var threwUndef = null;
+  try { b.constants.TIME.minutes(undefined); } catch (e) { threwUndef = e; }
+  check("TIME.minutes(undefined) throws TypeError",
+        threwUndef instanceof TypeError && /minutes/.test(threwUndef.message));
+  var threwString = null;
+  try { b.constants.TIME.seconds("5"); } catch (e) { threwString = e; }
+  check("TIME.seconds('5') throws (no silent string-coerce)",
+        threwString instanceof TypeError);
+  var threwNeg = null;
+  try { b.constants.TIME.hours(-1); } catch (e) { threwNeg = e; }
+  check("TIME.hours(-1) throws (no negative durations)",
+        threwNeg instanceof TypeError);
+  var threwNaN = null;
+  try { b.constants.TIME.days(NaN); } catch (e) { threwNaN = e; }
+  check("TIME.days(NaN) throws (no silent NaN)",
+        threwNaN instanceof TypeError);
+  var threwBytesUndef = null;
+  try { b.constants.BYTES.mib(undefined); } catch (e) { threwBytesUndef = e; }
+  check("BYTES.mib(undefined) throws TypeError",
+        threwBytesUndef instanceof TypeError && /mib/.test(threwBytesUndef.message));
+  // Zero is a legitimate value (operators use it for "no cap" sentinels)
+  check("TIME.minutes(0) returns 0 (zero is allowed)",
+        b.constants.TIME.minutes(0) === 0);
+  check("BYTES.kib(0) returns 0 (zero is allowed)",
+        b.constants.BYTES.kib(0) === 0);
+
   // vault-wrap format constants
   check("vault-wrap MAGIC = 0xE2",       b.vaultWrap.MAGIC === 0xE2);
   check("vault-wrap FORMAT_VERSION = 1", b.vaultWrap.FORMAT_VERSION === 0x01);

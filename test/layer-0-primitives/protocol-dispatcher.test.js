@@ -22,7 +22,7 @@ function testSurface() {
 
 function testCreateValidatesOpts() {
   var threwName = null;
-  try { b.protocolDispatcher.create({ protocols: { a: {} } }); }
+  try { b.protocolDispatcher.create({ protocols: { a: _fakeProto("a") } }); }
   catch (e) { threwName = e; }
   check("create: missing name rejected",        threwName && /opts.name/.test(threwName.message));
 
@@ -30,6 +30,34 @@ function testCreateValidatesOpts() {
   try { b.protocolDispatcher.create({ name: "x" }); }
   catch (e) { threwProtos = e; }
   check("create: missing protocols rejected",  threwProtos && /opts.protocols/.test(threwProtos.message));
+
+  var threwProtosArray = null;
+  try { b.protocolDispatcher.create({ name: "x", protocols: [] }); }
+  catch (e) { threwProtosArray = e; }
+  check("create: array protocols rejected",     threwProtosArray && /opts.protocols/.test(threwProtosArray.message));
+
+  var threwBadProto = null;
+  try { b.protocolDispatcher.create({ name: "x", protocols: { foo: { /* missing .create */ } } }); }
+  catch (e) { threwBadProto = e; }
+  check("create: protocol without .create rejected",
+        threwBadProto && /\.create function/.test(threwBadProto.message));
+
+  var threwBadDeferred = null;
+  try { b.protocolDispatcher.create({ name: "x", protocols: { a: _fakeProto("a") }, deferred: "no" }); }
+  catch (e) { threwBadDeferred = e; }
+  check("create: non-object deferred rejected", threwBadDeferred && /opts.deferred/.test(threwBadDeferred.message));
+
+  var threwBadFallback = null;
+  try { b.protocolDispatcher.create({ name: "x", protocols: { a: _fakeProto("a") }, fallbackProtocol: 42 }); }
+  catch (e) { threwBadFallback = e; }
+  check("create: non-string fallbackProtocol rejected",
+        threwBadFallback && /fallbackProtocol/.test(threwBadFallback.message));
+
+  var threwBadErrCls = null;
+  try { b.protocolDispatcher.create({ name: "x", protocols: { a: _fakeProto("a") }, errorClass: "not-a-class" }); }
+  catch (e) { threwBadErrCls = e; }
+  check("create: non-function errorClass rejected",
+        threwBadErrCls && /errorClass/.test(threwBadErrCls.message));
 }
 
 function testResolveKnownProtocol() {

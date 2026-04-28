@@ -192,6 +192,36 @@ function testObservabilityTapRejectsBadFn() {
   check("tap: rejects non-function fn", threw && /must be a function/.test(threw.message));
 }
 
+function testObservabilityTapRejectsBadName() {
+  _resetRegistries();
+  var threwUndef = null;
+  try { b.observability.tap(undefined, function () {}); }
+  catch (e) { threwUndef = e; }
+  check("tap: rejects undefined name (Tier A)",
+        threwUndef instanceof TypeError && /name must be/.test(threwUndef.message));
+  var threwEmpty = null;
+  try { b.observability.tap("", function () {}); }
+  catch (e) { threwEmpty = e; }
+  check("tap: rejects empty-string name", threwEmpty instanceof TypeError);
+  var threwNumeric = null;
+  try { b.observability.tap(42, function () {}); }
+  catch (e) { threwNumeric = e; }
+  check("tap: rejects number name", threwNumeric instanceof TypeError);
+}
+
+function testObservabilityEventDropsBadName() {
+  _resetRegistries();
+  var m = b.metrics.create();
+  var threw = null;
+  try {
+    b.observability.event(undefined, 1, { x: 1 });
+    b.observability.event("", 1);
+    b.observability.event(null);
+  } catch (e) { threw = e; }
+  check("event: silently drops malformed name (Tier B)", threw === null);
+  m.deactivate();
+}
+
 async function run() {
   testObservabilitySurface();
   testObservabilityTapRunsFnWithoutRegistries();
@@ -204,6 +234,8 @@ async function run() {
   testObservabilityEventRoutesIntoMetricsOnly();
   testObservabilityEventNoOpWhenNoRegistry();
   testObservabilityTapRejectsBadFn();
+  testObservabilityTapRejectsBadName();
+  testObservabilityEventDropsBadName();
 }
 
 module.exports = { run: run };
