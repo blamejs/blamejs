@@ -4,11 +4,36 @@
  *
  * The Node framework that owns its stack.
  *
- * Public surface lives on the exported object: crypto, router, vault,
- * db, cryptoField, audit, consent, subject, session, storage, queue,
- * objectStore, externalDb, logStream, middleware, parsers, atomic-file,
- * ntp-check, redact, cluster (leader election + write-side gates), and
- * the version-stable `constants` namespace.
+ * Public surface lives on the exported object below — see
+ * `module.exports` for the authoritative list. Notable groupings:
+ *
+ *   Crypto:       crypto, vault, vaultWrap, vaultPassphraseSource,
+ *                 vaultPassphraseOps, vaultRotate, cryptoField, mtlsCa,
+ *                 pqcGate, pqcAgent
+ *   Storage:      db, storage, objectStore, queue, externalDb,
+ *                 frameworkSchema, clusterStorage, session, atomicFile,
+ *                 cookies
+ *   Audit:        audit, auditChain, auditSign, auditTools, consent,
+ *                 subject, events, redact
+ *   HTTP:         router, middleware (csrf, cors, rate-limit, request-id,
+ *                 security-headers, bot-guard, attach-user, require-auth,
+ *                 error-handler, body-parser, csp-nonce, compression,
+ *                 health, api-encrypt), httpClient, websocket,
+ *                 websocketChannels, nonceStore
+ *   Auth:         auth.{password,totp,passkey,jwt,oauth}, authHeader
+ *   Render:       template, render, staticServe, forms, errorPage
+ *   App:          createApp, jobs, mail, mailBounce, scheduler,
+ *                 appShutdown
+ *   Backup:       backup, backupCrypto, backupManifest, backupBundle,
+ *                 restore, restoreBundle, restoreRollback
+ *   DX:           log, logger, dev, bundler, cli, migrations, deprecate,
+ *                 apiSnapshot
+ *   Validation:   safeSchema, safeJson, safeSql, safeBuffer, safeUrl,
+ *                 safeAsync, parsers, pagination
+ *   Observability: metrics, tracing, ntpCheck, logStream
+ *   Cluster:      cluster (leader election + write-side gates), handlers,
+ *                 chainWriter, lazyRequire, frameworkError
+ *   Constants:    constants (version-stable namespace), version
  *
  * See LICENSE (Apache-2.0) and NOTICE for vendored attribution.
  */
