@@ -131,6 +131,7 @@ var metrics = require("./lib/metrics");
 var tracing = require("./lib/tracing");
 var observability = require("./lib/observability");
 var protocolDispatcher = require("./lib/protocol-dispatcher");
+var requestHelpers = require("./lib/request-helpers");
 var appShutdown = require("./lib/app-shutdown");
 
 module.exports = {
@@ -215,6 +216,7 @@ module.exports = {
   tracing:          tracing,
   observability:    observability,
   protocolDispatcher: protocolDispatcher,
+  requestHelpers:   requestHelpers,
   appShutdown:      appShutdown,
   ntpCheck:         ntpCheck,
   version:          constants.version,
