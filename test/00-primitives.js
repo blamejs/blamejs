@@ -12642,6 +12642,31 @@ function testWebSocketFrames() {
   check("FrameParser: rejects oversized frame", threwTooLarge);
 }
 
+async function testRouterSetsRoutePattern() {
+  // metrics + tracing label by route TEMPLATE, not the actual URL.
+  // The router must populate req.routePattern when a route matches so
+  // /users/:id labels stay one bucket instead of one-per-id.
+  var router = new b.router.Router();
+  var captured = null;
+  router.get("/users/:id", function (req, res) {
+    captured = req.routePattern;
+    res.writeHead(200);
+    res.end("ok");
+  });
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method = "GET";
+  req.url = "/users/42?q=1";
+  req.headers = { host: "x" };
+  var res = new EE();
+  res.writableEnded = false;
+  res.writeHead = function () { return res; };
+  res.end = function () { res.writableEnded = true; };
+  await router.handle(req, res);
+  check("router: req.routePattern set to template, not URL",
+        captured === "/users/:id");
+}
+
 function testRouterWsValidation() {
   var router = new b.router.Router();
 
@@ -14098,6 +14123,7 @@ async function run() {
   testWebSocketFrames();
   await testWebSocketConnection();
   testRouterWsValidation();
+  await testRouterSetsRoutePattern();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
@@ -14629,6 +14655,7 @@ module.exports = {
   testWebSocketFrames:                       testWebSocketFrames,
   testWebSocketConnection:                   testWebSocketConnection,
   testRouterWsValidation:                    testRouterWsValidation,
+  testRouterSetsRoutePattern:                testRouterSetsRoutePattern,
   testFrameworkError:                        testFrameworkError,
   testLazyRequire:                           testLazyRequire,
   testJsonModuleSurface:                     testJsonModuleSurface,
