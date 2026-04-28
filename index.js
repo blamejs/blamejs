@@ -129,6 +129,7 @@ var safeSchema = require("./lib/safe-schema");
 var pagination = require("./lib/pagination");
 var metrics = require("./lib/metrics");
 var tracing = require("./lib/tracing");
+var observability = require("./lib/observability");
 var appShutdown = require("./lib/app-shutdown");
 
 module.exports = {
@@ -211,6 +212,7 @@ module.exports = {
   pagination:       pagination,
   metrics:          metrics,
   tracing:          tracing,
+  observability:    observability,
   appShutdown:      appShutdown,
   ntpCheck:         ntpCheck,
   version:          constants.version,
