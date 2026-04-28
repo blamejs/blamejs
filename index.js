@@ -59,6 +59,7 @@ var auth = {
   totp:     require("./lib/auth/totp"),
   passkey:  require("./lib/auth/passkey"),
   jwt:      require("./lib/auth/jwt"),
+  oauth:    require("./lib/auth/oauth"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");

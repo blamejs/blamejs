@@ -5437,6 +5437,417 @@ async function testBodyParserSanitizeFilenameUnit() {
         raw._sanitizeFilename("a".repeat(300)).length === 255);
 }
 
+// ---- auth.oauth ----
+
+function _spawnFakeIdpServer(routes) {
+  // Minimal HTTP server that serves the configured route handlers.
+  // routes: { "/.well-known/...": fn(req,res), ... }
+  var http = require("node:http");
+  var server = http.createServer(function (req, res) {
+    var u = new URL(req.url, "http://localhost");
+    var handler = routes[u.pathname];
+    if (!handler) { res.writeHead(404); res.end(); return; }
+    var bodyChunks = [];
+    req.on("data", function (c) { bodyChunks.push(c); });
+    req.on("end", function () {
+      req.body = Buffer.concat(bodyChunks).toString("utf8");
+      try { handler(req, res, u); }
+      catch (e) {
+        res.writeHead(500); res.end(String(e));
+      }
+    });
+  });
+  return server;
+}
+
+function _signRs256(payload, header, privateKey) {
+  // Build a JWT signed with RS256 using node:crypto.
+  var b64u = b.auth.oauth._b64urlEncode;
+  var hdr = Object.assign({ alg: "RS256", typ: "JWT" }, header || {});
+  var headerB64  = b64u(JSON.stringify(hdr));
+  var payloadB64 = b64u(JSON.stringify(payload));
+  var signingInput = headerB64 + "." + payloadB64;
+  var sig = require("node:crypto").sign("sha256", Buffer.from(signingInput, "ascii"), {
+    key:     privateKey,
+    padding: require("node:crypto").constants.RSA_PKCS1_PADDING,
+  });
+  return signingInput + "." + b64u(sig);
+}
+
+async function _generateRsaKeypair() {
+  var crypto = require("node:crypto");
+  return new Promise(function (resolve, reject) {
+    crypto.generateKeyPair("rsa", { modulusLength: 2048 }, function (err, pub, priv) {
+      if (err) reject(err); else resolve({ publicKey: pub, privateKey: priv });
+    });
+  });
+}
+
+function _publicKeyToJwk(publicKey, kid) {
+  var jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = kid;
+  jwk.use = "sig";
+  jwk.alg = "RS256";
+  return jwk;
+}
+
+function testOAuthSurface() {
+  check("b.auth.oauth namespace present",         typeof b.auth.oauth === "object");
+  check("b.auth.oauth.create is a function",      typeof b.auth.oauth.create === "function");
+  check("PRESETS exposed",                        typeof b.auth.oauth.PRESETS === "object");
+  check("OAuthError class",                       typeof b.auth.oauth.OAuthError === "function");
+  check("DEFAULT_ACCEPTED_ALGS exposed",          Array.isArray(b.auth.oauth.DEFAULT_ACCEPTED_ALGS));
+  check("PRESETS.google has issuer",              b.auth.oauth.PRESETS.google.issuer.indexOf("accounts.google.com") !== -1);
+  check("PRESETS.github has authorizationEndpoint",
+        b.auth.oauth.PRESETS.github.authorizationEndpoint.indexOf("github.com") !== -1);
+  check("PRESETS.github isOidc=false",            b.auth.oauth.PRESETS.github.isOidc === false);
+}
+
+function testOAuthCreateValidates() {
+  var threw;
+  threw = null;
+  try { b.auth.oauth.create({}); } catch (e) { threw = e; }
+  check("create: missing clientId rejected",      threw && threw.code === "auth-oauth/no-client-id");
+
+  threw = null;
+  try { b.auth.oauth.create({ clientId: "x" }); } catch (e) { threw = e; }
+  check("create: missing redirectUri rejected",   threw && threw.code === "auth-oauth/no-redirect-uri");
+
+  threw = null;
+  try {
+    b.auth.oauth.create({
+      clientId: "x", clientSecret: "y", redirectUri: "http://insecure",
+      authorizationEndpoint: "https://x", tokenEndpoint: "https://y",
+    });
+  } catch (e) { threw = e; }
+  check("create: http redirectUri rejected",      threw && threw.code === "auth-oauth/insecure-url");
+
+  threw = null;
+  try {
+    b.auth.oauth.create({
+      clientId: "x", redirectUri: "https://app/cb",
+      provider: "nope-not-a-real-preset",
+    });
+  } catch (e) { threw = e; }
+  check("create: unknown preset rejected",        threw && threw.code === "auth-oauth/unknown-provider");
+
+  threw = null;
+  try {
+    b.auth.oauth.create({
+      clientId: "x", redirectUri: "https://app/cb",
+      provider: "auth0",
+    });
+  } catch (e) { threw = e; }
+  check("create: auth0 preset requires auth0Domain", threw && threw.code === "auth-oauth/auth0-domain");
+}
+
+function testOAuthPkceGenerator() {
+  var p1 = b.auth.oauth._generatePkce();
+  check("pkce: verifier 43 chars (base64url 32 bytes)",  p1.verifier.length === 43);
+  check("pkce: challenge 43 chars",                       p1.challenge.length === 43);
+  check("pkce: verifier matches base64url charset",      /^[A-Za-z0-9_-]+$/.test(p1.verifier));
+  // Different calls produce different values
+  var p2 = b.auth.oauth._generatePkce();
+  check("pkce: subsequent calls produce different verifiers", p1.verifier !== p2.verifier);
+  // Challenge derives deterministically from verifier
+  var crypto = require("node:crypto");
+  var expected = b.auth.oauth._b64urlEncode(crypto.createHash("sha256").update(p1.verifier).digest());
+  check("pkce: challenge = b64url(sha256(verifier))",    p1.challenge === expected);
+}
+
+async function testOAuthAuthorizationUrlPreset() {
+  var oa = b.auth.oauth.create({
+    provider:    "github",
+    clientId:    "abc",
+    clientSecret: "secret",
+    redirectUri: "https://app/cb",
+  });
+  var auth = await oa.authorizationUrl();
+  check("authUrl: starts with provider authorize endpoint",
+        auth.url.indexOf("https://github.com/login/oauth/authorize") === 0);
+  check("authUrl: includes client_id",              auth.url.indexOf("client_id=abc") !== -1);
+  check("authUrl: includes redirect_uri",           auth.url.indexOf("redirect_uri=https") !== -1);
+  check("authUrl: includes state",                  auth.url.indexOf("state=") !== -1);
+  check("authUrl: includes code_challenge (PKCE)",  auth.url.indexOf("code_challenge=") !== -1);
+  check("authUrl: includes code_challenge_method=S256", auth.url.indexOf("code_challenge_method=S256") !== -1);
+  check("authUrl: response_type=code",              auth.url.indexOf("response_type=code") !== -1);
+  check("authUrl: returns state for caller storage", typeof auth.state === "string" && auth.state.length > 0);
+  check("authUrl: returns verifier for caller storage", typeof auth.verifier === "string");
+  check("authUrl: github preset → no nonce (not OIDC)", auth.nonce === null);
+}
+
+async function testOAuthAuthorizationUrlOidc() {
+  var oa = b.auth.oauth.create({
+    provider:    "google",
+    clientId:    "abc",
+    clientSecret: "secret",
+    redirectUri: "https://app/cb",
+  });
+  // Google requires discovery, but we can build the auth URL with
+  // discovery fired here. Capture by mocking discovery via stub.
+  // For this test we just verify the surface returns nonce for OIDC.
+  // We bypass network by setting endpoints directly.
+  var oaDirect = b.auth.oauth.create({
+    clientId: "abc", redirectUri: "https://app/cb",
+    isOidc: true,
+    scope:   ["openid", "email", "profile"],
+    authorizationEndpoint: "https://example.com/auth",
+    tokenEndpoint:         "https://example.com/token",
+    issuer:                "https://example.com",
+  });
+  var auth = await oaDirect.authorizationUrl();
+  check("authUrl: OIDC includes nonce",             typeof auth.nonce === "string" && auth.nonce.length > 0);
+  // URLSearchParams encodes space as '+', so the scope params are
+  // joined with '+' in the wire-format URL.
+  check("authUrl: scope contains openid+email+profile",
+        auth.url.indexOf("scope=openid+email+profile") !== -1);
+}
+
+async function testOAuthAuthorizationUrlExtraParams() {
+  var oa = b.auth.oauth.create({
+    clientId: "x", redirectUri: "https://app/cb",
+    authorizationEndpoint: "https://example.com/auth",
+    tokenEndpoint:         "https://example.com/token",
+    isOidc: false,
+  });
+  var auth = await oa.authorizationUrl({
+    prompt:    "consent",
+    loginHint: "user@example.com",
+    extraParams: { audience: "api://my-api" },
+  });
+  check("authUrl: prompt threaded through",         auth.url.indexOf("prompt=consent") !== -1);
+  check("authUrl: login_hint encoded",              auth.url.indexOf("login_hint=user%40example.com") !== -1);
+  check("authUrl: extraParams (audience) included", auth.url.indexOf("audience=api%3A%2F%2Fmy-api") !== -1);
+}
+
+async function testOAuthExchangeCodeRequiresVerifier() {
+  var oa = b.auth.oauth.create({
+    clientId: "x", redirectUri: "https://app/cb",
+    authorizationEndpoint: "https://example.com/auth",
+    tokenEndpoint:         "https://example.com/token",
+    isOidc: false,
+  });
+  var threw = null;
+  try { await oa.exchangeCode({ code: "abc" }); } catch (e) { threw = e; }
+  check("exchangeCode: missing code rejected",
+        threw && (threw.code === "auth-oauth/no-code" || threw.code === "auth-oauth/no-verifier"));
+  threw = null;
+  try { await oa.exchangeCode({}); } catch (e) { threw = e; }
+  check("exchangeCode: empty opts rejected",       threw && threw.code === "auth-oauth/no-code");
+}
+
+async function testOAuthExchangeCodeRoundTrip() {
+  // Spin a fake IdP that accepts a code + verifier and returns tokens.
+  var receivedBody = null;
+  var server = _spawnFakeIdpServer({
+    "/token": function (req, res) {
+      receivedBody = req.body;
+      var body = JSON.stringify({
+        access_token:  "AT-xyz",
+        token_type:    "Bearer",
+        expires_in:    3600,
+        refresh_token: "RT-xyz",
+        scope:         "read:user",
+      });
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+      res.end(body);
+    },
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var oa = b.auth.oauth.create({
+      clientId:     "abc",
+      clientSecret: "secret",
+      redirectUri:  "https://app/cb",
+      authorizationEndpoint: "http://127.0.0.1:" + port + "/auth",
+      tokenEndpoint:         "http://127.0.0.1:" + port + "/token",
+      isOidc:       false,
+      allowHttp:    true,    // for local fake IdP
+      pkce:         true,
+    });
+    var tokens = await oa.exchangeCode({
+      code:     "AUTH_CODE_123",
+      verifier: "test-verifier-1234567890123456789012345",
+    });
+    check("exchangeCode: accessToken returned",      tokens.accessToken === "AT-xyz");
+    check("exchangeCode: refreshToken returned",     tokens.refreshToken === "RT-xyz");
+    check("exchangeCode: tokenType set",             tokens.tokenType === "Bearer");
+    check("exchangeCode: scope parsed",              tokens.scope.indexOf("read:user") !== -1);
+    check("exchangeCode: POST included grant_type",   receivedBody.indexOf("grant_type=authorization_code") !== -1);
+    check("exchangeCode: POST included code",         receivedBody.indexOf("code=AUTH_CODE_123") !== -1);
+    check("exchangeCode: POST included verifier",     receivedBody.indexOf("code_verifier=test-verifier-") !== -1);
+    check("exchangeCode: POST included client_secret", receivedBody.indexOf("client_secret=secret") !== -1);
+  } finally { server.close(); }
+}
+
+async function testOAuthRefreshAccessToken() {
+  var receivedBody = null;
+  var server = _spawnFakeIdpServer({
+    "/token": function (req, res) {
+      receivedBody = req.body;
+      var body = JSON.stringify({
+        access_token: "AT-fresh", token_type: "Bearer", expires_in: 3600,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" }); res.end(body);
+    },
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var oa = b.auth.oauth.create({
+      clientId: "x", clientSecret: "y", redirectUri: "https://app/cb",
+      authorizationEndpoint: "http://127.0.0.1:" + port + "/auth",
+      tokenEndpoint:         "http://127.0.0.1:" + port + "/token",
+      isOidc: false, allowHttp: true,
+    });
+    var tokens = await oa.refreshAccessToken("RT-old");
+    check("refresh: new access token issued",       tokens.accessToken === "AT-fresh");
+    check("refresh: POST included grant_type=refresh_token",
+          receivedBody.indexOf("grant_type=refresh_token") !== -1);
+    check("refresh: POST included refresh_token",     receivedBody.indexOf("refresh_token=RT-old") !== -1);
+  } finally { server.close(); }
+}
+
+async function testOAuthFetchUserInfo() {
+  var receivedAuthHeader = null;
+  var server = _spawnFakeIdpServer({
+    "/userinfo": function (req, res) {
+      receivedAuthHeader = req.headers["authorization"];
+      var body = JSON.stringify({ sub: "user-1", email: "x@y.io", name: "Alice" });
+      res.writeHead(200, { "Content-Type": "application/json" }); res.end(body);
+    },
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var oa = b.auth.oauth.create({
+      clientId: "x", redirectUri: "https://app/cb",
+      authorizationEndpoint: "http://127.0.0.1:" + port + "/auth",
+      tokenEndpoint:         "http://127.0.0.1:" + port + "/token",
+      userinfoEndpoint:      "http://127.0.0.1:" + port + "/userinfo",
+      isOidc: false, allowHttp: true,
+    });
+    var profile = await oa.fetchUserInfo("AT-xyz");
+    check("userinfo: returns parsed profile",        profile.email === "x@y.io");
+    check("userinfo: Authorization Bearer header sent",
+          receivedAuthHeader === "Bearer AT-xyz");
+  } finally { server.close(); }
+}
+
+async function testOAuthVerifyIdTokenRoundTrip() {
+  // Generate an RSA keypair, sign an RS256 ID token, verify via the
+  // OAuth client's verifyIdToken (with JWKS served from the fake IdP).
+  var kp = await _generateRsaKeypair();
+  var jwk = _publicKeyToJwk(kp.publicKey, "test-kid-1");
+  var jwks = { keys: [jwk] };
+  var server = _spawnFakeIdpServer({
+    "/jwks": function (req, res) {
+      var body = JSON.stringify(jwks);
+      res.writeHead(200, { "Content-Type": "application/json" }); res.end(body);
+    },
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var issuerUrl = "http://127.0.0.1:" + port;
+    var clientId  = "test-client";
+    var oa = b.auth.oauth.create({
+      clientId: clientId, redirectUri: "https://app/cb",
+      isOidc:    true,
+      issuer:    issuerUrl,
+      authorizationEndpoint: issuerUrl + "/auth",
+      tokenEndpoint:         issuerUrl + "/token",
+      jwksUri:               issuerUrl + "/jwks",
+      allowHttp: true,
+    });
+    var nowSec = Math.floor(Date.now() / 1000);
+    var idToken = _signRs256({
+      iss:   issuerUrl, sub: "user-1", aud: clientId,
+      exp:   nowSec + 3600, iat: nowSec, nonce: "abc-nonce",
+    }, { kid: "test-kid-1" }, kp.privateKey);
+
+    var ok = await oa.verifyIdToken(idToken, { nonce: "abc-nonce" });
+    check("verifyIdToken: claims returned",          ok.claims.sub === "user-1");
+    check("verifyIdToken: iss matches",              ok.claims.iss === issuerUrl);
+
+    // Wrong nonce → reject
+    var threw = null;
+    try { await oa.verifyIdToken(idToken, { nonce: "different" }); } catch (e) { threw = e; }
+    check("verifyIdToken: wrong nonce rejected",     threw && threw.code === "auth-oauth/nonce-mismatch");
+
+    // Tampered signature → reject
+    var tampered = idToken.slice(0, -5) + "XXXXX";
+    threw = null;
+    try { await oa.verifyIdToken(tampered, { nonce: "abc-nonce" }); } catch (e) { threw = e; }
+    check("verifyIdToken: tampered signature rejected",
+          threw && (threw.code === "auth-oauth/bad-signature" || threw.code === "auth-oauth/malformed-jwt"));
+
+    // Expired token → reject
+    var expired = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: clientId,
+      exp: nowSec - 7200, iat: nowSec - 7300,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(expired, {}); } catch (e) { threw = e; }
+    check("verifyIdToken: expired rejected",         threw && threw.code === "auth-oauth/expired");
+
+    // Wrong audience → reject
+    var wrongAud = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: "different-client",
+      exp: nowSec + 3600, iat: nowSec,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(wrongAud, {}); } catch (e) { threw = e; }
+    check("verifyIdToken: wrong aud rejected",       threw && threw.code === "auth-oauth/aud-mismatch");
+
+    // Wrong issuer → reject
+    var wrongIss = _signRs256({
+      iss: "https://other-iss", sub: "user-1", aud: clientId,
+      exp: nowSec + 3600, iat: nowSec,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(wrongIss, {}); } catch (e) { threw = e; }
+    check("verifyIdToken: wrong iss rejected",       threw && threw.code === "auth-oauth/iss-mismatch");
+  } finally { server.close(); }
+}
+
+async function testOAuthVerifyIdTokenRefusesUnsupportedAlg() {
+  // none / HS256 should be refused.
+  var oa = b.auth.oauth.create({
+    clientId: "x", redirectUri: "https://app/cb",
+    isOidc: true, issuer: "https://example.com",
+    authorizationEndpoint: "https://example.com/auth", tokenEndpoint: "https://example.com/token",
+    jwksUri: "https://example.com/jwks",
+    allowHttp: false,
+  });
+  var b64u = b.auth.oauth._b64urlEncode;
+  // Forge a "none"-alg token
+  var noneTok = b64u(JSON.stringify({ alg: "none", typ: "JWT" })) + "." +
+                b64u(JSON.stringify({ sub: "u" })) + ".";
+  var threw = null;
+  try { await oa.verifyIdToken(noneTok, {}); } catch (e) { threw = e; }
+  check("verifyIdToken: none alg rejected",        threw && threw.code === "auth-oauth/alg-not-accepted");
+
+  // HS256 — also not in DEFAULT_ACCEPTED_ALGS
+  var hsTok = b64u(JSON.stringify({ alg: "HS256", typ: "JWT" })) + "." +
+              b64u(JSON.stringify({ sub: "u" })) + ".sig";
+  threw = null;
+  try { await oa.verifyIdToken(hsTok, {}); } catch (e) { threw = e; }
+  check("verifyIdToken: HS256 rejected",            threw && threw.code === "auth-oauth/alg-not-accepted");
+}
+
+function testOAuthVerifyParamsForAlg() {
+  var raw = b.auth.oauth._verifyParamsForAlg;
+  check("RS256 → sha256 + PKCS1",                  raw("RS256").hash === "sha256");
+  check("ES256 → sha256 + ieee-p1363",             raw("ES256").dsaEncoding === "ieee-p1363");
+  check("PS256 → sha256 + PSS padding",
+        raw("PS256").padding === require("node:crypto").constants.RSA_PKCS1_PSS_PADDING);
+  var threw = null;
+  try { raw("XYZ"); } catch (e) { threw = e; }
+  check("unsupported alg → throws",                threw && threw.code === "auth-oauth/unsupported-alg");
+}
+
 // ---- app-shutdown ----
 
 function testAppShutdownSurface() {
@@ -14344,6 +14755,20 @@ async function run() {
   await testBodyParserMultipartTruncated();
   await testBodyParserContentLengthExceedsLimitImmediate();
   testBodyParserSanitizeFilenameUnit();
+  // auth.oauth — OAuth 2 / OIDC client (Phase 9.10)
+  testOAuthSurface();
+  testOAuthCreateValidates();
+  testOAuthPkceGenerator();
+  await testOAuthAuthorizationUrlPreset();
+  await testOAuthAuthorizationUrlOidc();
+  await testOAuthAuthorizationUrlExtraParams();
+  await testOAuthExchangeCodeRequiresVerifier();
+  await testOAuthExchangeCodeRoundTrip();
+  await testOAuthRefreshAccessToken();
+  await testOAuthFetchUserInfo();
+  await testOAuthVerifyIdTokenRoundTrip();
+  await testOAuthVerifyIdTokenRefusesUnsupportedAlg();
+  testOAuthVerifyParamsForAlg();
   // app-shutdown — graceful shutdown orchestrator (Phase 9.9)
   testAppShutdownSurface();
   await testAppShutdownEmpty();
@@ -14984,6 +15409,19 @@ module.exports = {
   testBodyParserMultipartTruncated:          testBodyParserMultipartTruncated,
   testBodyParserContentLengthExceedsLimitImmediate: testBodyParserContentLengthExceedsLimitImmediate,
   testBodyParserSanitizeFilenameUnit:        testBodyParserSanitizeFilenameUnit,
+  testOAuthSurface:                          testOAuthSurface,
+  testOAuthCreateValidates:                  testOAuthCreateValidates,
+  testOAuthPkceGenerator:                    testOAuthPkceGenerator,
+  testOAuthAuthorizationUrlPreset:           testOAuthAuthorizationUrlPreset,
+  testOAuthAuthorizationUrlOidc:             testOAuthAuthorizationUrlOidc,
+  testOAuthAuthorizationUrlExtraParams:      testOAuthAuthorizationUrlExtraParams,
+  testOAuthExchangeCodeRequiresVerifier:     testOAuthExchangeCodeRequiresVerifier,
+  testOAuthExchangeCodeRoundTrip:            testOAuthExchangeCodeRoundTrip,
+  testOAuthRefreshAccessToken:               testOAuthRefreshAccessToken,
+  testOAuthFetchUserInfo:                    testOAuthFetchUserInfo,
+  testOAuthVerifyIdTokenRoundTrip:           testOAuthVerifyIdTokenRoundTrip,
+  testOAuthVerifyIdTokenRefusesUnsupportedAlg: testOAuthVerifyIdTokenRefusesUnsupportedAlg,
+  testOAuthVerifyParamsForAlg:               testOAuthVerifyParamsForAlg,
   testAppShutdownSurface:                    testAppShutdownSurface,
   testAppShutdownEmpty:                      testAppShutdownEmpty,
   testAppShutdownPhasesRunInOrder:           testAppShutdownPhasesRunInOrder,
