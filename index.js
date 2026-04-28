@@ -140,6 +140,7 @@ var slug = require("./lib/slug");
 var webhook = require("./lib/webhook");
 var apiKey = require("./lib/api-key");
 var credentialHash = require("./lib/credential-hash");
+var permissions = require("./lib/permissions");
 
 module.exports = {
   crypto:           crypto,
@@ -230,6 +231,7 @@ module.exports = {
   webhook:          webhook,
   apiKey:           apiKey,
   credentialHash:   credentialHash,
+  permissions:      permissions,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
