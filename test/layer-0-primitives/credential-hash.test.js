@@ -17,7 +17,6 @@ function testSurface() {
   check("verify is async fn",                  typeof b.credentialHash.verify === "function");
   check("inspect is fn",                       typeof b.credentialHash.inspect === "function");
   check("needsRehash is fn",                   typeof b.credentialHash.needsRehash === "function");
-  check("verifyAllowingLegacy fn",             typeof b.credentialHash.verifyAllowingLegacy === "function");
   check("ALGOS frozen",                        Object.isFrozen(b.credentialHash.ALGOS));
   check("ALGOS.SHAKE256",                      b.credentialHash.ALGOS.SHAKE256 === "shake256");
   check("ALGOS.ARGON2ID",                      b.credentialHash.ALGOS.ARGON2ID === "argon2id");
@@ -117,22 +116,32 @@ async function testNeedsRehash() {
         ch.needsRehash(argEnv, { algo: "argon2id" }) === false);
 }
 
-async function testLegacyRawHexFallback() {
+async function testObservabilityEmission() {
   var ch = b.credentialHash;
-  var raw = b.crypto.sha3Hash("legacy-secret");      // 128 hex chars
-  check("isLegacyRawHexSha3_512: matches 128 hex",  ch.isLegacyRawHexSha3_512(raw) === true);
-  check("isLegacyRawHexSha3_512: rejects short",    ch.isLegacyRawHexSha3_512("abcd") === false);
-  check("isLegacyRawHexSha3_512: rejects non-hex",
-        ch.isLegacyRawHexSha3_512("z".repeat(128)) === false);
+  var captured = [];
+  var originalTap = b.metrics.tap;
+  b.metrics.tap = function (name, value, labels) {
+    captured.push({ name: name, value: value, labels: labels || {} });
+  };
+  try {
+    var env = await ch.hash("emit-secret");
+    await ch.verify("emit-secret", env);
+    await ch.verify("WRONG", env);
+  } finally {
+    b.metrics.tap = originalTap;
+  }
+  var names = captured.map(function (c) { return c.name; });
+  check("emits credentialHash.hash",       names.indexOf("credentialHash.hash") !== -1);
+  check("emits credentialHash.verify",     names.indexOf("credentialHash.verify") !== -1);
 
-  check("verifyAllowingLegacy: legacy true on match",
-        (await ch.verifyAllowingLegacy("legacy-secret", raw)) === true);
-  check("verifyAllowingLegacy: legacy false on mismatch",
-        (await ch.verifyAllowingLegacy("WRONG", raw)) === false);
-  // Envelope path still works through the same helper
-  var env = await ch.hash("modern-secret");
-  check("verifyAllowingLegacy: envelope true",
-        (await ch.verifyAllowingLegacy("modern-secret", env)) === true);
+  var hashEvent = captured.find(function (c) { return c.name === "credentialHash.hash"; });
+  check("hash event has algo label",       hashEvent && hashEvent.labels.algo === "shake256");
+
+  var verifyEvents = captured.filter(function (c) { return c.name === "credentialHash.verify"; });
+  var anySuccess = verifyEvents.some(function (e) { return e.labels.outcome === "success"; });
+  var anyFailure = verifyEvents.some(function (e) { return e.labels.outcome === "failure"; });
+  check("verify emits success outcome",    anySuccess === true);
+  check("verify emits failure outcome",    anyFailure === true);
 }
 
 async function testTierA() {
@@ -164,7 +173,7 @@ async function run() {
   await testInspectMalformed();
   await testVerifyMalformed();
   await testNeedsRehash();
-  await testLegacyRawHexFallback();
+  await testObservabilityEmission();
   await testTierA();
 }
 

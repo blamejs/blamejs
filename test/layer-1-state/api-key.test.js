@@ -236,31 +236,6 @@ async function testEnvelopeFormatPersisted() {
   check("envelope: payload is 128 bytes by default", info.payloadBytes === 128);
 }
 
-async function testLegacyRawHexFallback() {
-  var keys = b.apiKey.create({ namespace: "legacy-fallback" });
-  // Manually craft a legacy-style row: raw hex SHA3-512 (no envelope).
-  // Issue normally to populate the row, then overwrite secretHash with
-  // a raw-hex SHA3-512 of a known plaintext to simulate a v0.2.27 row.
-  var legacySecret = "deadbeefcafe1234567890abcdef0123";
-  var legacyHex = b.crypto.sha3Hash(legacySecret);    // 128 hex chars
-  var issued = await keys.issue({ ownerId: "u1" });
-  // Overwrite directly via cluster-storage
-  await b.clusterStorage.execute(
-    "UPDATE _blamejs_api_keys SET secretHash = ? WHERE id = ?",
-    [legacyHex, "legacy-fallback:" + issued.id]
-  );
-  // Build a key with the legacy secret
-  var legacyKey = "bk_legacy-fallback_" + issued.id + "_" + legacySecret;
-  var record = await keys.verify(legacyKey);
-  check("legacy fallback: raw-hex SHA3-512 verifies",
-        record !== null && record.id === issued.id);
-
-  // Negative: wrong secret against the legacy row → null
-  var wrongKey = "bk_legacy-fallback_" + issued.id + "_" + "0".repeat(32);
-  var wrongResult = await keys.verify(wrongKey);
-  check("legacy fallback: wrong secret returns null", wrongResult === null);
-}
-
 async function testHashAlgoOptArgon2id() {
   // Argon2id costs ~250ms per verify — keep this test small (issue +
   // verify only; no rotation, no purge sweep).
@@ -517,7 +492,6 @@ async function run() {
     await testRotate();
     await testRotateNotFoundOrRevoked();
     await testEnvelopeFormatPersisted();
-    await testLegacyRawHexFallback();
     await testHashAlgoOptArgon2id();
     await testListForOwner();
     await testGetById();
