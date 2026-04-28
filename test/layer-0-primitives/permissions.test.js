@@ -21,7 +21,8 @@ function testSurface() {
   check("PermissionsError class",                typeof b.permissions.PermissionsError === "function");
   check("DEFAULTS frozen",                       Object.isFrozen(b.permissions.DEFAULTS));
   check("DEFAULTS.auditFailures true",           b.permissions.DEFAULTS.auditFailures === true);
-  check("DEFAULTS.auditSuccess false",           b.permissions.DEFAULTS.auditSuccess === false);
+  check("DEFAULTS.auditSuccess true (auth decision IS the audit event)",
+        b.permissions.DEFAULTS.auditSuccess === true);
   check("DEFAULTS.denyStatus 403",               b.permissions.DEFAULTS.denyStatus === 403);
   check("DEFAULTS.missingActorStatus 401",       b.permissions.DEFAULTS.missingActorStatus === 401);
 }
@@ -331,23 +332,40 @@ async function testAuditAndObservabilityEmission() {
         auditActions.indexOf("permissions.missing_actor") !== -1);
 }
 
-async function testAuditFailuresOnlyByDefault() {
+async function testAuditDefaults() {
   var auditCaptured = [];
   var auditShim = { safeEmit: function (event) { auditCaptured.push(event); } };
+  // Defaults: both success AND failure audited (auth decision is the event)
   var p = b.permissions.create({
     roles: { admin: ["*"] },
     audit: auditShim,
-    // auditSuccess defaults to false
   });
   var mwOk = p.require("users:read");
   await _runMiddleware(mwOk, Object.assign(_mockReq(), { user: { scopes: ["*"] } }));
   var actions = auditCaptured.map(function (e) { return e.action; });
-  check("default: success NOT audited",  actions.indexOf("permissions.check.success") === -1);
+  check("default: success IS audited (auth decision)",
+        actions.indexOf("permissions.check.success") !== -1);
 
   var mwDeny = p.require("users:write");
   await _runMiddleware(mwDeny, Object.assign(_mockReq(), { user: { scopes: ["users:read"] } }));
   var actions2 = auditCaptured.map(function (e) { return e.action; });
   check("default: deny IS audited",      actions2.indexOf("permissions.check.deny") !== -1);
+}
+
+async function testAuditSuccessOptOut() {
+  var auditCaptured = [];
+  var auditShim = { safeEmit: function (event) { auditCaptured.push(event); } };
+  // Operator opt-out for extreme volume
+  var p = b.permissions.create({
+    roles: { admin: ["*"] },
+    audit: auditShim,
+    auditSuccess: false,
+  });
+  var mwOk = p.require("users:read");
+  await _runMiddleware(mwOk, Object.assign(_mockReq(), { user: { scopes: ["*"] } }));
+  var actions = auditCaptured.map(function (e) { return e.action; });
+  check("opt-out: success NOT audited when auditSuccess=false",
+        actions.indexOf("permissions.check.success") === -1);
 }
 
 // ---- Tier-A validation ----
@@ -424,7 +442,8 @@ async function run() {
   await testMiddlewareRequireAny();
   await testMiddlewareCustomResponder();
   await testAuditAndObservabilityEmission();
-  await testAuditFailuresOnlyByDefault();
+  await testAuditDefaults();
+  await testAuditSuccessOptOut();
   testTierA();
 }
 
