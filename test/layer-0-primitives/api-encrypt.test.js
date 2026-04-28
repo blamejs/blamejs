@@ -153,6 +153,80 @@ async function testApiEncryptKeypairValidated() {
     b.middleware.apiEncrypt({ keypair: { publicKey: "pem", privateKey: "pem" } });
   } catch (e) { threw = e; }
   check("non-hybrid keypair rejected",           threw && threw.code === "INVALID_KEYPAIR");
+  threw = null;
+  try { b.middleware.apiEncrypt({ keypairs: [] }); } catch (e) { threw = e; }
+  check("empty keypairs array rejected",         threw && threw.code === "INVALID_KEYPAIR");
+}
+
+async function testApiEncryptMultiKeypairRotation() {
+  // Build two server keypairs. The "active" keypair encrypts new
+  // bootstraps; the previous one stays in the array so in-flight
+  // requests still encrypted to it continue to decrypt.
+  var prevKp = _serverKeypair();
+  var newKp  = _serverKeypair();
+
+  // Old client was bootstrapped against prevKp. Its outbound request
+  // will encrypt _ek to prevKp's pubkey.
+  var oldClient = b.middleware.apiEncrypt.client({ pubkey: prevKp });
+
+  // Server middleware in rotation overlap: keypairs = [new, prev].
+  var mw = b.middleware.apiEncrypt({
+    keypairs: [newKp, prevKp],
+    audit:    false,
+  });
+
+  var oldCall = oldClient.encryptRequest({ from: "old client" });
+  var req = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req.body = oldCall.body;
+  var res = _mkRes();
+  var fin = _newFinish(res);
+
+  await mw(req, res, function () {
+    check("rotation: req.body decrypted via prevKp", req.body.from === "old client");
+    res.json({ ok: true });
+  });
+  await fin;
+
+  check("rotation: 200 from server",            res._endedStatus === 200);
+  var responseBody = JSON.parse(res._captured);
+  // Old client decrypts the response with the session key it generated;
+  // session key derives from prevKp encapsulation but the response is
+  // wrapped with the same session key, so it round-trips.
+  var plain = oldCall.decryptResponse(responseBody);
+  check("rotation: old client decrypts response", plain.ok === true);
+
+  // After rotation completes, dropping prevKp from the array means
+  // old-client requests stop decrypting.
+  var mwPostRotation = b.middleware.apiEncrypt({
+    keypairs: [newKp],
+    audit:    false,
+  });
+  var oldCall2 = oldClient.encryptRequest({ from: "post-rotation" });
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = oldCall2.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mwPostRotation(req2, res2, function () {
+    check("post-rotation: should not have called next", false);
+  });
+  await fin2;
+  check("post-rotation: request rejected",      res2._endedStatus === 400);
+}
+
+async function testApiEncryptPublishesActiveKeypair() {
+  var prevKp = _serverKeypair();
+  var newKp  = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypairs: [newKp, prevKp],
+    audit:    false,
+  });
+  var handler = mw.publishPublicKey();
+  var req = _bodyReq("GET", {}, "");
+  var res = _mkRes();
+  handler(req, res);
+  var body = JSON.parse(res._captured);
+  check("publishes the active (first) keypair", body.publicKey === newKp.publicKey);
+  check("does not publish previous keypair",    body.publicKey !== prevKp.publicKey);
 }
 
 async function testApiEncryptRoundTrip() {
@@ -221,7 +295,7 @@ async function testApiEncryptRejectsStaleTimestamp() {
   // Backdate the timestamp past the window
   clientCall.body._ts = Date.now() - 10_000;
 
-  var req = _bodyReq("POST", {}, "");
+  var req = _bodyReq("POST", { "content-type": "application/json" }, "");
   req.body = clientCall.body;
   var res = _mkRes();
   var fin = _newFinish(res);
@@ -243,7 +317,7 @@ async function testApiEncryptRejectsReplay() {
   var clientCall = clientCtx.encryptRequest({ x: 1 });
 
   // First request: succeeds.
-  var req1 = _bodyReq("POST", {}, "");
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
   req1.body = clientCall.body;
   var res1 = _mkRes();
   var fin1 = _newFinish(res1);
@@ -252,7 +326,7 @@ async function testApiEncryptRejectsReplay() {
   check("first request: 200",                    res1._endedStatus === 200);
 
   // Replay the same body (same _ek, _ct, _ts, _nonce) → rejected.
-  var req2 = _bodyReq("POST", {}, "");
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
   req2.body = clientCall.body;
   var res2 = _mkRes();
   var fin2 = _newFinish(res2);
@@ -276,7 +350,7 @@ async function testApiEncryptRejectsTamperedCiphertext() {
   ctBuf[ctBuf.length - 5] ^= 0xff;
   clientCall.body._ct = ctBuf.toString("base64");
 
-  var req = _bodyReq("POST", {}, "");
+  var req = _bodyReq("POST", { "content-type": "application/json" }, "");
   req.body = clientCall.body;
   var res = _mkRes();
   var fin = _newFinish(res);
@@ -339,7 +413,7 @@ async function testApiEncryptEventOnFailure() {
   var listener = function (info) { captured.push(info); };
   b.events.on(b.events.EVENTS.API_ENCRYPT_FAILURE, listener);
   try {
-    var req = _bodyReq("POST", {}, "");
+    var req = _bodyReq("POST", { "content-type": "application/json" }, "");
     req.body = { msg: "oops" };
     req.url = "/api/x";
     req.pathname = "/api/x";
@@ -369,7 +443,7 @@ async function testApiEncryptAuditEmit() {
     ctBuf[ctBuf.length - 1] ^= 0xff;
     call.body._ct = ctBuf.toString("base64");
 
-    var req = _bodyReq("POST", {}, "");
+    var req = _bodyReq("POST", { "content-type": "application/json" }, "");
     req.body = call.body;
     req.url = "/api/y";
     req.pathname = "/api/y";
@@ -397,6 +471,215 @@ async function testApiEncryptClientRejectsBadPubkey() {
   threw = null;
   try { b.middleware.apiEncrypt.client({ pubkey: { publicKey: "pem" } }); } catch (e) { threw = e; }
   check("client rejects non-hybrid pubkey",       threw && threw.code === "CLIENT_INVALID_PUBKEY");
+}
+
+async function testApiEncryptContentTypeScoping() {
+  // Default contentTypes = ["application/json"]. Requests with a
+  // non-JSON Content-Type bypass the middleware entirely (they're
+  // treated as a public route the operator chose to expose).
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({ keypair: keypair, audit: false });
+  var req = _bodyReq("POST", { "content-type": "multipart/form-data; boundary=---x" }, "");
+  req.body = { not: "encrypted" };
+  var res = _mkRes();
+  var fin = _newFinish(res);
+  var nextCalled = false;
+  await mw(req, res, function () { nextCalled = true; });
+  check("non-JSON Content-Type bypasses middleware", nextCalled === true);
+  check("body not replaced",                         req.body && req.body.not === "encrypted");
+
+  // Explicit null disables the filter — every non-exempt request is
+  // treated as encrypted regardless of Content-Type.
+  var mwAll = b.middleware.apiEncrypt({
+    keypair:      keypair,
+    audit:        false,
+    contentTypes: null,
+  });
+  var req2 = _bodyReq("POST", { "content-type": "text/plain" }, "");
+  req2.body = { not: "encrypted" };
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mwAll(req2, res2, function () { check("contentTypes:null should not allow non-encrypted bodies through", false); });
+  await fin2;
+  check("contentTypes:null rejects raw body without _ek", res2._endedStatus === 400);
+
+  // Custom list — operator wired form-encoded clients too.
+  var mwForm = b.middleware.apiEncrypt({
+    keypair:      keypair,
+    audit:        false,
+    contentTypes: ["application/json", "application/x-www-form-urlencoded"],
+  });
+  var req3 = _bodyReq("POST", { "content-type": "application/x-www-form-urlencoded" }, "");
+  req3.body = { not: "encrypted" };
+  var res3 = _mkRes();
+  var fin3 = _newFinish(res3);
+  await mwForm(req3, res3, function () { check("custom contentTypes should reject non-encrypted body", false); });
+  await fin3;
+  check("custom contentTypes catches form-encoded request", res3._endedStatus === 400);
+}
+
+async function testApiEncryptNonceHashedBeforeStorage() {
+  // The cluster nonce store should never see the raw client nonce —
+  // the middleware hashes via sha3 before passing to checkAndInsert.
+  // Verify by pinning the cluster store and reading the table.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ae-"));
+  try {
+    await setupTestDb(tmpDir);
+    var keypair = _serverKeypair();
+    var nonceStore = b.nonceStore.create({ backend: "cluster" });
+    var mw = b.middleware.apiEncrypt({
+      keypair:    keypair,
+      nonceStore: nonceStore,
+      audit:      false,
+    });
+    var clientCtx = b.middleware.apiEncrypt.client({ pubkey: keypair });
+    var call = clientCtx.encryptRequest({ x: 1 });
+    var rawNonce = call.body._nonce;
+
+    var req = _bodyReq("POST", { "content-type": "application/json" }, "");
+    req.body = call.body;
+    var res = _mkRes();
+    var fin = _newFinish(res);
+    await mw(req, res, function () { res.json({ ok: true }); });
+    await fin;
+    check("hashed nonce: 200 first request",      res._endedStatus === 200);
+
+    // The DB row's PRIMARY KEY is the SHA3 hash, not the raw nonce.
+    var rows = b.db.prepare(
+      "SELECT nonceHash FROM _blamejs_api_encrypt_nonces"
+    ).all();
+    check("hashed nonce: exactly one row stored", rows.length === 1);
+    check("hashed nonce: row holds hash, not raw",
+          rows[0].nonceHash !== rawNonce);
+    check("hashed nonce: hash is sha3 of raw",
+          rows[0].nonceHash === b.crypto.sha3Hash(rawNonce, "hex"));
+
+    nonceStore.close();
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testApiEncryptDerivedPruneInterval() {
+  // pruneIntervalMs defaults to max(30s, replayWindowMs / 2) — derived
+  // from replayWindowMs so tight-window deploys get correct cadence
+  // automatically. Verify by calling the middleware twice; pruneExpired
+  // should fire on the second call when (now - lastPruneAt) crosses the
+  // half-window threshold.
+  var keypair = _serverKeypair();
+  var pruneCalls = 0;
+  var fakeStore = {
+    name:           "fake",
+    checkAndInsert: function () { return Promise.resolve(true); },
+    purgeExpired:   function () { pruneCalls++; return Promise.resolve(0); },
+    close:          function () {},
+  };
+  var mw = b.middleware.apiEncrypt({
+    keypair:        keypair,
+    nonceStore:     fakeStore,
+    replayWindowMs: 60_000,        // 1 min window
+    // pruneIntervalMs defaults to 30_000 (max(30s, 60000/2))
+    audit:          false,
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({ pubkey: keypair });
+
+  // First request — lastPruneAt is 0, so prune fires.
+  var c1 = clientCtx.encryptRequest({ n: 1 });
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = c1.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: 1 }); });
+  await fin1;
+
+  // Second request immediately after — lastPruneAt is ~now, prune skipped.
+  var c2 = clientCtx.encryptRequest({ n: 2 });
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = c2.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mw(req2, res2, function () { res2.json({ ok: 2 }); });
+  await fin2;
+
+  // Allow microtasks for the .catch chain
+  await new Promise(function (r) { setImmediate(r); });
+  check("derived prune: fires once across two close-together requests",
+        pruneCalls === 1);
+}
+
+async function testApiEncryptHttpClientHelperShape() {
+  var pub = _serverKeypair();
+  var enc = b.httpClient.encrypted({ pubkey: pub });
+  check("httpClient.encrypted returns request fn", typeof enc.request === "function");
+
+  // Reject missing url + path
+  var threw = null;
+  try { await enc.request({ method: "POST", body: { x: 1 } }); }
+  catch (e) { threw = e; }
+  check("rejects request without url or path",     threw && threw.code === "CLIENT_INVALID_URL");
+
+  // Reject path without baseUrl
+  threw = null;
+  try { await enc.request({ path: "/foo", body: { x: 1 } }); }
+  catch (e) { threw = e; }
+  check("rejects path without baseUrl",            threw && threw.code === "CLIENT_INVALID_URL");
+}
+
+async function testApiEncryptHttpClientRoundTrip() {
+  // End-to-end: a real http server with the middleware mounted, and
+  // b.httpClient.encrypted as the caller. Demonstrates the full
+  // server-to-server flow.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-aeh-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    var http = require("http");
+    var keypair = _serverKeypair();
+    var mw = b.middleware.apiEncrypt({ keypair: keypair, audit: false });
+
+    // Tiny server: only POST /api/echo, body parsed manually then
+    // handed to the middleware.
+    var server = http.createServer(function (req, res) {
+      // Mirror the router's res.json convention.
+      res.json = function (data) {
+        res.writeHead(res.statusCode || 200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(data));
+      };
+      req.pathname = req.url.split("?")[0];
+      var chunks = [];
+      req.on("data", function (c) { chunks.push(c); });
+      req.on("end", function () {
+        try { req.body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+        catch (_e) { req.body = null; }
+        mw(req, res, function () {
+          res.json({ echo: req.body, server: "ok" });
+        });
+      });
+    });
+    var port = await helpers.listenOnRandomPort(server);
+
+    var enc = b.httpClient.encrypted({
+      pubkey:  keypair,                          // operators normally fetch from /.well-known
+      baseUrl: "http://127.0.0.1:" + port,
+      // Allow http for the test fixture (production uses https).
+      method:  "POST",
+    });
+    var resp = await enc.request({
+      path:             "/api/echo",
+      body:             { user: "alice", n: 42 },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    });
+    check("httpClient.encrypted: 200",            resp.statusCode === 200);
+    check("httpClient.encrypted: body decrypted", resp.body && resp.body.echo &&
+                                                  resp.body.echo.user === "alice" &&
+                                                  resp.body.echo.n === 42);
+    check("httpClient.encrypted: server tag present", resp.body && resp.body.server === "ok");
+
+    server.close();
+    mw.close();
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
 }
 
 async function testApiEncryptClientRejectsBadResponse() {
@@ -429,6 +712,13 @@ async function run() {
   await testApiEncryptAuditEmit();
   await testApiEncryptClientRejectsBadPubkey();
   await testApiEncryptClientRejectsBadResponse();
+  await testApiEncryptMultiKeypairRotation();
+  await testApiEncryptPublishesActiveKeypair();
+  await testApiEncryptContentTypeScoping();
+  await testApiEncryptNonceHashedBeforeStorage();
+  await testApiEncryptDerivedPruneInterval();
+  await testApiEncryptHttpClientHelperShape();
+  await testApiEncryptHttpClientRoundTrip();
 }
 
 module.exports = { run: run };

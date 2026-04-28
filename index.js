@@ -51,6 +51,11 @@ var lazyRequire = require("./lib/lazy-require");
 var frameworkError = require("./lib/framework-error");
 var logger = require("./lib/logger");
 var httpClient = require("./lib/http-client");
+// Attach the encrypted-payload helper from the api-encrypt middleware so
+// `b.httpClient.encrypted({ pubkey, baseUrl })` is available alongside
+// the bare `b.httpClient.request(...)`. The api-encrypt module owns the
+// implementation; httpClient stays free of an api-encrypt dependency.
+httpClient.encrypted = require("./lib/middleware/api-encrypt").httpClient;
 var websocket = require("./lib/websocket");
 var safeUrl = require("./lib/safe-url");
 var authHeader = require("./lib/auth-header");
