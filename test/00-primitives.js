@@ -5437,6 +5437,346 @@ async function testBodyParserSanitizeFilenameUnit() {
         raw._sanitizeFilename("a".repeat(300)).length === 255);
 }
 
+// ---- metrics ----
+
+function _metricsRes() {
+  var EE = require("node:events").EventEmitter;
+  var res = new EE();
+  res._headers = {};
+  res._captured = "";
+  res._statusCode = null;
+  res.writeHead = function (s, h) {
+    res._statusCode = s;
+    if (h) {
+      var keys = Object.keys(h);
+      for (var i = 0; i < keys.length; i++) res._headers[keys[i].toLowerCase()] = h[keys[i]];
+    }
+  };
+  res.end = function (body) { if (body) res._captured += body; res.emit("finish"); };
+  return res;
+}
+
+function testMetricsSurface() {
+  check("b.metrics namespace present",       typeof b.metrics === "object");
+  check("b.metrics.create is a function",    typeof b.metrics.create === "function");
+  check("b.metrics.tap is a function",       typeof b.metrics.tap === "function");
+  check("MetricsError is a class",           typeof b.metrics.MetricsError === "function");
+  check("DEFAULT_HTTP_BUCKETS exposed",      Array.isArray(b.metrics.DEFAULT_HTTP_BUCKETS));
+}
+
+function testMetricsCounterBasic() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var c = m.counter("requests_total", { help: "test", labelNames: ["method"] });
+  c.inc({ method: "GET" });
+  c.inc({ method: "GET" }, 4);
+  c.inc({ method: "POST" });
+  check("counter: GET tally is 5",                 c.get({ method: "GET" }) === 5);
+  check("counter: POST tally is 1",                c.get({ method: "POST" }) === 1);
+  check("counter: missing combo returns 0",        c.get({ method: "DELETE" }) === 0);
+  m.deactivate();
+}
+
+function testMetricsCounterRefusesNegative() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var c = m.counter("x", { labelNames: [] });
+  var threw = null;
+  try { c.inc({}, -1); } catch (e) { threw = e; }
+  check("counter: negative inc rejected",          threw && threw.code === "metrics/counter-decrement");
+  m.deactivate();
+}
+
+function testMetricsGaugeBasic() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var g = m.gauge("queue_depth", { labelNames: ["queueName"] });
+  g.set({ queueName: "default" }, 10);
+  check("gauge: set works",                        g.get({ queueName: "default" }) === 10);
+  g.inc({ queueName: "default" });
+  check("gauge: inc works",                        g.get({ queueName: "default" }) === 11);
+  g.dec({ queueName: "default" }, 3);
+  check("gauge: dec works",                        g.get({ queueName: "default" }) === 8);
+  // Gauges allow decreasing
+  g.set({ queueName: "default" }, -5);
+  check("gauge: negative set allowed",             g.get({ queueName: "default" }) === -5);
+  m.deactivate();
+}
+
+function testMetricsHistogramBasic() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var h = m.histogram("latency", {
+    labelNames: ["route"],
+    buckets:    [0.1, 0.5, 1.0, 5.0],
+  });
+  h.observe({ route: "/api" }, 0.05);
+  h.observe({ route: "/api" }, 0.3);
+  h.observe({ route: "/api" }, 2.0);
+  h.observe({ route: "/api" }, 8.0);
+  // Inspect via the Map — counts[i] is for [<=buckets[i]]; counts[4] = +Inf
+  // Buckets: [0.1, 0.5, 1.0, 5.0]; values: 0.05, 0.3, 2.0, 8.0
+  var entry = h.values.get(_keyForLabels({ route: "/api" }));
+  check("histogram: bucket 0.1 counts 0.05 only",  entry.counts[0] === 1);
+  check("histogram: bucket 0.5 counts 0.05+0.3",   entry.counts[1] === 2);
+  check("histogram: bucket 1.0 counts 0.05+0.3",   entry.counts[2] === 2);
+  check("histogram: bucket 5.0 counts 0.05+0.3+2.0", entry.counts[3] === 3);
+  check("histogram: +Inf counts all 4",            entry.counts[4] === 4);
+  check("histogram: count=4",                      entry.count === 4);
+  check("histogram: sum=10.35",                    Math.abs(entry.sum - 10.35) < 1e-9);
+  m.deactivate();
+}
+
+function _keyForLabels(labels) {
+  return b.metrics._labelsKey(labels);
+}
+
+function testMetricsHistogramRejectsBadBuckets() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var threw;
+
+  threw = null;
+  try { m.histogram("x", { buckets: [] }); } catch (e) { threw = e; }
+  check("histogram: empty buckets rejected",       threw && threw.code === "metrics/bad-buckets");
+
+  threw = null;
+  try { m.histogram("x", { buckets: [1, 2, 1.5] }); } catch (e) { threw = e; }
+  check("histogram: non-ascending buckets rejected", threw && threw.code === "metrics/bad-buckets");
+
+  threw = null;
+  try { m.histogram("x", { buckets: [1, "two", 3] }); } catch (e) { threw = e; }
+  check("histogram: non-numeric buckets rejected", threw && threw.code === "metrics/bad-buckets");
+  m.deactivate();
+}
+
+function testMetricsDefaultLabels() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create({ defaultLabels: { service: "api", version: "1.2.3" } });
+  var c = m.counter("requests", { labelNames: ["method"] });
+  c.inc({ method: "GET" });
+  // Default labels are folded into every observation.
+  var output = m.exposition();
+  check("default labels present in exposition",    output.indexOf('service="api"') !== -1);
+  check("default labels include version",          output.indexOf('version="1.2.3"') !== -1);
+  m.deactivate();
+}
+
+function testMetricsNamespacing() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create({ namespace: "myapp" });
+  var c = m.counter("requests_total", { labelNames: [] });
+  c.inc({});
+  var output = m.exposition();
+  check("namespace prepended to metric name",      output.indexOf("myapp_requests_total") !== -1);
+  m.deactivate();
+}
+
+function testMetricsLabelValidation() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var c = m.counter("x", { labelNames: ["valid"] });
+  var threw;
+
+  threw = null;
+  try { c.inc({ undeclared: "v" }); } catch (e) { threw = e; }
+  check("undeclared label rejected",               threw && threw.code === "metrics/undeclared-label");
+
+  threw = null;
+  try { c.inc({}); } catch (e) { threw = e; }
+  check("missing required label rejected",         threw && threw.code === "metrics/missing-label");
+
+  threw = null;
+  try { m.counter("bad-name-with-dash", {}); } catch (e) { threw = e; }
+  check("bad metric name rejected",                threw && threw.code === "metrics/bad-name");
+
+  threw = null;
+  try { m.counter("ok", { labelNames: ["bad-label"] }); } catch (e) { threw = e; }
+  check("bad label name rejected",                 threw && threw.code === "metrics/bad-label");
+  m.deactivate();
+}
+
+function testMetricsCardinalityCap() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create({ labelCardinalityCap: 5 });
+  var c = m.counter("x", { labelNames: ["uid"] });
+  for (var i = 0; i < 10; i++) c.inc({ uid: "u" + i });
+  check("cardinality cap: 5 distinct combos retained", c.values.size === 5);
+  // First 5 values still increment correctly
+  c.inc({ uid: "u0" });
+  check("cardinality cap: pre-cap entries still increment",
+        c.get({ uid: "u0" }) === 2);
+  m.deactivate();
+}
+
+function testMetricsExpositionFormat() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create({ namespace: "app" });
+  var c = m.counter("requests_total", { help: "Request count", labelNames: ["method"] });
+  c.inc({ method: "GET" }, 3);
+  var h = m.histogram("latency_seconds", {
+    help: "Latency", labelNames: ["route"], buckets: [0.1, 1.0],
+  });
+  h.observe({ route: "/x" }, 0.05);
+  h.observe({ route: "/x" }, 5.0);
+  var output = m.exposition();
+
+  check("exposition: HELP line for counter",
+        output.indexOf("# HELP app_requests_total Request count") !== -1);
+  check("exposition: TYPE line for counter",
+        output.indexOf("# TYPE app_requests_total counter") !== -1);
+  check("exposition: counter sample with label",
+        output.indexOf('app_requests_total{method="GET"} 3') !== -1);
+  check("exposition: HELP for histogram",
+        output.indexOf("# HELP app_latency_seconds Latency") !== -1);
+  check("exposition: TYPE histogram",
+        output.indexOf("# TYPE app_latency_seconds histogram") !== -1);
+  check("exposition: histogram bucket le=0.1",
+        output.indexOf('app_latency_seconds_bucket{le="0.1",route="/x"} 1') !== -1);
+  check("exposition: histogram bucket le=+Inf",
+        output.indexOf('app_latency_seconds_bucket{le="+Inf",route="/x"} 2') !== -1);
+  check("exposition: histogram _sum",
+        output.indexOf('app_latency_seconds_sum{route="/x"} 5.05') !== -1);
+  check("exposition: histogram _count",
+        output.indexOf('app_latency_seconds_count{route="/x"} 2') !== -1);
+  m.deactivate();
+}
+
+function testMetricsLabelEscaping() {
+  var raw = b.metrics;
+  check("escape: backslash escaped",       raw._escapeLabelValue("a\\b") === "a\\\\b");
+  check("escape: newline escaped",         raw._escapeLabelValue("a\nb") === "a\\nb");
+  check("escape: double-quote escaped",    raw._escapeLabelValue('a"b') === 'a\\"b');
+}
+
+async function testMetricsExpositionHandler() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var c = m.counter("ping", { labelNames: [] });
+  c.inc({});
+  var handler = m.expositionHandler();
+  var res = _metricsRes();
+  await new Promise(function (resolve) {
+    res.on("finish", resolve);
+    handler({ method: "GET", url: "/metrics" }, res);
+  });
+  check("handler: status 200",                     res._statusCode === 200);
+  check("handler: content-type prometheus format",
+        res._headers["content-type"].indexOf("text/plain") === 0);
+  check("handler: body contains ping metric",      res._captured.indexOf("ping") !== -1);
+  check("handler: cache-control no-store",          res._headers["cache-control"] === "no-store");
+  m.deactivate();
+}
+
+async function testMetricsRequestMiddleware() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var mw = m.requestMiddleware();
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method = "GET";
+  req.url = "/users/123?q=x";
+  req.routePattern = "/users/:id";
+  req.headers = {};
+  var res = _metricsRes();
+  await new Promise(function (resolve) {
+    res.on("finish", resolve);
+    mw(req, res, function () {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+    });
+  });
+  var requestsTotal = m.metrics.get("framework_http_requests_total");
+  check("requestMiddleware: counter incremented",
+        requestsTotal.get({ method: "GET", route: "/users/:id", status: "200" }) === 1);
+  // Histogram observed once
+  var latency = m.metrics.get("framework_http_request_duration_seconds");
+  var key = b.metrics._labelsKey({ method: "GET", route: "/users/:id" });
+  check("requestMiddleware: histogram observed once", latency.values.get(key).count === 1);
+  m.deactivate();
+}
+
+async function testMetricsRequestMiddlewareRoutePatternFallback() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var mw = m.requestMiddleware();
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method = "GET";
+  req.url = "/raw-path?x=1";
+  // No routePattern — middleware falls back to URL with query stripped
+  req.headers = {};
+  var res = _metricsRes();
+  await new Promise(function (resolve) {
+    res.on("finish", resolve);
+    mw(req, res, function () {
+      res.writeHead(200);
+      res.end();
+    });
+  });
+  var requestsTotal = m.metrics.get("framework_http_requests_total");
+  check("middleware: falls back to URL with query stripped",
+        requestsTotal.get({ method: "GET", route: "/raw-path", status: "200" }) === 1);
+  m.deactivate();
+}
+
+function testMetricsTapNoOpWhenNoRegistry() {
+  b.metrics._resetForTest();
+  // tap() is a no-op when no registry is active — calling it must not throw.
+  var threw = null;
+  try {
+    b.metrics.tap("audit.record", 1, { action: "x", outcome: "success" });
+    b.metrics.tap("vault.seal", 1);
+    b.metrics.tap("queue.enqueue", 1, { queueName: "default" });
+  } catch (e) { threw = e; }
+  check("tap: no-op when registry inactive — no throw", threw === null);
+}
+
+function testMetricsTapRoutesIntoActiveRegistry() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  b.metrics.tap("audit.record", 1, { action: "auth.login", outcome: "success" });
+  b.metrics.tap("audit.record", 1, { action: "auth.login", outcome: "success" });
+  b.metrics.tap("vault.seal", 1);
+  b.metrics.tap("vault.seal", 1);
+  b.metrics.tap("vault.seal", 1);
+  b.metrics.tap("queue.enqueue", 1, { queueName: "emails" });
+  var auditTotal = m.metrics.get("framework_audit_events_total");
+  check("tap: audit.record routes into framework_audit_events_total",
+        auditTotal.get({ action: "auth.login", outcome: "success" }) === 2);
+  var sealTotal = m.metrics.get("framework_vault_seal_total");
+  check("tap: vault.seal routes into framework_vault_seal_total",
+        sealTotal.get({}) === 3);
+  var enqueueTotal = m.metrics.get("framework_queue_enqueue_total");
+  check("tap: queue.enqueue routes into framework_queue_enqueue_total",
+        enqueueTotal.get({ queueName: "emails" }) === 1);
+  m.deactivate();
+}
+
+function testMetricsDuplicateRegistrationRejected() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  m.counter("dup", { labelNames: [] });
+  var threw = null;
+  try { m.counter("dup", { labelNames: [] }); } catch (e) { threw = e; }
+  check("duplicate metric registration rejected",  threw && threw.code === "metrics/duplicate");
+  m.deactivate();
+}
+
+function testMetricsResetClearsValues() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var c = m.counter("x", { labelNames: ["k"] });
+  c.inc({ k: "a" });
+  c.inc({ k: "b" });
+  check("before reset: 2 distinct combos",         c.values.size === 2);
+  c.reset();
+  check("after reset: 0 combos",                   c.values.size === 0);
+  c.inc({ k: "c" });
+  check("after reset: new combos work",            c.get({ k: "c" }) === 1);
+  m.deactivate();
+}
+
 // ---- csp-nonce ----
 
 function _cspReq() {
@@ -13407,6 +13747,26 @@ async function run() {
   await testBodyParserMultipartTruncated();
   await testBodyParserContentLengthExceedsLimitImmediate();
   testBodyParserSanitizeFilenameUnit();
+  // metrics — Prometheus-format counters / gauges / histograms (Phase 9.7)
+  testMetricsSurface();
+  testMetricsCounterBasic();
+  testMetricsCounterRefusesNegative();
+  testMetricsGaugeBasic();
+  testMetricsHistogramBasic();
+  testMetricsHistogramRejectsBadBuckets();
+  testMetricsDefaultLabels();
+  testMetricsNamespacing();
+  testMetricsLabelValidation();
+  testMetricsCardinalityCap();
+  testMetricsExpositionFormat();
+  testMetricsLabelEscaping();
+  await testMetricsExpositionHandler();
+  await testMetricsRequestMiddleware();
+  await testMetricsRequestMiddlewareRoutePatternFallback();
+  testMetricsTapNoOpWhenNoRegistry();
+  testMetricsTapRoutesIntoActiveRegistry();
+  testMetricsDuplicateRegistrationRejected();
+  testMetricsResetClearsValues();
   // csp-nonce — per-request CSP nonce + render integration (Phase 9.6)
   testCspNonceSurface();
   testCspNonceParseSerialize();
@@ -13992,6 +14352,25 @@ module.exports = {
   testBodyParserMultipartTruncated:          testBodyParserMultipartTruncated,
   testBodyParserContentLengthExceedsLimitImmediate: testBodyParserContentLengthExceedsLimitImmediate,
   testBodyParserSanitizeFilenameUnit:        testBodyParserSanitizeFilenameUnit,
+  testMetricsSurface:                        testMetricsSurface,
+  testMetricsCounterBasic:                   testMetricsCounterBasic,
+  testMetricsCounterRefusesNegative:         testMetricsCounterRefusesNegative,
+  testMetricsGaugeBasic:                     testMetricsGaugeBasic,
+  testMetricsHistogramBasic:                 testMetricsHistogramBasic,
+  testMetricsHistogramRejectsBadBuckets:     testMetricsHistogramRejectsBadBuckets,
+  testMetricsDefaultLabels:                  testMetricsDefaultLabels,
+  testMetricsNamespacing:                    testMetricsNamespacing,
+  testMetricsLabelValidation:                testMetricsLabelValidation,
+  testMetricsCardinalityCap:                 testMetricsCardinalityCap,
+  testMetricsExpositionFormat:               testMetricsExpositionFormat,
+  testMetricsLabelEscaping:                  testMetricsLabelEscaping,
+  testMetricsExpositionHandler:              testMetricsExpositionHandler,
+  testMetricsRequestMiddleware:              testMetricsRequestMiddleware,
+  testMetricsRequestMiddlewareRoutePatternFallback: testMetricsRequestMiddlewareRoutePatternFallback,
+  testMetricsTapNoOpWhenNoRegistry:          testMetricsTapNoOpWhenNoRegistry,
+  testMetricsTapRoutesIntoActiveRegistry:    testMetricsTapRoutesIntoActiveRegistry,
+  testMetricsDuplicateRegistrationRejected:  testMetricsDuplicateRegistrationRejected,
+  testMetricsResetClearsValues:              testMetricsResetClearsValues,
   testCspNonceSurface:                       testCspNonceSurface,
   testCspNonceParseSerialize:                testCspNonceParseSerialize,
   testCspNonceInjectNonceIntoExisting:       testCspNonceInjectNonceIntoExisting,
