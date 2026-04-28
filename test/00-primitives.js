@@ -6132,6 +6132,32 @@ async function testMetricsRequestMiddleware() {
   m.deactivate();
 }
 
+async function testMetricsRequestMiddlewareStatusCodeFallback() {
+  // Handlers that set res.statusCode directly (modern Node pattern)
+  // instead of calling writeHead must still produce the correct status
+  // label. Prior versions only caught writeHead.
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  var mw = m.requestMiddleware();
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method = "GET";
+  req.url = "/notfound";
+  req.headers = {};
+  var res = _metricsRes();
+  await new Promise(function (resolve) {
+    res.on("finish", resolve);
+    mw(req, res, function () {
+      res.statusCode = 404;     // direct set; no writeHead
+      res.end("nope");
+    });
+  });
+  var requestsTotal = m.metrics.get("framework_http_requests_total");
+  check("requestMiddleware: status=404 captured from res.statusCode (no writeHead)",
+        requestsTotal.get({ method: "GET", route: "/notfound", status: "404" }) === 1);
+  m.deactivate();
+}
+
 async function testMetricsRequestMiddlewareRoutePatternFallback() {
   b.metrics._resetForTest();
   var m = b.metrics.create();
@@ -13825,6 +13851,7 @@ async function run() {
   await testMetricsExpositionHandler();
   await testMetricsRequestMiddleware();
   await testMetricsRequestMiddlewareRoutePatternFallback();
+  await testMetricsRequestMiddlewareStatusCodeFallback();
   testMetricsTapNoOpWhenNoRegistry();
   testMetricsTapRoutesIntoActiveRegistry();
   testMetricsBuiltinQueueDepthGauge();
@@ -14409,6 +14436,7 @@ module.exports = {
   testMetricsExpositionHandler:              testMetricsExpositionHandler,
   testMetricsRequestMiddleware:              testMetricsRequestMiddleware,
   testMetricsRequestMiddlewareRoutePatternFallback: testMetricsRequestMiddlewareRoutePatternFallback,
+  testMetricsRequestMiddlewareStatusCodeFallback:   testMetricsRequestMiddlewareStatusCodeFallback,
   testMetricsTapNoOpWhenNoRegistry:          testMetricsTapNoOpWhenNoRegistry,
   testMetricsTapRoutesIntoActiveRegistry:    testMetricsTapRoutesIntoActiveRegistry,
   testMetricsBuiltinQueueDepthGauge:         testMetricsBuiltinQueueDepthGauge,
