@@ -1216,6 +1216,25 @@ async function testAuditChain() {
     catch (_) { outcomeRejected = true; }
     check("invalid outcome rejected", outcomeRejected);
 
+    // safeEmit: fire-and-forget shape with default-fill + try/catch.
+    // Surface contract: never throws on malformed input; valid events
+    // get queued via the handler (full end-to-end landing depends on
+    // cluster init, covered by integration tests elsewhere).
+    check("audit.safeEmit is exposed",                typeof b.audit.safeEmit === "function");
+    var threwOnMalformed = null;
+    try {
+      b.audit.safeEmit();
+      b.audit.safeEmit(null);
+      b.audit.safeEmit({});                            // missing action
+      b.audit.safeEmit({ outcome: "success" });        // missing action
+      b.audit.safeEmit("not-an-object");
+    } catch (e) { threwOnMalformed = e; }
+    check("safeEmit: malformed inputs silently dropped", threwOnMalformed === null);
+    var threwOnValid = null;
+    try { b.audit.safeEmit({ action: "orders.shipped" }); }
+    catch (e) { threwOnValid = e; }
+    check("safeEmit: valid event accepted without throw", threwOnValid === null);
+
     // Verify chain is intact
     var v1 = await b.audit.verify();
     check("audit.verify() ok after valid records",  v1.ok === true && v1.rowsVerified === 2);
