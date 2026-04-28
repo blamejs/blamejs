@@ -69,6 +69,7 @@ var app = require("./lib/app");
 var jobs = require("./lib/jobs");
 var mail = require("./lib/mail");
 var mailBounce = require("./lib/mail-bounce");
+var websocketChannels = require("./lib/websocket-channels");
 var scheduler = require("./lib/scheduler");
 var log = require("./lib/log");
 var errorPage = require("./lib/error-page");
@@ -150,6 +151,7 @@ module.exports = {
   jobs:             jobs,
   mail:             mail,
   mailBounce:       mailBounce,
+  websocketChannels: websocketChannels,
   scheduler:        scheduler,
   log:              log,
   errorPage:       errorPage,
