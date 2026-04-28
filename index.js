@@ -136,6 +136,7 @@ var observability = require("./lib/observability");
 var protocolDispatcher = require("./lib/protocol-dispatcher");
 var requestHelpers = require("./lib/request-helpers");
 var appShutdown = require("./lib/app-shutdown");
+var slug = require("./lib/slug");
 
 module.exports = {
   crypto:           crypto,
@@ -222,6 +223,7 @@ module.exports = {
   protocolDispatcher: protocolDispatcher,
   requestHelpers:   requestHelpers,
   appShutdown:      appShutdown,
+  slug:             slug,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
