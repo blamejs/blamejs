@@ -90,6 +90,34 @@ async function testNonceStoreMemoryPurge() {
   store.close();
 }
 
+async function testNonceStoreClusterBasics() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-ns-"));
+  try {
+    await setupTestDb(tmpDir);
+    var store = b.nonceStore.create({ backend: "cluster" });
+    check("cluster backend reports name",          store.name === "cluster");
+    var expireAt = Date.now() + 60_000;
+    check("cluster first sighting true",          (await store.checkAndInsert("c1", expireAt)) === true);
+    check("cluster replay false",                 (await store.checkAndInsert("c1", expireAt)) === false);
+
+    // A SECOND cluster store talking to the same DB sees the row too —
+    // that's the whole point of cluster mode.
+    var store2 = b.nonceStore.create({ backend: "cluster" });
+    check("second instance sees the same row",    (await store2.checkAndInsert("c1", expireAt)) === false);
+    check("second instance accepts new nonce",    (await store2.checkAndInsert("c2", expireAt)) === true);
+
+    // Purge respects expireAt
+    await store.checkAndInsert("oldA", Date.now() - 5000);
+    var removed = await store.purgeExpired();
+    check("cluster purgeExpired removed >= 1",    removed >= 1);
+
+    store.close();
+    store2.close();
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testNonceStoreCustomBackend() {
   var calls = [];
   var custom = {
@@ -385,6 +413,7 @@ async function run() {
   await testNonceStoreMemoryBasics();
   await testNonceStoreMemoryRejectsBadInput();
   await testNonceStoreMemoryPurge();
+  await testNonceStoreClusterBasics();
   await testNonceStoreCustomBackend();
   await testNonceStoreUnknownBackend();
 
