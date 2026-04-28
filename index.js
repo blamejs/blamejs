@@ -94,6 +94,7 @@ var events = require("./lib/events");
 var safeSchema = require("./lib/safe-schema");
 var pagination = require("./lib/pagination");
 var metrics = require("./lib/metrics");
+var tracing = require("./lib/tracing");
 
 module.exports = {
   crypto:           crypto,
@@ -171,6 +172,7 @@ module.exports = {
   safeSchema:       safeSchema,
   pagination:       pagination,
   metrics:          metrics,
+  tracing:          tracing,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
