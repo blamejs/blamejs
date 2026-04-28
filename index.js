@@ -137,6 +137,7 @@ var protocolDispatcher = require("./lib/protocol-dispatcher");
 var requestHelpers = require("./lib/request-helpers");
 var appShutdown = require("./lib/app-shutdown");
 var slug = require("./lib/slug");
+var webhook = require("./lib/webhook");
 
 module.exports = {
   crypto:           crypto,
@@ -224,6 +225,7 @@ module.exports = {
   requestHelpers:   requestHelpers,
   appShutdown:      appShutdown,
   slug:             slug,
+  webhook:          webhook,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
