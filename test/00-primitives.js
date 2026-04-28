@@ -6168,6 +6168,59 @@ function testMetricsTapRoutesIntoActiveRegistry() {
   m.deactivate();
 }
 
+function testMetricsBuiltinQueueDepthGauge() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  b.metrics.tap("queue.enqueue", 1, { queueName: "outbox" });
+  b.metrics.tap("queue.enqueue", 1, { queueName: "outbox" });
+  b.metrics.tap("queue.enqueue", 1, { queueName: "outbox" });
+  var depth = m.metrics.get("framework_queue_depth");
+  check("queue_depth: enqueue increments gauge",
+        depth.get({ queueName: "outbox" }) === 3);
+  b.metrics.tap("queue.complete", 1, { queueName: "outbox" });
+  check("queue_depth: complete decrements gauge",
+        depth.get({ queueName: "outbox" }) === 2);
+  b.metrics.tap("queue.fail", 1, { queueName: "outbox", willRetry: true });
+  check("queue_depth: fail-with-retry leaves depth (job back to pending)",
+        depth.get({ queueName: "outbox" }) === 2);
+  b.metrics.tap("queue.fail", 1, { queueName: "outbox", willRetry: false });
+  check("queue_depth: fail-terminal decrements depth",
+        depth.get({ queueName: "outbox" }) === 1);
+  m.deactivate();
+}
+
+function testMetricsBuiltinJobsInflightGauge() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  b.metrics.tap("queue.lease", 1, { queueName: "outbox" });
+  b.metrics.tap("queue.lease", 1, { queueName: "outbox" });
+  var inflight = m.metrics.get("framework_jobs_inflight");
+  check("jobs_inflight: lease increments gauge",
+        inflight.get({ queueName: "outbox" }) === 2);
+  b.metrics.tap("queue.complete", 1, { queueName: "outbox" });
+  check("jobs_inflight: complete decrements gauge",
+        inflight.get({ queueName: "outbox" }) === 1);
+  b.metrics.tap("queue.fail", 1, { queueName: "outbox", willRetry: true });
+  check("jobs_inflight: fail-with-retry decrements gauge (lease ended)",
+        inflight.get({ queueName: "outbox" }) === 0);
+  m.deactivate();
+}
+
+function testMetricsBuiltinErrorsTotalCounter() {
+  b.metrics._resetForTest();
+  var m = b.metrics.create();
+  // FrameworkError construction taps — triggered by the defineClass-built
+  // error classes used everywhere in the framework.
+  var errs = m.metrics.get("framework_errors_total");
+  var beforeQueue = errs.get({ class: "QueueError" });
+  try { throw new b.frameworkError.QueueError("test/case", "smoke", true); }
+  catch (_e) { /* swallow — we only need the construction tap */ }
+  var afterQueue = errs.get({ class: "QueueError" });
+  check("errors_total: framework-error construction increments class label",
+        afterQueue === beforeQueue + 1);
+  m.deactivate();
+}
+
 function testMetricsDuplicateRegistrationRejected() {
   b.metrics._resetForTest();
   var m = b.metrics.create();
@@ -13727,6 +13780,9 @@ async function run() {
   await testMetricsRequestMiddlewareRoutePatternFallback();
   testMetricsTapNoOpWhenNoRegistry();
   testMetricsTapRoutesIntoActiveRegistry();
+  testMetricsBuiltinQueueDepthGauge();
+  testMetricsBuiltinJobsInflightGauge();
+  testMetricsBuiltinErrorsTotalCounter();
   testMetricsDuplicateRegistrationRejected();
   testMetricsResetClearsValues();
   // CspNonce — moved to test/layer-0-primitives/
@@ -14306,6 +14362,9 @@ module.exports = {
   testMetricsRequestMiddlewareRoutePatternFallback: testMetricsRequestMiddlewareRoutePatternFallback,
   testMetricsTapNoOpWhenNoRegistry:          testMetricsTapNoOpWhenNoRegistry,
   testMetricsTapRoutesIntoActiveRegistry:    testMetricsTapRoutesIntoActiveRegistry,
+  testMetricsBuiltinQueueDepthGauge:         testMetricsBuiltinQueueDepthGauge,
+  testMetricsBuiltinJobsInflightGauge:       testMetricsBuiltinJobsInflightGauge,
+  testMetricsBuiltinErrorsTotalCounter:      testMetricsBuiltinErrorsTotalCounter,
   testMetricsDuplicateRegistrationRejected:  testMetricsDuplicateRegistrationRejected,
   testMetricsResetClearsValues:              testMetricsResetClearsValues,
   testCompressionSurface:                    testCompressionSurface,
