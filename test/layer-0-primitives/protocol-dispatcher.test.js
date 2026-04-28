@@ -1,0 +1,136 @@
+"use strict";
+/**
+ * protocol-dispatcher — pluggable protocol resolver.
+ *
+ * Run standalone: `node test/layer-0-primitives/protocol-dispatcher.test.js`
+ * Or via smoke:   `node test/smoke.js`
+ */
+
+var helpers = require("../helpers");
+var b     = helpers.b;
+var check = helpers.check;
+
+function _fakeProto(name) {
+  return { name: name, create: function (cfg) { return { proto: name, cfg: cfg }; } };
+}
+
+function testSurface() {
+  check("b.protocolDispatcher exposed",       typeof b.protocolDispatcher === "object");
+  check("create is a function",               typeof b.protocolDispatcher.create === "function");
+  check("default ProtocolDispatcherError",    typeof b.protocolDispatcher.ProtocolDispatcherError === "function");
+}
+
+function testCreateValidatesOpts() {
+  var threwName = null;
+  try { b.protocolDispatcher.create({ protocols: { a: {} } }); }
+  catch (e) { threwName = e; }
+  check("create: missing name rejected",        threwName && /opts.name/.test(threwName.message));
+
+  var threwProtos = null;
+  try { b.protocolDispatcher.create({ name: "x" }); }
+  catch (e) { threwProtos = e; }
+  check("create: missing protocols rejected",  threwProtos && /opts.protocols/.test(threwProtos.message));
+}
+
+function testResolveKnownProtocol() {
+  var d = b.protocolDispatcher.create({
+    name: "test",
+    protocols: { foo: _fakeProto("foo"), bar: _fakeProto("bar") },
+  });
+  check("resolve: returns the matching proto",  d.resolve("foo").name === "foo");
+  check("resolve: alternate proto",              d.resolve("bar").name === "bar");
+}
+
+function testResolveMissingProtocol() {
+  var d = b.protocolDispatcher.create({
+    name: "test",
+    protocols: { foo: _fakeProto("foo") },
+  });
+  var threw = null;
+  try { d.resolve(); } catch (e) { threw = e; }
+  check("resolve: missing protocol → MISSING_PROTOCOL",
+        threw && threw.code === "MISSING_PROTOCOL");
+  check("resolve: missing protocol — error names dispatcher",
+        threw && /test backend/.test(threw.message));
+}
+
+function testResolveUnknownProtocol() {
+  var d = b.protocolDispatcher.create({
+    name: "test",
+    protocols: { foo: _fakeProto("foo"), bar: _fakeProto("bar") },
+  });
+  var threw = null;
+  try { d.resolve("baz"); } catch (e) { threw = e; }
+  check("resolve: unknown → UNKNOWN_PROTOCOL",
+        threw && threw.code === "UNKNOWN_PROTOCOL");
+  check("resolve: unknown — error lists known protocols",
+        threw && /known: bar, foo/.test(threw.message));
+}
+
+function testResolveDeferredProtocol() {
+  var d = b.protocolDispatcher.create({
+    name: "test",
+    protocols: { foo: _fakeProto("foo") },
+    deferred: { redis: { description: "Redis Streams", since: "Phase 10" } },
+    fallbackProtocol: "foo",
+  });
+  var threw = null;
+  try { d.resolve("redis"); } catch (e) { threw = e; }
+  check("resolve: deferred → PROTOCOL_NOT_IMPLEMENTED",
+        threw && threw.code === "PROTOCOL_NOT_IMPLEMENTED");
+  check("resolve: deferred error includes description",
+        threw && /Redis Streams/.test(threw.message));
+  check("resolve: deferred error includes since",
+        threw && /Phase 10/.test(threw.message));
+  check("resolve: deferred error suggests fallback",
+        threw && /Use protocol: 'foo'/.test(threw.message));
+}
+
+function testProtocolsAndDeferredArrays() {
+  var d = b.protocolDispatcher.create({
+    name: "test",
+    protocols: { local: _fakeProto("local"), webhook: _fakeProto("webhook") },
+    deferred:  { syslog: { description: "x" }, otlp: { description: "y" } },
+  });
+  check("protocols: sorted array",
+        Array.isArray(d.protocols) && d.protocols.length === 2 &&
+        d.protocols[0] === "local" && d.protocols[1] === "webhook");
+  check("deferred: sorted array",
+        Array.isArray(d.deferred) && d.deferred.length === 2 &&
+        d.deferred[0] === "otlp" && d.deferred[1] === "syslog");
+}
+
+function testThreeFrameworkUsages() {
+  // Verify the three migrated callers (queue / log-stream / object-store)
+  // expose dispatcher-driven PROTOCOLS / DEFERRED_PROTOCOLS arrays.
+  check("queue.PROTOCOLS includes local",
+        b.queue.PROTOCOLS.indexOf("local") !== -1);
+  check("queue.DEFERRED_PROTOCOLS includes redis",
+        b.queue.DEFERRED_PROTOCOLS.indexOf("redis") !== -1);
+  check("logStream.PROTOCOLS includes webhook",
+        b.logStream.PROTOCOLS.indexOf("webhook") !== -1);
+  check("logStream.DEFERRED_PROTOCOLS includes otlp",
+        b.logStream.DEFERRED_PROTOCOLS.indexOf("otlp") !== -1);
+  check("objectStore.PROTOCOLS includes sigv4",
+        b.objectStore.PROTOCOLS.indexOf("sigv4") !== -1);
+}
+
+async function run() {
+  testSurface();
+  testCreateValidatesOpts();
+  testResolveKnownProtocol();
+  testResolveMissingProtocol();
+  testResolveUnknownProtocol();
+  testResolveDeferredProtocol();
+  testProtocolsAndDeferredArrays();
+  testThreeFrameworkUsages();
+}
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  run().then(
+    function () { console.log("protocol-dispatcher tests passed"); process.exit(0); },
+    function (e) { console.error(e); process.exit(1); }
+  );
+}
