@@ -115,6 +115,27 @@ async function run() {
     });
     assert("GET /welcome/index → 200",       welcome.statusCode === 200);
     assert("welcome page mentions blamejs",  /blamejs/i.test(welcome.body));
+    assert("welcome page has hello-world section",
+           /hello-world/.test(welcome.body));
+    assert("welcome page has design-tenets section",
+           /design-tenets/.test(welcome.body));
+    assert("welcome page links to concern groups",
+           /\/observability\/index/.test(welcome.body) &&
+           /\/auth-permissions\/index/.test(welcome.body));
+
+    var obs = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/observability/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /observability/index → 200", obs.statusCode === 200);
+    assert("observability page covers audit chain",
+           /audit chain/i.test(obs.body) && /tamper-evident/i.test(obs.body));
+    assert("observability page documents the 5 W's",
+           /actor\.userId/.test(obs.body) && /actor\.requestId/.test(obs.body));
+    assert("observability page covers tracing pass-through",
+           /pass-through/i.test(obs.body) && /OTel/i.test(obs.body));
+    assert("observability page includes redaction recipe",
+           /b\.redact\.redact/.test(obs.body));
 
     var redirect = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
