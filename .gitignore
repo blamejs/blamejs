@@ -53,3 +53,9 @@ id_ed25519*
 *.bak
 *.orig
 *.rej
+
+# Example-app per-instance runtime state (vault keys, SQLite DBs, etc.)
+# The example app's repo-tracked content is its source; data/ is local.
+examples/*/data/
+examples/*/data-e2e/
+examples/*/package-lock.json
