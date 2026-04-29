@@ -1,9 +1,18 @@
 "use strict";
 /**
  * Full-framework setup/teardown for tests that need a working DB +
- * vault + audit chain. setupTestDb wires plaintext vault + plain at-
- * rest storage so tests don't pay for sealed-disk ceremony; production
- * apps run with the secure defaults.
+ * vault + audit chain.
+ *
+ * Tests run with the same secure modes operators use in production —
+ * wrapped vault (Argon2id-derived AEAD wrap), encrypted at-rest db
+ * (tmpfs working copy, sealed db.enc on durable disk), wrapped audit-
+ * signing key. The earlier "plain mode for test speed" pattern hid
+ * the same class of bug as feedback_test_to_security_not_security_to_test.md
+ * warns about; the production path is what should be exercised.
+ *
+ * The test passphrase is hard-coded — these tests are local-only and
+ * the surface that matters is wrap/unwrap behaviour, not passphrase
+ * secrecy. Real deployments source it from BLAMEJS_VAULT_PASSPHRASE.
  */
 
 var fs = require("fs");
@@ -11,17 +20,25 @@ var os = require("os");
 var path = require("path");
 var b = require("../../index.js");
 
+var TEST_PASSPHRASE = "blamejs-test-passphrase-not-secret";
+
+function _setTestEnv() {
+  process.env.BLAMEJS_VAULT_PASSPHRASE         = TEST_PASSPHRASE;
+  process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = TEST_PASSPHRASE;
+  delete process.env.BLAMEJS_AUDIT_SIGNING_MODE;
+}
+
 async function setupTestDb(tmpDir, schemaOverrides) {
   process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  _setTestEnv();
   b.cluster._resetForTest();
   b.audit._resetForTest();
   b.vault._resetForTest();
   b.db._resetForTest();
-  await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
-  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  await b.vault.init({ dataDir: tmpDir });
   await b.db.init({
     dataDir: tmpDir,
-    atRest:  "plain",
+    tmpDir:  path.join(tmpDir, "tmpfs"),
     schema:  schemaOverrides || [
       {
         name: "users",
@@ -58,14 +75,13 @@ async function teardownTestDb(tmpDir) {
 async function setupTestDbForMW() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mw-"));
   process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
-  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  _setTestEnv();
   b.vault._resetForTest();
   b.db._resetForTest();
-  await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+  await b.vault.init({ dataDir: tmpDir });
   await b.db.init({
     dataDir: tmpDir,
-    atRest:  "plain",
-    auditSigning: { mode: "plaintext" },
+    tmpDir:  path.join(tmpDir, "tmpfs"),
     schema:  [],
   });
   global._mwTmpDir = tmpDir;
@@ -85,4 +101,10 @@ module.exports = {
   teardownTestDb:   teardownTestDb,
   setupTestDbForMW: setupTestDbForMW,
   teardownMW:       teardownMW,
+  // Exported so tests that close + re-open the vault (persistence,
+  // schema-evolution) can re-supply the passphrase. The framework's
+  // passphrase source strips env after reading (security feature),
+  // so each fresh vault.init needs a fresh env set.
+  setTestPassphraseEnv: _setTestEnv,
+  TEST_PASSPHRASE:      TEST_PASSPHRASE,
 };

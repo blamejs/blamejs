@@ -6583,6 +6583,52 @@ async function testCompressionInvalidEncodingRejectedAtCreate() {
   check("create: unsupported encoding rejected",     threw && threw.code === "compression/bad-encoding");
 }
 
+// Regression for the streaming-pipe stall: piping a Readable larger
+// than zlib's internal highWaterMark (16 KB) through the wrapped res
+// would hang because the wrapped res.write returned false when the
+// compressor signalled backpressure but never re-emitted drain on res.
+// stream.pipe() then paused the source forever waiting for a drain
+// that never came. The fix: forward compressor 'drain' to res.emit('drain').
+async function testCompressionPipedStreamLargerThanHighWaterMarkCompletes() {
+  var stream = require("node:stream");
+  var zlib = require("node:zlib");
+  var compress = b.middleware.compression();
+  var req = _compressionReq({ "accept-encoding": "gzip" });
+  var res = _compressionRes();
+
+  // 256 KB of compressible text — well past zlib's 16 KB highWaterMark.
+  // Highly compressible (single repeated character) so compression
+  // ratio is high and the bug reliably triggers.
+  var payload = Buffer.alloc(256 * 1024, "A");
+  var source  = stream.Readable.from([payload]);
+
+  // Race the pipe completion against a timeout. Pre-fix this hangs
+  // indefinitely; with the drain forward it completes promptly.
+  var done = new Promise(function (resolve) {
+    res.on("finish", function () { resolve("ok"); });
+  });
+  var timeout = new Promise(function (resolve) {
+    setTimeout(function () { resolve("timeout"); }, 3000);
+  });
+
+  await new Promise(function (resolve) {
+    compress(req, res, function () {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      source.pipe(res);
+      resolve();
+    });
+  });
+
+  var outcome = await Promise.race([done, timeout]);
+  check("piped stream completes (no stall on backpressure)", outcome === "ok");
+  if (outcome !== "ok") return;
+
+  check("piped stream: Content-Encoding set",   res._headers["content-encoding"] === "gzip");
+  check("piped stream: Content-Length removed", res._headers["content-length"] === undefined);
+  var decompressed = zlib.gunzipSync(res._captured());
+  check("piped stream: round-trip preserves bytes", decompressed.equals(payload));
+}
+
 async function testCompressionDoesntDoubleCompressViaWrappedWrite() {
   // Regression: an earlier implementation could feed compressor output
   // back through res.write (the wrapped one), causing recursive
@@ -13877,6 +13923,7 @@ async function run() {
   await testCompressionImplicitWriteHeadPath();
   await testCompressionInvalidEncodingRejectedAtCreate();
   await testCompressionDoesntDoubleCompressViaWrappedWrite();
+  await testCompressionPipedStreamLargerThanHighWaterMarkCompletes();
   // health — liveness/readiness/startup probe primitive
   await testHealthSurface();
   await testHealthDefaultLiveness();
@@ -14459,6 +14506,7 @@ module.exports = {
   testCompressionImplicitWriteHeadPath:      testCompressionImplicitWriteHeadPath,
   testCompressionInvalidEncodingRejectedAtCreate: testCompressionInvalidEncodingRejectedAtCreate,
   testCompressionDoesntDoubleCompressViaWrappedWrite: testCompressionDoesntDoubleCompressViaWrappedWrite,
+  testCompressionPipedStreamLargerThanHighWaterMarkCompletes: testCompressionPipedStreamLargerThanHighWaterMarkCompletes,
   testHealthSurface:                         testHealthSurface,
   testHealthDefaultLiveness:                 testHealthDefaultLiveness,
   testHealthDefaultReadiness:                testHealthDefaultReadiness,

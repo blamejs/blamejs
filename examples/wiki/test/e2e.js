@@ -33,14 +33,17 @@ function _request(opts, body) {
       var chunks = [];
       res.on("data", function (c) { chunks.push(c); });
       res.on("end", function () {
+        var raw = Buffer.concat(chunks);
         resolve({
           statusCode: res.statusCode,
           headers:    res.headers,
-          body:       Buffer.concat(chunks).toString("utf8"),
+          body:       raw.toString("utf8"),
+          rawBuffer:  raw,
         });
       });
     });
     req.on("error", reject);
+    req.setTimeout(5000, function () { req.destroy(new Error("request timed out — server stalled")); });
     if (body) req.write(body);
     req.end();
   });
@@ -88,7 +91,7 @@ async function run() {
     // Bundler emits hashed filenames: /dist/wiki.<16-hex>.js
     assert("GET / links bundled wiki.js",
            /\/dist\/wiki\.[a-f0-9]{16}\.js/.test(home.body));
-    assert("GET / links logo SVG",           /\/img\/blamejs-logo\.svg/.test(home.body));
+    assert("GET / links logo PNG",           /\/img\/blamejs-logo\.png/.test(home.body));
 
     var health = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/healthz",
@@ -271,6 +274,22 @@ async function run() {
     });
     assert("GET /vendor/prism.js → 200",     prismJs.statusCode === 200);
     assert("prism.js mentions Prism",        /Prism/.test(prismJs.body));
+    assert("prism.js bundles javascript grammar",
+           /Prism\.languages\.javascript/.test(prismJs.body));
+
+    var prismCss = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/vendor/prism.css",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "sec-fetch-dest": "style", "sec-fetch-mode": "no-cors",
+      }),
+    });
+    assert("GET /vendor/prism.css → 200",    prismCss.statusCode === 200);
+    assert("prism.css is non-empty (theme actually vendored)",
+           prismCss.body.length > 500);
+    assert("prism.css defines token rules",
+           /\.token\.keyword/.test(prismCss.body) && /\.token\.string/.test(prismCss.body));
+    assert("prism.css uses tomorrow theme dark bg",
+           /background:#2d2d2d/.test(prismCss.body));
 
     // Bundled wiki.js — extract the hashed path from the home HTML
     // and verify staticServe returns the bundled artifact.
@@ -306,13 +325,196 @@ async function run() {
     assert("GET /wiki.css → 200",            wikiCss.statusCode === 200);
 
     var logo = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/img/blamejs-logo.svg",
+      method: "GET", host: "127.0.0.1", port: port, path: "/img/blamejs-logo.png",
       headers: Object.assign({}, BROWSER_HEADERS, {
         "sec-fetch-dest": "image", "sec-fetch-mode": "no-cors",
       }),
     });
-    assert("GET /img/blamejs-logo.svg → 200", logo.statusCode === 200);
-    assert("logo is SVG",                    /<svg/.test(logo.body));
+    assert("GET /img/blamejs-logo.png → 200", logo.statusCode === 200);
+    assert("logo is served as image/png",
+           /image\/png/.test(logo.headers["content-type"] || ""));
+
+    // ---- Compression-on path (what real browsers actually do) ----
+    // Regression: every other request in this suite uses
+    // Accept-Encoding: identity for assertion convenience. That hid
+    // a real backpressure stall in the framework's compression
+    // middleware where stream.pipe(res) of a file > 16 KB hung
+    // because the wrapped res.write returned false on compressor
+    // backpressure but never re-emitted 'drain'. These checks force
+    // the gzip/br code path so the regression can't recur.
+    var zlib = require("node:zlib");
+    var COMPRESS_HEADERS = Object.assign({}, BROWSER_HEADERS, {
+      "accept-encoding": "gzip, br",
+    });
+
+    // Static file served by staticServe + piped through compression.
+    // prism.js is 39 KB — well past zlib's 16 KB highWaterMark.
+    var prismCompressed = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/vendor/prism.js",
+      headers: Object.assign({}, COMPRESS_HEADERS, {
+        "sec-fetch-dest": "script", "sec-fetch-mode": "no-cors",
+      }),
+    });
+    assert("compressed prism.js → 200 (no stall)",
+           prismCompressed.statusCode === 200);
+    assert("compressed prism.js: Content-Encoding present",
+           !!prismCompressed.headers["content-encoding"]);
+    assert("compressed prism.js: no Content-Length (chunked)",
+           prismCompressed.headers["content-length"] === undefined);
+    var enc = prismCompressed.headers["content-encoding"];
+    var prismDecoded =
+      enc === "br"   ? zlib.brotliDecompressSync(prismCompressed.rawBuffer) :
+      enc === "gzip" ? zlib.gunzipSync(prismCompressed.rawBuffer) :
+                       prismCompressed.rawBuffer;
+    assert("compressed prism.js decompresses to bundle",
+           /Prism\.languages\.javascript/.test(prismDecoded.toString("utf8")));
+
+    // Templated HTML page served by routes/pages.js + cached + piped
+    // through compression.
+    var welcomeCompressed = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/welcome/index",
+      headers: COMPRESS_HEADERS,
+    });
+    assert("compressed /welcome/index → 200 (no stall)",
+           welcomeCompressed.statusCode === 200);
+    assert("compressed /welcome/index: Content-Encoding present",
+           !!welcomeCompressed.headers["content-encoding"]);
+    var pageEnc = welcomeCompressed.headers["content-encoding"];
+    var welcomeDecoded =
+      pageEnc === "br"   ? zlib.brotliDecompressSync(welcomeCompressed.rawBuffer) :
+      pageEnc === "gzip" ? zlib.gunzipSync(welcomeCompressed.rawBuffer) :
+                           welcomeCompressed.rawBuffer;
+    var welcomeHtml = welcomeDecoded.toString("utf8");
+    assert("compressed welcome page contains body",
+           /blamejs/i.test(welcomeHtml) && /<h1/.test(welcomeHtml));
+    // CSP nonce must match between header and every rendered script
+    // tag (regression for the cached-stale-nonce bug — the page cache
+    // held a render with a frozen nonce, but the CSP header rotated
+    // per request, so script tags had a nonce the browser rejected).
+    var cspMatch = (welcomeCompressed.headers["content-security-policy"] || "")
+      .match(/'nonce-([A-Za-z0-9+/=]+)'/);
+    var headerNonce  = cspMatch ? cspMatch[1] : null;
+    var scriptNonces = [];
+    var nonceRe = /<script[^>]+nonce="([^"]+)"/g;
+    var m;
+    while ((m = nonceRe.exec(welcomeHtml)) !== null) scriptNonces.push(m[1]);
+    assert("compressed welcome page: header CSP nonce present", headerNonce !== null);
+    assert("compressed welcome page: at least one nonced script",
+           scriptNonces.length > 0);
+    assert("compressed welcome page: every script nonce matches CSP header nonce",
+           headerNonce !== null &&
+           scriptNonces.length > 0 &&
+           scriptNonces.every(function (n) { return n === headerNonce; }));
+
+    // Second hit — same path, served from page cache. The cached HTML
+    // contains a placeholder; substitution at serve time has to give
+    // it a fresh nonce that matches the new CSP header.
+    var welcome2 = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/welcome/index",
+      headers: COMPRESS_HEADERS,
+    });
+    var cached2enc = welcome2.headers["content-encoding"];
+    var welcome2Html = (
+      cached2enc === "br"   ? zlib.brotliDecompressSync(welcome2.rawBuffer) :
+      cached2enc === "gzip" ? zlib.gunzipSync(welcome2.rawBuffer) :
+                              welcome2.rawBuffer
+    ).toString("utf8");
+    var csp2    = (welcome2.headers["content-security-policy"] || "").match(/'nonce-([A-Za-z0-9+/=]+)'/);
+    var script2 = welcome2Html.match(/<script[^>]+nonce="([^"]+)"/);
+    assert("cached page re-render: CSP nonce rotates between requests",
+           csp2 !== null && headerNonce !== null && csp2[1] !== headerNonce);
+    assert("cached page re-render: script nonce tracks the new CSP nonce",
+           csp2 !== null && script2 !== null && script2[1] === csp2[1]);
+
+    // ---- Page-content completeness ----
+    // Walk every concern-group landing page, extract internal links
+    // and code-block language classes, and verify they all resolve /
+    // are valid. Catches things like a typo'd <a href="/auht-...">
+    // (typo) or a <code class="language-rust"> when Rust isn't in the
+    // Prism bundle.
+    var GROUPS = [
+      "welcome", "observability", "auth-permissions", "storage-state",
+      "http-middleware", "crypto-vault", "testing",
+      "notify-mail", "i18n-locale", "production-essentials",
+    ];
+    // Evaluate the bundle in a sandbox and read Prism.languages directly.
+    // Source-text scanning misses languages bound through the IIFE
+    // local (e.g. `e.languages.bash` inside `(function(e){...})(Prism)`).
+    var vm = require("node:vm");
+    var sandbox = {
+      window:                 {},
+      self:                   {},
+      document:               { readyState: "complete", currentScript: null, addEventListener: function () {}, getElementsByTagName: function () { return []; } },
+      Element:                function () {},
+      requestAnimationFrame:  function () {},
+    };
+    sandbox.window = sandbox; sandbox.self = sandbox;
+    vm.createContext(sandbox);
+    vm.runInContext(prismJs.body, sandbox, { filename: "prism.js" });
+    var prismLangs = new Set(Object.keys((sandbox.Prism && sandbox.Prism.languages) || {}));
+    assert("Prism bundle exposes javascript + bash + html",
+           prismLangs.has("javascript") && prismLangs.has("bash") && prismLangs.has("html"));
+
+    var allInternalLinks = new Set();
+    var allLanguages     = new Set();
+    for (var gi = 0; gi < GROUPS.length; gi++) {
+      var page = await _request({
+        method: "GET", host: "127.0.0.1", port: port, path: "/" + GROUPS[gi] + "/index",
+        headers: BROWSER_HEADERS,
+      });
+      assert("completeness: GET /" + GROUPS[gi] + "/index → 200", page.statusCode === 200);
+      var bodyOnly = page.body;
+      // Internal links — only paths that start with "/" and don't
+      // include "://"; ignore hash-only fragments.
+      var linkRe = /href="(\/[a-z0-9][a-z0-9/_\-#]*)"/g;
+      var lm = bodyOnly.match(linkRe) || [];
+      lm.forEach(function (s) {
+        var href = s.replace(/^href="/, "").replace(/"$/, "");
+        var withoutHash = href.indexOf("#") === -1 ? href : href.slice(0, href.indexOf("#"));
+        if (withoutHash) allInternalLinks.add(withoutHash);
+      });
+      // Code-block languages
+      var codeRe = /<code\s+class="language-([a-z0-9]+)"/g;
+      var cm = bodyOnly.match(codeRe) || [];
+      cm.forEach(function (s) {
+        var lang = s.replace(/^<code\s+class="language-/, "").replace(/"$/, "");
+        allLanguages.add(lang);
+      });
+    }
+    assert("completeness: scanned ≥10 internal links",     allInternalLinks.size >= 10);
+    assert("completeness: scanned ≥3 code-block languages", allLanguages.size >= 3);
+
+    // Every language used in a docs code block must be loadable by
+    // the Prism bundle we ship.
+    var unknownLangs = [];
+    allLanguages.forEach(function (lang) {
+      if (!prismLangs.has(lang)) unknownLangs.push(lang);
+    });
+    assert("completeness: every code-block language is in the Prism bundle " +
+           (unknownLangs.length > 0 ? "(unknown: " + unknownLangs.join(",") + ")" : ""),
+           unknownLangs.length === 0);
+
+    // Every internal link resolves (2xx or 3xx). Skips links to
+    // /admin (auth-gated) and /login (form route).
+    var brokenLinks = [];
+    var linksToFetch = [];
+    allInternalLinks.forEach(function (link) {
+      if (link === "/admin" || link === "/login" || link === "/logout") return;
+      linksToFetch.push(link);
+    });
+    for (var li = 0; li < linksToFetch.length; li++) {
+      var link = linksToFetch[li];
+      var resp = await _request({
+        method: "GET", host: "127.0.0.1", port: port, path: link,
+        headers: BROWSER_HEADERS,
+      });
+      if (resp.statusCode < 200 || resp.statusCode >= 400) {
+        brokenLinks.push(link + " → " + resp.statusCode);
+      }
+    }
+    assert("completeness: every internal link resolves (no 4xx/5xx) " +
+           (brokenLinks.length > 0 ? "broken: " + brokenLinks.join(", ") : ""),
+           brokenLinks.length === 0);
   } finally {
     await built.app.shutdown();
   }

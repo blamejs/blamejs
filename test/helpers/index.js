@@ -42,10 +42,12 @@ module.exports = {
   resetChecksForTest: _check.resetChecksForTest,
 
   // DB fixtures
-  setupTestDb:      _db.setupTestDb,
-  teardownTestDb:   _db.teardownTestDb,
-  setupTestDbForMW: _db.setupTestDbForMW,
-  teardownMW:       _db.teardownMW,
+  setupTestDb:           _db.setupTestDb,
+  teardownTestDb:        _db.teardownTestDb,
+  setupTestDbForMW:      _db.setupTestDbForMW,
+  teardownMW:            _db.teardownMW,
+  setTestPassphraseEnv:  _db.setTestPassphraseEnv,
+  TEST_PASSPHRASE:       _db.TEST_PASSPHRASE,
 
   // Driver fakes
   _makeFakeDriver:         _drivers._makeFakeDriver,

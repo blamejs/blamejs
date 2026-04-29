@@ -239,6 +239,129 @@ function testRenderHtmlOperatorDataOverridesLocals() {
         rendered.cspNonce === "operator-override");
 }
 
+// ---- Cacheable-render API: PLACEHOLDER + substitute() ----
+
+function testCspNoncePlaceholderIsPerInstanceRandom() {
+  var a = b.middleware.cspNonce();
+  var b1 = b.middleware.cspNonce();
+  check("placeholder is a non-empty string",   typeof a.PLACEHOLDER === "string" && a.PLACEHOLDER.length > 0);
+  check("placeholder differs across instances", a.PLACEHOLDER !== b1.PLACEHOLDER);
+  check("placeholder shape is recognizable",   /^__BLAMEJS_CSP_NONCE_[a-f0-9]+__$/.test(a.PLACEHOLDER));
+}
+
+function testCspNoncePlaceholderHonorsOperatorOverride() {
+  var pinned = "__OPERATOR_PINNED_TOKEN__";
+  var mw = b.middleware.cspNonce({ placeholder: pinned });
+  check("operator-pinned placeholder is used as-is", mw.PLACEHOLDER === pinned);
+}
+
+function testCspNoncePlaceholderInvalidTypeThrows() {
+  // Tier A: bad config → throw at create time so the operator's typo
+  // surfaces at app boot, not as silently-broken cache substitution
+  // three days later.
+  var threwOnNumber = null;
+  try { b.middleware.cspNonce({ placeholder: 42 }); }
+  catch (e) { threwOnNumber = e; }
+  check("placeholder: number throws CspNonceError",
+        threwOnNumber && threwOnNumber.code === "csp-nonce/bad-placeholder");
+
+  var threwOnEmpty = null;
+  try { b.middleware.cspNonce({ placeholder: "" }); }
+  catch (e) { threwOnEmpty = e; }
+  check("placeholder: empty string throws CspNonceError",
+        threwOnEmpty && threwOnEmpty.code === "csp-nonce/bad-placeholder");
+
+  var threwOnNull = null;
+  try { b.middleware.cspNonce({ placeholder: null }); }
+  catch (e) { threwOnNull = e; }
+  check("placeholder: null throws CspNonceError",
+        threwOnNull && threwOnNull.code === "csp-nonce/bad-placeholder");
+
+  // undefined / not-passed → silently use the default. NOT a throw.
+  var ok = b.middleware.cspNonce({ /* no placeholder */ });
+  check("placeholder: undefined uses the default (no throw)",
+        typeof ok.PLACEHOLDER === "string" && ok.PLACEHOLDER.length > 0);
+}
+
+function testCspNonceSubstituteReplacesPlaceholderWithReqNonce() {
+  var mw = b.middleware.cspNonce();
+  var html = '<script nonce="' + mw.PLACEHOLDER + '">x</script>' +
+             '<style nonce="' + mw.PLACEHOLDER + '">y</style>';
+  var req = { cspNonce: "real-nonce-abc" };
+  var out = mw.substitute(html, req);
+  check("substitute replaces every placeholder occurrence",
+        out === '<script nonce="real-nonce-abc">x</script><style nonce="real-nonce-abc">y</style>');
+}
+
+function testCspNonceSubstituteAcceptsRawNonceString() {
+  var mw = b.middleware.cspNonce();
+  var html = '<script nonce="' + mw.PLACEHOLDER + '">x</script>';
+  var out = mw.substitute(html, "literal-nonce-xyz");
+  check("substitute accepts a raw string nonce",
+        out === '<script nonce="literal-nonce-xyz">x</script>');
+}
+
+function testCspNonceSubstituteHonorsCustomProperty() {
+  var mw = b.middleware.cspNonce({ property: "myNonce" });
+  var html = '<script nonce="' + mw.PLACEHOLDER + '">x</script>';
+  var req = { myNonce: "custom-prop-nonce" };
+  var out = mw.substitute(html, req);
+  check("substitute reads from operator-supplied property",
+        out === '<script nonce="custom-prop-nonce">x</script>');
+}
+
+function testCspNonceSubstituteHandlesEmptyAndMissing() {
+  var mw = b.middleware.cspNonce();
+  check("substitute on empty html returns empty",          mw.substitute("", { cspNonce: "x" }) === "");
+  check("substitute on null html returns null",            mw.substitute(null, { cspNonce: "x" }) === null);
+  check("substitute with no placeholder returns input as-is",
+        mw.substitute("<p>no token</p>", { cspNonce: "x" }) === "<p>no token</p>");
+  var html = '<script nonce="' + mw.PLACEHOLDER + '">x</script>';
+  check("substitute with null req substitutes empty (so the placeholder doesn't leak)",
+        mw.substitute(html, null) === '<script nonce="">x</script>');
+}
+
+// Drives the middleware twice on the same cached HTML to confirm
+// each request gets its own nonce in BOTH the CSP header and the
+// substituted script tags. This is the canonical regression for the
+// cached-stale-nonce class of bug.
+async function testCspNonceCacheableRoundTripIntegration() {
+  var mw = b.middleware.cspNonce();
+  var cachedHtml =
+    '<head>' +
+    '  <script src="/a.js" nonce="' + mw.PLACEHOLDER + '"></script>' +
+    '  <script src="/b.js" nonce="' + mw.PLACEHOLDER + '"></script>' +
+    '</head>';
+
+  function _drive() {
+    return new Promise(function (resolve) {
+      var req = _cspReq();
+      var res = _cspRes("default-src 'self'");
+      mw(req, res, function () {
+        var rendered = mw.substitute(cachedHtml, req);
+        var headerCsp = res.getHeader("content-security-policy") || "";
+        var headerNonce = (headerCsp.match(/'nonce-([A-Za-z0-9+/=]+)'/) || [])[1] || null;
+        var nonceAttrs = rendered.match(/nonce="([^"]+)"/g) || [];
+        var scriptNonces = nonceAttrs.map(function (s) { return s.slice(7, -1); });
+        resolve({ headerNonce: headerNonce, scriptNonces: scriptNonces });
+      });
+    });
+  }
+
+  var r1 = await _drive();
+  var r2 = await _drive();
+
+  check("cache hit #1: header nonce present",            r1.headerNonce !== null);
+  check("cache hit #1: every script nonce matches header",
+        r1.scriptNonces.length === 2 &&
+        r1.scriptNonces.every(function (n) { return n === r1.headerNonce; }));
+  check("cache hit #2: header nonce rotated between requests",
+        r1.headerNonce !== r2.headerNonce);
+  check("cache hit #2: every script nonce matches the rotated header nonce",
+        r2.scriptNonces.length === 2 &&
+        r2.scriptNonces.every(function (n) { return n === r2.headerNonce; }));
+}
+
 async function run() {
   testCspNonceSurface();
   testCspNonceParseSerialize();
@@ -258,6 +381,14 @@ async function run() {
   await testCspNonceLayeredOnSecurityHeaders();
   testRenderHtmlAutoMergesResLocals();
   testRenderHtmlOperatorDataOverridesLocals();
+  testCspNoncePlaceholderIsPerInstanceRandom();
+  testCspNoncePlaceholderHonorsOperatorOverride();
+  testCspNoncePlaceholderInvalidTypeThrows();
+  testCspNonceSubstituteReplacesPlaceholderWithReqNonce();
+  testCspNonceSubstituteAcceptsRawNonceString();
+  testCspNonceSubstituteHonorsCustomProperty();
+  testCspNonceSubstituteHandlesEmptyAndMissing();
+  await testCspNonceCacheableRoundTripIntegration();
 }
 
 module.exports = { run: run };

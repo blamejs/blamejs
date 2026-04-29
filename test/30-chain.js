@@ -31,6 +31,7 @@ var path   = helpers.path;
 var check  = helpers.check;
 var setupTestDb              = helpers.setupTestDb;
 var teardownTestDb           = helpers.teardownTestDb;
+var setTestPassphraseEnv     = helpers.setTestPassphraseEnv;
 var _makeSqliteDriver        = helpers._makeSqliteDriver;
 
 async function testClusterStorageLocalDispatch() {
@@ -1402,6 +1403,7 @@ async function testSubjectRights() {
     await b.db.init({
       dataDir: tmpDir,
       atRest:  "plain",
+      auditSigning: { mode: "plaintext" },
       schema: [
         {
           name: "users",
@@ -1535,6 +1537,7 @@ async function testForeignKeys() {
     await b.db.init({
       dataDir: tmpDir,
       atRest:  "plain",
+      auditSigning: { mode: "plaintext" },
       schema: [
         {
           name: "users",
@@ -1592,6 +1595,7 @@ async function testTableMetadata() {
     await b.db.init({
       dataDir: tmpDir,
       atRest:  "plain",
+      auditSigning: { mode: "plaintext" },
       schema: [
         {
           name: "items",
@@ -1638,7 +1642,21 @@ async function testAuditSignDefaultsToSlhDsa() {
   // future loads dispatch correctly without re-detection.
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-asd-"));
   try {
-    await setupTestDb(tmpDir);
+    // This test inspects the on-disk JSON content of audit-sign.key,
+    // which only exists in plaintext audit-signing mode. Override
+    // setupTestDb's secure-mode default explicitly.
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    b.cluster._resetForTest();
+    b.audit._resetForTest();
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    await b.db.init({
+      dataDir:      tmpDir,
+      atRest:       "plain",
+      auditSigning: { mode: "plaintext" },
+      schema:       [],
+    });
     check("auditSign.getAlgorithm is exposed",
           typeof b.auditSign.getAlgorithm === "function");
     check("auditSign default alg is SLH-DSA-SHAKE-256f",
@@ -1808,8 +1826,11 @@ async function testCheckpointSign() {
           typeof b.auditSign.getPublicKeyFingerprint() === "string" &&
           b.auditSign.getPublicKeyFingerprint().length === 128);
 
-    // audit-sign keypair file written
-    check("audit-sign.key file exists in plaintext mode",  fs.existsSync(path.join(tmpDir, "audit-sign.key")));
+    // audit-sign keypair file written (wrapped mode is what setupTestDb
+    // configures, matching production posture; sealed file is the
+    // expected on-disk artifact).
+    check("audit-sign.key.sealed file exists in wrapped mode",
+          fs.existsSync(path.join(tmpDir, "audit-sign.key.sealed")));
 
     // Empty audit_log → checkpoint returns null (nothing to anchor)
     var emptyResult = await b.audit.checkpoint();
@@ -1948,14 +1969,16 @@ async function testRollbackDetection() {
     }, null, 2));
 
     // Reopen — should detect rollback and exit. We fork a child to capture
-    // the exit code.
+    // the exit code. The on-disk dataDir is in wrapped/encrypted modes
+    // (setupTestDb's secure default), so the child re-inits in those
+    // same modes; the test passphrase is inherited via env.
+    setTestPassphraseEnv();
     var spawnSync = require("child_process").spawnSync;
     var childScript = "var b = require('" + path.resolve("../blamejs/index.js").replace(/\\/g, "/") + "');\n" +
       "process.env.BLAMEJS_SKIP_NTP_CHECK = '1';\n" +
-      "process.env.BLAMEJS_AUDIT_SIGNING_MODE = 'plaintext';\n" +
       "(async function () {\n" +
-      "  await b.vault.init({ dataDir: " + JSON.stringify(tmpDir) + ", mode: 'plaintext' });\n" +
-      "  await b.db.init({ dataDir: " + JSON.stringify(tmpDir) + ", atRest: 'plain', auditSigning: { mode: 'plaintext' }, schema: [] });\n" +
+      "  await b.vault.init({ dataDir: " + JSON.stringify(tmpDir) + " });\n" +
+      "  await b.db.init({ dataDir: " + JSON.stringify(tmpDir) + ", tmpDir: " + JSON.stringify(path.join(tmpDir, "tmpfs")) + ", schema: [] });\n" +
       "})().catch(function (e) { console.error(e.message); process.exit(99); });\n";
     var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
     check("rollback boot exits with code 1",                  result.status === 1);

@@ -166,6 +166,12 @@ async function buildApp(opts) {
       securityHeaders: { csp: STRICT_CSP },
       botGuard:        true,
       cors: {
+        // No third-party origins — only this app's own forms post
+        // here. The Fetch spec sends an Origin header on every same-
+        // origin POST, so we still need to tell CORS which origin is
+        // "self". For local dev (HTTP, default port) the framework
+        // can infer it from the request; production deployments
+        // behind TLS terminators should pass siteOrigin explicitly.
         allowedOrigins:   [],
         allowCredentials: false,
       },
@@ -179,7 +185,8 @@ async function buildApp(opts) {
     routes: function (router) {
       router.use(healthChecks.middleware());
       router.use(b.middleware.bodyParser({ formUrlEncoded: true, json: true }));
-      router.use(b.middleware.cspNonce());
+      var nonceMw = b.middleware.cspNonce();
+      router.use(nonceMw);
       router.use(b.middleware.compression());
       router.use(i18n.middleware());
 
@@ -218,6 +225,7 @@ async function buildApp(opts) {
         notify:       notify,
         apiKeys:      apiKeys,
         assets:       assets,
+        nonceMw:      nonceMw,
       };
       pagesRoute.registerSpecific(router, routeCtx);
       adminRoute.register(router, routeCtx);

@@ -22,8 +22,9 @@
         "js":  "prism.js",
         "css": "prism.css"
       },
+      "theme": "prism-tomorrow",
       "vendoredAt": "2026-04-29",
-      "_revendor": "concatenate the bundle listed above + grab themes/prism.min.css"
+      "_revendor": "concatenate the bundle listed above + grab themes/prism-tomorrow.min.css"
     }
   }
 }

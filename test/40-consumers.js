@@ -121,6 +121,7 @@ async function testDataResidency() {
     await b.db.init({
       dataDir: tmpDir,
       atRest:  "plain",
+      auditSigning: { mode: "plaintext" },
       schema:  [{ name: "x", columns: { _id: "TEXT PRIMARY KEY" } }],
       dataResidency: { region: "EU", allowedStorageRegions: ["eu-west-1"] },
     });

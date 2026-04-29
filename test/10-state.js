@@ -138,6 +138,11 @@ async function testVaultWrappedE2E() {
   }
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-wrap-e2e-"));
   var passphrase = "smoke-wrapped-vault-2026-" + Date.now();
+  // Save whatever was set by an earlier test (e.g. helpers/db.js
+  // sets a stable test passphrase) so the finally block restores it
+  // — deleting it unconditionally breaks downstream tests that need
+  // the helper-supplied passphrase.
+  var priorPassphrase = process.env.BLAMEJS_VAULT_PASSPHRASE;
   process.env.BLAMEJS_VAULT_PASSPHRASE = passphrase;
   try {
     b.vault._resetForTest();
@@ -173,7 +178,8 @@ async function testVaultWrappedE2E() {
     var openedAgain = b.vault.unseal(sealedVal);
     check("wrapped persistence: prior sealed value decrypts after restart", openedAgain === payload);
   } finally {
-    delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    if (priorPassphrase === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    else process.env.BLAMEJS_VAULT_PASSPHRASE = priorPassphrase;
     b.vault._resetForTest();
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
   }

@@ -5,13 +5,14 @@
 
 var b = require("@blamejs/core");
 
-function _renderLayoutData(req, ctx) {
-  // Per-request fields the layout expects. Most come from middleware
-  // (cspNonce from b.middleware.cspNonce, locale from b.i18n.middleware,
-  // user from b.session). Defaults make the views safe even when those
-  // middlewares haven't been wired.
+// Layout-data shape shared by both the per-request render path and the
+// cacheable render path. The cspNonce field is the only thing that
+// differs: live paths get the real nonce, cacheable paths get the
+// framework's stable placeholder (substituted at serve time via
+// b.middleware.cspNonce's substitute helper).
+function _layoutData(req, ctx, nonce) {
   return {
-    cspNonce:    (req.res && req.res.locals && req.res.locals.cspNonce) || "",
+    cspNonce:    nonce,
     locale:      req.locale || "en",
     dir:         req.dir ? req.dir() : "ltr",
     user:        req.user || null,
@@ -20,6 +21,12 @@ function _renderLayoutData(req, ctx) {
     title:       "",
     assets:      (ctx && ctx.assets) || {},
   };
+}
+function _layoutDataLive(req, ctx) {
+  return _layoutData(req, ctx, req.cspNonce || (req.res && req.res.locals && req.res.locals.cspNonce) || "");
+}
+function _layoutDataForCache(req, ctx) {
+  return _layoutData(req, ctx, ctx.nonceMw.PLACEHOLDER);
 }
 
 // Wikis read-heavy → cache rendered HTML keyed by `<group>/<slug>`. The
@@ -43,7 +50,7 @@ function registerSpecific(router, ctx) {
 
   // ---- Landing ----
   router.get("/", function (req, res) {
-    var data = Object.assign(_renderLayoutData(req, ctx), {
+    var data = Object.assign(_layoutDataLive(req, ctx), {
       title: "blamejs",
     });
     var html = template.render("home", data);
@@ -73,7 +80,7 @@ function registerSpecific(router, ctx) {
         hits = [];
       }
     }
-    var data = Object.assign(_renderLayoutData(req, ctx), {
+    var data = Object.assign(_layoutDataLive(req, ctx), {
       title:       "Search",
       searchQuery: q,
       hits:        hits,
@@ -112,7 +119,7 @@ function registerCatchAll(router, ctx) {
         "FROM pages WHERE groupName = ? AND slug = ?"
       ).get(group, slug);
       if (!row) return null;
-      var data = Object.assign(_renderLayoutData(req, ctx), {
+      var data = Object.assign(_layoutDataForCache(req, ctx), {
         title:        row.title,
         groupName:    row.groupName,
         slug:         row.slug,
@@ -126,7 +133,7 @@ function registerCatchAll(router, ctx) {
       res.statusCode = 404;
       return b.render.htmlString(res, "<h1>Not found</h1><p>No such page.</p>", { status: 404 });
     }
-    b.render.htmlString(res, html);
+    b.render.htmlString(res, ctx.nonceMw.substitute(html, req));
   });
 }
 

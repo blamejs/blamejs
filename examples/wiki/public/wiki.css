@@ -230,20 +230,7 @@ main pre code {
   font-size: inherit;
 }
 
-/* Prism's default theme uses light backgrounds; override to match
-   our dark code-block aesthetic. We re-skin the token classes so the
-   highlighted output stays legible on the dark pre. */
-.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #8a93a6; }
-.token.punctuation { color: #cfd5e0; }
-.token.property, .token.tag, .token.boolean, .token.number, .token.constant,
-.token.symbol, .token.deleted { color: #f08d49; }
-.token.selector, .token.attr-name, .token.string, .token.char, .token.builtin,
-.token.inserted { color: #a5e36e; }
-.token.operator, .token.entity, .token.url, .language-css .token.string,
-.style .token.string { color: #f8f8f2; }
-.token.atrule, .token.attr-value, .token.keyword { color: #66d9ef; }
-.token.function, .token.class-name { color: #ffd866; }
-.token.regex, .token.important, .token.variable { color: #fc6d68; }
+/* Token colors come from public/vendor/prism.css (prism-tomorrow theme). */
 
 /* copy-to-clipboard button */
 .copy-btn {

@@ -26,13 +26,15 @@ var path   = helpers.path;
 var check  = helpers.check;
 var setupTestDb              = helpers.setupTestDb;
 var teardownTestDb           = helpers.teardownTestDb;
+var setTestPassphraseEnv     = helpers.setTestPassphraseEnv;
 
 async function testDbBasic() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-db-"));
   try {
     await setupTestDb(tmpDir);
-    check("db.getMode() returns 'plain'",  b.db.getMode() === "plain");
-    check("blamejs.db file exists",        fs.existsSync(path.join(tmpDir, "blamejs.db")));
+    check("db.getMode() returns 'encrypted'", b.db.getMode() === "encrypted");
+    check("db.key.enc (sealed db key) exists in dataDir",
+                                              fs.existsSync(path.join(tmpDir, "db.key.enc")));
 
     var users = b.db.from("users");
     var inserted = users.insertOne({ email: "Alice@example.com", name: "Alice", createdAt: "2026-04-25" });
@@ -157,10 +159,17 @@ async function testDbPersistence() {
     b.db._resetForTest();
     b.vault._resetForTest();
 
-    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    // Re-init in the SAME secure modes setupTestDb wrote on disk
+    // (wrapped vault + encrypted db). Switching modes here would
+    // collide with the on-disk sealed files; the persistence test
+    // doesn't care which mode, only that a close+reopen round trip
+    // recovers the row. The passphrase env was stripped after the
+    // first init (security feature), so re-supply before re-init.
+    setTestPassphraseEnv();
+    await b.vault.init({ dataDir: tmpDir });
     await b.db.init({
       dataDir: tmpDir,
-      atRest:  "plain",
+      tmpDir:  path.join(tmpDir, "tmpfs"),
       schema: [
         {
           name: "users",
@@ -194,11 +203,13 @@ async function testDbSchemaEvolution() {
     b.db._resetForTest();
     b.vault._resetForTest();
 
-    // Add a new column 'lastSeen' to schema, re-init
-    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    // Add a new column 'lastSeen' to schema, re-init in the same
+    // (encrypted) mode setupTestDb wrote on disk.
+    setTestPassphraseEnv();
+    await b.vault.init({ dataDir: tmpDir });
     await b.db.init({
       dataDir: tmpDir,
-      atRest:  "plain",
+      tmpDir:  path.join(tmpDir, "tmpfs"),
       schema: [
         {
           name: "users",
@@ -251,12 +262,16 @@ async function testDbMigrations() {
     "};\n"
   );
   try {
+    // This test is testing migration idempotency, not crypto modes.
+    // Explicit plaintext for vault + audit-sign keeps it self-contained
+    // (no reliance on env state set by other tests).
     b.vault._resetForTest();
     b.db._resetForTest();
     await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
     await b.db.init({
       dataDir:      tmpDir,
       atRest:       "plain",
+      auditSigning: { mode: "plaintext" },
       migrationDir: migDir,
       schema: [
         {
@@ -289,6 +304,7 @@ async function testDbMigrations() {
     await b.db.init({
       dataDir:      tmpDir,
       atRest:       "plain",
+      auditSigning: { mode: "plaintext" },
       migrationDir: migDir,
       schema: [
         {
@@ -341,8 +357,9 @@ async function testReservedTableProtection() {
     var threw = false;
     try {
       await b.db.init({
-        dataDir: tmpDir,
-        atRest:  "plain",
+        dataDir:      tmpDir,
+        atRest:       "plain",
+        auditSigning: { mode: "plaintext" },
         schema: [{ name: "audit_log", columns: { _id: "TEXT PRIMARY KEY" } }],
       });
     } catch (e) {
