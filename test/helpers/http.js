@@ -1,25 +1,14 @@
 "use strict";
 /**
- * HTTP test helpers — mostly the listenOnRandomPort utility that
- * collapsed the `await new Promise(r => server.listen(0, host, r));
- * var port = server.address().port;` boilerplate every consumer test
- * was repeating.
+ * HTTP test helpers — listenOnRandomPort utility.
  *
- * Works with anything that has the listen(port, host, cb) + address()
- * shape (http.Server, http2.Server, net.Server, tls.Server).
+ * As of v0.2.38 this is a thin re-export of `b.testing.listenOnRandomPort`
+ * — the canonical implementation lives in lib/testing.js so operators
+ * get the same helper the framework's own smoke suite uses.
  */
 
-function listenOnRandomPort(server, host) {
-  host = host || "127.0.0.1";
-  return new Promise(function (resolve, reject) {
-    server.once("error", reject);
-    server.listen(0, host, function () {
-      server.removeListener("error", reject);
-      resolve(server.address().port);
-    });
-  });
-}
+var b = require("../../index.js");
 
 module.exports = {
-  listenOnRandomPort: listenOnRandomPort,
+  listenOnRandomPort: b.testing.listenOnRandomPort,
 };

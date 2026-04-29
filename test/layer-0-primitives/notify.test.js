@@ -409,16 +409,11 @@ async function testCustomRedactor() {
 
 // ---- httpJson built-in transport ----
 
-function _fakeHttpClient(responder) {
-  var calls = [];
-  return {
-    calls: calls,
-    request: function (req) {
-      calls.push(req);
-      return Promise.resolve(responder(req));
-    },
-  };
-}
+// Local _fakeHttpClient was the original copy of this pattern; v0.2.38
+// consolidated it into b.testing.fakeHttpClient so every primitive's
+// tests can share the same shape. Aliased here to keep call-sites
+// unchanged while demonstrating the migration.
+var _fakeHttpClient = b.testing.fakeHttpClient;
 
 async function testHttpJsonBasic() {
   var hc = _fakeHttpClient(function () { return { statusCode: 200, body: Buffer.from("ok") }; });

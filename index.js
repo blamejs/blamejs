@@ -145,6 +145,7 @@ var cache = require("./lib/cache");
 var seeders = require("./lib/seeders");
 var i18n = require("./lib/i18n");
 var notify = require("./lib/notify");
+var testing = require("./lib/testing");
 
 module.exports = {
   crypto:           crypto,
@@ -240,6 +241,7 @@ module.exports = {
   seeders:          seeders,
   i18n:             i18n,
   notify:           notify,
+  testing:          testing,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
