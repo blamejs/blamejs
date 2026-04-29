@@ -98,6 +98,7 @@ var template = require("./lib/template");
 var render = require("./lib/render");
 var htmlBalance = require("./lib/html-balance");
 var validateOpts = require("./lib/validate-opts");
+var cliHelpers = require("./lib/cli-helpers");
 var staticServe = require("./lib/static");
 var forms = require("./lib/forms");
 var app = require("./lib/app");
@@ -197,6 +198,7 @@ module.exports = {
   render:           render,
   htmlBalance:      htmlBalance,
   validateOpts:     validateOpts,
+  cliHelpers:       cliHelpers,
   staticServe:      staticServe,
   forms:            forms,
   createApp:        app.createApp,
