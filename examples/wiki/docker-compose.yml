@@ -1,0 +1,39 @@
+# Wiki reference app — single-container deploy.
+#
+# Run from this directory:
+#   docker compose up --build
+#
+# First boot generates a random admin password and prints it. Set
+# WIKI_ADMIN_PASSWORD in a .env file alongside this compose file (or in
+# the host environment) to pin a stable credential. The data volume
+# persists the vault key, sqlite db, and audit chain across container
+# restarts; deleting it resets everything to first-boot state.
+
+services:
+  wiki:
+    build:
+      context: ../..
+      dockerfile: examples/wiki/Dockerfile
+    image: blamejs-wiki:0.3.8
+    container_name: blamejs-wiki
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      WIKI_DATA_DIR: /data
+      WIKI_PORT: "8080"
+      WIKI_ADMIN_EMAIL: ${WIKI_ADMIN_EMAIL:-admin@blamejs.app}
+      WIKI_ADMIN_PASSWORD: ${WIKI_ADMIN_PASSWORD:-}
+      WIKI_WEBHOOK_URL: ${WIKI_WEBHOOK_URL:-}
+      WIKI_WEBHOOK_SECRET: ${WIKI_WEBHOOK_SECRET:-}
+    volumes:
+      - wiki-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  wiki-data:

@@ -12,6 +12,17 @@ WIKI_ADMIN_PASSWORD="some-strong-password" npm start
 
 Server listens on `http://localhost:8080` by default. Override with `WIKI_PORT`. Admin credentials via `WIKI_ADMIN_EMAIL` (default `admin@blamejs.app`) and `WIKI_ADMIN_PASSWORD` (required ≥ 8 chars; a random dev password is generated and printed if unset).
 
+## Run with Docker Compose
+
+```bash
+cd examples/wiki
+docker compose up --build
+```
+
+The compose file mounts a named volume (`wiki-data`) at `/data` so the vault key, sqlite database, and audit chain persist across container restarts. Set `WIKI_ADMIN_PASSWORD` (and any other `WIKI_*` envs from `server.js`) in a `.env` file alongside `docker-compose.yml`, or in the host environment, to pin a stable admin credential. Healthcheck hits `/healthz` every 30 seconds.
+
+The `Dockerfile` is multi-stage (deps build + slim runtime), runs as the unprivileged `node` user, and uses a `node:24-slim` base because the vendored Argon2id native module ships glibc prebuilds rather than musl.
+
 ## Run the e2e test
 
 ```bash
@@ -19,7 +30,7 @@ cd examples/wiki
 npm test
 ```
 
-Boots the server in-process on an ephemeral port, hits each route with browser-shaped headers, validates response codes and body content, then shuts down cleanly. **14/14 checks** at present.
+Boots the server in-process on an ephemeral port, hits each route with browser-shaped headers, validates response codes and body content, then shuts down cleanly. **70/70 checks** at present.
 
 ## What's wired (baseline-all-features stance)
 
