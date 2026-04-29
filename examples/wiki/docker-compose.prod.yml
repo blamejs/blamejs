@@ -1,0 +1,52 @@
+# Production overlay — runs alongside docker-compose.yml.
+#
+# Use:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Adds a Caddy reverse proxy in front of the wiki container. Caddy
+# handles TLS termination + automatic Let's Encrypt cert issuance for
+# the configured domain. Pull from the published GHCR image instead of
+# rebuilding from source — this is the operational path.
+#
+# Required: an .env file alongside this compose file with at least:
+#   WIKI_ADMIN_PASSWORD=<a stable, strong passphrase>
+# Optional:
+#   WIKI_WEBHOOK_URL, WIKI_WEBHOOK_SECRET — outbound page-edit webhook
+#
+# The operator points DNS A/AAAA records for blamejs.app + www.blamejs.app
+# at the host running this stack, opens 80/443 inbound, and Caddy does
+# the rest on first boot.
+
+services:
+  wiki:
+    # Pull the published image instead of building from source. Pin to
+    # a specific version in production so a forgotten `docker compose
+    # pull` doesn't quietly upgrade.
+    image: ghcr.io/blamejs/blamejs-wiki:0.3.10
+    build: !reset null
+    container_name: blamejs-wiki
+    # Don't expose 8080 on the host — only Caddy talks to it on the
+    # internal network.
+    ports: !override []
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2.9-alpine
+    container_name: blamejs-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 (QUIC)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data        # ACME state — DO NOT delete in prod
+      - caddy-config:/config
+    depends_on:
+      wiki:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:

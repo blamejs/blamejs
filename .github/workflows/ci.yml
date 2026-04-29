@@ -1,0 +1,69 @@
+# Framework smoke + wiki e2e on every push and pull request.
+# Run on the same Node major operators run in production (24 LTS),
+# matching the engines.node constraint in package.json.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags:     ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Framework smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Show Node version (debug)
+        run: node --version && npm --version
+
+      # Framework has zero npm runtime deps — nothing to install at the
+      # repo root. The wiki example has one workspace-style file:../..
+      # link which we install in the e2e job below.
+      - name: Run framework smoke
+        run: node test/smoke.js
+
+  wiki-e2e:
+    name: Wiki e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Resolve wiki framework dep (file:../..)
+        working-directory: examples/wiki
+        run: npm install --no-package-lock --omit=dev --install-links
+
+      - name: Run wiki e2e
+        working-directory: examples/wiki
+        run: node test/e2e.js

@@ -1,0 +1,77 @@
+# Build and publish the wiki reference container to GHCR on every
+# `v*` tag. The image is tagged with the version (vX.Y.Z), the
+# major+minor (vX.Y), and `latest` for the most recent release.
+#
+# Operators pull with:
+#   docker pull ghcr.io/blamejs/blamejs-wiki:0.3.10
+#   docker pull ghcr.io/blamejs/blamejs-wiki:0.3
+#   docker pull ghcr.io/blamejs/blamejs-wiki:latest
+#
+# Source path: examples/wiki/Dockerfile, build context: repo root
+# (the wiki's package.json declares "@blamejs/core": "file:../..").
+
+name: Release container
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: release-container-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE:    ghcr.io/${{ github.repository_owner }}/blamejs-wiki
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        # vX.Y.Z → semver:X.Y.Z + minor:X.Y + latest
+        run: |
+          REF="${GITHUB_REF#refs/tags/v}"
+          MAJOR_MINOR="${REF%.*}"
+          {
+            echo "semver=$REF"
+            echo "minor=$MAJOR_MINOR"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: examples/wiki/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.semver }}
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.minor }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.semver }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.description=blamejs wiki reference app
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

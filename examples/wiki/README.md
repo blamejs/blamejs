@@ -23,6 +23,8 @@ The compose file mounts a named volume (`wiki-data`) at `/data` so the vault key
 
 The `Dockerfile` is multi-stage (deps build + slim runtime), runs as the unprivileged `node` user, and uses a `node:24-slim` base because the vendored Argon2id native module ships glibc prebuilds rather than musl.
 
+For production deploys with TLS terminator + auto Let's Encrypt, see [DEPLOY.md](./DEPLOY.md) — it documents the `docker-compose.prod.yml` overlay that fronts the wiki with Caddy and pulls the published `ghcr.io/blamejs/blamejs-wiki` image instead of building from source.
+
 ## Run the e2e test
 
 ```bash
@@ -30,7 +32,7 @@ cd examples/wiki
 npm test
 ```
 
-Boots the server in-process on an ephemeral port, hits each route with browser-shaped headers, validates response codes and body content, then shuts down cleanly. **70/70 checks** at present.
+Boots the server in-process on an ephemeral port, hits each route with browser-shaped headers (CORS-on path included so the compression backpressure path is exercised), validates response codes and body content, walks every internal link, and verifies every code-block language is loadable by the Prism bundle. **102/102 checks** at present.
 
 ## What's wired (baseline-all-features stance)
 
