@@ -280,19 +280,12 @@ async function testMiddlewareCustomResponder() {
 // ---- Audit + observability emission ----
 
 async function testAuditAndObservabilityEmission() {
-  var captured = [];
-  var auditCaptured = [];
-  var originalTap = b.metrics.tap;
-  b.metrics.tap = function (name, value, labels) {
-    captured.push({ name: name, labels: labels || {} });
-  };
-  var auditShim = {
-    safeEmit: function (event) { auditCaptured.push(event); },
-  };
+  var cap = b.testing.captureMetricsTap();
+  var audit = b.testing.captureAudit();
   try {
     var p = b.permissions.create({
       roles: { viewer: ["*:read"] },
-      audit: auditShim,
+      audit: audit,
       auditSuccess: true,        // we want to observe both branches
     });
 
@@ -308,74 +301,67 @@ async function testAuditAndObservabilityEmission() {
     var mwMissing = p.require("users:read");
     await _runMiddleware(mwMissing, _mockReq());
   } finally {
-    b.metrics.tap = originalTap;
+    cap.restore();
   }
 
-  var names = captured.map(function (c) { return c.name; });
   check("emits permissions.check event",
-        names.indexOf("permissions.check") !== -1);
+        cap.byName("permissions.check").length > 0);
   check("emits permissions.missing_actor event",
-        names.indexOf("permissions.missing_actor") !== -1);
+        cap.byName("permissions.missing_actor").length > 0);
 
-  var checkEvents = captured.filter(function (c) { return c.name === "permissions.check"; });
+  var checkEvents = cap.byName("permissions.check");
   var hasSuccess = checkEvents.some(function (e) { return e.labels.outcome === "success"; });
   var hasDeny = checkEvents.some(function (e) { return e.labels.outcome === "deny"; });
   check("permissions.check emits success outcome", hasSuccess === true);
   check("permissions.check emits deny outcome",    hasDeny === true);
 
-  var auditActions = auditCaptured.map(function (e) { return e.action; });
   check("audit emits check.deny",
-        auditActions.indexOf("permissions.check.deny") !== -1);
+        audit.byAction("permissions.check.deny").length > 0);
   check("audit emits check.success (auditSuccess=true)",
-        auditActions.indexOf("permissions.check.success") !== -1);
+        audit.byAction("permissions.check.success").length > 0);
   check("audit emits missing_actor",
-        auditActions.indexOf("permissions.missing_actor") !== -1);
+        audit.byAction("permissions.missing_actor").length > 0);
 }
 
 async function testAuditDefaults() {
-  var auditCaptured = [];
-  var auditShim = { safeEmit: function (event) { auditCaptured.push(event); } };
+  var audit = b.testing.captureAudit();
   // Defaults: both success AND failure audited (auth decision is the event)
   var p = b.permissions.create({
     roles: { admin: ["*"] },
-    audit: auditShim,
+    audit: audit,
   });
   var mwOk = p.require("users:read");
   await _runMiddleware(mwOk, Object.assign(_mockReq(), { user: { scopes: ["*"] } }));
-  var actions = auditCaptured.map(function (e) { return e.action; });
   check("default: success IS audited (auth decision)",
-        actions.indexOf("permissions.check.success") !== -1);
+        audit.byAction("permissions.check.success").length > 0);
 
   var mwDeny = p.require("users:write");
   await _runMiddleware(mwDeny, Object.assign(_mockReq(), { user: { scopes: ["users:read"] } }));
-  var actions2 = auditCaptured.map(function (e) { return e.action; });
-  check("default: deny IS audited",      actions2.indexOf("permissions.check.deny") !== -1);
+  check("default: deny IS audited",
+        audit.byAction("permissions.check.deny").length > 0);
 }
 
 async function testAuditSuccessOptOut() {
-  var auditCaptured = [];
-  var auditShim = { safeEmit: function (event) { auditCaptured.push(event); } };
+  var audit = b.testing.captureAudit();
   // Operator opt-out for extreme volume
   var p = b.permissions.create({
     roles: { admin: ["*"] },
-    audit: auditShim,
+    audit: audit,
     auditSuccess: false,
   });
   var mwOk = p.require("users:read");
   await _runMiddleware(mwOk, Object.assign(_mockReq(), { user: { scopes: ["*"] } }));
-  var actions = auditCaptured.map(function (e) { return e.action; });
   check("opt-out: success NOT audited when auditSuccess=false",
-        actions.indexOf("permissions.check.success") === -1);
+        audit.byAction("permissions.check.success").length === 0);
 }
 
 // ---- 5 W's audit propagation ----
 
 async function testFiveWsAuditPropagation() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var audit = b.testing.captureAudit();
   var p = b.permissions.create({
     roles: { editor: ["users:read"], viewer: ["*:read"] },
-    audit: auditShim,
+    audit: audit,
   });
 
   var req = _mockReq();
@@ -388,7 +374,7 @@ async function testFiveWsAuditPropagation() {
 
   // Success path
   await _runMiddleware(p.require("users:read"), req);
-  var success = captured.find(function (e) { return e.action === "permissions.check.success"; });
+  var success = audit.byAction("permissions.check.success")[0];
   check("perms 5 W's: success has WHO (userId)",     success.actor.userId === "admin-7");
   check("perms 5 W's: success has WHERE (ip)",       success.actor.ip === "203.0.113.99");
   check("perms 5 W's: success has HOW (userAgent)",  success.actor.userAgent === "compliance-test/1.0");
@@ -398,14 +384,14 @@ async function testFiveWsAuditPropagation() {
         Array.isArray(success.actor.roles) && success.actor.roles.indexOf("editor") !== -1);
 
   // Deny path
-  captured.length = 0;
+  audit.clear();
   var denyReq = _mockReq();
   denyReq.url = "/admin/users/42/delete";
   denyReq.method = "DELETE";
   denyReq.ip = "203.0.113.99";
   denyReq.user = { id: "viewer-9", roles: ["viewer"] };
   await _runMiddleware(p.require("users:write"), denyReq);
-  var deny = captured.find(function (e) { return e.action === "permissions.check.deny"; });
+  var deny = audit.byAction("permissions.check.deny")[0];
   check("perms 5 W's: deny has WHO",       deny.actor.userId === "viewer-9");
   check("perms 5 W's: deny has WHERE",     deny.actor.ip === "203.0.113.99");
   check("perms 5 W's: deny has HOW (route)", deny.actor.route === "/admin/users/42/delete");

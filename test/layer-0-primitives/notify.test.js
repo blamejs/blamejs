@@ -287,23 +287,22 @@ async function testCircuitBreakerOpens() {
 // ---- Audit emission ----
 
 async function testAuditSuccess() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var audit = b.testing.captureAudit();
   var test = b.notify.transports.test();
   var n = b.notify.create({
     channels: { test: test },
-    audit:    auditShim,
+    audit:    audit,
   });
-  var fakeReq = {
-    ip:      "10.0.0.5",
-    headers: { "user-agent": "tester/1.0", "x-request-id": "req-42" },
-    method:  "POST",
-    url:     "/admin/notify",
-  };
+  var fakeReq = b.testing.mockReq({
+    ip:        "10.0.0.5",
+    userAgent: "tester/1.0",
+    requestId: "req-42",
+    method:    "POST",
+    url:       "/admin/notify",
+  });
   await n.send({ channel: "test", message: { text: "hi" }, req: fakeReq });
-  var actions = captured.map(function (e) { return e.action; });
-  check("audit emits notify.send.success",    actions.indexOf("notify.send.success") !== -1);
-  var ev = captured.find(function (e) { return e.action === "notify.send.success"; });
+  var ev = audit.byAction("notify.send.success")[0];
+  check("audit emits notify.send.success",    !!ev);
   check("audit carries 5 W's via extractActorContext",
         ev.actor.ip === "10.0.0.5" &&
         ev.actor.userAgent === "tester/1.0" &&
@@ -315,8 +314,7 @@ async function testAuditSuccess() {
 }
 
 async function testAuditFailureWithCause() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var audit = b.testing.captureAudit();
   var transport = {
     name: "broken",
     send: async function () {
@@ -327,30 +325,28 @@ async function testAuditFailureWithCause() {
   };
   var n = b.notify.create({
     channels: { broken: { transport: transport, retry: { maxAttempts: 1 } } },
-    audit:    auditShim,
+    audit:    audit,
   });
   try { await n.send({ channel: "broken", message: { x: 1 } }); } catch (_e) {}
-  var actions = captured.map(function (e) { return e.action; });
-  check("failure audit emitted",              actions.indexOf("notify.send.failure") !== -1);
-  var ev = captured.find(function (e) { return e.action === "notify.send.failure"; });
+  var ev = audit.byAction("notify.send.failure")[0];
+  check("failure audit emitted",              !!ev);
   check("failure audit outcome=failure",      ev.outcome === "failure");
   check("failure audit captures cause message",
         ev.metadata.message_ === "nope");
 }
 
 async function testAuditOptOuts() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var audit = b.testing.captureAudit();
   var test = b.notify.transports.test();
   var n = b.notify.create({
     channels:     { test: test },
-    audit:        auditShim,
+    audit:        audit,
     auditSuccess: false,
     auditFailures: false,
   });
   await n.send({ channel: "test", message: { x: 1 } });
   check("auditSuccess: false suppresses success audit",
-        captured.length === 0);
+        audit.captured.length === 0);
 
   // Even with auditFailures: false, observability still fires (just not the audit chain)
   var transport = {
@@ -359,23 +355,22 @@ async function testAuditOptOuts() {
   };
   var n2 = b.notify.create({
     channels:     { x: { transport: transport, retry: { maxAttempts: 1 } } },
-    audit:        auditShim,
+    audit:        audit,
     auditFailures: false,
   });
   try { await n2.send({ channel: "x", message: { y: 1 } }); } catch (_e) {}
   check("auditFailures: false suppresses failure audit",
-        captured.filter(function (e) { return e.action === "notify.send.failure"; }).length === 0);
+        audit.byAction("notify.send.failure").length === 0);
 }
 
 // ---- Redaction via b.redact.redact ----
 
 async function testRedactionViaBRedact() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var audit = b.testing.captureAudit();
   var test = b.notify.transports.test();
   var n = b.notify.create({
     channels: { test: test },
-    audit:    auditShim,
+    audit:    audit,
   });
   await n.send({
     channel: "test",
@@ -387,22 +382,21 @@ async function testRedactionViaBRedact() {
       password: "secret123",
     },
   });
-  var ev = captured.find(function (e) { return e.action === "notify.send.success"; });
+  var ev = audit.byAction("notify.send.success")[0];
   check("audit metadata.message has password redacted (b.redact applied)",
         ev.metadata.message.password !== "secret123");
 }
 
 async function testCustomRedactor() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var audit = b.testing.captureAudit();
   var test = b.notify.transports.test();
   var n = b.notify.create({
     channels: { test: test },
-    audit:    auditShim,
+    audit:    audit,
     redact:   function (m) { return { _scrubbed: true }; },
   });
   await n.send({ channel: "test", message: { secret: "x" } });
-  var ev = captured.find(function (e) { return e.action === "notify.send.success"; });
+  var ev = audit.byAction("notify.send.success")[0];
   check("custom redact fn used in audit metadata",
         ev.metadata.message._scrubbed === true);
 }
@@ -583,27 +577,22 @@ async function testCustomTransportObject() {
 // ---- Observability via b.observability.tap (span+counter) ----
 
 async function testObservabilityEmission() {
-  var captured = [];
-  var originalTap = b.metrics.tap;
-  b.metrics.tap = function (name, value, labels) {
-    captured.push({ name: name, labels: labels || {} });
-  };
+  var cap = b.testing.captureMetricsTap();
   try {
     var test = b.notify.transports.test();
     var n = b.notify.create({ channels: { test: test } });
     await n.send({ channel: "test", message: { x: 1 } });
   } finally {
-    b.metrics.tap = originalTap;
+    cap.restore();
   }
-  var names = captured.map(function (e) { return e.name; });
   check("emits notify.send (via observability.tap)",
-        names.indexOf("notify.send") !== -1);
+        cap.byName("notify.send").length > 0);
   check("emits notify.send.attempt",
-        names.indexOf("notify.send.attempt") !== -1);
+        cap.byName("notify.send.attempt").length > 0);
   check("emits notify.send.success",
-        names.indexOf("notify.send.success") !== -1);
+        cap.byName("notify.send.success").length > 0);
   // The notify.send tap event should carry channel label
-  var sendEvt = captured.find(function (e) { return e.name === "notify.send"; });
+  var sendEvt = cap.byName("notify.send")[0];
   check("notify.send labels include channel",
         sendEvt && sendEvt.labels.channel === "test");
 }

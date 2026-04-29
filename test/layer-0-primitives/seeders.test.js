@@ -603,22 +603,21 @@ async function testAuditAppliedOn() {
       dev: { "0001-a.js": _seedSource("a", { description: "test seed" }) },
     });
     try {
-      var auditCaptured = [];
-      var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+      var audit = b.testing.captureAudit();
       var runner = b.seeders.create({
         dir:   tree.seedsDir,
-        audit: auditShim,
+        audit: audit,
       });
-      var fakeReq = {
-        ip:      "10.0.0.5",
-        headers: { "user-agent": "tester/1.0", "x-request-id": "req-42" },
-        method:  "POST",
-        url:     "/admin/seed/run",
-      };
+      var fakeReq = b.testing.mockReq({
+        ip:        "10.0.0.5",
+        userAgent: "tester/1.0",
+        requestId: "req-42",
+        method:    "POST",
+        url:       "/admin/seed/run",
+      });
       await runner.run({ env: "dev", req: fakeReq });
-      var actions = auditCaptured.map(function (e) { return e.action; });
-      check("default: seeders.applied audited",  actions.indexOf("seeders.applied") !== -1);
-      var ev = auditCaptured.find(function (e) { return e.action === "seeders.applied"; });
+      var ev = audit.byAction("seeders.applied")[0];
+      check("default: seeders.applied audited",  !!ev);
       check("audit carries 5 W's via extractActorContext",
             !!ev &&
             ev.actor.ip === "10.0.0.5" &&
@@ -644,17 +643,15 @@ async function testAuditAppliedOptOut() {
       dev: { "0001-a.js": _seedSource("a") },
     });
     try {
-      var auditCaptured = [];
-      var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+      var audit = b.testing.captureAudit();
       var runner = b.seeders.create({
         dir:           tree.seedsDir,
-        audit:         auditShim,
+        audit:         audit,
         auditApplied:  false,
       });
       await runner.run({ env: "dev" });
-      var actions = auditCaptured.map(function (e) { return e.action; });
       check("opt-out: seeders.applied NOT emitted when auditApplied=false",
-            actions.indexOf("seeders.applied") === -1);
+            audit.byAction("seeders.applied").length === 0);
     } finally {
       _cleanupTree(tree);
     }
@@ -671,17 +668,14 @@ async function testAuditFailedOn() {
       dev: { "0001-bad.js": _seedSource("bad", { throws: "boom" }) },
     });
     try {
-      var auditCaptured = [];
-      var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+      var audit = b.testing.captureAudit();
       var runner = b.seeders.create({
         dir:   tree.seedsDir,
-        audit: auditShim,
+        audit: audit,
       });
       try { await runner.run({ env: "dev" }); } catch (_e) {}
-      var actions = auditCaptured.map(function (e) { return e.action; });
-      check("default: seeders.failed audited on error",
-            actions.indexOf("seeders.failed") !== -1);
-      var ev = auditCaptured.find(function (e) { return e.action === "seeders.failed"; });
+      var ev = audit.byAction("seeders.failed")[0];
+      check("default: seeders.failed audited on error",  !!ev);
       check("failed audit outcome=failure",
             !!ev && ev.outcome === "failure");
       check("failed audit metadata carries cause message",
@@ -702,19 +696,17 @@ async function testAuditForceApplied() {
       dev: { "0001-x.js": _seedSource("x") },
     });
     try {
-      var auditCaptured = [];
-      var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+      var audit = b.testing.captureAudit();
       var runner = b.seeders.create({
         dir:   tree.seedsDir,
-        audit: auditShim,
+        audit: audit,
       });
       await runner.run({ env: "dev" });
-      auditCaptured.length = 0;
+      audit.clear();
       await runner.run({ env: "dev", force: true });
-      var actions = auditCaptured.map(function (e) { return e.action; });
       check("force re-apply emits seeders.force_applied (distinct from applied)",
-            actions.indexOf("seeders.force_applied") !== -1 &&
-            actions.indexOf("seeders.applied") === -1);
+            audit.byAction("seeders.force_applied").length > 0 &&
+            audit.byAction("seeders.applied").length === 0);
     } finally {
       _cleanupTree(tree);
     }
@@ -736,22 +728,17 @@ async function testObservabilityEmission() {
       },
     });
     try {
-      var captured = [];
-      var originalTap = b.metrics.tap;
-      b.metrics.tap = function (name, value, labels) {
-        captured.push({ name: name, labels: labels || {} });
-      };
+      var cap = b.testing.captureMetricsTap();
       try {
         var runner = b.seeders.create({ dir: tree.seedsDir });
         await runner.run({ env: "dev" });
       } finally {
-        b.metrics.tap = originalTap;
+        cap.restore();
       }
-      var names = captured.map(function (e) { return e.name; });
-      check("emits seeders.run.start",          names.indexOf("seeders.run.start") !== -1);
-      check("emits seeders.applied",            names.indexOf("seeders.applied") !== -1);
-      check("emits seeders.run.completed",      names.indexOf("seeders.run.completed") !== -1);
-      var startEvt = captured.find(function (e) { return e.name === "seeders.run.start"; });
+      check("emits seeders.run.start",          cap.byName("seeders.run.start").length > 0);
+      check("emits seeders.applied",            cap.byName("seeders.applied").length > 0);
+      check("emits seeders.run.completed",      cap.byName("seeders.run.completed").length > 0);
+      var startEvt = cap.byName("seeders.run.start")[0];
       check("seeders.run.start labels carry env + count",
             !!startEvt && startEvt.labels.env === "dev" && startEvt.labels.count === 2);
     } finally {

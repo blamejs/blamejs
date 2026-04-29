@@ -115,17 +115,18 @@ async function testHmacUnknownKid() {
 // ---- Timestamp window ----
 
 async function testTimestampExpired() {
-  var fakeNow = 2_000_000_000_000;     // fixed
+  var clk = b.testing.fakeClock(2_000_000_000_000);
   var s = b.webhook.signer({
     algo: "hmac-sha3-512",
     keys: { v1: "s" },
-    now: function () { return fakeNow; },
+    now: clk.now,
   });
+  var future = b.testing.fakeClock(clk.ms + C.TIME.minutes(5));
   var v = b.webhook.verifier({
     algo: "hmac-sha3-512",
     keys: { v1: "s" },
     toleranceMs: C.TIME.minutes(1),
-    now: function () { return fakeNow + C.TIME.minutes(5); },
+    now: future.now,
   });
   var signed = s.sign("body");
   var threw = null;
@@ -135,17 +136,18 @@ async function testTimestampExpired() {
 }
 
 async function testTimestampFuture() {
-  var fakeNow = 2_000_000_000_000;
+  var clk = b.testing.fakeClock(2_000_000_000_000);
+  var signerClk = b.testing.fakeClock(clk.ms + C.TIME.minutes(10));
   var s = b.webhook.signer({
     algo: "hmac-sha3-512",
     keys: { v1: "s" },
-    now: function () { return fakeNow + C.TIME.minutes(10); },
+    now: signerClk.now,
   });
   var v = b.webhook.verifier({
     algo: "hmac-sha3-512",
     keys: { v1: "s" },
     clockSkewMs: C.TIME.minutes(1),
-    now: function () { return fakeNow; },
+    now: clk.now,
   });
   var signed = s.sign("body");
   var threw = null;

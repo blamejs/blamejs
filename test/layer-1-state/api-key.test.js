@@ -128,20 +128,20 @@ async function testRevoke() {
 // ---- Expiry ----
 
 async function testExpired() {
-  var fakeNow = 2_000_000_000_000;
+  var clk = b.testing.fakeClock(2_000_000_000_000);
   var keys = b.apiKey.create({
     namespace: "live",
-    clock: function () { return fakeNow; },
+    clock: clk.now,
   });
-  var issued = await keys.issue({ ownerId: "u1", expiresAt: fakeNow - C.TIME.seconds(1) });
+  var issued = await keys.issue({ ownerId: "u1", expiresAt: clk.ms - C.TIME.seconds(1) });
   var result = await keys.verify(issued.key);
   check("verify: expired key returns null", result === null);
 
   var keysFuture = b.apiKey.create({
     namespace: "live2",
-    clock: function () { return fakeNow; },
+    clock: clk.now,
   });
-  var future = await keysFuture.issue({ ownerId: "u1", expiresAt: fakeNow + C.TIME.minutes(1) });
+  var future = await keysFuture.issue({ ownerId: "u1", expiresAt: clk.ms + C.TIME.minutes(1) });
   var fresh = await keysFuture.verify(future.key);
   check("verify: not-yet-expired returns record", fresh !== null);
 }
@@ -296,11 +296,10 @@ async function testTrackLastUsedAt() {
 }
 
 async function testGracefulRotation() {
-  var fakeNow = 4_000_000_000_000;
-  var clockState = { current: fakeNow };
+  var clk = b.testing.fakeClock(4_000_000_000_000);
   var keys = b.apiKey.create({
     namespace: "graceful",
-    clock: function () { return clockState.current; },
+    clock: clk.now,
   });
   var issued = await keys.issue({ ownerId: "u1" });
   var rotated = await keys.rotate(issued.id, { graceful: true });
@@ -321,7 +320,7 @@ async function testGracefulRotation() {
         newWorks.usedSecondary === false);
 
   // After grace expires, old stops working but new keeps going
-  clockState.current = rotated.secondaryExpiresAt + C.TIME.seconds(1);
+  clk.set(rotated.secondaryExpiresAt + C.TIME.seconds(1));
   var oldExpired = await keys.verify(issued.key);
   check("graceful rotate: old secret stops after grace",
         oldExpired === null);
@@ -331,18 +330,17 @@ async function testGracefulRotation() {
 }
 
 async function testGracefulRotationExplicitMs() {
-  var fakeNow = 4_500_000_000_000;
-  var clockState = { current: fakeNow };
+  var clk = b.testing.fakeClock(4_500_000_000_000);
   var keys = b.apiKey.create({
     namespace: "graceful-explicit",
-    clock: function () { return clockState.current; },
+    clock: clk.now,
   });
   var issued = await keys.issue({ ownerId: "u1" });
   var rotated = await keys.rotate(issued.id, { gracePeriodMs: C.TIME.minutes(1) });
   check("graceful rotate: explicit gracePeriodMs honored",
         rotated.gracePeriodMs === C.TIME.minutes(1));
   check("graceful rotate: secondaryExpiresAt = now + 60s",
-        rotated.secondaryExpiresAt === fakeNow + C.TIME.minutes(1));
+        rotated.secondaryExpiresAt === clk.ms + C.TIME.minutes(1));
 }
 
 async function testHardRotateClearsSecondary() {
@@ -372,19 +370,18 @@ async function testHardRotateClearsSecondary() {
 // ---- purgeExpired ----
 
 async function testPurgeExpired() {
-  var fakeNow = 3_000_000_000_000;
-  var clock = { current: fakeNow };
+  var clk = b.testing.fakeClock(3_000_000_000_000);
   var keys = b.apiKey.create({
     namespace: "purge",
     purgeAfterMs: C.TIME.minutes(1),
-    clock: function () { return clock.current; },
+    clock: clk.now,
   });
-  var fresh = await keys.issue({ ownerId: "u1", expiresAt: fakeNow + C.TIME.hours(1) });
-  var oldExpired = await keys.issue({ ownerId: "u2", expiresAt: fakeNow - C.TIME.minutes(5) });
+  var fresh = await keys.issue({ ownerId: "u1", expiresAt: clk.ms + C.TIME.hours(1) });
+  var oldExpired = await keys.issue({ ownerId: "u2", expiresAt: clk.ms - C.TIME.minutes(5) });
   var oldRevoked = await keys.issue({ ownerId: "u3" });
   await keys.revoke(oldRevoked.id);
   // Fast-forward
-  clock.current = fakeNow + C.TIME.minutes(10);
+  clk.advance(C.TIME.minutes(10));
 
   var deleted = await keys.purgeExpired();
   check("purgeExpired: deletes expired + revoked old rows", deleted >= 2);
@@ -450,29 +447,27 @@ async function testIssueTierA() {
 // ---- Audit emission ----
 
 async function testPurgeAuditEmission() {
-  var fakeNow = 5_000_000_000_000;
-  var clockState = { current: fakeNow };
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var clk = b.testing.fakeClock(5_000_000_000_000);
+  var audit = b.testing.captureAudit();
   var keys = b.apiKey.create({
     namespace: "purge-audit",
     purgeAfterMs: C.TIME.minutes(1),
-    audit: auditShim,
-    clock: function () { return clockState.current; },
+    audit: audit,
+    clock: clk.now,
   });
-  var k1 = await keys.issue({ ownerId: "u1", expiresAt: fakeNow - C.TIME.minutes(5) });
+  var k1 = await keys.issue({ ownerId: "u1", expiresAt: clk.ms - C.TIME.minutes(5) });
   var k2 = await keys.issue({ ownerId: "u2" });
   await keys.revoke(k2.id);
   // Fast-forward so both rows are past purgeAfterMs
-  clockState.current = fakeNow + C.TIME.minutes(10);
+  clk.advance(C.TIME.minutes(10));
 
   // Drain audit captures from the issue/revoke setup so we only assert
   // on the purge emission.
-  captured.length = 0;
+  audit.clear();
   var deleted = await keys.purgeExpired();
   check("purge: returned count matches",      deleted === 2);
 
-  var purgeEvents = captured.filter(function (e) { return e.action === "apikey.purge"; });
+  var purgeEvents = audit.byAction("apikey.purge");
   check("purge: emits apikey.purge audit",    purgeEvents.length === 1);
   check("purge: audit metadata.count matches", purgeEvents[0].metadata.count === 2);
   check("purge: audit metadata has purgedIds array",
@@ -489,29 +484,26 @@ async function testPurgeAuditEmission() {
 }
 
 async function testFiveWsAuditPropagation() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
-  var keys = b.apiKey.create({ namespace: "five-ws", audit: auditShim });
+  var audit = b.testing.captureAudit();
+  var keys = b.apiKey.create({ namespace: "five-ws", audit: audit });
 
   // Simulate a request with all 5 W's populated
-  var fakeReq = {
-    ip: "203.0.113.42",
-    headers: {
-      "user-agent": "test-client/1.0",
-      "x-request-id": "req-abc-123",
-    },
-    sessionId: "sess-xyz",
-    method: "POST",
-    url: "/admin/keys/issue",
-    user: { id: "admin-7" },
-  };
+  var fakeReq = b.testing.mockReq({
+    ip:        "203.0.113.42",
+    userAgent: "test-client/1.0",
+    requestId: "req-abc-123",
+    method:    "POST",
+    url:       "/admin/keys/issue",
+  });
+  fakeReq.sessionId = "sess-xyz";
+  fakeReq.user      = { id: "admin-7" };
 
-  captured.length = 0;
+  audit.clear();
   var issued = await keys.issue({
     ownerId: "u1",
     req: fakeReq,
   });
-  var issueEvent = captured.find(function (e) { return e.action === "apikey.issue"; });
+  var issueEvent = audit.byAction("apikey.issue")[0];
   check("5 W's: issue audit has actor",
         issueEvent && issueEvent.actor && typeof issueEvent.actor === "object");
   check("5 W's: issue actor.userId (WHO)",      issueEvent.actor.userId === "u1");
@@ -523,10 +515,10 @@ async function testFiveWsAuditPropagation() {
   check("5 W's: issue actor.route",             issueEvent.actor.route === "/admin/keys/issue");
 
   // Verify path also propagates context
-  captured.length = 0;
+  audit.clear();
   var verifyReq = Object.assign({}, fakeReq, { url: "/api/data", method: "GET" });
   await keys.verify(issued.key, { req: verifyReq });
-  var verifyEvent = captured.find(function (e) { return e.action === "apikey.verify"; });
+  var verifyEvent = audit.byAction("apikey.verify")[0];
   check("5 W's: verify audit has WHO (ownerId from row)",
         verifyEvent.actor.userId === "u1");
   check("5 W's: verify audit has WHERE (ip)",
@@ -537,23 +529,23 @@ async function testFiveWsAuditPropagation() {
         verifyEvent.actor.method === "GET");
 
   // List + getById propagate too
-  captured.length = 0;
+  audit.clear();
   await keys.listForOwner("u1", { req: fakeReq });
   await keys.getById(issued.id, { req: fakeReq });
-  var listEvent = captured.find(function (e) { return e.action === "apikey.list"; });
-  var getEvent  = captured.find(function (e) { return e.action === "apikey.get"; });
+  var listEvent = audit.byAction("apikey.list")[0];
+  var getEvent  = audit.byAction("apikey.get")[0];
   check("5 W's: list audit has full context",
         listEvent.actor.ip === "203.0.113.42" && listEvent.actor.requestId === "req-abc-123");
   check("5 W's: get audit has full context",
         getEvent.actor.ip === "203.0.113.42" && getEvent.actor.requestId === "req-abc-123");
 
   // Explicit context override beats req fields
-  captured.length = 0;
+  audit.clear();
   await keys.revoke(issued.id, {
     req: fakeReq,
     context: { ip: "10.0.0.1", requestId: "manual-override" },
   });
-  var revokeEvent = captured.find(function (e) { return e.action === "apikey.revoke"; });
+  var revokeEvent = audit.byAction("apikey.revoke")[0];
   check("5 W's: explicit context.ip overrides req.ip",
         revokeEvent.actor.ip === "10.0.0.1");
   check("5 W's: explicit context.requestId overrides",
@@ -563,24 +555,22 @@ async function testFiveWsAuditPropagation() {
 }
 
 async function testReadAccessAudit() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
-  var keys = b.apiKey.create({ namespace: "read-audit", audit: auditShim });
+  var audit = b.testing.captureAudit();
+  var keys = b.apiKey.create({ namespace: "read-audit", audit: audit });
   var k1 = await keys.issue({ ownerId: "u1" });
   var k2 = await keys.issue({ ownerId: "u1" });
 
-  captured.length = 0;             // drain issue events
+  audit.clear();             // drain issue events
   await keys.getById(k1.id);
   await keys.getById("0000000000000000");
   await keys.listForOwner("u1");
 
-  var actions = captured.map(function (e) { return e.action; });
   check("read audit: getById emits apikey.get",
-        actions.indexOf("apikey.get") !== -1);
+        audit.byAction("apikey.get").length > 0);
   check("read audit: listForOwner emits apikey.list",
-        actions.indexOf("apikey.list") !== -1);
+        audit.byAction("apikey.list").length > 0);
 
-  var getEvents = captured.filter(function (e) { return e.action === "apikey.get"; });
+  var getEvents = audit.byAction("apikey.get");
   check("read audit: get includes both calls (hit + miss)",
         getEvents.length === 2);
   check("read audit: hit event has found=true",
@@ -588,7 +578,7 @@ async function testReadAccessAudit() {
   check("read audit: miss event has found=false",
         getEvents.some(function (e) { return e.metadata && e.metadata.found === false; }));
 
-  var listEvent = captured.find(function (e) { return e.action === "apikey.list"; });
+  var listEvent = audit.byAction("apikey.list")[0];
   check("read audit: list metadata has ownerId",
         listEvent.metadata.ownerId === "u1");
   check("read audit: list metadata has count",
@@ -601,42 +591,33 @@ async function testReadAccessAudit() {
 }
 
 async function testReadAuditOptOut() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
+  var audit = b.testing.captureAudit();
   var keys = b.apiKey.create({
     namespace: "read-audit-off",
-    audit: auditShim,
+    audit: audit,
     auditSuccess: false,            // operator opt-out for extreme volume
   });
   var issued = await keys.issue({ ownerId: "u1" });
-  captured.length = 0;
+  audit.clear();
   await keys.getById(issued.id);
   await keys.listForOwner("u1");
-  var actions = captured.map(function (e) { return e.action; });
-  check("opt-out: getById not audited",   actions.indexOf("apikey.get") === -1);
-  check("opt-out: listForOwner not audited", actions.indexOf("apikey.list") === -1);
+  check("opt-out: getById not audited",   audit.byAction("apikey.get").length === 0);
+  check("opt-out: listForOwner not audited", audit.byAction("apikey.list").length === 0);
 }
 
 async function testVerifySuccessAudit() {
-  var captured = [];
-  var auditShim = { safeEmit: function (e) { captured.push(e); } };
-  var keys = b.apiKey.create({ namespace: "verify-audit", audit: auditShim });
+  var audit = b.testing.captureAudit();
+  var keys = b.apiKey.create({ namespace: "verify-audit", audit: audit });
   var issued = await keys.issue({ ownerId: "u1" });
-  captured.length = 0;
+  audit.clear();
   await keys.verify(issued.key);
-  var actions = captured.map(function (e) { return e.action; });
-  check("verify success now audited by default",
-        actions.indexOf("apikey.verify") !== -1);
-  var verifyEvent = captured.find(function (e) { return e.action === "apikey.verify"; });
+  var verifyEvent = audit.byAction("apikey.verify")[0];
+  check("verify success now audited by default", !!verifyEvent);
   check("verify success outcome label",        verifyEvent.outcome === "success");
 }
 
 async function testReadObservability() {
-  var captured = [];
-  var originalTap = b.metrics.tap;
-  b.metrics.tap = function (name, value, labels) {
-    captured.push({ name: name, value: value, labels: labels || {} });
-  };
+  var cap = b.testing.captureMetricsTap();
   try {
     var keys = b.apiKey.create({ namespace: "read-obs" });
     var issued = await keys.issue({ ownerId: "u1" });
@@ -645,43 +626,38 @@ async function testReadObservability() {
     await keys.listForOwner("u1");
     await keys.purgeExpired();                        // 0 rows but should emit
   } finally {
-    b.metrics.tap = originalTap;
+    cap.restore();
   }
-  var names = captured.map(function (c) { return c.name; });
-  check("emits apikey.get",                   names.indexOf("apikey.get") !== -1);
-  check("emits apikey.list",                  names.indexOf("apikey.list") !== -1);
-  check("emits apikey.purge (zero-count)",    names.indexOf("apikey.purge") !== -1);
+  check("emits apikey.get",                   cap.byName("apikey.get").length > 0);
+  check("emits apikey.list",                  cap.byName("apikey.list").length > 0);
+  check("emits apikey.purge (zero-count)",    cap.byName("apikey.purge").length > 0);
 
-  var getEvents = captured.filter(function (c) { return c.name === "apikey.get"; });
+  var getEvents = cap.byName("apikey.get");
   var hasFound = getEvents.some(function (e) { return e.labels.found === true; });
   var hasMiss  = getEvents.some(function (e) { return e.labels.found === false; });
   check("apikey.get emits found=true label",  hasFound === true);
   check("apikey.get emits found=false label", hasMiss === true);
 
-  var listEvent = captured.find(function (c) { return c.name === "apikey.list"; });
+  var listEvent = cap.byName("apikey.list")[0];
   check("apikey.list has count label",
         listEvent && typeof listEvent.labels.count === "number");
 }
 
 async function testAuditEmission() {
-  // Build a capture-only audit shim with the same surface as b.audit
-  var captured = [];
-  var auditShim = {
-    safeEmit: function (event) { captured.push(event); },
-  };
-  var keys = b.apiKey.create({ namespace: "audit-test", audit: auditShim });
+  // Build a capture-only audit via the framework's testing primitive
+  var audit = b.testing.captureAudit();
+  var keys = b.apiKey.create({ namespace: "audit-test", audit: audit });
   var issued = await keys.issue({ ownerId: "u1", scopes: ["x"] });
   await keys.revoke(issued.id);
   // Fresh issue for rotate
   var second = await keys.issue({ ownerId: "u2" });
   await keys.rotate(second.id);
 
-  var actions = captured.map(function (e) { return e.action; });
-  check("audit: apikey.issue emitted",     actions.indexOf("apikey.issue") !== -1);
-  check("audit: apikey.revoke emitted",    actions.indexOf("apikey.revoke") !== -1);
-  check("audit: apikey.rotate emitted",    actions.indexOf("apikey.rotate") !== -1);
+  check("audit: apikey.issue emitted",     audit.byAction("apikey.issue").length > 0);
+  check("audit: apikey.revoke emitted",    audit.byAction("apikey.revoke").length > 0);
+  check("audit: apikey.rotate emitted",    audit.byAction("apikey.rotate").length > 0);
 
-  var issueEvent = captured.find(function (e) { return e.action === "apikey.issue"; });
+  var issueEvent = audit.byAction("apikey.issue")[0];
   check("audit: issue event has resource",
         issueEvent.resource && issueEvent.resource.kind === "apikey");
   check("audit: issue event has scope metadata",

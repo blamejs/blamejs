@@ -683,11 +683,7 @@ function testMiddlewareNeverCrashesOnBadHeader() {
 // ---- Observability ----
 
 function testObservabilityEmission() {
-  var captured = [];
-  var originalTap = b.metrics.tap;
-  b.metrics.tap = function (name, value, labels) {
-    captured.push({ name: name, labels: labels || {} });
-  };
+  var cap = b.testing.captureMetricsTap();
   try {
     var i = b.i18n.create({
       defaultLocale: "en",
@@ -702,22 +698,18 @@ function testObservabilityEmission() {
     i.formatNumber(1234.5);           // → i18n.format.created (number)
     i.formatNumber(1234.5);           // cache hit, no new event
   } finally {
-    b.metrics.tap = originalTap;
+    cap.restore();
   }
-  var names = captured.map(function (e) { return e.name; });
   check("emits i18n.missing on missing key",
-        names.indexOf("i18n.missing") !== -1);
+        cap.byName("i18n.missing").length > 0);
   check("emits i18n.miss.fallback on cross-locale resolution",
-        names.indexOf("i18n.miss.fallback") !== -1);
+        cap.byName("i18n.miss.fallback").length > 0);
   check("emits i18n.format.created on first formatter alloc",
-        names.indexOf("i18n.format.created") !== -1);
+        cap.byName("i18n.format.created").length > 0);
 
   // Cache hit on second formatNumber call: only ONE format.created event
-  var formatCreatedCount = captured.filter(function (e) {
-    return e.name === "i18n.format.created";
-  }).length;
   check("formatter cached — only one i18n.format.created on repeat call",
-        formatCreatedCount === 1);
+        cap.byName("i18n.format.created").length === 1);
 }
 
 // ---- Operator-supplied observability shape ----

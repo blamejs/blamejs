@@ -151,50 +151,50 @@ async function testGetSetDel() {
 // ---- TTL expiration ----
 
 async function testTtlExpiration() {
-  var fakeNow = 1_000_000;
+  var clk = b.testing.fakeClock(1_000_000);
   var c = b.cache.create({
     namespace: "ttl",
     ttlMs:     100,
-    clock:     function () { return fakeNow; },
+    clock:     clk.now,
   });
   await c.set("k", "v");
   check("fresh entry — get returns",         (await c.get("k")) === "v");
-  fakeNow += 50;
+  clk.advance(50);
   check("within ttl — still cached",         (await c.get("k")) === "v");
-  fakeNow += 60;     // total 110ms — past ttl
+  clk.advance(60);     // total 110ms — past ttl
   check("past ttl — get returns undefined",  (await c.get("k")) === undefined);
   check("past ttl — size now 0 (lazy purge)", (await c.size()) === 0);
   await c.close();
 }
 
 async function testPerCallTtlOverride() {
-  var fakeNow = 1_000_000;
+  var clk = b.testing.fakeClock(1_000_000);
   var c = b.cache.create({
     namespace: "ttl-override",
     ttlMs:     b.constants.TIME.minutes(5),
-    clock:     function () { return fakeNow; },
+    clock:     clk.now,
   });
   await c.set("short", "v", { ttlMs: 10 });
-  fakeNow += 20;
+  clk.advance(20);
   check("per-call ttlMs overrides instance default",
         (await c.get("short")) === undefined);
 
   await c.set("long", "v");   // uses instance default 5min
-  fakeNow += b.constants.TIME.minutes(1);
+  clk.advance(b.constants.TIME.minutes(1));
   check("instance default still applies to other keys",
         (await c.get("long")) === "v");
   await c.close();
 }
 
 async function testInfinityTtl() {
-  var fakeNow = 1_000_000;
+  var clk = b.testing.fakeClock(1_000_000);
   var c = b.cache.create({
     namespace: "infinity",
     ttlMs:     1,
-    clock:     function () { return fakeNow; },
+    clock:     clk.now,
   });
   await c.set("k", "v", { ttlMs: Infinity });
-  fakeNow += b.constants.TIME.days(365);
+  clk.advance(b.constants.TIME.days(365));
   check("Infinity ttl — entry survives massive clock advance",
         (await c.get("k")) === "v");
   await c.close();
@@ -256,16 +256,16 @@ async function testHasDoesNotBumpRecency() {
 // ---- Sweep timer ----
 
 async function testSweepTimer() {
-  var fakeNow = 1_000_000;
+  var clk = b.testing.fakeClock(1_000_000);
   var c = b.cache.create({
     namespace:        "sweep",
     ttlMs:            10,
     sweepIntervalMs:  1000,
-    clock:            function () { return fakeNow; },
+    clock:            clk.now,
   });
   await c.set("a", 1);
   await c.set("b", 2);
-  fakeNow += 100;
+  clk.advance(100);
   // Manually trigger sweep without waiting for interval — invoke the
   // backend's sweep cycle by calling size() (which doesn't sweep) and
   // checking that size reflects 0 live (lazy purge).
@@ -336,16 +336,16 @@ async function testWrapSingleFlightOptOut() {
 }
 
 async function testWrapPerCallTtl() {
-  var fakeNow = 1_000_000;
+  var clk = b.testing.fakeClock(1_000_000);
   var c = b.cache.create({
     namespace: "wrap-ttl",
     ttlMs:     b.constants.TIME.minutes(5),
-    clock:     function () { return fakeNow; },
+    clock:     clk.now,
   });
   var calls = 0;
   var fn = function () { calls++; return "v"; };
   await c.wrap("k", fn, { ttlMs: 10 });
-  fakeNow += 20;
+  clk.advance(20);
   await c.wrap("k", fn, { ttlMs: 10 });    // expired, recomputes
   check("wrap respects per-call ttlMs override (recomputed after short ttl)",
         calls === 2);
@@ -355,12 +355,12 @@ async function testWrapPerCallTtl() {
 // ---- Stale-while-revalidate ----
 
 async function testStaleWhileRevalidate() {
-  var fakeNow = 1_000_000;
+  var clk = b.testing.fakeClock(1_000_000);
   var c = b.cache.create({
     namespace:            "swr",
     ttlMs:                100,
     staleWhileRevalidate: true,
-    clock:                function () { return fakeNow; },
+    clock:                clk.now,
   });
   var version = 1;
   var fn = function () { return Promise.resolve("v" + version); };
@@ -368,7 +368,7 @@ async function testStaleWhileRevalidate() {
   check("SWR: first call returns fresh",     first === "v1");
 
   // Past soft TTL, before hard TTL: returns stale + triggers refresh
-  fakeNow += 150;     // 150 > 100ms soft, < 200ms hard
+  clk.advance(150);     // 150 > 100ms soft, < 200ms hard
   version = 2;
   var stale = await c.wrap("k", fn);
   check("SWR: past-soft returns stale value", stale === "v1");
@@ -377,7 +377,7 @@ async function testStaleWhileRevalidate() {
   await new Promise(function (r) { setImmediate(r); });
   await new Promise(function (r) { setImmediate(r); });
 
-  fakeNow += 1;       // small advance so backend doesn't think it's stale again
+  clk.advance(1);       // small advance so backend doesn't think it's stale again
   var fresh = await c.wrap("k", fn);
   check("SWR: subsequent call returns refreshed value",
         fresh === "v2");
@@ -387,52 +387,48 @@ async function testStaleWhileRevalidate() {
 // ---- Audit emission ----
 
 async function testAuditClearedOn() {
-  var auditCaptured = [];
-  var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+  var audit = b.testing.captureAudit();
   var c = b.cache.create({
     namespace: "audit-clear",
-    audit:     auditShim,
+    audit:     audit,
   });
   await c.set("k", "v");
   await c.clear();
-  var actions = auditCaptured.map(function (e) { return e.action; });
   check("default: cache.cleared audited when audit wired",
-        actions.indexOf("cache.cleared") !== -1);
+        audit.byAction("cache.cleared").length === 1);
   await c.close();
 }
 
 async function testAuditClearedOptOut() {
-  var auditCaptured = [];
-  var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+  var audit = b.testing.captureAudit();
   var c = b.cache.create({
     namespace:  "audit-clear-off",
-    audit:      auditShim,
+    audit:      audit,
     auditClear: false,
   });
   await c.set("k", "v");
   await c.clear();
-  var actions = auditCaptured.map(function (e) { return e.action; });
   check("opt-out: cache.cleared NOT emitted when auditClear=false",
-        actions.indexOf("cache.cleared") === -1);
+        audit.byAction("cache.cleared").length === 0);
   await c.close();
 }
 
 async function testAuditCarriesActorContext() {
-  var auditCaptured = [];
-  var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+  var audit = b.testing.captureAudit();
   var c = b.cache.create({
     namespace: "audit-actor",
-    audit:     auditShim,
+    audit:     audit,
   });
-  var fakeReq = {
-    ip:      "10.0.0.5",
-    headers: { "user-agent": "tester/1.0", "x-request-id": "req-42" },
-    method:  "POST",
-    url:     "/admin/cache/clear",
-  };
+  var fakeReq = b.testing.mockReq({
+    ip:        "10.0.0.5",
+    userAgent: "tester/1.0",
+    requestId: "req-42",
+    method:    "POST",
+    url:       "/admin/cache/clear",
+  });
   await c.set("k", "v");
   await c.clear({ req: fakeReq });
-  var clearedEvent = auditCaptured.find(function (e) { return e.action === "cache.cleared"; });
+  var clearedEvent = audit.byAction("cache.cleared")[0];
   check("audit carries WHO/WHERE/HOW from req via extractActorContext",
         !!clearedEvent &&
         clearedEvent.actor.ip === "10.0.0.5" &&
@@ -444,8 +440,7 @@ async function testAuditCarriesActorContext() {
 }
 
 async function testAuditBackendFailed() {
-  var auditCaptured = [];
-  var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+  var audit = b.testing.captureAudit();
   var failingBackend = {
     get:   function () { return Promise.reject(new Error("backend dead")); },
     set:   function () { return Promise.reject(new Error("backend dead")); },
@@ -457,20 +452,18 @@ async function testAuditBackendFailed() {
   var c = b.cache.create({
     namespace: "audit-fail",
     backend:   failingBackend,
-    audit:     auditShim,
+    audit:     audit,
   });
   var threw = false;
   try { await c.set("k", "v"); } catch (_e) { threw = true; }
   check("backend error propagates to caller", threw);
-  var actions = auditCaptured.map(function (e) { return e.action; });
   check("backend failure emits cache.backend.failed audit",
-        actions.indexOf("cache.backend.failed") !== -1);
+        audit.byAction("cache.backend.failed").length === 1);
   await c.close();
 }
 
 async function testAuditFailuresOptOut() {
-  var auditCaptured = [];
-  var auditShim = { safeEmit: function (e) { auditCaptured.push(e); } };
+  var audit = b.testing.captureAudit();
   var failingBackend = {
     get:   function () { return Promise.reject(new Error("dead")); },
     set:   function () { return Promise.reject(new Error("dead")); },
@@ -482,13 +475,12 @@ async function testAuditFailuresOptOut() {
   var c = b.cache.create({
     namespace:     "audit-fail-off",
     backend:       failingBackend,
-    audit:         auditShim,
+    audit:         audit,
     auditFailures: false,
   });
   try { await c.set("k", "v"); } catch (_e) {}
-  var actions = auditCaptured.map(function (e) { return e.action; });
   check("opt-out: cache.backend.failed NOT emitted when auditFailures=false",
-        actions.indexOf("cache.backend.failed") === -1);
+        audit.byAction("cache.backend.failed").length === 0);
   await c.close();
 }
 
@@ -531,11 +523,7 @@ async function testClosedState() {
 // ---- Observability ----
 
 async function testObservabilityEmission() {
-  var captured = [];
-  var originalTap = b.metrics.tap;
-  b.metrics.tap = function (name, value, labels) {
-    captured.push({ name: name, labels: labels || {} });
-  };
+  var cap = b.testing.captureMetricsTap();
   try {
     var c = b.cache.create({ namespace: "obs" });
     await c.set("k", "v");
@@ -544,21 +532,16 @@ async function testObservabilityEmission() {
     await c.del("k");
     await c.close();
   } finally {
-    b.metrics.tap = originalTap;
+    cap.restore();
   }
-  var names = captured.map(function (e) { return e.name; });
-  check("emits cache.set",                  names.indexOf("cache.set") !== -1);
-  check("emits cache.hit",                  names.indexOf("cache.hit") !== -1);
-  check("emits cache.miss",                 names.indexOf("cache.miss") !== -1);
-  check("emits cache.del",                  names.indexOf("cache.del") !== -1);
+  check("emits cache.set",                  cap.byName("cache.set").length > 0);
+  check("emits cache.hit",                  cap.byName("cache.hit").length > 0);
+  check("emits cache.miss",                 cap.byName("cache.miss").length > 0);
+  check("emits cache.del",                  cap.byName("cache.del").length > 0);
 }
 
 async function testObservabilityWrapCompute() {
-  var captured = [];
-  var originalTap = b.metrics.tap;
-  b.metrics.tap = function (name, value, labels) {
-    captured.push({ name: name, labels: labels || {} });
-  };
+  var cap = b.testing.captureMetricsTap();
   try {
     var c = b.cache.create({ namespace: "obs-wrap" });
     await c.wrap("k", function () { return Promise.resolve("v"); });
@@ -569,13 +552,12 @@ async function testObservabilityWrapCompute() {
     ]);
     await c.close();
   } finally {
-    b.metrics.tap = originalTap;
+    cap.restore();
   }
-  var names = captured.map(function (e) { return e.name; });
   check("wrap emits cache.wrap.compute",
-        names.indexOf("cache.wrap.compute") !== -1);
+        cap.byName("cache.wrap.compute").length > 0);
   check("wrap emits cache.wrap.singleflight.collapsed on concurrent calls",
-        names.indexOf("cache.wrap.singleflight.collapsed") !== -1);
+        cap.byName("cache.wrap.singleflight.collapsed").length > 0);
 }
 
 // ---- Cluster backend ----
@@ -631,16 +613,16 @@ async function testClusterTtlExpiration() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cache-"));
   try {
     await setupTestDb(tmpDir);
-    var fakeNow = 1_000_000;
+    var clk = b.testing.fakeClock(1_000_000);
     var c = b.cache.create({
       namespace: "cb-ttl",
       backend:   "cluster",
       ttlMs:     100,
-      clock:     function () { return fakeNow; },
+      clock:     clk.now,
     });
     await c.set("k", "v");
     check("cluster fresh entry returns",     (await c.get("k")) === "v");
-    fakeNow += 200;
+    clk.advance(200);
     check("cluster expired entry returns undefined",
           (await c.get("k")) === undefined);
     await c.close();

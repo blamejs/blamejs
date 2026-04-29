@@ -118,26 +118,21 @@ async function testNeedsRehash() {
 
 async function testObservabilityEmission() {
   var ch = b.credentialHash;
-  var captured = [];
-  var originalTap = b.metrics.tap;
-  b.metrics.tap = function (name, value, labels) {
-    captured.push({ name: name, value: value, labels: labels || {} });
-  };
+  var cap = b.testing.captureMetricsTap();
   try {
     var env = await ch.hash("emit-secret");
     await ch.verify("emit-secret", env);
     await ch.verify("WRONG", env);
   } finally {
-    b.metrics.tap = originalTap;
+    cap.restore();
   }
-  var names = captured.map(function (c) { return c.name; });
-  check("emits credentialHash.hash",       names.indexOf("credentialHash.hash") !== -1);
-  check("emits credentialHash.verify",     names.indexOf("credentialHash.verify") !== -1);
+  check("emits credentialHash.hash",       cap.byName("credentialHash.hash").length > 0);
+  check("emits credentialHash.verify",     cap.byName("credentialHash.verify").length > 0);
 
-  var hashEvent = captured.find(function (c) { return c.name === "credentialHash.hash"; });
+  var hashEvent = cap.byName("credentialHash.hash")[0];
   check("hash event has algo label",       hashEvent && hashEvent.labels.algo === "shake256");
 
-  var verifyEvents = captured.filter(function (c) { return c.name === "credentialHash.verify"; });
+  var verifyEvents = cap.byName("credentialHash.verify");
   var anySuccess = verifyEvents.some(function (e) { return e.labels.outcome === "success"; });
   var anyFailure = verifyEvents.some(function (e) { return e.labels.outcome === "failure"; });
   check("verify emits success outcome",    anySuccess === true);
