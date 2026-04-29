@@ -227,8 +227,12 @@ async function run() {
     assert("GET /production-essentials → 200", prod.statusCode === 200);
     assert("prod-essentials page covers exactly-once-globally scheduler",
            /exactly once globally/.test(prod.body) && /fencing token/.test(prod.body));
-    assert("prod-essentials page covers backup chain",
-           /b\.backup/.test(prod.body) && /chained/.test(prod.body));
+    assert("prod-essentials page covers backup primitive + chain",
+           /b\.backup/.test(prod.body) && /prev-hash chain|chain/i.test(prod.body));
+    assert("prod-essentials page documents backup encryption format",
+           /XChaCha20-Poly1305/.test(prod.body) && /Argon2id/.test(prod.body));
+    assert("prod-essentials page documents backup CLI surface",
+           /blamejs backup/.test(prod.body));
     assert("prod-essentials page covers ntpCheck",
            /b\.ntpCheck/.test(prod.body));
 
