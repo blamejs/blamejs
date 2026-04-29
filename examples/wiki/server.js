@@ -128,7 +128,26 @@ var SCHEMA = [
       // inherit these defaults; making any of them opt-in here
       // would teach the wrong lesson.
       requestId:       true,
-      securityHeaders: true,
+      securityHeaders: {
+        // Tighter CSP than the framework default — drop
+        // 'unsafe-inline' from style-src. The wiki ships zero inline
+        // styles or scripts; everything is in external files served
+        // from 'self'. cspNonce middleware (mounted later) injects
+        // 'nonce-XYZ' into script-src + style-src so operators
+        // adding inline content opt-in via a nonce attr — there is
+        // NO 'unsafe-inline' fallback.
+        csp:
+          "default-src 'self'; " +
+          "script-src 'self'; " +
+          "style-src 'self'; " +
+          "img-src 'self' data:; " +
+          "font-src 'self'; " +
+          "connect-src 'self'; " +
+          "frame-ancestors 'none'; " +
+          "base-uri 'self'; " +
+          "form-action 'self'; " +
+          "object-src 'none';",
+      },
       botGuard:        true,
       cors: {
         // Wiki serves itself only — no cross-origin browser app

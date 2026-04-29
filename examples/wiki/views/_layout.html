@@ -4,51 +4,60 @@
 <meta charset="utf-8">
 <title>{{ title }} &middot; blamejs</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'nonce-{{ cspNonce }}'">
-<style>
-  :root { --fg: #1a1a1a; --bg: #fafafa; --link: #0066cc; --muted: #666; --code-bg: #efefef; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 1rem; color: var(--fg); background: var(--bg); line-height: 1.5; }
-  header, nav, main, footer { padding: 1rem 0; }
-  header { border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
-  header h1 { margin: 0; font-size: 1.4rem; }
-  header h1 a { color: inherit; text-decoration: none; }
-  nav { border-bottom: 1px solid #eee; }
-  nav ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; }
-  nav a { color: var(--link); text-decoration: none; }
-  nav a:hover, a:focus { text-decoration: underline; }
-  a { color: var(--link); }
-  code, pre { background: var(--code-bg); padding: 0.1rem 0.3rem; border-radius: 3px; font-family: ui-monospace, SFMono-Regular, monospace; }
-  pre { padding: 0.75rem; overflow-x: auto; }
-  pre code { background: transparent; padding: 0; }
-  .muted { color: var(--muted); font-size: 0.9rem; }
-  .search { display: flex; gap: 0.5rem; }
-  .search input[type="search"] { padding: 0.4rem 0.6rem; border: 1px solid #ccc; border-radius: 3px; min-width: 16rem; }
-  .search button { padding: 0.4rem 0.8rem; }
-  footer { border-top: 1px solid #ddd; font-size: 0.9rem; color: var(--muted); margin-top: 2rem; }
-  .hits { list-style: none; padding: 0; }
-  .hits li { padding: 0.75rem 0; border-bottom: 1px solid #eee; }
-  .hits .snippet { color: var(--muted); margin: 0.25rem 0 0; }
-</style>
+<link rel="icon" type="image/svg+xml" href="/img/blamejs-logo.svg">
+<link rel="alternate icon" href="/img/blamejs-logo.png">
+<link rel="stylesheet" href="/wiki.css">
+<link rel="stylesheet" href="/vendor/prism.css">
+<meta name="description" content="blamejs — the Node framework that owns its stack. PQC-first crypto, audit chain, sealed storage, zero npm dependencies.">
 </head>
 <body>
-<header>
-  <h1><a href="/">blamejs</a></h1>
-  <form class="search" action="/search" method="get" role="search">
-    <input type="search" name="q" placeholder="Search the docs" value="{{ searchQuery }}" aria-label="Search">
-    <button type="submit">Search</button>
-  </form>
-</header>
-<nav aria-label="Concern groups">
-  <ul>
-    {{> nav }}
-  </ul>
-</nav>
-<main>
-  {% block content %}{% endblock %}
-</main>
-<footer>
-  <p>blamejs &middot; the Node framework that owns its stack &middot; <a href="https://github.com/blamejs/blamejs">github</a> &middot; <a href="https://blamejs.app">blamejs.app</a></p>
-  {% if user %}<p class="muted">Signed in as {{ user.email }} &middot; <a href="/admin">admin</a> &middot; <form method="post" action="/logout" style="display:inline"><input type="hidden" name="csrf" value="{{ csrfToken }}"><button type="submit" style="background:none;border:none;color:var(--link);cursor:pointer;text-decoration:underline">log out</button></form></p>{% else %}<p class="muted"><a href="/login">admin login</a></p>{% endif %}
-</footer>
+<div class="shell">
+
+  <aside class="rail" aria-label="Site navigation">
+    <div class="rail-brand">
+      <a href="/">
+        <img src="/img/blamejs-logo.svg" alt="blamejs">
+        <span>blamejs</span>
+      </a>
+    </div>
+
+    <form class="rail-search" action="/search" method="get" role="search">
+      <label for="rail-q" class="visually-hidden">Search</label>
+      <input id="rail-q" type="search" name="q" placeholder="Search the docs" value="{{ searchQuery }}">
+    </form>
+
+    <p class="rail-nav-title">Concern groups</p>
+    <ul class="rail-nav">
+      {{> nav }}
+    </ul>
+
+    <p class="rail-nav-title">External</p>
+    <ul class="rail-nav">
+      <li><a href="https://github.com/blamejs/blamejs">GitHub</a></li>
+      <li><a href="https://blamejs.app">blamejs.app</a></li>
+    </ul>
+
+    <div class="rail-foot">
+      {% if user %}
+        <p>Signed in as <strong>{{ user.email }}</strong></p>
+        <p><a href="/admin">Admin dashboard</a></p>
+        <form class="logout-form" method="post" action="/logout">
+          <input type="hidden" name="csrf" value="{{ csrfToken }}">
+          <button type="submit" class="btn">Log out</button>
+        </form>
+      {% else %}
+        <p><a href="/login">Admin login</a></p>
+      {% endif %}
+    </div>
+  </aside>
+
+  <main role="main">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+
+<script src="/vendor/prism.js"></script>
+<script src="/wiki.js"></script>
 </body>
 </html>

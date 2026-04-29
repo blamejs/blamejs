@@ -119,7 +119,20 @@ async function _bootApp() {
       rateLimit:   false,
       botGuard:    true,
       requestId:   true,
-      securityHeaders: true,
+      securityHeaders: {
+        // Strict CSP — no 'unsafe-inline'. Same as production server.js.
+        csp:
+          "default-src 'self'; " +
+          "script-src 'self'; " +
+          "style-src 'self'; " +
+          "img-src 'self' data:; " +
+          "font-src 'self'; " +
+          "connect-src 'self'; " +
+          "frame-ancestors 'none'; " +
+          "base-uri 'self'; " +
+          "form-action 'self'; " +
+          "object-src 'none';",
+      },
     },
     routes: function (router) {
       router.use(healthChecks.middleware());

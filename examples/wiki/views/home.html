@@ -1,14 +1,84 @@
 {% extends "_layout" %}
 {% block content %}
 <h1>blamejs</h1>
-<p>The Node framework that owns its stack.</p>
-<p>This site is the docs AND a working reference app — every page renders through the framework's own primitives. Pick a concern group from the navigation above to start.</p>
-<h2>Quick links</h2>
+<p>The Node framework that <strong>owns its stack</strong>. Zero npm runtime dependencies, post-quantum crypto from the start, sealed-by-default storage, audit chain on every operator action.</p>
+<p>This site is the docs <em>and</em> a working reference app — every page you read renders through the framework's own primitives.</p>
+
+<h2 id="quick-start">Quick start <a class="anchor" href="#quick-start">#</a></h2>
+<pre><code class="language-bash">npm install @blamejs/core
+node -e 'require("@blamejs/core").createApp({ dataDir: "./data" })'</code></pre>
+
+<p>Or browse the source layout of this very wiki for a full reference app:</p>
+
+<pre><code class="language-javascript">var b = require("@blamejs/core");
+var app = await b.createApp({
+  dataDir: "./data",
+  routes: function (router) {
+    router.get("/", function (req, res) {
+      b.render.htmlString(res, "&lt;h1&gt;Hello from blamejs&lt;/h1&gt;");
+    });
+  },
+});
+await app.listen({ port: 3000 });</code></pre>
+
+<aside class="callout">
+  <p class="callout-title">Note</p>
+  <p>blamejs targets Node.js Active LTS (24+). It uses <code>node:sqlite</code>, <code>Intl.PluralRules</code>, modern <code>crypto</code> primitives, and other recent built-ins. There is no transpilation step.</p>
+</aside>
+
+<h2 id="concern-groups">Concern groups <a class="anchor" href="#concern-groups">#</a></h2>
+<p>Pick the area you're working on:</p>
+
+<div class="card-grid">
+  <a href="/auth-permissions/index" class="card">
+    <h3>Auth &amp; Permissions</h3>
+    <p>Sessions, passkeys, OAuth, password hashing, RBAC, API keys, credential hashing.</p>
+  </a>
+  <a href="/storage-state/index" class="card">
+    <h3>Storage &amp; State</h3>
+    <p>SQLite + sealed columns, migrations, seeders, S3-compatible object store, queue, cache.</p>
+  </a>
+  <a href="/http-middleware/index" class="card">
+    <h3>HTTP &amp; Middleware</h3>
+    <p>Router, CSRF, CORS, rate limiting, body parsing, compression, security headers, bot guard.</p>
+  </a>
+  <a href="/crypto-vault/index" class="card">
+    <h3>Crypto &amp; Vault</h3>
+    <p>PQC envelope (ML-KEM-1024, XChaCha20-Poly1305, SHAKE256), vault sealing, mTLS CA, signed webhooks.</p>
+  </a>
+  <a href="/observability/index" class="card">
+    <h3>Observability</h3>
+    <p>Audit chain, metrics, tracing, structured logging, PII redaction.</p>
+  </a>
+  <a href="/testing/index" class="card">
+    <h3>Testing</h3>
+    <p>HTTP fixtures, fake clock, fake httpClient, audit + observability captures, middleware runner.</p>
+  </a>
+  <a href="/notify-mail/index" class="card">
+    <h3>Notify &amp; Mail</h3>
+    <p>Generic notification dispatcher with operator-supplied transports, mail with bounce processing.</p>
+  </a>
+  <a href="/i18n-locale/index" class="card">
+    <h3>i18n &amp; Locale</h3>
+    <p>Translations with CLDR plural rules, Accept-Language negotiation, Intl formatters, RTL detection.</p>
+  </a>
+  <a href="/production-essentials/index" class="card">
+    <h3>Production Essentials</h3>
+    <p>Cluster mode, external DB, scheduler, jobs, retry/backoff, backup/restore, NTP check.</p>
+  </a>
+</div>
+
+<h2 id="design-tenets">Design tenets <a class="anchor" href="#design-tenets">#</a></h2>
 <ul>
-  <li><a href="/welcome">Why blamejs?</a></li>
-  <li><a href="/auth-permissions">Auth, sessions, permissions</a></li>
-  <li><a href="/observability">Audit chain, metrics, tracing</a></li>
-  <li><a href="/testing">Test helpers</a></li>
-  <li><a href="https://github.com/blamejs/blamejs">Source on GitHub</a></li>
+  <li><strong>Zero npm runtime deps.</strong> Every dependency is vendored under <code>lib/vendor/</code> with a manifest pinning version + license + provenance.</li>
+  <li><strong>PQC from the start.</strong> ML-KEM-1024 + P-384 hybrid KEM, XChaCha20-Poly1305 cipher, SHAKE256 KDF, SLH-DSA-SHAKE-256f signatures. No classical-only fallbacks.</li>
+  <li><strong>Sealed-by-default storage.</strong> Every database field except IDs / timestamps / FK references goes through <code>vault.seal()</code> or a derived hash.</li>
+  <li><strong>Audit chain on every operator action.</strong> Login, page edit, cache clear, key rotation — all emit with the 5 W's (WHO / WHAT / WHEN / WHERE / HOW).</li>
+  <li><strong>Composition over invention.</strong> Every primitive routes through existing primitives instead of reimplementing retry, timeouts, redaction, etc. The framework's job is coordination.</li>
 </ul>
+
+<aside class="callout callout-tip">
+  <p class="callout-title">Tip</p>
+  <p>Start with the <a href="/welcome/index">Welcome</a> page for the framework's overall posture, then jump to whichever concern group matches your current work.</p>
+</aside>
 {% endblock %}
