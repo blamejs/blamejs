@@ -1,21 +1,14 @@
 "use strict";
-/**
- * Admin auth + page editor routes.
- *
- * Composition:
- *   - b.auth.password for credential check (PBKDF-shaped via Argon2id)
- *   - b.session for cookie-bound session token
- *   - b.permissions to gate /admin behind admin scope
- *   - b.audit.safeEmit for every page edit (5 W's via b.requestHelpers)
- *   - b.cache (the page cache) — invalidated on save
- *   - b.slug for slug-from-title coercion (operator-supplied admin form)
- *   - b.middleware.csrf for form-POST protection
- *
- * Single-admin model (per Phase 11 scope): one admin seeded from
- * WIKI_ADMIN_EMAIL + WIKI_ADMIN_PASSWORD env vars at first boot.
- * Operators wanting team-of-editors swap b.auth.password for whatever
- * larger auth surface they prefer; the route shapes here remain.
- */
+// Admin auth + page editor routes.
+// Uses b.auth.password (Argon2id), b.session, b.permissions to gate
+// /admin, b.audit.safeEmit for every page edit, b.cache (invalidated on
+// save), b.slug for title→slug coercion, and b.middleware.csrf for
+// form-POST protection.
+//
+// Single-admin model: one admin seeded from WIKI_ADMIN_EMAIL +
+// WIKI_ADMIN_PASSWORD at first boot. Apps wanting a larger editor
+// surface swap b.auth.password for whatever auth surface they need;
+// the route shapes here stay the same.
 
 var b = require("@blamejs/core");
 

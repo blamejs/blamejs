@@ -2,7 +2,7 @@
 /**
  * Layer 5 — operator-facing integration / cross-module flows.
  *
- * Per feedback_test_dependency_order.md (Layer 5: operator-facing
+ * (Layer 5: operator-facing
  * integration). Cluster gates verify that write-side framework calls
  * fail with NotLeaderError when the local node is a follower.
  *

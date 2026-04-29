@@ -2,8 +2,8 @@
 /**
  * Layer 4 — consumer modules.
  *
- * Per feedback_test_dependency_order.md (Layer 4: uses audit, consumer
- * modules). These modules sit on top of audit + db + chain primitives.
+ * Layer 4 — consumer modules sit on top of audit + db + chain
+ * primitives.
  *
  *   session           — session lifecycle
  *   data-residency    — db + storage residency rules

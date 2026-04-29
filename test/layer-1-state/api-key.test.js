@@ -277,7 +277,7 @@ async function testGetById() {
 // ---- trackLastUsedAt ----
 
 async function testTrackLastUsedAt() {
-  // Default ON (security default per CLAUDE.md rule #3)
+  // Default ON (visibility defaults are on)
   var keysOn = b.apiKey.create({ namespace: "track-on" });
   var iOn = await keysOn.issue({ ownerId: "u1" });
   await keysOn.verify(iOn.key);

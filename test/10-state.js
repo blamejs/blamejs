@@ -2,7 +2,7 @@
 /**
  * Layer 1 — framework-state primitives.
  *
- * Per feedback_test_dependency_order.md (Layer 1: framework-state-dependent
+ * (Layer 1: framework-state-dependent
  * but isolated). These primitives initialize / tear down framework state
  * but don't depend on db, audit chain, or external integrations.
  *

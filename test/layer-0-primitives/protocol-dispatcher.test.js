@@ -99,7 +99,7 @@ function testResolveDeferredProtocol() {
   var d = b.protocolDispatcher.create({
     name: "test",
     protocols: { foo: _fakeProto("foo") },
-    deferred: { redis: { description: "Redis Streams", since: "Phase 10" } },
+    deferred: { redis: { description: "Redis Streams", since: "future" } },
     fallbackProtocol: "foo",
   });
   var threw = null;
@@ -109,7 +109,7 @@ function testResolveDeferredProtocol() {
   check("resolve: deferred error includes description",
         threw && /Redis Streams/.test(threw.message));
   check("resolve: deferred error includes since",
-        threw && /Phase 10/.test(threw.message));
+        threw && /future/.test(threw.message));
   check("resolve: deferred error suggests fallback",
         threw && /Use protocol: 'foo'/.test(threw.message));
 }

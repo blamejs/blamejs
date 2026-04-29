@@ -74,7 +74,6 @@ await app.listen({ port: 3000 });</code></pre>
   <li><strong>PQC from the start.</strong> ML-KEM-1024 + P-384 hybrid KEM, XChaCha20-Poly1305 cipher, SHAKE256 KDF, SLH-DSA-SHAKE-256f signatures. No classical-only fallbacks.</li>
   <li><strong>Sealed-by-default storage.</strong> Every database field except IDs / timestamps / FK references goes through <code>vault.seal()</code> or a derived hash.</li>
   <li><strong>Audit chain on every operator action.</strong> Login, page edit, cache clear, key rotation — all emit with the 5 W's (WHO / WHAT / WHEN / WHERE / HOW).</li>
-  <li><strong>Composition over invention.</strong> Every primitive routes through existing primitives instead of reimplementing retry, timeouts, redaction, etc. The framework's job is coordination.</li>
 </ul>
 
 <aside class="callout callout-tip">

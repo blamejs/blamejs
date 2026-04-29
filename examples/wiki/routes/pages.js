@@ -1,13 +1,7 @@
 "use strict";
-/**
- * Public page routes — landing, group/page lookups, search.
- *
- * Composition (per feedback_compose_existing_primitives.md):
- *   - b.cache for rendered-HTML cache (per page key)
- *   - b.render.html for SSR
- *   - b.template (mounted by createApp via opts.routes pattern)
- *   - DB lookups via b.db.prepare(...).get(...)
- */
+// Public page routes — landing, group/page lookups, search.
+// Uses b.cache for rendered-HTML cache, b.render.html for SSR,
+// b.template (mounted by createApp), and b.db.prepare for lookups.
 
 var b = require("@blamejs/core");
 

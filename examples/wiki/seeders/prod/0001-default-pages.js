@@ -1,18 +1,8 @@
 "use strict";
-/**
- * Initial wiki content — concern-group pages.
- *
- * Filled out per session. Pages with full coverage have prose +
- * code samples + callouts + property tables; remaining pages are
- * "Coming soon" stubs that get replaced in subsequent sessions.
- *
- * rerunnable: true so iteration on copy doesn't need a wipe — every
- * boot UPSERTs the latest text. Admin-edited pages have updatedBy set
- * to the admin user id; the seeder writes "seeder" so the audit chain
- * can distinguish framework-supplied vs operator-authored content.
- */
-
-// ---- Full-coverage pages (Pass 5 onward) ----
+// Default wiki content. rerunnable: true so each boot UPSERTs the latest
+// text. Admin edits set updatedBy to the user id; the seeder writes
+// "seeder" so the audit chain can distinguish framework-supplied vs
+// operator-authored content.
 
 var WELCOME = [
   '<h1>Welcome to blamejs</h1>',
@@ -51,8 +41,7 @@ var WELCOME = [
   '  <li><strong>PQC from the start.</strong> ML-KEM-1024 + P-384 hybrid KEM, XChaCha20-Poly1305 cipher, SHAKE256 KDF, SLH-DSA-SHAKE-256f signatures. No classical-only fallbacks. See <a href="/crypto-vault/index">Crypto &amp; Vault</a>.</li>',
   '  <li><strong>Sealed-by-default storage.</strong> Every database field except IDs / timestamps / FK references goes through <code>vault.seal()</code> or a derived hash. See <a href="/storage-state/index">Storage &amp; State</a>.</li>',
   '  <li><strong>Audit chain on every operator action.</strong> Login, page edit, cache clear, key rotation, seed apply — all emit with the 5 W\'s (WHO / WHAT / WHEN / WHERE / HOW). See <a href="/observability/index">Observability</a>.</li>',
-  '  <li><strong>Composition over invention.</strong> Every primitive routes through existing primitives instead of reimplementing retry, timeouts, redaction. The framework\'s job is coordination.</li>',
-  '  <li><strong>Forward-looking defaults.</strong> When pinning versions or features, default to current Active LTS / current bar — not the broadest-compatible older version. Node 24+, ECMAScript modules, modern HTTP semantics.</li>',
+  '  <li><strong>Forward-looking defaults.</strong> Node 24 LTS, modern ECMAScript, current HTTP semantics. Operators who need older runtimes pin to an older release; the active line targets what current Node ships.</li>',
   '</ul>',
 
   '<h2 id="next">Where to go next <a class="anchor" href="#next">#</a></h2>',
@@ -79,7 +68,7 @@ var WELCOME = [
 var OBSERVABILITY = [
   '<h1>Observability</h1>',
   '<p>blamejs ships four observability primitives that compose: <code>b.audit</code> (tamper-evident chain), <code>b.metrics</code> (counter taps), <code>b.tracing</code> (span taps), and <code>b.redact</code> (PII scrubbing). The wrapper <code>b.observability.tap</code> unifies span + counter into one call so primitives don\'t have to interleave them.</p>',
-  '<p>Per CLAUDE.md rule #3 (security defaults are not opt-in), every framework primitive emits audit events on operator-action paths by default. Operators with extreme verify-rate volume opt OUT of success-event audit explicitly via <code>auditSuccess: false</code>; failures stay on regardless.</p>',
+  '<p>Every framework primitive emits audit events on operator-action paths by default. High-throughput verifiers can disable success-event audit with <code>auditSuccess: false</code>; failures emit regardless.</p>',
 
   '<h2 id="audit">Audit chain <a class="anchor" href="#audit">#</a></h2>',
   '<p>The audit chain is hash-chained, signed, tamper-evident, and append-only. Every framework primitive that mutates operator-visible state emits an audit event when wired with <code>audit: b.audit</code>:</p>',
@@ -149,7 +138,7 @@ var OBSERVABILITY = [
   '//   notify.send.attempt   { channel: "slack", attempt: 1 }',
   '//   notify.send.success   { channel: "slack", durationMs: 124 }',
   '// Plus a span via observability.tap (next section).</code></pre>',
-  '<p>Operators wire a real backend (Prometheus exporter, OTel collector, etc.) by replacing the framework default with <code>b.metrics.tap = function (name, value, labels) { ... }</code>. Bad input drops silently — Tier-B per <code>feedback_validation_tier_policy.md</code>.</p>',
+  '<p>Operators wire a real backend (Prometheus exporter, OTel collector, etc.) by replacing the framework default with <code>b.metrics.tap = function (name, value, labels) { ... }</code>. Bad input drops silently so a malformed metric can\'t crash the request that emitted it.</p>',
 
   '<h2 id="tracing">Tracing <a class="anchor" href="#tracing">#</a></h2>',
   '<p><code>b.observability.tap(name, attrs, fn)</code> wraps an async operation in BOTH a span AND a counter. This is the canonical pattern primitives use:</p>',
@@ -185,9 +174,9 @@ var OBSERVABILITY = [
   '//   }</code></pre>',
   '<p>Operators register custom rules via <code>b.redact.registerFieldRule(name, replacement)</code> and <code>b.redact.registerValueDetector(name, testFn, replacement)</code>. <code>b.notify</code> uses <code>b.redact.redact</code> as its default audit-metadata redactor; operators can override per primitive.</p>',
 
-  '<h2 id="composition">Composition pattern <a class="anchor" href="#composition">#</a></h2>',
-  '<p>Per <code>feedback_compose_existing_primitives.md</code>, primitives never re-implement audit / metrics / tracing / redaction. They thread through <code>b.observability.tap</code>, <code>b.audit.safeEmit</code>, and <code>b.redact.redact</code>:</p>',
-  '<pre><code class="language-javascript">// Excerpt from lib/notify.js — the hot path:',
+  '<h2 id="primitive-internals">How primitives wire it <a class="anchor" href="#primitive-internals">#</a></h2>',
+  '<p>The wiring inside framework primitives threads through <code>b.observability.tap</code>, <code>b.audit.safeEmit</code>, and <code>b.redact.redact</code>. Excerpt from <code>lib/notify.js</code>:</p>',
+  '<pre><code class="language-javascript">// notify.send — the hot path:',
   'return b.observability.tap("notify.send", { channel: ch }, async function () {',
   '  try {',
   '    var result = await b.retry.withRetry(_oneAttempt, retryOpts);',
@@ -210,11 +199,7 @@ var OBSERVABILITY = [
 ].join("\n");
 
 
-// ---- Stub pages (Pass 6+) ----
-// "Coming soon" placeholders. As subsequent sessions write each
-// concern group's full content, those entries move from STUBS into
-// FULL_PAGES at the top of this file.
-
+// Stub pages — replaced as each concern group gets its full write-up.
 function _stub(group, title, primitives) {
   return [
     '<h1>' + title + '</h1>',
@@ -264,7 +249,7 @@ for (var i = 0; i < STUBS.length; i++) {
 
 
 module.exports = {
-  description: "Default wiki content (Welcome + Observability full; rest stubs)",
+  description: "Default wiki content",
   envs:        ["prod", "dev"],
   rerunnable:  true,
   run: async function (db, ctx) {

@@ -1,50 +1,26 @@
 "use strict";
-/**
- * buildApp — single source of truth for the wiki's framework wiring.
- *
- * Both server.js (production boot) and test/e2e.js (in-process boot)
- * call this to construct the running app. Drift between the two used
- * to require parallel updates; consolidating here ensures every
- * primitive added in subsequent passes wires identically in both
- * contexts.
- *
- * Call shape:
- *   var app = await buildApp({
- *     dataDir:        "./data",
- *     port:           8080,                    // 0 for ephemeral
- *     adminEmail:     "admin@blamejs.app",
- *     adminPassword:  "...",                   // optional; null skips seed
- *     webhookUrl:     null,                    // optional
- *     webhookSecret:  null,                    // optional
- *   });
- *
- * Returns the { app, info? } shape from b.createApp + listen.
- *
- * Composition (per feedback_compose_existing_primitives.md):
- *   - b.app.createApp                — server boot
- *   - b.template / b.render          — SSR
- *   - b.cache                        — page-render cache
- *   - b.permissions / b.session
- *   - b.audit / b.requestHelpers     — 5 W's actor context
- *   - b.migrations / b.seeders       — schema + content
- *   - b.i18n / b.middleware.health
- *   - b.middleware.{requestId, securityHeaders, botGuard, cors,
- *                   rateLimit, cspNonce, bodyParser, compression,
- *                   attachUser, csrfProtect}
- *   - b.staticServe
- *   - b.notify (log + optional httpJson)
- *   - b.webhook.signer (optional, env-gated)
- *   - b.scheduler (session purge, cache stats)
- *   - b.jobs / b.queue (post-edit pipeline)
- *   - b.apiKey (content-management keys)
- */
+// buildApp — single source of truth for the wiki's framework wiring.
+// Both server.js and test/e2e.js call this so the live and in-process
+// boots stay in sync.
+//
+// Call shape:
+//   var app = await buildApp({
+//     dataDir:       "./data",
+//     port:          8080,            // 0 for ephemeral
+//     adminEmail:    "admin@blamejs.app",
+//     adminPassword: "...",           // optional; null skips seed
+//     webhookUrl:    null,
+//     webhookSecret: null,
+//   });
+//
+// Returns { app, info? } from b.createApp + listen.
 
 var path = require("node:path");
 var b = require("@blamejs/core");
 
-// Strict CSP — drops 'unsafe-inline' from style-src + script-src.
-// All assets are external; cspNonce middleware adds 'nonce-XYZ'
-// for operator-side opt-in. Per feedback_no_unsafe_inline_in_examples.md.
+// Strict CSP — drops 'unsafe-inline' from style-src + script-src. All
+// assets are external; cspNonce middleware adds 'nonce-XYZ' when the
+// app actually needs an inline element.
 var STRICT_CSP =
   "default-src 'self'; " +
   "script-src 'self'; " +

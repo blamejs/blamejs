@@ -2,7 +2,7 @@
 /**
  * Layer 2 — db + framework-schema integration.
  *
- * Per feedback_test_dependency_order.md (Layer 2: needs db). These tests
+ * (Layer 2: needs db). These tests
  * exercise the SQLite-backed db module and the framework-schema enforcer
  * (reserved-table protection).
  *

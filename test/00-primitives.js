@@ -5,13 +5,7 @@
  * These tests exercise primitives with NO framework state and NO I/O
  * dependencies (or I/O confined to tmpdir round-trips). They run FIRST
  * in the smoke-test ordering: a broken primitive should surface here,
- * not as a downstream consumer crash that hides the root cause (per
- * .claude/memory/feedback_test_dependency_order.md).
- *
- * This file is being populated incrementally — each commit moves one
- * functional group from test/smoke.js. When all Layer 0 groups have
- * been migrated, smoke.js's runner block will call ONLY this file's
- * `run()` for Layer 0 work.
+ * not as a downstream consumer crash that hides the root cause.
  *
  * Currently shipped here:
  *   - sql-safe (identifier validation, quoting, allowlist)

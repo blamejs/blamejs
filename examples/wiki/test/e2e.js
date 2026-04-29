@@ -1,17 +1,11 @@
 "use strict";
-/**
- * Wiki app e2e — boots the same wiring as server.js (via the shared
- * lib/build-app.js) on an ephemeral port, hits each route via
- * node:http with realistic browser headers, asserts response codes
- * and body content, then shuts down.
- *
- * Test discipline (per feedback_test_to_security_not_security_to_test.md):
- *   - DO NOT weaken the framework's security middleware for tests
- *   - Send the same Accept-Language / User-Agent / Sec-Fetch-* headers
- *     a real browser would
- *   - Accept-Encoding: identity to opt out of compression so substring
- *     assertions don't have to decompress
- */
+// Wiki app e2e — boots the same wiring as server.js (via shared
+// lib/build-app.js) on an ephemeral port, hits each route via node:http
+// with realistic browser headers, asserts response codes and body
+// content, then shuts down. The bot-guard / Sec-Fetch / rate-limit
+// middleware run unmodified; the test sends the headers a real browser
+// would. Accept-Encoding: identity opts out of compression so substring
+// assertions don't have to decompress.
 
 var http = require("node:http");
 var path = require("node:path");

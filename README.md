@@ -17,21 +17,23 @@ The modern Node app is a 1,200-package supply-chain liability with no LTS calend
 
 ## Status
 
-**v0.0.1 (Phase 0 — foundation).** The first usable layer is in place: envelope-versioned PQC crypto primitives (ML-KEM-1024 + P-384 hybrid, XChaCha20-Poly1305, SHAKE256), a zero-dependency HTTP router, and framework constants. No runtime npm dependencies.
+Pre-1.0. The framework is usable end-to-end — envelope-versioned PQC crypto, sealed storage, HTTP router with a full middleware stack, vault, sessions, permissions, audit chain, scheduler, jobs, notify, mail, websocket, i18n, cluster mode, backup/restore, a wiki reference app under `examples/wiki/`. Operators can build production apps on it today; the surface is still subject to change before 1.0.
 
 ```js
-const { crypto, router, constants } = require("@blamejs/core");
+var b = require("@blamejs/core");
 
-const keys = crypto.generateEncryptionKeyPair();
-const sealed = crypto.encrypt("hello", keys);
-const opened = crypto.decrypt(sealed, keys);          // "hello"
-
-const r = new router.Router();
-r.get("/", (req, res) => res.json({ ok: true }));
-r.listen(3000);
+(async function () {
+  var app = await b.createApp({
+    dataDir: "./data",
+    routes: function (router) {
+      router.get("/", function (req, res) {
+        b.render.htmlString(res, "<h1>Hello from blamejs</h1>");
+      });
+    },
+  });
+  await app.listen({ port: 3000 });
+})();
 ```
-
-The full eleven-phase roadmap to v1.0 is planned. v0.0.1 satisfies Phase 0 only.
 
 **Requirements:** Node.js 24+ (current active LTS).
 

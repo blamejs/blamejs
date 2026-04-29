@@ -4,8 +4,7 @@
  *
  * Run: `npm test` (or `node test/smoke.js`)
  *
- * Tests run in dependency order (per
- * .claude/memory/feedback_test_dependency_order.md):
+ * Tests run in dependency order:
  *
  *   Layer 0 — pure primitives                test/00-primitives.js
  *                                            + test/layer-0-primitives/*.test.js

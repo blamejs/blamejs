@@ -125,12 +125,9 @@ examples/wiki/
 └── data/                         # local SQLite + vault key (gitignored)
 ```
 
-## Known gaps (Phase 11.2 work)
+## Known gaps
 
-- **Search**: `/search?q=...` works but the search results page needs a few full-coverage docs pages to actually have content to find. v1 just demonstrates the FTS5 wiring.
-- **Concern-group pages are stubs**: each landing page (Auth, Storage, HTTP, etc.) currently has a "Coming soon" body. The full coverage tier (~10 pages with primitive walkthrough + code samples) is the next session's work per the Phase 11 roadmap.
-- **No client-side JS**: editor is a plain HTML `<textarea>`. A future pass wires `b.bundler` to bundle a tiny editor enhancement (autosave, slug-from-title preview).
-- **Search recipe page**: `/observability/search` (or similar) should explain the FTS5 schema, trigger pattern, MATCH grammar, and how operators add this to their own apps. Stub for now.
-- **Operator-specific recipe pages**: cluster mode, mail, websocket, etc. — all stubbed, full coverage in subsequent sessions.
-
-These are tracked in the Phase 11 task list; v1 of the engine ships now.
+- **Search**: `/search?q=...` works against the FTS5 index, but most concern-group pages are still stubs so there isn't much to find yet.
+- **Concern-group pages are stubs**: most landing pages (Auth, Storage, HTTP, etc.) currently have a "Coming soon" body. Full primitive walkthroughs land as each group is written.
+- **Editor is plain HTML**: the admin edit screen is a `<textarea>`. A small client-side enhancement (autosave, slug-from-title preview) is on the list.
+- **Recipe pages**: cluster mode, mail, websocket, FTS5 schema walkthrough — stubbed for now.

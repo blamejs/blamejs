@@ -3,7 +3,7 @@
  * Layer 3 — chain-writing modules (audit, consent, subject, checkpoint)
  *           + cluster-storage (SQL dispatcher).
  *
- * Per feedback_test_dependency_order.md (Layer 3: uses db + chain-writer +
+ * (Layer 3: uses db + chain-writer +
  * cluster-storage). Hash-chained log tables and the framework write-path
  * primitives that consume them.
  *
