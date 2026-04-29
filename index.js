@@ -143,6 +143,7 @@ var credentialHash = require("./lib/credential-hash");
 var permissions = require("./lib/permissions");
 var cache = require("./lib/cache");
 var seeders = require("./lib/seeders");
+var i18n = require("./lib/i18n");
 
 module.exports = {
   crypto:           crypto,
@@ -236,6 +237,7 @@ module.exports = {
   permissions:      permissions,
   cache:            cache,
   seeders:          seeders,
+  i18n:             i18n,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };
