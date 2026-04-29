@@ -1074,14 +1074,17 @@ async function testClusterAuditFlushNoRecursionHang() {
       actor:   { userId: "rec-test" },
     });
 
-    var t0 = Date.now();
+    // The Promise.race against a 5s timeout is the no-hang regression
+    // guard — if flush() truly hangs it never resolves, raced lands as
+    // "TIMEOUT". Don't add a separate elapsed-< 5000 check: it's
+    // tautologically true when raced === "done" (the timeout would have
+    // fired first otherwise) and produces a Windows boundary flake when
+    // event-loop drift puts the post-await Date.now() at 5001ms.
     var raced = await Promise.race([
       b.audit.flush().then(function () { return "done"; }),
       new Promise(function (r) { setTimeout(function () { r("TIMEOUT"); }, 5000); }),
     ]);
-    var elapsed = Date.now() - t0;
     check("audit.flush returns (no recursion hang)",  raced === "done");
-    check("audit.flush returns within 5s budget",     elapsed < 5000);
   } finally {
     try { await b.cluster.shutdown(); } catch (_e) {}
     try { await b.externalDb.shutdown(); } catch (_e) {}
