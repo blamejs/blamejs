@@ -2862,9 +2862,8 @@ async function testMailSmtpRoundTrip() {
     // current shape is: non-implicit always issues STARTTLS. Skip TLS
     // testing here — that needs cert plumbing — and instead verify that
     // the state machine refuses to send data when STARTTLS is rejected.
-    var result = null;
     var err = null;
-    try { result = await transport.send({
+    try { await transport.send({
       from: "sender@test.local", to: "rcpt@test.local",
       subject: "S", text: "T",
     }); }
@@ -5544,16 +5543,8 @@ async function testOAuthAuthorizationUrlPreset() {
 }
 
 async function testOAuthAuthorizationUrlOidc() {
-  var oa = b.auth.oauth.create({
-    provider:    "google",
-    clientId:    "abc",
-    clientSecret: "secret",
-    redirectUri: "https://app/cb",
-  });
-  // Google requires discovery, but we can build the auth URL with
-  // discovery fired here. Capture by mocking discovery via stub.
-  // For this test we just verify the surface returns nonce for OIDC.
-  // We bypass network by setting endpoints directly.
+  // Google requires discovery; for this test we bypass network and
+  // verify the surface returns a nonce by setting endpoints directly.
   var oaDirect = b.auth.oauth.create({
     clientId: "abc", redirectUri: "https://app/cb",
     isOidc: true,
@@ -6695,7 +6686,7 @@ async function testHealthDefaultLiveness() {
   var res = _mockBodyRes();
   var r = await _runHealthMiddleware(mw, _healthReq("GET", "/healthz"), res);
   check("default /healthz: status 200",           r.status === 200);
-  check("default /healthz: body contains ok",     /\"status\":\"ok\"/.test(r.body));
+  check("default /healthz: body contains ok",     /"status":"ok"/.test(r.body));
 }
 
 async function testHealthDefaultReadiness() {
@@ -6730,7 +6721,7 @@ async function testHealthCriticalFailReturns503() {
   var res = _mockBodyRes();
   var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
   check("critical fail: status 503",              r.status === 503);
-  check("critical fail: body has fail status",    /\"status\":\"fail\"/.test(r.body));
+  check("critical fail: body has fail status",    /"status":"fail"/.test(r.body));
 }
 
 async function testHealthNonCriticalFailIsDegraded() {
@@ -6742,7 +6733,7 @@ async function testHealthNonCriticalFailIsDegraded() {
   var r = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), res);
   // Degraded keeps 200 — service is still serving, the failed check is informational.
   check("non-critical fail: status 200",          r.status === 200);
-  check("non-critical fail: body status=degraded", /\"status\":\"degraded\"/.test(r.body));
+  check("non-critical fail: body status=degraded", /"status":"degraded"/.test(r.body));
 }
 
 async function testHealthDetailedResponse() {
@@ -6769,7 +6760,7 @@ async function testHealthMinimalHidesDetail() {
   check("minimal mode: no check breakdown",       res._captured.indexOf("\"db\"") === -1);
   check("minimal mode: no internal secret leaked", res._captured.indexOf("top-secret-internal") === -1);
   // Should still surface the top-level status, just nothing more
-  check("minimal mode: status field present",     /\"status\":\"ok\"/.test(res._captured));
+  check("minimal mode: status field present",     /"status":"ok"/.test(res._captured));
 }
 
 async function testHealthDetailPredicate() {
@@ -6827,7 +6818,7 @@ async function testHealthShuttingDownFlipsReadiness() {
   var resAfter = _mockBodyRes();
   var rAfter = await _runHealthMiddleware(mw, _healthReq("GET", "/readyz"), resAfter);
   check("after shutdown: /readyz 503",            rAfter.status === 503);
-  check("after shutdown: body shutting-down",     /\"status\":\"shutting-down\"/.test(rAfter.body));
+  check("after shutdown: body shutting-down",     /"status":"shutting-down"/.test(rAfter.body));
 
   // Liveness UNAFFECTED — orchestrator must not kill us mid-drain
   var resLive = _mockBodyRes();
@@ -11626,10 +11617,10 @@ function testCsvFormulaInjection() {
     { name: "@SUM(1,2)",     value: "ok" },
     { name: "normal",        value: "ok" },
   ]);
-  check("csv stringify: =formula gets '-prefix",        /'\=SUM/.test(dangerous));
+  check("csv stringify: =formula gets '-prefix",        /'=SUM/.test(dangerous));
   check("csv stringify: +formula gets '-prefix",        /'\+CMD/.test(dangerous));
-  check("csv stringify: -formula gets '-prefix",        /'\-1\+2/.test(dangerous));
-  check("csv stringify: @formula gets '-prefix",        /'\@SUM/.test(dangerous));
+  check("csv stringify: -formula gets '-prefix",        /'-1\+2/.test(dangerous));
+  check("csv stringify: @formula gets '-prefix",        /'@SUM/.test(dangerous));
   check("csv stringify: normal cell unchanged",         /(^|\n|\r)normal,ok/.test(dangerous));
 
   // Disabled mode (RFC 4180 strict)
@@ -12629,12 +12620,9 @@ function testWebSocketFrames() {
   var ws = b.websocket;
 
   // Round-trip: serialize → parse → same data, opcode preserved.
+  // The parser expects client-side frames (masked); use the
+  // serializer's mask:true path to build that shape.
   var payload = Buffer.from("hello websocket", "utf8");
-  var frame = ws.serializeFrame(ws.OPCODE_TEXT, payload);
-  // Mask the frame so the parser (which expects client-side frames)
-  // accepts it. Use the parser via the FrameParser API.
-  // Build a masked variant by hand for the parser test.
-  // The serializer's mask:true path produces a client-shaped frame.
   var masked = ws.serializeFrame(ws.OPCODE_TEXT, payload, { mask: true });
   var parser = new ws.FrameParser({ maxFrameBytes: 1024 });
   var frames = parser.push(masked);

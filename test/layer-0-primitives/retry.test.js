@@ -226,14 +226,12 @@ async function testWithRetryOnRetryThrowSwallowed() {
 
 async function testWithRetrySignalAbort() {
   var ac = new AbortController();
-  var calls = 0;
   var threw = null;
   // Abort 5ms after start; backoff is 1000ms so signal must short-circuit it.
   setTimeout(function () { ac.abort(); }, 5);
   var t0 = Date.now();
   try {
     await b.retry.withRetry(function () {
-      calls++;
       var err = new Error("transient");
       err.code = "ECONNRESET";
       throw err;
@@ -250,7 +248,6 @@ async function testWithRetrySignalAbort() {
 // ---- withRetry Tier-A validation ----
 
 function _expectRetryThrow(label, opts, regex) {
-  var threw = null;
   try {
     // Pass dummy fn; validation happens before fn invocation.
     var p = b.retry.withRetry(function () { return "ok"; }, opts);

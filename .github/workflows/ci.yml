@@ -1,6 +1,12 @@
-# Framework smoke + wiki e2e on every push and pull request.
-# Run on the same Node major operators run in production (24 LTS),
-# matching the engines.node constraint in package.json.
+# Framework smoke + wiki e2e + lint scans on every push/PR.
+#
+# Lint posture: 0 warnings, 0 errors. Bug-class ESLint rules + Hadolint
+# strict + ShellCheck strict. The ESLint config is tuned to flag real
+# bugs without forcing a stylistic-cleanup sweep on legacy code.
+#
+# Output posture: every step's full output is shown — no `>/dev/null`,
+# no `--quiet`, no `--silent`. Operators reading a failed run see what
+# actually fired without re-running locally.
 
 name: CI
 
@@ -28,19 +34,16 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node 24 LTS
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
 
-      - name: Show Node version (debug)
+      - name: Show Node + npm version
         run: node --version && npm --version
 
-      # Framework has zero npm runtime deps — nothing to install at the
-      # repo root. The wiki example has one workspace-style file:../..
-      # link which we install in the e2e job below.
       - name: Run framework smoke
         run: node test/smoke.js
 
@@ -53,10 +56,10 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node 24 LTS
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
 
@@ -67,3 +70,61 @@ jobs:
       - name: Run wiki e2e
         working-directory: examples/wiki
         run: node test/e2e.js
+
+  lint-eslint:
+    name: ESLint (lib + examples + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node 24 LTS
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Run ESLint (max-warnings 0)
+        # --max-warnings 0 fails on any warning. The flat config in
+        # eslint.config.mjs flags bug-class rules only; new code that
+        # introduces undef references, unreachable code, regex bugs,
+        # etc., fails CI here before review.
+        run: npx --yes eslint@9 --max-warnings 0 .
+
+  lint-hadolint:
+    name: Hadolint (Dockerfiles)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Hadolint (strict, all severities)
+        # `--no-fail` is OFF; any error or warning fails the job.
+        # Config at .hadolint.yaml ignores the small set of rules
+        # that conflict with our intentional patterns.
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: examples/wiki/Dockerfile
+          config:     .hadolint.yaml
+          format:     tty
+          no-fail:    false
+          failure-threshold: warning
+
+  lint-shellcheck:
+    name: ShellCheck (shell scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        # Walk the repo for tracked .sh files; if there are none, the
+        # action exits 0. The `severity: style` setting flags the
+        # widest set of findings, including style/info, matching the
+        # 0-warnings posture.
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          severity: style
+          format:   tty
+          check_together: 'yes'
+        env:
+          SHELLCHECK_OPTS: -e SC2034

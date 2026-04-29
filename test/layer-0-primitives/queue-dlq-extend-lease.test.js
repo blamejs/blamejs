@@ -48,7 +48,6 @@ async function testQueueExtendLeaseBackend() {
     await b.queue.enqueue("ext", { x: 1 });
 
     // Lease one job so it's in 'inflight'.
-    var local = require("../../lib/queue-local");
     // Backend instance is private to queue.js — use the SQL directly to
     // verify status transitions (we round-trip via b.queue's public API
     // for everything else).

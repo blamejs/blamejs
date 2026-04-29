@@ -1,14 +1,19 @@
-# Build and publish the wiki reference container to GHCR on every
-# `v*` tag. The image is tagged with the version (vX.Y.Z), the
-# major+minor (vX.Y), and `latest` for the most recent release.
+# Build, scan with Trivy, then push the wiki container to GHCR on
+# every `v*` tag. Build → scan → push order: a vulnerable image never
+# lands in the registry.
 #
-# Operators pull with:
-#   docker pull ghcr.io/blamejs/blamejs-wiki:0.3.10
-#   docker pull ghcr.io/blamejs/blamejs-wiki:0.3
-#   docker pull ghcr.io/blamejs/blamejs-wiki:latest
+# Two Trivy steps mirror the hermitstash pattern:
 #
-# Source path: examples/wiki/Dockerfile, build context: repo root
-# (the wiki's package.json declares "@blamejs/core": "file:../..").
+#   1. Visibility (exit-code 0): scans every severity (UNKNOWN→CRITICAL)
+#      plus secrets and misconfig, INCLUDING unfixed CVEs. Informational
+#      only — surfaces the full finding list for the post-release fix
+#      log so the next patch release can address what we can fix.
+#
+#   2. Gate (exit-code 1): fails the release on CRITICAL/HIGH findings
+#      that have a fix available (`ignore-unfixed: true`). Narrow
+#      threshold avoids blocking on unpatched upstream CVEs while still
+#      refusing to ship images with actionable high-severity issues
+#      (a fixable glibc CVE, a leaked secret, a HIGH Dockerfile misconfig).
 
 name: Release container
 
@@ -31,17 +36,17 @@ env:
 
 jobs:
   publish:
-    name: Build and publish
+    name: Build, scan, publish
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -49,17 +54,58 @@ jobs:
 
       - name: Compute tags
         id: tags
-        # vX.Y.Z → semver:X.Y.Z + minor:X.Y + latest
         run: |
           REF="${GITHUB_REF#refs/tags/v}"
           MAJOR_MINOR="${REF%.*}"
           {
             echo "semver=$REF"
             echo "minor=$MAJOR_MINOR"
+            echo "scan_tag=$REF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      # Build the image into the local Docker daemon (load: true) so
+      # Trivy can scan it. We push only after both Trivy steps pass.
+      - name: Build (local-only)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: examples/wiki/Dockerfile
+          load: true
+          push: false
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.scan_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- Trivy step 1 — visibility (no fail) ----
+      # Logs every finding from UNKNOWN to CRITICAL plus secrets and
+      # Dockerfile misconfiguration. ignore-unfixed: false so unpatched
+      # upstream CVEs surface for the next patch's fix log.
+      - name: Trivy scan — visibility (all severities, no fail)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ steps.tags.outputs.scan_tag }}
+          severity:  'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+          exit-code: '0'
+          scanners:  'vuln,secret,misconfig'
+          ignore-unfixed: false
+          format:    'table'
+
+      # ---- Trivy step 2 — release gate (fixed CRITICAL/HIGH only) ----
+      # Fails the release on CRITICAL/HIGH with fix available. Doesn't
+      # block on unfixed upstream CVEs.
+      - name: Trivy scan — release gate (CRITICAL/HIGH fixed)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref:      ${{ env.IMAGE }}:${{ steps.tags.outputs.scan_tag }}
+          severity:       'CRITICAL,HIGH'
+          exit-code:      '1'
+          ignore-unfixed: true
+          format:         'table'
+
+      # Only reached when both Trivy steps pass.
+      - name: Push (after Trivy gate)
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: examples/wiki/Dockerfile

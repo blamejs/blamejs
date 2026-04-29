@@ -23,8 +23,6 @@ var fs     = helpers.fs;
 var os     = helpers.os;
 var path   = helpers.path;
 var check  = helpers.check;
-var setupTestDb              = helpers.setupTestDb;
-var teardownTestDb           = helpers.teardownTestDb;
 var _makeSqliteDriver        = helpers._makeSqliteDriver;
 
 async function testVaultWrapRoundTrip() {
@@ -441,7 +439,7 @@ async function testFrameworkSchemaEnsure() {
         "INSERT INTO _blamejs_audit_tip (scope, atMonotonicCounter, fencingToken) VALUES ($1, $2, $3)",
         ["NOT_AUDIT", 0, 0]
       );
-    } catch (e) { threwBadScope = true; }
+    } catch { threwBadScope = true; }
     check("audit_tip CHECK constraint rejects bad scope", threwBadScope);
 
     // Idempotent re-run
@@ -479,15 +477,8 @@ function testFrameworkSchemaTableNameMapping() {
 }
 
 function testFrameworkSchemaInvalidDialect() {
-  var threw = null;
-  try {
-    b.frameworkSchema.ensureSchema({
-      externalDbBackend: "ops",
-      dialect:           "mysql",
-    }).catch(function (e) { /* swallow async path */ });
-  } catch (e) { threw = e; }
-  // The throw can come either sync (config validation) or async (per-table
-  // execution). In either case the returned promise rejects.
+  // The throw can come either sync (config validation) or async (per-
+  // table execution). The .then(success, failure) handler covers both.
   return b.frameworkSchema.ensureSchema({
     externalDbBackend: "ops",
     dialect:           "mysql",

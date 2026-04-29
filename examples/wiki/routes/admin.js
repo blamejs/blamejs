@@ -140,8 +140,8 @@ function register(router, ctx) {
       error:     null,
     });
     // Template var collision — use `titleField` for the form's title
-    // because `title` is the page-meta title in the layout.
-    data.title = data.title;       // explicit "page meta" stays
+    // input; `title` stays the page-meta title in the layout (already
+    // set by Object.assign earlier, so no re-assignment needed here).
     data.titleField = "";
     b.render.htmlString(res, template.render("admin/edit", data));
   });

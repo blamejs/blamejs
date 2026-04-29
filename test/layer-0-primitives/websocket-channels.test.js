@@ -234,7 +234,6 @@ async function testClusterBackendFanOut() {
 async function testCustomBackend() {
   // Operator wires a Redis-shaped backend (or any other pubsub).
   var remoteBus = []; // captures published messages
-  var dispatchedRemoteMessages = 0;
   var custom = {
     publishRemote: function (channel, payload) {
       remoteBus.push({ channel: channel, payload: payload });

@@ -371,7 +371,6 @@ async function testApiEncryptExemptPathBypass() {
   req.pathname = "/healthz";
   req.body = undefined;
   var res = _mkRes();
-  var fin = _newFinish(res);
   var nextCalled = false;
   await mw(req, res, function () { nextCalled = true; });
   check("exempt path: next called",              nextCalled === true);
@@ -381,7 +380,6 @@ async function testApiEncryptExemptPathBypass() {
   req2.url = "/.well-known/blamejs-pubkey";
   req2.pathname = "/.well-known/blamejs-pubkey";
   var res2 = _mkRes();
-  var fin2 = _newFinish(res2);
   var nextCalled2 = false;
   await mw(req2, res2, function () { nextCalled2 = true; });
   check("exempt prefix: next called",            nextCalled2 === true);
@@ -395,7 +393,6 @@ async function testApiEncryptPublishPublicKey() {
 
   var req = _bodyReq("GET", {}, "");
   var res = _mkRes();
-  var fin = _newFinish(res);
   handler(req, res);
   // res.json is sync in our mock — read what it wrote.
   var body = JSON.parse(res._captured);
@@ -482,7 +479,6 @@ async function testApiEncryptContentTypeScoping() {
   var req = _bodyReq("POST", { "content-type": "multipart/form-data; boundary=---x" }, "");
   req.body = { not: "encrypted" };
   var res = _mkRes();
-  var fin = _newFinish(res);
   var nextCalled = false;
   await mw(req, res, function () { nextCalled = true; });
   check("non-JSON Content-Type bypasses middleware", nextCalled === true);

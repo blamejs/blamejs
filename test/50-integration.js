@@ -24,11 +24,8 @@ var fs     = helpers.fs;
 var os     = helpers.os;
 var path   = helpers.path;
 var check  = helpers.check;
-var setupTestDb               = helpers.setupTestDb;
-var teardownTestDb            = helpers.teardownTestDb;
 var _setupClusterGateFixture  = helpers._setupClusterGateFixture;
 var _expectNotLeaderError     = helpers._expectNotLeaderError;
-var listenOnRandomPort        = helpers.listenOnRandomPort;
 
 async function testClusterGatesAuditAndConsent() {
   var fx = await _setupClusterGateFixture();

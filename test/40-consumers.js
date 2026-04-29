@@ -1721,8 +1721,7 @@ async function testMiddlewareCors() {
     // Regex origin → match
     var req2 = _mockReq({ headers: { origin: "https://feature-1.staging.example.com" } });
     var res2 = _mockRes();
-    var n2 = false;
-    mw(req2, res2, function () { n2 = true; });
+    mw(req2, res2, function () {});
     check("cors: regex origin matched",                   res2._captured().headers["access-control-allow-origin"] === "https://feature-1.staging.example.com");
 
     // Disallowed origin → 403 (refuseUnknown default)

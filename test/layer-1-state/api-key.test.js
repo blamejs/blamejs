@@ -681,6 +681,9 @@ async function run() {
     await testExpired();
     await testRotate();
     await testRotateNotFoundOrRevoked();
+    await testGracefulRotation();
+    await testGracefulRotationExplicitMs();
+    await testHardRotateClearsSecondary();
     await testEnvelopeFormatPersisted();
     await testHashAlgoOptArgon2id();
     await testListForOwner();

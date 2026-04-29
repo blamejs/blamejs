@@ -1436,7 +1436,7 @@ async function testSubjectRights() {
       ],
     });
 
-    var alice = b.db.from("users").insertOne({ _id: "u-alice", email: "alice@x.com", name: "Alice" });
+    b.db.from("users").insertOne({ _id: "u-alice", email: "alice@x.com", name: "Alice" });
     b.db.from("users").insertOne({ _id: "u-bob",   email: "bob@x.com",   name: "Bob" });
     b.db.from("orders").insertOne({ _id: "o-1", userId: "u-alice", amount: 99.95 });
     b.db.from("orders").insertOne({ _id: "o-2", userId: "u-alice", amount: 12.50 });
