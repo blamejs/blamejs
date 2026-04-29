@@ -174,6 +174,34 @@ var OBSERVABILITY = [
   '//   }</code></pre>',
   '<p>Operators register custom rules via <code>b.redact.registerFieldRule(name, replacement)</code> and <code>b.redact.registerValueDetector(name, testFn, replacement)</code>. <code>b.notify</code> uses <code>b.redact.redact</code> as its default audit-metadata redactor; operators can override per primitive.</p>',
 
+  '<h2 id="consent">Consent + subject identity <a class="anchor" href="#consent">#</a></h2>',
+  '<p>The audit chain is a tamper-evident <em>operator</em> action log. <code>b.consent</code> is the parallel chain for <em>subject</em> consent state — capturing who agreed to what, when, and under which scope. Same chain primitive (<code>chain-writer</code>) underneath, so consent records get the same hash-linked durability as the audit log.</p>',
+  '<pre><code class="language-javascript">// Record a consent grant from an end-user',
+  'await b.consent.record({',
+  '  subjectId: user.id,',
+  '  scope:     "marketing-email",',
+  '  granted:   true,',
+  '  basis:     "explicit-checkbox",',
+  '  metadata:  { source: "/signup", ip: req.socket.remoteAddress },',
+  '});',
+  '',
+  '// Look up effective consent state',
+  'var c = await b.consent.current({ subjectId: user.id, scope: "marketing-email" });',
+  '// → { granted: true, recordedAt: 1717…, basis: "explicit-checkbox" } | null</code></pre>',
+  '<p><code>b.subject</code> is the identity-resolution helper that produces a stable opaque subject ID from whichever attributes the operator considers identifying (email, phone, account ID, anonymous fingerprint). Consent records key off that ID, so a subject who later changes their email still has their consent state attached.</p>',
+
+  '<h2 id="log-stream">Log stream sinks <a class="anchor" href="#log-stream">#</a></h2>',
+  '<p><code>b.logStream</code> is the operator-facing log-shipper primitive: the framework\'s structured log records (the JSON lines the wiki prints to stdout) can be tee\'d to an external SIEM, ELK, or any HTTPS POST endpoint without giving up the local stdout / file destination. Pair with <code>b.logStreamWebhook</code> for an HMAC-signed webhook delivery that survives transient receiver failures.</p>',
+  '<pre><code class="language-javascript">var sink = b.logStream.create({',
+  '  destination: b.logStreamWebhook.create({',
+  '    url:    "https://siem.example.com/ingest",',
+  '    secret: process.env.SIEM_HMAC_SECRET,',
+  '    retry:  { maxAttempts: 5, baseDelayMs: 250 },',
+  '  }),',
+  '  minLevel: "info",',
+  '});',
+  'b.log.subscribe(sink);     // tee — local destination still emits</code></pre>',
+
   '<h2 id="primitive-internals">How primitives wire it <a class="anchor" href="#primitive-internals">#</a></h2>',
   '<p>The wiring inside framework primitives threads through <code>b.observability.tap</code>, <code>b.audit.safeEmit</code>, and <code>b.redact.redact</code>. Excerpt from <code>lib/notify.js</code>:</p>',
   '<pre><code class="language-javascript">// notify.send — the hot path:',
@@ -408,6 +436,15 @@ var STORAGE_STATE = [
 
   '<h2 id="crypto-field">Field-level crypto <a class="anchor" href="#crypto-field">#</a></h2>',
   '<p><code>b.cryptoField</code> is the middleware <code>b.db</code> uses internally to seal and unseal columns. Operators rarely call it directly, but it\'s reachable when a feature stores ciphertext outside the DB (a side-car file, a third-party blob store) and wants the same envelope shape.</p>',
+
+  '<h2 id="atomic-file">Atomic file writes <a class="anchor" href="#atomic-file">#</a></h2>',
+  '<p><code>b.atomicFile</code> is the crash-safe file-write primitive every framework component that touches disk uses (vault keypair, audit-tip sidecar, sealed cookie keys, backup/restore manifests). The shape is always the same: write to <code>&lt;target&gt;.tmp</code>, <code>fsync</code> the file, atomically <code>rename</code> over the target. A power-loss mid-write leaves either the OLD bytes or the NEW bytes intact, never a half-written file.</p>',
+  '<pre><code class="language-javascript">// Write a JSON config atomically — same primitive vault.key uses',
+  'await b.atomicFile.writeJson("./data/feature-flags.json", flags);',
+  '',
+  '// Or buffer-level — full control over encoding',
+  'await b.atomicFile.writeBuffer("./data/binary.bin", Buffer.from(payload));</code></pre>',
+  '<p>Reach for it any time a feature stores state outside the DB. Operators writing operator-side migration scripts that touch <code>./data/</code> files should use it — same crash-safety guarantee as the framework\'s own writers.</p>',
 ].join("\n");
 
 
@@ -605,6 +642,16 @@ var CRYPTO_VAULT = [
 
   '<h2 id="pqc-gate">PQC gate <a class="anchor" href="#pqc-gate">#</a></h2>',
   '<p><code>b.pqcGate</code> inspects the TLS ClientHello at the TCP level and refuses connections that don\'t advertise an acceptable post-quantum or hybrid key-exchange. Operators rolling out PQ readiness behind a feature flag can run the gate in <em>warn-only</em> first, watch the audit chain for clients that would have been rejected, and flip to <em>enforce</em> once their fleet has caught up.</p>',
+
+  '<h2 id="pqc-agent">PQC agent for outbound HTTP <a class="anchor" href="#pqc-agent">#</a></h2>',
+  '<p>The gate covers <em>inbound</em> connections; <code>b.pqcAgent</code> covers <em>outbound</em>. It\'s an <code>https.Agent</code> subclass that pins the TLS minimum version + curve list to PQ-acceptable values, so app code that does <code>b.httpClient.request({ url: "https://..." })</code> against an upstream gets the same posture the inbound gate enforces. Operators with a fleet that\'s mostly modernized but still talks to a legacy stragger pass <code>{ allowFallback: true }</code> per call and audit the rare exception, instead of weakening the global default.</p>',
+  '<pre><code class="language-javascript">var agent = b.pqcAgent.create({ keepAlive: true });',
+  '',
+  'await b.httpClient.request({',
+  '  url:    "https://upstream.example.com/api",',
+  '  agent:  agent,    // PQ posture pinned',
+  '  // ...',
+  '});</code></pre>',
 ].join("\n");
 
 
