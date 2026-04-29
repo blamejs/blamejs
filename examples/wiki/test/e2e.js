@@ -185,6 +185,50 @@ async function run() {
     assert("crypto page covers PQ signatures",
            /SLH-DSA-SHAKE-256f/.test(crypto.body));
 
+    var testing = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/testing/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /testing/index → 200", testing.statusCode === 200);
+    assert("testing page covers fakeClock",
+           /fakeClock/.test(testing.body) && /clk\.advance/.test(testing.body));
+    assert("testing page covers captureAudit + captureObservability",
+           /captureAudit/.test(testing.body) && /captureObservability/.test(testing.body));
+
+    var notify = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/notify-mail/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /notify-mail/index → 200", notify.statusCode === 200);
+    assert("notify-mail page covers b.notify channels",
+           /b\.notify\.channels\.log/.test(notify.body) && /httpJson/.test(notify.body));
+    assert("notify-mail page covers websocketChannels fan-out",
+           /websocketChannels/.test(notify.body) && /publish/.test(notify.body));
+    assert("notify-mail page covers bounce intake",
+           /b\.mailBounce/.test(notify.body) && /Postmark/.test(notify.body));
+
+    var i18n = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/i18n-locale/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /i18n-locale/index → 200", i18n.statusCode === 200);
+    assert("i18n page covers ICU MessageFormat plurals",
+           /MessageFormat/.test(i18n.body) && /plural/.test(i18n.body));
+    assert("i18n page covers RTL detection",
+           /req\.dir/.test(i18n.body) && /rtl/.test(i18n.body));
+
+    var prod = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/production-essentials/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /production-essentials/index → 200", prod.statusCode === 200);
+    assert("prod-essentials page covers exactly-once-globally scheduler",
+           /exactly once globally/.test(prod.body) && /fencing token/.test(prod.body));
+    assert("prod-essentials page covers backup chain",
+           /b\.backup/.test(prod.body) && /chained/.test(prod.body));
+    assert("prod-essentials page covers ntpCheck",
+           /b\.ntpCheck/.test(prod.body));
+
     var redirect = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
       headers: BROWSER_HEADERS,
