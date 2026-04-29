@@ -1,34 +1,28 @@
 "use strict";
 /**
- * Wiki app e2e — boots the server in this process, hits each route via
- * node:http with realistic browser headers, asserts response codes and
- * body content, then shuts down.
+ * Wiki app e2e — boots the same wiring as server.js (via the shared
+ * lib/build-app.js) on an ephemeral port, hits each route via
+ * node:http with realistic browser headers, asserts response codes
+ * and body content, then shuts down.
  *
- * Validation discipline: we DO NOT weaken the framework's security
- * middleware (bot-guard, etc.) for tests. Instead we send the same
- * Accept-Language / User-Agent / sec-fetch-* headers a real browser
- * would, which is what bot-guard validates. This means:
- *
- *   - The wiki ships with operator-safe defaults (botGuard: true)
- *   - The e2e suite reflects real browser traffic, not bot traffic
- *   - Operators copying this test as a template get the headers right
+ * Test discipline (per feedback_test_to_security_not_security_to_test.md):
+ *   - DO NOT weaken the framework's security middleware for tests
+ *   - Send the same Accept-Language / User-Agent / Sec-Fetch-* headers
+ *     a real browser would
+ *   - Accept-Encoding: identity to opt out of compression so substring
+ *     assertions don't have to decompress
  */
 
 var http = require("node:http");
 var path = require("node:path");
 var fs = require("node:fs");
-var b = require("@blamejs/core");
+var { buildApp } = require("../lib/build-app");
 
 var DATA_DIR = path.join(__dirname, "..", "data-e2e");
-var PORT = 0;     // ephemeral
 var ADMIN_EMAIL = "admin-e2e@blamejs.app";
 var ADMIN_PASSWORD = "e2e-test-password-x9k2";
 
-// Browser-shaped headers. Bot-guard's gates are "missing Accept-Language"
-// and "missing sec-fetch-mode" — both required. Accept-Encoding: identity
-// opts OUT of compression so the route-logic substring assertions below
-// can run without decompressing. Compression itself is exercised by
-// the framework's own compression.test.js — orthogonal to wiki routing.
+// Browser-shaped headers — see test docstring above.
 var BROWSER_HEADERS = {
   "user-agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   "accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -38,8 +32,6 @@ var BROWSER_HEADERS = {
   "sec-fetch-mode":   "navigate",
   "sec-fetch-site":   "none",
 };
-
-// ---- HTTP helper ----
 
 function _request(opts, body) {
   return new Promise(function (resolve, reject) {
@@ -60,144 +52,15 @@ function _request(opts, body) {
   });
 }
 
-// ---- Boot the wiki server in-process ----
-// Same logic as server.js but inlined here so we can control DATA_DIR
-// + ADMIN_PASSWORD without depending on env-var hygiene in the parent
-// shell. Closely mirrors server.js — drift would surface as a failing
-// test.
 async function _bootApp() {
   if (fs.existsSync(DATA_DIR)) fs.rmSync(DATA_DIR, { recursive: true, force: true });
-
-  var template = b.template.create({ viewsDir: path.join(__dirname, "..", "views") });
-  var pageCache = b.cache.create({
-    namespace: "wiki.page",
-    ttlMs:     b.constants.TIME.minutes(5),
+  return buildApp({
+    dataDir:       DATA_DIR,
+    port:          0,                 // ephemeral
+    adminEmail:    ADMIN_EMAIL,
+    adminPassword: ADMIN_PASSWORD,
   });
-  var perms = b.permissions.create({
-    roles:    { admin: ["wiki:admin"], viewer: ["wiki:read"] },
-    resolver: function (req) {
-      if (!req.user) return null;
-      return { scopes: req.user.scopes || [] };
-    },
-  });
-  var i18n = b.i18n.create({
-    defaultLocale: "en",
-    locales:       ["en"],
-    translations:  { en: {} },
-  });
-  var healthChecks = b.middleware.health({
-    livenessPath:  "/healthz",
-    readinessPath: "/readyz",
-    startupPath:   "/startupz",
-  });
-  healthChecks.registerCheck("db", function () {
-    try { b.db.prepare("SELECT 1").get(); return true; }
-    catch (_e) { return false; }
-  }, { tier: "readiness", critical: true });
-
-  var SCHEMA = [{
-    name: "admin_users",
-    columns: {
-      id:           "TEXT PRIMARY KEY",
-      email:        "TEXT NOT NULL UNIQUE",
-      passwordHash: "TEXT NOT NULL",
-      createdAt:    "INTEGER NOT NULL",
-    },
-    sealedFields: [],
-  }];
-
-  var app = await b.createApp({
-    dataDir: DATA_DIR,
-    schema:  SCHEMA,
-    vault:   { mode: "plaintext" },
-    db:      {
-      atRest:       "plain",
-      auditSigning: { mode: "plaintext" },
-    },
-    middleware: {
-      cors:        false,
-      rateLimit:   false,
-      botGuard:    true,
-      requestId:   true,
-      securityHeaders: {
-        // Strict CSP — no 'unsafe-inline'. Same as production server.js.
-        csp:
-          "default-src 'self'; " +
-          "script-src 'self'; " +
-          "style-src 'self'; " +
-          "img-src 'self' data:; " +
-          "font-src 'self'; " +
-          "connect-src 'self'; " +
-          "frame-ancestors 'none'; " +
-          "base-uri 'self'; " +
-          "form-action 'self'; " +
-          "object-src 'none';",
-      },
-    },
-    routes: function (router) {
-      router.use(healthChecks.middleware());
-      router.use(b.middleware.bodyParser({ formUrlEncoded: true, json: true }));
-      router.use(b.middleware.cspNonce());
-      router.use(b.middleware.compression());
-      router.use(i18n.middleware());
-      router.use(b.middleware.attachUser({
-        cookieName: "wiki_sid",
-        tokenFrom:  "cookie",
-        userLoader: async function (verifiedSession) {
-          var row = b.db.prepare(
-            "SELECT id, email FROM admin_users WHERE id = ?"
-          ).get(verifiedSession.userId);
-          if (!row) return null;
-          var scopes = (verifiedSession.data && Array.isArray(verifiedSession.data.scopes))
-            ? verifiedSession.data.scopes : [];
-          return { userId: row.id, email: row.email, scopes: scopes };
-        },
-      }));
-      router.use(b.middleware.csrfProtect({
-        tokenLookup: function (req) { return (req.body && req.body.csrf) || null; },
-      }));
-
-      var pagesRoute = require("../routes/pages");
-      var adminRoute = require("../routes/admin");
-      var ctx = {
-        db:           b.db,
-        template:     template,
-        audit:        b.audit,
-        pageCache:    pageCache,
-        perms:        perms,
-        passwordAuth: b.auth.password,
-        session:      b.session,
-      };
-      pagesRoute.registerSpecific(router, ctx);
-      adminRoute.register(router, ctx);
-      pagesRoute.registerCatchAll(router, ctx);
-    },
-  });
-
-  // Run migrations + seeders
-  var migrations = b.migrations.create({
-    dir: path.join(__dirname, "..", "migrations"),
-    db:  b.db,
-  });
-  await migrations.up();
-
-  // Seed admin
-  var hash = await b.auth.password.hash(ADMIN_PASSWORD);
-  b.db.prepare(
-    "INSERT INTO admin_users (id, email, passwordHash, createdAt) VALUES (?, ?, ?, ?)"
-  ).run("admin-e2e", ADMIN_EMAIL, hash, Date.now());
-
-  var seeders = b.seeders.create({
-    dir: path.join(__dirname, "..", "seeders"),
-    db:  b.db,
-  });
-  await seeders.run({ env: "prod" });
-
-  var info = await app.listen({ port: PORT });
-  return { app: app, port: info.port };
 }
-
-// ---- Test runner ----
 
 var checks = 0;
 var failures = [];
@@ -209,19 +72,27 @@ function assert(name, cond) {
 
 async function run() {
   console.log("[wiki-e2e] booting…");
-  var booted = await _bootApp();
-  var port = booted.port;
+  var built = await _bootApp();
+  // Don't call scheduler.start() in tests — would ref the event loop
+  // and prevent clean exit.
+  var info = await built.app.listen({ port: 0 });
+  var port = info.port;
   console.log("[wiki-e2e] listening on :" + port);
 
   try {
-    // ---- Public routes ----
     var home = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/",
       headers: BROWSER_HEADERS,
     });
     assert("GET / → 200",                    home.statusCode === 200);
     assert("GET / body has 'blamejs'",       /blamejs/i.test(home.body));
-    assert("GET / body has nav",             /Concern groups|Welcome/i.test(home.body));
+    assert("GET / body has nav",             /rail-nav/i.test(home.body));
+    assert("GET / loads strict CSP (no unsafe-inline)",
+           home.headers["content-security-policy"] &&
+           home.headers["content-security-policy"].indexOf("'unsafe-inline'") === -1);
+    assert("GET / links Prism CSS",          /\/vendor\/prism\.css/.test(home.body));
+    assert("GET / links wiki.js",            /\/wiki\.js/.test(home.body));
+    assert("GET / links logo SVG",           /\/img\/blamejs-logo\.svg/.test(home.body));
 
     var health = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/healthz",
@@ -229,6 +100,12 @@ async function run() {
     });
     assert("GET /healthz → 200",             health.statusCode === 200);
     assert("GET /healthz JSON has status:ok", /"status"\s*:\s*"ok"/.test(health.body));
+
+    var ready = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/readyz",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /readyz → 200 (db check passes)", ready.statusCode === 200);
 
     var welcome = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/welcome/index",
@@ -257,14 +134,12 @@ async function run() {
     });
     assert("GET /missing/missing → 404",     noPage.statusCode === 404);
 
-    // ---- Admin gate (anon) ----
     var anonAdmin = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/admin",
       headers: BROWSER_HEADERS,
     });
     assert("anon GET /admin → 401",          anonAdmin.statusCode === 401);
 
-    // ---- Login form rendered ----
     var loginGet = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/login",
       headers: BROWSER_HEADERS,
@@ -272,14 +147,34 @@ async function run() {
     assert("GET /login → 200",               loginGet.statusCode === 200);
     assert("login form has csrf hidden field", /name="csrf"/.test(loginGet.body));
 
-    // The full POST /login round-trip would require extracting the
-    // session-bound CSRF token from the rendered form (the framework
-    // binds CSRF to the session cookie). The login flow is thoroughly
-    // tested in the framework's own smoke (auth + csrf-protect tests);
-    // exercising it again here would re-verify framework behavior, not
-    // wiki behavior. Skip; document.
+    // ---- Static asset checks ----
+    var prismJs = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/vendor/prism.js",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "sec-fetch-dest": "script", "sec-fetch-mode": "no-cors",
+      }),
+    });
+    assert("GET /vendor/prism.js → 200",     prismJs.statusCode === 200);
+    assert("prism.js mentions Prism",        /Prism/.test(prismJs.body));
+
+    var wikiCss = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/wiki.css",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "sec-fetch-dest": "style", "sec-fetch-mode": "no-cors",
+      }),
+    });
+    assert("GET /wiki.css → 200",            wikiCss.statusCode === 200);
+
+    var logo = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/img/blamejs-logo.svg",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "sec-fetch-dest": "image", "sec-fetch-mode": "no-cors",
+      }),
+    });
+    assert("GET /img/blamejs-logo.svg → 200", logo.statusCode === 200);
+    assert("logo is SVG",                    /<svg/.test(logo.body));
   } finally {
-    await booted.app.shutdown();
+    await built.app.shutdown();
   }
 
   console.log("");

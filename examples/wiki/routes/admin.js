@@ -39,6 +39,8 @@ function register(router, ctx) {
   var perms = ctx.perms;
   var passwordAuth = ctx.passwordAuth;
   var session = ctx.session;
+  var notify = ctx.notify;
+  var apiKeys = ctx.apiKeys;
 
   // ---- Login form ----
   router.get("/login", function (req, res) {
@@ -203,7 +205,84 @@ function register(router, ctx) {
       metadata: { title: title, byteLength: content.length },
     });
 
+    // Notify on every page edit. The 'log' channel always fires (dev
+    // visibility); the 'webhook' channel fires when WIKI_WEBHOOK_URL
+    // + WIKI_WEBHOOK_SECRET are configured. b.notify dispatches via
+    // sendBatch — one channel down (e.g. webhook receiver 5xx) does
+    // NOT fail the other.
+    var notifyMessage = {
+      event:     "wiki.page.edited",
+      group:     groupName,
+      slug:      slug,
+      title:     title,
+      byteLength: content.length,
+      editedAt:  now,
+      editedBy:  userId,
+    };
+    var inputs = [{ channel: "log", message: notifyMessage, req: req }];
+    if (notify.channels().indexOf("webhook") !== -1) {
+      inputs.push({ channel: "webhook", message: notifyMessage, req: req });
+    }
+    // sendBatch is fire-and-forget at the route level — we don't block
+    // the redirect on outbound webhook delivery. b.retry inside notify
+    // handles transient failures; permanent ones audit.
+    notify.sendBatch(inputs).catch(function () { /* notify is best-effort */ });
+
     b.render.redirect(res, "/" + groupName + "/" + slug);
+  });
+
+  // ---- API keys (content-management) ----
+  router.get("/admin/api-keys", requireAdmin, async function (req, res) {
+    if (!req.user || !req.user.userId) {
+      res.statusCode = 401;
+      return b.render.htmlString(res, "Unauthorized", { status: 401 });
+    }
+    var keys = await apiKeys.listForOwner(req.user.userId, { req: req });
+    var data = Object.assign(_layoutData(req), {
+      title:  "API Keys",
+      keys:   keys,
+      issued: null,
+    });
+    b.render.htmlString(res, template.render("admin/api-keys", data));
+  });
+
+  router.post("/admin/api-keys/issue", requireAdmin, async function (req, res) {
+    if (!req.user || !req.user.userId) {
+      res.statusCode = 401;
+      return b.render.htmlString(res, "Unauthorized", { status: 401 });
+    }
+    var body = req.body || {};
+    var label = String(body.label || "").trim() || null;
+    var scopes = String(body.scopes || "").split(",")
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; });
+    if (scopes.length === 0) scopes = ["wiki:read"];
+    var issued = await apiKeys.issue({
+      ownerId:  req.user.userId,
+      scopes:   scopes,
+      metadata: { label: label },
+      req:      req,
+    });
+    // The plaintext secret is shown ONCE; subsequent listings only
+    // surface the prefix + id.
+    var keys = await apiKeys.listForOwner(req.user.userId, { req: req });
+    var data = Object.assign(_layoutData(req), {
+      title:  "API Keys",
+      keys:   keys,
+      issued: { id: issued.id, key: issued.key, scopes: scopes.join(", ") },
+    });
+    b.render.htmlString(res, template.render("admin/api-keys", data));
+  });
+
+  router.post("/admin/api-keys/revoke", requireAdmin, async function (req, res) {
+    var body = req.body || {};
+    var id = String(body.id || "").trim();
+    if (!/^wiki:[a-f0-9]+$/.test(id)) {
+      res.statusCode = 400;
+      return b.render.htmlString(res, "Bad request", { status: 400 });
+    }
+    await apiKeys.revoke(id, { req: req });
+    b.render.redirect(res, "/admin/api-keys");
   });
 }
 
