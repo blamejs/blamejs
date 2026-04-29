@@ -83,10 +83,20 @@ async function buildApp(opts) {
     assets[out.name] = "/dist/" + path.basename(out.path);
   }
 
+  // ---- Register app-specific audit namespace ----
+  // The framework refuses to write events on namespaces it doesn't know
+  // about (and silently drops with a warning). The wiki emits wiki.login,
+  // wiki.page.edited, etc., so register up front.
+  b.audit.registerNamespace("wiki");
+
   // ---- Build framework primitives ----
   var template = b.template.create({
     viewsDir: path.join(__dirname, "..", "views"),
   });
+  // Compile every view at boot — a `{% if not foo %}` typo (or any
+  // template syntax error) fails the deploy here instead of surfacing
+  // as a 500 the first time an operator clicks the route.
+  template.precompileAll();
 
   var pageCache = b.cache.create({
     namespace: "wiki.page",
@@ -95,11 +105,19 @@ async function buildApp(opts) {
   });
 
   var perms = b.permissions.create({
-    roles: { admin: ["wiki:admin"], viewer: ["wiki:read"] },
+    // Role table — perms.require("wiki:admin") matches when a user has
+    // either the "wiki:admin" scope directly OR the "admin" role that
+    // grants it. Only the admin role is enforced by this example; add
+    // a viewer role mapped to wiki:read here when adding read-gated
+    // routes (e.g. drafts, private pages).
+    roles: { admin: ["wiki:admin"] },
     audit: b.audit,
     resolver: function (req) {
       if (!req.user) return null;
-      return { scopes: req.user.scopes || [] };
+      return {
+        scopes: req.user.scopes || [],
+        roles:  req.user.roles  || [],
+      };
     },
   });
 
@@ -172,19 +190,19 @@ async function buildApp(opts) {
         // "self". For local dev (HTTP, default port) the framework
         // can infer it from the request; production deployments
         // behind TLS terminators should pass siteOrigin explicitly.
-        allowedOrigins:   [],
-        allowCredentials: false,
+        origins:     [],
+        credentials: false,
       },
       rateLimit: {
         backend:         "memory",
         burst:           120,
         refillPerSecond: 2,
-        skip: function (req) { return req.url === "/healthz"; },
+        skipPaths:       ["/healthz", "/readyz"],
       },
     },
     routes: function (router) {
       router.use(healthChecks.middleware());
-      router.use(b.middleware.bodyParser({ formUrlEncoded: true, json: true }));
+      router.use(b.middleware.bodyParser({ urlencoded: true, json: true }));
       var nonceMw = b.middleware.cspNonce();
       router.use(nonceMw);
       router.use(b.middleware.compression());
@@ -204,7 +222,14 @@ async function buildApp(opts) {
         },
       }));
       router.use(b.middleware.csrfProtect({
-        tokenLookup: function (req) { return (req.body && req.body.csrf) || null; },
+        // Double-submit cookie pattern: csrfProtect issues a token via
+        // cookie on first GET, exposes it on req.csrfToken for the
+        // template to render in <input name="csrf">, and on POST
+        // verifies the form-submitted value matches the cookie.
+        // SameSite=Lax blocks cross-site form POSTs from carrying the
+        // cookie, so the comparison fails for CSRF attempts.
+        cookie:    { name: "wiki_csrf" },
+        fieldName: "csrf",   // wiki templates use <input name="csrf">
       }));
       router.use(b.staticServe.create({
         root: path.join(__dirname, "..", "public"),

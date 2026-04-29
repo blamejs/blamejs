@@ -52,7 +52,6 @@ function register(router, ctx) {
 
     function _showError(msg) {
       data.error = msg;
-      res.statusCode = 401;
       return b.render.htmlString(res, template.render("login", data), { status: 401 });
     }
 
@@ -82,10 +81,18 @@ function register(router, ctx) {
       });
       return _showError("Invalid credentials.");
     }
-    // Build a session bound to this admin
-    var sid = await session.create({ userId: row.id, data: { email: row.email, scopes: ["admin"] } });
+    // Build a session bound to this admin. session.create returns
+    // { token, expiresAt } — the cookie value is the token, max-age
+    // mirrors expiresAt. The scope stored on the session is the actual
+    // scope the role grants (wiki:admin), not the role name — perms
+    // checks compare scope strings, so the role/scope split must be
+    // honored or the comparison only works by string-coincidence.
+    var sess = await session.create({ userId: row.id, data: { email: row.email, scopes: ["wiki:admin"] } });
+    var maxAge = Math.max(0, Math.floor((sess.expiresAt - Date.now()) / 1000));
+    var secure = (req.socket && req.socket.encrypted) ||
+      (req.headers && req.headers["x-forwarded-proto"] === "https") ? "; Secure" : "";
     res.setHeader("Set-Cookie",
-      "wiki_sid=" + sid + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400");
+      "wiki_sid=" + sess.token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + maxAge + secure);
     audit.safeEmit({
       action:   "wiki.login.success",
       outcome:  "success",
@@ -99,7 +106,9 @@ function register(router, ctx) {
     if (req.session && req.session.id) {
       await session.destroy(req.session.id);
     }
-    res.setHeader("Set-Cookie", "wiki_sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+    var secureLogout = (req.socket && req.socket.encrypted) ||
+      (req.headers && req.headers["x-forwarded-proto"] === "https") ? "; Secure" : "";
+    res.setHeader("Set-Cookie", "wiki_sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" + secureLogout);
     audit.safeEmit({
       action:   "wiki.logout",
       outcome:  "success",
@@ -109,9 +118,10 @@ function register(router, ctx) {
   });
 
   // ---- Admin gate ----
-  // perms.require("admin") returns a 3-arg middleware that emits a
-  // 401/403 if the actor lacks the role. Routes below are gated by it.
-  var requireAdmin = perms.require("admin");
+  // perms.require(scope) returns a 3-arg middleware that emits a
+  // 401/403 if the actor lacks the scope. The scope string here must
+  // match what gets stored on the session (see login above).
+  var requireAdmin = perms.require("wiki:admin");
 
   router.get("/admin", requireAdmin, function (req, res) {
     var pages = db.prepare(
@@ -174,9 +184,42 @@ function register(router, ctx) {
     var slug = b.slug(String(body.slug || ""), { fallback: "" });
     var title = String(body.title || "").trim();
     var content = String(body.body || "");
+    // Re-render the edit form with the operator's submitted values + an
+    // error banner. Used for any validation failure so the user doesn't
+    // lose what they just typed.
+    function _rerenderEdit(errMsg, status) {
+      var data = Object.assign(_layoutData(req, ctx), {
+        title:      groupName && slug ? "Edit " + groupName + "/" + slug : "New page",
+        isNew:      !(groupName && slug),
+        groupName:  groupName,
+        slug:       slug,
+        titleField: title,
+        body:       content,
+        error:      errMsg,
+      });
+      return b.render.htmlString(res, template.render("admin/edit", data), { status: status });
+    }
+
     if (!groupName || !slug || !title) {
-      res.statusCode = 400;
-      return b.render.htmlString(res, "<h1>Bad request</h1><p>Invalid group/slug/title.</p>", { status: 400 });
+      return _rerenderEdit("Group, slug, and title are all required.", 400);
+    }
+    // Reject malformed HTML at the operator boundary so a forgotten
+    // `</div>` doesn't ship and silently break the rendered page (the
+    // wiki renders body raw — `{{{ body }}}` — by design, so the
+    // browser's tag-recovery would otherwise swallow surrounding
+    // layout into the unclosed element).
+    var htmlProblem = b.htmlBalance.check(content);
+    if (htmlProblem) {
+      audit.safeEmit({
+        action:   "wiki.page.edited",
+        outcome:  "failure",
+        actor:    b.requestHelpers.extractActorContext(req),
+        resource: { kind: "wiki.page", id: groupName + "/" + slug },
+        reason:   htmlProblem.code,
+        metadata: { message: htmlProblem.message },
+      });
+      return _rerenderEdit("Invalid HTML — " + htmlProblem.message +
+        ". Fix the issue and save again; your text is preserved below.", 400);
     }
     var now = Date.now();
     var userId = req.user ? req.user.userId : "unknown";
@@ -228,7 +271,6 @@ function register(router, ctx) {
   // ---- API keys (content-management) ----
   router.get("/admin/api-keys", requireAdmin, async function (req, res) {
     if (!req.user || !req.user.userId) {
-      res.statusCode = 401;
       return b.render.htmlString(res, "Unauthorized", { status: 401 });
     }
     var keys = await apiKeys.listForOwner(req.user.userId, { req: req });
@@ -242,7 +284,6 @@ function register(router, ctx) {
 
   router.post("/admin/api-keys/issue", requireAdmin, async function (req, res) {
     if (!req.user || !req.user.userId) {
-      res.statusCode = 401;
       return b.render.htmlString(res, "Unauthorized", { status: 401 });
     }
     var body = req.body || {};
@@ -250,7 +291,10 @@ function register(router, ctx) {
     var scopes = String(body.scopes || "").split(",")
       .map(function (s) { return s.trim(); })
       .filter(function (s) { return s.length > 0; });
-    if (scopes.length === 0) scopes = ["wiki:read"];
+    // Default issued API keys to wiki:admin so the operator gets a usable
+    // key out of the form. Adjust scopes via the form's text field; the
+    // perms primitive enforces the chosen scope at the route boundary.
+    if (scopes.length === 0) scopes = ["wiki:admin"];
     var issued = await apiKeys.issue({
       ownerId:  req.user.userId,
       scopes:   scopes,
@@ -272,7 +316,6 @@ function register(router, ctx) {
     var body = req.body || {};
     var id = String(body.id || "").trim();
     if (!/^wiki:[a-f0-9]+$/.test(id)) {
-      res.statusCode = 400;
       return b.render.htmlString(res, "Bad request", { status: 400 });
     }
     await apiKeys.revoke(id, { req: req });

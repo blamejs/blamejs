@@ -107,24 +107,24 @@ async function run() {
     assert("GET /readyz → 200 (db check passes)", ready.statusCode === 200);
 
     var welcome = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/welcome/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /welcome/index → 200",       welcome.statusCode === 200);
+    assert("GET /welcome → 200",       welcome.statusCode === 200);
     assert("welcome page mentions blamejs",  /blamejs/i.test(welcome.body));
     assert("welcome page has hello-world section",
            /hello-world/.test(welcome.body));
     assert("welcome page has design-tenets section",
            /design-tenets/.test(welcome.body));
     assert("welcome page links to concern groups",
-           /\/observability\/index/.test(welcome.body) &&
-           /\/auth-permissions\/index/.test(welcome.body));
+           /href="\/observability"/.test(welcome.body) &&
+           /href="\/auth-permissions"/.test(welcome.body));
 
     var obs = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/observability/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/observability",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /observability/index → 200", obs.statusCode === 200);
+    assert("GET /observability → 200", obs.statusCode === 200);
     assert("observability page covers audit chain",
            /audit chain/i.test(obs.body) && /tamper-evident/i.test(obs.body));
     assert("observability page documents the 5 W's",
@@ -135,10 +135,10 @@ async function run() {
            /b\.redact\.redact/.test(obs.body));
 
     var auth = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/auth-permissions/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/auth-permissions",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /auth-permissions/index → 200", auth.statusCode === 200);
+    assert("GET /auth-permissions → 200", auth.statusCode === 200);
     assert("auth page covers passwords + Argon2id",
            /Argon2id/.test(auth.body) && /b\.auth\.password/.test(auth.body));
     assert("auth page covers passkeys (WebAuthn)",
@@ -149,10 +149,10 @@ async function run() {
            /b\.permissions/.test(auth.body) && /inherits/.test(auth.body));
 
     var storage = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/storage-state/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/storage-state",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /storage-state/index → 200", storage.statusCode === 200);
+    assert("GET /storage-state → 200", storage.statusCode === 200);
     assert("storage page covers sealed columns",
            /sealedFields/.test(storage.body) && /vault\.seal/.test(storage.body));
     assert("storage page covers migrations advisory lock",
@@ -163,10 +163,10 @@ async function run() {
            /b\.queue/.test(storage.body) && /b\.jobs/.test(storage.body));
 
     var http = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/http-middleware/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/http-middleware",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /http-middleware/index → 200", http.statusCode === 200);
+    assert("GET /http-middleware → 200", http.statusCode === 200);
     assert("http page documents the default middleware stack",
            /requestId/.test(http.body) && /securityHeaders/.test(http.body) && /csrfProtect/.test(http.body));
     assert("http page covers cspNonce",
@@ -175,10 +175,10 @@ async function run() {
            /safeUrl/.test(http.body) && /SSRF/.test(http.body));
 
     var crypto = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/crypto-vault/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/crypto-vault",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /crypto-vault/index → 200", crypto.statusCode === 200);
+    assert("GET /crypto-vault → 200", crypto.statusCode === 200);
     assert("crypto page documents the storage envelope",
            /envelope/i.test(crypto.body) && /0xE1/.test(crypto.body));
     assert("crypto page covers ML-KEM + P-384 hybrid",
@@ -189,20 +189,20 @@ async function run() {
            /SLH-DSA-SHAKE-256f/.test(crypto.body));
 
     var testing = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/testing/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/testing",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /testing/index → 200", testing.statusCode === 200);
+    assert("GET /testing → 200", testing.statusCode === 200);
     assert("testing page covers fakeClock",
            /fakeClock/.test(testing.body) && /clk\.advance/.test(testing.body));
     assert("testing page covers captureAudit + captureObservability",
            /captureAudit/.test(testing.body) && /captureObservability/.test(testing.body));
 
     var notify = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/notify-mail/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/notify-mail",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /notify-mail/index → 200", notify.statusCode === 200);
+    assert("GET /notify-mail → 200", notify.statusCode === 200);
     assert("notify-mail page covers b.notify channels",
            /b\.notify\.channels\.log/.test(notify.body) && /httpJson/.test(notify.body));
     assert("notify-mail page covers websocketChannels fan-out",
@@ -211,20 +211,20 @@ async function run() {
            /b\.mailBounce/.test(notify.body) && /Postmark/.test(notify.body));
 
     var i18n = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/i18n-locale/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/i18n-locale",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /i18n-locale/index → 200", i18n.statusCode === 200);
+    assert("GET /i18n-locale → 200", i18n.statusCode === 200);
     assert("i18n page covers ICU MessageFormat plurals",
            /MessageFormat/.test(i18n.body) && /plural/.test(i18n.body));
     assert("i18n page covers RTL detection",
            /req\.dir/.test(i18n.body) && /rtl/.test(i18n.body));
 
     var prod = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/production-essentials/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/production-essentials",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /production-essentials/index → 200", prod.statusCode === 200);
+    assert("GET /production-essentials → 200", prod.statusCode === 200);
     assert("prod-essentials page covers exactly-once-globally scheduler",
            /exactly once globally/.test(prod.body) && /fencing token/.test(prod.body));
     assert("prod-essentials page covers backup chain",
@@ -232,12 +232,14 @@ async function run() {
     assert("prod-essentials page covers ntpCheck",
            /b\.ntpCheck/.test(prod.body));
 
+    // Canonicalization: /<group>/index 301-redirects to /<group> so
+    // there's one canonical URL for the landing page.
     var redirect = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
+      method: "GET", host: "127.0.0.1", port: port, path: "/welcome/index",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /welcome → 302 to index",
-           redirect.statusCode === 302 && /\/welcome\/index/.test(redirect.headers.location || ""));
+    assert("GET /welcome/index → 301 to /welcome",
+           redirect.statusCode === 301 && (redirect.headers.location || "") === "/welcome");
 
     var search = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/search?q=blamejs",
@@ -264,6 +266,94 @@ async function run() {
     });
     assert("GET /login → 200",               loginGet.statusCode === 200);
     assert("login form has csrf hidden field", /name="csrf"/.test(loginGet.body));
+
+    // ---- POST /login + authenticated /admin ---- (the missing leg
+    // that previously hid the session-cookie return-shape bug).
+    var csrfMatch = loginGet.body.match(/name="csrf"\s+value="([0-9a-f]+)"/);
+    assert("login form has populated csrf token", !!(csrfMatch && csrfMatch[1]));
+    var csrf = csrfMatch ? csrfMatch[1] : "";
+    // Pull the wiki_csrf cookie off the GET response so the POST carries it.
+    var setCookieRaw = loginGet.headers["set-cookie"] || [];
+    var cookieHeader = (Array.isArray(setCookieRaw) ? setCookieRaw : [setCookieRaw])
+      .map(function (sc) { return String(sc).split(";")[0]; })
+      .join("; ");
+    assert("GET /login set wiki_csrf cookie", /wiki_csrf=/.test(cookieHeader));
+
+    var loginPostBody = "csrf=" + encodeURIComponent(csrf) +
+      "&email=" + encodeURIComponent(ADMIN_EMAIL) +
+      "&password=" + encodeURIComponent(ADMIN_PASSWORD);
+    var loginPost = await _request({
+      method: "POST", host: "127.0.0.1", port: port, path: "/login",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "content-type":   "application/x-www-form-urlencoded",
+        "content-length": Buffer.byteLength(loginPostBody),
+        "origin":         "http://127.0.0.1:" + port,
+        "sec-fetch-site": "same-origin",
+        "cookie":         cookieHeader,
+      }),
+    }, loginPostBody);
+    assert("POST /login redirects to /admin (302)",
+           loginPost.statusCode === 302 && /\/admin/.test(loginPost.headers.location || ""));
+    var sessionSetCookie = loginPost.headers["set-cookie"] || [];
+    var sessionCookie = (Array.isArray(sessionSetCookie) ? sessionSetCookie : [sessionSetCookie])
+      .map(function (sc) { return String(sc); })
+      .find(function (sc) { return /^wiki_sid=/.test(sc); }) || "";
+    assert("POST /login sets wiki_sid cookie", /^wiki_sid=[^;]+/.test(sessionCookie));
+    assert("wiki_sid value is a non-empty token (not '[object Object]')",
+           !/wiki_sid=(\[object|undefined|null|\s*;)/.test(sessionCookie) &&
+           /^wiki_sid=[a-f0-9]{16,}/.test(sessionCookie));
+
+    var sessionCookieValue = sessionCookie.split(";")[0]; // wiki_sid=<token>
+    var fullCookie = cookieHeader + "; " + sessionCookieValue;
+    var authedAdmin = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/admin",
+      headers: Object.assign({}, BROWSER_HEADERS, { cookie: fullCookie }),
+    });
+    assert("authenticated GET /admin → 200",
+           authedAdmin.statusCode === 200);
+    assert("authenticated /admin renders admin dashboard",
+           /admin/i.test(authedAdmin.body) && !/missing_actor/.test(authedAdmin.body));
+
+    // Walk every authenticated admin route reachable via GET — this
+    // catches template syntax errors / handler-side regressions that
+    // would otherwise only surface when an operator clicks the link.
+    var authedRoutes = [
+      { path: "/admin/edit",                   needle: /name="title"/i },
+      { path: "/admin/edit/welcome/index",     needle: /welcome/i },
+      { path: "/admin/api-keys",               needle: /api keys/i },
+    ];
+    for (var ar = 0; ar < authedRoutes.length; ar++) {
+      var rt = authedRoutes[ar];
+      var routeResp = await _request({
+        method: "GET", host: "127.0.0.1", port: port, path: rt.path,
+        headers: Object.assign({}, BROWSER_HEADERS, { cookie: fullCookie }),
+      });
+      assert("authenticated GET " + rt.path + " → 200", routeResp.statusCode === 200);
+      assert("authenticated GET " + rt.path + " body matches expected content",
+             rt.needle.test(routeResp.body));
+      assert("authenticated GET " + rt.path + " not a 500/template error",
+             !/INTERNAL_ERROR|trailing tokens|template:/i.test(routeResp.body));
+    }
+
+    // Negative case: malformed CSRF on POST must be refused (403 with
+    // "CSRF token mismatch" — the form value doesn't match the cookie).
+    var badCsrfBody = "csrf=deadbeef" +
+      "&email=" + encodeURIComponent(ADMIN_EMAIL) +
+      "&password=" + encodeURIComponent(ADMIN_PASSWORD);
+    var badCsrf = await _request({
+      method: "POST", host: "127.0.0.1", port: port, path: "/login",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "content-type":   "application/x-www-form-urlencoded",
+        "content-length": Buffer.byteLength(badCsrfBody),
+        "origin":         "http://127.0.0.1:" + port,
+        "sec-fetch-site": "same-origin",
+        "cookie":         cookieHeader,
+      }),
+    }, badCsrfBody);
+    assert("POST /login with bad CSRF → 403",
+           badCsrf.statusCode === 403);
+    assert("POST /login with bad CSRF body mentions mismatch",
+           /CSRF token mismatch/i.test(badCsrf.body));
 
     // ---- Static asset checks ----
     var prismJs = await _request({
@@ -372,12 +462,12 @@ async function run() {
     // Templated HTML page served by routes/pages.js + cached + piped
     // through compression.
     var welcomeCompressed = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/welcome/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
       headers: COMPRESS_HEADERS,
     });
-    assert("compressed /welcome/index → 200 (no stall)",
+    assert("compressed /welcome → 200 (no stall)",
            welcomeCompressed.statusCode === 200);
-    assert("compressed /welcome/index: Content-Encoding present",
+    assert("compressed /welcome: Content-Encoding present",
            !!welcomeCompressed.headers["content-encoding"]);
     var pageEnc = welcomeCompressed.headers["content-encoding"];
     var welcomeDecoded =
@@ -410,7 +500,7 @@ async function run() {
     // contains a placeholder; substitution at serve time has to give
     // it a fresh nonce that matches the new CSP header.
     var welcome2 = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/welcome/index",
+      method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
       headers: COMPRESS_HEADERS,
     });
     var cached2enc = welcome2.headers["content-encoding"];
@@ -459,10 +549,10 @@ async function run() {
     var allLanguages     = new Set();
     for (var gi = 0; gi < GROUPS.length; gi++) {
       var page = await _request({
-        method: "GET", host: "127.0.0.1", port: port, path: "/" + GROUPS[gi] + "/index",
+        method: "GET", host: "127.0.0.1", port: port, path: "/" + GROUPS[gi],
         headers: BROWSER_HEADERS,
       });
-      assert("completeness: GET /" + GROUPS[gi] + "/index → 200", page.statusCode === 200);
+      assert("completeness: GET /" + GROUPS[gi] + " → 200", page.statusCode === 200);
       var bodyOnly = page.body;
       // Internal links — only paths that start with "/" and don't
       // include "://"; ignore hash-only fragments.

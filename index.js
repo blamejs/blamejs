@@ -96,6 +96,8 @@ var auth = {
 };
 var template = require("./lib/template");
 var render = require("./lib/render");
+var htmlBalance = require("./lib/html-balance");
+var validateOpts = require("./lib/validate-opts");
 var staticServe = require("./lib/static");
 var forms = require("./lib/forms");
 var app = require("./lib/app");
@@ -193,6 +195,8 @@ module.exports = {
   auth:             auth,
   template:         template,
   render:           render,
+  htmlBalance:      htmlBalance,
+  validateOpts:     validateOpts,
   staticServe:      staticServe,
   forms:            forms,
   createApp:        app.createApp,

@@ -29,17 +29,6 @@ function _layoutDataForCache(req, ctx) {
   return _layoutData(req, ctx, ctx.nonceMw.PLACEHOLDER);
 }
 
-// Wikis read-heavy → cache rendered HTML keyed by `<group>/<slug>`. The
-// admin save route invalidates the cache key on edit. b.cache.create
-// returns a memory-backed instance per process; cluster-mode operators
-// could swap in cluster backend with one opt change.
-function _buildPageCache() {
-  return b.cache.create({
-    namespace: "wiki.page",
-    ttlMs:     b.constants.TIME.minutes(5),
-  });
-}
-
 // Specific routes (literal paths, registered FIRST so they match before
 // the /:group catch-all). The catch-all `/:group` would otherwise
 // intercept /login, /admin, /logout, etc. — operator-supplied paths
@@ -98,20 +87,11 @@ function registerCatchAll(router, ctx) {
   var template = ctx.template;
 
   // ---- Group/page lookup ----
-  // /<group> redirects to /<group>/index for the landing page; the
-  // index slug is the framework convention used by the seeder.
-  router.get("/:group", function (req, res) {
-    var group = req.params.group;
-    if (!/^[a-z0-9-]+$/.test(group)) return b.render.htmlString(res, "Not found", { status: 404 });
-    return b.render.redirect(res, "/" + group + "/index");
-  });
-
-  router.get("/:group/:slug", async function (req, res) {
-    var group = req.params.group;
-    var slug = req.params.slug;
-    if (!/^[a-z0-9-]+$/.test(group) || !/^[a-z0-9-]+$/.test(slug)) {
-      return b.render.htmlString(res, "Not found", { status: 404 });
-    }
+  // Convention: each group has a landing page stored at slug "index".
+  // /<group>          serves the group's index directly (no redirect).
+  // /<group>/<slug>   serves the named page within the group.
+  // /<group>/index    301-redirects to /<group> so there's one canonical URL.
+  async function _renderPage(req, res, group, slug) {
     var cacheKey = group + "/" + slug;
     var html = await pageCache.wrap(cacheKey, async function () {
       var row = db.prepare(
@@ -130,15 +110,34 @@ function registerCatchAll(router, ctx) {
       return template.render("page", data);
     });
     if (!html) {
-      res.statusCode = 404;
       return b.render.htmlString(res, "<h1>Not found</h1><p>No such page.</p>", { status: 404 });
     }
     b.render.htmlString(res, ctx.nonceMw.substitute(html, req));
+  }
+
+  router.get("/:group", async function (req, res) {
+    var group = req.params.group;
+    if (!/^[a-z0-9-]+$/.test(group)) {
+      return b.render.htmlString(res, "Not found", { status: 404 });
+    }
+    return _renderPage(req, res, group, "index");
+  });
+
+  router.get("/:group/:slug", async function (req, res) {
+    var group = req.params.group;
+    var slug = req.params.slug;
+    if (!/^[a-z0-9-]+$/.test(group) || !/^[a-z0-9-]+$/.test(slug)) {
+      return b.render.htmlString(res, "Not found", { status: 404 });
+    }
+    // Canonicalize: /<group>/index permanently redirects to /<group>.
+    if (slug === "index") {
+      return b.render.redirect(res, "/" + group, { status: 301 });
+    }
+    return _renderPage(req, res, group, slug);
   });
 }
 
 module.exports = {
   registerSpecific: registerSpecific,
   registerCatchAll: registerCatchAll,
-  _buildPageCache:  _buildPageCache,
 };

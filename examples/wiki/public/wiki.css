@@ -413,8 +413,11 @@ main form button:hover, main button.btn:hover, main a.btn:hover {
   text-decoration: none;
   color: #fff;
 }
-main form .form-error {
+main .form-error {
   color: #b22a2a;
+  background: #fdecec;
+  border-left: 3px solid #b22a2a;
+  padding: 0.5rem 0.75rem;
   font-weight: 500;
   margin: 0.75rem 0;
 }

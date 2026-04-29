@@ -34,7 +34,7 @@ var LIB_ROOT = path.resolve(__dirname, "..", "..", "lib");
 // Single-quoted variants too. Action shape:
 // `[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+`.
 var EMIT_PATTERNS = [
-  /(?:_emit|_emitAudit|emitAudit)\(\s*["']([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)["']/g,
+  /(?:_emit|_emitAudit|_auditEmit|emitAudit)\(\s*["']([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)["']/g,
   /action\s*:\s*["']([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)["']/g,
 ];
 
