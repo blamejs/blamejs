@@ -10,7 +10,6 @@ WORKDIR /build
 COPY package.json index.js NOTICE LICENSE README.md ./
 COPY bin ./bin
 COPY lib ./lib
-COPY scripts ./scripts
 COPY examples/wiki ./examples/wiki
 WORKDIR /build/examples/wiki
 RUN rm -rf node_modules data data-e2e public/dist \
@@ -24,7 +23,6 @@ WORKDIR /app
 COPY --from=deps /build/package.json /build/index.js /build/NOTICE /build/LICENSE /build/README.md ./
 COPY --from=deps /build/bin ./bin
 COPY --from=deps /build/lib ./lib
-COPY --from=deps /build/scripts ./scripts
 COPY --from=deps /build/examples/wiki ./examples/wiki
 WORKDIR /app/examples/wiki
 RUN mkdir -p /data \
