@@ -131,6 +131,34 @@ async function run() {
     assert("observability page includes redaction recipe",
            /b\.redact\.redact/.test(obs.body));
 
+    var auth = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/auth-permissions/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /auth-permissions/index → 200", auth.statusCode === 200);
+    assert("auth page covers passwords + Argon2id",
+           /Argon2id/.test(auth.body) && /b\.auth\.password/.test(auth.body));
+    assert("auth page covers passkeys (WebAuthn)",
+           /WebAuthn/.test(auth.body) && /b\.auth\.passkey/.test(auth.body));
+    assert("auth page covers OAuth providers",
+           /b\.auth\.oauth/.test(auth.body) && /PKCE/.test(auth.body));
+    assert("auth page covers RBAC roles",
+           /b\.permissions/.test(auth.body) && /inherits/.test(auth.body));
+
+    var storage = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/storage-state/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /storage-state/index → 200", storage.statusCode === 200);
+    assert("storage page covers sealed columns",
+           /sealedFields/.test(storage.body) && /vault\.seal/.test(storage.body));
+    assert("storage page covers migrations advisory lock",
+           /advisory lock/.test(storage.body) && /SHA3-512/.test(storage.body));
+    assert("storage page covers presigned uploads",
+           /presignUpload/.test(storage.body) && /SigV4/.test(storage.body));
+    assert("storage page covers queue + jobs",
+           /b\.queue/.test(storage.body) && /b\.jobs/.test(storage.body));
+
     var redirect = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
       headers: BROWSER_HEADERS,
