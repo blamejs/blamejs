@@ -16,28 +16,31 @@
 # The vendored Argon2id native module ships glibc prebuilds; Wolfi is
 # glibc-based so the existing prebuilds load without rebuild.
 
+# Chainguard's :latest-dev runs as the `node` user by default with HOME
+# at /home/node. Anchor the build there with matching --chown=node:node
+# so npm install can create node_modules without any USER root step.
+# The :latest runtime image runs as `nonroot` (different user, lower
+# privilege); --chown=nonroot:nonroot on the COPY --from=deps rewrites
+# ownership at copy time into the runtime image.
 FROM cgr.dev/chainguard/node:latest-dev AS deps
-WORKDIR /build
-USER root
-COPY package.json index.js NOTICE LICENSE README.md ./
-COPY bin ./bin
-COPY lib ./lib
-COPY examples/wiki ./examples/wiki
-WORKDIR /build/examples/wiki
+WORKDIR /home/node
+COPY --chown=node:node package.json index.js NOTICE LICENSE README.md ./
+COPY --chown=node:node bin ./bin
+COPY --chown=node:node lib ./lib
+COPY --chown=node:node examples/wiki ./examples/wiki
+WORKDIR /home/node/examples/wiki
 RUN rm -rf node_modules data data-e2e public/dist \
- && npm install --no-package-lock --omit=dev --install-links \
- && chown -R nonroot:nonroot /build
+ && npm install --no-package-lock --omit=dev --install-links
 
 FROM cgr.dev/chainguard/node:latest AS runtime
 ENV NODE_ENV=production \
     WIKI_DATA_DIR=/data \
     WIKI_PORT=8080
 WORKDIR /app
-COPY --from=deps --chown=nonroot:nonroot /build/package.json /build/index.js /build/NOTICE /build/LICENSE /build/README.md ./
-COPY --from=deps --chown=nonroot:nonroot /build/bin ./bin
-COPY --from=deps --chown=nonroot:nonroot /build/lib ./lib
-COPY --from=deps --chown=nonroot:nonroot /build/examples/wiki ./examples/wiki
-USER nonroot
+COPY --from=deps --chown=nonroot:nonroot /home/node/package.json /home/node/index.js /home/node/NOTICE /home/node/LICENSE /home/node/README.md ./
+COPY --from=deps --chown=nonroot:nonroot /home/node/bin ./bin
+COPY --from=deps --chown=nonroot:nonroot /home/node/lib ./lib
+COPY --from=deps --chown=nonroot:nonroot /home/node/examples/wiki ./examples/wiki
 WORKDIR /app/examples/wiki
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

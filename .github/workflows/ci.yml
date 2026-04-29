@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run Hadolint (strict, all severities)
         # `--no-fail` is OFF; any error or warning fails the job.
@@ -114,17 +114,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Detect shell scripts
+        id: sh
+        run: |
+          # ludeeus/action-shellcheck@2.0.0 fails when there are no
+          # *.sh files (shellcheck itself exits 3 on empty input).
+          # Skip the lint step when nothing matches; flip back on the
+          # moment a tracked .sh appears.
+          count=$(git ls-files '*.sh' | wc -l)
+          echo "Tracked .sh files: $count"
+          git ls-files '*.sh' || true
+          echo "found=$count" >> "$GITHUB_OUTPUT"
 
       - name: Run ShellCheck
-        # Walk the repo for tracked .sh files; if there are none, the
-        # action exits 0. The `severity: style` setting flags the
-        # widest set of findings, including style/info, matching the
-        # 0-warnings posture.
+        if: steps.sh.outputs.found != '0'
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           severity: style
           format:   tty
           check_together: 'yes'
-        env:
-          SHELLCHECK_OPTS: -e SC2034

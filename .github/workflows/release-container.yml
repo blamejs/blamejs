@@ -35,8 +35,62 @@ env:
   IMAGE:    ghcr.io/${{ github.repository_owner }}/blamejs-wiki
 
 jobs:
+  # ---- Lint gate ----------------------------------------------------------
+  # ESLint + Hadolint + ShellCheck run on every release tag before the
+  # container build starts. Lint failure here aborts the release — a
+  # tag-time lint regression must never publish a container.
+  lint-eslint:
+    name: ESLint (lib + examples + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Node 24 LTS
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Run ESLint (max-warnings 0)
+        run: npx --yes eslint@9 --max-warnings 0 .
+
+  lint-hadolint:
+    name: Hadolint (Dockerfiles)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run Hadolint (strict, all severities)
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: examples/wiki/Dockerfile
+          config:     .hadolint.yaml
+          format:     tty
+          no-fail:    false
+          failure-threshold: warning
+
+  lint-shellcheck:
+    name: ShellCheck (shell scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Detect shell scripts
+        id: sh
+        run: |
+          count=$(git ls-files '*.sh' | wc -l)
+          echo "Tracked .sh files: $count"
+          git ls-files '*.sh' || true
+          echo "found=$count" >> "$GITHUB_OUTPUT"
+      - name: Run ShellCheck
+        if: steps.sh.outputs.found != '0'
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          severity: style
+          format:   tty
+          check_together: 'yes'
+
   publish:
     name: Build, scan, publish
+    needs: [lint-eslint, lint-hadolint, lint-shellcheck]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
