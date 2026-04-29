@@ -159,6 +159,32 @@ async function run() {
     assert("storage page covers queue + jobs",
            /b\.queue/.test(storage.body) && /b\.jobs/.test(storage.body));
 
+    var http = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/http-middleware/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /http-middleware/index → 200", http.statusCode === 200);
+    assert("http page documents the default middleware stack",
+           /requestId/.test(http.body) && /securityHeaders/.test(http.body) && /csrfProtect/.test(http.body));
+    assert("http page covers cspNonce",
+           /cspNonce/.test(http.body));
+    assert("http page covers safeUrl SSRF defense",
+           /safeUrl/.test(http.body) && /SSRF/.test(http.body));
+
+    var crypto = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/crypto-vault/index",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /crypto-vault/index → 200", crypto.statusCode === 200);
+    assert("crypto page documents the storage envelope",
+           /envelope/i.test(crypto.body) && /0xE1/.test(crypto.body));
+    assert("crypto page covers ML-KEM + P-384 hybrid",
+           /ML-KEM-1024/.test(crypto.body) && /P-384/.test(crypto.body));
+    assert("crypto page covers vault wrapped vs plaintext",
+           /wrapped/.test(crypto.body) && /BLAMEJS_VAULT_PASSPHRASE/.test(crypto.body));
+    assert("crypto page covers PQ signatures",
+           /SLH-DSA-SHAKE-256f/.test(crypto.body));
+
     var redirect = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/welcome",
       headers: BROWSER_HEADERS,
