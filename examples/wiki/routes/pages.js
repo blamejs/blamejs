@@ -11,7 +11,7 @@
 
 var b = require("@blamejs/core");
 
-function _renderLayoutData(req) {
+function _renderLayoutData(req, ctx) {
   // Per-request fields the layout expects. Most come from middleware
   // (cspNonce from b.middleware.cspNonce, locale from b.i18n.middleware,
   // user from b.session). Defaults make the views safe even when those
@@ -24,6 +24,7 @@ function _renderLayoutData(req) {
     csrfToken:   req.csrfToken || "",
     searchQuery: "",
     title:       "",
+    assets:      (ctx && ctx.assets) || {},
   };
 }
 
@@ -48,7 +49,7 @@ function registerSpecific(router, ctx) {
 
   // ---- Landing ----
   router.get("/", function (req, res) {
-    var data = Object.assign(_renderLayoutData(req), {
+    var data = Object.assign(_renderLayoutData(req, ctx), {
       title: "blamejs",
     });
     var html = template.render("home", data);
@@ -78,7 +79,7 @@ function registerSpecific(router, ctx) {
         hits = [];
       }
     }
-    var data = Object.assign(_renderLayoutData(req), {
+    var data = Object.assign(_renderLayoutData(req, ctx), {
       title:       "Search",
       searchQuery: q,
       hits:        hits,
@@ -117,7 +118,7 @@ function registerCatchAll(router, ctx) {
         "FROM pages WHERE groupName = ? AND slug = ?"
       ).get(group, slug);
       if (!row) return null;
-      var data = Object.assign(_renderLayoutData(req), {
+      var data = Object.assign(_renderLayoutData(req, ctx), {
         title:        row.title,
         groupName:    row.groupName,
         slug:         row.slug,

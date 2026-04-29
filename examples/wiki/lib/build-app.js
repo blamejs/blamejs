@@ -84,6 +84,29 @@ async function buildApp(opts) {
   var webhookUrl = opts.webhookUrl || null;
   var webhookSecret = opts.webhookSecret || null;
 
+  // ---- Build client assets via b.bundler ----
+  // Hashes wiki.js + editor.js into public/dist/<name>.<hash>.js so
+  // operators get cache-busting via filename and SRI-friendly content
+  // hashes. Manifest map ({ wiki: "wiki.4a8c.js", ... }) is passed to
+  // templates as `assets.<name>` so views render the hashed path.
+  var bundler = b.bundler.create({
+    entries: {
+      wiki:   path.join(__dirname, "..", "src", "wiki.js"),
+      editor: path.join(__dirname, "..", "src", "editor.js"),
+    },
+    outdir:   path.join(__dirname, "..", "public", "dist"),
+    manifest: "manifest.json",
+    hashLen:  16,
+  });
+  var bundleResult = await bundler.build();
+  var assets = {};
+  for (var i = 0; i < bundleResult.outputs.length; i++) {
+    var out = bundleResult.outputs[i];
+    // outputs[].path is absolute; we want the URL-style relative to
+    // the public/ root: "/dist/<filename>".
+    assets[out.name] = "/dist/" + path.basename(out.path);
+  }
+
   // ---- Build framework primitives ----
   var template = b.template.create({
     viewsDir: path.join(__dirname, "..", "views"),
@@ -218,6 +241,7 @@ async function buildApp(opts) {
         session:      b.session,
         notify:       notify,
         apiKeys:      apiKeys,
+        assets:       assets,
       };
       pagesRoute.registerSpecific(router, routeCtx);
       adminRoute.register(router, routeCtx);
@@ -289,6 +313,8 @@ async function buildApp(opts) {
     apiKeys:   apiKeys,
     scheduler: scheduler,
     pageCache: pageCache,
+    assets:    assets,
+    bundler:   bundler,
   };
 }
 

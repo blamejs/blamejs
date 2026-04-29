@@ -91,7 +91,9 @@ async function run() {
            home.headers["content-security-policy"] &&
            home.headers["content-security-policy"].indexOf("'unsafe-inline'") === -1);
     assert("GET / links Prism CSS",          /\/vendor\/prism\.css/.test(home.body));
-    assert("GET / links wiki.js",            /\/wiki\.js/.test(home.body));
+    // Bundler emits hashed filenames: /dist/wiki.<16-hex>.js
+    assert("GET / links bundled wiki.js",
+           /\/dist\/wiki\.[a-f0-9]{16}\.js/.test(home.body));
     assert("GET / links logo SVG",           /\/img\/blamejs-logo\.svg/.test(home.body));
 
     var health = await _request({
@@ -156,6 +158,31 @@ async function run() {
     });
     assert("GET /vendor/prism.js → 200",     prismJs.statusCode === 200);
     assert("prism.js mentions Prism",        /Prism/.test(prismJs.body));
+
+    // Bundled wiki.js — extract the hashed path from the home HTML
+    // and verify staticServe returns the bundled artifact.
+    var wikiBundleMatch = home.body.match(/\/dist\/(wiki\.[a-f0-9]{16}\.js)/);
+    assert("home HTML includes bundled wiki.js path", !!wikiBundleMatch);
+    if (wikiBundleMatch) {
+      var bundledWiki = await _request({
+        method: "GET", host: "127.0.0.1", port: port, path: "/dist/" + wikiBundleMatch[1],
+        headers: Object.assign({}, BROWSER_HEADERS, {
+          "sec-fetch-dest": "script", "sec-fetch-mode": "no-cors",
+        }),
+      });
+      assert("GET bundled wiki.js → 200",    bundledWiki.statusCode === 200);
+      assert("bundled wiki.js mentions IntersectionObserver",
+             /IntersectionObserver/.test(bundledWiki.body));
+    }
+    // Bundler manifest is published to /dist/manifest.json
+    var manifest = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/dist/manifest.json",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /dist/manifest.json → 200",  manifest.statusCode === 200);
+    assert("manifest maps wiki + editor entries",
+           /wiki\.[a-f0-9]{16}\.js/.test(manifest.body) &&
+           /editor\.[a-f0-9]{16}\.js/.test(manifest.body));
 
     var wikiCss = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/wiki.css",

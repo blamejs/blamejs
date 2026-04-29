@@ -1,4 +1,7 @@
 {% extends "_layout" %}
+{% block scripts %}
+<script src="{{ assets.editor }}"></script>
+{% endblock %}
 {% block content %}
 <h1>{% if isNew %}New page{% else %}Edit {{ groupName }}/{{ slug }}{% endif %}</h1>
 {% if error %}<p style="color:#b00020"><strong>{{ error }}</strong></p>{% endif %}

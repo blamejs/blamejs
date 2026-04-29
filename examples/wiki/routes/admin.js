@@ -19,7 +19,7 @@
 
 var b = require("@blamejs/core");
 
-function _layoutData(req) {
+function _layoutData(req, ctx) {
   return {
     cspNonce:    (req.res && req.res.locals && req.res.locals.cspNonce) || "",
     locale:      req.locale || "en",
@@ -28,6 +28,7 @@ function _layoutData(req) {
     csrfToken:   req.csrfToken || "",
     searchQuery: "",
     title:       "",
+    assets:      (ctx && ctx.assets) || {},
   };
 }
 
@@ -45,7 +46,7 @@ function register(router, ctx) {
   // ---- Login form ----
   router.get("/login", function (req, res) {
     if (req.user) return b.render.redirect(res, "/admin");
-    var data = Object.assign(_layoutData(req), { title: "Sign in", error: null });
+    var data = Object.assign(_layoutData(req, ctx), { title: "Sign in", error: null });
     b.render.htmlString(res, template.render("login", data));
   });
 
@@ -54,7 +55,7 @@ function register(router, ctx) {
     var body = req.body || {};
     var email = String(body.email || "").trim().toLowerCase();
     var password = String(body.password || "");
-    var data = Object.assign(_layoutData(req), { title: "Sign in" });
+    var data = Object.assign(_layoutData(req, ctx), { title: "Sign in" });
 
     function _showError(msg) {
       data.error = msg;
@@ -126,7 +127,7 @@ function register(router, ctx) {
     ).all().map(function (r) {
       return Object.assign(r, { updatedAtIso: new Date(r.updatedAt).toISOString() });
     });
-    var data = Object.assign(_layoutData(req), {
+    var data = Object.assign(_layoutData(req, ctx), {
       title: "Admin",
       pages: pages,
     });
@@ -136,7 +137,7 @@ function register(router, ctx) {
   // GET /admin/edit  → new page
   // GET /admin/edit/:group/:slug → edit existing
   router.get("/admin/edit", requireAdmin, function (req, res) {
-    var data = Object.assign(_layoutData(req), {
+    var data = Object.assign(_layoutData(req, ctx), {
       title:     "New page",
       isNew:     true,
       groupName: "",
@@ -157,7 +158,7 @@ function register(router, ctx) {
       "SELECT groupName, slug, title, body FROM pages WHERE groupName = ? AND slug = ?"
     ).get(req.params.group, req.params.slug);
     if (!row) return b.render.htmlString(res, "Not found", { status: 404 });
-    var data = Object.assign(_layoutData(req), {
+    var data = Object.assign(_layoutData(req, ctx), {
       title:     "Edit " + row.title,
       isNew:     false,
       groupName: row.groupName,
@@ -238,7 +239,7 @@ function register(router, ctx) {
       return b.render.htmlString(res, "Unauthorized", { status: 401 });
     }
     var keys = await apiKeys.listForOwner(req.user.userId, { req: req });
-    var data = Object.assign(_layoutData(req), {
+    var data = Object.assign(_layoutData(req, ctx), {
       title:  "API Keys",
       keys:   keys,
       issued: null,
@@ -266,7 +267,7 @@ function register(router, ctx) {
     // The plaintext secret is shown ONCE; subsequent listings only
     // surface the prefix + id.
     var keys = await apiKeys.listForOwner(req.user.userId, { req: req });
-    var data = Object.assign(_layoutData(req), {
+    var data = Object.assign(_layoutData(req, ctx), {
       title:  "API Keys",
       keys:   keys,
       issued: { id: issued.id, key: issued.key, scopes: scopes.join(", ") },
