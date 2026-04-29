@@ -141,6 +141,57 @@ async function testCorsNoOriginHeaderPassesThrough() {
   check("no Origin header: next called (no 403)",       out.nextCalled === true);
 }
 
+async function testCorsNullOriginWithSameOriginFetchSitePasses() {
+  // Browsers send `Origin: null` on form-navigation POSTs from a page
+  // whose response carries `Referrer-Policy: no-referrer`. The browser
+  // ALSO sends `Sec-Fetch-Site: same-origin` to disambiguate — that
+  // fetch-metadata signal lets the framework accept the request without
+  // consulting the (potentially empty) allow-list.
+  var mw = b.middleware.cors({ origins: [], refuseUnknown: true });
+  var req = _req({
+    method:  "POST",
+    headers: {
+      host:   "localhost:8080",
+      origin: "null",
+      "sec-fetch-site": "same-origin",
+    },
+  });
+  var out = await _drive(mw, req);
+  check("Origin:null + Sec-Fetch-Site:same-origin passes through",
+        out.nextCalled === true);
+}
+
+async function testCorsNullOriginWithCrossSiteFetchSiteRefused() {
+  // Origin:null without a same-origin Fetch-Site signal is genuinely
+  // opaque — could be a sandboxed iframe or a cross-site form post.
+  // Refuse it (default refuseUnknown).
+  var mw = b.middleware.cors({ origins: [], refuseUnknown: true });
+  var req = _req({
+    method:  "POST",
+    headers: {
+      host:   "localhost:8080",
+      origin: "null",
+      "sec-fetch-site": "cross-site",
+    },
+  });
+  var out = await _drive(mw, req);
+  check("Origin:null + Sec-Fetch-Site:cross-site refused (403)",
+        out.res._sent.statusCode === 403);
+}
+
+async function testCorsNullOriginWithoutFetchSiteRefused() {
+  // Origin:null with no fetch-metadata at all (older browser, curl, etc.)
+  // — without the same-origin signal we can't trust it. Refuse.
+  var mw = b.middleware.cors({ origins: [], refuseUnknown: true });
+  var req = _req({
+    method:  "POST",
+    headers: { host: "localhost:8080", origin: "null" },
+  });
+  var out = await _drive(mw, req);
+  check("Origin:null without Sec-Fetch-Site refused",
+        out.res._sent.statusCode === 403);
+}
+
 function testCorsConfigValidationThrows() {
   // Tier A — bad config surfaces at create() not at request time.
   var threwOnBadOrigin = null;
@@ -173,6 +224,9 @@ async function run() {
   await testCorsExplicitSiteOriginRejectsInferredOrigin();
   await testCorsXForwardedProtoRespected();
   await testCorsNoOriginHeaderPassesThrough();
+  await testCorsNullOriginWithSameOriginFetchSitePasses();
+  await testCorsNullOriginWithCrossSiteFetchSiteRefused();
+  await testCorsNullOriginWithoutFetchSiteRefused();
   testCorsConfigValidationThrows();
 }
 
