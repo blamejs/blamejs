@@ -5345,6 +5345,291 @@ async function testBodyParserMultipartMimeAllowlist() {
   }
 }
 
+// ---- v0.4.10 fileFilter + per-field opts ----
+
+async function testBodyParserMultipartFileFilterAccept() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var calls = [];
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fileFilter: function (part) { calls.push(part); return true; },
+      },
+    });
+    var boundary = "----blamejs-test-fileFilter-accept";
+    var body = _buildMultipartBody(boundary, [
+      { name: "doc", value: Buffer.from("ok"), filename: "doc.txt", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    var r = await _runBodyParser(bp, req, res);
+    check("fileFilter accept: middleware called next()",   r.next === true);
+    check("fileFilter accept: file kept in req.files",     req.files.length === 1);
+    check("fileFilter accept: filesRejected empty",        req.filesRejected.length === 0);
+    check("fileFilter accept: predicate received metadata",
+          calls.length === 1 && calls[0].field === "doc" && calls[0].filename === "doc.txt"
+          && calls[0].mimeType === "text/plain");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartFileFilterRejectFalse() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fileFilter: function () { return false; },
+      },
+    });
+    var boundary = "----blamejs-test-fileFilter-false";
+    var body = _buildMultipartBody(boundary, [
+      { name: "doc", value: Buffer.from("body"), filename: "x.txt", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    var r = await _runBodyParser(bp, req, res);
+    check("fileFilter false: middleware called next()",    r.next === true);
+    check("fileFilter false: req.files empty",             req.files.length === 0);
+    check("fileFilter false: filesRejected has 1 entry",   req.filesRejected.length === 1);
+    check("fileFilter false: rejected entry field",        req.filesRejected[0].field === "doc");
+    check("fileFilter false: rejected entry filename",     req.filesRejected[0].filename === "x.txt");
+    check("fileFilter false: rejected code = fileFilter",  req.filesRejected[0].code === "fileFilter");
+    var dirContents = fs.readdirSync(tmpDir);
+    check("fileFilter false: no tmp file written",         dirContents.length === 0);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartFileFilterRejectObject() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fileFilter: function () {
+          return { reject: true, code: "policy/no-exe", message: "executables not allowed" };
+        },
+      },
+    });
+    var boundary = "----blamejs-test-fileFilter-object";
+    var body = _buildMultipartBody(boundary, [
+      { name: "upload", value: Buffer.from("MZ\x90\x00"), filename: "evil.exe",
+        contentType: "application/octet-stream" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("fileFilter object: filesRejected[0].code custom",
+          req.filesRejected[0].code === "policy/no-exe");
+    check("fileFilter object: filesRejected[0].message custom",
+          req.filesRejected[0].message === "executables not allowed");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartFileFilterMixedAcceptReject() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fileFilter: function (part) { return part.field === "good"; },
+      },
+    });
+    var boundary = "----blamejs-test-fileFilter-mixed";
+    var body = _buildMultipartBody(boundary, [
+      { name: "good", value: Buffer.from("ok"), filename: "ok.txt", contentType: "text/plain" },
+      { name: "bad",  value: Buffer.from("nope"), filename: "no.txt", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("fileFilter mixed: 1 file kept",            req.files.length === 1);
+    check("fileFilter mixed: kept file is 'good'",    req.files[0].field === "good");
+    check("fileFilter mixed: 1 file rejected",        req.filesRejected.length === 1);
+    check("fileFilter mixed: rejected file is 'bad'", req.filesRejected[0].field === "bad");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartFileFilterThrows() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fileFilter: function () { throw new Error("operator bug"); },
+      },
+    });
+    var boundary = "----blamejs-test-fileFilter-throw";
+    var body = _buildMultipartBody(boundary, [
+      { name: "x", value: Buffer.from("y"), filename: "y.txt", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("fileFilter throw: 500 response",  res._endedStatus === 500);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartFileFilterAuditEmit() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var captured = [];
+    var auditCap = { safeEmit: function (e) { captured.push(e); } };
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        audit:  auditCap,
+        fileFilter: function () { return false; },
+      },
+    });
+    var boundary = "----blamejs-test-fileFilter-audit";
+    var body = _buildMultipartBody(boundary, [
+      { name: "doc", value: Buffer.from("body"), filename: "x.pdf", contentType: "application/pdf" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("fileFilter audit: event emitted",         captured.length === 1);
+    check("fileFilter audit: action correct",
+          captured[0].action === "body-parser.multipart.file_rejected");
+    check("fileFilter audit: outcome=denied",        captured[0].outcome === "denied");
+    check("fileFilter audit: metadata.field",        captured[0].metadata.field === "doc");
+    check("fileFilter audit: metadata.mimeType",     captured[0].metadata.mimeType === "application/pdf");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartPerFieldMaxBytesTighter() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fileSize: 1024,                       // global generous
+        fields: { avatar: { maxBytes: 8 } },  // tight per-field
+      },
+    });
+    var boundary = "----blamejs-test-perfield-tight";
+    var body = _buildMultipartBody(boundary, [
+      { name: "avatar", value: Buffer.alloc(64, "x"),
+        filename: "big.jpg", contentType: "image/jpeg" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("per-field maxBytes (tighter): 413 response",  res._endedStatus === 413);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartPerFieldMaxBytesLooser() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fileSize: 8,                                   // global tiny
+        fields: { document: { maxBytes: 1024 * 64 } }, // looser per-field
+      },
+    });
+    var boundary = "----blamejs-test-perfield-loose";
+    var body = _buildMultipartBody(boundary, [
+      { name: "document", value: Buffer.alloc(100, "x"),
+        filename: "big.txt", contentType: "text/plain" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    var r = await _runBodyParser(bp, req, res);
+    check("per-field maxBytes (looser): file accepted",  r.next === true && req.files.length === 1);
+    check("per-field maxBytes (looser): size matches",   req.files[0].size === 100);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartPerFieldMimeTypesBlock() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        fields: { avatar: { mimeTypes: ["image/jpeg", "image/png"] } },
+      },
+    });
+    var boundary = "----blamejs-test-perfield-mime-block";
+    var body = _buildMultipartBody(boundary, [
+      { name: "avatar", value: Buffer.from("body"),
+        filename: "wrong.gif", contentType: "image/gif" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    await _runBodyParser(bp, req, res);
+    check("per-field mimeTypes (block): 415 response",  res._endedStatus === 415);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+async function testBodyParserMultipartPerFieldMimeOverridesGlobal() {
+  // Global denies; per-field allows. Per-field wins for the named field.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
+  try {
+    var bp = b.middleware.bodyParser({
+      multipart: {
+        tmpDir: tmpDir,
+        mimeAllowlist: ["image/png"],                            // global
+        fields: { document: { mimeTypes: ["application/pdf"] } }, // per-field
+      },
+    });
+    var boundary = "----blamejs-test-perfield-mime-override";
+    var body = _buildMultipartBody(boundary, [
+      { name: "document", value: Buffer.from("%PDF-1.4"),
+        filename: "ok.pdf", contentType: "application/pdf" },
+    ]);
+    var req = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(body.length) }, body);
+    var res = _mockBodyRes();
+    var r = await _runBodyParser(bp, req, res);
+    check("per-field mimeTypes (override): file accepted",
+          r.next === true && req.files.length === 1);
+    check("per-field mimeTypes (override): mimeType preserved",
+          req.files[0].mimeType === "application/pdf");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 async function testBodyParserMultipartPoisonedFieldName() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
   try {
@@ -13898,6 +14183,16 @@ async function run() {
   await testBodyParserMultipartFilenameTraversal();
   await testBodyParserMultipartFileSizeLimit();
   await testBodyParserMultipartMimeAllowlist();
+  await testBodyParserMultipartFileFilterAccept();
+  await testBodyParserMultipartFileFilterRejectFalse();
+  await testBodyParserMultipartFileFilterRejectObject();
+  await testBodyParserMultipartFileFilterMixedAcceptReject();
+  await testBodyParserMultipartFileFilterThrows();
+  await testBodyParserMultipartFileFilterAuditEmit();
+  await testBodyParserMultipartPerFieldMaxBytesTighter();
+  await testBodyParserMultipartPerFieldMaxBytesLooser();
+  await testBodyParserMultipartPerFieldMimeTypesBlock();
+  await testBodyParserMultipartPerFieldMimeOverridesGlobal();
   await testBodyParserMultipartPoisonedFieldName();
   await testBodyParserMultipartTruncated();
   await testBodyParserContentLengthExceedsLimitImmediate();

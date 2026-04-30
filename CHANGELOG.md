@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.9** (2026-04-30) — Origin-Agent-Cluster + DNS-Prefetch-Control headers; b.auth.lockout primitive
 - **0.4.8** (2026-04-30) — wiki SEO surface: per-page OG / Twitter / JSON-LD + sitemap.xml + robots.txt
 - **0.4.7** (2026-04-30) — audit-fix the welcome page's "what's in the box" table
 - **0.4.6** (2026-04-30) — wiki gets the brand-flare on every page + substantive content additions
