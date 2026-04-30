@@ -790,6 +790,195 @@ async function run() {
   testObservabilityEmission();
   testOperatorObservability();
   testParseQualityListShared();
+
+  // v0.4.14
+  testOrdinalPlural();
+  testToShortcut();
+  testOnMissingKeyHook();
+  testOnMissingKeyValidation();
+  testLazyLoadEagerOnly();
+  testLazyLoadFiresOnDemand();
+  testLazyLoadValidatesOnLoad();
+  testLazyLoadRejectsInlineTranslations();
+  testEagerLocalesValidation();
+}
+
+// ---- v0.4.14 ordinal + onMissingKey + lazyLoad ----
+
+function testOrdinalPlural() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  {
+      en: {
+        rank: {
+          one:   "{count}st",
+          two:   "{count}nd",
+          few:   "{count}rd",
+          other: "{count}th",
+        },
+      },
+    },
+  });
+  check("ordinal: 1 → '1st'",   i.t("rank", { count: 1 }, { ordinal: true }) === "1st");
+  check("ordinal: 2 → '2nd'",   i.t("rank", { count: 2 }, { ordinal: true }) === "2nd");
+  check("ordinal: 3 → '3rd'",   i.t("rank", { count: 3 }, { ordinal: true }) === "3rd");
+  check("ordinal: 4 → '4th'",   i.t("rank", { count: 4 }, { ordinal: true }) === "4th");
+  check("ordinal: 21 → '21st'", i.t("rank", { count: 21 }, { ordinal: true }) === "21st");
+  check("ordinal: 22 → '22nd'", i.t("rank", { count: 22 }, { ordinal: true }) === "22nd");
+  // Without ordinal: en cardinal returns 'one' for 1, 'other' otherwise
+  check("cardinal still works (non-ordinal)",  i.t("rank", { count: 1 }) === "1st");
+  check("cardinal: 2 hits 'other'",            i.t("rank", { count: 2 }) === "2th");
+}
+
+function testToShortcut() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  {
+      en: { place: { one: "{count}st place", two: "{count}nd", few: "{count}rd", other: "{count}th" } },
+    },
+  });
+  check("to(): ordinal 1",  i.to("place", 1) === "1st place");
+  check("to(): ordinal 4",  i.to("place", 4) === "4th");
+
+  var threw = false;
+  try { i.to("place", "not-a-number"); } catch (_e) { threw = true; }
+  check("to(): rejects non-finite count",       threw);
+}
+
+function testOnMissingKeyHook() {
+  var calls = [];
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { hi: "Hello" } },
+    onMissingKey:  function (key, locale) { calls.push({ key: key, locale: locale }); },
+  });
+  i.t("known.key");                              // miss; hits the hook
+  i.t("hi");                                     // hit; does not
+  i.t("missing.again");                          // miss again
+  check("onMissingKey: called for missing keys", calls.length === 2);
+  check("onMissingKey: receives key + locale",
+        calls[0].key === "known.key" && calls[0].locale === "en");
+
+  // Hook throwing must not break the request
+  var i2 = b.i18n.create({
+    defaultLocale: "en", locales: ["en"], translations: { en: {} },
+    onMissingKey: function () { throw new Error("hook bug"); },
+  });
+  var v = i2.t("missing");
+  check("onMissingKey: hook throw doesn't break t()", v === "missing");
+}
+
+function testOnMissingKeyValidation() {
+  var threw = false;
+  try {
+    b.i18n.create({
+      defaultLocale: "en", locales: ["en"], translations: {},
+      onMissingKey: 42,
+    });
+  } catch (_e) { threw = true; }
+  check("onMissingKey: rejects non-function",    threw);
+}
+
+function testLazyLoadEagerOnly() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-i18n-lazy-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "en.json"), JSON.stringify({ greet: "Hello" }));
+    fs.writeFileSync(path.join(tmpDir, "es.json"), JSON.stringify({ greet: "Hola" }));
+    fs.writeFileSync(path.join(tmpDir, "fr.json"), JSON.stringify({ greet: "Bonjour" }));
+
+    var i = b.i18n.create({
+      defaultLocale: "en",
+      locales:       ["en", "es", "fr"],
+      eagerLocales:  ["en"],
+      lazyLoad:      true,
+      dir:           tmpDir,
+    });
+    // English (eager): immediately available without a file read after create
+    check("lazyLoad: eager locale resolved", i.t("greet", null, { locale: "en" }) === "Hello");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+function testLazyLoadFiresOnDemand() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-i18n-lazy-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "en.json"), JSON.stringify({ greet: "Hello" }));
+    fs.writeFileSync(path.join(tmpDir, "es.json"), JSON.stringify({ greet: "Hola" }));
+
+    var lazyEvents = [];
+    var i = b.i18n.create({
+      defaultLocale: "en",
+      locales:       ["en", "es"],
+      eagerLocales:  ["en"],
+      lazyLoad:      true,
+      dir:           tmpDir,
+      observability: { event: function (name, _v, l) { if (name === "i18n.lazyLoad") lazyEvents.push(l); } },
+    });
+    var hello = i.t("greet", null, { locale: "es" });
+    check("lazyLoad: lazy locale resolved on demand", hello === "Hola");
+    check("lazyLoad: lazyLoad observability emitted",
+          lazyEvents.length === 1 && lazyEvents[0].locale === "es");
+
+    // Second call: no extra load — instance caches.
+    i.t("greet", null, { locale: "es" });
+    check("lazyLoad: second hit reuses cached locale", lazyEvents.length === 1);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+function testLazyLoadValidatesOnLoad() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-i18n-lazy-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "en.json"), JSON.stringify({ greet: "Hello" }));
+    // Bad shape: plural-shape entry missing 'other' — load-time validation should throw.
+    fs.writeFileSync(path.join(tmpDir, "es.json"),
+                     JSON.stringify({ count: { one: "uno" } }));
+
+    var i = b.i18n.create({
+      defaultLocale: "en",
+      locales:       ["en", "es"],
+      eagerLocales:  ["en"],
+      lazyLoad:      true,
+      dir:           tmpDir,
+    });
+    var threw = false;
+    try { i.t("count", { count: 1 }, { locale: "es" }); } catch (_e) { threw = true; }
+    check("lazyLoad: bad-shape locale throws on load", threw);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+function testLazyLoadRejectsInlineTranslations() {
+  var threw = false;
+  try {
+    b.i18n.create({
+      defaultLocale: "en",
+      locales:       ["en"],
+      lazyLoad:      true,
+      translations:  { en: { hi: "Hi" } },
+    });
+  } catch (_e) { threw = true; }
+  check("lazyLoad: rejects inline translations",  threw);
+}
+
+function testEagerLocalesValidation() {
+  var threw = false;
+  try {
+    b.i18n.create({
+      defaultLocale: "en",
+      locales:       ["en"],
+      eagerLocales:  ["fr"],   // not in locales
+      lazyLoad:      true,
+      dir:           "/tmp",
+    });
+  } catch (_e) { threw = true; }
+  check("eagerLocales: must be subset of locales", threw);
 }
 
 module.exports = { run: run };

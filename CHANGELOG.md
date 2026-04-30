@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.13** (2026-04-30) — b.db: streaming query results
 - **0.4.12** (2026-04-30) — b.log: multi-sink output with per-sink level filtering
 - **0.4.11** (2026-04-30) — b.cache: bytes-cap eviction, sliding TTL, tag invalidation
 - **0.4.10** (2026-04-30) — bodyParser multipart: fileFilter + per-field maxBytes/mimeTypes
