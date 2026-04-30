@@ -10819,6 +10819,107 @@ function testLogRoutesErrorAndFatalToStderr() {
   check("fatal routes to stderr",                   stderr[1].level === "fatal");
 }
 
+// ---- v0.4.12 multi-sink ----
+
+function testLogMultiSinkRoutesByLevel() {
+  var sink1 = []; // captures everything
+  var sink2 = []; // captures warn+
+  var sink3 = []; // captures error+
+  var log = b.log.create({
+    level: "debug",
+    sinks: [
+      { stream: { write: function (l) { sink1.push(l); } }, level: "debug" },
+      { stream: { write: function (l) { sink2.push(l); } }, level: "warn"  },
+      { stream: { write: function (l) { sink3.push(l); } }, level: "error" },
+    ],
+    redact: false,
+  });
+  log.debug("d");
+  log.info("i");
+  log.warn("w");
+  log.error("e");
+  check("multi-sink: debug-level sink got 4 lines",   sink1.length === 4);
+  check("multi-sink: warn-level sink got 2 lines",    sink2.length === 2);
+  check("multi-sink: error-level sink got 1 line",    sink3.length === 1);
+  var lvls = sink2.map(function (l) { return JSON.parse(l).level; });
+  check("multi-sink: warn-sink level filter accurate",
+        lvls.indexOf("debug") === -1 && lvls.indexOf("info") === -1);
+}
+
+function testLogMultiSinkSinkWithoutLevel() {
+  // No per-sink level → no extra filter beyond the global.
+  var capt = [];
+  var log = b.log.create({
+    level: "warn",
+    sinks: [{ stream: { write: function (l) { capt.push(l); } } }],
+    redact: false,
+  });
+  log.info("i");
+  log.warn("w");
+  log.error("e");
+  check("multi-sink: no per-sink level honors global only",
+        capt.length === 2);
+}
+
+function testLogMultiSinkConflictsWithDestination() {
+  var threw = false;
+  try {
+    b.log.create({
+      destination: process.stdout,
+      sinks: [{ stream: process.stdout, level: "info" }],
+    });
+  } catch (e) { threw = e && e.code === "log/conflicting-sinks"; }
+  check("multi-sink: rejects sinks + destination together",  threw);
+}
+
+function testLogMultiSinkEmptyArrayRejected() {
+  var threw = false;
+  try { b.log.create({ sinks: [] }); }
+  catch (e) { threw = e && e.code === "log/no-sinks"; }
+  check("multi-sink: rejects empty sinks array",          threw);
+}
+
+function testLogMultiSinkBadShapeRejected() {
+  var threw = false;
+  try { b.log.create({ sinks: [{}] }); }
+  catch (e) { threw = e && e.code === "log/bad-sink"; }
+  check("multi-sink: rejects sink without stream",         threw);
+
+  threw = false;
+  try { b.log.create({ sinks: [{ stream: process.stdout, weird: 1 }] }); }
+  catch (e) { threw = e && e.code === "log/bad-sink"; }
+  check("multi-sink: rejects sink with unknown key",       threw);
+
+  threw = false;
+  try { b.log.create({ sinks: [{ stream: process.stdout, level: "BAD" }] }); }
+  catch (_e) { threw = true; }
+  check("multi-sink: rejects sink with bad level",         threw);
+}
+
+function testLogMultiSinkStringDest() {
+  // 'stdout' / 'stderr' shorthand should resolve in sinks too.
+  var log = b.log.create({
+    sinks: [{ stream: "stderr", level: "debug" }],
+  });
+  // Smoke: just confirms create() didn't throw.
+  check("multi-sink: 'stderr' string shorthand accepted",  typeof log.info === "function");
+}
+
+function testLogMultiSinkOneSinkFailDoesntBreakOthers() {
+  var good = [];
+  var failingSink  = { write: function () { throw new Error("disk full"); } };
+  var goodSink     = { write: function (l) { good.push(l); } };
+  var log = b.log.create({
+    sinks: [
+      { stream: failingSink, level: "debug" },
+      { stream: goodSink,    level: "debug" },
+    ],
+    redact: false,
+  });
+  log.info("survives");
+  check("multi-sink: throwing sink doesn't poison others", good.length === 1);
+}
+
 function testLogLevelGate() {
   var t = _makeCapturingLog({ level: "warn" });
   t.log.debug("d");
@@ -14432,6 +14533,13 @@ async function run() {
   testLogSurface();
   testLogEmitsJsonLineToStdout();
   testLogRoutesErrorAndFatalToStderr();
+  testLogMultiSinkRoutesByLevel();
+  testLogMultiSinkSinkWithoutLevel();
+  testLogMultiSinkConflictsWithDestination();
+  testLogMultiSinkEmptyArrayRejected();
+  testLogMultiSinkBadShapeRejected();
+  testLogMultiSinkStringDest();
+  testLogMultiSinkOneSinkFailDoesntBreakOthers();
   testLogLevelGate();
   testLogBindAddsBoundContext();
   testLogCoreFieldsCannotBeOverwritten();
