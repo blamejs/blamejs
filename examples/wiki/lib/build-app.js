@@ -182,7 +182,7 @@ async function buildApp(opts) {
     middleware: {
       requestId:       true,
       securityHeaders: { csp: STRICT_CSP },
-      botGuard:        true,
+      botGuard:        { skipPaths: ["/healthz", "/readyz", "/startupz"] },
       cors: {
         // No third-party origins — only this app's own forms post
         // here. The Fetch spec sends an Origin header on every same-
