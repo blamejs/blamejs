@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.25** (2026-04-30) — b.objectStore.bucketOps: bucket-level operations (SigV4)
 - **0.4.24** (2026-04-30) — b.objectStore: multipart upload + server-side encryption
 - **0.4.23** (2026-04-30) — b.mail.dkim signing + calendar invites
 - **0.4.22** (2026-04-30) — b.mail attachments + inline images + plain/HTML alternatives
