@@ -126,7 +126,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 **Application**
 - [ ] Use `b.permissions` for every state-changing route (don't gate on `req.user` truthiness alone)
 - [ ] Audit all `{{{ raw }}}` template outputs — these bypass HTML escape
-- [ ] Run `blamejs api-snapshot --diff` in CI to catch unintentional public-API changes
+- [ ] Run `blamejs api-snapshot compare --file ./api-snapshot.json` in CI to catch removed methods or changed signatures before they ship
 - [ ] Subscribe to the `blamejs-security-announce` mailing list for advisories
 
 ---

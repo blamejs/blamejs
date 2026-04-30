@@ -49,7 +49,7 @@ blamejs backup     inspect | verify | extract           --bundle <dir>
 blamejs api-key    issue | revoke | list | rotate | verify   --data-dir <path> --namespace <ns>
 blamejs mtls       status | show-cert | init | issue | issue-p12   --data-dir <path>
 blamejs audit      archive | export | verify-bundle | purge
-blamejs api-snapshot                                    (CI gate for public API drift)
+blamejs api-snapshot   capture | compare                --file <path>
 blamejs dev        --command <cmd> [--watch <dir>...]
 ```
 
