@@ -6,6 +6,12 @@ Pre-1.0 the surface is intentionally evolving — every release may
 change something operators depend on. Read each entry before
 upgrading across more than a few patches at a time.
 
+## v0.4.x
+
+- **0.4.2** (2026-04-30) — npm keywords
+- **0.4.1** (2026-04-29) — wiki bot-guard skips /healthz so the post-publish smoke check passes
+- **0.4.0** (2026-04-29) — bench suite + drops the deprecated b.logger.createLogger
+
 ## v0.3.x
 
 - **0.3.39** (2026-04-29) — MIGRATING.md generator scans deprecate() calls in lib/

@@ -7,13 +7,23 @@
  * + signal-handler shim around buildApp.
  *
  * Env vars:
- *   WIKI_DATA_DIR        directory for vault key + sqlite db (default ./data)
- *   WIKI_PORT            HTTP port (default 8080)
- *   WIKI_ADMIN_EMAIL     admin user email (default admin@blamejs.app)
- *   WIKI_ADMIN_PASSWORD  admin password — required ≥ 8 chars; a random
- *                        dev password is generated and printed if unset
- *   WIKI_WEBHOOK_URL     optional outbound page-edit webhook URL
- *   WIKI_WEBHOOK_SECRET  HMAC-SHA3-512 signing key for the webhook
+ *   WIKI_DATA_DIR                       directory for vault key + sqlite db (default ./data)
+ *   WIKI_PORT                           HTTP port (default 8080)
+ *   WIKI_BIND                           bind address (default 0.0.0.0)
+ *   WIKI_ADMIN_EMAIL                    admin user email (default admin@blamejs.app)
+ *   WIKI_ADMIN_PASSWORD                 admin password — required ≥ 8 chars; a random
+ *                                       dev password is generated and printed if unset
+ *   WIKI_WEBHOOK_URL                    optional outbound page-edit webhook URL
+ *   WIKI_WEBHOOK_SECRET                 HMAC-SHA3-512 signing key for the webhook
+ *
+ *   Production posture (auto-detected from passphrase env vars; explicit
+ *   overrides take precedence):
+ *
+ *   BLAMEJS_VAULT_PASSPHRASE            sets vault to wrapped + DB to encrypted-at-rest
+ *   BLAMEJS_AUDIT_SIGNING_PASSPHRASE    sets audit-sign key to wrapped
+ *   WIKI_VAULT_MODE                     "wrapped" | "plaintext" (override)
+ *   WIKI_DB_AT_REST                     "encrypted" | "plain" (override)
+ *   WIKI_AUDIT_SIGNING_MODE             "wrapped" | "plaintext" (override)
  */
 
 var path = require("node:path");

@@ -59,6 +59,7 @@ What blamejs defends against, by design:
 - **Algorithm-substitution attacks** — every encrypted blob carries a 4-byte algorithm-ID header; `b.crypto.decrypt` dispatches on the header bytes, not on a guess at the active default. An attacker swapping a weaker algorithm into the envelope fails the AEAD tag check.
 - **Supply-chain compromise via npm transitive deps** — zero npm runtime dependencies. Every external library is vendored under `lib/vendor/` with a manifest pinning version + license + provenance. Build reproducibility is verified via the GHCR image's SLSA provenance attestation (see DEPLOY.md → "Release verification").
 - **Replay of API requests** — `apiEncrypt` middleware nonce-stores + replay-windows the `_ek` field; old session keys can't be reused.
+- **Server-Side Request Forgery on outbound calls** — `b.ssrfGuard` resolves the hostname of every `b.httpClient.request({ url })` and refuses any IP in private / loopback / link-local / cloud-metadata / reserved ranges (incl. AWS / GCP / Azure metadata at 169.254.169.254). Wired default-on; operators on internal-mesh deployments override per call via `allowInternal: true | CIDR[]`. Webhook delivery, OAuth, mail HTTP transports, object-store, and notify all inherit the gate.
 
 What blamejs does **not** defend against (operator responsibility):
 

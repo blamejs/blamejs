@@ -41,7 +41,10 @@ var listenOnRandomPort = helpers.listenOnRandomPort;
 // repeating the opt-in 18 times.
 function httpReq(opts) {
   return b.httpClient.request(Object.assign(
-    { allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL },
+    {
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
+    },
     opts
   ));
 }
@@ -1851,6 +1854,7 @@ async function _httpGet(port, urlPath, headers) {
     url: "http://127.0.0.1:" + port + urlPath,
     headers: headers || {},
     allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    allowInternal:    true,
   });
 }
 
@@ -1860,6 +1864,7 @@ async function _httpReq(port, method, urlPath, headers) {
     url: "http://127.0.0.1:" + port + urlPath,
     headers: headers || {},
     allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    allowInternal:    true,
   });
 }
 
@@ -1956,6 +1961,7 @@ async function testStaticServeEtagAnd304() {
         url: "http://127.0.0.1:" + port + "/f.txt",
         headers: { "If-None-Match": etag },
         allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        allowInternal:    true,
         errorClass: b.frameworkError.ObjectStoreError,
       });
     } catch (e) { second = e; }
@@ -2019,6 +2025,7 @@ async function testStaticServeContainmentDefenses() {
         resp = await b.httpClient.request({
           url: "http://127.0.0.1:" + port + rejected[i],
           allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+          allowInternal:    true,
           errorClass: b.frameworkError.ObjectStoreError,
         });
       } catch (e) { resp = e; }
@@ -2069,6 +2076,7 @@ async function testStaticServeIndexFile() {
       var noIdx = await b.httpClient.request({
         url: "http://127.0.0.1:" + port2 + "/",
         allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        allowInternal:    true,
         errorClass: b.frameworkError.ObjectStoreError,
       }).catch(function (e) { return e; });
       check("static: indexFile=null → falls through to next()",
@@ -2100,6 +2108,7 @@ async function testStaticServeMethodGuard() {
       url: "http://127.0.0.1:" + port + "/f.txt",
       body: Buffer.from("nope"),
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
       errorClass: b.frameworkError.ObjectStoreError,
     }).catch(function (e) { return e; });
     check("static: POST falls through (next() called)",  nextCalls === 1);
@@ -2650,6 +2659,7 @@ async function testMailHttpRoundTripWithCustomVendor() {
       endpoint:         "http://127.0.0.1:" + port + "/email",
       timeoutMs:        2000,
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
       headers: {
         "X-Postmark-Server-Token": "tok_test",
         "Content-Type":            "application/json",
@@ -2706,6 +2716,7 @@ async function testMailHttpInterpretRejection() {
       endpoint:         "http://127.0.0.1:" + port + "/",
       timeoutMs:        1500,
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
       headers:   { "Content-Type": "application/json" },
       serialize: function () { return { body: "{}" }; },
       interpret: function (res) {
@@ -2741,6 +2752,7 @@ async function testMailHttpInterpretThrows() {
       endpoint:         "http://127.0.0.1:" + port + "/",
       timeoutMs:        1500,
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
       headers:   { "Content-Type": "application/json" },
       serialize: function () { return { body: "{}" }; },
       interpret: function (res) { return { ok: !!JSON.parse(res.body.toString("utf8")).id }; },
@@ -2973,6 +2985,7 @@ async function testMailResendRoundTrip() {
       endpoint:         "http://127.0.0.1:" + port + "/emails",
       timeoutMs:        2000,
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
     });
     var result = await transport.send({
       from: "Sender <sender@test.local>",
@@ -3016,7 +3029,7 @@ async function testMailResendErrorPaths() {
   try {
     var t1 = b.mail.transports.resend({
       apiKey: "re_x", endpoint: "http://127.0.0.1:" + p1 + "/",
-      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, timeoutMs: 1500,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true, timeoutMs: 1500,
     });
     var err1 = null;
     try { await t1.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
@@ -3036,7 +3049,7 @@ async function testMailResendErrorPaths() {
   try {
     var t2 = b.mail.transports.resend({
       apiKey: "re_x", endpoint: "http://127.0.0.1:" + p2 + "/",
-      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, timeoutMs: 1500,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true, timeoutMs: 1500,
     });
     var err2 = null;
     try { await t2.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
@@ -3057,7 +3070,7 @@ async function testMailResendErrorPaths() {
   try {
     var t3 = b.mail.transports.resend({
       apiKey: "re_x", endpoint: "http://127.0.0.1:" + p3 + "/",
-      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, timeoutMs: 1500,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true, timeoutMs: 1500,
     });
     var err3 = null;
     try { await t3.send({ from: "a@b.com", to: "c@d.com", subject: "S", text: "T" }); }
@@ -5642,7 +5655,7 @@ async function testOAuthExchangeCodeRoundTrip() {
       authorizationEndpoint: "http://127.0.0.1:" + port + "/auth",
       tokenEndpoint:         "http://127.0.0.1:" + port + "/token",
       isOidc:       false,
-      allowHttp:    true,    // for local fake IdP
+      allowHttp:    true, allowInternal: true,    // for local fake IdP
       pkce:         true,
     });
     var tokens = await oa.exchangeCode({
@@ -5678,7 +5691,7 @@ async function testOAuthRefreshAccessToken() {
       clientId: "x", clientSecret: "y", redirectUri: "https://app/cb",
       authorizationEndpoint: "http://127.0.0.1:" + port + "/auth",
       tokenEndpoint:         "http://127.0.0.1:" + port + "/token",
-      isOidc: false, allowHttp: true,
+      isOidc: false, allowHttp: true, allowInternal: true,
     });
     var tokens = await oa.refreshAccessToken("RT-old");
     check("refresh: new access token issued",       tokens.accessToken === "AT-fresh");
@@ -5705,7 +5718,7 @@ async function testOAuthFetchUserInfo() {
       authorizationEndpoint: "http://127.0.0.1:" + port + "/auth",
       tokenEndpoint:         "http://127.0.0.1:" + port + "/token",
       userinfoEndpoint:      "http://127.0.0.1:" + port + "/userinfo",
-      isOidc: false, allowHttp: true,
+      isOidc: false, allowHttp: true, allowInternal: true,
     });
     var profile = await oa.fetchUserInfo("AT-xyz");
     check("userinfo: returns parsed profile",        profile.email === "x@y.io");
@@ -5738,7 +5751,7 @@ async function testOAuthVerifyIdTokenRoundTrip() {
       authorizationEndpoint: issuerUrl + "/auth",
       tokenEndpoint:         issuerUrl + "/token",
       jwksUri:               issuerUrl + "/jwks",
-      allowHttp: true,
+      allowHttp: true, allowInternal: true,
     });
     var nowSec = Math.floor(Date.now() / 1000);
     var idToken = _signRs256({

@@ -85,6 +85,7 @@ var httpClient = require("./lib/http-client");
 httpClient.encrypted = require("./lib/middleware/api-encrypt").httpClient;
 var websocket = require("./lib/websocket");
 var safeUrl = require("./lib/safe-url");
+var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
 var auth = {
   password: require("./lib/auth/password"),
@@ -191,6 +192,7 @@ module.exports = {
   httpClient:       httpClient,
   websocket:        websocket,
   safeUrl:          safeUrl,
+  ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,
   auth:             auth,
   template:         template,

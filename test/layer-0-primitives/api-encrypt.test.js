@@ -664,6 +664,7 @@ async function testApiEncryptHttpClientRoundTrip() {
       path:             "/api/echo",
       body:             { user: "alice", n: 42 },
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
     });
     check("httpClient.encrypted: 200",            resp.statusCode === 200);
     check("httpClient.encrypted: body decrypted", resp.body && resp.body.echo &&

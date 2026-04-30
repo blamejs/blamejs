@@ -169,14 +169,30 @@ async function buildApp(opts) {
     audit:     b.audit,
   });
 
+  // ---- Posture auto-detect ----
+  // The wiki ships in plaintext defaults so a quick local boot just works.
+  // When the operator sets BLAMEJS_VAULT_PASSPHRASE in the env, the wiki
+  // takes that as the production-posture signal and flips to wrapped vault
+  // + encrypted DB at rest. Same for BLAMEJS_AUDIT_SIGNING_PASSPHRASE →
+  // wrapped audit-sign key. WIKI_VAULT_MODE / WIKI_DB_AT_REST /
+  // WIKI_AUDIT_SIGNING_MODE override the auto-detect explicitly.
+  var hasVaultPass = !!process.env.BLAMEJS_VAULT_PASSPHRASE;
+  var hasAuditPass = !!process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;
+  var vaultMode    = process.env.WIKI_VAULT_MODE
+                  || (hasVaultPass ? "wrapped"   : "plaintext");
+  var dbAtRest     = process.env.WIKI_DB_AT_REST
+                  || (hasVaultPass ? "encrypted" : "plain");
+  var auditMode    = process.env.WIKI_AUDIT_SIGNING_MODE
+                  || (hasAuditPass ? "wrapped"   : "plaintext");
+
   // ---- Boot the app ----
   var app = await b.createApp({
     dataDir: dataDir,
     schema:  SCHEMA,
-    vault:   { mode: "plaintext" },     // examples — production = wrapped
+    vault:   { mode: vaultMode },
     db:      {
-      atRest:       "plain",
-      auditSigning: { mode: "plaintext" },
+      atRest:       dbAtRest,
+      auditSigning: { mode: auditMode },
     },
     port:    port,
     middleware: {

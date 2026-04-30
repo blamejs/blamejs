@@ -395,7 +395,7 @@ async function testSendEndToEnd() {
   var signer = b.webhook.signer({
     algo: "hmac-sha3-512",
     keys: { v1: pair },
-    http: { allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL },
+    http: { allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true },
   });
 
   try {

@@ -160,6 +160,7 @@ async function _appGet(port, urlPath) {
   return await b.httpClient.request({
     url: "http://127.0.0.1:" + port + urlPath,
     allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    allowInternal:    true,
   });
 }
 
@@ -236,6 +237,7 @@ async function testCreateAppDefaultMiddleware() {
         "User-Agent":      "Mozilla/5.0 blamejs-test",
       },
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
     });
     // requestId middleware sets X-Request-Id by default
     check("default middleware: X-Request-Id set",
@@ -314,6 +316,7 @@ async function testCreateAppRoutesCallback() {
       url: "http://127.0.0.1:" + addr.port + "/echo",
       body:  Buffer.from(""),
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
     });
     check("routes callback: POST handler runs",
           JSON.parse(posted.body.toString("utf8")).method === "POST");
@@ -367,6 +370,7 @@ async function testCreateAppWithJobs() {
       url: "http://127.0.0.1:" + addr.port + "/users",
       body: Buffer.from(""),
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:    true,
     });
     check("route enqueues + responds",                 posted.statusCode === 200);
 
