@@ -633,6 +633,177 @@ async function testClusterTtlExpiration() {
 
 // ---- run ----
 
+// ---- v0.4.11 maxBytes + sliding TTL + tags ----
+
+function _newCache(extra) {
+  return b.cache.create(Object.assign({ namespace: "v411", backend: "memory" }, extra || {}));
+}
+
+async function testMaxBytesEvictsLru() {
+  // Cache size budget: 30 bytes. Each entry ~12 bytes JSON ("aaaaaaaa" → 10).
+  var c = _newCache({
+    maxBytes: 30,
+    sizeOf:   function (v) { return Buffer.byteLength(String(v), "utf8"); },
+  });
+  await c.set("k1", "aaaaaaaa");   // 8 bytes
+  await c.set("k2", "bbbbbbbb");   // 8 bytes (16 total)
+  await c.set("k3", "cccccccc");   // 8 bytes (24 total)
+  await c.set("k4", "dddddddd");   // 8 bytes (32 → over cap; evicts k1)
+  check("maxBytes: k1 evicted (LRU)",         (await c.get("k1")) === undefined);
+  check("maxBytes: k4 stored",                (await c.get("k4")) === "dddddddd");
+  check("maxBytes: k2 still present",         (await c.get("k2")) === "bbbbbbbb");
+  check("bytes() reflects live entries",      (await c.bytes()) <= 30 && (await c.bytes()) > 0);
+  await c.close();
+}
+
+async function testMaxBytesObservabilityEmit() {
+  var captured = [];
+  var c = _newCache({
+    maxBytes:      4,
+    sizeOf:        function (v) { return v.length; },
+    observability: { event: function (n, _v, l) { captured.push({ n: n, l: l }); }, tap: function (_n, _l, fn) { return fn(); } },
+  });
+  await c.set("a", "xx");   // 2 bytes
+  await c.set("b", "xx");   // 2 bytes (full)
+  await c.set("c", "xx");   // evicts oldest by bytes
+  var byteEvictions = captured.filter(function (e) { return e.n === "cache.eviction.bytes"; });
+  check("maxBytes: cache.eviction.bytes event fires",  byteEvictions.length >= 1);
+  await c.close();
+}
+
+async function testCustomSizeOf() {
+  var calls = 0;
+  var c = _newCache({
+    maxBytes: 20,
+    sizeOf:   function (v) { calls++; return v && v.estimateBytes ? v.estimateBytes : 0; },
+  });
+  await c.set("k", { estimateBytes: 5 });
+  check("sizeOf called",                      calls >= 1);
+  check("bytes() reports custom-sized total", (await c.bytes()) === 5);
+  await c.close();
+}
+
+async function testSlidingTtlMemory() {
+  var nowMs = 1700000000000;
+  var c = _newCache({
+    ttlMs:      100,
+    slidingTtl: true,
+    clock:      function () { return nowMs; },
+  });
+  await c.set("k", "v");
+  nowMs += 80;                          // 80ms elapsed
+  check("sliding: read before original expiry returns value",
+                                              (await c.get("k")) === "v");
+  nowMs += 80;                          // 160ms total — past original 100ms; sliding bumped to ~180
+  check("sliding: read after original ttl still returns",
+                                              (await c.get("k")) === "v");
+  nowMs += 200;                         // well past any extension
+  check("sliding: eventually expires after no reads",
+                                              (await c.get("k")) === undefined);
+  await c.close();
+}
+
+async function testSlidingTtlOffByDefault() {
+  var nowMs = 1700000000000;
+  var c = _newCache({
+    ttlMs: 100,
+    clock: function () { return nowMs; },
+  });
+  await c.set("k", "v");
+  nowMs += 80;
+  await c.get("k");                     // would extend if sliding were on
+  nowMs += 80;                          // 160ms total — past 100ms TTL
+  check("sliding off: original ttl still wins",
+                                              (await c.get("k")) === undefined);
+  await c.close();
+}
+
+async function testTagsAndInvalidateTag() {
+  var c = _newCache();
+  await c.set("u-1", "alice", { tags: ["user:1", "session"] });
+  await c.set("u-2", "bob",   { tags: ["user:2", "session"] });
+  await c.set("u-3", "carol", { tags: ["user:3"] });
+
+  var tags1 = await c.getTags("u-1");
+  check("getTags: array length matches",     Array.isArray(tags1) && tags1.length === 2);
+  check("getTags: contains user:1",          tags1.indexOf("user:1") !== -1);
+
+  var purged = await c.invalidateTag("session");
+  check("invalidateTag: returns purge count", purged === 2);
+  check("invalidateTag: u-1 gone",            (await c.get("u-1")) === undefined);
+  check("invalidateTag: u-2 gone",            (await c.get("u-2")) === undefined);
+  check("invalidateTag: u-3 untouched",       (await c.get("u-3")) === "carol");
+
+  // Single-key tag wipe
+  var purged2 = await c.invalidateTag("user:3");
+  check("invalidateTag: single-key tag",      purged2 === 1);
+  await c.close();
+}
+
+async function testTagsValidateFormat() {
+  var c = _newCache();
+  var threw = false;
+  try { await c.set("k", "v", { tags: ["", "ok"] }); } catch (_e) { threw = true; }
+  check("tags: rejects empty string entry",   threw);
+  threw = false;
+  try { await c.set("k", "v", { tags: [42, "ok"] }); } catch (_e) { threw = true; }
+  check("tags: rejects non-string entry",     threw);
+  await c.close();
+}
+
+async function testInvalidateTagAuditEmit() {
+  var captured = [];
+  var c = _newCache({
+    audit: { safeEmit: function (e) { captured.push(e); } },
+  });
+  await c.set("u-1", "v", { tags: ["bulk"] });
+  await c.set("u-2", "v", { tags: ["bulk"] });
+  await c.invalidateTag("bulk");
+  var taggedAudits = captured.filter(function (e) { return e.action === "cache.tag.invalidated"; });
+  check("tag invalidate audit emitted",       taggedAudits.length === 1);
+  check("tag invalidate audit metadata.tag",  taggedAudits[0].metadata.tag === "bulk");
+  check("tag invalidate audit count",         taggedAudits[0].metadata.itemCount === 2);
+  await c.close();
+}
+
+async function testInvalidateTagOnClusterThrows() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cache-"));
+  await setupTestDb(tmpDir);
+  try {
+    var c = b.cache.create({
+      namespace: "v411cluster",
+      backend:   "cluster",
+    });
+    var threw = false;
+    try { await c.invalidateTag("anything"); }
+    catch (e) { threw = e && e.code === "NOT_SUPPORTED"; }
+    check("invalidateTag on cluster: NOT_SUPPORTED", threw);
+    await c.close();
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testValidationNewOpts() {
+  var threw;
+
+  threw = false;
+  try { _newCache({ maxBytes: -1 }); } catch (_e) { threw = true; }
+  check("validation: rejects negative maxBytes",   threw);
+
+  threw = false;
+  try { _newCache({ maxBytes: "100" }); } catch (_e) { threw = true; }
+  check("validation: rejects non-number maxBytes", threw);
+
+  threw = false;
+  try { _newCache({ sizeOf: 42 }); } catch (_e) { threw = true; }
+  check("validation: rejects non-fn sizeOf",       threw);
+
+  threw = false;
+  try { _newCache({ slidingTtl: "yes" }); } catch (_e) { threw = true; }
+  check("validation: rejects non-bool slidingTtl", threw);
+}
+
 async function run() {
   await testSurface();
   await testValidation();
@@ -663,6 +834,18 @@ async function run() {
   await testClusterBackendBasics();
   await testClusterNamespaceIsolation();
   await testClusterTtlExpiration();
+
+  // v0.4.11
+  await testValidationNewOpts();
+  await testMaxBytesEvictsLru();
+  await testMaxBytesObservabilityEmit();
+  await testCustomSizeOf();
+  await testSlidingTtlMemory();
+  await testSlidingTtlOffByDefault();
+  await testTagsAndInvalidateTag();
+  await testTagsValidateFormat();
+  await testInvalidateTagAuditEmit();
+  await testInvalidateTagOnClusterThrows();
 }
 
 module.exports = { run: run };
