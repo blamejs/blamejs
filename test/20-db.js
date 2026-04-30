@@ -386,6 +386,105 @@ async function run() {
   // framework schema + reserved-table protection
   await testFrameworkSchema();
   await testReservedTableProtection();
+
+  // v0.4.13 streaming
+  await testDbStreamRaw();
+  await testDbStreamRawWithUnseal();
+  await testDbStreamFromQueryAutoUnseal();
+  await testDbStreamErrorPropagates();
+}
+
+// v0.4.13 — streaming reads
+
+async function _drain(stream) {
+  var rows = [];
+  for await (var row of stream) rows.push(row);
+  return rows;
+}
+
+async function testDbStreamRaw() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-db-stream-"));
+  try {
+    await setupTestDb(tmpDir);
+    var users = b.db.from("users");
+    users.insertOne({ email: "a@x.com", name: "Alice" });
+    users.insertOne({ email: "b@x.com", name: "Bob" });
+    users.insertOne({ email: "c@x.com", name: "Carol" });
+
+    // Aggregate query — no per-row sealing concerns.
+    var rows = await _drain(b.db.stream("SELECT COUNT(*) AS n FROM users"));
+    check("db.stream raw COUNT(*) returns 1 row", rows.length === 1);
+    check("db.stream raw COUNT(*) value 3",       rows[0].n === 3);
+
+    // Plain SELECT without table opt — sealed columns come back as
+    // ciphertext (vault:...), since there's no auto-unseal.
+    var rawRows = await _drain(b.db.stream("SELECT email FROM users WHERE email IS NOT NULL"));
+    check("db.stream raw SELECT returns 3 rows",  rawRows.length === 3);
+    check("db.stream raw SELECT keeps sealing",
+          rawRows.every(function (r) { return typeof r.email === "string" && r.email.indexOf("vault:") === 0; }));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testDbStreamRawWithUnseal() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-db-stream-"));
+  try {
+    await setupTestDb(tmpDir);
+    var users = b.db.from("users");
+    users.insertOne({ email: "alice@x.com", name: "Alice" });
+
+    // Pass { table } to enable cryptoField.unsealRow per row.
+    var rows = await _drain(
+      b.db.stream("SELECT * FROM users WHERE email IS NOT NULL", { table: "users" })
+    );
+    check("db.stream(opts.table) auto-unseals email",  rows[0].email === "alice@x.com");
+    check("db.stream(opts.table) auto-unseals name",   rows[0].name === "Alice");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testDbStreamFromQueryAutoUnseal() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-db-stream-"));
+  try {
+    await setupTestDb(tmpDir);
+    var users = b.db.from("users");
+    users.insertOne({ email: "alice@x.com", name: "Alice" });
+    users.insertOne({ email: "bob@x.com",   name: "Bob" });
+
+    var rows = await _drain(b.db.from("users").stream());
+    check("Query.stream() returns all rows", rows.length === 2);
+    check("Query.stream() unseals fields",
+          rows.every(function (r) { return r.email && r.email.indexOf("@x.com") !== -1; }));
+
+    // With where(): same auto-unseal, filtered.
+    var filtered = await _drain(b.db.from("users").where({ email: "alice@x.com" }).stream());
+    check("Query.where().stream() filters",  filtered.length === 1);
+    check("Query.where().stream() unseals",  filtered[0].name === "Alice");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testDbStreamErrorPropagates() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-db-stream-"));
+  try {
+    await setupTestDb(tmpDir);
+    // Bad SQL — error should arrive on the stream as 'error', not throw.
+    var s = b.db.stream("SELECT BAD_FUNC()");
+    var err = null;
+    s.on("error", function (e) { err = e; });
+    // Drive the stream so the error fires.
+    await new Promise(function (resolve) {
+      s.on("close", resolve);
+      s.on("end", resolve);
+      s.resume();
+    });
+    check("db.stream surfaces SQL error as stream error", err !== null);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
 }
 
 module.exports = {
