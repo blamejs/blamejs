@@ -54,6 +54,26 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
+      # Fail loud + early if the NPM_TOKEN secret isn't visible to this
+      # workflow run. The publish step otherwise burns ~60s of lint +
+      # smoke + e2e + tarball-build before producing an opaque
+      # ENEEDAUTH. Diagnostic message points operators at the
+      # most-common cause (org-secret with restricted repo access).
+      - name: Verify NPM_TOKEN is reachable
+        if: ${{ !inputs.dry_run }}
+        env:
+          NPM_TOKEN_REACHABLE: ${{ secrets.NPM_TOKEN != '' }}
+        run: |
+          if [ "$NPM_TOKEN_REACHABLE" != "true" ]; then
+            echo "::error::NPM_TOKEN secret is empty in this workflow run."
+            echo "::error::Check at: https://github.com/organizations/blamejs/settings/secrets/actions"
+            echo "::error::  - Confirm a secret named NPM_TOKEN exists at the org level (not personal account)"
+            echo "::error::  - Confirm 'Repository access' includes blamejs/blamejs (or is 'All repositories')"
+            echo "::error::  - Confirm the secret value is not empty/whitespace"
+            exit 1
+          fi
+          echo "NPM_TOKEN secret is reachable (length will be revealed only by the npm publish step)."
+
       - name: Compute version
         id: version
         run: |
