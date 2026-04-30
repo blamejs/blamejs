@@ -13006,11 +13006,9 @@ function testConstantsReferenceIntegrity() {
 }
 
 function testLogger() {
-  check("logger namespace present",        typeof b.logger === "object");
-  check("logger.createLogger is function", typeof b.logger.createLogger === "function");
-  check("log.boot is the canonical entry", typeof b.log.boot === "function");
+  check("log.boot is the canonical entry",  typeof b.log.boot === "function");
+  check("legacy b.logger removed in v0.4",  b.logger === undefined);
 
-  // Capture console output by stubbing
   var origLog = console.log;
   var origErr = console.error;
   var captured = { log: [], error: [] };
@@ -13027,37 +13025,30 @@ function testLogger() {
   process.stderr.isTTY = true;
 
   try {
-    var log = b.logger.createLogger("testmod");
+    var log = b.log.boot("testmod");
 
-    // Default invocation = info → console.log
     log("hello");
-    check("logger: default invocation logs to stdout", captured.log[0] === "[blamejs:testmod] hello");
+    check("log.boot: default invocation logs to stdout", captured.log[0] === "[blamejs:testmod] hello");
 
-    // .info path
     log.info("info msg");
-    check("logger: .info logs to stdout", captured.log[1] === "[blamejs:testmod] info msg");
+    check("log.boot: .info logs to stdout", captured.log[1] === "[blamejs:testmod] info msg");
 
-    // .warn → stderr
     log.warn("warn msg");
-    check("logger: .warn logs to stderr", captured.error[0] === "[blamejs:testmod] warn msg");
+    check("log.boot: .warn logs to stderr", captured.error[0] === "[blamejs:testmod] warn msg");
 
-    // .error → stderr
     log.error("err msg");
-    check("logger: .error logs to stderr", captured.error[1] === "[blamejs:testmod] err msg");
+    check("log.boot: .error logs to stderr", captured.error[1] === "[blamejs:testmod] err msg");
 
-    // .prefix exposed
-    check("logger: .prefix exposes the namespace", log.prefix === "[blamejs:testmod] ");
+    check("log.boot: .prefix exposes the namespace", log.prefix === "[blamejs:testmod] ");
 
-    // Empty / non-string name rejected
     var threw = false;
-    try { b.logger.createLogger(""); } catch (_e) { threw = true; }
-    check("logger: rejects empty name", threw);
+    try { b.log.boot(""); } catch (_e) { threw = true; }
+    check("log.boot: rejects empty name", threw);
 
     var threw2 = false;
-    try { b.logger.createLogger(null); } catch (_e) { threw2 = true; }
-    check("logger: rejects non-string name", threw2);
+    try { b.log.boot(null); } catch (_e) { threw2 = true; }
+    check("log.boot: rejects non-string name", threw2);
 
-    // Non-TTY → JSON line. Reset captured + flip flags.
     captured.log.length = 0;
     captured.error.length = 0;
     process.stdout.isTTY = false;
@@ -13074,7 +13065,6 @@ function testLogger() {
     var parsedWarn = JSON.parse(captured.error[0]);
     check("log.boot non-TTY warn → stderr JSON", parsedWarn.level === "warn" && parsedWarn.message === "ouch");
 
-    // log.boot and logger.createLogger return the same shape
     var direct = b.log.boot("direct");
     check("log.boot returns callable",        typeof direct === "function");
     check("log.boot returns .info / .warn / .error",

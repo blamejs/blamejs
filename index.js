@@ -26,7 +26,7 @@
  *                 appShutdown
  *   Backup:       backup, backupCrypto, backupManifest, backupBundle,
  *                 restore, restoreBundle, restoreRollback
- *   DX:           log, logger, dev, bundler, cli, migrations, deprecate,
+ *   DX:           log, dev, bundler, cli, migrations, deprecate,
  *                 apiSnapshot
  *   Validation:   safeSchema, safeJson, safeSql, safeBuffer, safeUrl,
  *                 safeAsync, parsers, pagination
@@ -77,7 +77,6 @@ var chainWriter = require("./lib/chain-writer");
 var safeBuffer = require("./lib/safe-buffer");
 var lazyRequire = require("./lib/lazy-require");
 var frameworkError = require("./lib/framework-error");
-var logger = require("./lib/logger");
 var httpClient = require("./lib/http-client");
 // Attach the encrypted-payload helper from the api-encrypt middleware so
 // `b.httpClient.encrypted({ pubkey, baseUrl })` is available alongside
@@ -189,7 +188,6 @@ module.exports = {
   safeBuffer:       safeBuffer,
   lazyRequire:      lazyRequire,
   frameworkError:   frameworkError,
-  logger:           logger,
   httpClient:       httpClient,
   websocket:        websocket,
   safeUrl:          safeUrl,

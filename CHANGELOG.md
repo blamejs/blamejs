@@ -8,6 +8,9 @@ upgrading across more than a few patches at a time.
 
 ## v0.3.x
 
+- **0.3.39** (2026-04-29) — MIGRATING.md generator scans deprecate() calls in lib/
+- **0.3.38** (2026-04-29) — LTS-CALENDAR.md publishes the major-cadence + algorithm posture
+- **0.3.37** (2026-04-29) — bundled pure-JS mTLS engine + vendor-update.sh + CHANGELOG + thanks page
 - **0.3.36** (2026-04-29) — prepack guard refuses to publish any path that matches a gitignore rule
 - **0.3.35** (2026-04-29) — wiki home page hero with logo + neon-magenta brand accents
 - **0.3.34** (2026-04-29) — rewrite api-snapshot wiki section in plain operator voice + fix SECURITY.md flag
