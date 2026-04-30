@@ -11,7 +11,7 @@
 // any node_modules are excluded.
 //
 // Standalone (no @eslint/js / globals npm dependency) so this lints
-// cleanly via `npx eslint@9` without resolving extra peer deps.
+// cleanly via `npx eslint@10` without resolving extra peer deps.
 
 const NODE_GLOBALS = {
   // CommonJS module system

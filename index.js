@@ -20,7 +20,7 @@
  *                 error-handler, body-parser, csp-nonce, compression,
  *                 health, api-encrypt), httpClient, websocket,
  *                 websocketChannels, nonceStore
- *   Auth:         auth.{password,totp,passkey,jwt,oauth}, authHeader
+ *   Auth:         auth.{password,totp,passkey,jwt,oauth,lockout}, authHeader
  *   Render:       template, render, staticServe, forms, errorPage
  *   App:          createApp, jobs, mail, mailBounce, scheduler,
  *                 appShutdown
@@ -93,6 +93,7 @@ var auth = {
   passkey:  require("./lib/auth/passkey"),
   jwt:      require("./lib/auth/jwt"),
   oauth:    require("./lib/auth/oauth"),
+  lockout:  require("./lib/auth/lockout"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");

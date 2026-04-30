@@ -23,7 +23,7 @@ node test/smoke.js
 cd examples/wiki && rm -rf data data-e2e && node test/e2e.js
 
 # 4. Run lint as a pre-commit gate (CI runs all three)
-npx eslint@9 --max-warnings 0 .
+npx eslint@10 --max-warnings 0 .
 docker run --rm -i hadolint/hadolint < examples/wiki/Dockerfile
 shellcheck $(git ls-files '*.sh')
 ```
@@ -97,7 +97,7 @@ The smoke target is `OK — N checks passed` ending with a count higher than the
 4. **Fail-loud verification before push:**
    - `node test/smoke.js` ends with `OK — N checks passed`
    - `cd examples/wiki && rm -rf data data-e2e && node test/e2e.js` ends with `OK — N checks passed`
-   - `npx eslint@9 --max-warnings 0 .` exits 0
+   - `npx eslint@10 --max-warnings 0 .` exits 0
 5. **Commit message style:** lowercase imperative, no AI references, no `Co-Authored-By` trailers from generators. The first line is a one-sentence summary; the body explains *why* and *what tradeoff*. See git log for examples.
 6. **Open the PR.** The `Lint summary` CI check is required to pass before merge — it aggregates ESLint + Hadolint + ShellCheck and posts a sticky comment on the PR with the results.
 7. **Review feedback** is usually one round. Reviewers focus on:

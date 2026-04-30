@@ -1602,16 +1602,31 @@ async function testMiddlewareSecurityHeaders() {
     check("security: Permissions-Policy disables camera", /camera=\(\)/.test(h["permissions-policy"]));
     check("security: COOP same-origin",                  h["cross-origin-opener-policy"] === "same-origin");
     check("security: CORP same-origin",                  h["cross-origin-resource-policy"] === "same-origin");
+    check("security: Origin-Agent-Cluster ?1",           h["origin-agent-cluster"] === "?1");
+    check("security: X-DNS-Prefetch-Control off",        h["x-dns-prefetch-control"] === "off");
     check("security: CSP includes default-src 'self'",   /default-src 'self'/.test(h["content-security-policy"]));
 
     // Override + disable
-    var mw2 = b.middleware.securityHeaders({ frameOptions: "SAMEORIGIN", csp: false });
+    var mw2 = b.middleware.securityHeaders({
+      frameOptions:       "SAMEORIGIN",
+      originAgentCluster: false,
+      dnsPrefetchControl: "on",
+      csp:                false,
+    });
     var req2 = _mockReq();
     var res2 = _mockRes();
     mw2(req2, res2, function () {});
     var h2 = res2._captured().headers;
     check("security: frameOptions override applied",     h2["x-frame-options"] === "SAMEORIGIN");
     check("security: csp disabled when false",           h2["content-security-policy"] === undefined);
+    check("security: Origin-Agent-Cluster disabled when false",
+                                                         h2["origin-agent-cluster"] === undefined);
+    check("security: DNS-Prefetch-Control on override",  h2["x-dns-prefetch-control"] === "on");
+
+    var threwUnknownOpt = false;
+    try { b.middleware.securityHeaders({ NOT_A_REAL_OPT: true }); }
+    catch (_e) { threwUnknownOpt = true; }
+    check("security: rejects unknown opt",               threwUnknownOpt);
   } finally { teardownMW(); }
 }
 

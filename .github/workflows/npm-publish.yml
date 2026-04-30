@@ -99,7 +99,7 @@ jobs:
       # Run the same lint posture release-container.yml's lint gate runs
       # — a tag-time regression must fail the publish before it lands.
       - name: ESLint (max-warnings 0)
-        run: npx --yes eslint@9 --max-warnings 0 .
+        run: npx --yes eslint@10 --max-warnings 0 .
 
       - name: Framework smoke
         run: node test/smoke.js

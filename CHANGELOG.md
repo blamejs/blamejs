@@ -8,6 +8,12 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.8** (2026-04-30) — wiki SEO surface: per-page OG / Twitter / JSON-LD + sitemap.xml + robots.txt
+- **0.4.7** (2026-04-30) — audit-fix the welcome page's "what's in the box" table
+- **0.4.6** (2026-04-30) — wiki gets the brand-flare on every page + substantive content additions
+- **0.4.5** (2026-04-30) — canonical domain is blamejs.com (was blamejs.app everywhere)
+- **0.4.4** (2026-04-30) — document BLAMEJS_AUDIT_SIGNING_PASSPHRASE everywhere
+- **0.4.3** (2026-04-30) — b.ssrfGuard primitive (default-on in httpClient) + wiki posture auto-detect
 - **0.4.2** (2026-04-30) — npm keywords
 - **0.4.1** (2026-04-29) — wiki bot-guard skips /healthz so the post-publish smoke check passes
 - **0.4.0** (2026-04-29) — bench suite + drops the deprecated b.logger.createLogger
