@@ -1,8 +1,31 @@
 {% extends "_layout" %}
 {% block content %}
-<h1>blamejs</h1>
-<p>The Node framework that <strong>owns its stack</strong>. Zero npm runtime dependencies, post-quantum crypto from the start, sealed-by-default storage, audit chain on every operator action.</p>
-<p>This site is the docs <em>and</em> a working reference app — every page you read renders through the framework's own primitives.</p>
+<section class="hero" aria-labelledby="hero-title">
+  <div class="hero-inner">
+    <div class="hero-mark">
+      <img src="/img/blamejs-logo.png" alt="" width="128" height="128">
+    </div>
+    <div class="hero-text">
+      <p class="hero-eyebrow">Apache-2.0</p>
+      <h1 id="hero-title" class="hero-title">BlameJS</h1>
+      <p class="hero-tagline">The Node framework that <span class="hero-em">owns its stack</span>.</p>
+      <p class="hero-sub">Zero npm runtime dependencies. Post-quantum crypto from line zero. Sealed-by-default storage. Audit chain on every operator action.</p>
+      <div class="hero-cta">
+        <a href="#quick-start" class="btn-brand">Quick start</a>
+        <a href="https://github.com/blamejs/blamejs" class="btn-ghost" rel="noopener">View on GitHub</a>
+      </div>
+    </div>
+  </div>
+  <ul class="hero-pills" aria-label="Default posture">
+    <li>Zero npm deps</li>
+    <li>PQC by default</li>
+    <li>Sealed storage</li>
+    <li>Audit chain</li>
+    <li>Server-rendered</li>
+  </ul>
+</section>
+
+<p class="hero-aside">This site is the docs <em>and</em> a working reference app &mdash; every page you read renders through the framework's own primitives.</p>
 
 <h2 id="quick-start">Quick start <a class="anchor" href="#quick-start">#</a></h2>
 <pre><code class="language-bash">npm install @blamejs/core
