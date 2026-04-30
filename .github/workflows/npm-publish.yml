@@ -1,0 +1,126 @@
+# Publish @blamejs/core to the npm registry on every `v*` tag push.
+#
+# Same trigger shape as release-container.yml, but a separate workflow
+# so a failure in one doesn't block the other (npm publish failures
+# shouldn't keep the GHCR image from shipping; container failures
+# shouldn't block an operator from `npm install @blamejs/core`).
+#
+# Supply-chain posture matches the container release:
+#   - npm publish --provenance attaches a SLSA v1 provenance attestation
+#     tying the published tarball to this exact GitHub Actions workflow
+#     run + commit + tag (visible at https://www.npmjs.com/package/@blamejs/core
+#     → "Provenance" on each version).
+#   - Lint + smoke gate runs before publish; a tag-time test regression
+#     never lands on the npm registry.
+#   - Version match: the package.json "version" must equal the pushed
+#     tag minus the leading "v". Tag drift fails the publish.
+#
+# `workflow_dispatch.dry_run` lets an operator exercise the validation
+# + lint + test path without actually pushing to npm — useful for
+# verifying a package.json change before tagging.
+
+name: npm publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build + lint + smoke without publishing to npm'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for npm provenance attestation
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Lint, smoke, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node 24 LTS + npm registry auth
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Compute version
+        id: version
+        run: |
+          # On tag push: derive version from the tag (strip leading "v").
+          # On workflow_dispatch (no tag): just pull from package.json
+          # and validate, but don't expect a tag match.
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            TAG_REF="${GITHUB_REF#refs/tags/v}"
+            if [ "$TAG_REF" != "$PKG_VERSION" ]; then
+              echo "::error::Tag-version drift: pushed tag is v$TAG_REF but package.json version is $PKG_VERSION."
+              echo "::error::Bump package.json AND tag the same version on a single commit."
+              exit 1
+            fi
+            echo "is_tag=true"      >> "$GITHUB_OUTPUT"
+            echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_tag=false"     >> "$GITHUB_OUTPUT"
+            echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved version: $PKG_VERSION (tag-push: ${GITHUB_REF#refs/tags/})"
+
+      # Run the same lint posture release-container.yml's lint gate runs
+      # — a tag-time regression must fail the publish before it lands.
+      - name: ESLint (max-warnings 0)
+        run: npx --yes eslint@9 --max-warnings 0 .
+
+      - name: Framework smoke
+        run: node test/smoke.js
+
+      - name: Wiki e2e
+        working-directory: examples/wiki
+        run: |
+          rm -rf data data-e2e
+          npm install --no-package-lock --omit=dev --install-links
+          node test/e2e.js
+
+      - name: Publish to npm (with SLSA provenance)
+        if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build summary
+        if: always()
+        run: |
+          IS_TAG="${{ steps.version.outputs.is_tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          DRY_RUN="${{ inputs.dry_run || 'false' }}"
+
+          {
+            echo "### npm publish"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Package**   | \`@blamejs/core\` |"
+            echo "| **Version**   | \`$VERSION\` |"
+            echo "| **Tag push**  | $IS_TAG |"
+            echo "| **Dry run**   | $DRY_RUN |"
+            echo "| **Registry**  | https://registry.npmjs.org |"
+            if [ "$IS_TAG" = "true" ] && [ "$DRY_RUN" != "true" ]; then
+              echo "| **Provenance** | https://www.npmjs.com/package/@blamejs/core/v/$VERSION → Provenance tab |"
+            fi
+            echo ""
+            echo "Operators can install with:"
+            echo ""
+            echo '```bash'
+            echo "npm install @blamejs/core@$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -38,7 +38,8 @@ WORKDIR /home/node/examples/wiki
 # reproducibility win as well.
 RUN rm -rf node_modules data data-e2e public/dist \
  && npm install --no-package-lock --omit=dev --install-links \
- && node -e "var b = require('@blamejs/core'); var path = require('node:path'); (async function () { var bundler = b.bundler.create({ entries: { wiki: path.join(process.cwd(), 'src', 'wiki.js'), editor: path.join(process.cwd(), 'src', 'editor.js') }, outdir: path.join(process.cwd(), 'public', 'dist'), manifest: 'manifest.json', hashLen: 16 }); await bundler.build(); console.log('[Dockerfile] bundle pre-built into public/dist'); })().catch(function (e) { console.error('bundle build failed:', e.stack || e); process.exit(1); });"
+ && node -e "var b = require('@blamejs/core'); var path = require('node:path'); (async function () { var bundler = b.bundler.create({ entries: { wiki: path.join(process.cwd(), 'src', 'wiki.js'), editor: path.join(process.cwd(), 'src', 'editor.js') }, outdir: path.join(process.cwd(), 'public', 'dist'), manifest: 'manifest.json', hashLen: 16 }); await bundler.build(); console.log('[Dockerfile] bundle pre-built into public/dist'); })().catch(function (e) { console.error('bundle build failed:', e.stack || e); process.exit(1); });" \
+ && mkdir -p /home/node/data-skeleton
 
 FROM cgr.dev/chainguard/node:latest AS runtime
 # Non-secret defaults baked into the image. Secrets (passphrases,
@@ -84,6 +85,16 @@ COPY --from=deps --chown=65532:65532 /home/node/package.json /home/node/index.js
 COPY --from=deps --chown=65532:65532 /home/node/bin ./bin
 COPY --from=deps --chown=65532:65532 /home/node/lib ./lib
 COPY --from=deps --chown=65532:65532 /home/node/examples/wiki ./examples/wiki
+# Pre-create WIKI_DATA_DIR (default /data) with nonroot ownership so
+# the runtime user can populate it with vault.key + sqlite + audit
+# chain on first boot. The framework's createApp does
+# fs.mkdirSync(dataDir, {recursive:true}); without this, that mkdir
+# fails because nonroot (UID 65532) doesn't have write permission on
+# /. Production deployments bind-mount a named volume on top of
+# /data — see examples/wiki/docker-compose.prod.yml. This empty
+# pre-created dir is the fallback for a `docker run` with no volume
+# (the post-publish smoke-test job's invocation).
+COPY --from=deps --chown=65532:65532 /home/node/data-skeleton /data
 WORKDIR /app/examples/wiki
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
