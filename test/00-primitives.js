@@ -13008,6 +13008,191 @@ async function testHttpClientH2Stream() {
   }
 }
 
+// ---- v0.4.15 redirect-following + outbound multipart ----
+
+async function testHttpClientRedirectFollow() {
+  var http = require("http");
+  var hits = [];
+  var server = http.createServer(function (req, res) {
+    hits.push(req.url);
+    if (req.url === "/start") {
+      res.writeHead(302, { "Location": "/middle" });
+      res.end();
+    } else if (req.url === "/middle") {
+      res.writeHead(302, { "Location": "/end" });
+      res.end();
+    } else if (req.url === "/end") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("final");
+    } else { res.writeHead(404); res.end(); }
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    // Default behavior (no maxRedirects opt) — non-2xx including 3xx
+    // throws as an HTTP error, matching the framework's existing
+    // contract before maxRedirects existed.
+    var threw = false;
+    try { await httpReq({ url: "http://127.0.0.1:" + port + "/start" }); }
+    catch (_e) { threw = true; }
+    check("redirect: default behavior treats 3xx as error", threw);
+
+    hits.length = 0;
+    // Follow — caller sees 200.
+    var followed = await httpReq({
+      url:          "http://127.0.0.1:" + port + "/start",
+      maxRedirects: 5,
+    });
+    check("redirect: follow lands on 200",            followed.statusCode === 200);
+    check("redirect: follow body is final",           followed.body.toString("utf8") === "final");
+    check("redirect: server saw 3 hops",              hits.length === 3);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientRedirectMaxHops() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    res.writeHead(302, { "Location": req.url + "x" });
+    res.end();
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    // maxRedirects: 2 — server keeps redirecting; caller sees the 3rd 3xx.
+    var capped = await httpReq({
+      url:          "http://127.0.0.1:" + port + "/loop",
+      maxRedirects: 2,
+    });
+    check("redirect: maxRedirects:2 stops after 2 hops",   capped.statusCode === 302);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientRedirectStripsAuthCrossOrigin() {
+  var http = require("http");
+  // Same-origin server keeps Authorization; the test asserts the
+  // Authorization header is absent on the second hop when the redirect
+  // changes the URL host. We can't actually cross hosts in a unit test
+  // (one server), so we use 127.0.0.1 vs localhost — different by string.
+  var seenAuthOnEnd;
+  var serverEnd = http.createServer(function (req, res) {
+    seenAuthOnEnd = req.headers["authorization"] || null;
+    res.writeHead(200);
+    res.end("ok");
+  });
+  var portEnd = await listenOnRandomPort(serverEnd, "127.0.0.1");
+
+  var serverStart = http.createServer(function (req, res) {
+    // Redirect to a different host (localhost vs 127.0.0.1 — origin differs)
+    res.writeHead(302, { "Location": "http://localhost:" + portEnd + "/" });
+    res.end();
+  });
+  var portStart = await listenOnRandomPort(serverStart, "127.0.0.1");
+  try {
+    b.httpClient._resetForTest();
+    await httpReq({
+      url:          "http://127.0.0.1:" + portStart + "/",
+      headers:      { "Authorization": "Bearer secret-token" },
+      maxRedirects: 5,
+    });
+    check("redirect: Authorization stripped on cross-origin hop",
+          seenAuthOnEnd === null);
+  } finally {
+    serverEnd.close();
+    serverStart.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientRedirect303CoercesGet() {
+  var http = require("http");
+  var capturedMethod = null;
+  var server = http.createServer(function (req, res) {
+    if (req.url === "/post") {
+      res.writeHead(303, { "Location": "/get-target" });
+      res.end();
+    } else if (req.url === "/get-target") {
+      capturedMethod = req.method;
+      res.writeHead(200);
+      res.end("ok");
+    }
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    await httpReq({
+      url:          "http://127.0.0.1:" + port + "/post",
+      method:       "POST",
+      body:         Buffer.from("payload"),
+      headers:      { "Content-Type": "application/octet-stream" },
+      maxRedirects: 5,
+    });
+    check("redirect: 303 coerces follow-up to GET", capturedMethod === "GET");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientMultipartOutbound() {
+  var http = require("http");
+  var captured;
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      captured = {
+        method:      req.method,
+        contentType: req.headers["content-type"],
+        body:        Buffer.concat(chunks),
+      };
+      res.writeHead(200);
+      res.end("ok");
+    });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    await httpReq({
+      url:    "http://127.0.0.1:" + port + "/upload",
+      multipart: {
+        fields: { title: "My Doc", tags: ["a", "b"] },
+        files:  [{ field: "file", filename: "x.txt",
+                   contentType: "text/plain", content: "hello multipart" }],
+      },
+    });
+    check("multipart: method defaults to POST",     captured.method === "POST");
+    check("multipart: Content-Type carries boundary",
+          /^multipart\/form-data; boundary=----blamejs-mp-/.test(captured.contentType));
+    var bodyStr = captured.body.toString("utf8");
+    check("multipart: title field present",          bodyStr.indexOf('name="title"') !== -1);
+    check("multipart: tag field repeated",          (bodyStr.match(/name="tags"/g) || []).length === 2);
+    check("multipart: file Content-Disposition",     bodyStr.indexOf('name="file"; filename="x.txt"') !== -1);
+    check("multipart: file Content-Type",            bodyStr.indexOf("Content-Type: text/plain") !== -1);
+    check("multipart: file content present",         bodyStr.indexOf("hello multipart") !== -1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientMultipartConflictsWithBody() {
+  var threw = false;
+  try {
+    await httpReq({
+      url:       "http://127.0.0.1:1/x",
+      body:      "anything",
+      multipart: { fields: { a: "b" } },
+    });
+  } catch (_e) { threw = true; }
+  check("multipart: rejects body+multipart together",  threw);
+}
+
 function testWebSocketHandshake() {
   var ws = b.websocket;
 
@@ -14633,6 +14818,14 @@ async function run() {
   await testHttpClientH2ErrorStatus();
   await testHttpClientH2Multiplex();
   await testHttpClientH2Stream();
+
+  // v0.4.15
+  await testHttpClientRedirectFollow();
+  await testHttpClientRedirectMaxHops();
+  await testHttpClientRedirectStripsAuthCrossOrigin();
+  await testHttpClientRedirect303CoercesGet();
+  await testHttpClientMultipartOutbound();
+  await testHttpClientMultipartConflictsWithBody();
   // websocket primitive (RFC 6455 + RFC 8441) — fixture-needing
   // tests (h2c suite + router suite) live in module.exports.groups[]
   // so each group's setup runs once and per-test timing is reported.
