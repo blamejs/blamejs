@@ -118,3 +118,75 @@ The on-disk schema is forward-compatible within a minor; downgrading across a mi
 - **Caddy can't issue cert** — check that ports 80 and 443 are reachable from the public internet (Let's Encrypt's HTTP-01 challenge needs port 80). Run `docker compose logs caddy` for the specific ACME error.
 - **Wiki returns 502** — the wiki container's healthcheck is failing. `docker compose logs wiki` shows the cause; usually missing `WIKI_ADMIN_PASSWORD` or a corrupt vault key.
 - **Cookies / sessions don't stick** — the wiki sets `Secure` cookies in production. If you're testing on `http://` for some reason, sessions will drop; either add `WIKI_INSECURE_COOKIES=1` (dev only) or use the proper TLS path.
+
+## GitHub repository + Actions setup (publishing your own image)
+
+If you're forking `blamejs` (or running this wiki as your own deployment that ships its own GHCR image), the workflows have prerequisites on the GitHub side that aren't visible in the code. Configure these once per org / per fork.
+
+### Org-level Actions billing
+
+The release-container workflow runs five jobs per tag push: 3 lint jobs, the build/scan/sign/publish job, and a post-publish smoke-test. The build job does a multi-arch build (linux/amd64 + linux/arm64 via QEMU) which consumes more runner-minutes than a single-arch build. Make sure the **organization's** Actions spending limit (not personal) is non-zero — public-repo Linux runner-minutes are free on most plans, but a `Stop usage: Yes` setting with a $0 limit blocks all jobs.
+
+- **Org settings**: `https://github.com/organizations/<your-org>/settings/billing`
+- **Spending limit**: `https://github.com/organizations/<your-org>/settings/billing/spending_limit`
+- Symptom of a billing block: a job fails in seconds with no steps, no runner allocated, and an annotation containing `"recent account payments have failed or your spending limit needs to be increased"`. The fix has to propagate from GitHub's billing system after you change the limit; allow a few minutes.
+
+### Workflow permissions (already set in the YAML, but worth knowing)
+
+`.github/workflows/release-container.yml` declares the minimum permissions the workflow needs. Each one is required for a specific step:
+
+| Permission | Used by | Why |
+|---|---|---|
+| `contents: read` | `actions/checkout@v6` | Read the repo source |
+| `packages: write` | `docker/login-action@v4` + `docker/build-push-action@v7` | Push the built image to `ghcr.io/<owner>/blamejs-wiki` |
+| `id-token: write` | `sigstore/cosign-installer@v3` + `cosign sign --yes` | Mint a short-lived OIDC token GitHub Actions exchanges with Sigstore's Fulcio for a keyless signing certificate |
+
+CI (`ci.yml`) declares `contents: read` + `pull-requests: write` (the latter so the lint-summary job can post / update the sticky PR comment).
+
+These are scoped per workflow; the org-level **default permissions** at `https://github.com/organizations/<your-org>/settings/actions` should be set to `Read repository contents and packages permissions` (the most-restrictive default) so workflows that don't declare explicit permissions can't accidentally write.
+
+### GHCR package visibility
+
+GitHub Container Registry packages default to **private** when a workflow first publishes them. For an open-source framework, you'll want public so operators can `docker pull` without authenticating:
+
+- `https://github.com/orgs/<your-org>/packages/container/blamejs-wiki/settings`
+- "Change visibility" → Public
+
+Even with a public package, the post-publish smoke-test job logs in via `docker/login-action@v4` (using the auto-provided `GITHUB_TOKEN`) — login is a no-op for public packages and required for private, so the same workflow shape works either way.
+
+### Cosign signature verification (downstream operators)
+
+The publish job signs the multi-arch manifest with Sigstore's keyless flow — there's no long-lived key to manage. The signing identity is the workflow itself, attested by GitHub's OIDC issuer. Downstream operators verify before pulling:
+
+```bash
+cosign verify ghcr.io/<your-org>/blamejs-wiki:<tag> \
+  --certificate-identity-regexp "https://github.com/<your-org>/<repo>/.github/workflows/release-container.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+A successful verification proves the image was built by the actual release-container workflow on a tag push, and not pushed by anyone with `packages: write` directly. Combine with the SBOM + provenance attestations the workflow attaches (`provenance: true` + `sbom: true` on `docker/build-push-action`) for full supply-chain confidence.
+
+### Branch protection (recommended)
+
+For `main`, require the CI workflow's lint-summary job to pass before merge. The lint-summary aggregates ESLint + Hadolint + ShellCheck and is the single check name to add to "Required status checks":
+
+- `https://github.com/<your-org>/<repo>/settings/branches`
+- Add rule for `main`
+- "Require status checks to pass before merging" → "Lint summary"
+- Optionally also require: "Framework smoke (ubuntu-latest)" + "Wiki e2e (ubuntu-latest)"
+
+### Tag-driven releases
+
+The release-container workflow triggers on `push: tags: ["v*"]`. The standard release flow is:
+
+1. Bump `version` in `package.json` on `main`
+2. Commit + push `main`
+3. `git tag vX.Y.Z && git push origin vX.Y.Z` — this is what triggers the release pipeline
+4. Workflow runs all 5 jobs; on success, image is at `ghcr.io/<your-org>/blamejs-wiki:<tag>` (signed, scanned, smoke-tested)
+5. Pin the new tag in `docker-compose.prod.yml`'s `image:` line on the deploy host, then `docker compose pull && docker compose up -d`
+
+Hot-fixes / dry-runs use the `workflow_dispatch` trigger with the `dry_run` input — run the build + scan path without pushing or signing, useful for verifying a Dockerfile change before tagging:
+
+```bash
+gh workflow run release-container.yml --repo <your-org>/<repo> --ref <branch> -F dry_run=true
+```
