@@ -53,7 +53,7 @@ FROM cgr.dev/chainguard/node:latest AS runtime
 #                          audit chain                              (default: /data)
 #   WIKI_PORT              listen port                              (default: 8080)
 #
-#   WIKI_ADMIN_EMAIL       seeded admin login email                 (default: admin@blamejs.app)
+#   WIKI_ADMIN_EMAIL       seeded admin login email                 (default: admin@blamejs.com)
 #   WIKI_ADMIN_PASSWORD    seeded admin password                    (REQUIRED — generated
 #                                                                    if absent, printed to
 #                                                                    stdout on first boot;

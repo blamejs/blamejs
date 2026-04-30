@@ -7,7 +7,7 @@
 //   var app = await buildApp({
 //     dataDir:       "./data",
 //     port:          8080,            // 0 for ephemeral
-//     adminEmail:    "admin@blamejs.app",
+//     adminEmail:    "admin@blamejs.com",
 //     adminPassword: "...",           // optional; null skips seed
 //     webhookUrl:    null,
 //     webhookSecret: null,
@@ -55,7 +55,7 @@ async function buildApp(opts) {
 
   var dataDir = opts.dataDir;
   var port = opts.port !== undefined ? opts.port : 8080;
-  var adminEmail = opts.adminEmail || "admin@blamejs.app";
+  var adminEmail = opts.adminEmail || "admin@blamejs.com";
   var adminPassword = opts.adminPassword || null;
   var webhookUrl = opts.webhookUrl || null;
   var webhookSecret = opts.webhookSecret || null;

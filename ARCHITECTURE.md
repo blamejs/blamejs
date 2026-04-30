@@ -17,7 +17,7 @@ blamejs/
 │   ├── vault/        # Vault keypair management + passphrase ops
 │   ├── backup/       # Backup bundle creation
 │   └── *.js          # Top-level primitives (one .js per primitive)
-├── examples/wiki/    # Reference operator-built app (lives at blamejs.app)
+├── examples/wiki/    # Reference operator-built app (lives at blamejs.com)
 ├── test/             # Layered tests (smoke runner walks every layer)
 │   ├── layer-0-primitives/
 │   ├── layer-1-state/

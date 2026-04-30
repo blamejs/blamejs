@@ -8,7 +8,7 @@ blamejs is a security-first framework. The defaults are post-quantum, sealed-by-
 
 **Do not file a public issue for a security report.**
 
-Email: `security@blamejs.app`
+Email: `security@blamejs.com`
 
 Please include:
 
@@ -84,7 +84,7 @@ What blamejs does **not** defend against (operator responsibility):
 | Signatures (default) | SLH-DSA-SHAKE-256f | FIPS 205 |
 | Signatures (legacy verify) | ML-DSA-87 | FIPS 204 |
 
-Algorithm agility is the framework's posture, not just a feature: every encrypted blob carries an envelope header identifying the KEM / cipher / KDF used. New algorithms (HQC when standardized, FrodoKEM, etc.) land as new ID values without breaking existing data — `b.crypto.decrypt` continues to read old blobs while new writes use the new algorithm. See the wiki's [Crypto & Vault](https://blamejs.app/crypto-vault) page for the per-algorithm IDs and the migration path.
+Algorithm agility is the framework's posture, not just a feature: every encrypted blob carries an envelope header identifying the KEM / cipher / KDF used. New algorithms (HQC when standardized, FrodoKEM, etc.) land as new ID values without breaking existing data — `b.crypto.decrypt` continues to read old blobs while new writes use the new algorithm. See the wiki's [Crypto & Vault](https://blamejs.com/crypto-vault) page for the per-algorithm IDs and the migration path.
 
 ---
 

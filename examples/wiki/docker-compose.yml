@@ -22,7 +22,7 @@ services:
     environment:
       WIKI_DATA_DIR: /data
       WIKI_PORT: "8080"
-      WIKI_ADMIN_EMAIL: ${WIKI_ADMIN_EMAIL:-admin@blamejs.app}
+      WIKI_ADMIN_EMAIL: ${WIKI_ADMIN_EMAIL:-admin@blamejs.com}
       WIKI_ADMIN_PASSWORD: ${WIKI_ADMIN_PASSWORD:-}
       WIKI_WEBHOOK_URL: ${WIKI_WEBHOOK_URL:-}
       WIKI_WEBHOOK_SECRET: ${WIKI_WEBHOOK_SECRET:-}

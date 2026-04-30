@@ -13,7 +13,7 @@ var fs = require("node:fs");
 var { buildApp } = require("../lib/build-app");
 
 var DATA_DIR = path.join(__dirname, "..", "data-e2e");
-var ADMIN_EMAIL = "admin-e2e@blamejs.app";
+var ADMIN_EMAIL = "admin-e2e@blamejs.com";
 var ADMIN_PASSWORD = "e2e-test-password-x9k2";
 
 // Browser-shaped headers — see test docstring above.

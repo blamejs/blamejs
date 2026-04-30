@@ -46,7 +46,7 @@ Maintainers have the right and responsibility to remove, edit, or reject comment
 
 If you experience or witness behavior that violates this Code of Conduct, report it to:
 
-**`conduct@blamejs.app`**
+**`conduct@blamejs.com`**
 
 All reports will be reviewed and investigated promptly and fairly. The maintainer team is obligated to respect the privacy and security of the reporter of any incident — reporter identity is shared only with the maintainers handling the report unless the reporter explicitly consents otherwise.
 

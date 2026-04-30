@@ -1,13 +1,13 @@
-# Caddy config for blamejs.app — automatic Let's Encrypt TLS,
+# Caddy config for blamejs.com — automatic Let's Encrypt TLS,
 # reverse-proxy to the wiki container on the docker-compose network.
 #
 # Caddy issues + renews certificates automatically. The operator only
-# needs to point blamejs.app A/AAAA records at the host running this.
+# needs to point blamejs.com A/AAAA records at the host running this.
 
-blamejs.app, www.blamejs.app {
+blamejs.com, www.blamejs.com {
 	# Canonicalize www.* → apex.
-	@www host www.blamejs.app
-	redir @www https://blamejs.app{uri} 308
+	@www host www.blamejs.com
+	redir @www https://blamejs.com{uri} 308
 
 	encode zstd gzip
 

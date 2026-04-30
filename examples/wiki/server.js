@@ -10,7 +10,7 @@
  *   WIKI_DATA_DIR                       directory for vault key + sqlite db (default ./data)
  *   WIKI_PORT                           HTTP port (default 8080)
  *   WIKI_BIND                           bind address (default 0.0.0.0)
- *   WIKI_ADMIN_EMAIL                    admin user email (default admin@blamejs.app)
+ *   WIKI_ADMIN_EMAIL                    admin user email (default admin@blamejs.com)
  *   WIKI_ADMIN_PASSWORD                 admin password — required ≥ 8 chars; a random
  *                                       dev password is generated and printed if unset
  *   WIKI_WEBHOOK_URL                    optional outbound page-edit webhook URL
@@ -38,7 +38,7 @@ var PORT           = parseInt(process.env.WIKI_PORT || "8080", 10);
 // listening only on localhost behind a same-host reverse proxy) set
 // WIKI_BIND=127.0.0.1.
 var BIND           = process.env.WIKI_BIND       || "0.0.0.0";
-var ADMIN_EMAIL    = process.env.WIKI_ADMIN_EMAIL || "admin@blamejs.app";
+var ADMIN_EMAIL    = process.env.WIKI_ADMIN_EMAIL || "admin@blamejs.com";
 var ADMIN_PASSWORD = process.env.WIKI_ADMIN_PASSWORD || null;
 var WEBHOOK_URL    = process.env.WIKI_WEBHOOK_URL    || null;
 var WEBHOOK_SECRET = process.env.WIKI_WEBHOOK_SECRET || null;

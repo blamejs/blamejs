@@ -25,12 +25,12 @@
 #   WIKI_WEBHOOK_SECRET=<hmac secret>
 #
 #   # optional — defaults shown
-#   WIKI_ADMIN_EMAIL=admin@blamejs.app
+#   WIKI_ADMIN_EMAIL=admin@blamejs.com
 #   WIKI_PORT=8080
 #   LOG_LEVEL=info
 #   BLAMEJS_DEPRECATIONS=warn
 #
-# The operator points DNS A/AAAA records for blamejs.app + www.blamejs.app
+# The operator points DNS A/AAAA records for blamejs.com + www.blamejs.com
 # at the host running this stack, opens 80/443 inbound, and Caddy does
 # the rest on first boot.
 
@@ -55,7 +55,7 @@ services:
       # ---- Wiki app ----
       WIKI_PORT:            ${WIKI_PORT:-8080}
       WIKI_DATA_DIR:        ${WIKI_DATA_DIR:-/data}
-      WIKI_ADMIN_EMAIL:     ${WIKI_ADMIN_EMAIL:-admin@blamejs.app}
+      WIKI_ADMIN_EMAIL:     ${WIKI_ADMIN_EMAIL:-admin@blamejs.com}
       WIKI_ADMIN_PASSWORD:  ${WIKI_ADMIN_PASSWORD:?WIKI_ADMIN_PASSWORD must be set in .env for production}
       WIKI_WEBHOOK_URL:     ${WIKI_WEBHOOK_URL:-}
       WIKI_WEBHOOK_SECRET:  ${WIKI_WEBHOOK_SECRET:-}

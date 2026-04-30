@@ -113,7 +113,7 @@ Good contribution areas, ordered by current need:
 1. **Operator ergonomics** — wiki docs gaps, DEPLOY.md improvements, CLI verb usability, error messages that don't say what to do next.
 2. **Test coverage** — there are still framework primitives at lower test coverage than the rest. `git grep -L "test/layer-" lib/` reveals candidates.
 3. **Vendored-dep refreshes** — when an upstream library publishes a security or feature release, run `scripts/vendor-update.sh --check` then `vendor-update.sh <pkg>`. Patches refreshing vendored deps are always welcome.
-4. **Wiki content** — the wiki at blamejs.app is also the docs site. Filling in concern-group pages (or fixing existing ones) helps every operator.
+4. **Wiki content** — the wiki at blamejs.com is also the docs site. Filling in concern-group pages (or fixing existing ones) helps every operator.
 5. **CLI subcommands** — covered: migrate, seed, dev, api-snapshot, audit, vault, backup, api-key, mtls. Open: a `blamejs i18n missing-keys` reporter, a `blamejs scheduler list/trigger`, a `blamejs queue inspect` for operational debugging. See `lib/cli-helpers.js` for the headless-app + reporter pattern.
 
 What we don't want:
@@ -138,6 +138,6 @@ The maintainer list is in [MAINTAINERS.md](MAINTAINERS.md) (or `git log` if that
 
 - **General questions:** GitHub Discussions on the repo
 - **Real-time:** the project doesn't run a Discord / Slack — async-by-design
-- **Security:** `security@blamejs.app` ([SECURITY.md](SECURITY.md))
+- **Security:** `security@blamejs.com` ([SECURITY.md](SECURITY.md))
 
 This document is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Be excellent.

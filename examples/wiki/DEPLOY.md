@@ -5,13 +5,13 @@ The wiki ships with two compose configurations:
 - `docker-compose.yml` — local dev. Builds from source, exposes 8080.
 - `docker-compose.prod.yml` — production overlay. Pulls the published GHCR image, fronts it with Caddy for automatic TLS, exposes 80/443.
 
-## Quick deploy to a VPS for `blamejs.app`
+## Quick deploy to a VPS for `blamejs.com`
 
 Prerequisites:
 
 - A host with Docker + Docker Compose installed
 - Inbound 80/443 open
-- DNS `A` (and `AAAA` if IPv6) for `blamejs.app` and `www.blamejs.app` pointing at the host
+- DNS `A` (and `AAAA` if IPv6) for `blamejs.com` and `www.blamejs.com` pointing at the host
 - A stable strong admin password (see `.env` below)
 
 Steps:
@@ -32,7 +32,7 @@ WIKI_ADMIN_PASSWORD=<a strong passphrase>
 BLAMEJS_VAULT_PASSPHRASE=<a different strong passphrase>
 
 # Optional — defaults shown
-WIKI_ADMIN_EMAIL=admin@blamejs.app
+WIKI_ADMIN_EMAIL=admin@blamejs.com
 WIKI_PORT=8080
 LOG_LEVEL=info
 
@@ -51,7 +51,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 docker compose logs -f
 ```
 
-When the Caddy logs show `certificate obtained successfully`, the site is live at `https://blamejs.app`.
+When the Caddy logs show `certificate obtained successfully`, the site is live at `https://blamejs.com`.
 
 ## Environment variables
 
@@ -62,7 +62,7 @@ The wiki container reads its configuration from environment. `docker-compose.pro
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
 | `WIKI_ADMIN_PASSWORD` | **yes (production)** | random + printed to stdout once | Seeded admin login. Setting it explicitly avoids the random-on-each-restart pattern. |
-| `WIKI_ADMIN_EMAIL` | no | `admin@blamejs.app` | Seeded admin login email. |
+| `WIKI_ADMIN_EMAIL` | no | `admin@blamejs.com` | Seeded admin login email. |
 | `WIKI_PORT` | no | `8080` | HTTP listen port inside the container. Caddy proxies to this; rarely overridden. |
 | `WIKI_DATA_DIR` | no | `/data` | On-disk path the wiki writes vault key + sqlite + audit chain to. Bound to a Docker volume in the compose. |
 | `WIKI_WEBHOOK_URL` | no | unset | Outbound HTTPS endpoint that receives one POST per `wiki.page.edited` event. |
