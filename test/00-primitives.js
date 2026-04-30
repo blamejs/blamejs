@@ -13193,6 +13193,246 @@ async function testHttpClientMultipartConflictsWithBody() {
   check("multipart: rejects body+multipart together",  threw);
 }
 
+// ---- v0.4.16 interceptors + progress events ----
+
+async function testHttpClientBeforeInterceptor() {
+  var http = require("http");
+  var capturedHeader;
+  var server = http.createServer(function (req, res) {
+    capturedHeader = req.headers["x-injected"];
+    res.writeHead(200);
+    res.end("ok");
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    await httpReq({
+      url: "http://127.0.0.1:" + port + "/",
+      before: [
+        function (req) {
+          req.headers = Object.assign({}, req.headers || {}, { "X-Injected": "from-interceptor" });
+          return req;
+        },
+      ],
+    });
+    check("before: interceptor injects header",  capturedHeader === "from-interceptor");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientBeforeChain() {
+  var http = require("http");
+  var sawA, sawB;
+  var server = http.createServer(function (req, res) {
+    sawA = req.headers["x-a"];
+    sawB = req.headers["x-b"];
+    res.writeHead(200);
+    res.end();
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    await httpReq({
+      url: "http://127.0.0.1:" + port + "/",
+      before: [
+        function (req) { req.headers = { "X-A": "1" }; return req; },
+        function (req) { req.headers = Object.assign({}, req.headers, { "X-B": "2" }); return req; },
+      ],
+    });
+    check("before: chain runs in order — first sets X-A",  sawA === "1");
+    check("before: chain runs in order — second adds X-B", sawB === "2");
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientBeforeThrows() {
+  var threw = false;
+  try {
+    await httpReq({
+      url: "http://127.0.0.1:1/x",
+      before: [function () { throw new Error("oops"); }],
+    });
+  } catch (e) {
+    threw = e && (e.code === "BEFORE_THREW" || /BEFORE_THREW/.test(e.message));
+  }
+  check("before: thrown error surfaces as BEFORE_THREW",  threw);
+}
+
+async function testHttpClientAfterInterceptor() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    res.writeHead(200, { "X-Server-Tag": "alpha" });
+    res.end("hi");
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var captured = null;
+    await httpReq({
+      url: "http://127.0.0.1:" + port + "/",
+      after: [
+        function (reqOpts, res) { captured = { url: reqOpts.url, status: res.statusCode, tag: res.headers["x-server-tag"] }; },
+      ],
+    });
+    check("after: receives final opts + response",
+          captured && captured.status === 200 && captured.tag === "alpha");
+    check("after: opts carries url",
+          captured.url.indexOf("/") !== -1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientAfterAcrossRedirect() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    if (req.url === "/start") { res.writeHead(302, { "Location": "/end" }); res.end(); }
+    else { res.writeHead(200); res.end("done"); }
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var capturedUrl = null;
+    var capturedStatus = null;
+    await httpReq({
+      url:          "http://127.0.0.1:" + port + "/start",
+      maxRedirects: 5,
+      after:        [function (reqOpts, res) { capturedUrl = reqOpts.url; capturedStatus = res.statusCode; }],
+    });
+    check("after: fires once with final URL after redirect",
+          capturedUrl.indexOf("/end") !== -1);
+    check("after: receives the final 200, not the 302",   capturedStatus === 200);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientInterceptorValidation() {
+  var threw;
+
+  threw = false;
+  try { await httpReq({ url: "http://127.0.0.1:1/x", before: "not-an-array" }); }
+  catch (_e) { threw = true; }
+  check("interceptor: rejects non-array before",  threw);
+
+  threw = false;
+  try { await httpReq({ url: "http://127.0.0.1:1/x", before: [42] }); }
+  catch (_e) { threw = true; }
+  check("interceptor: rejects non-fn entries",   threw);
+
+  threw = false;
+  try { await httpReq({ url: "http://127.0.0.1:1/x", after: { fn: 1 } }); }
+  catch (_e) { threw = true; }
+  check("interceptor: rejects non-array after",  threw);
+
+  threw = false;
+  try { await httpReq({ url: "http://127.0.0.1:1/x", onUploadProgress: 42 }); }
+  catch (_e) { threw = true; }
+  check("progress: rejects non-fn onUploadProgress", threw);
+
+  threw = false;
+  try { await httpReq({ url: "http://127.0.0.1:1/x", onDownloadProgress: "no" }); }
+  catch (_e) { threw = true; }
+  check("progress: rejects non-fn onDownloadProgress", threw);
+}
+
+async function testHttpClientUploadProgress() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      res.writeHead(200);
+      res.end("got " + Buffer.concat(chunks).length + " bytes");
+    });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var events = [];
+    var body = Buffer.alloc(200 * 1024, "x");      // 200 KiB → 4 chunks at 64 KiB
+    await httpReq({
+      method: "POST",
+      url:    "http://127.0.0.1:" + port + "/upload",
+      body:   body,
+      onUploadProgress: function (e) { events.push(e); },
+    });
+    check("upload progress: at least 1 event",     events.length >= 1);
+    var last = events[events.length - 1];
+    check("upload progress: final loaded matches body",  last.loaded === body.length);
+    check("upload progress: total = body.length",        last.total === body.length);
+    check("upload progress: monotonic loaded",
+          events.every(function (e, i) { return i === 0 || e.loaded >= events[i - 1].loaded; }));
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientDownloadProgress() {
+  var http = require("http");
+  var payload = Buffer.alloc(100 * 1024, "y");
+  var server = http.createServer(function (req, res) {
+    res.writeHead(200, { "Content-Length": String(payload.length), "Content-Type": "application/octet-stream" });
+    res.end(payload);
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var events = [];
+    var got = await httpReq({
+      url:                "http://127.0.0.1:" + port + "/blob",
+      onDownloadProgress: function (e) { events.push(e); },
+    });
+    check("download progress: response complete",         got.body.length === payload.length);
+    check("download progress: at least 1 event",          events.length >= 1);
+    var last = events[events.length - 1];
+    check("download progress: final loaded matches body", last.loaded === payload.length);
+    check("download progress: total = Content-Length",    last.total === payload.length);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientDownloadProgressStream() {
+  var http = require("http");
+  var payload = Buffer.alloc(50 * 1024, "z");
+  var server = http.createServer(function (req, res) {
+    res.writeHead(200, { "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var events = [];
+    var got = await httpReq({
+      url:                "http://127.0.0.1:" + port + "/blob",
+      responseMode:       "stream",
+      onDownloadProgress: function (e) { events.push(e); },
+    });
+    var collected = await new Promise(function (resolve, reject) {
+      var chunks = [];
+      got.body.on("data",  function (c) { chunks.push(c); });
+      got.body.on("end",   function ()  { resolve(Buffer.concat(chunks)); });
+      got.body.on("error", reject);
+    });
+    check("download progress (stream): body fully delivered",  collected.length === payload.length);
+    check("download progress (stream): events fired",          events.length >= 1);
+    check("download progress (stream): final total ok",
+          events[events.length - 1].total === payload.length);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
 function testWebSocketHandshake() {
   var ws = b.websocket;
 
@@ -14826,6 +15066,17 @@ async function run() {
   await testHttpClientRedirect303CoercesGet();
   await testHttpClientMultipartOutbound();
   await testHttpClientMultipartConflictsWithBody();
+
+  // v0.4.16
+  await testHttpClientBeforeInterceptor();
+  await testHttpClientBeforeChain();
+  await testHttpClientBeforeThrows();
+  await testHttpClientAfterInterceptor();
+  await testHttpClientAfterAcrossRedirect();
+  await testHttpClientInterceptorValidation();
+  await testHttpClientUploadProgress();
+  await testHttpClientDownloadProgress();
+  await testHttpClientDownloadProgressStream();
   // websocket primitive (RFC 6455 + RFC 8441) — fixture-needing
   // tests (h2c suite + router suite) live in module.exports.groups[]
   // so each group's setup runs once and per-test timing is reported.

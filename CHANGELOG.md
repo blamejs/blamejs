@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.15** (2026-04-30) — b.httpClient: redirect-following + outbound multipart
 - **0.4.14** (2026-04-30) — b.i18n: lazy locales + ordinal plurals + onMissingKey hook
 - **0.4.13** (2026-04-30) — b.db: streaming query results
 - **0.4.12** (2026-04-30) — b.log: multi-sink output with per-sink level filtering
