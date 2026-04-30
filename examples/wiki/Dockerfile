@@ -80,10 +80,10 @@ ENV NODE_ENV=production \
     WIKI_DATA_DIR=/data \
     WIKI_PORT=8080
 WORKDIR /app
-COPY --from=deps --chown=nonroot:nonroot /home/node/package.json /home/node/index.js /home/node/NOTICE /home/node/LICENSE /home/node/README.md ./
-COPY --from=deps --chown=nonroot:nonroot /home/node/bin ./bin
-COPY --from=deps --chown=nonroot:nonroot /home/node/lib ./lib
-COPY --from=deps --chown=nonroot:nonroot /home/node/examples/wiki ./examples/wiki
+COPY --from=deps --chown=65532:65532 /home/node/package.json /home/node/index.js /home/node/NOTICE /home/node/LICENSE /home/node/README.md ./
+COPY --from=deps --chown=65532:65532 /home/node/bin ./bin
+COPY --from=deps --chown=65532:65532 /home/node/lib ./lib
+COPY --from=deps --chown=65532:65532 /home/node/examples/wiki ./examples/wiki
 WORKDIR /app/examples/wiki
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
