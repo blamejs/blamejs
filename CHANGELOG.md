@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.19** (2026-04-30) — b.router: schema-validated routes + OpenAPI gen
 - **0.4.18** (2026-04-30) — cookieJar forensic-test strengthening (real crypto, replay, nonce)
 - **0.4.17** (2026-04-30) — b.httpClient.cookieJar (encrypted) + wiki catch-up sweep
 - **0.4.16** (2026-04-30) — b.httpClient: interceptors + progress events
