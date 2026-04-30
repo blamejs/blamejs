@@ -61,6 +61,26 @@ Pass `--help` to any subcommand for the full flag list. Passphrases for crypto-b
 
 See [`examples/wiki/DEPLOY.md`](examples/wiki/DEPLOY.md) for the full deployment walkthrough, including the operator-facing environment-variable matrix (`WIKI_*` and `BLAMEJS_*` keys) and the pin-to-version workflow for production updates.
 
+## Vendored dependencies
+
+All runtime dependencies are committed to the repo — no transitive npm install at runtime, no `node_modules` lookup path for production. Server-side deps are bundled via `scripts/vendor-update.sh`:
+
+```bash
+./scripts/vendor-update.sh --check                  # see what's outdated
+./scripts/vendor-update.sh --diff @noble/ciphers    # see changelog before bumping
+./scripts/vendor-update.sh @noble/ciphers 2.2.0     # bundle + commit a new version
+```
+
+| Package | Version | Author | Purpose |
+|---|---|---|---|
+| [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) | 2.2.0 | [Paul Miller](https://github.com/paulmillr) | XChaCha20-Poly1305 AEAD |
+| [`@simplewebauthn/server`](https://github.com/MasterKale/SimpleWebAuthn) | 13.3.0 | [Matthew Miller](https://github.com/MasterKale) | WebAuthn / passkey verification |
+| [`argon2`](https://github.com/ranisalt/node-argon2) | 0.44.0 | [Ranieri Althoff](https://github.com/ranisalt) | Password hashing (native prebuilds, 8 platforms) |
+| [`@peculiar/x509`](https://github.com/PeculiarVentures/x509) + [`pkijs`](https://github.com/PeculiarVentures/PKI.js) | 2.0.0 + 3.4.0 | [Peculiar Ventures](https://github.com/PeculiarVentures) | Pure-JS mTLS CA — ECDSA P-384 cert signing, PKCS#12 packaging (no openssl CLI) |
+| [`prismjs`](https://prismjs.com/) | 1.30.0 | [Lea Verou + contributors](https://github.com/PrismJS/prism) | Syntax highlighting in the example wiki's code blocks (browser-side) |
+
+These libraries are exceptional work — blamejs wouldn't exist without them. All are MIT licensed. Per-package version, license, and provenance live in two manifests: [`lib/vendor/MANIFEST.json`](lib/vendor/MANIFEST.json) for the framework's server-side bundles and [`examples/wiki/public/vendor/MANIFEST.json`](examples/wiki/public/vendor/MANIFEST.json) for the wiki app's browser-side bundle. The framework's [`NOTICE`](NOTICE) file carries the upstream attributions.
+
 ## Why "blamejs"
 
 Because when something breaks, `blame` should know exactly where it lives. We own the stack so you don't have to chase the fault across an ecosystem.

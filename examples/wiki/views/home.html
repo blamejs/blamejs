@@ -99,6 +99,16 @@ await app.listen({ port: 3000 });</code></pre>
   <li><strong>Audit chain on every operator action.</strong> Login, page edit, cache clear, key rotation — all emit with the 5 W's (WHO / WHAT / WHEN / WHERE / HOW).</li>
 </ul>
 
+<h2 id="thanks">Special thanks <a class="anchor" href="#thanks">#</a></h2>
+<p>blamejs vendors a small set of exceptional third-party libraries. Their work is the foundation the framework is built on — every cryptographic operation, passkey handshake, and certificate the framework signs runs through their code. All MIT-licensed; full attribution lives in <a href="https://github.com/blamejs/blamejs/blob/main/NOTICE">NOTICE</a>.</p>
+<ul>
+  <li><a href="https://github.com/paulmillr">Paul Miller</a> &mdash; <a href="https://github.com/paulmillr/noble-ciphers">@noble/ciphers</a> (XChaCha20-Poly1305 AEAD)</li>
+  <li><a href="https://github.com/ranisalt">Ranieri Althoff</a> &mdash; <a href="https://github.com/ranisalt/node-argon2">argon2</a> (Argon2id passphrase hashing)</li>
+  <li><a href="https://github.com/MasterKale">Matthew Miller</a> &mdash; <a href="https://github.com/MasterKale/SimpleWebAuthn">@simplewebauthn/server</a> (WebAuthn / passkey verification)</li>
+  <li><a href="https://github.com/PeculiarVentures">Peculiar Ventures</a> &mdash; <a href="https://github.com/PeculiarVentures/x509">@peculiar/x509</a> + <a href="https://github.com/PeculiarVentures/PKI.js">pkijs</a> (pure-JS X.509 + PKCS#12 stack behind <code>b.mtlsCa</code>)</li>
+  <li><a href="https://github.com/PrismJS/prism">Lea Verou + contributors</a> &mdash; <a href="https://prismjs.com/">Prism</a> (syntax highlighting in the wiki you're reading)</li>
+</ul>
+
 <aside class="callout callout-tip">
   <p class="callout-title">Tip</p>
   <p>Start with the <a href="/welcome">Welcome</a> page for the framework's overall posture, then jump to whichever concern group matches your current work.</p>

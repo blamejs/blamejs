@@ -1,6 +1,6 @@
 {
   "name": "@blamejs/core",
-  "version": "0.3.36",
+  "version": "0.3.37",
   "description": "The Node framework that owns its stack.",
   "license": "Apache-2.0",
   "author": "blamejs contributors",
@@ -23,6 +23,7 @@
     "index.js",
     "bin/",
     "lib/",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
     "README.md"

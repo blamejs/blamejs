@@ -58,6 +58,27 @@
       },
       "bundler": "esbuild --format=cjs --minify --platform=node --external:crypto --external:node:crypto",
       "bundledAt": "2026-04-26"
+    },
+    "peculiar-pki": {
+      "version": "2.0.0+pkijs-3.4.0",
+      "license": "MIT",
+      "author": "Peculiar Ventures",
+      "source": "https://github.com/PeculiarVentures",
+      "_about": "Meta-bundle of @peculiar/x509 + pkijs + reflect-metadata + every transitive ASN.1 schema package. Used by lib/mtls-engine-default.js as the pure-JS CA + PKCS#12 engine wired into b.mtlsCa.",
+      "components": {
+        "@peculiar/x509": "https://github.com/PeculiarVentures/x509",
+        "pkijs": "https://github.com/PeculiarVentures/PKI.js"
+      },
+      "exports": [
+        "x509",
+        "pkijs",
+        "crypto"
+      ],
+      "files": {
+        "server": "lib/vendor/pki.cjs"
+      },
+      "bundler": "esbuild --format=cjs --minify --platform=node --external:crypto --external:node:crypto",
+      "bundledAt": "2026-04-29"
     }
   }
 }

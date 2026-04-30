@@ -34,3 +34,26 @@ Used for:    Argon2id passphrase-derived key derivation in the vault wrap
              prebuilds shipped for darwin-{arm64,x64}, freebsd-{arm64,x64},
              linux-{arm,arm64,x64}, win32-x64.
 --------------------------------------------------------------------------------
+Component:   @simplewebauthn/server
+Version:     13.3.0
+Source:      https://github.com/MasterKale/SimpleWebAuthn
+License:     MIT
+Copyright:   Copyright (c) Matthew Miller
+Used for:    WebAuthn / passkey registration + authentication response
+             verification (lib/passkey.js, via lib/vendor/simplewebauthn-
+             server.cjs).
+--------------------------------------------------------------------------------
+Component:   @peculiar/x509 + pkijs (peculiar-pki bundle)
+Version:     @peculiar/x509 2.0.0, pkijs 3.4.0
+Source:      https://github.com/PeculiarVentures/x509
+             https://github.com/PeculiarVentures/PKI.js
+License:     MIT
+Copyright:   Copyright (c) Peculiar Ventures
+Used for:    Pure-JS mTLS CA. Self-signed CA generation (ECDSA P-384, SHA-384),
+             leaf-cert signing for client certificates, PKCS#12 packaging
+             (PBES2 + AES-256-CBC + PBKDF2-HMAC-SHA-512, 2,000,000 iterations).
+             Wired into b.mtlsCa via lib/mtls-engine-default.js, backed by the
+             bundle lib/vendor/pki.cjs (also includes reflect-metadata,
+             asn1js, pvtsutils, pvutils, and the @peculiar/asn1-* schema
+             chain).
+--------------------------------------------------------------------------------

@@ -120,6 +120,7 @@ var pqcAgent = require("./lib/pqc-agent");
 var vaultRotate = require("./lib/vault/rotate");
 var vaultPassphraseOps = require("./lib/vault/passphrase-ops");
 var mtlsCa = require("./lib/mtls-ca");
+var mtlsEngine = require("./lib/mtls-engine-default");
 var backupCrypto = require("./lib/backup/crypto");
 var backupManifest = require("./lib/backup/manifest");
 var backupBundle = require("./lib/backup/bundle");
@@ -220,6 +221,7 @@ module.exports = {
   vaultRotate:      vaultRotate,
   vaultPassphraseOps: vaultPassphraseOps,
   mtlsCa:           mtlsCa,
+  mtlsEngine:       mtlsEngine,
   backupCrypto:     backupCrypto,
   backupManifest:   backupManifest,
   backupBundle:     backupBundle,

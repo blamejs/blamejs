@@ -7888,24 +7888,75 @@ function testMtlsCaSealedRequiredRefusesPlaintextFile() {
   } finally { fx.cleanup(); }
 }
 
-function testMtlsCaIssuanceRequiresEngine() {
+async function testMtlsCaInitCaWithDefaultEngine() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, generation: 1 });
+    var fresh = await ca.initCA();
+    check("default engine: initCA returns caCertPem",
+          typeof fresh.caCertPem === "string" && /BEGIN CERTIFICATE/.test(fresh.caCertPem));
+    check("default engine: initCA returns caKeyPem",
+          typeof fresh.caKeyPem === "string" && /BEGIN PRIVATE KEY/.test(fresh.caKeyPem));
+    check("default engine: ca.crt written",
+          fs.existsSync(path.join(fx.dir, "ca.crt")));
+    check("default engine: ca.key written",
+          fs.existsSync(path.join(fx.dir, "ca.key")));
+    var gen = b.mtlsCa.parseGeneration(fresh.caCertPem);
+    check("default engine: cert carries OU=CAv1 generation tag", gen === 1);
+
+    // Subject + issuer round-trip through node:crypto — both should
+    // contain "CN=blamejs CA" since the default engine self-signs.
+    var nc = require("node:crypto");
+    var x = new nc.X509Certificate(fresh.caCertPem);
+    check("default engine: subject contains 'CN=blamejs CA'",
+          /CN=blamejs CA/.test(x.subject || ""));
+    check("default engine: cert is self-signed (issuer === subject)",
+          x.issuer === x.subject);
+
+    // Second call returns existing CA without regenerating.
+    var second = await ca.initCA();
+    check("default engine: second initCA returns existing cert",
+          second.caCertPem === fresh.caCertPem);
+  } finally { fx.cleanup(); }
+}
+
+async function testMtlsCaGenerateClientCertWithDefaultEngine() {
   var fx = _mtlsCaFixture();
   try {
     var ca = b.mtlsCa.create({ dataDir: fx.dir });
-    var threw;
-    threw = null;
-    ca.initCA().catch(function (e) { threw = e; }).then(function () {
-      check("initCA without engine throws no-engine",
-            threw && threw.code === "mtls-ca/no-engine");
-    });
-    return ca.initCA().then(
-      function () { check("initCA without engine should have rejected", false); },
-      function (e) {
-        check("initCA without engine throws no-engine",
-              e && e.code === "mtls-ca/no-engine" &&
-              /vendored/.test(e.message));
-      }
-    );
+    var leaf = await ca.generateClientCert({ cn: "alice", validityDays: 90 });
+    check("default engine: leaf cert PEM emitted",
+          typeof leaf.cert === "string" && /BEGIN CERTIFICATE/.test(leaf.cert));
+    check("default engine: leaf private key PEM emitted",
+          typeof leaf.key === "string" && /BEGIN PRIVATE KEY/.test(leaf.key));
+    check("default engine: leaf carries CA PEM in 'ca' field",
+          /BEGIN CERTIFICATE/.test(leaf.ca));
+
+    var nc = require("node:crypto");
+    var leafX = new nc.X509Certificate(leaf.cert);
+    var caX   = new nc.X509Certificate(leaf.ca);
+    check("leaf subject contains CN=alice",     /CN=alice/.test(leafX.subject || ""));
+    check("leaf issuer === CA subject (chain)",  leafX.issuer === caX.subject);
+    check("leaf verifies under CA public key",   leafX.verify(caX.publicKey) === true);
+
+    // validity window approximately 90 days
+    var diffDays = (new Date(leaf.expiresAt) - new Date(leaf.issuedAt)) / 86400000;
+    check("leaf validity window ~ 90 days",      diffDays >= 89 && diffDays <= 91);
+  } finally { fx.cleanup(); }
+}
+
+async function testMtlsCaGenerateClientP12WithDefaultEngine() {
+  var fx = _mtlsCaFixture();
+  try {
+    var ca = b.mtlsCa.create({ dataDir: fx.dir });
+    var bundle = await ca.generateClientP12({ cn: "bob", password: "p12-passphrase-x9k2" });
+    check("default engine: p12 is a Buffer",                Buffer.isBuffer(bundle.p12));
+    check("default engine: p12 has non-trivial size",       bundle.p12.length > 1000);
+    check("default engine: p12 starts with ASN.1 SEQUENCE", bundle.p12[0] === 0x30);
+    check("default engine: certPem returned alongside",
+          typeof bundle.certPem === "string" && /BEGIN CERTIFICATE/.test(bundle.certPem));
+    check("default engine: issuedAt + expiresAt are ISO strings",
+          typeof bundle.issuedAt === "string" && typeof bundle.expiresAt === "string");
   } finally { fx.cleanup(); }
 }
 
@@ -13970,7 +14021,9 @@ async function run() {
   testMtlsCaSealedRequiredMode();
   testMtlsCaSealedDisabledRefusesSealedFile();
   testMtlsCaSealedRequiredRefusesPlaintextFile();
-  await testMtlsCaIssuanceRequiresEngine();
+  await testMtlsCaInitCaWithDefaultEngine();
+  await testMtlsCaGenerateClientCertWithDefaultEngine();
+  await testMtlsCaGenerateClientP12WithDefaultEngine();
   await testMtlsCaInitCaWithEngineGeneratesAndCommits();
   await testMtlsCaInitCaRejectsBadEngineOutput();
   await testMtlsCaGenerateClientCertDelegates();
@@ -14548,7 +14601,9 @@ module.exports = {
   testMtlsCaSealedRequiredMode:              testMtlsCaSealedRequiredMode,
   testMtlsCaSealedDisabledRefusesSealedFile: testMtlsCaSealedDisabledRefusesSealedFile,
   testMtlsCaSealedRequiredRefusesPlaintextFile: testMtlsCaSealedRequiredRefusesPlaintextFile,
-  testMtlsCaIssuanceRequiresEngine:          testMtlsCaIssuanceRequiresEngine,
+  testMtlsCaInitCaWithDefaultEngine:         testMtlsCaInitCaWithDefaultEngine,
+  testMtlsCaGenerateClientCertWithDefaultEngine: testMtlsCaGenerateClientCertWithDefaultEngine,
+  testMtlsCaGenerateClientP12WithDefaultEngine:  testMtlsCaGenerateClientP12WithDefaultEngine,
   testMtlsCaInitCaWithEngineGeneratesAndCommits: testMtlsCaInitCaWithEngineGeneratesAndCommits,
   testMtlsCaInitCaRejectsBadEngineOutput:    testMtlsCaInitCaRejectsBadEngineOutput,
   testMtlsCaGenerateClientCertDelegates:     testMtlsCaGenerateClientCertDelegates,

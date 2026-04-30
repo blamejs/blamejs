@@ -63,32 +63,50 @@ async function run() {
   check("show-cert (no CA): points at the missing path",
         /no CA on disk/.test(ctx2.err()));
 
-  // ---- init (engine not bundled) fails loud with the diagnostic ----
+  // ---- init: bundled engine generates a real CA ----
   var ctx3 = _captureCtx();
   var c3 = await cli.main(["mtls", "init"].concat(base), ctx3);
-  check("init (no engine): non-zero",                 c3 !== 0);
-  check("init (no engine): names the engine requirement",
-        /requires opts\.engine/.test(ctx3.err()));
-  check("init (no engine): mentions the future-slice plan",
-        /future slice|@peculiar\/x509/.test(ctx3.err()));
+  check("init: returns 0",                            c3 === 0);
+  check("init: announces ca-cert path",                /ca-cert:/.test(ctx3.out()));
+  check("init: announces ca-key path",                 /ca-key:/.test(ctx3.out()));
+  check("init: ca.crt written to data-dir",
+        fs.existsSync(path.join(dataDir, "ca.crt")));
 
-  // ---- issue (engine not bundled) requires both --subject and engine ----
+  // ---- issue: --subject required ----
   var ctx4 = _captureCtx();
   var c4 = await cli.main(["mtls", "issue"].concat(base), ctx4);
   check("issue without --subject: returns 2",
         c4 === 2 && /--subject/.test(ctx4.err()));
 
+  // ---- issue: bundled engine signs a leaf cert ----
   var ctx5 = _captureCtx();
-  var c5 = await cli.main(["mtls", "issue"].concat(base).concat(["--subject", "CN=client-1"]), ctx5);
-  check("issue with --subject (no engine): non-zero",  c5 !== 0);
-  check("issue (no engine): names the engine requirement",
-        /requires opts\.engine/.test(ctx5.err()));
+  var c5 = await cli.main(["mtls", "issue"].concat(base).concat(["--subject", "client-1"]), ctx5);
+  check("issue with --subject: returns 0",            c5 === 0);
+  check("issue: prints leaf certificate PEM",          /BEGIN CERTIFICATE/.test(ctx5.out()));
+  check("issue: prints leaf private key PEM",          /BEGIN PRIVATE KEY/.test(ctx5.out()));
 
   // ---- issue-p12 demands both --subject and --password ----
   var ctx6 = _captureCtx();
-  var c6 = await cli.main(["mtls", "issue-p12"].concat(base).concat(["--subject", "CN=x"]), ctx6);
+  var c6 = await cli.main(["mtls", "issue-p12"].concat(base).concat(["--subject", "x"]), ctx6);
   check("issue-p12 without --password: returns 2",
         c6 === 2 && /--password/.test(ctx6.err()));
+
+  // ---- issue-p12: bundled engine packages a P12 ----
+  var p12Out = path.join(dataDir, "client.p12");
+  var ctx6b = _captureCtx();
+  var c6b = await cli.main(
+    ["mtls", "issue-p12"].concat(base).concat([
+      "--subject", "client-2",
+      "--password", "p12-passphrase-xyz",
+      "--out", p12Out,
+    ]), ctx6b);
+  check("issue-p12 with --subject + --password + --out: returns 0", c6b === 0);
+  check("issue-p12: writes the bundle to --out",                    fs.existsSync(p12Out));
+  if (fs.existsSync(p12Out)) {
+    var p12Buf = fs.readFileSync(p12Out);
+    check("issue-p12: file is a non-trivial ASN.1 SEQUENCE",
+          p12Buf.length > 1000 && p12Buf[0] === 0x30);
+  }
 
   // ---- bad --vault-mode ----
   var ctx7 = _captureCtx();
