@@ -13366,6 +13366,104 @@ function testCookieJarPersistVaultEncryptsValue() {
   void dump;  // dump retained earlier for symmetry
 }
 
+// Build a vault-shaped wrapper backed by REAL XChaCha20-Poly1305 via
+// b.crypto.encryptPacked. Used in the forensic tests below to exercise
+// the actual cipher properties (random nonce per encrypt, AEAD tag,
+// ciphertext that doesn't reveal plaintext) rather than the lossy fake
+// from testCookieJarPersistVaultEncryptsValue.
+function _realCryptoVault() {
+  var key = b.crypto.generateBytes(32);
+  return {
+    seal: function (plaintext) {
+      var packed = b.crypto.encryptPacked(Buffer.from(String(plaintext), "utf8"), key);
+      return "vault:" + packed.toString("base64");
+    },
+    unseal: function (sealed) {
+      if (typeof sealed !== "string" || sealed.indexOf("vault:") !== 0) return sealed;
+      var packed = Buffer.from(sealed.slice("vault:".length), "base64");
+      return b.crypto.decryptPacked(packed, key).toString("utf8");
+    },
+  };
+}
+
+function testCookieJarRealCryptoForensic() {
+  // Same shape as testCookieJarPersistVaultEncryptsValue but using REAL
+  // XChaCha20-Poly1305 — the forensic claim has to hold against the
+  // actual cipher, not a fake stub. Operator concern: even with the
+  // raw stored bytes, an attacker must not be able to recover the
+  // plaintext cookie value.
+  var vault = _realCryptoVault();
+  var jar = b.httpClient.cookieJar.create({ persist: "vault", vault: vault });
+  var SECRET = "session=jwt.eyJhbGciOiJSUzI1NiJ9.SECRET-PAYLOAD-DO-NOT-LEAK-1234567890";
+  jar.setFromResponse("https://example.com/login", SECRET + "; Path=/; Secure");
+
+  // Forensic claim 1: the raw stored value MUST NOT contain the
+  // plaintext substring anywhere — not as a suffix, prefix, or in the
+  // middle of the AEAD output.
+  var raw = jar._storeForTest();
+  var dump = JSON.stringify(raw);
+  check("real-crypto: no plaintext substring in raw store",
+        dump.indexOf("SECRET-PAYLOAD-DO-NOT-LEAK") === -1);
+  check("real-crypto: stored value carries vault: prefix",
+        raw[0].valueRaw.indexOf("vault:") === 0);
+
+  // Forensic claim 2: round-trip via the API boundary still recovers
+  // the plaintext (so legitimate operator code works), proving the
+  // ciphertext IS reversible — but only with the vault key.
+  var hdr = jar.cookieHeaderFor("https://example.com/anywhere");
+  check("real-crypto: API boundary recovers plaintext",
+        hdr.indexOf("SECRET-PAYLOAD-DO-NOT-LEAK") !== -1);
+}
+
+function testCookieJarReplayBlobUnusable() {
+  // Operator's concern: if an attacker reads the stored blob and tries
+  // to use it as a Cookie header to forge a session against the upstream,
+  // the upstream's auth layer should see garbage — not the original
+  // session token. This is a structural property of the cipher: blob
+  // text is NOT equal to plaintext, so { Cookie: session=<blob> } would
+  // fail upstream-side auth that expects the plaintext.
+  var vault = _realCryptoVault();
+  var jar = b.httpClient.cookieJar.create({ persist: "vault", vault: vault });
+  var TOKEN_PLAINTEXT = "AUTH-TOKEN-PLAINTEXT-AAAA";
+  jar.setFromResponse("https://example.com/login",
+                      "session=" + TOKEN_PLAINTEXT + "; Path=/");
+
+  var raw = jar._storeForTest();
+  var stored = raw[0].valueRaw;
+
+  check("replay: stored blob is NOT equal to plaintext token",
+        stored !== TOKEN_PLAINTEXT);
+
+  // The blob is a "vault:<base64>" envelope — sending it as
+  // `Cookie: session=vault:base64...` to the upstream would mismatch
+  // any backend expecting the plaintext.
+  check("replay: stored blob is the vault envelope, not the token",
+        /^vault:[A-Za-z0-9+/=]+$/.test(stored));
+
+  // Cipher property: even the BASE64 portion contains no plaintext.
+  check("replay: base64 ciphertext doesn't leak plaintext substring",
+        stored.indexOf("AUTH-TOKEN-PLAINTEXT-AAAA") === -1);
+}
+
+function testCookieJarNonceRandomized() {
+  // XChaCha20-Poly1305 random nonce per encrypt → same plaintext sealed
+  // twice produces different blobs. So an attacker can't fingerprint
+  // sessions by comparing blob byte-strings across snapshots.
+  var vault = _realCryptoVault();
+  var jar1 = b.httpClient.cookieJar.create({ persist: "vault", vault: vault });
+  var jar2 = b.httpClient.cookieJar.create({ persist: "vault", vault: vault });
+  var SAME_TOKEN = "session=identical-plaintext-XXXX; Path=/";
+  jar1.setFromResponse("https://example.com/login", SAME_TOKEN);
+  jar2.setFromResponse("https://example.com/login", SAME_TOKEN);
+  var raw1 = jar1._storeForTest()[0].valueRaw;
+  var raw2 = jar2._storeForTest()[0].valueRaw;
+  check("nonce-random: same plaintext → different ciphertexts",
+        raw1 !== raw2);
+  check("nonce-random: both still decrypt to the original token",
+        jar1.cookieHeaderFor("https://example.com/x").indexOf("identical-plaintext-XXXX") !== -1 &&
+        jar2.cookieHeaderFor("https://example.com/x").indexOf("identical-plaintext-XXXX") !== -1);
+}
+
 async function testHttpClientJarRoundTrip() {
   var http = require("http");
   var server = http.createServer(function (req, res) {
@@ -15352,6 +15450,9 @@ async function run() {
   testCookieJarSetFromSerialized();
   testCookieJarPersistVaultRequiresVault();
   testCookieJarPersistVaultEncryptsValue();
+  testCookieJarRealCryptoForensic();
+  testCookieJarReplayBlobUnusable();
+  testCookieJarNonceRandomized();
   await testHttpClientJarRoundTrip();
   await testHttpClientJarMergesWithCallerCookie();
   await testHttpClientJarValidation();
