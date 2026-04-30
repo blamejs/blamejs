@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.21** (2026-04-30) — b.queue: repeat-in-queue (cron) + parent-child Flows
 - **0.4.20** (2026-04-30) — b.queue + b.jobs: priority, rate-limit, progress
 - **0.4.19** (2026-04-30) — b.router: schema-validated routes + OpenAPI gen
 - **0.4.18** (2026-04-30) — cookieJar forensic-test strengthening (real crypto, replay, nonce)

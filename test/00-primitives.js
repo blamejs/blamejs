@@ -3084,6 +3084,139 @@ async function testMailResendErrorPaths() {
   }
 }
 
+// ---- v0.4.22 mail attachments + multipart ----
+
+async function testMailAttachmentsValidation() {
+  var t = b.mail.transports.memory();
+  var mail = b.mail.create({ transport: t });
+  var base = { from: "a@b", to: "c@d", subject: "S", text: "T" };
+
+  async function _expectThrow(label, opts) {
+    var threw = false;
+    try { await mail.send(Object.assign({}, base, { attachments: opts })); }
+    catch (_e) { threw = true; }
+    check("mail attachments validation: " + label, threw);
+  }
+  await _expectThrow("rejects non-array",                 "string");
+  await _expectThrow("rejects non-object entry",          ["string"]);
+  await _expectThrow("rejects missing filename",          [{ content: Buffer.from("x") }]);
+  await _expectThrow("rejects empty filename",            [{ filename: "", content: Buffer.from("x") }]);
+  await _expectThrow("rejects filename CRLF",             [{ filename: "x\nfoo", content: Buffer.from("x") }]);
+  await _expectThrow("rejects missing content",           [{ filename: "x.txt" }]);
+  await _expectThrow("rejects non-buffer non-string content", [{ filename: "x.txt", content: 42 }]);
+  await _expectThrow("rejects bad contentDisposition",    [{ filename: "x.txt", content: "x", contentDisposition: "weird" }]);
+  await _expectThrow("rejects cid with brackets",         [{ filename: "x.png", content: "x", cid: "<bad>" }]);
+}
+
+async function testMailAttachmentsMemoryTransportPassthrough() {
+  var t = b.mail.transports.memory();
+  var mail = b.mail.create({ transport: t });
+  await mail.send({
+    from: "noreply@app.example.com", to: "alice@example.com", subject: "Files",
+    text: "see attached",
+    attachments: [
+      { filename: "doc.txt", content: "hello", contentType: "text/plain" },
+      { filename: "logo.png", content: Buffer.from([1, 2, 3]), cid: "logo-1" },
+    ],
+  });
+  check("memory transport: 1 message captured",          t.sent.length === 1);
+  check("memory transport: attachments passed through",  t.sent[0].attachments.length === 2);
+  check("memory transport: cid preserved",               t.sent[0].attachments[1].cid === "logo-1");
+}
+
+function testMailRfc822MultipartMixedWithAttachment() {
+  // Inspect the wire format directly via the test-only export. The SMTP
+  // network path is covered by the existing smtpRoundTrip / smtpStarttls
+  // smoke tests; here we just want to assert builder shape.
+  var wire = b.mail._buildRfc822ForTest({
+    from: "x@y.com", to: "a@b.com", subject: "Files", text: "see attached",
+    attachments: [{ filename: "doc.txt", content: "hello world", contentType: "text/plain" }],
+  });
+  check("rfc822: Content-Type multipart/mixed",
+        /Content-Type: multipart\/mixed; boundary="blamejs-mixed-/.test(wire));
+  check("rfc822: contains body part", /Content-Type: text\/plain; charset=utf-8/.test(wire));
+  check("rfc822: Content-Disposition attachment",
+        /Content-Disposition: attachment; filename="doc.txt"/.test(wire));
+  check("rfc822: Content-Transfer-Encoding base64",
+        /Content-Transfer-Encoding: base64/.test(wire));
+  var b64 = Buffer.from("hello world").toString("base64");
+  check("rfc822: base64 body present",  wire.indexOf(b64) !== -1);
+}
+
+function testMailRfc822InlineWithCid() {
+  var wire = b.mail._buildRfc822ForTest({
+    from: "x@y.com", to: "a@b.com", subject: "Inline image",
+    html: '<img src="cid:logo-1">',
+    attachments: [
+      { filename: "logo.png", content: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        contentType: "image/png", cid: "logo-1" },
+    ],
+  });
+  check("rfc822 inline: Content-ID header",     /Content-ID: <logo-1>/.test(wire));
+  check("rfc822 inline: disposition inline",
+        /Content-Disposition: inline; filename="logo\.png"/.test(wire));
+  check("rfc822 inline: image/png content-type", /Content-Type: image\/png/.test(wire));
+}
+
+function testMailRfc822TextHtmlPlusAttachment() {
+  // Both text + html + attachment → multipart/mixed wrapping
+  // multipart/alternative wrapping the text and html parts.
+  var wire = b.mail._buildRfc822ForTest({
+    from: "x@y.com", to: "a@b.com", subject: "Both",
+    text: "TEXT", html: "<p>HTML</p>",
+    attachments: [{ filename: "foo.txt", content: "x" }],
+  });
+  check("rfc822 mixed+alt: outer multipart/mixed",
+        /multipart\/mixed; boundary="blamejs-mixed-/.test(wire));
+  check("rfc822 mixed+alt: inner multipart/alternative",
+        /multipart\/alternative; boundary="blamejs-alt-/.test(wire));
+  check("rfc822 mixed+alt: text body present",
+        /TEXT/.test(wire));
+  check("rfc822 mixed+alt: html body present",
+        /<p>HTML<\/p>/.test(wire));
+}
+
+async function testMailResendForwardsAttachments() {
+  var http = require("http");
+  var captured = null;
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      try { captured = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+      catch (_e) { captured = null; }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "msg-abc" }));
+    });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    var mail = b.mail.create({
+      transport: b.mail.transports.resend({
+        apiKey:           "rk_test",
+        endpoint:         "http://127.0.0.1:" + port + "/emails",
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        allowInternal:    true,
+      }),
+    });
+    await mail.send({
+      from: "noreply@x.com", to: "a@b.com", subject: "Files", text: "T",
+      attachments: [
+        { filename: "doc.txt", content: "hello", contentType: "text/plain" },
+        { filename: "logo.png", content: Buffer.from("PNG"), contentType: "image/png", cid: "logo-1" },
+      ],
+    });
+    check("resend forward: payload.attachments present",  Array.isArray(captured.attachments) && captured.attachments.length === 2);
+    check("resend forward: filename forwarded",            captured.attachments[0].filename === "doc.txt");
+    check("resend forward: content base64-encoded",
+          captured.attachments[0].content === Buffer.from("hello").toString("base64"));
+    check("resend forward: contentType forwarded",         captured.attachments[1].contentType === "image/png");
+    check("resend forward: cid maps to content_id",        captured.attachments[1].content_id === "logo-1");
+  } finally {
+    await new Promise(function (r) { server.close(function () { r(); }); });
+  }
+}
+
 // ---- api-snapshot ----
 
 function testApiSnapshotSurface() {
@@ -15168,6 +15301,14 @@ async function run() {
   await testMailHttpBadSerializer();
   await testMailResendRoundTrip();
   await testMailResendErrorPaths();
+
+  // v0.4.22 — attachments + multipart
+  await testMailAttachmentsValidation();
+  await testMailAttachmentsMemoryTransportPassthrough();
+  await testMailRfc822MultipartMixedWithAttachment();
+  await testMailRfc822InlineWithCid();
+  await testMailRfc822TextHtmlPlusAttachment();
+  await testMailResendForwardsAttachments();
   // api-snapshot — public-API surface walker + breaking-change detector
   testApiSnapshotSurface();
   testApiSnapshotCaptureCategorizes();
