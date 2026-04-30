@@ -198,7 +198,7 @@ async function buildApp(opts) {
     middleware: {
       requestId:       true,
       securityHeaders: { csp: STRICT_CSP },
-      botGuard:        { skipPaths: ["/healthz", "/readyz", "/startupz"] },
+      botGuard:        { skipPaths: ["/healthz", "/readyz", "/startupz", "/robots.txt", "/sitemap.xml"] },
       cors: {
         // No third-party origins — only this app's own forms post
         // here. The Fetch spec sends an Origin header on every same-
@@ -267,6 +267,7 @@ async function buildApp(opts) {
         apiKeys:      apiKeys,
         assets:       assets,
         nonceMw:      nonceMw,
+        siteUrl:      opts.siteUrl || "https://blamejs.com",
       };
       pagesRoute.registerSpecific(router, routeCtx);
       adminRoute.register(router, routeCtx);

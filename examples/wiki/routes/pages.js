@@ -10,7 +10,13 @@ var b = require("@blamejs/core");
 // differs: live paths get the real nonce, cacheable paths get the
 // framework's stable placeholder (substituted at serve time via
 // b.middleware.cspNonce's substitute helper).
+var DEFAULT_DESCRIPTION =
+  "blamejs — the Node framework that owns its stack. Post-quantum crypto, " +
+  "audit chain, sealed storage, zero npm dependencies.";
+
 function _layoutData(req, ctx, nonce) {
+  var siteUrl = (ctx && ctx.siteUrl) || "https://blamejs.com";
+  var pathname = (req.url || "/").split("?")[0];
   return {
     cspNonce:    nonce,
     locale:      req.locale || "en",
@@ -20,6 +26,11 @@ function _layoutData(req, ctx, nonce) {
     searchQuery: "",
     title:       "",
     assets:      (ctx && ctx.assets) || {},
+    siteUrl:     siteUrl,
+    canonical:   siteUrl + pathname,
+    description: DEFAULT_DESCRIPTION,
+    ogImage:     siteUrl + "/img/blamejs-logo.png",
+    ogType:      "website",
   };
 }
 function _layoutDataLive(req, ctx) {
@@ -27,6 +38,20 @@ function _layoutDataLive(req, ctx) {
 }
 function _layoutDataForCache(req, ctx) {
   return _layoutData(req, ctx, ctx.nonceMw.PLACEHOLDER);
+}
+
+// Pull a meta-description from a page body — the first <p>..</p>'s
+// text, tags stripped, normalised whitespace, capped at 160 chars
+// (the Google SERP truncation point). Falls back to the site default
+// when the body has no <p>.
+function _synthDescription(body, fallback) {
+  if (typeof body !== "string") return fallback;
+  var m = body.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+  if (!m) return fallback;
+  var text = m[1].replace(/<[^>]+>/g, "").replace(/&[a-z0-9#]+;/gi, " ").replace(/\s+/g, " ").trim();
+  if (!text) return fallback;
+  if (text.length > 160) text = text.slice(0, 157).trimEnd() + "...";
+  return text;
 }
 
 // Specific routes (literal paths, registered FIRST so they match before
@@ -48,6 +73,61 @@ function registerSpecific(router, ctx) {
 
   // /healthz / /readyz / /startupz are handled by b.middleware.health
   // mounted at the top of the chain; no route registered here.
+
+  // ---- robots.txt ----
+  router.get("/robots.txt", function (req, res) {
+    var siteUrl = ctx.siteUrl || "https://blamejs.com";
+    var body =
+      "User-agent: *\n" +
+      "Allow: /\n" +
+      "Disallow: /admin\n" +
+      "Disallow: /admin/\n" +
+      "Disallow: /login\n" +
+      "Disallow: /logout\n" +
+      "\n" +
+      "Sitemap: " + siteUrl + "/sitemap.xml\n";
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.end(body);
+  });
+
+  // ---- sitemap.xml ----
+  router.get("/sitemap.xml", function (req, res) {
+    var siteUrl = ctx.siteUrl || "https://blamejs.com";
+    var rows = db.prepare(
+      "SELECT groupName, slug, updatedAt FROM pages ORDER BY groupName, slug"
+    ).all();
+    var lines = [];
+    lines.push('<?xml version="1.0" encoding="UTF-8"?>');
+    lines.push('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">');
+    // Home page
+    var homeMod = (rows[0] && rows[0].updatedAt)
+      ? new Date(rows[0].updatedAt).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    lines.push("  <url>");
+    lines.push("    <loc>" + siteUrl + "/</loc>");
+    lines.push("    <lastmod>" + homeMod + "</lastmod>");
+    lines.push("    <changefreq>weekly</changefreq>");
+    lines.push("    <priority>1.0</priority>");
+    lines.push("  </url>");
+    rows.forEach(function (r) {
+      // Each group's index is served at /<group>; non-index pages at /<group>/<slug>.
+      var loc = r.slug === "index"
+        ? siteUrl + "/" + r.groupName
+        : siteUrl + "/" + r.groupName + "/" + r.slug;
+      var mod = new Date(r.updatedAt).toISOString().slice(0, 10);
+      lines.push("  <url>");
+      lines.push("    <loc>" + loc + "</loc>");
+      lines.push("    <lastmod>" + mod + "</lastmod>");
+      lines.push("    <changefreq>weekly</changefreq>");
+      lines.push("    <priority>0.8</priority>");
+      lines.push("  </url>");
+    });
+    lines.push("</urlset>");
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.end(lines.join("\n"));
+  });
 
   // ---- Search (FTS5 — operator-side recipe) ----
   router.get("/search", async function (req, res) {
@@ -99,13 +179,16 @@ function registerCatchAll(router, ctx) {
         "FROM pages WHERE groupName = ? AND slug = ?"
       ).get(group, slug);
       if (!row) return null;
-      var data = Object.assign(_layoutDataForCache(req, ctx), {
+      var base = _layoutDataForCache(req, ctx);
+      var data = Object.assign(base, {
         title:        row.title,
         groupName:    row.groupName,
         slug:         row.slug,
         body:         row.body,
         updatedAtIso: new Date(row.updatedAt).toISOString(),
         updatedBy:    row.updatedBy || "unknown",
+        description:  _synthDescription(row.body, base.description),
+        ogType:       "article",
       });
       return template.render("page", data);
     });

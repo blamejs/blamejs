@@ -10,6 +10,10 @@
  *   WIKI_DATA_DIR                       directory for vault key + sqlite db (default ./data)
  *   WIKI_PORT                           HTTP port (default 8080)
  *   WIKI_BIND                           bind address (default 0.0.0.0)
+ *   WIKI_SITE_URL                       canonical public URL of this deploy
+ *                                       (default https://blamejs.com) — used for
+ *                                       canonical links, Open Graph, sitemap.xml,
+ *                                       and robots.txt
  *   WIKI_ADMIN_EMAIL                    admin user email (default admin@blamejs.com)
  *   WIKI_ADMIN_PASSWORD                 admin password — required ≥ 8 chars; a random
  *                                       dev password is generated and printed if unset
@@ -32,6 +36,7 @@ var { buildApp } = require("./lib/build-app");
 
 var DATA_DIR       = process.env.WIKI_DATA_DIR    || path.join(__dirname, "data");
 var PORT           = parseInt(process.env.WIKI_PORT || "8080", 10);
+var SITE_URL       = (process.env.WIKI_SITE_URL || "https://blamejs.com").replace(/\/+$/, "");
 // Default bind: 0.0.0.0 so a containerized wiki accepts connections
 // from the Docker port-forward (-p 8080:8080) and reverse proxies on
 // the same host network. Operators with a stricter posture (e.g.
@@ -61,6 +66,7 @@ function _resolveAdminPassword() {
     adminPassword: _resolveAdminPassword(),
     webhookUrl:    WEBHOOK_URL,
     webhookSecret: WEBHOOK_SECRET,
+    siteUrl:       SITE_URL,
   });
 
   // Start the scheduler (timer-based; refs the event loop until shutdown)
