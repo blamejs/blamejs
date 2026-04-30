@@ -13928,6 +13928,215 @@ async function testRouterSetsRoutePattern() {
         captured === "/users/:id");
 }
 
+// ---- v0.4.19 schema-validated routes ----
+
+function _routerHttpFixture(opts) {
+  // Minimal req/res that satisfy the router's expectations + a way to
+  // capture the response status + body.
+  var EE = require("node:events").EventEmitter;
+  var req = new EE();
+  req.method = opts.method || "GET";
+  req.url    = opts.url    || "/";
+  req.headers = Object.assign({ host: "x" }, opts.headers || {});
+  if (opts.body !== undefined) req.body = opts.body;
+  var res = new EE();
+  res.writableEnded = false;
+  res.headersSent = false;
+  res._status = null;
+  res._body = "";
+  res.writeHead = function (s) { res._status = s; res.headersSent = true; return res; };
+  res.end = function (chunk) {
+    if (chunk !== undefined) res._body += String(chunk);
+    res.writableEnded = true;
+  };
+  res.json = function (v) {
+    res._status = res._status || 200;
+    res._body = JSON.stringify(v);
+    res.writableEnded = true;
+    res.headersSent = true;
+  };
+  return { req: req, res: res };
+}
+
+async function testRouterSpecBodyValidatesPass() {
+  var router = new b.router.Router();
+  var bodyShape = b.safeSchema.object({
+    name:  b.safeSchema.string(),
+    count: b.safeSchema.number().int().min(1),
+  });
+  var captured;
+  router.post("/users", { body: bodyShape, description: "Create user" },
+    function (req, res) {
+      captured = req.body;
+      res.writeHead(201); res.end("ok");
+    });
+  var fx = _routerHttpFixture({ method: "POST", url: "/users", body: { name: "A", count: 5 } });
+  await router.handle(fx.req, fx.res);
+  check("router spec: pass-through on valid body", fx.res._status === 201);
+  check("router spec: req.body parsed by schema", captured && captured.name === "A");
+}
+
+async function testRouterSpecBodyValidatesReject() {
+  var router = new b.router.Router();
+  var bodyShape = b.safeSchema.object({
+    name:  b.safeSchema.string(),
+    count: b.safeSchema.number().int().min(1),
+  });
+  router.post("/users", { body: bodyShape },
+    function (_req, res) { res.writeHead(201); res.end("should not reach"); });
+  var fx = _routerHttpFixture({ method: "POST", url: "/users",
+                                 body: { name: "A", count: -1 } });
+  await router.handle(fx.req, fx.res);
+  check("router spec: 400 on body validation reject",  fx.res._status === 400);
+  var body = JSON.parse(fx.res._body);
+  check("router spec: 400 carries 'where: body'",      body.where === "body");
+  check("router spec: issues array present",           Array.isArray(body.issues) && body.issues.length > 0);
+}
+
+async function testRouterSpecQueryAndParams() {
+  var router = new b.router.Router();
+  var paramsShape = b.safeSchema.object({ id: b.safeSchema.string() });
+  var queryShape  = b.safeSchema.object({
+    page: b.safeSchema.preprocess(function (v) { return parseInt(v, 10); }, b.safeSchema.number().int().min(1)),
+  });
+  router.get("/items/:id", { params: paramsShape, query: queryShape },
+    function (req, res) {
+      res.writeHead(200);
+      res.end("id=" + req.params.id + " page=" + req.query.page);
+    });
+  var fx = _routerHttpFixture({ method: "GET", url: "/items/abc?page=3" });
+  await router.handle(fx.req, fx.res);
+  check("router spec: params + query validate",        fx.res._status === 200);
+  check("router spec: query coerced via preprocess",   /page=3/.test(fx.res._body));
+
+  // Reject — bad page=0
+  var fx2 = _routerHttpFixture({ method: "GET", url: "/items/abc?page=0" });
+  await router.handle(fx2.req, fx2.res);
+  check("router spec: 400 on query reject",            fx2.res._status === 400);
+  var b2 = JSON.parse(fx2.res._body);
+  check("router spec: query reject where=query",       b2.where === "query");
+}
+
+async function testRouterSpecPassesNonObjectFirstArg() {
+  // Existing two-arg shape (pattern + handler fn) must keep working.
+  var router = new b.router.Router();
+  router.get("/old-style", function (_req, res) { res.writeHead(200); res.end("legacy"); });
+  var fx = _routerHttpFixture({ method: "GET", url: "/old-style" });
+  await router.handle(fx.req, fx.res);
+  check("router spec: legacy two-arg registration still works",
+        fx.res._status === 200 && fx.res._body === "legacy");
+}
+
+async function testRouterSpecRejectsUnknownKey() {
+  var router = new b.router.Router();
+  var threw = false;
+  try {
+    router.get("/x", { body: b.safeSchema.string(), bogus: 1 },
+      function (_req, res) { res.end(); });
+  } catch (e) { threw = /unknown spec key 'bogus'/.test(e.message); }
+  check("router spec: rejects unknown spec key",  threw);
+}
+
+async function testRouterSpecRejectsBadSchema() {
+  var router = new b.router.Router();
+  var threw = false;
+  try {
+    router.get("/x", { body: { notASchema: true } },
+      function (_req, res) { res.end(); });
+  } catch (e) { threw = /must be a b\.safeSchema/.test(e.message); }
+  check("router spec: rejects non-safeSchema body",  threw);
+}
+
+function testRouterInspectRoutes() {
+  var router = new b.router.Router();
+  var bodyShape = b.safeSchema.object({ name: b.safeSchema.string() });
+  router.post("/users", {
+    body:        bodyShape,
+    description: "Create a user",
+    summary:     "Create user",
+    tags:        ["users", "admin"],
+    bodyJsonSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+  }, function (_req, res) { res.end(); });
+  router.get("/health", function (_req, res) { res.end(); });
+
+  var rows = router.inspectRoutes();
+  check("router.inspectRoutes: 2 entries",         rows.length === 2);
+  var post = rows.find(function (r) { return r.method === "POST"; });
+  check("router.inspectRoutes: POST has spec",      post.spec !== null);
+  check("router.inspectRoutes: description carried", post.description === "Create a user");
+  check("router.inspectRoutes: tags carried",        post.spec.tags.length === 2);
+  check("router.inspectRoutes: bodyJsonSchema carried",
+        post.spec.bodyJsonSchema && post.spec.bodyJsonSchema.type === "object");
+  var getH = rows.find(function (r) { return r.method === "GET"; });
+  check("router.inspectRoutes: legacy route has spec=null", getH.spec === null);
+}
+
+function testRouterOpenapi() {
+  var router = new b.router.Router();
+  var bodyShape = b.safeSchema.object({ name: b.safeSchema.string() });
+  router.post("/users", {
+    body: bodyShape,
+    bodyJsonSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+    description: "Create a new user",
+    tags:        ["users"],
+  }, function (_req, res) { res.end(); });
+  router.get("/users/:id", {
+    params: b.safeSchema.object({ id: b.safeSchema.string() }),
+    description: "Get user by id",
+  }, function (_req, res) { res.end(); });
+
+  var spec = router.openapi({ info: { title: "Wiki", version: "1.0.0" } });
+  check("openapi: openapi: '3.0.3'",      spec.openapi === "3.0.3");
+  check("openapi: info carried",           spec.info.title === "Wiki" && spec.info.version === "1.0.0");
+  check("openapi: /users path present",    !!spec.paths["/users"]);
+  check("openapi: /users POST present",    !!spec.paths["/users"].post);
+  check("openapi: /users POST has tags",
+        spec.paths["/users"].post.tags && spec.paths["/users"].post.tags.indexOf("users") !== -1);
+  check("openapi: requestBody bodyJsonSchema embedded",
+        spec.paths["/users"].post.requestBody &&
+        spec.paths["/users"].post.requestBody.content["application/json"].schema.type === "object");
+  // :id pattern → {id} in OpenAPI
+  check("openapi: path-param converted to OpenAPI form",
+        !!spec.paths["/users/{id}"]);
+  check("openapi: path-param appears in parameters",
+        spec.paths["/users/{id}"].get.parameters.some(function (p) {
+          return p.name === "id" && p.in === "path";
+        }));
+}
+
+async function testRouterSpecResponseValidationThrow() {
+  process.env.BLAMEJS_VALIDATE_RESPONSES = "throw";
+  try {
+    var router = new b.router.Router();
+    var responseShape = b.safeSchema.object({ ok: b.safeSchema.boolean() });
+    router.get("/r", { response: responseShape },
+      function (_req, res) { res.json({ wrong: "shape" }); });
+    var fx = _routerHttpFixture({ method: "GET", url: "/r" });
+    var threw = false;
+    try { await router.handle(fx.req, fx.res); }
+    catch (e) { threw = /response-validation failed/.test(e.message); }
+    check("response-validation throw: detected drift",  threw);
+  } finally {
+    delete process.env.BLAMEJS_VALIDATE_RESPONSES;
+  }
+}
+
+async function testRouterSpecResponseValidationWarn() {
+  process.env.BLAMEJS_VALIDATE_RESPONSES = "warn";
+  try {
+    var router = new b.router.Router();
+    var responseShape = b.safeSchema.object({ ok: b.safeSchema.boolean() });
+    router.get("/r", { response: responseShape },
+      function (_req, res) { res.json({ wrong: "shape" }); });
+    var fx = _routerHttpFixture({ method: "GET", url: "/r" });
+    await router.handle(fx.req, fx.res);
+    // Warn mode: response still ships; no throw.
+    check("response-validation warn: response still ships", fx.res.writableEnded === true);
+  } finally {
+    delete process.env.BLAMEJS_VALIDATE_RESPONSES;
+  }
+}
+
 function testRouterWsValidation() {
   var router = new b.router.Router();
 
@@ -15465,6 +15674,18 @@ async function run() {
   await testWebSocketConnection();
   testRouterWsValidation();
   await testRouterSetsRoutePattern();
+
+  // v0.4.19 schema-validated routes
+  await testRouterSpecBodyValidatesPass();
+  await testRouterSpecBodyValidatesReject();
+  await testRouterSpecQueryAndParams();
+  await testRouterSpecPassesNonObjectFirstArg();
+  await testRouterSpecRejectsUnknownKey();
+  await testRouterSpecRejectsBadSchema();
+  testRouterInspectRoutes();
+  testRouterOpenapi();
+  await testRouterSpecResponseValidationThrow();
+  await testRouterSpecResponseValidationWarn();
   // lazy-require primitive (used by 12 modules to break circular loads)
   testLazyRequire();
   // json-safe primitive
