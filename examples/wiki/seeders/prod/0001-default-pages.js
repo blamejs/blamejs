@@ -777,6 +777,22 @@ var TESTING = [
 
   '<h2 id="waitfor">waitFor and tempDir <a class="anchor" href="#waitfor">#</a></h2>',
   '<p><code>waitFor(predicate, opts)</code> polls until the predicate returns truthy or the cap fires. Built on <code>b.safeAsync.sleep</code> + <code>b.safeAsync.withTimeout</code>, so cancellation is real and there\'s no chance of a leaked timer keeping the suite alive after a failure. <code>tempDir(name)</code> returns <code>{ path, cleanup }</code> backed by a path containment check that mirrors <code>b.staticServe</code>\'s — so nothing the test writes can escape the fixture root.</p>',
+
+  '<h2 id="api-snapshot">API snapshot <a class="anchor" href="#api-snapshot">#</a></h2>',
+  '<p><code>blamejs api-snapshot</code> walks the framework\'s public surface (everything <code>require("@blamejs/core")</code> exposes — primitives, methods, types) and writes a structured JSON snapshot. <code>compare</code> diffs the live surface against a saved snapshot and exits non-zero on breaking changes. Wired into CI, this catches accidental API drift before a tag ships.</p>',
+  '<pre><code class="language-bash"># Capture the current public surface — committed alongside the code',
+  'blamejs api-snapshot capture --file ./api-snapshot.json',
+  '',
+  '# In CI: diff the current code against the saved snapshot',
+  'blamejs api-snapshot compare --file ./api-snapshot.json',
+  '#  exit 0 = no changes',
+  '#  exit 1 = breaking changes detected (removed methods, type changes, etc.)',
+  '#  exit 2 = bad invocation</code></pre>',
+  '<p>The snapshot captures method signatures, exported constants, error-class shapes, and option keys. Additive changes (new methods, new opts) don\'t fail; signature changes, removed methods, or shape changes do. When a breaking change is intentional (pre-1.0 surface evolution), the operator regenerates the snapshot in the same patch — making the diff visible in the PR rather than hiding inside the snapshot file.</p>',
+  '<pre><code class="language-text"># .github/workflows/ci.yml — gate on the snapshot',
+  '- name: Public-API drift gate',
+  '  run: npx blamejs api-snapshot compare --file ./api-snapshot.json</code></pre>',
+  '<p>Pre-1.0 the surface is intentionally evolving. The drift gate doesn\'t block evolution — it makes evolution explicit. Post-1.0, the same gate gives operators a documented deprecation window before any signature changes ship.</p>',
 ].join("\n");
 
 

@@ -110,6 +110,12 @@ This is the minimum-viable security posture for a production deployment. The fra
 - [ ] Off-site at least one bundle (different region / cloud / physical location)
 - [ ] Retain bundles per compliance window; the prev-hash chain across bundles makes silent deletion detectable
 
+**mTLS** (only if using `b.mtlsCa` for service-to-service auth)
+- [ ] Boot the CA with `--sealed-mode required` so the CA private key is vault-sealed before hitting disk
+- [ ] Inspect CA state: `blamejs mtls status --data-dir ./data` — confirms the generation matches the operator's expected version (no silent drift on shared deploys)
+- [ ] Rotate leaf certificates per their issued lifetime (typically annual); keep the CA generation field bumped on full-CA rotation events
+- [ ] Distribute the CA cert to clients via `blamejs mtls show-cert --data-dir ./data` rather than copying files around — reduces "wrong-cert-trusted" mistakes
+
 **Pipeline**
 - [ ] Enable branch protection on `main` requiring the CI workflow's `Lint summary` job
 - [ ] Require at least one reviewer on every PR (prevents the "compromised contributor key publishes a malicious image under valid OIDC" path)

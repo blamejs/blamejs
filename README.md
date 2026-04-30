@@ -42,13 +42,14 @@ var b = require("@blamejs/core");
 `blamejs` ships an operator-facing CLI for the recurring ops work. Each subcommand boots a headless app instance from `--data-dir` (no HTTP listener), runs the operation, and shuts down. Same vault + DB + audit chain the running app uses.
 
 ```
-blamejs migrate    up | down | status   --db <path> [--dir <path>]
-blamejs seed       run | status         --db <path> --env <name> [--dir <path>]
-blamejs vault      status | seal | unseal | rotate   --data-dir <path>
-blamejs backup     inspect | verify | extract        --bundle <dir>
+blamejs migrate    up | down | status                   --db <path> [--dir <path>]
+blamejs seed       run | status                         --db <path> --env <name> [--dir <path>]
+blamejs vault      status | seal | unseal | rotate      --data-dir <path>
+blamejs backup     inspect | verify | extract           --bundle <dir>
 blamejs api-key    issue | revoke | list | rotate | verify   --data-dir <path> --namespace <ns>
+blamejs mtls       status | show-cert | init | issue | issue-p12   --data-dir <path>
 blamejs audit      archive | export | verify-bundle | purge
-blamejs api-snapshot                    (CI gate for public API drift)
+blamejs api-snapshot                                    (CI gate for public API drift)
 blamejs dev        --command <cmd> [--watch <dir>...]
 ```
 
