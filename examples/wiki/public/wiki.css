@@ -176,7 +176,9 @@ main h1, main h2, main h3, main h4 {
 }
 main h1 {
   font-size: 2rem;
-  margin: 0.25rem 0 1.25rem;
+  margin: 0.25rem 0 1.5rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 2px solid var(--brand-soft);
 }
 main h2 {
   font-size: 1.5rem;
@@ -187,6 +189,40 @@ main h2 {
 main h3 {
   font-size: 1.2rem;
   margin: 1.5rem 0 0.5rem;
+  color: var(--brand-strong);
+}
+/* Brand-tick before every body H2 (the home hero scopes this to its own
+   block via .hero ~ h2 below; this rule covers every other page). */
+main h2:not(.hero-title)::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 1.05em;
+  background: var(--brand);
+  border-radius: 2px;
+  margin-right: 0.6rem;
+  vertical-align: -0.12em;
+}
+main h1:not(.hero-title)::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 1.6rem;
+  background: linear-gradient(180deg, var(--brand) 0%, var(--brand-strong) 100%);
+  border-radius: 2px;
+  margin-right: 0.7rem;
+  vertical-align: -0.32em;
+}
+/* Tiny eyebrow some pages opt into above their H1 — small mono caps in
+   brand color, like the hero's eyebrow but on a light background. */
+.page-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-strong);
+  margin: 0 0 0.3rem;
+  font-weight: 600;
 }
 main p { margin: 0.75rem 0; }
 main ul, main ol { padding-left: 1.5rem; }
@@ -636,18 +672,9 @@ main .form-error {
   margin: 0 0 1.5rem;
 }
 
-/* On the home page the first h2 directly follows the hero — give it a
-   small magenta tick as a brand thread without touching docs pages. */
-.hero ~ h2::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 1.05em;
-  background: var(--brand);
-  border-radius: 2px;
-  margin-right: 0.55rem;
-  vertical-align: -0.12em;
-}
+/* The brand-tick on H2 is now defined globally near the top of the
+   stylesheet (main h2:not(.hero-title)::before), so it threads through
+   every page including the home page below the hero. */
 
 @media (max-width: 768px) {
   .hero {
