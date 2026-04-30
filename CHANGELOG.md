@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.16** (2026-04-30) — b.httpClient: interceptors + progress events
 - **0.4.15** (2026-04-30) — b.httpClient: redirect-following + outbound multipart
 - **0.4.14** (2026-04-30) — b.i18n: lazy locales + ordinal plurals + onMissingKey hook
 - **0.4.13** (2026-04-30) — b.db: streaming query results

@@ -83,6 +83,7 @@ var httpClient = require("./lib/http-client");
 // the bare `b.httpClient.request(...)`. The api-encrypt module owns the
 // implementation; httpClient stays free of an api-encrypt dependency.
 httpClient.encrypted = require("./lib/middleware/api-encrypt").httpClient;
+httpClient.cookieJar = require("./lib/http-client-cookie-jar");
 var websocket = require("./lib/websocket");
 var safeUrl = require("./lib/safe-url");
 var ssrfGuard = require("./lib/ssrf-guard");

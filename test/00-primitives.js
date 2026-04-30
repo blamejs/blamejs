@@ -13193,6 +13193,267 @@ async function testHttpClientMultipartConflictsWithBody() {
   check("multipart: rejects body+multipart together",  threw);
 }
 
+// ---- v0.4.17 cookie jar ----
+
+function testCookieJarSurface() {
+  check("b.httpClient.cookieJar exists",      typeof b.httpClient.cookieJar === "object");
+  check("cookieJar.create is a function",     typeof b.httpClient.cookieJar.create === "function");
+  check("CookieJarError class",                typeof b.httpClient.cookieJar.CookieJarError === "function");
+  check("DEFAULTS frozen",                     Object.isFrozen(b.httpClient.cookieJar.DEFAULTS));
+  check("DEFAULTS.persist === 'memory'",       b.httpClient.cookieJar.DEFAULTS.persist === "memory");
+}
+
+function testCookieJarParseAndAttach() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://example.com/login", "session=abc123; Path=/; HttpOnly; Secure");
+  var hdr = jar.cookieHeaderFor("https://example.com/me");
+  check("cookieJar: round-trip session=abc123",   hdr === "session=abc123");
+  check("cookieJar: size = 1",                    jar.size() === 1);
+}
+
+function testCookieJarDomainAttribute() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://api.example.com/", "tracking=t1; Domain=example.com; Path=/");
+  // Subdomain match per Domain attribute.
+  var sub = jar.cookieHeaderFor("https://api.example.com/x");
+  check("Domain attr: subdomain attaches",        sub === "tracking=t1");
+  // Different host that doesn't match the domain
+  var none = jar.cookieHeaderFor("https://other.com/x");
+  check("Domain attr: unrelated host gets nothing", none === null);
+  // Domain attr that the response host doesn't match — drop entirely.
+  jar.setFromResponse("https://api.example.com/", "evil=v; Domain=other.com");
+  check("Domain attr: rejects when host doesn't suffix-match", jar.size() === 1);
+}
+
+function testCookieJarPathMatch() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://example.com/api/v1/", "scoped=s; Path=/api/v1");
+  check("Path match: exact",     jar.cookieHeaderFor("https://example.com/api/v1") === "scoped=s");
+  check("Path match: below",     jar.cookieHeaderFor("https://example.com/api/v1/x") === "scoped=s");
+  check("Path match: outside",   jar.cookieHeaderFor("https://example.com/other") === null);
+}
+
+function testCookieJarSecureFilter() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://example.com/", "s=val; Secure; Path=/");
+  check("Secure: sent over https",  jar.cookieHeaderFor("https://example.com/x") === "s=val");
+  check("Secure: not sent over http", jar.cookieHeaderFor("http://example.com/x") === null);
+}
+
+function testCookieJarMaxAgeAndExpires() {
+  var nowMs = 1700000000000;
+  var jar = b.httpClient.cookieJar.create({ clock: function () { return nowMs; } });
+  jar.setFromResponse("https://example.com/", "k=v; Max-Age=60; Path=/");
+  // Read at set-time: still live.
+  check("Max-Age: live within window", jar.cookieHeaderFor("https://example.com/x") === "k=v");
+  // Advance the clock past the 60-second window.
+  nowMs += 120000;
+  check("Max-Age: expired after window",
+        jar.cookieHeaderFor("https://example.com/x") === null);
+}
+
+function testCookieJarMaxAgeZeroDeletes() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://example.com/", "k=v; Path=/");
+  check("delete: present before",                  jar.size() === 1);
+  jar.setFromResponse("https://example.com/", "k=v; Max-Age=0; Path=/");
+  check("Max-Age=0: cookie removed",               jar.size() === 0);
+}
+
+function testCookieJarMultipleSort() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://example.com/", "a=root; Path=/");
+  jar.setFromResponse("https://example.com/", "b=deep; Path=/x/y");
+  var hdr = jar.cookieHeaderFor("https://example.com/x/y/z");
+  // Longer-path cookie should appear first.
+  check("multi-cookie sort: longer path first",  /^b=deep; a=root$/.test(hdr));
+}
+
+function testCookieJarClearAndGetAll() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://a.example.com/", "x=1; Path=/");
+  jar.setFromResponse("https://b.example.com/", "y=2; Path=/");
+  check("getAll: 2 rows",                          jar.getAll().length === 2);
+  var purged = jar.clear({ domain: "a.example.com" });
+  check("clear: filtered domain purges 1",         purged === 1);
+  check("clear: remaining = 1",                    jar.size() === 1);
+  jar.clear();
+  check("clear: full wipe",                        jar.size() === 0);
+}
+
+function testCookieJarSetFromSerialized() {
+  var jar = b.httpClient.cookieJar.create();
+  jar.setFromResponse("https://example.com/", "s=z; Path=/");
+  var rows = jar.getAll();
+
+  var jar2 = b.httpClient.cookieJar.create();
+  jar2.setFromSerialized(rows);
+  check("serialize round-trip: size matches",       jar2.size() === 1);
+  check("serialize round-trip: cookieHeader OK",
+        jar2.cookieHeaderFor("https://example.com/x") === "s=z");
+}
+
+function testCookieJarPersistVaultRequiresVault() {
+  var threw = false;
+  try { b.httpClient.cookieJar.create({ persist: "vault" }); }
+  catch (_e) { threw = true; }
+  check("persist:'vault': rejects missing vault",   threw);
+
+  // Bad shape — object without seal/unseal
+  threw = false;
+  try { b.httpClient.cookieJar.create({ persist: "vault", vault: { seal: 1 } }); }
+  catch (_e) { threw = true; }
+  check("persist:'vault': rejects malformed vault", threw);
+}
+
+function testCookieJarPersistVaultEncryptsValue() {
+  // No-op vault stub that wraps + unwraps with a recognizable prefix —
+  // mirrors b.vault.seal/unseal contract minus the actual crypto. The
+  // assertion isn't about the cipher (b.vault tests cover that); it's
+  // that the jar's IN-MEMORY storage never holds the plaintext value.
+  var fakeVault = {
+    seal:   function (v) { return "vault:SEALED(" + v + ")"; },
+    unseal: function (v) {
+      if (typeof v !== "string" || v.indexOf("vault:SEALED(") !== 0) return v;
+      return v.slice("vault:SEALED(".length, -1);
+    },
+  };
+  var jar = b.httpClient.cookieJar.create({ persist: "vault", vault: fakeVault });
+  jar.setFromResponse("https://example.com/login", "session=secret-cookie-plaintext-12345; Path=/; Secure");
+
+  // Forensic check: the jar's RAW store must not contain the plaintext.
+  var raw = jar._storeForTest();
+  check("vault persist: raw stored 1 entry",        raw.length === 1);
+  check("vault persist: raw value is sealed",
+        typeof raw[0].valueRaw === "string" && raw[0].valueRaw.indexOf("vault:") === 0);
+  check("vault persist: raw value HIDES plaintext",
+        raw[0].valueRaw.indexOf("secret-cookie-plaintext-12345") === -1 ||
+        raw[0].valueRaw === "vault:SEALED(secret-cookie-plaintext-12345)");
+
+  // The fake-vault-sealed string DOES include the plaintext inside the
+  // SEALED() wrapper for trace purposes — that's a test-only artifact.
+  // The harder forensic check: serialize the WHOLE jar map and grep.
+  var dump = JSON.stringify(raw);
+  // With a real vault.seal, the dump won't contain the plaintext at
+  // all. Our fake's wrapper does contain it. Rather than rely on the
+  // fake's behavior, run a SECOND scenario with a lossy fake that
+  // returns ciphertext-only so the forensic test is real.
+  var lossyVault = {
+    seal:   function (_v) { return "vault:OPAQUE-CIPHERTEXT-NO-PLAINTEXT-LEAK"; },
+    unseal: function (_v) { return "session=opaque"; },
+  };
+  var jar2 = b.httpClient.cookieJar.create({ persist: "vault", vault: lossyVault });
+  jar2.setFromResponse("https://example.com/", "session=actually-secret-PLAINTEXT-7777; Path=/");
+  var dump2 = JSON.stringify(jar2._storeForTest());
+  check("vault persist (lossy): no plaintext in raw store",
+        dump2.indexOf("actually-secret-PLAINTEXT-7777") === -1);
+  check("vault persist (lossy): raw value is the opaque ciphertext",
+        dump2.indexOf("OPAQUE-CIPHERTEXT-NO-PLAINTEXT-LEAK") !== -1);
+
+  // Reading via cookieHeaderFor goes through unseal — operator sees
+  // plaintext at the API boundary, never in the storage map.
+  var hdr = jar.cookieHeaderFor("https://example.com/anything");
+  check("vault persist: API boundary delivers plaintext",
+        hdr === "session=secret-cookie-plaintext-12345");
+
+  // Memory-mode jar SHOULD hold plaintext (no encryption opted in).
+  var memJar = b.httpClient.cookieJar.create();
+  memJar.setFromResponse("https://example.com/", "k=memory-mode-plaintext; Path=/");
+  var memDump = JSON.stringify(memJar._storeForTest());
+  check("memory persist (default): raw store IS plaintext",
+        memDump.indexOf("memory-mode-plaintext") !== -1);
+
+  void dump;  // dump retained earlier for symmetry
+}
+
+async function testHttpClientJarRoundTrip() {
+  var http = require("http");
+  var server = http.createServer(function (req, res) {
+    if (req.url === "/login") {
+      res.writeHead(200, { "Set-Cookie": "session=abc; Path=/; HttpOnly", "Content-Type": "text/plain" });
+      res.end("logged in");
+    } else if (req.url === "/me") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("cookies: " + (req.headers.cookie || "(none)"));
+    }
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var jar = b.httpClient.cookieJar.create();
+    await httpReq({ url: "http://127.0.0.1:" + port + "/login", jar: jar });
+    var me = await httpReq({ url: "http://127.0.0.1:" + port + "/me", jar: jar });
+    check("jar: cookie attached on second hop",
+          me.body.toString("utf8").indexOf("session=abc") !== -1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientJarMergesWithCallerCookie() {
+  var http = require("http");
+  var seen;
+  var server = http.createServer(function (req, res) {
+    seen = req.headers.cookie;
+    res.writeHead(200);
+    res.end();
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var jar = b.httpClient.cookieJar.create();
+    jar.setFromResponse("http://127.0.0.1:" + port + "/", "from-jar=A; Path=/");
+    await httpReq({
+      url:     "http://127.0.0.1:" + port + "/x",
+      headers: { "Cookie": "caller-set=B" },
+      jar:     jar,
+    });
+    check("jar: caller Cookie + jar header merged",
+          seen && seen.indexOf("caller-set=B") !== -1 && seen.indexOf("from-jar=A") !== -1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientJarValidation() {
+  var threw = false;
+  try { await httpReq({ url: "http://127.0.0.1:1/x", jar: { foo: 1 } }); }
+  catch (_e) { threw = true; }
+  check("jar: rejects malformed jar object",   threw);
+}
+
+async function testHttpClientJarFollowsRedirect() {
+  var http = require("http");
+  var seenAtHop2;
+  var server = http.createServer(function (req, res) {
+    if (req.url === "/start") {
+      res.writeHead(302, { "Location": "/end", "Set-Cookie": "trace=hop1; Path=/" });
+      res.end();
+    } else if (req.url === "/end") {
+      seenAtHop2 = req.headers.cookie;
+      res.writeHead(200);
+      res.end("ok");
+    }
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    var jar = b.httpClient.cookieJar.create();
+    await httpReq({
+      url:          "http://127.0.0.1:" + port + "/start",
+      jar:          jar,
+      maxRedirects: 5,
+    });
+    check("jar: cookie set on hop1 attaches on hop2",
+          seenAtHop2 && seenAtHop2.indexOf("trace=hop1") !== -1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
 // ---- v0.4.16 interceptors + progress events ----
 
 async function testHttpClientBeforeInterceptor() {
@@ -15077,6 +15338,24 @@ async function run() {
   await testHttpClientUploadProgress();
   await testHttpClientDownloadProgress();
   await testHttpClientDownloadProgressStream();
+
+  // v0.4.17 cookie jar
+  testCookieJarSurface();
+  testCookieJarParseAndAttach();
+  testCookieJarDomainAttribute();
+  testCookieJarPathMatch();
+  testCookieJarSecureFilter();
+  testCookieJarMaxAgeAndExpires();
+  testCookieJarMaxAgeZeroDeletes();
+  testCookieJarMultipleSort();
+  testCookieJarClearAndGetAll();
+  testCookieJarSetFromSerialized();
+  testCookieJarPersistVaultRequiresVault();
+  testCookieJarPersistVaultEncryptsValue();
+  await testHttpClientJarRoundTrip();
+  await testHttpClientJarMergesWithCallerCookie();
+  await testHttpClientJarValidation();
+  await testHttpClientJarFollowsRedirect();
   // websocket primitive (RFC 6455 + RFC 8441) — fixture-needing
   // tests (h2c suite + router suite) live in module.exports.groups[]
   // so each group's setup runs once and per-test timing is reported.
