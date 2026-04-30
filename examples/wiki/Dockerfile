@@ -62,15 +62,26 @@ FROM cgr.dev/chainguard/node:latest AS runtime
 #   WIKI_WEBHOOK_SECRET    HMAC secret for the webhook              (required if URL set)
 #
 #   BLAMEJS_VAULT_PASSPHRASE
-#                          required if vault: { mode: "wrapped" }
-#                          (the framework default for production)
-#                          — Argon2id-stretched into a wrapping key
-#                          for vault.key.sealed
+#                          when set, the wiki auto-flips to vault:
+#                          wrapped + DB encrypted-at-rest at boot —
+#                          Argon2id-stretched into the wrapping key
+#                          for vault.key.sealed. Without it the wiki
+#                          boots in plaintext mode for dev ergonomics.
+#
+#   BLAMEJS_AUDIT_SIGNING_PASSPHRASE
+#                          when set, the audit-chain signing key is
+#                          sealed at boot (audit-sign.key.sealed on
+#                          disk) — Argon2id-stretched. Read at boot.
+#                          Different from BLAMEJS_AUDIT_PASSPHRASE.
 #
 #   BLAMEJS_AUDIT_PASSPHRASE
 #                          used by `blamejs audit archive/export/
 #                          verify/purge` CLI commands invoked
 #                          inside the container; not read at boot
+#
+#   WIKI_VAULT_MODE / WIKI_DB_AT_REST / WIKI_AUDIT_SIGNING_MODE
+#                          explicit overrides for the auto-detect
+#                          above ("wrapped" / "encrypted" / etc.)
 #
 #   BLAMEJS_DEPRECATIONS   "verbose" | "throw" | "silent"           (default: warn)
 #                          framework deprecation reporting mode

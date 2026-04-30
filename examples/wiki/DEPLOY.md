@@ -72,8 +72,12 @@ The wiki container reads its configuration from environment. `docker-compose.pro
 
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
-| `BLAMEJS_VAULT_PASSPHRASE` | required if vault is in `wrapped` mode | unset | Argon2id-stretched into the vault-key wrapping key. The wiki example app boots plaintext-mode by default; flip `lib/build-app.js`'s `vault: { mode: "plaintext" }` to `"wrapped"` and seal via `blamejs vault seal` once you have a passphrase set. |
+| `BLAMEJS_VAULT_PASSPHRASE` | required for production posture | unset | Argon2id-stretched into the vault-key wrapping key. **Setting this auto-flips the wiki to wrapped vault + encrypted-at-rest DB at boot** (the wiki's `lib/build-app.js` reads the env var as the production-posture signal). Without it the wiki boots in plaintext mode for dev ergonomics. |
+| `BLAMEJS_AUDIT_SIGNING_PASSPHRASE` | required for production posture | unset | Argon2id-stretched into the audit-signing key wrap. **Setting this auto-flips audit-sign to wrapped at boot** (`audit-sign.key.sealed` on disk, never plaintext). Different from `BLAMEJS_AUDIT_PASSPHRASE` below — that's for the archive CLI, not boot-time signing. |
 | `BLAMEJS_AUDIT_PASSPHRASE` | only when running `blamejs audit` CLI | unset | Used by `blamejs audit archive / export / verify / purge` for the chain-export bundle wrap. Not read at app boot. |
+| `WIKI_VAULT_MODE` | no | auto-detect | `wrapped` \| `plaintext`. Explicit override for the auto-detect logic above. |
+| `WIKI_DB_AT_REST` | no | auto-detect | `encrypted` \| `plain`. Explicit override. |
+| `WIKI_AUDIT_SIGNING_MODE` | no | auto-detect | `wrapped` \| `plaintext`. Explicit override. |
 | `BLAMEJS_BACKUP_PASSPHRASE` | only when running `blamejs backup` CLI | unset | Used by `blamejs backup verify / extract` against an existing bundle on disk. Not read at app boot. |
 | `BLAMEJS_DEPRECATIONS` | no | `warn` | `warn` (default) emits a structured log line; `throw` makes deprecated calls fail loud (recommended pre-v1); `silent` suppresses. |
 

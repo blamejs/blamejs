@@ -60,15 +60,20 @@ services:
       WIKI_WEBHOOK_URL:     ${WIKI_WEBHOOK_URL:-}
       WIKI_WEBHOOK_SECRET:  ${WIKI_WEBHOOK_SECRET:-}
       # ---- Framework (vault, audit, deprecation reporting) ----
-      # BLAMEJS_VAULT_PASSPHRASE — required when the framework boots
-      # vault in `wrapped` mode (the production default). The wiki
-      # example app currently boots plaintext for ergonomics; flip
-      # the build-app.js setting to "wrapped" once you've sealed.
+      # BLAMEJS_VAULT_PASSPHRASE — when set, the wiki auto-flips
+      # vault to `wrapped` mode + DB to encrypted-at-rest. Without
+      # it the wiki boots in plaintext (dev default). Required for
+      # any production deployment.
       BLAMEJS_VAULT_PASSPHRASE: ${BLAMEJS_VAULT_PASSPHRASE:-}
+      # BLAMEJS_AUDIT_SIGNING_PASSPHRASE — when set, the wiki flips
+      # the audit-chain signing key to `wrapped` mode (sealed on
+      # disk as audit-sign.key.sealed). Read at boot. Different
+      # from BLAMEJS_AUDIT_PASSPHRASE below.
+      BLAMEJS_AUDIT_SIGNING_PASSPHRASE: ${BLAMEJS_AUDIT_SIGNING_PASSPHRASE:-}
       # BLAMEJS_AUDIT_PASSPHRASE — used by `blamejs audit archive/
       # export/verify/purge` invocations inside the container; not
-      # read at boot. Set in the operator's runbook env, not here,
-      # if ops are run from outside the container.
+      # read at app boot. Set in the operator's runbook env, not
+      # here, if ops are run from outside the container.
       BLAMEJS_AUDIT_PASSPHRASE: ${BLAMEJS_AUDIT_PASSPHRASE:-}
       # BLAMEJS_DEPRECATIONS — "warn" (default) | "throw" | "silent".
       BLAMEJS_DEPRECATIONS: ${BLAMEJS_DEPRECATIONS:-warn}
