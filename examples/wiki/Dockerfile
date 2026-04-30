@@ -33,6 +33,41 @@ RUN rm -rf node_modules data data-e2e public/dist \
  && npm install --no-package-lock --omit=dev --install-links
 
 FROM cgr.dev/chainguard/node:latest AS runtime
+# Non-secret defaults baked into the image. Secrets (passphrases,
+# webhook secrets, admin password) are NEVER ENV-baked — they're
+# injected at runtime via env / docker secrets / mounted files.
+#
+# Available environment variables (operator-set at runtime):
+#
+#   NODE_ENV               production | development                 (default: production)
+#   WIKI_DATA_DIR          on-disk path for vault.key + sqlite +
+#                          audit chain                              (default: /data)
+#   WIKI_PORT              listen port                              (default: 8080)
+#
+#   WIKI_ADMIN_EMAIL       seeded admin login email                 (default: admin@blamejs.app)
+#   WIKI_ADMIN_PASSWORD    seeded admin password                    (REQUIRED — generated
+#                                                                    if absent, printed to
+#                                                                    stdout on first boot;
+#                                                                    set explicitly in prod)
+#   WIKI_WEBHOOK_URL       outbound page-edit webhook target        (optional)
+#   WIKI_WEBHOOK_SECRET    HMAC secret for the webhook              (required if URL set)
+#
+#   BLAMEJS_VAULT_PASSPHRASE
+#                          required if vault: { mode: "wrapped" }
+#                          (the framework default for production)
+#                          — Argon2id-stretched into a wrapping key
+#                          for vault.key.sealed
+#
+#   BLAMEJS_AUDIT_PASSPHRASE
+#                          used by `blamejs audit archive/export/
+#                          verify/purge` CLI commands invoked
+#                          inside the container; not read at boot
+#
+#   BLAMEJS_DEPRECATIONS   "verbose" | "throw" | "silent"           (default: warn)
+#                          framework deprecation reporting mode
+#
+#   LOG_LEVEL              "debug" | "info" | "warn" | "error"      (default: info)
+#                          structured-log filter level
 ENV NODE_ENV=production \
     WIKI_DATA_DIR=/data \
     WIKI_PORT=8080

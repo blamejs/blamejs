@@ -8,10 +8,27 @@
 # the configured domain. Pull from the published GHCR image instead of
 # rebuilding from source — this is the operational path.
 #
-# Required: an .env file alongside this compose file with at least:
-#   WIKI_ADMIN_PASSWORD=<a stable, strong passphrase>
-# Optional:
-#   WIKI_WEBHOOK_URL, WIKI_WEBHOOK_SECRET — outbound page-edit webhook
+# Configuration: an .env file alongside this compose file. Every value
+# below uses ${VAR:-default} so the operator can override any subset
+# without listing the rest. See DEPLOY.md for a full env-var matrix
+# with explanations of every key.
+#
+#   # required for stable production logins
+#   WIKI_ADMIN_PASSWORD=<strong passphrase>
+#
+#   # required if the framework's vault is in wrapped mode (the
+#   # production default). Argon2id-stretched into the vault wrap key.
+#   BLAMEJS_VAULT_PASSPHRASE=<a different strong passphrase>
+#
+#   # optional — outbound webhook for every wiki.page.edited event
+#   WIKI_WEBHOOK_URL=https://...
+#   WIKI_WEBHOOK_SECRET=<hmac secret>
+#
+#   # optional — defaults shown
+#   WIKI_ADMIN_EMAIL=admin@blamejs.app
+#   WIKI_PORT=8080
+#   LOG_LEVEL=info
+#   BLAMEJS_DEPRECATIONS=warn
 #
 # The operator points DNS A/AAAA records for blamejs.app + www.blamejs.app
 # at the host running this stack, opens 80/443 inbound, and Caddy does
@@ -22,7 +39,7 @@ services:
     # Pull the published image instead of building from source. Pin to
     # a specific version in production so a forgotten `docker compose
     # pull` doesn't quietly upgrade.
-    image: ghcr.io/blamejs/blamejs-wiki:0.3.10
+    image: ghcr.io/blamejs/blamejs-wiki:0.3.24
     build: !reset null
     container_name: blamejs-wiki
     # Don't expose 8080 on the host — only Caddy talks to it on the
@@ -30,6 +47,34 @@ services:
     ports: !override []
     expose:
       - "8080"
+    # Full operator-facing environment surface. Every value is
+    # overridable from the .env file; defaults match the framework's
+    # built-in defaults so an operator who just wants the basics can
+    # leave most blank.
+    environment:
+      # ---- Wiki app ----
+      WIKI_PORT:            ${WIKI_PORT:-8080}
+      WIKI_DATA_DIR:        ${WIKI_DATA_DIR:-/data}
+      WIKI_ADMIN_EMAIL:     ${WIKI_ADMIN_EMAIL:-admin@blamejs.app}
+      WIKI_ADMIN_PASSWORD:  ${WIKI_ADMIN_PASSWORD:?WIKI_ADMIN_PASSWORD must be set in .env for production}
+      WIKI_WEBHOOK_URL:     ${WIKI_WEBHOOK_URL:-}
+      WIKI_WEBHOOK_SECRET:  ${WIKI_WEBHOOK_SECRET:-}
+      # ---- Framework (vault, audit, deprecation reporting) ----
+      # BLAMEJS_VAULT_PASSPHRASE — required when the framework boots
+      # vault in `wrapped` mode (the production default). The wiki
+      # example app currently boots plaintext for ergonomics; flip
+      # the build-app.js setting to "wrapped" once you've sealed.
+      BLAMEJS_VAULT_PASSPHRASE: ${BLAMEJS_VAULT_PASSPHRASE:-}
+      # BLAMEJS_AUDIT_PASSPHRASE — used by `blamejs audit archive/
+      # export/verify/purge` invocations inside the container; not
+      # read at boot. Set in the operator's runbook env, not here,
+      # if ops are run from outside the container.
+      BLAMEJS_AUDIT_PASSPHRASE: ${BLAMEJS_AUDIT_PASSPHRASE:-}
+      # BLAMEJS_DEPRECATIONS — "warn" (default) | "throw" | "silent".
+      BLAMEJS_DEPRECATIONS: ${BLAMEJS_DEPRECATIONS:-warn}
+      # ---- Standard Node ----
+      NODE_ENV:  ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
 
   caddy:
     image: caddy:2.9-alpine

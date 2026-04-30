@@ -290,6 +290,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Smoke-test runs on a fresh runner — it doesn't inherit the
+      # publish job's GHCR auth. Log in first so `docker pull` works
+      # whether the package is public or private. Login is a no-op
+      # against a public package, so this is the right shape regardless
+      # of visibility.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Pull published image
         run: docker pull "${{ env.IMAGE }}@${{ needs.publish.outputs.digest }}"
 

@@ -21,10 +21,24 @@ Steps:
 git clone https://github.com/blamejs/blamejs.git
 cd blamejs/examples/wiki
 
-# 2. Configure the admin password
+# 2. Configure the .env (every value below is optional except the
+#    one explicitly marked REQUIRED — see "Environment variables"
+#    section for the full matrix).
 cat > .env <<'EOF'
-WIKI_ADMIN_EMAIL=admin@blamejs.app
+# REQUIRED
 WIKI_ADMIN_PASSWORD=<a strong passphrase>
+
+# Recommended once you flip the wiki to wrapped vault mode
+BLAMEJS_VAULT_PASSPHRASE=<a different strong passphrase>
+
+# Optional — defaults shown
+WIKI_ADMIN_EMAIL=admin@blamejs.app
+WIKI_PORT=8080
+LOG_LEVEL=info
+
+# Optional — outbound page-edit webhook
+WIKI_WEBHOOK_URL=
+WIKI_WEBHOOK_SECRET=
 EOF
 chmod 600 .env
 
@@ -38,6 +52,41 @@ docker compose logs -f
 ```
 
 When the Caddy logs show `certificate obtained successfully`, the site is live at `https://blamejs.app`.
+
+## Environment variables
+
+The wiki container reads its configuration from environment. `docker-compose.prod.yml` wires every variable below from your `.env`; the Dockerfile sets non-secret defaults so an operator who just wants the basics can leave most blank.
+
+### Wiki app
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `WIKI_ADMIN_PASSWORD` | **yes (production)** | random + printed to stdout once | Seeded admin login. Setting it explicitly avoids the random-on-each-restart pattern. |
+| `WIKI_ADMIN_EMAIL` | no | `admin@blamejs.app` | Seeded admin login email. |
+| `WIKI_PORT` | no | `8080` | HTTP listen port inside the container. Caddy proxies to this; rarely overridden. |
+| `WIKI_DATA_DIR` | no | `/data` | On-disk path the wiki writes vault key + sqlite + audit chain to. Bound to a Docker volume in the compose. |
+| `WIKI_WEBHOOK_URL` | no | unset | Outbound HTTPS endpoint that receives one POST per `wiki.page.edited` event. |
+| `WIKI_WEBHOOK_SECRET` | required if URL set | unset | HMAC secret the webhook receiver uses to verify the request signature. |
+
+### Framework (`BLAMEJS_*`)
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `BLAMEJS_VAULT_PASSPHRASE` | required if vault is in `wrapped` mode | unset | Argon2id-stretched into the vault-key wrapping key. The wiki example app boots plaintext-mode by default; flip `lib/build-app.js`'s `vault: { mode: "plaintext" }` to `"wrapped"` and seal via `blamejs vault seal` once you have a passphrase set. |
+| `BLAMEJS_AUDIT_PASSPHRASE` | only when running `blamejs audit` CLI | unset | Used by `blamejs audit archive / export / verify / purge` for the chain-export bundle wrap. Not read at app boot. |
+| `BLAMEJS_BACKUP_PASSPHRASE` | only when running `blamejs backup` CLI | unset | Used by `blamejs backup verify / extract` against an existing bundle on disk. Not read at app boot. |
+| `BLAMEJS_DEPRECATIONS` | no | `warn` | `warn` (default) emits a structured log line; `throw` makes deprecated calls fail loud (recommended pre-v1); `silent` suppresses. |
+
+### Standard Node
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `NODE_ENV` | no | `production` | Standard `production`/`development` flag. |
+| `LOG_LEVEL` | no | `info` | Structured-log filter. `debug` / `info` / `warn` / `error`. |
+
+### Secrets handling
+
+Every passphrase / webhook secret in the table above is **never** ENV-baked into the image — they're injected at runtime via the `.env` file (compose), Docker secrets, or a secret-manager mount. The `.env` file should be `chmod 600` and excluded from version control. The `Dockerfile` only sets non-secret defaults (`NODE_ENV`, `WIKI_DATA_DIR`, `WIKI_PORT`).
 
 ## What's where
 

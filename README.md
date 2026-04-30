@@ -37,6 +37,29 @@ var b = require("@blamejs/core");
 
 **Requirements:** Node.js 24+ (current active LTS).
 
+## CLI
+
+`blamejs` ships an operator-facing CLI for the recurring ops work. Each subcommand boots a headless app instance from `--data-dir` (no HTTP listener), runs the operation, and shuts down. Same vault + DB + audit chain the running app uses.
+
+```
+blamejs migrate    up | down | status   --db <path> [--dir <path>]
+blamejs seed       run | status         --db <path> --env <name> [--dir <path>]
+blamejs vault      status | seal | unseal | rotate   --data-dir <path>
+blamejs backup     inspect | verify | extract        --bundle <dir>
+blamejs api-key    issue | revoke | list | rotate | verify   --data-dir <path> --namespace <ns>
+blamejs audit      archive | export | verify-bundle | purge
+blamejs api-snapshot                    (CI gate for public API drift)
+blamejs dev        --command <cmd> [--watch <dir>...]
+```
+
+Pass `--help` to any subcommand for the full flag list. Passphrases for crypto-backed operations resolve from the appropriate env var (`BLAMEJS_VAULT_PASSPHRASE`, `BLAMEJS_BACKUP_PASSPHRASE`, `BLAMEJS_AUDIT_PASSPHRASE`) so they don't end up in shell history.
+
+## Reference app + deployment
+
+`examples/wiki/` is a complete production-ready operator-built blamejs app — the wiki you're looking at when you visit `blamejs.app`. It demonstrates every framework primitive in real usage and ships with `Dockerfile`, `docker-compose.yml` (dev), `docker-compose.prod.yml` (Caddy + GHCR image), and a published OCI image at `ghcr.io/blamejs/blamejs-wiki:<tag>` (multi-arch amd64/arm64, cosign-signed via GitHub OIDC, Trivy-scanned, SHA3-512 digest).
+
+See [`examples/wiki/DEPLOY.md`](examples/wiki/DEPLOY.md) for the full deployment walkthrough, including the operator-facing environment-variable matrix (`WIKI_*` and `BLAMEJS_*` keys) and the pin-to-version workflow for production updates.
+
 ## Why "blamejs"
 
 Because when something breaks, `blame` should know exactly where it lives. We own the stack so you don't have to chase the fault across an ecosystem.
