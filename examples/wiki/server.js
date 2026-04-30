@@ -22,6 +22,12 @@ var { buildApp } = require("./lib/build-app");
 
 var DATA_DIR       = process.env.WIKI_DATA_DIR    || path.join(__dirname, "data");
 var PORT           = parseInt(process.env.WIKI_PORT || "8080", 10);
+// Default bind: 0.0.0.0 so a containerized wiki accepts connections
+// from the Docker port-forward (-p 8080:8080) and reverse proxies on
+// the same host network. Operators with a stricter posture (e.g.
+// listening only on localhost behind a same-host reverse proxy) set
+// WIKI_BIND=127.0.0.1.
+var BIND           = process.env.WIKI_BIND       || "0.0.0.0";
 var ADMIN_EMAIL    = process.env.WIKI_ADMIN_EMAIL || "admin@blamejs.app";
 var ADMIN_PASSWORD = process.env.WIKI_ADMIN_PASSWORD || null;
 var WEBHOOK_URL    = process.env.WIKI_WEBHOOK_URL    || null;
@@ -50,8 +56,11 @@ function _resolveAdminPassword() {
   // Start the scheduler (timer-based; refs the event loop until shutdown)
   built.scheduler.start();
 
-  var info = await built.app.listen({ port: PORT });
-  console.log("[wiki] listening on http://localhost:" + info.port);
+  var info = await built.app.listen({ port: PORT, host: BIND });
+  // Display URL: 0.0.0.0 isn't a connectable address — show localhost
+  // for human readability while the actual bind is on all interfaces.
+  var displayHost = BIND === "0.0.0.0" ? "localhost" : BIND;
+  console.log("[wiki] listening on http://" + displayHost + ":" + info.port + " (bind: " + BIND + ")");
   console.log("[wiki] admin login: " + ADMIN_EMAIL);
   if (WEBHOOK_URL) {
     console.log("[wiki] page-edit webhooks → " + WEBHOOK_URL);
