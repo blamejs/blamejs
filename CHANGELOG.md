@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.23** (2026-04-30) — b.mail.dkim signing + calendar invites
 - **0.4.22** (2026-04-30) — b.mail attachments + inline images + plain/HTML alternatives
 - **0.4.21** (2026-04-30) — b.queue: repeat-in-queue (cron) + parent-child Flows
 - **0.4.20** (2026-04-30) — b.queue + b.jobs: priority, rate-limit, progress
