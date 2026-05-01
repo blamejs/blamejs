@@ -1591,7 +1591,11 @@ async function testMiddlewareSecurityHeaders() {
   await setupTestDbForMW();
   try {
     var mw = b.middleware.securityHeaders();
+    // Mark the request socket as TLS so the v0.5.3 HSTS-only-on-HTTPS
+    // gate engages — operators on plain HTTP won't get HSTS, which
+    // matches RFC 6797 §7.2.
     var req = _mockReq();
+    req.socket = { encrypted: true };
     var res = _mockRes();
     mw(req, res, function () {});
     var h = res._captured().headers;

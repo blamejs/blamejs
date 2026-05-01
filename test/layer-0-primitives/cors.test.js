@@ -111,8 +111,28 @@ async function testCorsExplicitSiteOriginRejectsInferredOrigin() {
 
 async function testCorsXForwardedProtoRespected() {
   // Behind a TLS terminator: socket is HTTP but Origin claims https.
-  // X-Forwarded-Proto: https flips the inferred scheme so same-origin
-  // detection works correctly.
+  // With `trustProxy: true`, X-Forwarded-Proto: https flips the inferred
+  // scheme so same-origin detection matches.
+  var mw = b.middleware.cors({ origins: [], refuseUnknown: true, trustProxy: true });
+  var req = _req({
+    method:  "POST",
+    headers: {
+      host:   "wiki.example.com",
+      origin: "https://wiki.example.com",
+      "x-forwarded-proto": "https",
+    },
+    socket:  { remoteAddress: "127.0.0.1", encrypted: false },
+  });
+  var out = await _drive(mw, req);
+  check("X-Forwarded-Proto: https + trustProxy → same-origin pass-through",
+        out.nextCalled === true);
+}
+
+async function testCorsXForwardedProtoIgnoredWithoutTrustProxy() {
+  // Same request without trustProxy: the framework refuses to consult
+  // forwarded headers, so the inferred origin is http://… and the
+  // same-origin check fails — refuseUnknown rejects the request. This
+  // is the secure default: an attacker can't forge the header.
   var mw = b.middleware.cors({ origins: [], refuseUnknown: true });
   var req = _req({
     method:  "POST",
@@ -124,8 +144,8 @@ async function testCorsXForwardedProtoRespected() {
     socket:  { remoteAddress: "127.0.0.1", encrypted: false },
   });
   var out = await _drive(mw, req);
-  check("X-Forwarded-Proto: https → same-origin pass-through",
-        out.nextCalled === true);
+  check("X-Forwarded-Proto without trustProxy → cross-origin treated as cross-origin",
+        out.nextCalled === false);
 }
 
 async function testCorsNoOriginHeaderPassesThrough() {
@@ -223,6 +243,7 @@ async function run() {
   await testCorsExplicitSiteOriginAcceptsThatOrigin();
   await testCorsExplicitSiteOriginRejectsInferredOrigin();
   await testCorsXForwardedProtoRespected();
+  await testCorsXForwardedProtoIgnoredWithoutTrustProxy();
   await testCorsNoOriginHeaderPassesThrough();
   await testCorsNullOriginWithSameOriginFetchSitePasses();
   await testCorsNullOriginWithCrossSiteFetchSiteRefused();
