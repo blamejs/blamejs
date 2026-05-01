@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.12** (2026-04-30) — b.middleware.requestLog: HTTP access-log middleware
 - **0.5.11** (2026-04-30) — b.config: schema-validated environment configuration
 - **0.5.10** (2026-04-30) — b.middleware.sse: Server-Sent Events
 - **0.5.9** (2026-04-30) — b.csv: RFC 4180 parser + serializer
