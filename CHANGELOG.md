@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.15** (2026-04-30) — b.archive: ZIP creation
 - **0.5.14** (2026-04-30) — b.time: timezone-aware datetime arithmetic + formatting
 - **0.5.13** (2026-04-30) — b.testing.request: supertest-style chainable HTTP test helper
 - **0.5.12** (2026-04-30) — b.middleware.requestLog: HTTP access-log middleware

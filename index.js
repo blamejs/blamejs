@@ -145,6 +145,7 @@ var pagination = require("./lib/pagination");
 var metrics = require("./lib/metrics");
 var tracing = require("./lib/tracing");
 var observability = require("./lib/observability");
+var otelExport = require("./lib/otel-export");
 var protocolDispatcher = require("./lib/protocol-dispatcher");
 var requestHelpers = require("./lib/request-helpers");
 var appShutdown = require("./lib/app-shutdown");
@@ -251,6 +252,7 @@ module.exports = {
   metrics:          metrics,
   tracing:          tracing,
   observability:    observability,
+  otelExport:       otelExport,
   protocolDispatcher: protocolDispatcher,
   requestHelpers:   requestHelpers,
   appShutdown:      appShutdown,
