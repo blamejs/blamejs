@@ -106,6 +106,7 @@ var forms = require("./lib/forms");
 var app = require("./lib/app");
 var jobs = require("./lib/jobs");
 var breakGlass = require("./lib/break-glass");
+var config = require("./lib/config");
 var csv = require("./lib/csv");
 var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
@@ -210,6 +211,7 @@ module.exports = {
   createApp:        app.createApp,
   jobs:             jobs,
   breakGlass:       breakGlass,
+  config:           config,
   csv:              csv,
   uuid:             uuid,
   mail:             mail,

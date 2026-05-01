@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.10** (2026-04-30) — b.middleware.sse: Server-Sent Events
 - **0.5.9** (2026-04-30) — b.csv: RFC 4180 parser + serializer
 - **0.5.8** (2026-04-30) — b.uuid: RFC 4122 v4 + RFC 9562 v7
 - **0.5.7** (2026-04-30) — defensive validation + queue closure capture + audit context
