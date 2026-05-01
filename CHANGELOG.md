@@ -6,6 +6,10 @@ Pre-1.0 the surface is intentionally evolving — every release may
 change something operators depend on. Read each entry before
 upgrading across more than a few patches at a time.
 
+## v0.5.x
+
+- **0.5.0** (2026-04-30) — b.breakGlass: column-policy / row-enforcement step-up auth
+
 ## v0.4.x
 
 - **0.4.29** (2026-04-30) — primitive-drift sweep: second-pass remediation

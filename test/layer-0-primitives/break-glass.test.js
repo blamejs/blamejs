@@ -148,8 +148,8 @@ async function testPolicyValidation() {
     await reject("rejects missing factors",    "t", { columns: ["x"] }, /breakglass\/bad-policy/);
     await reject("rejects unknown factor",     "t", { columns: ["x"], factors: ["sms"] }, /breakglass\/bad-policy/);
     await reject("rejects passkey in 0.5.0",   "t", { columns: ["x"], factors: ["passkey"] }, /breakglass\/bad-policy/);
-    await reject("rejects cryptographic in 0.5.0",
-                                               "t", { columns: ["x"], factors: ["totp"], cryptographic: true }, /breakglass\/bad-policy/);
+    await reject("rejects non-boolean cryptographic",
+                                               "t", { columns: ["x"], factors: ["totp"], cryptographic: "yes" }, /breakglass\/bad-policy/);
     await reject("rejects bad onLockedAccess", "t", { columns: ["x"], factors: ["totp"], onLockedAccess: "panic" }, /breakglass\/bad-policy/);
     await reject("rejects bad maxRowsPerGrant","t", { columns: ["x"], factors: ["totp"], maxRowsPerGrant: 0 }, /breakglass\/bad-policy/);
     await reject("rejects negative grantTtl",  "t", { columns: ["x"], factors: ["totp"], grantTtl: -1 }, /breakglass\/bad-policy/);
@@ -416,6 +416,196 @@ async function testSweepExpiredGrants() {
   }
 }
 
+// ---- v0.5.1: Cryptographic mode (Model B) ----
+
+async function testEncryptDecryptCellHappyPath() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns:       ["ssn"],
+      factors:       ["totp"],
+      cryptographic: true,
+      maxRowsPerGrant: 5,
+    });
+    var ct = await b.breakGlass.encryptCell("123-45-6789",
+      { table: "patients", rowId: "p-42", column: "ssn" });
+    check("encryptCell: returns bgcell:1: prefix", typeof ct === "string" && ct.indexOf("bgcell:1:") === 0);
+    var pt = await b.breakGlass.decryptCell(ct,
+      { table: "patients", rowId: "p-42", column: "ssn" });
+    check("decryptCell: round-trip recovers plaintext", pt === "123-45-6789");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testEncryptionContextBinding() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns: ["ssn"], factors: ["totp"], cryptographic: true,
+    });
+    var ct = await b.breakGlass.encryptCell("123-45-6789",
+      { table: "patients", rowId: "p-42", column: "ssn" });
+
+    // Wrong rowId — decrypt must fail
+    var threw = null;
+    try {
+      await b.breakGlass.decryptCell(ct, { table: "patients", rowId: "p-43", column: "ssn" });
+    } catch (e) { threw = e; }
+    check("aad-binding: wrong rowId fails decrypt", threw !== null);
+
+    // Wrong column — fails
+    threw = null;
+    try {
+      await b.breakGlass.decryptCell(ct, { table: "patients", rowId: "p-42", column: "diagnosis" });
+    } catch (e) { threw = e; }
+    check("aad-binding: wrong column fails decrypt", threw !== null);
+
+    // Wrong table — fails
+    threw = null;
+    try {
+      await b.breakGlass.decryptCell(ct, { table: "doctors", rowId: "p-42", column: "ssn" });
+    } catch (e) { threw = e; }
+    check("aad-binding: wrong table fails decrypt", threw !== null);
+
+    // Correct context — works
+    var pt = await b.breakGlass.decryptCell(ct,
+      { table: "patients", rowId: "p-42", column: "ssn" });
+    check("aad-binding: correct context decrypts", pt === "123-45-6789");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testEncryptCellRequiresCryptographicPolicy() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns: ["ssn"], factors: ["totp"], cryptographic: false,
+    });
+    var threw = null;
+    try {
+      await b.breakGlass.encryptCell("x", { table: "patients", rowId: "1", column: "ssn" });
+    } catch (e) { threw = e; }
+    check("encryptCell: rejects Model A policy",
+          threw && /breakglass\/policy-not-set/.test(threw.code));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testEncryptCellRejectsBadColumn() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns: ["ssn"], factors: ["totp"], cryptographic: true,
+    });
+    var threw = null;
+    try {
+      await b.breakGlass.encryptCell("x", { table: "patients", rowId: "1", column: "phone" });
+    } catch (e) { threw = e; }
+    check("encryptCell: rejects non-glass-locked column",
+          threw && /breakglass\/grant-column-mismatch/.test(threw.code));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testCryptographicUnsealRow() {
+  // End-to-end Model B: write a Model-B-shaped row directly, issue
+  // grant, unseal, verify cell decrypted via decryptCell with proper
+  // context binding.
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    var jid = await b.queue.enqueue("crypto-q", { sentinel: "outer-payload" });
+
+    await b.breakGlass.policy.set("_blamejs_jobs", {
+      columns:         ["payload"],
+      factors:         ["totp"],
+      cryptographic:   true,
+      maxRowsPerGrant: 3,
+    });
+
+    // Write a cryptographic-mode payload directly into the row.
+    var bgPayload = await b.breakGlass.encryptCell("alice's diagnosis (Model B)",
+      { table: "_blamejs_jobs", rowId: jid.jobId, column: "payload" });
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_jobs SET payload = ? WHERE _id = ?",
+      [bgPayload, jid.jobId]
+    );
+
+    var totp = _validTotp();
+    var grant = await b.breakGlass.grant({
+      req:    _fakeReq(),
+      table:  "_blamejs_jobs",
+      reason: "Model B integration test for cryptographic unseal",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    var row = await b.breakGlass.unsealRow(grant, "_blamejs_jobs", jid.jobId);
+    check("Model B unsealRow: decrypts cryptographic cell",
+          row.payload === "alice's diagnosis (Model B)");
+
+    try { await b.queue.shutdown({ timeoutMs: 200 }); } catch (_e) {}
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testMigrateModelAtoModelB() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    // Enqueue 3 jobs in Model A (vault-sealed payload).
+    var j1 = await b.queue.enqueue("mig-q", { secret: "row-1-secret" });
+    var j2 = await b.queue.enqueue("mig-q", { secret: "row-2-secret" });
+    var j3 = await b.queue.enqueue("mig-q", { secret: "row-3-secret" });
+
+    // Set cryptographic policy + run migrate.
+    await b.breakGlass.policy.set("_blamejs_jobs", {
+      columns: ["payload"], factors: ["totp"], cryptographic: true,
+      maxRowsPerGrant: 5,
+    });
+    var result = await b.breakGlass.migrate("_blamejs_jobs", { batchSize: 10 });
+    check("migrate: returns total + migrated counts",
+          result.totalRows >= 3 && result.migratedRows >= 3);
+
+    // Idempotent — second run skips already-migrated rows.
+    var result2 = await b.breakGlass.migrate("_blamejs_jobs", { batchSize: 10 });
+    check("migrate: second run is idempotent",
+          result2.skippedRows >= result2.migratedRows);
+
+    // Read via grant — confirms the migrated rows decrypt.
+    var totp = _validTotp();
+    var grant = await b.breakGlass.grant({
+      req:    _fakeReq(),
+      table:  "_blamejs_jobs",
+      reason: "post-migration verification of payload decrypt path",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    var row = await b.breakGlass.unsealRow(grant, "_blamejs_jobs", j1.jobId);
+    check("migrate: row-1 reads as cryptographic-mode plaintext",
+          row.payload && row.payload.indexOf("row-1-secret") !== -1);
+    void j2; void j3;
+
+    try { await b.queue.shutdown({ timeoutMs: 200 }); } catch (_e) {}
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   testSurface();
   await testPolicyCRUD();
@@ -427,6 +617,13 @@ async function run() {
   await testGrantRevoke();
   await testTableMismatch();
   await testSweepExpiredGrants();
+  // v0.5.1 Model B
+  await testEncryptDecryptCellHappyPath();
+  await testEncryptionContextBinding();
+  await testEncryptCellRequiresCryptographicPolicy();
+  await testEncryptCellRejectsBadColumn();
+  await testCryptographicUnsealRow();
+  await testMigrateModelAtoModelB();
 }
 
 module.exports = { run: run };
