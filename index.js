@@ -105,6 +105,7 @@ var staticServe = require("./lib/static");
 var forms = require("./lib/forms");
 var app = require("./lib/app");
 var jobs = require("./lib/jobs");
+var archive = require("./lib/archive");
 var breakGlass = require("./lib/break-glass");
 var config = require("./lib/config");
 var csv = require("./lib/csv");
@@ -211,6 +212,7 @@ module.exports = {
   forms:            forms,
   createApp:        app.createApp,
   jobs:             jobs,
+  archive:          archive,
   breakGlass:       breakGlass,
   config:           config,
   csv:              csv,
