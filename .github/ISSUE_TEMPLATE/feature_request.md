@@ -7,10 +7,10 @@ assignees: ''
 ---
 
 <!--
-Per CONTRIBUTING.md → "No-MVP rule": every framework primitive lands
-v1-defensible, not "minimum viable with key features deferred." File
-the issue first to discuss scope before opening a PR; it saves a
-round of rework.
+Per CONTRIBUTING.md → "Ship complete, not incremental": every framework
+primitive lands with the full operator-facing scope, not "minimum viable
+with key features deferred." File the issue first to discuss scope before
+opening a PR; it saves a round of rework.
 -->
 
 ## Problem
@@ -35,15 +35,15 @@ If it's a CLI subcommand, the imagined invocation:
 blamejs foo do-thing --flag value
 ```
 
-## v1 scope (no-MVP rule)
+## Initial-release scope
 
-What's IN this v1:
+What's IN the first shipped version:
 -
 
 What's explicitly OUT (and why each "out" is a complete decision, not a deferred bullet):
 -
 
-## Tier-A validation surface
+## Configuration surface
 
 <!-- Which opts keys does the new primitive's create() accept? -->
 
@@ -57,13 +57,20 @@ allowedKeys: [
 
 ## Failure modes
 
-<!-- Per the validation tier policy: every primitive picks Tier A
-(throw at config-time) / Tier B (drop silent in hot path) / Tier C
-(return defaults for request reads). Decide consciously. -->
+<!-- Pick the input-validation policy consciously per call site:
 
-- Bad opts → Tier A (throw at create())
-- Hot-path observability sink failure → Tier B
-- Request-read with bad input → Tier C
+  - Boot-time / config-time inputs:  THROW with a clear error code so
+    operators see the typo at boot, not at first request.
+  - Hot-path observability sinks (audit / metrics / events):  DROP
+    SILENT — these must never crash the request that triggered them.
+  - Request-shape readers (request helpers, defensive parsers):
+    RETURN DEFAULTS for missing / non-string input — the network sends
+    what it sends; rejecting at the read site moves errors out of band.
+-->
+
+- Bad opts at `create()` → throw with code
+- Hot-path sink failure → drop silent
+- Bad request-shape input → return default
 
 ## Crypto / audit / security implications
 

@@ -17,7 +17,7 @@ The modern Node app is a 1,200-package supply-chain liability with no LTS calend
 
 ## Status
 
-Pre-1.0. Usable end-to-end — operators can build production apps on it today; the surface is still subject to change before 1.0. Recent line is **v0.6.0** ([releases](https://github.com/blamejs/blamejs/releases) · [npm](https://www.npmjs.com/package/@blamejs/core) · [container](https://github.com/blamejs/blamejs/pkgs/container/blamejs-wiki)).
+Pre-1.0. Usable end-to-end — operators can build production apps on it today; the surface is still subject to change before 1.0. Recent line is **v0.6.1** ([releases](https://github.com/blamejs/blamejs/releases) · [npm](https://www.npmjs.com/package/@blamejs/core) · [container](https://github.com/blamejs/blamejs/pkgs/container/blamejs-wiki)).
 
 ```js
 var b = require("@blamejs/core");
@@ -115,7 +115,7 @@ Because when something breaks, `blame` should know exactly where it lives. We ow
 
 ## Contributing
 
-Patches welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, house rules (zero npm runtime deps, PQC-only crypto, audit-on-every-action, no-MVP), and the PR loop. New to the codebase? Start with [ARCHITECTURE.md](ARCHITECTURE.md) for the orientation map.
+Patches welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, house rules (zero npm runtime deps, PQC-only crypto, audit-on-every-action, ship-complete-not-incremental), and the PR loop. New to the codebase? Start with [ARCHITECTURE.md](ARCHITECTURE.md) for the orientation map.
 
 Community standards: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1). Be excellent.
 

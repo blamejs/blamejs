@@ -67,7 +67,7 @@ var WELCOME = [
   '    <tr><td><code>multer</code> / <code>busboy</code></td><td><code>b.middleware.bodyParser</code> (multipart)</td><td>Streaming multipart parser; file parts spool to a tmp dir, SHA3-512 hash computed during the stream so operators can de-dup on the digest.</td></tr>',
   '    <tr><td><code>uuid</code></td><td><code>b.uuid</code></td><td>RFC 4122 v4 + RFC 9562 v7 (time-sortable). Pure Node <code>crypto.randomUUID</code> + 48-bit timestamp prefix.</td></tr>',
   '    <tr><td><code>papaparse</code> / <code>csv-parse</code></td><td><code>b.csv</code></td><td>RFC 4180 parse + stringify with Excel formula-injection prevention default ON, DoS caps (maxRows, maxFieldBytes).</td></tr>',
-  '    <tr><td><code>archiver</code> / <code>yazl</code></td><td><code>b.archive</code></td><td>ZIP creation (store + deflate), UTF-8 filenames, path-traversal Tier-A.</td></tr>',
+  '    <tr><td><code>archiver</code> / <code>yazl</code></td><td><code>b.archive</code></td><td>ZIP creation (store + deflate), UTF-8 filenames, path-traversal rejection.</td></tr>',
   '    <tr><td><code>luxon</code> / <code>date-fns-tz</code></td><td><code>b.time</code></td><td>TZ-aware datetime via <code>Intl.DateTimeFormat</code>. DST-safe addDays / addMonths, two-pass offset correction for ambiguous wall-clock hours.</td></tr>',
   '    <tr><td><code>dotenv</code> + <code>zod</code></td><td><code>b.config</code> + <code>b.parsers.env</code></td><td>Schema-validated env (refuses to boot on missing/invalid required vars), $VAR expansion explicitly rejected, schema diffs audit-logged on change.</td></tr>',
   '    <tr><td><code>@opentelemetry/sdk-metrics</code></td><td><code>b.otelExport</code></td><td>OTLP/HTTP-JSON exporter for any OTel-compatible backend (Honeycomb, Datadog, Grafana, Jaeger).</td></tr>',
@@ -181,7 +181,7 @@ var OBSERVABILITY = [
   '</aside>',
 
   '<h3 id="audit-emit">Manual emission <a class="anchor" href="#audit-emit">#</a></h3>',
-  '<p>For operator-authored events, <code>b.audit.safeEmit</code> is the drop-silent (Tier-B) emitter:</p>',
+  '<p>For operator-authored events, <code>b.audit.safeEmit</code> is the drop-silent emitter — emit failures (DB unreachable, etc.) never crash the request that triggered them:</p>',
   '<pre><code class="language-javascript">b.audit.safeEmit({',
   '  action:   "wiki.page.published",',
   '  outcome:  "success",                 // "success" | "failure"',
@@ -247,7 +247,7 @@ var OBSERVABILITY = [
   'await otel.flush();   // manual flush',
   'otel.close();         // cancels the auto-flush interval, drains once</code></pre>',
   '<p>Auto-aggregation: <code>recordCounter</code> buckets by <code>(name, sorted-attrs)</code> and accumulates until flush, then ships a single OTLP <code>Sum</code> per bucket with DELTA temporality. <code>recordObservation</code> tracks <code>sum + count + min + max</code> per bucket as an OTLP <code>Summary</code> with <code>q=0</code> / <code>q=1</code> for min/max. Auto-flush via <code>setTimeout</code> chain (<code>.unref()</code>\'d so it never blocks shutdown).</p>',
-  '<p>Tier-A on <code>endpoint</code> / <code>serviceName</code> / <code>intervalMs</code> — throws <code>OtelExportError</code> at create-time, not at the first event. Drop-silent on bad event inputs (empty name, NaN value) — canonical Tier-B for observability sinks.</p>',
+  '<p>Validates <code>endpoint</code> / <code>serviceName</code> / <code>intervalMs</code> at create-time — throws <code>OtelExportError</code> on bad config so the app refuses to boot rather than failing on the first event. Bad event inputs (empty name, NaN value) drop silently — observability sinks must never crash the request that emitted to them.</p>',
 
   '<h2 id="redact">Redaction <a class="anchor" href="#redact">#</a></h2>',
   '<p><code>b.redact.redact(value)</code> walks an arbitrary value and strips PII-shaped fields. The default detectors catch:</p>',
@@ -494,7 +494,7 @@ var ACCESS_CONTROL = [
   '// Programmatic check elsewhere:',
   'var ok = perms.check(req.user, "page.publish");</code></pre>',
   '<p>Every check that runs through <code>middleware()</code> emits an audit row carrying the requested permission, the actor\'s resolved roles, and the outcome. <code>permissions.check()</code> called directly is silent unless wired with <code>{ audit }</code> per call site.</p>',
-  '<p>Wildcards: <code>"page.*"</code> matches <code>page.read</code>, <code>page.write</code>, etc. <code>"*"</code> at the role level grants every permission (admin shorthand). Cycle detection in <code>inherits</code> at create-time (Tier-A throw) so an accidental <code>A inherits B inherits A</code> fails loud.</p>',
+  '<p>Wildcards: <code>"page.*"</code> matches <code>page.read</code>, <code>page.write</code>, etc. <code>"*"</code> at the role level grants every permission (admin shorthand). Cycle detection in <code>inherits</code> at create-time — an accidental <code>A inherits B inherits A</code> throws at boot rather than producing surprise authorization decisions in production.</p>',
 
   '<h2 id="api-keys">API keys <a class="anchor" href="#api-keys">#</a></h2>',
   '<p><code>b.apiKey</code> issues namespaced keys for machine-to-machine traffic. The plaintext secret is shown to the operator exactly once on issuance; the DB stores an Argon2id hash inside the same envelope used by <code>b.credentialHash</code>.</p>',
@@ -793,7 +793,7 @@ var OBJECT_STORE = [
   '}]);',
   '',
   'await ops.delete("my-app-uploads");   // idempotent: returns false if already gone</code></pre>',
-  '<p>Conflict responses map to stable framework error codes: <code>BUCKET_ALREADY_OWNED</code>, <code>BUCKET_NAME_TAKEN</code>, <code>BUCKET_NOT_EMPTY</code>. Tier-A validation rejects bad bucket names (S3 spec: 3..63 chars, lowercase, no consecutive dots) before the request leaves the process.</p>',
+  '<p>Conflict responses map to stable framework error codes: <code>BUCKET_ALREADY_OWNED</code>, <code>BUCKET_NAME_TAKEN</code>, <code>BUCKET_NOT_EMPTY</code>. Bad bucket names (S3 spec: 3..63 chars, lowercase, no consecutive dots) are rejected at the call site before the request leaves the process — no surprise 400s after a network round-trip.</p>',
 ].join("\n");
 
 
@@ -843,7 +843,7 @@ var QUEUE_CACHE = [
   '<p>Final-failure jobs (DLQ landing) do NOT re-enqueue — operators investigate before the cron resumes, so a permanently broken handler can\'t loop a doomed job forever.</p>',
 
   '<h3 id="queue-flows">Parent-child flows <a class="anchor" href="#queue-flows">#</a></h3>',
-  '<p><code>b.queue.enqueueFlow</code> registers a job graph in one atomic call. Children declare <code>dependsOn: [name1, name2]</code> against sibling names; the framework only releases a child for leasing once all its dependencies complete. Cycle detection runs at registration (Tier-A throw); unknown dependency names fail loudly.</p>',
+  '<p><code>b.queue.enqueueFlow</code> registers a job graph in one atomic call. Children declare <code>dependsOn: [name1, name2]</code> against sibling names; the framework only releases a child for leasing once all its dependencies complete. Cycle detection runs at registration time — a graph with a cycle throws at <code>enqueueFlow()</code> rather than deadlocking at runtime. Unknown dependency names fail loudly with the offending name.</p>',
   '<pre><code class="language-javascript">var flow = await b.queue.enqueueFlow({',
   '  queueName: "ingest",',
   '  children: [',
@@ -1122,7 +1122,7 @@ var ROUTING = [
   '<p><code>immutable: true</code> only sets the directive when the URL contains a content-addressable hash (Vite / esbuild / framework-bundler output) — operators serving raw <code>style.css</code> get <code>max-age=3600</code> with no immutable; the hashed <code>style.83631e970cc34c0d.css</code> next to it gets the longer cache + immutable hint.</p>',
 
   '<h2 id="error-page">Error pages <a class="anchor" href="#error-page">#</a></h2>',
-  '<p><code>b.errorPage</code> is the operator-friendly error renderer. Different responses for HTML clients (templated error page with the request-id) vs JSON clients (RFC 7807 Problem+JSON), audit emission with the actor 5 W\'s, and Tier-A on the route\'s <code>auditAction</code> name so a typo fails at boot.</p>',
+  '<p><code>b.errorPage</code> is the operator-friendly error renderer. Different responses for HTML clients (templated error page with the request-id) vs JSON clients (RFC 7807 Problem+JSON), audit emission with the actor 5 W\'s, and the route\'s <code>auditAction</code> name is validated at create-time so a typo fails at boot.</p>',
   '<pre><code class="language-javascript">var errorHandler = b.errorPage.create({',
   '  audit:       b.audit,',
   '  // mode: "dev"  → full stack in the response',
@@ -1192,10 +1192,16 @@ var MIDDLEWARE = [
   ');</code></pre>',
 
   '<h2 id="csrf">CSRF protection <a class="anchor" href="#csrf">#</a></h2>',
-  '<p>JSON requests are protected by the encrypted session payload itself — an attacker who can\'t decrypt the session can\'t forge the request. Form POSTs (and any non-JSON content type) get a CSRF token via either the double-submit cookie pattern (default) or session-stored token. Tier-A throws if the operator passes both — the two are mutually exclusive.</p>',
+  '<p>JSON requests are protected by the encrypted session payload itself — an attacker who can\'t decrypt the session can\'t forge the request. Form POSTs (and any non-JSON content type) get a CSRF token via either the double-submit cookie pattern (default) or a session-stored token. The two are mutually exclusive — passing both at <code>create()</code> time throws.</p>',
   '<pre><code class="language-javascript">var csrf = b.middleware.csrfProtect({',
-  '  cookie: { name: "csrf", sameSite: "Lax", secure: true },',
+  '  cookie: { sameSite: "Lax" },     // name auto-resolves',
   '});',
+  '// Default cookie name: "__Host-csrf" over HTTPS, "csrf" over plain HTTP.',
+  '// The __Host- prefix forces browsers to refuse the cookie unless it carries',
+  '// Secure + Path=/ + no Domain — closing the malicious-sibling-subdomain',
+  '// override path. Operators with a custom name pass cookie: { name: "..." };',
+  '// the framework validates that __Host-* names carry the required attrs.',
+  '',
   '// Templates: render req.csrfToken into a hidden input',
   '//   &lt;input type="hidden" name="_csrf" value="{{csrfToken}}"&gt;</code></pre>',
 
@@ -1251,7 +1257,7 @@ var MIDDLEWARE = [
   '<p>Wraps <code>res.write</code>/<code>res.end</code>/<code>res.writeHead</code> inline so the byte counter increments before the log emit fires (the canonical bug class is logging from a status-capture hook before the byte counter has updated; this wraps in the right order).</p>',
 
   '<h2 id="cookies">Cookies <a class="anchor" href="#cookies">#</a></h2>',
-  '<p><code>b.cookies</code> ships the cookie helpers — parse the <code>Cookie</code> request header into a key/value map, build a <code>Set-Cookie</code> response header with the right attributes, and a small middleware that wires both onto <code>req.cookies</code> + <code>res.cookie(name, value, opts)</code>. Tier-A on Domain (rejects malformed values that would inject CRLF), Path (CRLF scrub), and SameSite (must be one of <code>Lax</code> / <code>Strict</code> / <code>None</code>).</p>',
+  '<p><code>b.cookies</code> ships the cookie helpers — parse the <code>Cookie</code> request header into a key/value map, build a <code>Set-Cookie</code> response header with the right attributes, and a small middleware that wires both onto <code>req.cookies</code> + <code>res.cookie(name, value, opts)</code>. Validates Domain (rejects malformed values that would inject CRLF), Path (CRLF scrub), and SameSite (must be one of <code>Lax</code> / <code>Strict</code> / <code>None</code>) at the call site so a bad cookie definition throws rather than rendering as broken header bytes.</p>',
   '<pre><code class="language-javascript">app.use(b.cookies.middleware());',
   '',
   'router.get("/", function (req, res) {',
@@ -1267,7 +1273,7 @@ var MIDDLEWARE = [
   '<h2 id="api-encrypt">API encryption <a class="anchor" href="#api-encrypt">#</a></h2>',
   '<p><code>b.middleware.apiEncrypt</code> ECIES-encrypts entire request and response bodies for clients that establish a session over the wire. Full envelope details at <a href="/crypto-vault#ecies">Crypto &amp; Vault → ECIES</a>; the middleware wires it into the request lifecycle with replay-defense via <code>b.nonceStore</code>.</p>',
 
-  '<h2 id="validate-opts">Tier-A config validation <a class="anchor" href="#validate-opts">#</a></h2>',
+  '<h2 id="validate-opts">Boot-time config validation <a class="anchor" href="#validate-opts">#</a></h2>',
   '<p>Every primitive\'s <code>create()</code> validates its <code>opts</code> object against an explicit allow-list. A typo like <code>cors({ allowedOrigins: [] })</code> (the API expects <code>origins</code>) throws at boot with the offending key plus the full allowed-keys list, instead of silently weakening the operator\'s setup until a real request hits the wrong code path. The shared helper at <code>b.validateOpts(opts, allowedKeys, "primitive.name")</code> is what every framework primitive uses — operator-built primitives picking up the same pattern stay consistent with the framework\'s diagnostic style.</p>',
 ].join("\n");
 
@@ -1867,7 +1873,7 @@ var FORMAT_HELPERS = [
   '',
   '// Disable for true RFC 4180 strict output',
   'b.csv.stringify([{ a: "=A1" }], { preventFormulaInjection: false });</code></pre>',
-  '<p>Defaults: <code>maxBytes</code>=16 MiB, <code>maxRows</code>=1M, <code>maxFieldBytes</code>=1 MiB, <code>delimiter</code>=<code>,</code>, <code>quote</code>=<code>"</code>, <code>eol</code>=<code>\\r\\n</code>. Operators with TSV / European semicolon-CSV pass <code>{ delimiter: "\\t" }</code> or <code>{ delimiter: ";" }</code>. Tier-A on bad inputs (multi-char delimiter, delimiter equal to quote, non-string-non-buffer input).</p>',
+  '<p>Defaults: <code>maxBytes</code>=16 MiB, <code>maxRows</code>=1M, <code>maxFieldBytes</code>=1 MiB, <code>delimiter</code>=<code>,</code>, <code>quote</code>=<code>"</code>, <code>eol</code>=<code>\\r\\n</code>. Operators with TSV / European semicolon-CSV pass <code>{ delimiter: "\\t" }</code> or <code>{ delimiter: ";" }</code>. Bad inputs (multi-char delimiter, delimiter equal to quote, non-string-non-buffer input) throw at the call site instead of producing silently malformed output.</p>',
 
   '<h2 id="uuid">UUID <a class="anchor" href="#uuid">#</a></h2>',
   '<p>RFC 4122 v4 (random) + RFC 9562 v7 (time-sortable). v7 encodes a 48-bit Unix-millisecond timestamp in the first 48 bits, then 74 random bits — IDs generated within the same millisecond sort by their random suffix; across milliseconds they sort by time. B-tree index locality is dramatically better than v4 for INSERT-heavy tables.</p>',
@@ -1933,7 +1939,7 @@ var FORMAT_HELPERS = [
   'var sha256 = archive.digest();                 // for integrity logs',
   '',
   'archive.entryCount;   // → 3</code></pre>',
-  '<p>Format support: stored + deflate (auto-fallback to STORE when deflate doesn\'t shrink), UTF-8 file names (EFS bit), per-file mtime. Path-traversal Tier-A: backslashes normalized to forward slashes; leading slashes stripped; <code>..</code> segments rejected. ZIP64, ZIP-native password encryption, streaming write, and reading are intentionally out-of-scope — operators with those needs reach for a different toolset.</p>',
+  '<p>Format support: stored + deflate (auto-fallback to STORE when deflate doesn\'t shrink), UTF-8 file names (EFS bit), per-file mtime. Path-traversal defense: backslashes normalized to forward slashes; leading slashes stripped; <code>..</code> segments rejected at <code>addFile()</code> time. ZIP64, ZIP-native password encryption, streaming write, and reading are intentionally out-of-scope — operators with those needs reach for a different toolset.</p>',
 
   '<h2 id="pagination">Pagination <a class="anchor" href="#pagination">#</a></h2>',
   '<p>Cursor-based pagination with HMAC-signed cursors so the client can\'t forge or replay a position from a different table or sort.</p>',
@@ -1957,7 +1963,7 @@ var FORMAT_HELPERS = [
   '  res.json(pager.serialize(rows, page));',
   '  // → { items: [...], nextCursor: "...", hasMore: true }',
   '});</code></pre>',
-  '<p>The cursor is <code>state JSON + HMAC-SHA3-512 tag</code>, base64-url encoded. Tampering, replay across tables, or forging a higher-priv-row cursor all fail at HMAC verification. Tier-A on the orderBy identifier (rejects anything outside <code>^[A-Za-z_][A-Za-z0-9_]*$</code> — closes the SQL-injection shape).</p>',
+  '<p>The cursor is <code>state JSON + HMAC-SHA3-512 tag</code>, base64-url encoded. Tampering, replay across tables, or forging a higher-priv-row cursor all fail at HMAC verification. The <code>orderBy</code> identifier is validated against <code>^[A-Za-z_][A-Za-z0-9_]*$</code> at the call site — closes the SQL-injection shape that would otherwise let a user-supplied query parameter sneak into the ORDER BY clause.</p>',
 
   '<h2 id="forms">Forms <a class="anchor" href="#forms">#</a></h2>',
   '<p><code>b.forms</code> is HTML form rendering + server-side validation + CSRF token primitives. The renderer and validator share a spec — change it once, both sides update.</p>',
@@ -2030,7 +2036,7 @@ var CLUSTER = [
   '',
   '// Compute the next firing time for a cron expression',
   'var next = b.scheduler.nextCronFire("0 9 * * *", { timezone: "America/New_York" });</code></pre>',
-  '<p>Cron parser: 5-field POSIX with named months / weekdays, <code>*/N</code> step, <code>L</code> for last-of-month, ranges, lists. Tier-A throw on malformed expressions at register time.</p>',
+  '<p>Cron parser: 5-field POSIX with named months / weekdays, <code>*/N</code> step, <code>L</code> for last-of-month, ranges, lists. Malformed expressions throw at <code>register()</code> time so a typo fails at boot rather than silently never firing.</p>',
 
   '<h2 id="ntp">NTP check <a class="anchor" href="#ntp">#</a></h2>',
   '<p><code>b.ntpCheck</code> samples the host clock against a small set of NTP servers at boot and on a schedule. A drift larger than the configured threshold (default 5 seconds) refuses the boot and logs a clear cause — token expiries, audit timestamps, and lease fencing all assume monotonic, well-synced wall-clock time, and a misconfigured VM with a bad clock is one of the most common production-data corruption vectors.</p>',

@@ -5,7 +5,7 @@ Thanks for considering a contribution. blamejs is a security-first framework wit
 ## Quick links
 
 - **Found a bug?** Open an issue with the bug-report template. For security bugs, **don't** open a public issue — see [SECURITY.md](SECURITY.md).
-- **Have a feature idea?** Open a feature-request issue first to discuss the design before writing code. See "No-MVP rule" below for why this matters.
+- **Have a feature idea?** Open a feature-request issue first to discuss the design before writing code. See "Ship complete, not incremental" below for why this matters.
 - **Want to ship a fix?** Read [Development setup](#development-setup), [House rules](#house-rules), and [The PR loop](#the-pr-loop) below.
 
 ## Development setup
@@ -65,13 +65,13 @@ Every namespace must be registered (`audit.registerNamespace("foo")`) before fir
 - **Top-of-file `require()`s.** Inline requires only for documented circular-dependency cases, with a comment explaining why.
 - **Use framework primitives over raw literals.** `C.TIME.minutes(5)` not `5 * 60 * 1000`. `C.BYTES.kib(64)` not `64 * 1024`. `timingSafeEqual(a, b)` for security-sensitive comparison, never `a === b`.
 
-### No-MVP rule
+### Ship complete, not incremental
 
-Every framework primitive is designed for completion from the start. We don't ship "minimum viable" with key features deferred to a follow-up. Before submitting a feature PR, list the v1-defensible scope in the issue's design discussion: what's in, what's out, why each "out" is a complete decision rather than a deferred bullet.
+Every framework primitive is designed for completion from the start — not "minimum viable" with key features deferred to a follow-up. Before submitting a feature PR, list the full operator-facing scope in the issue's design discussion: what's in, what's out, why each "out" is a complete decision rather than a deferred bullet.
 
-If a slice genuinely shouldn't be in v1 (real ROI question, escape hatch exists, no operator demand), say so explicitly. "Defer with re-open conditions" is a complete answer; "future patch" is not.
+If a slice genuinely shouldn't be in the first release (real ROI question, escape hatch exists, no operator demand), say so explicitly. "Defer with re-open conditions" is a complete answer; "future patch" is not.
 
-### Tier-A config validation
+### Boot-time config validation
 
 Every primitive's `create()` validates its `opts` against an explicit allow-list using `b.validateOpts(opts, allowedKeys, "primitive.name")`. Typos like `cors({ allowedOrigins: [] })` (the API expects `origins`) throw at boot with the offending key plus the full allowed-keys list. Adding a new primitive? Add the validation in the same patch as the primitive itself.
 

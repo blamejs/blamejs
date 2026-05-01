@@ -42,7 +42,7 @@ Closes #
 - [ ] New audit-emitting code registers its namespace via `audit.registerNamespace`
 - [ ] CommonJS / `var` / no TypeScript / no transpilation
 - [ ] Used framework primitives (`C.TIME.*`, `C.BYTES.*`, `timingSafeEqual`, `b.validateOpts`, etc.) instead of raw literals or hand-rolled helpers
-- [ ] New `create()` factory uses `validateOpts` for opts allow-list (Tier-A)
+- [ ] New `create()` factory uses `validateOpts` for opts allow-list (boot-time validation)
 - [ ] No "future patch" deferrals — sweep across all existing call sites in this same PR if introducing a shared helper
 - [ ] Zero AI / Claude / Anthropic references in code, comments, commit messages, or PR body
 

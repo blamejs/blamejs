@@ -1349,6 +1349,72 @@ async function testAuthJwtMalformedTokens() {
         threwV && threwV.code === "auth-jwt/malformed");
 }
 
+async function testAuthJwtMalformedRegisteredClaims() {
+  // RFC 7519 §4.1: exp / nbf / iat MUST be NumericDate values (JSON
+  // numeric, seconds since epoch). A token with a string exp must be
+  // rejected as malformed — silently skipping the check would let a
+  // token with `exp: "0"` bypass expiration enforcement entirely.
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+  var nodeCrypto = require("crypto");
+
+  function _buildToken(payload) {
+    var header = { alg: "ML-DSA-87", typ: "JWT" };
+    var b64 = function (o) {
+      return Buffer.from(JSON.stringify(o)).toString("base64")
+        .replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+    };
+    var signingInput = b64(header) + "." + b64(payload);
+    var sig = nodeCrypto.sign(null, Buffer.from(signingInput, "ascii"),
+                              nodeCrypto.createPrivateKey({ key: k.privateKey, format: "pem" }));
+    var sigB64 = sig.toString("base64").replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+    return signingInput + "." + sigB64;
+  }
+
+  // exp as a string → malformed
+  var t1 = _buildToken({ sub: "u", exp: "9999999999" });
+  var threw1 = null;
+  try { await j.verify(t1, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threw1 = e; }
+  check("verify: string exp rejected as malformed",
+        threw1 && threw1.code === "auth-jwt/malformed");
+
+  // nbf as a string → malformed
+  var t2 = _buildToken({ sub: "u", nbf: "0" });
+  var threw2 = null;
+  try { await j.verify(t2, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threw2 = e; }
+  check("verify: string nbf rejected as malformed",
+        threw2 && threw2.code === "auth-jwt/malformed");
+
+  // iat as a string → malformed
+  var t3 = _buildToken({ sub: "u", iat: "not-a-number" });
+  var threw3 = null;
+  try { await j.verify(t3, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threw3 = e; }
+  check("verify: string iat rejected as malformed",
+        threw3 && threw3.code === "auth-jwt/malformed");
+
+  // exp as null → malformed
+  var t4 = _buildToken({ sub: "u", exp: null });
+  var threw4 = null;
+  try { await j.verify(t4, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] }); }
+  catch (e) { threw4 = e; }
+  check("verify: null exp rejected as malformed",
+        threw4 && threw4.code === "auth-jwt/malformed");
+
+  // exp as Infinity → malformed
+  var t5 = _buildToken({ sub: "u", exp: 1e308 * 1e308 });   // → Infinity in JSON
+  // (JSON.stringify(Infinity) → "null", which the test above already covers
+  //  via t4. Skipping the redundant case.)
+  void t5;
+
+  // omitted claims still pass — the rule is "if present, must be number"
+  var tOk = _buildToken({ sub: "u" });
+  var ok = await j.verify(tOk, { publicKey: k.publicKey, algorithms: ["ML-DSA-87"] });
+  check("verify: missing exp/nbf/iat is fine (no claim, no enforcement)", ok.sub === "u");
+}
+
 async function testAuthJwtCritHeaderRejected() {
   // RFC 7515 §4.1.11: any unrecognized critical header MUST cause the
   // verifier to reject the token. We don't define any extensions, so
@@ -15668,6 +15734,7 @@ async function run() {
   await testAuthJwtIssuerAudienceSubject();
   await testAuthJwtSignatureTampering();
   await testAuthJwtMalformedTokens();
+  await testAuthJwtMalformedRegisteredClaims();
   await testAuthJwtCritHeaderRejected();
   await testAuthJwtKidPropagation();
   await testAuthJwtMissingKey();
@@ -15876,6 +15943,7 @@ module.exports = {
   testAuthJwtIssuerAudienceSubject:          testAuthJwtIssuerAudienceSubject,
   testAuthJwtSignatureTampering:             testAuthJwtSignatureTampering,
   testAuthJwtMalformedTokens:                testAuthJwtMalformedTokens,
+  testAuthJwtMalformedRegisteredClaims:      testAuthJwtMalformedRegisteredClaims,
   testAuthJwtCritHeaderRejected:             testAuthJwtCritHeaderRejected,
   testAuthJwtKidPropagation:                 testAuthJwtKidPropagation,
   testAuthJwtMissingKey:                     testAuthJwtMissingKey,

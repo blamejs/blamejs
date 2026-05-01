@@ -137,7 +137,7 @@ If you're new to the codebase and want to understand how it fits together, read 
 2. `lib/app.js` `createApp()` — the boot orchestration
 3. `lib/audit.js` — the audit chain shape (most other primitives emit through this)
 4. `lib/crypto.js` — envelope versioning + active algorithms
-5. `lib/middleware/csrf-protect.js` — a representative middleware (cookie-mode + Tier-A validation + `req.X` exposure)
+5. `lib/middleware/csrf-protect.js` — a representative middleware (cookie-mode + boot-time validation + `req.X` exposure)
 6. `lib/cli.js` + `lib/cli-helpers.js` — the CLI dispatch + headless-app pattern
 7. `examples/wiki/lib/build-app.js` — what an operator-built app looks like
 

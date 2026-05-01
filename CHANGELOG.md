@@ -6,6 +6,10 @@ Pre-1.0 the surface is intentionally evolving — every release may
 change something operators depend on. Read each entry before
 upgrading across more than a few patches at a time.
 
+## v0.6.x
+
+- **0.6.0** (2026-05-01) — wiki restructured into 22 focused pages + missing-primitive coverage
+
 ## v0.5.x
 
 - **0.5.18** (2026-05-01) — bypass-fix sweep: route through existing primitives

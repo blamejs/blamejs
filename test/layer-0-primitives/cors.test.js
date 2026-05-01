@@ -161,13 +161,32 @@ async function testCorsNoOriginHeaderPassesThrough() {
   check("no Origin header: next called (no 403)",       out.nextCalled === true);
 }
 
-async function testCorsNullOriginWithSameOriginFetchSitePasses() {
-  // Browsers send `Origin: null` on form-navigation POSTs from a page
-  // whose response carries `Referrer-Policy: no-referrer`. The browser
-  // ALSO sends `Sec-Fetch-Site: same-origin` to disambiguate — that
-  // fetch-metadata signal lets the framework accept the request without
-  // consulting the (potentially empty) allow-list.
+async function testCorsNullOriginStrictByDefault() {
+  // Default: strictNullOrigin: true — refuse Origin: null even with
+  // Sec-Fetch-Site: same-origin, because non-browser callers can forge
+  // that header freely. Operators with a no-referrer page producing
+  // legitimate Origin: null on same-origin POSTs flip strictNullOrigin: false.
   var mw = b.middleware.cors({ origins: [], refuseUnknown: true });
+  var req = _req({
+    method:  "POST",
+    headers: {
+      host:   "localhost:8080",
+      origin: "null",
+      "sec-fetch-site": "same-origin",   // browsers send this; non-browsers can forge it
+    },
+  });
+  var out = await _drive(mw, req);
+  check("Origin:null refused even with sec-fetch-site:same-origin (default strict)",
+        out.res._sent.statusCode === 403);
+}
+
+async function testCorsNullOriginRelaxedOptIn() {
+  // Operators with a no-referrer page that produces Origin: null on
+  // same-origin POSTs flip strictNullOrigin: false to allow the
+  // Sec-Fetch-Site shortcut.
+  var mw = b.middleware.cors({
+    origins: [], refuseUnknown: true, strictNullOrigin: false,
+  });
   var req = _req({
     method:  "POST",
     headers: {
@@ -177,15 +196,16 @@ async function testCorsNullOriginWithSameOriginFetchSitePasses() {
     },
   });
   var out = await _drive(mw, req);
-  check("Origin:null + Sec-Fetch-Site:same-origin passes through",
+  check("strictNullOrigin:false honors sec-fetch-site:same-origin",
         out.nextCalled === true);
 }
 
-async function testCorsNullOriginWithCrossSiteFetchSiteRefused() {
-  // Origin:null without a same-origin Fetch-Site signal is genuinely
-  // opaque — could be a sandboxed iframe or a cross-site form post.
-  // Refuse it (default refuseUnknown).
-  var mw = b.middleware.cors({ origins: [], refuseUnknown: true });
+async function testCorsNullOriginRelaxedRequiresSameOrigin() {
+  // Even with strictNullOrigin: false, only same-origin / none signals
+  // pass — a cross-site fetch-metadata still gets refused.
+  var mw = b.middleware.cors({
+    origins: [], refuseUnknown: true, strictNullOrigin: false,
+  });
   var req = _req({
     method:  "POST",
     headers: {
@@ -195,7 +215,7 @@ async function testCorsNullOriginWithCrossSiteFetchSiteRefused() {
     },
   });
   var out = await _drive(mw, req);
-  check("Origin:null + Sec-Fetch-Site:cross-site refused (403)",
+  check("strictNullOrigin:false + cross-site fetch-site still refused",
         out.res._sent.statusCode === 403);
 }
 
@@ -245,8 +265,9 @@ async function run() {
   await testCorsXForwardedProtoRespected();
   await testCorsXForwardedProtoIgnoredWithoutTrustProxy();
   await testCorsNoOriginHeaderPassesThrough();
-  await testCorsNullOriginWithSameOriginFetchSitePasses();
-  await testCorsNullOriginWithCrossSiteFetchSiteRefused();
+  await testCorsNullOriginStrictByDefault();
+  await testCorsNullOriginRelaxedOptIn();
+  await testCorsNullOriginRelaxedRequiresSameOrigin();
   await testCorsNullOriginWithoutFetchSiteRefused();
   testCorsConfigValidationThrows();
 }
