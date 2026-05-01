@@ -106,6 +106,7 @@ var forms = require("./lib/forms");
 var app = require("./lib/app");
 var jobs = require("./lib/jobs");
 var breakGlass = require("./lib/break-glass");
+var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
 var mailBounce = require("./lib/mail-bounce");
 var websocketChannels = require("./lib/websocket-channels");
@@ -208,6 +209,7 @@ module.exports = {
   createApp:        app.createApp,
   jobs:             jobs,
   breakGlass:       breakGlass,
+  uuid:             uuid,
   mail:             mail,
   mailBounce:       mailBounce,
   websocketChannels: websocketChannels,
