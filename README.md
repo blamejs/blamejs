@@ -17,7 +17,7 @@ The modern Node app is a 1,200-package supply-chain liability with no LTS calend
 
 ## Status
 
-Pre-1.0. Usable end-to-end — operators can build production apps on it today; the surface is still subject to change before 1.0. Recent line is **v0.6.2** ([releases](https://github.com/blamejs/blamejs/releases) · [npm](https://www.npmjs.com/package/@blamejs/core) · [container](https://github.com/blamejs/blamejs/pkgs/container/blamejs-wiki)).
+Pre-1.0. Usable end-to-end — operators can build production apps on it today; the surface is still subject to change before 1.0. Recent line is **v0.6.3** ([releases](https://github.com/blamejs/blamejs/releases) · [npm](https://www.npmjs.com/package/@blamejs/core) · [container](https://github.com/blamejs/blamejs/pkgs/container/blamejs-wiki)).
 
 ```js
 var b = require("@blamejs/core");
@@ -63,6 +63,7 @@ Full primitive-by-primitive docs live at [blamejs.com](https://blamejs.com), whi
 - **Validation** — [Safe Parsers](https://blamejs.com/safe-parsers)
 - **Communication** — [WebSockets](https://blamejs.com/websockets) · [Mail](https://blamejs.com/mail) · [Notifications](https://blamejs.com/notifications)
 - **Tools** — [Observability](https://blamejs.com/observability) · [Testing](https://blamejs.com/testing) · [i18n & Locale](https://blamejs.com/i18n-locale) · [Format Helpers](https://blamejs.com/format-helpers)
+- **Compliance** — [Compliance Patterns](https://blamejs.com/compliance-patterns)
 - **Production** — [Cluster Mode](https://blamejs.com/cluster) · [Reliability](https://blamejs.com/reliability) · [Backup & Restore](https://blamejs.com/backup-restore)
 
 ## CLI

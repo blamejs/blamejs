@@ -322,6 +322,20 @@ async function run() {
     assert("reliability page covers retry + circuit breaker",
            /b\.retry\.withRetry/.test(reliability.body) && /CircuitBreaker/.test(reliability.body));
 
+    var compliancePatterns = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/compliance-patterns",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /compliance-patterns → 200", compliancePatterns.statusCode === 200);
+    assert("compliance-patterns page covers all three threat models",
+           /sealed columns/i.test(compliancePatterns.body) &&
+           /break-glass/i.test(compliancePatterns.body) &&
+           /search_path/i.test(compliancePatterns.body));
+    assert("compliance-patterns page covers connectAs",
+           /connectAs/.test(compliancePatterns.body));
+    assert("compliance-patterns page covers read-replica routing",
+           /read\.query|replicaFallbackToPrimary/.test(compliancePatterns.body));
+
     var backupRestore = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/backup-restore",
       headers: BROWSER_HEADERS,
@@ -634,6 +648,7 @@ async function run() {
       "websockets", "mail", "notifications",
       "observability", "testing", "i18n-locale",
       "format-helpers",
+      "compliance-patterns",
       "cluster", "reliability", "backup-restore",
     ];
     // Evaluate the bundle in a sandbox and read Prism.languages directly.
