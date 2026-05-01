@@ -105,6 +105,34 @@ function testCaptureStatusValidatesArgs() {
   check("captureResponseStatus: rejects missing onEnd", threwNoOnEnd !== null);
 }
 
+function testParseListHeader() {
+  var rh = b.requestHelpers;
+  check("parseListHeader: basic",
+        JSON.stringify(rh.parseListHeader("a,b,c")) === '["a","b","c"]');
+  check("parseListHeader: trims whitespace",
+        JSON.stringify(rh.parseListHeader("a, b , c")) === '["a","b","c"]');
+  check("parseListHeader: filters empty",
+        JSON.stringify(rh.parseListHeader("a,, ,b")) === '["a","b"]');
+  check("parseListHeader: lowercase opt",
+        JSON.stringify(rh.parseListHeader("Foo, BAR", { lowercase: true })) === '["foo","bar"]');
+  check("parseListHeader: lowercase off (default)",
+        JSON.stringify(rh.parseListHeader("Foo, BAR")) === '["Foo","BAR"]');
+  check("parseListHeader: null input → []",
+        rh.parseListHeader(null).length === 0);
+  check("parseListHeader: undefined input → []",
+        rh.parseListHeader(undefined).length === 0);
+  check("parseListHeader: empty string → []",
+        rh.parseListHeader("").length === 0);
+  check("parseListHeader: number coerced",
+        JSON.stringify(rh.parseListHeader(42)) === '["42"]');
+  check("parseListHeader: only commas → []",
+        rh.parseListHeader(",,,").length === 0);
+  check("parseListHeader: trailing comma tolerated",
+        JSON.stringify(rh.parseListHeader("a,b,")) === '["a","b"]');
+  check("parseListHeader: tabs/spaces trimmed",
+        JSON.stringify(rh.parseListHeader("\ta\t,\tb\n")) === '["a","b"]');
+}
+
 async function run() {
   testSurface();
   testResolveRoutePrefersRoutePattern();
@@ -116,6 +144,7 @@ async function run() {
   await testCaptureStatusDefaults200();
   await testCaptureStatusOnEndThrowDoesntBreakResponse();
   testCaptureStatusValidatesArgs();
+  testParseListHeader();
 }
 
 module.exports = { run: run };

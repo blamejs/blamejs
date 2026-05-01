@@ -1,6 +1,6 @@
 "use strict";
 /**
- * b.csv — RFC 4180 parser + serializer.
+ * b.csv — RFC 4180 parser + serializer with operator-friendly defaults.
  */
 
 var helpers = require("../helpers");
@@ -13,34 +13,48 @@ async function run() {
   check("b.csv.parse is fn",              typeof b.csv.parse === "function");
   check("b.csv.stringify is fn",          typeof b.csv.stringify === "function");
   check("b.csv.CsvError is class",        typeof b.csv.CsvError === "function");
+  check("b.parsers.csv removed",          typeof b.parsers.csv === "undefined");
 
-  // ---- parse: header mode ----
+  // ---- parse: header mode (returns array of objects) ----
   var p1 = b.csv.parse("a,b,c\n1,2,3\n4,5,6\n");
-  check("parse: headers extracted",        p1.headers.join(",") === "a,b,c");
-  check("parse: 2 rows",                   p1.rows.length === 2);
-  check("parse: row 0 keyed correctly",    p1.rows[0].a === "1" && p1.rows[0].b === "2");
+  check("parse: header mode → 2 rows",     p1.length === 2);
+  check("parse: row 0 keyed by header",    p1[0].a === "1" && p1[0].b === "2" && p1[0].c === "3");
+  check("parse: row 1 keyed by header",    p1[1].a === "4");
 
-  // CRLF + LF + bare CR all work
+  // CRLF
   var p2 = b.csv.parse("a,b\r\n1,2\r\n3,4\r\n");
-  check("parse: CRLF row terminators",     p2.rows.length === 2 && p2.rows[1].b === "4");
+  check("parse: CRLF row terminators",     p2.length === 2 && p2[1].b === "4");
+
+  // No trailing newline
   var p3 = b.csv.parse("a,b\n1,2");
-  check("parse: no trailing newline ok",   p3.rows.length === 1 && p3.rows[0].a === "1");
+  check("parse: no trailing newline ok",   p3.length === 1 && p3[0].a === "1");
 
   // BOM stripped
   var p4 = b.csv.parse("﻿a,b\n1,2\n");
-  check("parse: leading BOM consumed",     p4.headers[0] === "a");
+  check("parse: leading BOM consumed",     p4[0].a === "1");
+
+  // Buffer input + Uint8Array input
+  var p4b = b.csv.parse(Buffer.from("a,b\n1,2"));
+  check("parse: Buffer input accepted",    p4b[0].a === "1");
+  var p4u = b.csv.parse(new Uint8Array(Buffer.from("a,b\n1,2")));
+  check("parse: Uint8Array input accepted", p4u[0].a === "1");
 
   // Quoted fields with embedded comma + escaped quote + newline
   var quoted = "a,b\n\"hello, world\",\"he said \"\"hi\"\"\"\n\"line 1\nline 2\",x\n";
   var p5 = b.csv.parse(quoted);
-  check("parse: quoted comma in field",     p5.rows[0].a === "hello, world");
-  check("parse: escaped quote (\"\" → \")", p5.rows[0].b === 'he said "hi"');
-  check("parse: embedded newline in quotes",p5.rows[1].a === "line 1\nline 2");
+  check("parse: quoted comma in field",     p5[0].a === "hello, world");
+  check("parse: escaped quote (\"\" → \")", p5[0].b === 'he said "hi"');
+  check("parse: embedded newline in quotes",p5[1].a === "line 1\nline 2");
 
-  // No-header mode
+  // No-header mode (returns array of arrays)
   var p6 = b.csv.parse("1,2,3\n4,5,6\n", { header: false });
-  check("parse: no-header returns rows array",
-        p6.rows.length === 2 && p6.rows[0][0] === "1" && p6.rows[1][2] === "6");
+  check("parse: no-header returns array of arrays",
+        p6.length === 2 && p6[0][0] === "1" && p6[1][2] === "6");
+
+  // trim: true
+  var p6b = b.csv.parse("a,b\n  hi  , there\n", { trim: true });
+  check("parse: trim option strips cell whitespace",
+        p6b[0].a === "hi" && p6b[0].b === "there");
 
   // ---- parse: validation ----
   function rejects(label, fn, codeRe) {
@@ -48,10 +62,14 @@ async function run() {
     try { fn(); } catch (e) { threw = e; }
     check("parse-validate: " + label,  threw && codeRe.test(threw.code || ""));
   }
-  rejects("non-string input",          function () { b.csv.parse(42); }, /csv\/bad-input/);
+  rejects("number input",              function () { b.csv.parse(42); }, /csv\/bad-input/);
   rejects("multi-char delimiter",      function () { b.csv.parse("a,b\n1,2", { delimiter: ",," }); }, /csv\/bad-delimiter/);
-  rejects("quote as delimiter",        function () { b.csv.parse("a,b\n1,2", { delimiter: '"' }); }, /csv\/bad-delimiter/);
+  rejects("CR delimiter",              function () { b.csv.parse("a,b", { delimiter: "\r" }); }, /csv\/bad-delimiter/);
+  rejects("delimiter same as quote",   function () { b.csv.parse("a,b", { delimiter: "\"" }); }, /csv\/bad-delimiter/);
   rejects("over maxBytes",             function () { b.csv.parse("a,b\n", { maxBytes: 1 }); }, /csv\/too-large/);
+  rejects("over maxRows",              function () { b.csv.parse("a\n1\n2\n3\n4\n5\n", { header: false, maxRows: 3 }); }, /csv\/too-many-rows/);
+  rejects("over maxFieldBytes",        function () { b.csv.parse("a\n" + "x".repeat(20), { header: false, maxFieldBytes: 5 }); }, /csv\/field-too-large/);
+  rejects("unterminated quote",        function () { b.csv.parse("a,b\n\"unclosed,1\n2,3"); }, /csv\/unterminated-quote/);
   rejects("bad onBadRow value",        function () { b.csv.parse("a,b\n1,2,3", { onBadRow: "panic" }); }, /csv\/bad-opt/);
 
   // Row-length mismatch — throw vs skip
@@ -61,16 +79,18 @@ async function run() {
         threwRowMismatch && /csv\/row-length-mismatch/.test(threwRowMismatch.code));
   var skipped = b.csv.parse("a,b,c\n1,2\n4,5,6\n", { onBadRow: "skip" });
   check("parse: onBadRow=skip drops bad row",
-        skipped.rows.length === 1 && skipped.rows[0].a === "4");
+        skipped.length === 1 && skipped[0].a === "4");
 
-  // Custom delimiter (semicolon)
+  // Custom delimiter (semicolon, tab)
   var p7 = b.csv.parse("a;b\n1;2\n", { delimiter: ";" });
-  check("parse: custom delimiter",      p7.rows[0].b === "2");
+  check("parse: semicolon delimiter",   p7[0].b === "2");
+  var p7b = b.csv.parse("a\tb\n1\t2\n", { delimiter: "\t" });
+  check("parse: TAB delimiter",         p7b[0].a === "1" && p7b[0].b === "2");
 
-  // ---- stringify ----
+  // ---- stringify (basic) ----
   var s1 = b.csv.stringify([{ a: "1", b: "2" }, { a: "3", b: "4" }]);
   check("stringify: emits header + rows",
-        s1.indexOf("a,b\r\n1,2\r\n3,4\r\n") === 0);
+        s1.indexOf("a,b\r\n1,2\r\n3,4") === 0);
 
   // Cells needing quoting
   var s2 = b.csv.stringify([{ a: 'hello, "world"', b: "ok" }]);
@@ -87,7 +107,7 @@ async function run() {
   check("stringify: explicit columns ordering",
         s4.indexOf("c,a\r\n3,1") === 0);
 
-  // Array-of-arrays input
+  // Array-of-arrays input (no header by default in this shape)
   var s5 = b.csv.stringify([["x", "y"], ["1", "2"]], { header: false });
   check("stringify: array-of-arrays",
         s5.indexOf("x,y\r\n1,2") === 0);
@@ -99,7 +119,39 @@ async function run() {
 
   // Custom EOL
   var s7 = b.csv.stringify([{ a: "1" }], { eol: "\n" });
-  check("stringify: custom EOL",        s7 === "a\n1\n");
+  check("stringify: \\n EOL",            s7 === "a\n1");
+
+  // alwaysQuote
+  var s8 = b.csv.stringify([{ a: "1", b: "2" }], { alwaysQuote: true });
+  check("stringify: alwaysQuote wraps every cell",
+        s8.indexOf("\"a\",\"b\"\r\n\"1\",\"2\"") === 0);
+
+  // ---- Excel formula-injection prevention (default ON) ----
+  var dangerous = b.csv.stringify([
+    { name: "=SUM(A1:A10)" },
+    { name: "+CMD|/c calc"  },
+    { name: "-1+2"          },
+    { name: "@SUM(1,2)"     },
+    { name: "\tfoo"         },
+    { name: "\rbar"         },
+    { name: "normal"        },
+  ]);
+  check("stringify: =formula gets '-prefix",  /'=SUM/.test(dangerous));
+  check("stringify: +formula gets '-prefix",  /'\+CMD/.test(dangerous));
+  check("stringify: -formula gets '-prefix",  /'-1\+2/.test(dangerous));
+  check("stringify: @formula gets '-prefix",  /'@SUM/.test(dangerous));
+  check("stringify: TAB-leading gets '-prefix",   /'\tfoo/.test(dangerous));
+  check("stringify: CR-leading gets '-prefix",    /'\rbar/.test(dangerous));
+  check("stringify: normal cell unchanged",   /(^|\n|\r)normal/.test(dangerous));
+
+  // Disabled mode
+  var raw = b.csv.stringify([{ a: "=SUM(A1)" }], { preventFormulaInjection: false });
+  check("stringify: prevention can be disabled", /^a\r\n=SUM\(A1\)/.test(raw));
+
+  // Custom prefix list
+  var custom = b.csv.stringify([{ a: "%danger" }],
+    { formulaPrefixChars: ["%"] });
+  check("stringify: custom formulaPrefixChars",  /'%danger/.test(custom));
 
   // ---- Round-trip ----
   var src = [
@@ -108,13 +160,32 @@ async function run() {
   ];
   var written = b.csv.stringify(src);
   var read = b.csv.parse(written);
-  check("round-trip: row count preserved",   read.rows.length === 2);
+  check("round-trip: row count preserved",   read.length === 2);
   check("round-trip: comma in name preserved",
-        read.rows[1].name === "Bob, Jr.");
+        read[1].name === "Bob, Jr.");
   check("round-trip: embedded quote preserved",
-        read.rows[0].note === 'said "hi"');
+        read[0].note === 'said "hi"');
   check("round-trip: embedded newline preserved",
-        read.rows[1].note === "line1\nline2");
+        read[1].note === "line1\nline2");
+
+  // Round-trip with formula-prone cell — note the "'" prefix is preserved
+  // through round-trip (parse doesn't strip it; that's the operator's job
+  // when displaying user-controlled content from a parsed CSV).
+  var fz = b.csv.stringify([{ a: "=A1" }]);
+  var fzParsed = b.csv.parse(fz);
+  check("round-trip: '-prefix preserved on parse",  fzParsed[0].a === "'=A1");
+
+  // ---- stringify validation ----
+  function rejectsS(label, fn, codeRe) {
+    var threw = null;
+    try { fn(); } catch (e) { threw = e; }
+    check("stringify-validate: " + label,  threw && codeRe.test(threw.code || ""));
+  }
+  rejectsS("non-array input",       function () { b.csv.stringify("nope"); }, /csv\/bad-input/);
+  rejectsS("non-object row",        function () { b.csv.stringify([42]); }, /csv\/bad-input/);
+  rejectsS("delim same as quote",   function () { b.csv.stringify([{ a: 1 }], { delimiter: "\"" }); }, /csv\/bad-delimiter/);
+  rejectsS("bad eol",               function () { b.csv.stringify([{ a: 1 }], { eol: "X" }); }, /csv\/bad-opt/);
+  check("stringify: empty array → empty string",   b.csv.stringify([]) === "");
 }
 
 module.exports = { run: run };

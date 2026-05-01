@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.16** (2026-04-30) — b.otelExport: OTLP/HTTP exporter for b.observability
 - **0.5.15** (2026-04-30) — b.archive: ZIP creation
 - **0.5.14** (2026-04-30) — b.time: timezone-aware datetime arithmetic + formatting
 - **0.5.13** (2026-04-30) — b.testing.request: supertest-style chainable HTTP test helper

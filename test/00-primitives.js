@@ -12171,84 +12171,6 @@ function testXmlSecurityRejections() {
   check("xml: '<' in attribute value rejected",        ltRejected);
 }
 
-function testCsvParse() {
-  check("parsers.csv present",                        typeof b.parsers.csv === "object");
-
-  // Simple round-trip
-  var simple = b.parsers.csv.parse("name,age\nalice,30\nbob,25");
-  check("csv: header+rows → object array",            simple.length === 2);
-  check("csv: object has header keys",                simple[0].name === "alice" && simple[0].age === "30");
-
-  // Without header
-  var noHeader = b.parsers.csv.parse("a,b,c\n1,2,3", { header: false });
-  check("csv: no header → array of arrays",           Array.isArray(noHeader[0]));
-  check("csv: 2 rows",                                noHeader.length === 2);
-
-  // Quoted fields
-  var quoted = b.parsers.csv.parse('name,note\n"alice","says ""hi"""\n"bob","comma, inside"', { header: true });
-  check("csv: quoted field with escaped quote",       quoted[0].note === 'says "hi"');
-  check("csv: quoted field with comma",               quoted[1].note === "comma, inside");
-
-  // CRLF
-  var crlf = b.parsers.csv.parse("a,b\r\n1,2\r\n3,4", { header: false });
-  check("csv: CRLF line endings",                     crlf.length === 3);
-
-  // Custom delimiter
-  var tsv = b.parsers.csv.parse("a\tb\n1\t2", { delimiter: "\t", header: false });
-  check("csv: custom delimiter",                      tsv[1][0] === "1" && tsv[1][1] === "2");
-
-  // BOM stripped
-  var bom = b.parsers.csv.parse("﻿a,b\n1,2", { header: false });
-  check("csv: BOM stripped",                          bom[0][0] === "a");
-
-  // Size limit
-  var sizeRejected = false;
-  try { b.parsers.csv.parse("a,".repeat(100), { maxBytes: 50, header: false }); }
-  catch (e) { sizeRejected = e.code === "csv/too-large"; }
-  check("csv: maxBytes enforced",                     sizeRejected);
-
-  // Row count limit
-  var manyRows = Array.from({ length: 10 }, function (_, i) { return i + ",x"; }).join("\n");
-  var rowsRejected = false;
-  try { b.parsers.csv.parse(manyRows, { maxRows: 3, header: false }); }
-  catch (e) { rowsRejected = e.code === "csv/too-many-rows"; }
-  check("csv: maxRows enforced",                      rowsRejected);
-
-  // Unterminated quote
-  var unterminatedRejected = false;
-  try { b.parsers.csv.parse('a,b\n"unclosed,1\n2,3', { header: false }); }
-  catch (e) { unterminatedRejected = e.code === "csv/unterminated-quote"; }
-  check("csv: unterminated quote rejected",            unterminatedRejected);
-}
-
-function testCsvFormulaInjection() {
-  // Default: injection-prone cells get a '-prefix
-  var dangerous = b.parsers.csv.stringify([
-    { name: "=SUM(A1:A10)", value: "ok" },
-    { name: "+CMD|/c calc",  value: "ok" },
-    { name: "-1+2",          value: "ok" },
-    { name: "@SUM(1,2)",     value: "ok" },
-    { name: "normal",        value: "ok" },
-  ]);
-  check("csv stringify: =formula gets '-prefix",        /'=SUM/.test(dangerous));
-  check("csv stringify: +formula gets '-prefix",        /'\+CMD/.test(dangerous));
-  check("csv stringify: -formula gets '-prefix",        /'-1\+2/.test(dangerous));
-  check("csv stringify: @formula gets '-prefix",        /'@SUM/.test(dangerous));
-  check("csv stringify: normal cell unchanged",         /(^|\n|\r)normal,ok/.test(dangerous));
-
-  // Disabled mode (RFC 4180 strict)
-  var raw = b.parsers.csv.stringify([{ name: "=SUM(A1:A10)" }], { preventFormulaInjection: false });
-  check("csv stringify: preventFormulaInjection:false leaves =formula", /^name\r\n=SUM/.test(raw));
-
-  // Round-trip via parse + stringify
-  var rows = [{ a: "1", b: "two, three" }, { a: "x\nnewline", b: "with \"quote\"" }];
-  var serialized = b.parsers.csv.stringify(rows);
-  var parsed = b.parsers.csv.parse(serialized);
-  check("csv round-trip preserves comma in field",       parsed[0].b === "two, three");
-  check("csv round-trip preserves newline in field",     parsed[1].a === "x\nnewline");
-  check("csv round-trip preserves quote in field",       parsed[1].b === "with \"quote\"");
-}
-
 function testTomlBasicTypes() {
   var src =
     "title = \"blamejs\"\n" +
@@ -15875,8 +15797,6 @@ async function run() {
   // parsers/* primitives (independent of framework state)
   testXmlParse();
   testXmlSecurityRejections();
-  testCsvParse();
-  testCsvFormulaInjection();
   testTomlBasicTypes();
   testTomlTablesAndArrays();
   testTomlInlineTablesAndDottedKeys();
@@ -16408,8 +16328,6 @@ module.exports = {
   testAtomicFileListDir:                     testAtomicFileListDir,
   testXmlParse:                              testXmlParse,
   testXmlSecurityRejections:                 testXmlSecurityRejections,
-  testCsvParse:                              testCsvParse,
-  testCsvFormulaInjection:                   testCsvFormulaInjection,
   testTomlBasicTypes:                        testTomlBasicTypes,
   testTomlTablesAndArrays:                   testTomlTablesAndArrays,
   testTomlInlineTablesAndDottedKeys:         testTomlInlineTablesAndDottedKeys,
