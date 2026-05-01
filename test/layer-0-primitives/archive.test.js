@@ -50,7 +50,7 @@ async function run() {
   var totalEntries = _readU16LE(buf, buf.length - 22 + 10);
   check("toBuffer: EOCD entry count",      totalEntries === 3);
 
-  // ---- Tier-A on addFile ----
+  // ---- addFile rejects bad input ----
   function rejects(label, fn, codeRe) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -118,11 +118,11 @@ async function run() {
   var lsName = lsBuf.slice(30, 30 + lsNameLen).toString("utf8");
   check("name: leading slash stripped", lsName === "abs/path.txt");
 
-  // ---- digest() returns a hex SHA-256 ----
+  // ---- digest() returns a hex SHA3-512 ----
   var d1 = b.archive.zip();
   d1.addFile("a", "x");
   var dig = d1.digest();
-  check("digest: hex string",          /^[0-9a-f]{64}$/.test(dig));
+  check("digest: hex string",          /^[0-9a-f]{128}$/.test(dig));
 
   // ---- Empty archive is valid ZIP ----
   var emptyBuf = b.archive.zip().toBuffer();

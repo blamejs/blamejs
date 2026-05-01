@@ -356,7 +356,7 @@ async function testSseResponseVerificationFailsOnDroppedHeader() {
   }
 }
 
-// ---- SSE option validation (Tier-A) ----
+// ---- SSE option validation (rejects bad values at call site) ----
 
 async function testSseValidationRejectsBadValues() {
   var fake = _fakeS3();

@@ -45,7 +45,7 @@ async function _expectThrow(label, fn, codeRe) {
 }
 
 async function run() {
-  // ---------- Tier-A on create() ----------
+  // ---------- create() rejects bad opts ----------
 
   _expectThrow("create rejects missing dir",
     function () { b.externalDb.migrate.create({}); },
@@ -163,7 +163,7 @@ async function run() {
     async function () { await migrate.down({ steps: 1 }); },
     /externaldb-migrate\/no-down/);
 
-  // ---------- Tier-A on bad migration file ----------
+  // ---------- rejects bad migration file ----------
 
   _writeMigration(migDir, "0004-bad.js",
     'module.exports = { description: "bad" };  // no up()\n');

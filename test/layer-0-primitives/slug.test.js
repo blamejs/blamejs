@@ -224,9 +224,9 @@ async function testUniqueCustomSuffixSeparator() {
   check("unique: suffixSeparator applied", s === "foo_2");
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at call site) ----
 
-function testTierAValidation() {
+function testRejectsBadOpts() {
   function expectThrow(label, fn, codeOrRegex) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -266,7 +266,7 @@ function testTierAValidation() {
     function () { b.slug.create({ separator: "--" }); }, "BAD_OPT");
 }
 
-async function testUniqueTierAValidation() {
+async function testUniqueRejectsBadOpts() {
   function makePromiseExpect(label, fn, code) {
     return fn().then(
       function () { check(label + " — should have thrown", false); },
@@ -316,8 +316,8 @@ async function run() {
   await testUniqueTruncatesBaseWhenNeeded();
   await testUniqueCustomSuffixSeparator();
 
-  testTierAValidation();
-  await testUniqueTierAValidation();
+  testRejectsBadOpts();
+  await testUniqueRejectsBadOpts();
 }
 
 module.exports = { run: run };

@@ -108,7 +108,7 @@ async function run() {
     },
     /config\/validation-failed/);
 
-  // ---- create() Tier-A on opts ----
+  // ---- create() rejects bad opts ----
   rejects("opts missing",
     function () { b.config.create(); },
     /config\/bad-opts/);

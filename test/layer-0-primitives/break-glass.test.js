@@ -129,7 +129,7 @@ async function testPolicyCRUD() {
   }
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
 async function testPolicyValidation() {
   var tmpDir = _tmp();

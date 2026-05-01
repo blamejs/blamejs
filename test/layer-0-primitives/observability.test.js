@@ -139,7 +139,7 @@ function testObservabilityTapRejectsBadName() {
   var threwUndef = null;
   try { b.observability.tap(undefined, function () {}); }
   catch (e) { threwUndef = e; }
-  check("tap: rejects undefined name (Tier A)",
+  check("tap: rejects undefined name (throws)",
         threwUndef instanceof TypeError && /name must be/.test(threwUndef.message));
   var threwEmpty = null;
   try { b.observability.tap("", function () {}); }
@@ -160,7 +160,7 @@ function testObservabilityEventDropsBadName() {
     b.observability.event("", 1);
     b.observability.event(null);
   } catch (e) { threw = e; }
-  check("event: silently drops malformed name (Tier B)", threw === null);
+  check("event: silently drops malformed name", threw === null);
   m.deactivate();
 }
 

@@ -191,7 +191,7 @@ async function run() {
   check("transport fail: send-failed code",      threw2 && /send-failed/.test(threw2.code || ""));
   await exConn.close().catch(function () { /* drop */ });
 
-  // ---- Tier-A reject paths ----
+  // ---- create() reject paths ----
   function rejects(label, fn, codeRe) {
     var t = null;
     try { fn(); } catch (e) { t = e; }
@@ -216,7 +216,7 @@ async function run() {
     function () { b.otelExport.create({ endpoint: "https://x", serviceName: "x", intervalMs: NaN }); },
     /otel-export\/bad-interval/);
 
-  // Unknown opts key — Tier-A from validate-opts (plain Error, no code).
+  // Unknown opts key — validate-opts throws plain Error with no code.
   var threwUnknown = null;
   try {
     b.otelExport.create({

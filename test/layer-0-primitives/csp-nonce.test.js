@@ -256,9 +256,9 @@ function testCspNoncePlaceholderHonorsOperatorOverride() {
 }
 
 function testCspNoncePlaceholderInvalidTypeThrows() {
-  // Tier A: bad config → throw at create time so the operator's typo
-  // surfaces at app boot, not as silently-broken cache substitution
-  // three days later.
+  // Bad config → throw at create time so the operator's typo surfaces
+  // at app boot, not as silently-broken cache substitution three days
+  // later.
   var threwOnNumber = null;
   try { b.middleware.cspNonce({ placeholder: 42 }); }
   catch (e) { threwOnNumber = e; }

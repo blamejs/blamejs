@@ -10717,13 +10717,13 @@ function testCookiesSerialize() {
   check("serialize rejects non-integer maxAge",    threw && threw.code === "cookies/invalid-attr");
 
   // CRLF in path is stripped (defense in depth — operator-controlled
-  // but could come from config). The domain attribute now throws Tier-A
-  // on malformed input rather than scrubbing-and-passing, so the same
+  // but could come from config). The domain attribute now throws on
+  // malformed input rather than scrubbing-and-passing, so the same
   // hostile input is caught at the call site.
   var s7 = b.cookies.serialize("a", "1", { domain: "evil.com", path: "/admin\r\nX-Hack: 1" });
   check("serialize strips CRLF from path",
         s7.indexOf("\r") === -1 && s7.indexOf("\n") === -1 && /Path=\/admin/.test(s7));
-  // Domain Tier-A — anything that isn't a valid host name throws.
+  // Domain validation — anything that isn't a valid host name throws.
   threw = null;
   try { b.cookies.serialize("a", "1", { domain: "evil.com\r\nX-Hack: 1" }); }
   catch (e) { threw = e; }
@@ -12962,7 +12962,7 @@ async function testHttpClientConfigurePool() {
     });
   }
 
-  // Tier-A on bad inputs.
+  // Reject bad inputs at the call site.
   function rejects(label, fn, msgRe) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -15195,7 +15195,7 @@ function testCryptoAndModuleSurface() {
   check("BYTES.kib(4) = 4096",          b.constants.BYTES.kib(4) === 4096);
   check("TLS prefers PQ hybrid first",  b.constants.TLS_GROUP_PREFERENCE[0] === "SecP384r1MLKEM1024");
 
-  // Tier A validation: TIME / BYTES throw on bad input. Operators
+  // Input validation: TIME / BYTES throw on bad input. Operators
   // hitting `C.TIME.minutes(opts.x)` with opts.x undefined catch the
   // typo at boot, not as a silent 0ms or NaN-cap downstream.
   var threwUndef = null;

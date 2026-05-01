@@ -408,9 +408,9 @@ async function testSendEndToEnd() {
   }
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at call site) ----
 
-function testTierAValidation() {
+function testRejectsBadOpts() {
   function expectThrow(label, fn, code) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -494,7 +494,7 @@ async function run() {
   await testPqcPemTampered();
   await testPqcPemMultipleVerifierKeys();
   await testSendEndToEnd();
-  testTierAValidation();
+  testRejectsBadOpts();
   await testSendBadUrl();
 }
 

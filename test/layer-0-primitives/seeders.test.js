@@ -83,7 +83,7 @@ async function testSurface() {
   check("FILE_RE rejects no-prefix",        !b.seeders.FILE_RE.test("init.js"));
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
 async function testValidation() {
   var threwNoOpts = false;

@@ -65,7 +65,7 @@ async function run() {
   // No assertion — the goal is "process didn't crash from unhandled rejection."
   check("repeating: drop-silent path survives reject",  true);
 
-  // ---- repeating: Tier-A on bad args ----
+  // ---- repeating: rejects bad args ----
   function rejects(label, fn, codeRe) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -133,7 +133,7 @@ async function run() {
   await _sleep(120);
   check("flushLoop: stop during in-flight prevents reschedule",  midFlight === mfSnap);
 
-  // ---- flushLoop: Tier-A on bad args ----
+  // ---- flushLoop: rejects bad args ----
   function rejectsF(label, fn, codeRe) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }

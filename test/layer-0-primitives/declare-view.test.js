@@ -55,7 +55,7 @@ async function _expectThrow(label, fn, codeRe) {
 }
 
 async function run() {
-  // ---------- Tier-A validation at declareView() time ----------
+  // ---------- Input validation at declareView() time ----------
 
   _expectThrow("rejects missing opts",
     function () { b.db.declareView(); },

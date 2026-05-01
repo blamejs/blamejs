@@ -4,7 +4,7 @@
  *
  * Stands up a fake S3 server and exercises the create / delete / list /
  * setLifecycle / setCorsRules surface end-to-end. XML body shape +
- * Tier-A validation are also exercised through the test-only exports
+ * input validation are also exercised through the test-only exports
  * so the asserts can be tight without TCP plumbing in the loop.
  *
  * Run standalone: `node test/layer-0-primitives/sigv4-bucket-ops.test.js`

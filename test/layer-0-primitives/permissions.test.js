@@ -136,7 +136,7 @@ function testCheckPureFunctions() {
                                                  ["users:read", "users:write"]) === false);
 }
 
-function testCheckTierC() {
+function testCheckTolerantOnBadActor() {
   var p = b.permissions.create({ roles: { admin: ["*"] } });
   check("check(null, x) → false",     p.check(null, "users:read") === false);
   check("check({}, x) → false",       p.check({}, "users:read") === false);
@@ -398,9 +398,9 @@ async function testFiveWsAuditPropagation() {
   check("perms 5 W's: deny has HOW (method)", deny.actor.method === "DELETE");
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
-function testTierA() {
+function testCreateRejectsBadOpts() {
   function expect(label, fn, code) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -518,7 +518,7 @@ async function run() {
   testRoleExpansionDeepInheritance();
   testRolesProperty();
   testCheckPureFunctions();
-  testCheckTierC();
+  testCheckTolerantOnBadActor();
   await testMiddlewareSuccess();
   await testMiddlewareDeny();
   await testMiddlewareMissingActor();
@@ -532,7 +532,7 @@ async function run() {
   await testAuditDefaults();
   await testAuditSuccessOptOut();
   await testFiveWsAuditPropagation();
-  testTierA();
+  testCreateRejectsBadOpts();
   testDbRoleFor();
 }
 

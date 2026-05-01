@@ -66,9 +66,9 @@ function testSurface() {
   check("DEFAULTS.auditSuccess false",         b.auth.lockout.DEFAULTS.auditSuccess === false);
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
-function testCreateTierA() {
+function testCreateRejectsBadOpts() {
   var threw;
 
   threw = false;
@@ -522,7 +522,7 @@ async function run() {
   var tmpDir = _tmp();
   try {
     testSurface();
-    testCreateTierA();
+    testCreateRejectsBadOpts();
     await testKeyValidation();
     await testRecordFailureCounter();
     await testNonMutatingCheck();

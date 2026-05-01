@@ -245,7 +245,7 @@ async function testWithRetrySignalAbort() {
   check("withRetry: signal abort short-circuits backoff", elapsed < 500);
 }
 
-// ---- withRetry Tier-A validation ----
+// ---- withRetry input validation (rejects bad opts at call site) ----
 
 function _expectRetryThrow(label, opts, regex) {
   try {

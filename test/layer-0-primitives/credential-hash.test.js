@@ -139,7 +139,7 @@ async function testObservabilityEmission() {
   check("verify emits failure outcome",    anyFailure === true);
 }
 
-async function testTierA() {
+async function testRejectsBadOpts() {
   var ch = b.credentialHash;
   function expect(label, fn, code) {
     return fn().then(
@@ -169,7 +169,7 @@ async function run() {
   await testVerifyMalformed();
   await testNeedsRehash();
   await testObservabilityEmission();
-  await testTierA();
+  await testRejectsBadOpts();
 }
 
 module.exports = { run: run };

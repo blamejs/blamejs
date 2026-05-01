@@ -233,7 +233,7 @@ async function testCorsNullOriginWithoutFetchSiteRefused() {
 }
 
 function testCorsConfigValidationThrows() {
-  // Tier A — bad config surfaces at create() not at request time.
+  // Bad config surfaces at create() not at request time.
   var threwOnBadOrigin = null;
   try { b.middleware.cors({ origins: [42] }); }
   catch (e) { threwOnBadOrigin = e; }

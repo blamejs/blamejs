@@ -30,7 +30,7 @@ function _ed25519Keypair() {
   });
 }
 
-// ---- Validation tier A ----
+// ---- Surface + input validation ----
 
 function testDkimSurfaceAndValidation() {
   check("b.mail.dkim namespace present",          typeof b.mail.dkim === "object");

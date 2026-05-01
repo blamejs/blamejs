@@ -47,7 +47,7 @@ module.exports = {
   '</aside>',
 
   '<h3 id="audit-emit">b.audit.safeEmit(event) <a class="anchor" href="#audit-emit">#</a></h3>',
-  '<p>For operator-authored events. <strong>Tier B — drop-silent.</strong> Bad input drops, emit failures (DB unreachable, etc.) drop. The audit primitive must never crash the request that triggered it. Only <code>action</code> is enforced as a non-empty string; every other field is convention-by-passing-it.</p>',
+  '<p>For operator-authored events. <strong>Drop-silent</strong> by design: bad input drops, emit failures (DB unreachable, etc.) drop. The audit primitive must never crash the request that triggered it. Only <code>action</code> is enforced as a non-empty string; every other field is convention-by-passing-it.</p>',
   '<pre><code class="language-javascript">{',
   '  action:     string,                      // required: true — namespace.verb',
   '                                            //   (only field the call enforces)',

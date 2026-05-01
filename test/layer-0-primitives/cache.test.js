@@ -48,7 +48,7 @@ function testSurface() {
   return c.close();
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
 async function testValidation() {
   var threwNoOpts = false;

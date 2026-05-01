@@ -43,7 +43,7 @@ function testSurface() {
         n.channels().length === 1 && n.channels()[0] === "test");
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
 function testValidation() {
   var threwNoOpts = false;

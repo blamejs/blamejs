@@ -242,7 +242,7 @@ function testCaptureAudit() {
 
 function testCaptureAuditDropSilent() {
   var audit = t.captureAudit();
-  // Mirror b.audit.safeEmit Tier-B: caller-side bug shouldn't crash test
+  // Mirror b.audit.safeEmit drop-silent: caller-side bug shouldn't crash test
   audit.safeEmit({ action: "x" });
   check("captureAudit safeEmit doesn't throw on normal input",
         audit.captured.length === 1);

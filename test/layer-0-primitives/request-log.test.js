@@ -66,11 +66,11 @@ async function run() {
   // ---- Surface ----
   check("b.middleware.requestLog is fn",  typeof b.middleware.requestLog === "function");
 
-  // ---- Tier-A ----
+  // ---- create() rejects bad opts ----
   function rejects(label, fn, re) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
-    check("Tier-A: " + label, threw && re.test(threw.message || ""));
+    check("rejects: " + label, threw && re.test(threw.message || ""));
   }
   rejects("missing logger",          function () { b.middleware.requestLog(); }, /logger must be/);
   rejects("non-logger logger",       function () { b.middleware.requestLog({ logger: {} }); }, /logger must be/);

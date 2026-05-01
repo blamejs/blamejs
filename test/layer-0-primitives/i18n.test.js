@@ -55,7 +55,7 @@ function testSurface() {
         i.locale === "en");
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
 function testValidation() {
   var threwNoOpts = false;

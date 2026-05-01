@@ -393,9 +393,9 @@ async function testPurgeExpired() {
   check("purgeExpired: removes expired row", purgedExpiredGone === null);
 }
 
-// ---- Tier-A validation ----
+// ---- Input validation (rejects bad opts at create time) ----
 
-function testTierA() {
+function testCreateRejectsBadOpts() {
   function expect(label, fn, code) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -416,8 +416,8 @@ function testTierA() {
     function () { b.apiKey.create({ namespace: "ok", audit: {} }); }, "BAD_OPT");
 }
 
-async function testIssueTierA() {
-  var keys = b.apiKey.create({ namespace: "issue-tier-a" });
+async function testIssueRejectsBadOpts() {
+  var keys = b.apiKey.create({ namespace: "issue-bad-opts" });
   function expect(label, p, code) {
     return p.then(
       function () { check(label + " — should have thrown", false); },
@@ -669,7 +669,7 @@ async function testAuditEmission() {
 async function run() {
   testApiKeySurface();
   testParseFormat();
-  testTierA();
+  testCreateRejectsBadOpts();
 
   var tmp = _tmp();
   await setupTestDb(tmp);
@@ -690,7 +690,7 @@ async function run() {
     await testGetById();
     await testTrackLastUsedAt();
     await testPurgeExpired();
-    await testIssueTierA();
+    await testIssueRejectsBadOpts();
     await testPurgeAuditEmission();
     await testFiveWsAuditPropagation();
     await testReadAccessAudit();
