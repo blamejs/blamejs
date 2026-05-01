@@ -1,0 +1,4822 @@
+{
+  "version": 1,
+  "frameworkVersion": "0.6.7",
+  "createdAt": "2026-05-01T20:39:01.141Z",
+  "exports": {
+    "apiKey": {
+      "type": "object",
+      "members": {
+        "ApiKeyError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "auditFailures": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "auditSuccess": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "hashAlgo": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "idBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "prefix": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "purgeAfterMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "secretBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "trackLastUsedAt": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseFormat": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "apiSnapshot": {
+      "type": "object",
+      "members": {
+        "ApiSnapshotError": {
+          "type": "function",
+          "arity": 2
+        },
+        "SNAPSHOT_FORMAT_VERSION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "capture": {
+          "type": "function",
+          "arity": 2
+        },
+        "compare": {
+          "type": "function",
+          "arity": 2
+        },
+        "formatDiff": {
+          "type": "function",
+          "arity": 1
+        },
+        "read": {
+          "type": "function",
+          "arity": 1
+        },
+        "write": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "appShutdown": {
+      "type": "object",
+      "members": {
+        "AppShutdownError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DEFAULT_GRACE_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "standardPhases": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "members": {
+        "ArchiveError": {
+          "type": "function",
+          "arity": 4
+        },
+        "zip": {
+          "type": "function",
+          "arity": 0
+        }
+      }
+    },
+    "atomicFile": {
+      "type": "object",
+      "members": {
+        "AtomicFileError": {
+          "type": "function",
+          "arity": 2
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "computeHash": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "fileMode": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "lockPollMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "lockTimeoutMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "retryAttempts": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "retryBaseMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "retryMaxMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "cleanOrphans": {
+          "type": "function",
+          "arity": 2
+        },
+        "copy": {
+          "type": "function",
+          "arity": 3
+        },
+        "copyDirRecursive": {
+          "type": "function",
+          "arity": 3
+        },
+        "ensureDir": {
+          "type": "function",
+          "arity": 2
+        },
+        "exists": {
+          "type": "function",
+          "arity": 1
+        },
+        "fsync": {
+          "type": "function",
+          "arity": 1
+        },
+        "fsyncDir": {
+          "type": "function",
+          "arity": 1
+        },
+        "listDir": {
+          "type": "function",
+          "arity": 2
+        },
+        "lock": {
+          "type": "function",
+          "arity": 3
+        },
+        "pathTimestamp": {
+          "type": "function",
+          "arity": 1
+        },
+        "read": {
+          "type": "function",
+          "arity": 2
+        },
+        "readJson": {
+          "type": "function",
+          "arity": 2
+        },
+        "readSync": {
+          "type": "function",
+          "arity": 2
+        },
+        "write": {
+          "type": "function",
+          "arity": 3
+        },
+        "writeJson": {
+          "type": "function",
+          "arity": 3
+        },
+        "writeSync": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "members": {
+        "CHECKPOINT_FORMAT": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "FRAMEWORK_NAMESPACES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "beginTrace": {
+          "type": "function",
+          "arity": 0
+        },
+        "checkpoint": {
+          "type": "function",
+          "arity": 1
+        },
+        "emit": {
+          "type": "function",
+          "arity": 1
+        },
+        "flush": {
+          "type": "function",
+          "arity": 0
+        },
+        "query": {
+          "type": "function",
+          "arity": 1
+        },
+        "record": {
+          "type": "function",
+          "arity": 1
+        },
+        "registerNamespace": {
+          "type": "function",
+          "arity": 1
+        },
+        "safeEmit": {
+          "type": "function",
+          "arity": 1
+        },
+        "verify": {
+          "type": "function",
+          "arity": 1
+        },
+        "verifyCheckpoints": {
+          "type": "function",
+          "arity": 0
+        }
+      }
+    },
+    "auditChain": {
+      "type": "object",
+      "members": {
+        "ZERO_HASH": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "canonicalize": {
+          "type": "function",
+          "arity": 2
+        },
+        "computeRowHash": {
+          "type": "function",
+          "arity": 3
+        },
+        "getChainTip": {
+          "type": "function",
+          "arity": 2
+        },
+        "verifyChain": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "auditSign": {
+      "type": "object",
+      "members": {
+        "DEFAULT_SIGNING_ALG": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ENV_PASSPHRASE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ENV_PASSPHRASE_FILE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ENV_PASSPHRASE_SRC": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "SUPPORTED_SIGNING_ALGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "getAlgorithm": {
+          "type": "function",
+          "arity": 0
+        },
+        "getMode": {
+          "type": "function",
+          "arity": 0
+        },
+        "getPublicKey": {
+          "type": "function",
+          "arity": 0
+        },
+        "getPublicKeyFingerprint": {
+          "type": "function",
+          "arity": 0
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "sign": {
+          "type": "function",
+          "arity": 1
+        },
+        "verify": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "auditTools": {
+      "type": "object",
+      "members": {
+        "AuditToolsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "BUNDLE_FORMAT": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "KIND_ARCHIVE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "KIND_EXPORT": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "archive": {
+          "type": "function",
+          "arity": 1
+        },
+        "exportSlice": {
+          "type": "function",
+          "arity": 1
+        },
+        "purge": {
+          "type": "function",
+          "arity": 1
+        },
+        "verifyBundle": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "members": {
+        "jwt": {
+          "type": "object",
+          "members": {
+            "DEFAULT_ALGORITHM": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SUPPORTED_ALGORITHMS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "decode": {
+              "type": "function",
+              "arity": 1
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "lockout": {
+          "type": "object",
+          "members": {
+            "DEFAULTS": {
+              "type": "object",
+              "members": {
+                "auditEngaged": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "auditFailures": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "auditSuccess": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "auditUnlock": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "lockoutDurations": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxAttempts": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "windowMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "LockoutError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "oauth": {
+          "type": "object",
+          "members": {
+            "DEFAULT_ACCEPTED_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "OAuthError": {
+              "type": "function",
+              "arity": 4
+            },
+            "PRESETS": {
+              "type": "object",
+              "members": {
+                "apple": {
+                  "type": "object",
+                  "members": {
+                    "defaultScope": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "isOidc": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "issuer": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "responseMode": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "auth0": {
+                  "type": "object",
+                  "members": {
+                    "defaultScope": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "isOidc": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "issuerTemplate": {
+                      "type": "function",
+                      "arity": 1
+                    }
+                  }
+                },
+                "generic": {
+                  "type": "object",
+                  "members": {}
+                },
+                "github": {
+                  "type": "object",
+                  "members": {
+                    "authorizationEndpoint": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "defaultScope": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "isOidc": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "tokenEndpoint": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "userinfoEndpoint": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "google": {
+                  "type": "object",
+                  "members": {
+                    "defaultScope": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "isOidc": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "issuer": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keycloak": {
+                  "type": "object",
+                  "members": {
+                    "defaultScope": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "isOidc": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "issuerTemplate": {
+                      "type": "function",
+                      "arity": 1
+                    }
+                  }
+                },
+                "microsoft": {
+                  "type": "object",
+                  "members": {
+                    "defaultScope": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "isOidc": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "issuer": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "passkey": {
+          "type": "object",
+          "members": {
+            "startAuthentication": {
+              "type": "function",
+              "arity": 1
+            },
+            "startRegistration": {
+              "type": "function",
+              "arity": 1
+            },
+            "verifyAuthentication": {
+              "type": "function",
+              "arity": 1
+            },
+            "verifyRegistration": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "password": {
+          "type": "object",
+          "members": {
+            "DEFAULT_PARAMS": {
+              "type": "object",
+              "members": {
+                "memoryCost": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "parallelism": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "timeCost": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "hash": {
+              "type": "function",
+              "arity": 2
+            },
+            "needsRehash": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "totp": {
+          "type": "object",
+          "members": {
+            "DEFAULT_ALGORITHM": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DEFAULT_DIGITS": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "DEFAULT_DRIFT_STEPS": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "DEFAULT_SECRET_BYTES": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "DEFAULT_STEP_SECONDS": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "MIN_SECRET_BYTES": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "SUPPORTED_ALGORITHMS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "compute": {
+              "type": "function",
+              "arity": 3
+            },
+            "generate": {
+              "type": "function",
+              "arity": 2
+            },
+            "generateBackupCodes": {
+              "type": "function",
+              "arity": 1
+            },
+            "generateSecret": {
+              "type": "function",
+              "arity": 1
+            },
+            "uri": {
+              "type": "function",
+              "arity": 3
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        }
+      }
+    },
+    "authHeader": {
+      "type": "object",
+      "members": {
+        "AuthHeaderError": {
+          "type": "function",
+          "arity": 2
+        },
+        "basic": {
+          "type": "function",
+          "arity": 2
+        },
+        "bearer": {
+          "type": "function",
+          "arity": 1
+        },
+        "fromConfig": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "members": {
+        "BUNDLE_ID_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "BackupError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "localStorage": {
+          "type": "function",
+          "arity": 1
+        },
+        "recommendedFiles": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "backupBundle": {
+      "type": "object",
+      "members": {
+        "BackupBundleError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "backupCrypto": {
+      "type": "object",
+      "members": {
+        "ARGON2_OPTS": {
+          "type": "object",
+          "members": {
+            "hashLength": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "memoryCost": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "parallelism": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "raw": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "timeCost": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "type": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "BackupCryptoError": {
+          "type": "function",
+          "arity": 2
+        },
+        "NONCE_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "SALT_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "checksum": {
+          "type": "function",
+          "arity": 1
+        },
+        "decryptWithPassphrase": {
+          "type": "function",
+          "arity": 3
+        },
+        "deriveKey": {
+          "type": "function",
+          "arity": 3
+        },
+        "encryptWithFreshSalt": {
+          "type": "function",
+          "arity": 2
+        },
+        "encryptWithPassphrase": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "backupManifest": {
+      "type": "object",
+      "members": {
+        "BackupManifestError": {
+          "type": "function",
+          "arity": 2
+        },
+        "FORMAT_VERSION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "FRAMEWORK_NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "VALID_KINDS": {
+          "type": "object",
+          "members": {
+            "plaintext": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "raw": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "vault-sealed": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
+        },
+        "serialize": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "breakGlass": {
+      "type": "object",
+      "members": {
+        "BreakGlassError": {
+          "type": "function",
+          "arity": 4
+        },
+        "decryptCell": {
+          "type": "function",
+          "arity": 2
+        },
+        "encryptCell": {
+          "type": "function",
+          "arity": 2
+        },
+        "grant": {
+          "type": "function",
+          "arity": 1
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "listActive": {
+          "type": "function",
+          "arity": 1
+        },
+        "listActiveAll": {
+          "type": "function",
+          "arity": 1
+        },
+        "migrate": {
+          "type": "function",
+          "arity": 2
+        },
+        "policy": {
+          "type": "object",
+          "members": {
+            "delete": {
+              "type": "function",
+              "arity": 2
+            },
+            "get": {
+              "type": "function",
+              "arity": 1
+            },
+            "list": {
+              "type": "function",
+              "arity": 0
+            },
+            "set": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "revoke": {
+          "type": "function",
+          "arity": 2
+        },
+        "revokeAll": {
+          "type": "function",
+          "arity": 2
+        },
+        "unsealRow": {
+          "type": "function",
+          "arity": 4
+        },
+        "unsealRowAsService": {
+          "type": "function",
+          "arity": 4
+        }
+      }
+    },
+    "bundler": {
+      "type": "object",
+      "members": {
+        "BundlerError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "cache": {
+      "type": "object",
+      "members": {
+        "CacheError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "auditClear": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "auditFailures": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "backend": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxEntries": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "slidingTtl": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "staleWhileRevalidate": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "sweepIntervalMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ttlMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "chainWriter": {
+      "type": "object",
+      "members": {
+        "ALLOWED_CHAIN_TABLES": {
+          "type": "instance",
+          "ctorName": "Set"
+        },
+        "ChainWriterError": {
+          "type": "function",
+          "arity": 2
+        },
+        "FRAMEWORK_SQL_TIMEOUT_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "cli": {
+      "type": "object",
+      "members": {
+        "API_KEY_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "API_SNAPSHOT_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "AUDIT_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "BACKUP_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "DEV_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MIGRATE_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MTLS_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "TOP_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "VAULT_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "main": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "cliHelpers": {
+      "type": "object",
+      "members": {
+        "bootApp": {
+          "type": "function",
+          "arity": 1
+        },
+        "makeReporter": {
+          "type": "function",
+          "arity": 2
+        },
+        "resolvePassphrase": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "members": {
+        "NotLeaderError": {
+          "type": "function",
+          "arity": 1
+        },
+        "currentLeader": {
+          "type": "function",
+          "arity": 0
+        },
+        "currentNodeId": {
+          "type": "function",
+          "arity": 0
+        },
+        "dialect": {
+          "type": "function",
+          "arity": 0
+        },
+        "discoveryHandler": {
+          "type": "function",
+          "arity": 0
+        },
+        "endpoint": {
+          "type": "function",
+          "arity": 0
+        },
+        "externalDbBackend": {
+          "type": "function",
+          "arity": 0
+        },
+        "fencingToken": {
+          "type": "function",
+          "arity": 0
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "isClusterMode": {
+          "type": "function",
+          "arity": 0
+        },
+        "isLeader": {
+          "type": "function",
+          "arity": 0
+        },
+        "onTransition": {
+          "type": "function",
+          "arity": 1
+        },
+        "requireLeader": {
+          "type": "function",
+          "arity": 0
+        },
+        "shutdown": {
+          "type": "function",
+          "arity": 0
+        }
+      }
+    },
+    "clusterStorage": {
+      "type": "object",
+      "members": {
+        "ClusterStorageError": {
+          "type": "function",
+          "arity": 2
+        },
+        "execute": {
+          "type": "function",
+          "arity": 2
+        },
+        "executeAll": {
+          "type": "function",
+          "arity": 2
+        },
+        "executeOne": {
+          "type": "function",
+          "arity": 2
+        },
+        "placeholderize": {
+          "type": "function",
+          "arity": 2
+        },
+        "resolveTables": {
+          "type": "function",
+          "arity": 1
+        },
+        "tableName": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "members": {
+        "ConfigError": {
+          "type": "function",
+          "arity": 4
+        },
+        "coerce": {
+          "type": "object",
+          "members": {
+            "boolean": {
+              "type": "function",
+              "arity": 0
+            },
+            "number": {
+              "type": "function",
+              "arity": 0
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "consent": {
+      "type": "object",
+      "members": {
+        "ACTIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "LAWFUL_BASES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "grant": {
+          "type": "function",
+          "arity": 1
+        },
+        "history": {
+          "type": "function",
+          "arity": 1
+        },
+        "isGranted": {
+          "type": "function",
+          "arity": 1
+        },
+        "verify": {
+          "type": "function",
+          "arity": 1
+        },
+        "withdraw": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "constants": {
+      "type": "object",
+      "members": {
+        "ACTIVE": {
+          "type": "object",
+          "members": {
+            "CIPHER": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "CRED_HASH": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "KDF": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "KEM": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "BYTES": {
+          "type": "object",
+          "members": {
+            "gib": {
+              "type": "function",
+              "arity": 1
+            },
+            "kib": {
+              "type": "function",
+              "arity": 1
+            },
+            "mib": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "CIPHER_IDS": {
+          "type": "object",
+          "members": {
+            "XCHACHA20_POLY1305": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "CREDENTIAL_MAGIC": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CRED_HASH_IDS": {
+          "type": "object",
+          "members": {
+            "ARGON2ID": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "SHAKE256": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "ENVELOPE_MAGIC": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "FORMAT": {
+          "type": "object",
+          "members": {
+            "XCHACHA20_POLY1305": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "HASH_PREFIX": {
+          "type": "object",
+          "members": {
+            "EMAIL": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "IP": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "TOKEN": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KDF_IDS": {
+          "type": "object",
+          "members": {
+            "SHAKE256": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "KEM_IDS": {
+          "type": "object",
+          "members": {
+            "ML_KEM_1024": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ML_KEM_1024_P384": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "PQC_GROUPS": {
+          "type": "object",
+          "members": {
+            "SecP384r1MLKEM1024": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "X25519MLKEM768": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "TIME": {
+          "type": "object",
+          "members": {
+            "days": {
+              "type": "function",
+              "arity": 1
+            },
+            "hours": {
+              "type": "function",
+              "arity": 1
+            },
+            "minutes": {
+              "type": "function",
+              "arity": 1
+            },
+            "seconds": {
+              "type": "function",
+              "arity": 1
+            },
+            "weeks": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "TLS_GROUP_CURVE_STR": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "TLS_GROUP_PREFERENCE": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "VAULT_PREFIX": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "version": {
+          "type": "primitive",
+          "valueType": "string"
+        }
+      }
+    },
+    "cookies": {
+      "type": "object",
+      "members": {
+        "CookieError": {
+          "type": "function",
+          "arity": 2
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
+        },
+        "serialize": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "createApp": {
+      "type": "function",
+      "arity": 1
+    },
+    "credentialHash": {
+      "type": "object",
+      "members": {
+        "ALGOS": {
+          "type": "object",
+          "members": {
+            "ARGON2ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SHAKE256": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "CredentialHashError": {
+          "type": "function",
+          "arity": 2
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "algo": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "hash": {
+          "type": "function",
+          "arity": 2
+        },
+        "inspect": {
+          "type": "function",
+          "arity": 1
+        },
+        "needsRehash": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "crypto": {
+      "type": "object",
+      "members": {
+        "decrypt": {
+          "type": "function",
+          "arity": 2
+        },
+        "decryptPacked": {
+          "type": "function",
+          "arity": 3
+        },
+        "encrypt": {
+          "type": "function",
+          "arity": 2
+        },
+        "encryptPacked": {
+          "type": "function",
+          "arity": 3
+        },
+        "generateBytes": {
+          "type": "function",
+          "arity": 1
+        },
+        "generateEncryptionKeyPair": {
+          "type": "function",
+          "arity": 0
+        },
+        "generateSigningKeyPair": {
+          "type": "function",
+          "arity": 1
+        },
+        "generateToken": {
+          "type": "function",
+          "arity": 1
+        },
+        "hmacSha3": {
+          "type": "function",
+          "arity": 2
+        },
+        "kdf": {
+          "type": "function",
+          "arity": 2
+        },
+        "sha3Hash": {
+          "type": "function",
+          "arity": 1
+        },
+        "sign": {
+          "type": "function",
+          "arity": 2
+        },
+        "timingSafeEqual": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "cryptoField": {
+      "type": "object",
+      "members": {
+        "clearForTest": {
+          "type": "function",
+          "arity": 0
+        },
+        "computeDerived": {
+          "type": "function",
+          "arity": 3
+        },
+        "getSchema": {
+          "type": "function",
+          "arity": 1
+        },
+        "getSealedFields": {
+          "type": "function",
+          "arity": 1
+        },
+        "lookupHash": {
+          "type": "function",
+          "arity": 3
+        },
+        "registerTable": {
+          "type": "function",
+          "arity": 2
+        },
+        "sealRow": {
+          "type": "function",
+          "arity": 2
+        },
+        "unsealRow": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "csv": {
+      "type": "object",
+      "members": {
+        "CsvError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DEFAULTS_PARSE": {
+          "type": "object",
+          "members": {
+            "delimiter": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "header": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxFieldBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRows": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "onBadRow": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "quote": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "trim": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "DEFAULTS_STRINGIFY": {
+          "type": "object",
+          "members": {
+            "alwaysQuote": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "columns": {
+              "type": "primitive",
+              "valueType": "null"
+            },
+            "delimiter": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "eol": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "formulaPrefixChars": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "header": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "preventFormulaInjection": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "quote": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "stringify": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "db": {
+      "type": "object",
+      "members": {
+        "FRAMEWORK_SCHEMA": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "RESERVED_TABLE_NAMES": {
+          "type": "instance",
+          "ctorName": "Set"
+        },
+        "close": {
+          "type": "function",
+          "arity": 0
+        },
+        "declareRowPolicy": {
+          "type": "function",
+          "arity": 1
+        },
+        "declareView": {
+          "type": "function",
+          "arity": 1
+        },
+        "exec": {
+          "type": "function",
+          "arity": 1
+        },
+        "flushToDisk": {
+          "type": "function",
+          "arity": 0
+        },
+        "from": {
+          "type": "function",
+          "arity": 1
+        },
+        "getDataResidency": {
+          "type": "function",
+          "arity": 0
+        },
+        "getDbPath": {
+          "type": "function",
+          "arity": 0
+        },
+        "getMode": {
+          "type": "function",
+          "arity": 0
+        },
+        "getTableMetadata": {
+          "type": "function",
+          "arity": 1
+        },
+        "hashFor": {
+          "type": "function",
+          "arity": 3
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "prepare": {
+          "type": "function",
+          "arity": 1
+        },
+        "purgeAuditChain": {
+          "type": "function",
+          "arity": 1
+        },
+        "runSql": {
+          "type": "function",
+          "arity": 1
+        },
+        "stream": {
+          "type": "function",
+          "arity": 1
+        },
+        "transaction": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "deprecate": {
+      "type": "object",
+      "members": {
+        "DeprecateError": {
+          "type": "function",
+          "arity": 2
+        },
+        "alias": {
+          "type": "function",
+          "arity": 4
+        },
+        "getMode": {
+          "type": "function",
+          "arity": 0
+        },
+        "list": {
+          "type": "function",
+          "arity": 0
+        },
+        "reset": {
+          "type": "function",
+          "arity": 0
+        },
+        "warn": {
+          "type": "function",
+          "arity": 2
+        },
+        "wrap": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "dev": {
+      "type": "object",
+      "members": {
+        "DEFAULT_IGNORE": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DevError": {
+          "type": "function",
+          "arity": 2
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "errorPage": {
+      "type": "object",
+      "members": {
+        "STATUS_REASONS": {
+          "type": "object",
+          "members": {
+            "400": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "401": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "403": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "404": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "405": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "409": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "413": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "415": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "422": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "429": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "500": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "502": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "503": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "504": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "events": {
+      "type": "object",
+      "members": {
+        "EVENTS": {
+          "type": "object",
+          "members": {
+            "API_ENCRYPT_FAILURE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AUDIT_CHAIN_BREAK": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AUDIT_CHECKPOINT_BREAK": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AUDIT_ROLLBACK_DETECTED": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "NTP_DRIFT": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "emit": {
+          "type": "function",
+          "arity": 2
+        },
+        "listenerCount": {
+          "type": "function",
+          "arity": 1
+        },
+        "off": {
+          "type": "function",
+          "arity": 2
+        },
+        "on": {
+          "type": "function",
+          "arity": 2
+        },
+        "once": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "externalDb": {
+      "type": "object",
+      "members": {
+        "Pool": {
+          "type": "function",
+          "arity": 2
+        },
+        "adapters": {
+          "type": "object",
+          "members": {
+            "connectAs": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "configurePool": {
+          "type": "function",
+          "arity": 2
+        },
+        "currentRole": {
+          "type": "function",
+          "arity": 0
+        },
+        "healthCheck": {
+          "type": "function",
+          "arity": 1
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "listBackends": {
+          "type": "function",
+          "arity": 0
+        },
+        "migrate": {
+          "type": "object",
+          "members": {
+            "ExternalDbMigrateError": {
+              "type": "function",
+              "arity": 4
+            },
+            "TRACKING_TABLE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "query": {
+          "type": "function",
+          "arity": 3
+        },
+        "read": {
+          "type": "object",
+          "members": {
+            "query": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "runAs": {
+          "type": "function",
+          "arity": 2
+        },
+        "shutdown": {
+          "type": "function",
+          "arity": 0
+        },
+        "transaction": {
+          "type": "function",
+          "arity": 2
+        },
+        "write": {
+          "type": "object",
+          "members": {
+            "query": {
+              "type": "function",
+              "arity": 3
+            },
+            "transaction": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        }
+      }
+    },
+    "forms": {
+      "type": "object",
+      "members": {
+        "CSRF_TOKEN_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "escapeAttribute": {
+          "type": "function",
+          "arity": 1
+        },
+        "escapeHtml": {
+          "type": "function",
+          "arity": 1
+        },
+        "generateCsrfToken": {
+          "type": "function",
+          "arity": 0
+        },
+        "render": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        },
+        "verifyCsrfToken": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "frameworkError": {
+      "type": "object",
+      "members": {
+        "ApiKeyError": {
+          "type": "function",
+          "arity": 4
+        },
+        "AuthError": {
+          "type": "function",
+          "arity": 4
+        },
+        "CacheError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ClusterError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ClusterProviderError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ExternalDbError": {
+          "type": "function",
+          "arity": 4
+        },
+        "FrameworkError": {
+          "type": "function",
+          "arity": 2
+        },
+        "HandlerError": {
+          "type": "function",
+          "arity": 4
+        },
+        "I18nError": {
+          "type": "function",
+          "arity": 4
+        },
+        "JobsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "LockoutError": {
+          "type": "function",
+          "arity": 4
+        },
+        "LogStreamError": {
+          "type": "function",
+          "arity": 4
+        },
+        "NotifyError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ObjectStoreError": {
+          "type": "function",
+          "arity": 4
+        },
+        "PermissionsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "QueueError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SchedulerError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SeederError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SessionError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SlugError": {
+          "type": "function",
+          "arity": 4
+        },
+        "StorageError": {
+          "type": "function",
+          "arity": 4
+        },
+        "TestingError": {
+          "type": "function",
+          "arity": 4
+        },
+        "WebhookError": {
+          "type": "function",
+          "arity": 4
+        },
+        "defineClass": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "frameworkSchema": {
+      "type": "object",
+      "members": {
+        "FrameworkSchemaError": {
+          "type": "function",
+          "arity": 2
+        },
+        "LOCAL_TO_EXTERNAL": {
+          "type": "object",
+          "members": {
+            "audit_checkpoints": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "audit_log": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "consent_log": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "ensureSchema": {
+          "type": "function",
+          "arity": 1
+        },
+        "tableName": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "handlers": {
+      "type": "object",
+      "members": {
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "htmlBalance": {
+      "type": "object",
+      "members": {
+        "check": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "httpClient": {
+      "type": "object",
+      "members": {
+        "DEFAULT_AGENT_OPTS": {
+          "type": "object",
+          "members": {
+            "keepAlive": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "keepAliveMsecs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxFreeSockets": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxSockets": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "scheduling": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "DEFAULT_CONTROL_PLANE_CAP": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_GET_CAP": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "configurePool": {
+          "type": "function",
+          "arity": 1
+        },
+        "cookieJar": {
+          "type": "object",
+          "members": {
+            "CookieJarError": {
+              "type": "function",
+              "arity": 4
+            },
+            "DEFAULTS": {
+              "type": "object",
+              "members": {
+                "persist": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "encrypted": {
+          "type": "function",
+          "arity": 1
+        },
+        "request": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "i18n": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "RTL_LANGUAGES": {
+              "type": "instance",
+              "ctorName": "Set"
+            },
+            "fallbackLocale": {
+              "type": "primitive",
+              "valueType": "null"
+            },
+            "interpolation": {
+              "type": "object",
+              "members": {
+                "end": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "start": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "strict": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "missingKey": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "I18nError": {
+          "type": "function",
+          "arity": 4
+        },
+        "PLURAL_CATEGORIES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "RTL_LANGUAGES": {
+          "type": "instance",
+          "ctorName": "Set"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "members": {
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "lazyRequire": {
+      "type": "function",
+      "arity": 1
+    },
+    "log": {
+      "type": "object",
+      "members": {
+        "LEVELS": {
+          "type": "object",
+          "members": {
+            "debug": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "error": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "fatal": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "info": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "warn": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "LogError": {
+          "type": "function",
+          "arity": 2
+        },
+        "boot": {
+          "type": "function",
+          "arity": 1
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "getRequestId": {
+          "type": "function",
+          "arity": 0
+        },
+        "runWithRequestId": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "logStream": {
+      "type": "object",
+      "members": {
+        "DEFERRED_PROTOCOLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "LEVELS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "PROTOCOLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "debug": {
+          "type": "function",
+          "arity": 2
+        },
+        "deliverIncoming": {
+          "type": "function",
+          "arity": 2
+        },
+        "emit": {
+          "type": "function",
+          "arity": 3
+        },
+        "error": {
+          "type": "function",
+          "arity": 2
+        },
+        "info": {
+          "type": "function",
+          "arity": 2
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "listSinks": {
+          "type": "function",
+          "arity": 0
+        },
+        "onIncoming": {
+          "type": "function",
+          "arity": 1
+        },
+        "shutdown": {
+          "type": "function",
+          "arity": 0
+        },
+        "warn": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "mail": {
+      "type": "object",
+      "members": {
+        "MailError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "dkim": {
+          "type": "object",
+          "members": {
+            "DkimError": {
+              "type": "function",
+              "arity": 2
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "transports": {
+          "type": "object",
+          "members": {
+            "console": {
+              "type": "function",
+              "arity": 1
+            },
+            "http": {
+              "type": "function",
+              "arity": 1
+            },
+            "memory": {
+              "type": "function",
+              "arity": 0
+            },
+            "resend": {
+              "type": "function",
+              "arity": 1
+            },
+            "smtp": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        }
+      }
+    },
+    "mailBounce": {
+      "type": "object",
+      "members": {
+        "MailBounceError": {
+          "type": "function",
+          "arity": 4
+        },
+        "handler": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "vendors": {
+          "type": "object",
+          "members": {
+            "postmark": {
+              "type": "function",
+              "arity": 1
+            },
+            "resend": {
+              "type": "function",
+              "arity": 1
+            },
+            "ses": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "members": {
+        "DEFAULT_CARDINALITY_CAP": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_HTTP_BUCKETS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "MetricsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "tap": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "middleware": {
+      "type": "object",
+      "members": {
+        "apiEncrypt": {
+          "type": "function",
+          "arity": 1
+        },
+        "attachUser": {
+          "type": "function",
+          "arity": 1
+        },
+        "bodyParser": {
+          "type": "function",
+          "arity": 1
+        },
+        "botGuard": {
+          "type": "function",
+          "arity": 1
+        },
+        "compression": {
+          "type": "function",
+          "arity": 1
+        },
+        "cors": {
+          "type": "function",
+          "arity": 1
+        },
+        "cspNonce": {
+          "type": "function",
+          "arity": 1
+        },
+        "csrfProtect": {
+          "type": "function",
+          "arity": 1
+        },
+        "dbRoleFor": {
+          "type": "function",
+          "arity": 1
+        },
+        "errorHandler": {
+          "type": "function",
+          "arity": 1
+        },
+        "health": {
+          "type": "function",
+          "arity": 1
+        },
+        "rateLimit": {
+          "type": "function",
+          "arity": 1
+        },
+        "requestId": {
+          "type": "function",
+          "arity": 1
+        },
+        "requestLog": {
+          "type": "function",
+          "arity": 1
+        },
+        "requireAuth": {
+          "type": "function",
+          "arity": 1
+        },
+        "securityHeaders": {
+          "type": "function",
+          "arity": 1
+        },
+        "sse": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "migrations": {
+      "type": "object",
+      "members": {
+        "FILE_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "LOCK_TABLE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MIGRATIONS_TABLE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MigrationError": {
+          "type": "function",
+          "arity": 3
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "mtlsCa": {
+      "type": "object",
+      "members": {
+        "DEFAULT_PATHS": {
+          "type": "object",
+          "members": {
+            "caCert": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "caKey": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "caKeySealed": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "MtlsCaError": {
+          "type": "function",
+          "arity": 2
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseGeneration": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "mtlsEngine": {
+      "type": "object",
+      "members": {
+        "MtlsEngineError": {
+          "type": "function",
+          "arity": 2
+        },
+        "algorithmEnvelope": {
+          "type": "function",
+          "arity": 0
+        },
+        "generateCa": {
+          "type": "function",
+          "arity": 1
+        },
+        "packageP12": {
+          "type": "function",
+          "arity": 1
+        },
+        "signClientCert": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "nonceStore": {
+      "type": "object",
+      "members": {
+        "NonceStoreError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "notify": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "auditFailures": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "auditSuccess": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "defaultTimeoutMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "NotifyError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "transports": {
+          "type": "object",
+          "members": {
+            "httpJson": {
+              "type": "function",
+              "arity": 1
+            },
+            "log": {
+              "type": "function",
+              "arity": 1
+            },
+            "test": {
+              "type": "function",
+              "arity": 0
+            }
+          }
+        }
+      }
+    },
+    "ntpCheck": {
+      "type": "object",
+      "members": {
+        "DEFAULT_SERVERS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NTP_TO_UNIX_OFFSET_SECONDS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "bootCheck": {
+          "type": "function",
+          "arity": 1
+        },
+        "checkDrift": {
+          "type": "function",
+          "arity": 1
+        },
+        "querySingle": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "objectStore": {
+      "type": "object",
+      "members": {
+        "DEFERRED_PROTOCOLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "PROTOCOLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "bucketOps": {
+          "type": "object",
+          "members": {
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "buildBackend": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "objectStoreRetry": {
+      "type": "object",
+      "members": {
+        "CircuitBreaker": {
+          "type": "function",
+          "arity": 2
+        },
+        "DEFAULT_BREAKER": {
+          "type": "object",
+          "members": {
+            "cooldownMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "failureThreshold": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "successThreshold": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "DEFAULT_RETRY": {
+          "type": "object",
+          "members": {
+            "baseDelayMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "jitterFactor": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxAttempts": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDelayMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "NON_RETRYABLE_HTTP_STATUS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "RETRYABLE_HTTP_STATUS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "RETRYABLE_NET_ERRORS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "STATES": {
+          "type": "object",
+          "members": {
+            "CLOSED": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "HALF_OPEN": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "OPEN": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "backoffDelay": {
+          "type": "function",
+          "arity": 2
+        },
+        "isRetryable": {
+          "type": "function",
+          "arity": 1
+        },
+        "withRetry": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "members": {
+        "event": {
+          "type": "function",
+          "arity": 3
+        },
+        "tap": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "otelExport": {
+      "type": "object",
+      "members": {
+        "OtelExportError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "pagination": {
+      "type": "object",
+      "members": {
+        "CURSOR_VERSION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "PaginationError": {
+          "type": "function",
+          "arity": 4
+        },
+        "cursor": {
+          "type": "function",
+          "arity": 2
+        },
+        "decodeCursor": {
+          "type": "function",
+          "arity": 2
+        },
+        "encodeCursor": {
+          "type": "function",
+          "arity": 2
+        },
+        "offset": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "parsers": {
+      "type": "object",
+      "members": {
+        "env": {
+          "type": "object",
+          "members": {
+            "SafeEnvError": {
+              "type": "function",
+              "arity": 3
+            },
+            "load": {
+              "type": "function",
+              "arity": 2
+            },
+            "parse": {
+              "type": "function",
+              "arity": 2
+            },
+            "readVar": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "toml": {
+          "type": "object",
+          "members": {
+            "SafeTomlError": {
+              "type": "function",
+              "arity": 4
+            },
+            "parse": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "xml": {
+          "type": "object",
+          "members": {
+            "BUILT_IN_ENTITIES": {
+              "type": "object",
+              "members": {
+                "amp": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "apos": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "gt": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "lt": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "quot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "DEFAULTS": {
+              "type": "object",
+              "members": {
+                "allowDoctype": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowProcessing": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "maxAttributes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "SafeXmlError": {
+              "type": "function",
+              "arity": 3
+            },
+            "parse": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "yaml": {
+          "type": "object",
+          "members": {
+            "SafeYamlError": {
+              "type": "function",
+              "arity": 4
+            },
+            "parse": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "auditFailures": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "auditSuccess": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "denyStatus": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "missingActorStatus": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "PermissionsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "match": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "pqcAgent": {
+      "type": "object",
+      "members": {
+        "DEFAULT_OPTS": {
+          "type": "object",
+          "members": {
+            "keepAlive": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "keepAliveMsecs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxFreeSockets": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxSockets": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "scheduling": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "agent": {
+          "type": "instance",
+          "ctorName": "Agent"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "createHttp": {
+          "type": "function",
+          "arity": 1
+        },
+        "enforced": {
+          "type": "primitive",
+          "valueType": "boolean"
+        }
+      }
+    },
+    "pqcGate": {
+      "type": "object",
+      "members": {
+        "DEFAULT_BYPASS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "PQC_GROUP_IDS": {
+          "type": "instance",
+          "ctorName": "Set"
+        },
+        "TLS_ALERT_HANDSHAKE_FAILURE": {
+          "type": "instance",
+          "ctorName": "Buffer"
+        },
+        "clientHelloHasPQC": {
+          "type": "function",
+          "arity": 1
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "protocolDispatcher": {
+      "type": "object",
+      "members": {
+        "ProtocolDispatcherError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "queue": {
+      "type": "object",
+      "members": {
+        "DEFERRED_PROTOCOLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "PROTOCOLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "consume": {
+          "type": "function",
+          "arity": 3
+        },
+        "dlqList": {
+          "type": "function",
+          "arity": 2
+        },
+        "dlqRetry": {
+          "type": "function",
+          "arity": 2
+        },
+        "dlqSize": {
+          "type": "function",
+          "arity": 2
+        },
+        "enqueue": {
+          "type": "function",
+          "arity": 3
+        },
+        "enqueueFlow": {
+          "type": "function",
+          "arity": 1
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "listBackends": {
+          "type": "function",
+          "arity": 0
+        },
+        "purge": {
+          "type": "function",
+          "arity": 2
+        },
+        "shutdown": {
+          "type": "function",
+          "arity": 1
+        },
+        "size": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "redact": {
+      "type": "object",
+      "members": {
+        "MARKER": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "SENSITIVE_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "redact": {
+          "type": "function",
+          "arity": 2
+        },
+        "registerFieldRule": {
+          "type": "function",
+          "arity": 2
+        },
+        "registerValueDetector": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "render": {
+      "type": "object",
+      "members": {
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "htmlString": {
+          "type": "function",
+          "arity": 3
+        },
+        "json": {
+          "type": "function",
+          "arity": 3
+        },
+        "redirect": {
+          "type": "function",
+          "arity": 3
+        },
+        "text": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "requestHelpers": {
+      "type": "object",
+      "members": {
+        "appendVary": {
+          "type": "function",
+          "arity": 2
+        },
+        "captureResponseStatus": {
+          "type": "function",
+          "arity": 2
+        },
+        "clientIp": {
+          "type": "function",
+          "arity": 2
+        },
+        "extractActorContext": {
+          "type": "function",
+          "arity": 2
+        },
+        "parseListHeader": {
+          "type": "function",
+          "arity": 2
+        },
+        "parseQualityList": {
+          "type": "function",
+          "arity": 2
+        },
+        "requestProtocol": {
+          "type": "function",
+          "arity": 2
+        },
+        "resolveActorWithOverride": {
+          "type": "function",
+          "arity": 2
+        },
+        "resolveRoute": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "restore": {
+      "type": "object",
+      "members": {
+        "RestoreError": {
+          "type": "function",
+          "arity": 3
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "restoreBundle": {
+      "type": "object",
+      "members": {
+        "RestoreBundleError": {
+          "type": "function",
+          "arity": 4
+        },
+        "extract": {
+          "type": "function",
+          "arity": 1
+        },
+        "inspect": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "restoreRollback": {
+      "type": "object",
+      "members": {
+        "RestoreRollbackError": {
+          "type": "function",
+          "arity": 4
+        },
+        "list": {
+          "type": "function",
+          "arity": 1
+        },
+        "purge": {
+          "type": "function",
+          "arity": 1
+        },
+        "rollback": {
+          "type": "function",
+          "arity": 1
+        },
+        "swap": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "members": {
+        "CircuitBreaker": {
+          "type": "function",
+          "arity": 2
+        },
+        "DEFAULT_BREAKER": {
+          "type": "object",
+          "members": {
+            "cooldownMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "failureThreshold": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "successThreshold": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "DEFAULT_RETRY": {
+          "type": "object",
+          "members": {
+            "baseDelayMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "jitterFactor": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxAttempts": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDelayMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "NON_RETRYABLE_HTTP_STATUS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "RETRYABLE_HTTP_STATUS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "RETRYABLE_NET_ERRORS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "STATES": {
+          "type": "object",
+          "members": {
+            "CLOSED": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "HALF_OPEN": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "OPEN": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "backoffDelay": {
+          "type": "function",
+          "arity": 2
+        },
+        "isRetryable": {
+          "type": "function",
+          "arity": 1
+        },
+        "withRetry": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "router": {
+      "type": "object",
+      "members": {
+        "Router": {
+          "type": "function",
+          "arity": 0
+        },
+        "serveStatic": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "safeAsync": {
+      "type": "object",
+      "members": {
+        "CircuitBreaker": {
+          "type": "function",
+          "arity": 2
+        },
+        "Mutex": {
+          "type": "function",
+          "arity": 0
+        },
+        "Once": {
+          "type": "function",
+          "arity": 1
+        },
+        "SafeAsyncError": {
+          "type": "function",
+          "arity": 3
+        },
+        "Semaphore": {
+          "type": "function",
+          "arity": 1
+        },
+        "asyncRetry": {
+          "type": "function",
+          "arity": 2
+        },
+        "flushLoop": {
+          "type": "function",
+          "arity": 3
+        },
+        "repeating": {
+          "type": "function",
+          "arity": 3
+        },
+        "safeAwait": {
+          "type": "function",
+          "arity": 1
+        },
+        "sleep": {
+          "type": "function",
+          "arity": 2
+        },
+        "withSignal": {
+          "type": "function",
+          "arity": 2
+        },
+        "withTimeout": {
+          "type": "function",
+          "arity": 3
+        },
+        "withTimeoutSignal": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "safeBuffer": {
+      "type": "object",
+      "members": {
+        "SafeBufferError": {
+          "type": "function",
+          "arity": 2
+        },
+        "boundedChunkCollector": {
+          "type": "function",
+          "arity": 1
+        },
+        "normalizeText": {
+          "type": "function",
+          "arity": 2
+        },
+        "secureZero": {
+          "type": "function",
+          "arity": 1
+        },
+        "toBuffer": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "safeJson": {
+      "type": "object",
+      "members": {
+        "ABSOLUTE_MAX_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "ABSOLUTE_MAX_DEPTH": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_MAX_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_MAX_DEPTH": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "POISONED_KEYS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "SafeJsonError": {
+          "type": "function",
+          "arity": 3
+        },
+        "canonical": {
+          "type": "function",
+          "arity": 2
+        },
+        "formats": {
+          "type": "object",
+          "members": {
+            "email": {
+              "type": "function",
+              "arity": 1
+            },
+            "hex": {
+              "type": "function",
+              "arity": 1
+            },
+            "ip": {
+              "type": "function",
+              "arity": 1
+            },
+            "ipv4": {
+              "type": "function",
+              "arity": 1
+            },
+            "ipv6": {
+              "type": "function",
+              "arity": 1
+            },
+            "iso8601-date": {
+              "type": "function",
+              "arity": 1
+            },
+            "iso8601-datetime": {
+              "type": "function",
+              "arity": 1
+            },
+            "slug": {
+              "type": "function",
+              "arity": 1
+            },
+            "ulid": {
+              "type": "function",
+              "arity": 1
+            },
+            "url": {
+              "type": "function",
+              "arity": 1
+            },
+            "uuid": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "parseOrDefault": {
+          "type": "function",
+          "arity": 3
+        },
+        "registerFormat": {
+          "type": "function",
+          "arity": 2
+        },
+        "stringify": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "safeSchema": {
+      "type": "object",
+      "members": {
+        "CUID_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "DATETIME_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "DATE_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "EMAIL_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "IPV4_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "IPV6_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "SafeSchemaError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ULID_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "URL_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "UUID_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "any": {
+          "type": "function",
+          "arity": 0
+        },
+        "array": {
+          "type": "function",
+          "arity": 1
+        },
+        "boolean": {
+          "type": "function",
+          "arity": 0
+        },
+        "discriminatedUnion": {
+          "type": "function",
+          "arity": 2
+        },
+        "enum_": {
+          "type": "function",
+          "arity": 1
+        },
+        "lazy": {
+          "type": "function",
+          "arity": 1
+        },
+        "literal": {
+          "type": "function",
+          "arity": 1
+        },
+        "null_": {
+          "type": "function",
+          "arity": 0
+        },
+        "nullable": {
+          "type": "function",
+          "arity": 1
+        },
+        "number": {
+          "type": "function",
+          "arity": 0
+        },
+        "object": {
+          "type": "function",
+          "arity": 1
+        },
+        "oneOf": {
+          "type": "function",
+          "arity": 1
+        },
+        "optional": {
+          "type": "function",
+          "arity": 1
+        },
+        "preprocess": {
+          "type": "function",
+          "arity": 2
+        },
+        "record": {
+          "type": "function",
+          "arity": 2
+        },
+        "string": {
+          "type": "function",
+          "arity": 0
+        },
+        "tuple": {
+          "type": "function",
+          "arity": 1
+        },
+        "undefined_": {
+          "type": "function",
+          "arity": 0
+        },
+        "union": {
+          "type": "function",
+          "arity": 1
+        },
+        "unknown": {
+          "type": "function",
+          "arity": 0
+        }
+      }
+    },
+    "safeSql": {
+      "type": "object",
+      "members": {
+        "DEFAULT_IDENTIFIER_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "MAX_IDENTIFIER_LENGTH": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "SafeSqlError": {
+          "type": "function",
+          "arity": 2
+        },
+        "assertOneOf": {
+          "type": "function",
+          "arity": 2
+        },
+        "quoteIdentifier": {
+          "type": "function",
+          "arity": 2
+        },
+        "quoteQualified": {
+          "type": "function",
+          "arity": 2
+        },
+        "validateIdentifier": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "safeUrl": {
+      "type": "object",
+      "members": {
+        "ALLOW_ANY": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ALLOW_HTTP_ALL": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ALLOW_HTTP_TLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ALLOW_WS_ALL": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ALLOW_WS_TLS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "SafeUrlError": {
+          "type": "function",
+          "arity": 2
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "scheduler": {
+      "type": "object",
+      "members": {
+        "SchedulerError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "nextBaselineFire": {
+          "type": "function",
+          "arity": 3
+        },
+        "nextCronFire": {
+          "type": "function",
+          "arity": 3
+        },
+        "parseCron": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "seeders": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "auditApplied": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "auditFailures": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "lockStaleAfterMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "FILE_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "LOCK_TABLE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "SEEDERS_TABLE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "SeederError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "members": {
+        "DEFAULT_TTL_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "count": {
+          "type": "function",
+          "arity": 0
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "destroy": {
+          "type": "function",
+          "arity": 1
+        },
+        "destroyAllForUser": {
+          "type": "function",
+          "arity": 1
+        },
+        "purgeExpired": {
+          "type": "function",
+          "arity": 0
+        },
+        "rotate": {
+          "type": "function",
+          "arity": 2
+        },
+        "touch": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "slug": {
+      "type": "function",
+      "arity": 2
+    },
+    "ssrfGuard": {
+      "type": "object",
+      "members": {
+        "SsrfError": {
+          "type": "function",
+          "arity": 3
+        },
+        "checkUrl": {
+          "type": "function",
+          "arity": 2
+        },
+        "cidrContains": {
+          "type": "function",
+          "arity": 2
+        },
+        "classify": {
+          "type": "function",
+          "arity": 1
+        },
+        "isCloudMetadata": {
+          "type": "function",
+          "arity": 1
+        },
+        "isLinkLocal": {
+          "type": "function",
+          "arity": 1
+        },
+        "isLoopback": {
+          "type": "function",
+          "arity": 1
+        },
+        "isPrivate": {
+          "type": "function",
+          "arity": 1
+        },
+        "isReserved": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "staticServe": {
+      "type": "object",
+      "members": {
+        "DEFAULT_HASHED_PATTERN": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "DEFAULT_MAX_AGE_SEC": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "IMMUTABLE_MAX_AGE_SEC": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "integrity": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "members": {
+        "deleteFile": {
+          "type": "function",
+          "arity": 2
+        },
+        "exists": {
+          "type": "function",
+          "arity": 2
+        },
+        "getBackend": {
+          "type": "function",
+          "arity": 1
+        },
+        "getFileBuffer": {
+          "type": "function",
+          "arity": 3
+        },
+        "getFileStream": {
+          "type": "function",
+          "arity": 3
+        },
+        "getRawBuffer": {
+          "type": "function",
+          "arity": 2
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "listBackends": {
+          "type": "function",
+          "arity": 0
+        },
+        "presignedDownloadUrl": {
+          "type": "function",
+          "arity": 2
+        },
+        "presignedUploadPolicy": {
+          "type": "function",
+          "arity": 2
+        },
+        "presignedUploadUrl": {
+          "type": "function",
+          "arity": 2
+        },
+        "saveFile": {
+          "type": "function",
+          "arity": 3
+        },
+        "saveRaw": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "members": {
+        "REQUIRED_ERASE_ACKS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "erase": {
+          "type": "function",
+          "arity": 2
+        },
+        "export": {
+          "type": "function",
+          "arity": 2
+        },
+        "exportData": {
+          "type": "function",
+          "arity": 2
+        },
+        "isRestricted": {
+          "type": "function",
+          "arity": 1
+        },
+        "recordObjection": {
+          "type": "function",
+          "arity": 2
+        },
+        "rectify": {
+          "type": "function",
+          "arity": 2
+        },
+        "restrict": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "template": {
+      "type": "object",
+      "members": {
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "escapeHtml": {
+          "type": "function",
+          "arity": 1
+        },
+        "render": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "testing": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "runMiddlewareTimeoutMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "waitForIntervalMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "waitForTimeoutMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "TestingError": {
+          "type": "function",
+          "arity": 4
+        },
+        "bodyReq": {
+          "type": "function",
+          "arity": 3
+        },
+        "bodyRes": {
+          "type": "function",
+          "arity": 0
+        },
+        "captureAudit": {
+          "type": "function",
+          "arity": 0
+        },
+        "captureMetricsTap": {
+          "type": "function",
+          "arity": 0
+        },
+        "captureObservability": {
+          "type": "function",
+          "arity": 0
+        },
+        "fakeClock": {
+          "type": "function",
+          "arity": 1
+        },
+        "fakeHttpClient": {
+          "type": "function",
+          "arity": 1
+        },
+        "listenOnRandomPort": {
+          "type": "function",
+          "arity": 2
+        },
+        "makeFakeOtelApi": {
+          "type": "function",
+          "arity": 0
+        },
+        "mockReq": {
+          "type": "function",
+          "arity": 1
+        },
+        "mockRes": {
+          "type": "function",
+          "arity": 0
+        },
+        "request": {
+          "type": "function",
+          "arity": 1
+        },
+        "runMiddleware": {
+          "type": "function",
+          "arity": 4
+        },
+        "streamingRes": {
+          "type": "function",
+          "arity": 0
+        },
+        "tempDir": {
+          "type": "function",
+          "arity": 1
+        },
+        "waitFor": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "time": {
+      "type": "object",
+      "members": {
+        "TimeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "addDays": {
+          "type": "function",
+          "arity": 3
+        },
+        "addMonths": {
+          "type": "function",
+          "arity": 3
+        },
+        "diffDays": {
+          "type": "function",
+          "arity": 3
+        },
+        "endOfDay": {
+          "type": "function",
+          "arity": 2
+        },
+        "format": {
+          "type": "function",
+          "arity": 2
+        },
+        "parseISO": {
+          "type": "function",
+          "arity": 1
+        },
+        "startOfDay": {
+          "type": "function",
+          "arity": 2
+        },
+        "toParts": {
+          "type": "function",
+          "arity": 2
+        },
+        "tzOffsetMs": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "tracing": {
+      "type": "object",
+      "members": {
+        "TRACEPARENT_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "TracingError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "tap": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "uuid": {
+      "type": "object",
+      "members": {
+        "isValid": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
+        },
+        "v4": {
+          "type": "function",
+          "arity": 0
+        },
+        "v7": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "validateOpts": {
+      "type": "function",
+      "arity": 3
+    },
+    "vault": {
+      "type": "object",
+      "members": {
+        "getCurrentPassphrase": {
+          "type": "function",
+          "arity": 0
+        },
+        "getKeysJson": {
+          "type": "function",
+          "arity": 0
+        },
+        "getMode": {
+          "type": "function",
+          "arity": 0
+        },
+        "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "seal": {
+          "type": "function",
+          "arity": 1
+        },
+        "unseal": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "vaultPassphraseOps": {
+      "type": "object",
+      "members": {
+        "PLAINTEXT_NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "SEALED_NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "VaultPassphraseError": {
+          "type": "function",
+          "arity": 4
+        },
+        "preflightRotatable": {
+          "type": "function",
+          "arity": 1
+        },
+        "preflightSealable": {
+          "type": "function",
+          "arity": 1
+        },
+        "preflightUnsealable": {
+          "type": "function",
+          "arity": 1
+        },
+        "rotate": {
+          "type": "function",
+          "arity": 1
+        },
+        "seal": {
+          "type": "function",
+          "arity": 1
+        },
+        "unseal": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "vaultPassphraseSource": {
+      "type": "object",
+      "members": {
+        "ENV_PASSPHRASE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ENV_PASSPHRASE_FILE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ENV_PASSPHRASE_SRC": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MAX_PASSPHRASE_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "fromEnv": {
+          "type": "function",
+          "arity": 1
+        },
+        "fromFile": {
+          "type": "function",
+          "arity": 2
+        },
+        "fromStdin": {
+          "type": "function",
+          "arity": 1
+        },
+        "getPassphrase": {
+          "type": "function",
+          "arity": 1
+        },
+        "sourceKind": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "vaultRotate": {
+      "type": "object",
+      "members": {
+        "DEFAULT_DRIFT_SAMPLE_LIMIT": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_VERIFY_SAMPLE_FRAC": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_VERIFY_SAMPLE_MIN": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "ROW_BATCH_SIZE_DEFAULT": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "VaultRotateError": {
+          "type": "function",
+          "arity": 4
+        },
+        "formatValidationResult": {
+          "type": "function",
+          "arity": 1
+        },
+        "rotate": {
+          "type": "function",
+          "arity": 1
+        },
+        "validateSchemaMatch": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "vaultWrap": {
+      "type": "object",
+      "members": {
+        "CIPHER_XCHACHA20_POLY": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_ARGON2": {
+          "type": "object",
+          "members": {
+            "hashLength": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "memoryCost": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "parallelism": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "saltLength": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "timeCost": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "FORMAT_VERSION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "KDF_ARGON2ID": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAGIC": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "NONCE_LENGTH": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "buildHeader": {
+          "type": "function",
+          "arity": 1
+        },
+        "deriveWrappingKey": {
+          "type": "function",
+          "arity": 3
+        },
+        "parseHeader": {
+          "type": "function",
+          "arity": 1
+        },
+        "unwrap": {
+          "type": "function",
+          "arity": 2
+        },
+        "wrap": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "version": {
+      "type": "primitive",
+      "valueType": "string"
+    },
+    "webhook": {
+      "type": "object",
+      "members": {
+        "ALGOS": {
+          "type": "object",
+          "members": {
+            "HMAC_SHA3_512": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "PQC_PEM": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "auditFailures": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "auditSuccess": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "clockSkewMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "signatureHeader": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "toleranceMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "HEADER": {
+          "type": "object",
+          "members": {
+            "SIGNATURE": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "WebhookError": {
+          "type": "function",
+          "arity": 4
+        },
+        "signer": {
+          "type": "function",
+          "arity": 1
+        },
+        "verifier": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "websocket": {
+      "type": "object",
+      "members": {
+        "CLOSE_GOING_AWAY": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_INTERNAL_ERROR": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_INVALID_PAYLOAD": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_MESSAGE_TOO_BIG": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_NORMAL": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_POLICY_VIOLATION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_PROTOCOL_ERROR": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_UNSUPPORTED_DATA": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "FrameParser": {
+          "type": "function",
+          "arity": 1
+        },
+        "GUID": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "OPCODE_BINARY": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OPCODE_CLOSE": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OPCODE_CONTINUATION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OPCODE_PING": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OPCODE_PONG": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OPCODE_TEXT": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "WebSocketConnection": {
+          "type": "function",
+          "arity": 2
+        },
+        "WebSocketError": {
+          "type": "function",
+          "arity": 3
+        },
+        "buildUpgradeResponse": {
+          "type": "function",
+          "arity": 2
+        },
+        "computeAcceptKey": {
+          "type": "function",
+          "arity": 1
+        },
+        "handleExtendedConnect": {
+          "type": "function",
+          "arity": 3
+        },
+        "handleUpgrade": {
+          "type": "function",
+          "arity": 4
+        },
+        "isOriginAllowed": {
+          "type": "function",
+          "arity": 2
+        },
+        "negotiateSubprotocol": {
+          "type": "function",
+          "arity": 2
+        },
+        "serializeFrame": {
+          "type": "function",
+          "arity": 3
+        },
+        "validateUpgradeRequest": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "websocketChannels": {
+      "type": "object",
+      "members": {
+        "WebSocketChannelsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    }
+  }
+}

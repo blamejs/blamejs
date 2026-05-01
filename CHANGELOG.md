@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.6.x
 
+- **0.6.6** (2026-05-01) — request-time DB role binding + Postgres RLS migrations
 - **0.6.5** (2026-05-01) — b.db.declareView + b.externalDb.migrate
 - **0.6.4** (2026-05-01) — wiki schema docs realigned with the actual lib API
 - **0.6.3** (2026-05-01) — externalDb pool tuning + role-aware connect + read-replica routing

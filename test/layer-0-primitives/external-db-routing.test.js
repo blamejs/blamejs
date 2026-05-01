@@ -28,7 +28,7 @@ async function run() {
   // No throw — happy path. The new bounds take effect on next acquire.
   check("configurePool: happy path",  true);
 
-  // Tier-A on bad opts.
+  // configurePool rejects bad opts at the call site.
   function rejects(label, fn, codeRe) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
@@ -174,7 +174,7 @@ async function run() {
   check("read.query: no replicas configured → primary",
         solo.seen.some(function (s) { return /SELECT 1/.test(s); }));
 
-  // ---- Tier-A on replicas config ----
+  // ---- replicas config validation rejects bad shapes at init ----
   b.externalDb._resetForTest();
   function rejectsReplicas(label, replicasCfg, codeRe) {
     var threw = null;
@@ -353,6 +353,166 @@ async function run() {
   await rejectsTx("null value",         { "app.x": null },        /INVALID_SESSION_GUCS/);
   await rejectsTx("Infinity number",    { "app.x": Infinity },    /INVALID_SESSION_GUCS/);
   await rejectsTx("object value",       { "app.x": { y: 1 } },    /INVALID_SESSION_GUCS/);
+
+  // ---- v0.6.7: role-tagged metrics + 42501 denied detection ----
+  b.externalDb._resetForTest();
+  var obs = b.testing.captureObservability();
+
+  // Replace observability for the duration; restore at the end.
+  var obsModule = require("../../lib/observability");
+  var origEvent = obsModule.event;
+  obsModule.event = obs.event;
+
+  function _metricDriver(label) {
+    var seen = [];
+    return {
+      label: label,
+      seen:  seen,
+      connect: async function () { return { id: label + "-c" }; },
+      query:   async function (_c, sql, _p) {
+        seen.push(sql);
+        if (/PERMISSION_DENIED/i.test(sql)) {
+          var e = new Error("permission denied for table sessions");
+          e.code = "42501";
+          throw e;
+        }
+        if (/^SELECT 1$/i.test(sql)) return { rows: [], rowCount: 0 };
+        if (/^BEGIN/i.test(sql) || /^COMMIT/i.test(sql) || /^ROLLBACK/i.test(sql)) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [{ from: label }], rowCount: 1 };
+      },
+      close: async function () {},
+      ping:  async function () { return true; },
+    };
+  }
+
+  var driverApp = _metricDriver("app");
+  var driverAna = _metricDriver("ana");
+  b.externalDb.init({
+    backends: {
+      appMain:       { connect: driverApp.connect, query: driverApp.query, close: driverApp.close },
+      analyticsMain: { connect: driverAna.connect, query: driverAna.query, close: driverAna.close },
+    },
+    defaultBackend: "appMain",
+    dbRoleBackends: { app_user: "appMain", analytics_user: "analyticsMain" },
+  });
+
+  obs.clear();
+  await b.externalDb.runAs("analytics_user", async function () {
+    await b.externalDb.query("SELECT 1");
+  });
+  var successEvents = obs.byName("externaldb.query.success");
+  check("metrics: query.success tagged with role label",
+    successEvents.length === 1 && successEvents[0].labels.role === "analytics_user");
+  var durationEvents = obs.byName("externaldb.query.duration_ms");
+  check("metrics: query.duration_ms tagged with role label",
+    durationEvents.length === 1 && durationEvents[0].labels.role === "analytics_user" &&
+    typeof durationEvents[0].value === "number");
+
+  // 42501 → db.role.denied
+  obs.clear();
+  var threwDenied = null;
+  try {
+    await b.externalDb.runAs("app_user", async function () {
+      await b.externalDb.query("PERMISSION_DENIED test");
+    });
+  } catch (e) { threwDenied = e; }
+  check("42501 propagates as caller error",  threwDenied && threwDenied.code === "42501");
+  var deniedEvents = obs.byName("db.role.denied");
+  check("42501: db.role.denied counter emitted with role label",
+    deniedEvents.length === 1 && deniedEvents[0].labels.role === "app_user");
+
+  // No role → "(none)" label fallback
+  obs.clear();
+  await b.externalDb.query("SELECT 1");
+  var noRoleEvents = obs.byName("externaldb.query.success");
+  check("metrics: no role bound → labels.role=(none)",
+    noRoleEvents.length === 1 && noRoleEvents[0].labels.role === "(none)");
+
+  // ---- v0.6.7: pool acquire-wait emitted under contention ----
+  // Force a wait by holding all connections + queueing a second request.
+  obs.clear();
+  b.externalDb._resetForTest();
+  var slowDriver = _metricDriver("slow");
+  b.externalDb.init({
+    backends: {
+      x: {
+        connect: slowDriver.connect, query: slowDriver.query, close: slowDriver.close,
+        pool:    { min: 1, max: 1, idleTimeoutMs: 60000 },
+      },
+    },
+  });
+  // Hold the only client, then start a second query in parallel.
+  // The second has to wait — emits acquire_wait.
+  var holdResolve;
+  var holdingDriver = {
+    connect: async function () { return { id: "held" }; },
+    query:   async function (_c, sql) {
+      if (sql === "HOLD") return new Promise(function (r) { holdResolve = r; });
+      return { rows: [], rowCount: 0 };
+    },
+    close:   async function () {},
+  };
+  b.externalDb._resetForTest();
+  b.externalDb.init({
+    backends: {
+      x: {
+        connect: holdingDriver.connect, query: holdingDriver.query, close: holdingDriver.close,
+        pool:    { min: 1, max: 1, idleTimeoutMs: 60000 },
+      },
+    },
+  });
+  obs.clear();
+  // First call acquires the only slot.
+  var first = b.externalDb.query("HOLD");
+  // Wait a tick so the first acquire definitely landed.
+  await new Promise(function (r) { setImmediate(r); });
+  // Second call waits.
+  var second = b.externalDb.query("SELECT 1");
+  // Brief delay so the wait is observable.
+  await new Promise(function (r) { setTimeout(r, 5); });
+  // Release the held call.
+  holdResolve({ rows: [], rowCount: 0 });
+  await first;
+  await second;
+  var acquireWaitEvents = obs.byName("externaldb.pool.acquire_wait");
+  check("acquire_wait: emitted when waiter blocks at max capacity",
+    acquireWaitEvents.length >= 1 &&
+    typeof acquireWaitEvents[0].value === "number" &&
+    acquireWaitEvents[0].labels.backend === "x");
+
+  // ---- v0.6.7: runAs emits db.role.switched audit ----
+  // Swap audit module's safeEmit for capture; restore after.
+  b.externalDb._resetForTest();
+  var auditModule = require("../../lib/audit");
+  var origSafeEmit = auditModule.safeEmit;
+  var captured = [];
+  auditModule.safeEmit = function (e) { captured.push(e); };
+  try {
+    b.externalDb.init({
+      backends: {
+        x: { connect: holdingDriver.connect, query: async function () { return { rows: [], rowCount: 0 }; } },
+      },
+    });
+    await b.externalDb.runAs("analytics_user", async function () { /* no-op */ });
+    var runAsAudit = captured.filter(function (e) { return e && e.action === "db.role.switched"; });
+    check("runAs: db.role.switched audit emitted",
+      runAsAudit.length === 1 &&
+      runAsAudit[0].metadata.newRole === "analytics_user" &&
+      runAsAudit[0].metadata.source === "runAs");
+
+    // No-op transition (same role) → no emission.
+    captured.length = 0;
+    await b.externalDb.runAs(null, async function () { /* no role -> still no role */ });
+    check("runAs: same-role transition does NOT emit",
+      captured.filter(function (e) { return e && e.action === "db.role.switched"; }).length === 0);
+  } finally {
+    auditModule.safeEmit = origSafeEmit;
+  }
+
+  // Restore observability
+  obsModule.event = origEvent;
 
   // ---- Final clean ----
   b.externalDb._resetForTest();

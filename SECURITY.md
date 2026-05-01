@@ -127,6 +127,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 
 **Application**
 - [ ] Use `b.permissions` for every state-changing route (don't gate on `req.user` truthiness alone)
+- [ ] For Postgres backends serving narrowed views or row-level-security policies, mount `b.middleware.dbRoleFor` so the request-time DB role is bound from the actor's permissions role; pair `b.db.declareRowPolicy` migrations with `b.externalDb.transaction({ sessionGucs })` for per-tenant binding
 - [ ] Audit all `{{{ raw }}}` template outputs — these bypass HTML escape
 - [ ] Run `blamejs api-snapshot compare --file ./api-snapshot.json` in CI to catch removed methods or changed signatures before they ship
 - [ ] Subscribe to the `blamejs-security-announce` mailing list for advisories

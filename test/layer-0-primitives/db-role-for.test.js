@@ -174,6 +174,48 @@ async function run() {
     insideRole === "app_user");
   check("runWithRole: outside scope, getRole is null again",
     dbRoleContext.getRole() === null);
+
+  // ---- audit: db.role.switched emitted on bind (success path) ----
+  var audCap = b.testing.captureAudit();
+  var mwAudit = b.middleware.dbRoleFor({
+    audit:       audCap,
+    defaultRole: "app_user",
+  });
+  await _runMw(mwAudit, _mockReq({ url: "/x" }), _mockRes());
+  var switched = audCap.byAction("db.role.switched");
+  check("audit: db.role.switched emitted on success",
+    switched.length === 1 &&
+    switched[0].metadata.newRole === "app_user" &&
+    switched[0].metadata.previousRole === null &&
+    switched[0].metadata.source === "middleware" &&
+    switched[0].outcome === "success");
+
+  // ---- audit: opt-out via auditSuccess: false ----
+  var audCap2 = b.testing.captureAudit();
+  var mwOptOut = b.middleware.dbRoleFor({
+    audit:        audCap2,
+    defaultRole:  "app_user",
+    auditSuccess: false,
+  });
+  await _runMw(mwOptOut, _mockReq({ url: "/x" }), _mockRes());
+  check("audit: auditSuccess=false suppresses success emission",
+    audCap2.byAction("db.role.switched").length === 0);
+
+  // ---- audit: requireRole + missing actor → failure emission ----
+  var audCap3 = b.testing.captureAudit();
+  var mwReq = b.middleware.dbRoleFor({
+    audit:       audCap3,
+    permissions: perms,
+    requireRole: true,
+  });
+  var resReq = _mockRes();
+  mwReq(_mockReq({ url: "/x" }), resReq, function () {});
+  await Promise.resolve();
+  var failures = audCap3.byAction("db.role.switched");
+  check("audit: failure path emits with outcome=failure + reason=no-role",
+    failures.length === 1 &&
+    failures[0].outcome === "failure" &&
+    failures[0].reason === "no-role");
 }
 
 module.exports = { run: run };

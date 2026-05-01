@@ -80,6 +80,25 @@ jobs:
         working-directory: examples/wiki
         run: node test/e2e.js
 
+  api-snapshot:
+    name: API surface snapshot gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node 24 LTS
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Compare against committed baseline
+        # Fails on breaking changes (removed methods, type changes).
+        # Additive changes (new methods) are logged but pass — the
+        # baseline gets refreshed at the next release commit alongside
+        # the bump in package.json so the new surface is tracked.
+        run: node scripts/check-api-snapshot.js
+
   lint-eslint:
     name: ESLint (lib + examples + tests)
     runs-on: ubuntu-latest

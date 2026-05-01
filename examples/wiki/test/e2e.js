@@ -344,6 +344,9 @@ async function run() {
     assert("compliance-patterns page documents tenant-per-row vs tenant-per-schema",
            /tenant-per-row/i.test(compliancePatterns.body) &&
            /tenant-per-schema/i.test(compliancePatterns.body));
+    assert("compliance-patterns page has Pick-your-defenses decision tree",
+           /Pick your defenses/i.test(compliancePatterns.body) &&
+           /What are you defending against/i.test(compliancePatterns.body));
 
     var backupRestore = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/backup-restore",
