@@ -255,6 +255,41 @@ function testCorsConfigValidationThrows() {
   // undefined / not-passed → no throw, default behaviour.
   var ok = b.middleware.cors({});
   check("no opts: returns a function (default behaviour)", typeof ok === "function");
+
+  // Allowlist canonicalization — case + default-port differences match.
+  var threwOnUnparseableOrigin = null;
+  try { b.middleware.cors({ origins: ["not-a-url"] }); }
+  catch (e) { threwOnUnparseableOrigin = e; }
+  check("unparseable origin URL throws cors/bad-origin",
+        threwOnUnparseableOrigin && threwOnUnparseableOrigin.code === "cors/bad-origin");
+}
+
+async function testCorsAllowlistCanonicalization() {
+  // String entries are canonicalized at create() — case + default-port
+  // differences between the configured value and the inbound Origin
+  // header now match consistently.
+  var mw = b.middleware.cors({
+    origins:       ["https://APP.example.com:443"],   // upper-case + default port
+    refuseUnknown: true,
+  });
+
+  // Browser sends the canonical lower-case host without the default port.
+  var req = _req({
+    method:  "POST",
+    headers: { host: "wiki.example.com", origin: "https://app.example.com" },
+  });
+  var out = await _drive(mw, req);
+  check("allowlist: case + default-port differences match",
+        out.nextCalled === true || out.res._sent.statusCode !== 403);
+
+  // Different host: still refused.
+  var req2 = _req({
+    method:  "POST",
+    headers: { host: "wiki.example.com", origin: "https://other.example.com" },
+  });
+  var out2 = await _drive(mw, req2);
+  check("allowlist: different host still refused",
+        out2.res._sent.statusCode === 403);
 }
 
 async function run() {
@@ -270,6 +305,7 @@ async function run() {
   await testCorsNullOriginRelaxedRequiresSameOrigin();
   await testCorsNullOriginWithoutFetchSiteRefused();
   testCorsConfigValidationThrows();
+  await testCorsAllowlistCanonicalization();
 }
 
 module.exports = { run: run };

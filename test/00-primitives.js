@@ -106,6 +106,50 @@ function testSqlSafeQuoteIdentifier() {
   check("quoteIdentifier rejects bad name",                 threw);
 }
 
+function testSqlSafeQuoteQualified() {
+  // Array form
+  check("quoteQualified array → schema.table",
+        b.safeSql.quoteQualified(["public", "users"]) === '"public"."users"');
+  check("quoteQualified array postgres dialect",
+        b.safeSql.quoteQualified(["public", "users"], "postgres") === '"public"."users"');
+  check("quoteQualified array mysql dialect",
+        b.safeSql.quoteQualified(["public", "users"], "mysql") === "`public`.`users`");
+  // String form — splits on dot
+  check("quoteQualified string 'a.b'",
+        b.safeSql.quoteQualified("public.users") === '"public"."users"');
+  // Three-part qualifier
+  check("quoteQualified 3-part qualifier",
+        b.safeSql.quoteQualified("dbA.public.users") === '"dbA"."public"."users"');
+  // Single segment
+  check("quoteQualified single segment",
+        b.safeSql.quoteQualified("users") === '"users"');
+  // Each segment validated — bad part rejects
+  var threwBadPart = null;
+  try { b.safeSql.quoteQualified(["public", "1invalid"]); }
+  catch (e) { threwBadPart = e; }
+  check("quoteQualified rejects bad-shape segment",
+        threwBadPart && threwBadPart.code === "sql/bad-shape");
+  // Reserved-word part rejects
+  var threwReserved = null;
+  try { b.safeSql.quoteQualified(["public", "select"]); }
+  catch (e) { threwReserved = e; }
+  check("quoteQualified rejects reserved-word segment",
+        threwReserved && threwReserved.code === "sql/reserved-word");
+  // Empty / non-string / non-array
+  var threwEmpty = null;
+  try { b.safeSql.quoteQualified(""); } catch (e) { threwEmpty = e; }
+  check("quoteQualified rejects empty string",
+        threwEmpty && threwEmpty.code === "sql/empty");
+  var threwArr = null;
+  try { b.safeSql.quoteQualified([]); } catch (e) { threwArr = e; }
+  check("quoteQualified rejects empty array",
+        threwArr && threwArr.code === "sql/empty");
+  var threwType = null;
+  try { b.safeSql.quoteQualified(42); } catch (e) { threwType = e; }
+  check("quoteQualified rejects non-string/array",
+        threwType && threwType.code === "sql/bad-type");
+}
+
 function testSqlSafeAssertOneOf() {
   var allow = new Set(["audit_log", "consent_log"]);
   check("assertOneOf passes when in allowlist",
@@ -5262,6 +5306,43 @@ async function testBodyParserGetSkipped() {
   var r = await _runBodyParser(bp, req, res);
   check("GET request: bodyParser passes through (no body)",  r.next === true);
   check("GET request: req.body unset",                       req.body === undefined);
+}
+
+async function testBodyParserStrictContentLength() {
+  // RFC 9112 §6.1: Content-Length MUST be a sequence of decimal digits.
+  // Malformed values (123abc, "00 ", "+0", whitespace) get rejected as
+  // 400 instead of being leniently parsed by parseInt.
+  var bp = b.middleware.bodyParser();
+  var body = '{"a":1}';
+  var bad = ["123abc", "12.5", "+5", "-1", " 5 ", "00abc", "1e3"];
+  for (var i = 0; i < bad.length; i++) {
+    var req = _mockBodyReq("POST",
+      { "content-type": "application/json", "content-length": bad[i] }, body);
+    var res = _mockBodyRes();
+    var r = await _runBodyParser(bp, req, res);
+    check("malformed content-length '" + bad[i] + "' → 400",
+          res._endedStatus === 400);
+    check("malformed content-length '" + bad[i] + "' → next not called",
+          r.next === false);
+  }
+
+  // _hasBody behavior on edge cases:
+  //   "0" / "00" — both pass the strict /^\d+$/ regex and parse to 0,
+  //     so they're treated as "no body" (RFC 9112 doesn't forbid leading
+  //     zeros in the digit sequence — the value is what counts).
+  //   " 0 " / "+0" — whitespace + sign are NOT decimal digits, so the
+  //     header is malformed; _hasBody returns true so the downstream
+  //     _bufferBody can reject with 400 instead of silently skipping.
+  var raw = b.middleware._modules.bodyParser;
+  check("_hasBody('0') → false (strict zero)",
+        raw._hasBody({ method: "POST", headers: { "content-length": "0" } }) === false);
+  check("_hasBody('00') → false (still zero)",
+        raw._hasBody({ method: "POST", headers: { "content-length": "00" } }) === false);
+  var malformed = [" 0 ", "+0"];
+  for (var z = 0; z < malformed.length; z++) {
+    var hb = raw._hasBody({ method: "POST", headers: { "content-length": malformed[z] } });
+    check("_hasBody('" + malformed[z] + "') → true (downstream rejects malformed)",  hb === true);
+  }
 }
 
 async function testBodyParserJsonHappy() {
@@ -12853,6 +12934,49 @@ async function testHttpClientBasic() {
   }
 }
 
+async function testHttpClientConfigurePool() {
+  // configurePool tunes the per-origin transport cache and resets it so
+  // subsequent requests build fresh transports with the new opts.
+  var http = require("http");
+  var server = http.createServer(function (_req, res) { res.writeHead(200); res.end("ok"); });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+    await httpReq({ url: "http://127.0.0.1:" + port + "/" });
+    check("configurePool: transport cached pre-reconfigure",
+          b.httpClient._getCachedTransportCount() === 1);
+    b.httpClient.configurePool({ maxSockets: 8, keepAliveMsecs: 500 });
+    check("configurePool: cache cleared on reconfigure",
+          b.httpClient._getCachedTransportCount() === 0);
+    await httpReq({ url: "http://127.0.0.1:" + port + "/" });
+    check("configurePool: subsequent request rebuilds transport",
+          b.httpClient._getCachedTransportCount() === 1);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+    // Restore defaults so the rest of the suite isn't affected.
+    b.httpClient.configurePool({
+      maxSockets:     b.httpClient.DEFAULT_AGENT_OPTS.maxSockets,
+      maxFreeSockets: b.httpClient.DEFAULT_AGENT_OPTS.maxFreeSockets,
+      keepAliveMsecs: b.httpClient.DEFAULT_AGENT_OPTS.keepAliveMsecs,
+    });
+  }
+
+  // Tier-A on bad inputs.
+  function rejects(label, fn, msgRe) {
+    var threw = null;
+    try { fn(); } catch (e) { threw = e; }
+    check("configurePool rejects: " + label,  threw && msgRe.test(threw.message || ""));
+  }
+  rejects("non-object input",          function () { b.httpClient.configurePool("nope"); }, /must be an object/);
+  rejects("unknown key",               function () { b.httpClient.configurePool({ bogus: 1 }); }, /unknown option/);
+  rejects("negative maxSockets",       function () { b.httpClient.configurePool({ maxSockets: -1 }); }, /positive integer/);
+  rejects("non-integer keepAliveMsecs",function () { b.httpClient.configurePool({ keepAliveMsecs: 1.5 }); }, /positive integer/);
+  rejects("Infinity maxFreeSockets",   function () { b.httpClient.configurePool({ maxFreeSockets: Infinity }); }, /positive integer/);
+  rejects("non-boolean keepAlive",     function () { b.httpClient.configurePool({ keepAlive: "yes" }); }, /must be a boolean/);
+  rejects("bad scheduling",            function () { b.httpClient.configurePool({ scheduling: "rr" }); }, /lifo.*fifo/);
+}
+
 async function testHttpClientErrorStatus() {
   var http = require("http");
   var server = http.createServer(function (req, res) {
@@ -15419,6 +15543,7 @@ async function run() {
   // body-parser — request-body buffering + dispatch
   await testBodyParserSurface();
   await testBodyParserGetSkipped();
+  await testBodyParserStrictContentLength();
   await testBodyParserJsonHappy();
   await testBodyParserJsonStripsPrototypePollution();
   await testBodyParserJsonSizeCap();
@@ -15749,6 +15874,7 @@ async function run() {
   // sql-safe primitive
   testSqlSafeIdentifierValidation();
   testSqlSafeQuoteIdentifier();
+  testSqlSafeQuoteQualified();
   testSqlSafeAssertOneOf();
   // chain-writer primitive (cross-layer; documented in test header)
   await testChainWriterRejectsBadTable();
@@ -15776,6 +15902,7 @@ async function run() {
   testUrlSafeAllowAny();
   // http-client primitive (used by 5 protocol adapters)
   await testHttpClientBasic();
+  await testHttpClientConfigurePool();
   await testHttpClientErrorStatus();
   await testHttpClientWallClockTimeout();
   await testHttpClientAbortSignal();
@@ -16080,6 +16207,7 @@ module.exports = {
   testBackupCryptoArgValidation:             testBackupCryptoArgValidation,
   testBodyParserSurface:                     testBodyParserSurface,
   testBodyParserGetSkipped:                  testBodyParserGetSkipped,
+  testBodyParserStrictContentLength:         testBodyParserStrictContentLength,
   testBodyParserJsonHappy:                   testBodyParserJsonHappy,
   testBodyParserJsonStripsPrototypePollution: testBodyParserJsonStripsPrototypePollution,
   testBodyParserJsonSizeCap:                 testBodyParserJsonSizeCap,
@@ -16350,6 +16478,7 @@ module.exports = {
   testHandlerBackpressureDrop:               testHandlerBackpressureDrop,
   testSqlSafeIdentifierValidation:           testSqlSafeIdentifierValidation,
   testSqlSafeQuoteIdentifier:                testSqlSafeQuoteIdentifier,
+  testSqlSafeQuoteQualified:                 testSqlSafeQuoteQualified,
   testSqlSafeAssertOneOf:                    testSqlSafeAssertOneOf,
   testChainWriterRejectsBadTable:            testChainWriterRejectsBadTable,
   testChainWriterRaceSafetyConcurrentAppends: testChainWriterRaceSafetyConcurrentAppends,
@@ -16366,6 +16495,7 @@ module.exports = {
   testUrlSafeErrorClassInjection:            testUrlSafeErrorClassInjection,
   testUrlSafeAllowAny:                       testUrlSafeAllowAny,
   testHttpClientBasic:                       testHttpClientBasic,
+  testHttpClientConfigurePool:               testHttpClientConfigurePool,
   testHttpClientErrorStatus:                 testHttpClientErrorStatus,
   testHttpClientWallClockTimeout:            testHttpClientWallClockTimeout,
   testHttpClientAbortSignal:                 testHttpClientAbortSignal,

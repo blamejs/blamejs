@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.6.x
 
+- **0.6.1** (2026-05-01) — security tightenings + operator-facing jargon sweep
 - **0.6.0** (2026-05-01) — wiki restructured into 22 focused pages + missing-primitive coverage
 
 ## v0.5.x
