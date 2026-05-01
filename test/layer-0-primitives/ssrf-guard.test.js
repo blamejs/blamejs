@@ -192,6 +192,40 @@ async function run() {
   var e = new ssrf.SsrfError("msg", "ssrf-guard/test");
   check("SsrfError has isSsrfError flag",       e.isSsrfError === true);
   check("SsrfError marks permanent (no retry)", e.permanent === true);
+
+  // ---- Pinned-lookup callback (TOCTOU defense) ----
+  // After ssrf-guard validates an IP, http-client pins the actual TCP
+  // connect to that IP via a custom `lookup` callback (closes the DNS
+  // rebinding window). Verify the callback honors Node's documented
+  // shape: callback(err, address, family) for single, callback(err,
+  // [{ address, family }]) when options.all is set.
+  var httpClient = require("../../lib/http-client");
+  var pinned = httpClient._pinnedLookupForTest([
+    { address: "203.0.113.5", family: 4 },
+    { address: "2001:db8::1", family: 6 },
+  ]);
+  check("pinned-lookup: returns a function",   typeof pinned === "function");
+
+  var singleAddr, singleFamily;
+  pinned("evil.example.invalid", {}, function (err, addr, family) {
+    singleAddr = addr; singleFamily = family;
+  });
+  check("pinned-lookup: single returns first IP regardless of hostname",
+        singleAddr === "203.0.113.5" && singleFamily === 4);
+
+  var allList;
+  pinned("any-hostname-here", { all: true }, function (err, list) { allList = list; });
+  check("pinned-lookup: all=true returns full list",
+        Array.isArray(allList) && allList.length === 2);
+  check("pinned-lookup: all=true preserves order",
+        allList[0].address === "203.0.113.5" && allList[1].address === "2001:db8::1");
+  check("pinned-lookup: all=true preserves family",
+        allList[1].family === 6);
+
+  // Empty IP list → no lookup callback (caller falls back to Node's DNS)
+  var noPin = httpClient._pinnedLookupForTest([]);
+  check("pinned-lookup: empty ips → undefined (let Node resolve)",
+        noPin === undefined);
 }
 
 module.exports = { run: run };
