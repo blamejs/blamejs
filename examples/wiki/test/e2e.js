@@ -174,7 +174,7 @@ async function run() {
     });
     assert("GET /object-store → 200", objectStore.statusCode === 200);
     assert("object-store page covers presigned uploads",
-           /presignUpload/.test(objectStore.body) && /SigV4/.test(objectStore.body));
+           /presignedUploadPolicy/.test(objectStore.body) && /SigV4/.test(objectStore.body));
 
     var queueCache = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/queue-cache",
@@ -279,8 +279,8 @@ async function run() {
       headers: BROWSER_HEADERS,
     });
     assert("GET /notifications → 200", notifications.statusCode === 200);
-    assert("notifications page covers b.notify channels",
-           /b\.notify\.channels\.log/.test(notifications.body) && /httpJson/.test(notifications.body));
+    assert("notifications page covers b.notify transports",
+           /b\.notify\.transports\.log/.test(notifications.body) && /httpJson/.test(notifications.body));
 
     var i18n = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/i18n-locale",
