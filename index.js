@@ -108,6 +108,7 @@ var jobs = require("./lib/jobs");
 var breakGlass = require("./lib/break-glass");
 var config = require("./lib/config");
 var csv = require("./lib/csv");
+var time = require("./lib/time");
 var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
 var mailBounce = require("./lib/mail-bounce");
@@ -213,6 +214,7 @@ module.exports = {
   breakGlass:       breakGlass,
   config:           config,
   csv:              csv,
+  time:             time,
   uuid:             uuid,
   mail:             mail,
   mailBounce:       mailBounce,
