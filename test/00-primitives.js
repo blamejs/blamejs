@@ -7453,8 +7453,22 @@ function testSafeSchemaStringPrimitive() {
 
   check("string().ipv4 accepts",                   s.string().ipv4().parse("192.168.1.1") === "192.168.1.1");
   check("string().ipv4 rejects ipv6",              s.string().ipv4().safeParse("::1").ok === false);
+  check("string().ipv4 rejects out-of-range",      s.string().ipv4().safeParse("256.1.1.1").ok === false);
   check("string().ipv6 accepts ::1",               s.string().ipv6().parse("::1") === "::1");
-  check("string().ipv6 accepts full",              s.string().ipv6().parse("2001:0db8:85a3:0000:0000:8a2e:0370:7334") === "2001:0db8:85a3:0000:0000:8a2e:0370:7334");
+  check("string().ipv6 accepts ::",                s.string().ipv6().parse("::") === "::");
+  check("string().ipv6 accepts full 8-hextet",
+        s.string().ipv6().parse("2001:0db8:85a3:0000:0000:8a2e:0370:7334") === "2001:0db8:85a3:0000:0000:8a2e:0370:7334");
+  check("string().ipv6 accepts compressed",        s.string().ipv6().parse("2001:db8::1") === "2001:db8::1");
+  check("string().ipv6 accepts trailing 1::",      s.string().ipv6().parse("1::") === "1::");
+  check("string().ipv6 accepts mixed case",        s.string().ipv6().parse("2001:DB8::1") === "2001:DB8::1");
+  check("string().ipv6 accepts IPv4-mapped",       s.string().ipv6().parse("::ffff:192.168.1.1") === "::ffff:192.168.1.1");
+  check("string().ipv6 accepts long IPv4-mapped",  s.string().ipv6().parse("2001:db8::192.0.2.1") === "2001:db8::192.0.2.1");
+  check("string().ipv6 rejects multiple ::",       s.string().ipv6().safeParse("1::2::3").ok === false);
+  check("string().ipv6 rejects > 8 groups",        s.string().ipv6().safeParse("1:2:3:4:5:6:7:8:9").ok === false);
+  check("string().ipv6 rejects non-hex chars",     s.string().ipv6().safeParse("g::").ok === false);
+  check("string().ipv6 rejects > 4 hex per group", s.string().ipv6().safeParse("12345::").ok === false);
+  check("string().ipv6 rejects zone IDs",          s.string().ipv6().safeParse("fe80::1%eth0").ok === false);
+  check("string().ipv6 rejects empty",             s.string().ipv6().safeParse("").ok === false);
   check("string().ip accepts both",                s.string().ip().parse("192.168.1.1") === "192.168.1.1" &&
                                                      s.string().ip().parse("::1") === "::1");
 
