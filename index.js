@@ -105,6 +105,7 @@ var staticServe = require("./lib/static");
 var forms = require("./lib/forms");
 var app = require("./lib/app");
 var jobs = require("./lib/jobs");
+var breakGlass = require("./lib/break-glass");
 var mail = require("./lib/mail");
 var mailBounce = require("./lib/mail-bounce");
 var websocketChannels = require("./lib/websocket-channels");
@@ -206,6 +207,7 @@ module.exports = {
   forms:            forms,
   createApp:        app.createApp,
   jobs:             jobs,
+  breakGlass:       breakGlass,
   mail:             mail,
   mailBounce:       mailBounce,
   websocketChannels: websocketChannels,
