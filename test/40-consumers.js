@@ -1609,6 +1609,9 @@ async function testMiddlewareSecurityHeaders() {
     check("security: Origin-Agent-Cluster ?1",           h["origin-agent-cluster"] === "?1");
     check("security: X-DNS-Prefetch-Control off",        h["x-dns-prefetch-control"] === "off");
     check("security: CSP includes default-src 'self'",   /default-src 'self'/.test(h["content-security-policy"]));
+    check("security: CSP no longer ships 'unsafe-inline'",
+          h["content-security-policy"].indexOf("'unsafe-inline'") === -1);
+    check("security: CSP keeps style-src 'self'",        /style-src 'self'(?!\s+'unsafe-inline')/.test(h["content-security-policy"]));
 
     // Override + disable
     var mw2 = b.middleware.securityHeaders({

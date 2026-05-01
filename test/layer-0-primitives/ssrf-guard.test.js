@@ -60,6 +60,31 @@ async function run() {
   check("classify ::ffff:8.8.8.8 → null (IPv4-mapped public)",
         ssrf.classify("::ffff:8.8.8.8") === null);
 
+  // ---- classify: IPv6 special-use ranges ----
+  // Multicast ff00::/8 — RFC 4291.
+  check("classify ff02::1 → reserved (multicast)",     ssrf.classify("ff02::1") === "reserved");
+  check("classify ff05::1 → reserved (multicast site-local)", ssrf.classify("ff05::1") === "reserved");
+  check("classify ffff::1 → reserved (multicast)",     ssrf.classify("ffff::1") === "reserved");
+  // Discard prefix 100::/64 — RFC 6666.
+  check("classify 100::1 → reserved (discard)",        ssrf.classify("100::1") === "reserved");
+  check("classify 100::ffff:ffff:ffff:ffff → reserved (discard)",
+        ssrf.classify("100::ffff:ffff:ffff:ffff") === "reserved");
+  // 6to4 2002::/16 — should re-classify the embedded v4 (RFC 3056).
+  // 2002:0a00:0001:: → 10.0.0.1 (private)
+  check("classify 2002:0a00:0001:: → private (6to4 wrapping 10.0.0.1)",
+        ssrf.classify("2002:0a00:0001::") === "private");
+  // 2002:7f00:0001:: → 127.0.0.1 (loopback)
+  check("classify 2002:7f00:0001:: → loopback (6to4 wrapping 127.0.0.1)",
+        ssrf.classify("2002:7f00:0001::") === "loopback");
+  // 2002:a9fe:a9fe:: → 169.254.169.254 (cloud-metadata)
+  check("classify 2002:a9fe:a9fe:: → cloud-metadata (6to4 wrapping 169.254.169.254)",
+        ssrf.classify("2002:a9fe:a9fe::") === "cloud-metadata");
+  // NAT64 64:ff9b::/96 — should re-classify the embedded v4 (RFC 6052).
+  check("classify 64:ff9b::a00:1 → private (NAT64 wrapping 10.0.0.1)",
+        ssrf.classify("64:ff9b::a00:1") === "private");
+  check("classify 64:ff9b::a9fe:a9fe → cloud-metadata (NAT64 wrapping 169.254.169.254)",
+        ssrf.classify("64:ff9b::a9fe:a9fe") === "cloud-metadata");
+
   // ---- classify: bad input ----
   check("classify '' → null",                   ssrf.classify("") === null);
   check("classify 'not-an-ip' → null",          ssrf.classify("not-an-ip") === null);

@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.4** (2026-04-30) — close SSRF DNS-rebinding window with pinned outbound DNS
 - **0.5.3** (2026-04-30) — security cleanup: trustProxy primitive + Vary merge + HSTS gate
 - **0.5.2** (2026-04-30) — b.breakGlass: passkey factor + service-account bypass + admin tools
 - **0.5.1** (2026-04-30) — b.breakGlass: per-cell encryption + context binding + migrate
