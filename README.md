@@ -17,7 +17,7 @@ The modern Node app is a 1,200-package supply-chain liability with no LTS calend
 
 ## Status
 
-Pre-1.0. The framework is usable end-to-end — envelope-versioned PQC crypto, sealed storage, HTTP router with a full middleware stack, vault, sessions, permissions, audit chain, scheduler, jobs, notify, mail, websocket, i18n, cluster mode, backup/restore, a wiki reference app under `examples/wiki/`. Operators can build production apps on it today; the surface is still subject to change before 1.0.
+Pre-1.0. Usable end-to-end — operators can build production apps on it today; the surface is still subject to change before 1.0. Recent line is **v0.6.0** ([releases](https://github.com/blamejs/blamejs/releases) · [npm](https://www.npmjs.com/package/@blamejs/core) · [container](https://github.com/blamejs/blamejs/pkgs/container/blamejs-wiki)).
 
 ```js
 var b = require("@blamejs/core");
@@ -36,6 +36,34 @@ var b = require("@blamejs/core");
 ```
 
 **Requirements:** Node.js 24+ (current active LTS).
+
+## What ships in the box
+
+The framework bundles the surface a typical Node app reaches for. Every primitive listed is callable today; nothing is a stub.
+
+- **Data layer** — SQLite with sealed-by-default columns (`b.db`), migrations, seeders, atomic-file writes; S3 / R2 / B2 / GCS / Azure object store with multipart upload + SSE + bucket ops (`b.storage`, `b.objectStore`); durable queue with priority + cron + flows (`b.queue`, `b.jobs`); cluster-shared cache (`b.cache`).
+- **Identity & access** — passwords (Argon2id), passkeys (WebAuthn), TOTP, JWT (PQ-default), OAuth, sessions, brute-force lockout (`b.auth.*`, `b.session`); RBAC (`b.permissions`); API keys with rotation (`b.apiKey`); break-glass column gates with second-factor + audit (`b.breakGlass`).
+- **Crypto** — envelope-versioned PQC at rest (ML-KEM-1024 + P-384 hybrid, XChaCha20-Poly1305, SHAKE256), vault sealing, field-level crypto, signed webhooks (SLH-DSA-SHAKE-256f), ECIES API encryption (`b.crypto`, `b.vault`, `b.webhook`); pure-JS mTLS CA, PQC TLS gates inbound + outbound (`b.mtlsCa`, `b.pqcGate`, `b.pqcAgent`).
+- **HTTP** — router with schema-validated routes + OpenAPI publication; full middleware stack (CSRF, CORS, rate-limit, security headers, CSP nonce, body parser, compression, SSE, request log) wired by `createApp`; HTTP/1.1 + HTTP/2 outbound client with SSRF gate, redirects, multipart, interceptors, progress, encrypted cookie jar (`b.httpClient`, `b.ssrfGuard`, `b.safeUrl`).
+- **Defensive parsers** — `b.safeJson`, `b.safeBuffer`, `b.safeSql`, `b.safeSchema`, `b.parsers` (XML / TOML / YAML / .env), `b.config` (schema-validated env).
+- **Communication** — WebSockets with channel/room fan-out across cluster replicas (`b.websocket`, `b.websocketChannels`); mail with multipart + attachments + DKIM + calendar invites + bounce intake (`b.mail`, `b.mailBounce`); generic notification dispatcher with operator-supplied transports (`b.notify`).
+- **Observability** — tamper-evident audit chain with SLH-DSA-signed checkpoints, metrics, tracing (OTel pass-through when wired), PII redaction, log-stream sinks, OTLP/HTTP-JSON exporter for any OTel-compatible backend (`b.audit`, `b.metrics`, `b.tracing`, `b.redact`, `b.logStream`, `b.otelExport`).
+- **i18n** — CLDR plural rules, Accept-Language negotiation, Intl formatters, RTL (`b.i18n`).
+- **Format helpers** — RFC 4180 CSV with Excel formula-injection prevention (`b.csv`), RFC 9562 UUID v4 + v7 (`b.uuid`), URL-safe slugs (`b.slug`), TZ-aware datetime (`b.time`), ZIP creation (`b.archive`), HMAC-signed cursor pagination (`b.pagination`), HTML form rendering + validation + CSRF (`b.forms`).
+- **Production** — cluster leader election with fenced leases over Postgres/SQLite (`b.cluster`); cron + interval scheduler that runs exactly-once globally (`b.scheduler`); retry with full-jitter backoff + circuit breaker (`b.retry`); graceful shutdown (`b.appShutdown`); NTP boot check (`b.ntpCheck`); end-to-end-encrypted backup bundles (`b.backup`).
+
+## Documentation
+
+Full primitive-by-primitive docs live at [blamejs.com](https://blamejs.com), which is itself the `examples/wiki/` app running in production. The wiki is organized by concern:
+
+- **Data** — [Database](https://blamejs.com/database) · [Object Store](https://blamejs.com/object-store) · [Queue & Cache](https://blamejs.com/queue-cache)
+- **Identity** — [Authentication](https://blamejs.com/auth) · [Access Control](https://blamejs.com/access-control)
+- **Crypto** — [Crypto & Vault](https://blamejs.com/crypto-vault) · [Network Crypto](https://blamejs.com/network-crypto)
+- **HTTP** — [Routing](https://blamejs.com/routing) · [Middleware](https://blamejs.com/middleware) · [Outbound HTTP](https://blamejs.com/outbound-http)
+- **Validation** — [Safe Parsers](https://blamejs.com/safe-parsers)
+- **Communication** — [WebSockets](https://blamejs.com/websockets) · [Mail](https://blamejs.com/mail) · [Notifications](https://blamejs.com/notifications)
+- **Tools** — [Observability](https://blamejs.com/observability) · [Testing](https://blamejs.com/testing) · [i18n & Locale](https://blamejs.com/i18n-locale) · [Format Helpers](https://blamejs.com/format-helpers)
+- **Production** — [Cluster Mode](https://blamejs.com/cluster) · [Reliability](https://blamejs.com/reliability) · [Backup & Restore](https://blamejs.com/backup-restore)
 
 ## CLI
 

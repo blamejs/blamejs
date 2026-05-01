@@ -118,7 +118,7 @@ async function run() {
            /design-tenets/.test(welcome.body));
     assert("welcome page links to concern groups",
            /href="\/observability"/.test(welcome.body) &&
-           /href="\/auth-permissions"/.test(welcome.body));
+           /href="\/auth"/.test(welcome.body));
 
     var obs = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/observability",
@@ -133,46 +133,96 @@ async function run() {
            /pass-through/i.test(obs.body) && /OTel/i.test(obs.body));
     assert("observability page includes redaction recipe",
            /b\.redact\.redact/.test(obs.body));
+    assert("observability page covers OTel export",
+           /b\.otelExport/.test(obs.body) && /OTLP/.test(obs.body));
 
     var auth = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/auth-permissions",
+      method: "GET", host: "127.0.0.1", port: port, path: "/auth",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /auth-permissions → 200", auth.statusCode === 200);
+    assert("GET /auth → 200", auth.statusCode === 200);
     assert("auth page covers passwords + Argon2id",
            /Argon2id/.test(auth.body) && /b\.auth\.password/.test(auth.body));
     assert("auth page covers passkeys (WebAuthn)",
            /WebAuthn/.test(auth.body) && /b\.auth\.passkey/.test(auth.body));
     assert("auth page covers OAuth providers",
            /b\.auth\.oauth/.test(auth.body) && /PKCE/.test(auth.body));
-    assert("auth page covers RBAC roles",
-           /b\.permissions/.test(auth.body) && /inherits/.test(auth.body));
 
-    var storage = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/storage-state",
+    var access = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/access-control",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /storage-state → 200", storage.statusCode === 200);
-    assert("storage page covers sealed columns",
-           /sealedFields/.test(storage.body) && /vault\.seal/.test(storage.body));
-    assert("storage page covers migrations advisory lock",
-           /advisory lock/.test(storage.body) && /SHA3-512/.test(storage.body));
-    assert("storage page covers presigned uploads",
-           /presignUpload/.test(storage.body) && /SigV4/.test(storage.body));
-    assert("storage page covers queue + jobs",
-           /b\.queue/.test(storage.body) && /b\.jobs/.test(storage.body));
+    assert("GET /access-control → 200", access.statusCode === 200);
+    assert("access-control page covers RBAC roles",
+           /b\.permissions/.test(access.body) && /inherits/.test(access.body));
+    assert("access-control page covers break-glass",
+           /b\.breakGlass/.test(access.body) && /grant/i.test(access.body));
 
-    var http = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/http-middleware",
+    var database = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/database",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /http-middleware → 200", http.statusCode === 200);
-    assert("http page documents the default middleware stack",
-           /requestId/.test(http.body) && /securityHeaders/.test(http.body) && /csrfProtect/.test(http.body));
-    assert("http page covers cspNonce",
-           /cspNonce/.test(http.body));
-    assert("http page covers safeUrl SSRF defense",
-           /safeUrl/.test(http.body) && /SSRF/.test(http.body));
+    assert("GET /database → 200", database.statusCode === 200);
+    assert("database page covers sealed columns",
+           /sealedFields/.test(database.body));
+    assert("database page covers migrations advisory lock",
+           /advisory lock/.test(database.body) && /SHA3-512/.test(database.body));
+
+    var objectStore = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/object-store",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /object-store → 200", objectStore.statusCode === 200);
+    assert("object-store page covers presigned uploads",
+           /presignUpload/.test(objectStore.body) && /SigV4/.test(objectStore.body));
+
+    var queueCache = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/queue-cache",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /queue-cache → 200", queueCache.statusCode === 200);
+    assert("queue-cache page covers queue + jobs",
+           /b\.queue/.test(queueCache.body) && /b\.jobs/.test(queueCache.body));
+
+    var routing = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/routing",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /routing → 200", routing.statusCode === 200);
+    assert("routing page covers schema-validated routes",
+           /b\.safeSchema/.test(routing.body));
+
+    var middleware = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/middleware",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /middleware → 200", middleware.statusCode === 200);
+    assert("middleware page documents the default stack",
+           /requestId/.test(middleware.body) && /securityHeaders/.test(middleware.body) && /csrfProtect/.test(middleware.body));
+    assert("middleware page covers cspNonce",
+           /cspNonce/.test(middleware.body));
+    assert("middleware page covers SSE",
+           /Server-Sent Events|sseChannel/.test(middleware.body));
+
+    var outboundHttp = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/outbound-http",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /outbound-http → 200", outboundHttp.statusCode === 200);
+    assert("outbound-http page covers SSRF defense",
+           /b\.ssrfGuard/.test(outboundHttp.body) && /SSRF/.test(outboundHttp.body));
+    assert("outbound-http page covers signed webhooks",
+           /b\.webhook/.test(outboundHttp.body));
+
+    var safeParsers = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/safe-parsers",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /safe-parsers → 200", safeParsers.statusCode === 200);
+    assert("safe-parsers page covers safeJson + parsers",
+           /b\.safeJson/.test(safeParsers.body) && /b\.parsers/.test(safeParsers.body));
+    assert("safe-parsers page covers config primitive",
+           /b\.config/.test(safeParsers.body));
 
     var crypto = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/crypto-vault",
@@ -188,6 +238,14 @@ async function run() {
     assert("crypto page covers PQ signatures",
            /SLH-DSA-SHAKE-256f/.test(crypto.body));
 
+    var networkCrypto = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/network-crypto",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /network-crypto → 200", networkCrypto.statusCode === 200);
+    assert("network-crypto page covers mTLS CA",
+           /b\.mtlsCa/.test(networkCrypto.body));
+
     var testing = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/testing",
       headers: BROWSER_HEADERS,
@@ -198,17 +256,31 @@ async function run() {
     assert("testing page covers captureAudit + captureObservability",
            /captureAudit/.test(testing.body) && /captureObservability/.test(testing.body));
 
-    var notify = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/notify-mail",
+    var websockets = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/websockets",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /notify-mail → 200", notify.statusCode === 200);
-    assert("notify-mail page covers b.notify channels",
-           /b\.notify\.channels\.log/.test(notify.body) && /httpJson/.test(notify.body));
-    assert("notify-mail page covers websocketChannels fan-out",
-           /websocketChannels/.test(notify.body) && /publish/.test(notify.body));
-    assert("notify-mail page covers bounce intake",
-           /b\.mailBounce/.test(notify.body) && /Postmark/.test(notify.body));
+    assert("GET /websockets → 200", websockets.statusCode === 200);
+    assert("websockets page covers websocketChannels fan-out",
+           /websocketChannels/.test(websockets.body) && /publish/.test(websockets.body));
+
+    var mail = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/mail",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /mail → 200", mail.statusCode === 200);
+    assert("mail page covers bounce intake",
+           /b\.mailBounce/.test(mail.body) && /Postmark/.test(mail.body));
+    assert("mail page covers DKIM signing",
+           /DKIM/.test(mail.body));
+
+    var notifications = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/notifications",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /notifications → 200", notifications.statusCode === 200);
+    assert("notifications page covers b.notify channels",
+           /b\.notify\.channels\.log/.test(notifications.body) && /httpJson/.test(notifications.body));
 
     var i18n = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/i18n-locale",
@@ -220,21 +292,47 @@ async function run() {
     assert("i18n page covers RTL detection",
            /req\.dir/.test(i18n.body) && /rtl/.test(i18n.body));
 
-    var prod = await _request({
-      method: "GET", host: "127.0.0.1", port: port, path: "/production-essentials",
+    var formatHelpers = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/format-helpers",
       headers: BROWSER_HEADERS,
     });
-    assert("GET /production-essentials → 200", prod.statusCode === 200);
-    assert("prod-essentials page covers exactly-once-globally scheduler",
-           /exactly once globally/.test(prod.body) && /fencing token/.test(prod.body));
-    assert("prod-essentials page covers backup primitive + chain",
-           /b\.backup/.test(prod.body) && /prev-hash chain|chain/i.test(prod.body));
-    assert("prod-essentials page documents backup encryption format",
-           /XChaCha20-Poly1305/.test(prod.body) && /Argon2id/.test(prod.body));
-    assert("prod-essentials page documents backup CLI surface",
-           /blamejs backup/.test(prod.body));
-    assert("prod-essentials page covers ntpCheck",
-           /b\.ntpCheck/.test(prod.body));
+    assert("GET /format-helpers → 200", formatHelpers.statusCode === 200);
+    assert("format-helpers page covers csv + uuid + slug + time",
+           /b\.csv/.test(formatHelpers.body) && /b\.uuid/.test(formatHelpers.body) &&
+           /b\.slug/.test(formatHelpers.body) && /b\.time/.test(formatHelpers.body));
+    assert("format-helpers page covers archive + pagination + forms",
+           /b\.archive/.test(formatHelpers.body) && /b\.pagination/.test(formatHelpers.body) &&
+           /b\.forms/.test(formatHelpers.body));
+
+    var cluster = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/cluster",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /cluster → 200", cluster.statusCode === 200);
+    assert("cluster page covers exactly-once-globally scheduler",
+           /exactly once globally/.test(cluster.body) && /fencing token/.test(cluster.body));
+    assert("cluster page covers ntpCheck",
+           /b\.ntpCheck/.test(cluster.body));
+
+    var reliability = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/reliability",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /reliability → 200", reliability.statusCode === 200);
+    assert("reliability page covers retry + circuit breaker",
+           /b\.retry\.withRetry/.test(reliability.body) && /CircuitBreaker/.test(reliability.body));
+
+    var backupRestore = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/backup-restore",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /backup-restore → 200", backupRestore.statusCode === 200);
+    assert("backup-restore page covers backup primitive + chain",
+           /b\.backup/.test(backupRestore.body) && /prev-hash chain|chain/i.test(backupRestore.body));
+    assert("backup-restore page documents backup encryption format",
+           /XChaCha20-Poly1305/.test(backupRestore.body) && /Argon2id/.test(backupRestore.body));
+    assert("backup-restore page documents backup CLI surface",
+           /blamejs backup/.test(backupRestore.body));
 
     // Canonicalization: /<group>/index 301-redirects to /<group> so
     // there's one canonical URL for the landing page.
@@ -527,9 +625,16 @@ async function run() {
     // (typo) or a <code class="language-rust"> when Rust isn't in the
     // Prism bundle.
     var GROUPS = [
-      "welcome", "observability", "auth-permissions", "storage-state",
-      "http-middleware", "crypto-vault", "testing",
-      "notify-mail", "i18n-locale", "production-essentials",
+      "welcome",
+      "database", "object-store", "queue-cache",
+      "auth", "access-control",
+      "crypto-vault", "network-crypto",
+      "routing", "middleware", "outbound-http",
+      "safe-parsers",
+      "websockets", "mail", "notifications",
+      "observability", "testing", "i18n-locale",
+      "format-helpers",
+      "cluster", "reliability", "backup-restore",
     ];
     // Evaluate the bundle in a sandbox and read Prism.languages directly.
     // Source-text scanning misses languages bound through the IIFE
