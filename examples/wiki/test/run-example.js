@@ -44,12 +44,19 @@ var TEST_RSA = nodeCrypto.generateKeyPairSync("rsa", {
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
 });
 
-// The framework + the canonical test fixtures live up three directory
-// levels (examples/wiki/test → repo root). Both reachable on dev + CI
-// since the wiki e2e job checks out the whole repo and only npm-links
-// the framework as @blamejs/core.
+// `b` is the installed copy at examples/wiki/node_modules/@blamejs/core.
+// Cross-realm imports (the workspace-root test/helpers/db.js) are NOT
+// safe here: when CI runs `npm install --install-links`, the wiki gets
+// a real copy of @blamejs/core, distinct from any workspace `require`.
+// Two copies → two module-cache entries → two singletons; the helper
+// would init the workspace db while examples run against the installed
+// db (uninited → "db.init() must be awaited before using db API").
+// Locally on a `file:` symlink dev install both resolve to the same
+// module and the bug is invisible. Boot the fixture inline against
+// THIS file's `b` so init + use share one singleton in both setups.
 var b = require("@blamejs/core");
-var dbHelpers = require("../../../test/helpers/db.js");
+
+var TEST_PASSPHRASE = "blamejs-wiki-validator-passphrase-not-secret";
 
 // Reference schema covering every table wiki examples reference. The
 // validator scans `b.db.from("...")` and SQL strings; this list grows
@@ -177,7 +184,23 @@ function _envFn(name, fallback) {
 
 async function _bootFixture() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-validator-"));
-  await dbHelpers.setupTestDb(tmpDir, WIKI_SCHEMA);
+  // Inline the same wrapped-vault + encrypted-at-rest setup the
+  // framework's smoke suite uses (test/helpers/db.js shape), against
+  // THIS file's `b` so init touches the same singleton the examples do.
+  process.env.BLAMEJS_SKIP_NTP_CHECK           = "1";
+  process.env.BLAMEJS_VAULT_PASSPHRASE         = TEST_PASSPHRASE;
+  process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = TEST_PASSPHRASE;
+  delete process.env.BLAMEJS_AUDIT_SIGNING_MODE;
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  await b.vault.init({ dataDir: tmpDir });
+  await b.db.init({
+    dataDir: tmpDir,
+    tmpDir:  path.join(tmpDir, "tmpfs"),
+    schema:  WIKI_SCHEMA,
+  });
   // Queue init — local protocol, in-process backend.
   b.queue.init({ backends: { primary: { protocol: "local" } } });
   // ExternalDb init — fake Postgres-dialect backend so examples that
@@ -241,8 +264,16 @@ function _preprocessExample(code) {
 async function _teardownFixture(handle) {
   try { if (b.queue && typeof b.queue.shutdown === "function") await b.queue.shutdown(); } catch (_e) {}
   try { await b.externalDb.shutdown(); } catch (_e) {}
+  // Drain audit handler buffered emissions BEFORE close so pending
+  // rows land in audit_log rather than leaking into the next child.
+  try { await b.audit.flush(); } catch (_e) {}
+  try { b.db.close(); } catch (_e) {}
+  b.audit._resetForTest();
+  b.db._resetForTest();
+  b.vault._resetForTest();
+  b.cluster._resetForTest();
   if (handle && handle.tmpDir) {
-    try { await dbHelpers.teardownTestDb(handle.tmpDir); } catch (_e) {}
+    try { fs.rmSync(handle.tmpDir, { recursive: true, force: true }); } catch (_e) {}
   }
 }
 
