@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.4.x
 
+- **0.4.28** (2026-04-30) — primitive-drift sweep: inline-require hoisting + safeAsync.sleep + time-math
 - **0.4.27** (2026-04-30) — primitive-drift sweep: regex + escape consolidation, IPv6 completion
 - **0.4.26** (2026-04-30) — primitive-drift sweep: middleware audit context + safeUrl
 - **0.4.25** (2026-04-30) — b.objectStore.bucketOps: bucket-level operations (SigV4)
