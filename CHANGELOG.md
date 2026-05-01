@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.8** (2026-04-30) — b.uuid: RFC 4122 v4 + RFC 9562 v7
 - **0.5.7** (2026-04-30) — defensive validation + queue closure capture + audit context
 - **0.5.6** (2026-04-30) — break-glass: trustProxy honored, cache require hoisted
 - **0.5.5** (2026-04-30) — strict default CSP + IPv6 special-range expansion
