@@ -10,7 +10,9 @@
 var http = require("node:http");
 var path = require("node:path");
 var fs = require("node:fs");
+var b = require("@blamejs/core");
 var { buildApp } = require("../lib/build-app");
+var sectionValidator = require("./validate-primitive-sections");
 
 var DATA_DIR = path.join(__dirname, "..", "data-e2e");
 var ADMIN_EMAIL = "admin-e2e@blamejs.com";
@@ -68,6 +70,18 @@ function assert(name, cond) {
 }
 
 async function run() {
+  // Step 0 — wiki primitive-section convention check (rule §11). Runs
+  // before app boot so a structural docs gap surfaces immediately;
+  // operators don't pay the boot cost when the gate would have failed
+  // anyway.
+  var validatorExit = sectionValidator.run({});
+  if (validatorExit !== 0) {
+    console.error("[wiki-e2e] aborted — primitive-section validator failed " +
+      "(see lines above). Fix the missing pieces or add to the allowlist " +
+      "with a one-line reason.");
+    process.exit(validatorExit);
+  }
+
   console.log("[wiki-e2e] booting…");
   var built = await _bootApp();
   // Don't call scheduler.start() in tests — would ref the event loop
@@ -741,6 +755,52 @@ async function run() {
     assert("completeness: every internal link resolves (no 4xx/5xx) " +
            (brokenLinks.length > 0 ? "broken: " + brokenLinks.join(", ") : ""),
            brokenLinks.length === 0);
+
+    // Post-boot pass — example execution. Each non-opts javascript example
+    // block is parsed, symbol-resolution-checked against the live
+    // framework, then run in a sandboxed async wrapper. Examples that
+    // legitimately reference operator-stubbed names (req/res/db rows)
+    // get the harness stubs and pass; examples whose `b.X.Y` references
+    // don't resolve fail the gate (drift).
+    var execReport = await sectionValidator.runExamples(b);
+    assert("examples: zero syntax errors across primitive sections (" +
+           execReport.syntaxFailed.length + " failed)",
+           execReport.syntaxFailed.length === 0);
+    if (execReport.syntaxFailed.length > 0) {
+      execReport.syntaxFailed.forEach(function (f) {
+        console.error("  syntax: " + f.slug + " :: " + f.heading + " — " + f.error);
+      });
+    }
+    assert("examples: every b.X.Y reference resolves on the live framework (" +
+           execReport.symbolFailed.length + " drift)",
+           execReport.symbolFailed.length === 0);
+    if (execReport.symbolFailed.length > 0) {
+      execReport.symbolFailed.forEach(function (f) {
+        console.error("  symbol drift: " + f.slug + " :: " + f.heading +
+          " — unresolved: " + f.unresolved.join(", "));
+      });
+    }
+    // Execution: each example runs in a forked child against a fresh
+    // framework instance with the canonical test fixture (vault, db
+    // with reference schema, audit live, queue init'd, externalDb with
+    // a fake Postgres-dialect backend). Stubs in scope: req, res,
+    // env(), pg, connectPrimary/replica/replica1/replica2, rawConnect,
+    // rawQuery, log, etc. Examples that throw at the framework
+    // boundary fail the gate — that's drift the wiki author should
+    // fix.
+    assert("examples: zero runtime failures across primitive sections (" +
+           execReport.executionFailed.length + " failed, " +
+           execReport.ran + " ran clean)",
+           execReport.executionFailed.length === 0);
+    if (execReport.executionFailed.length > 0) {
+      execReport.executionFailed.forEach(function (f) {
+        console.error("  exec fail: " + f.slug + " :: " + f.heading);
+        console.error("    status: " + f.status);
+        if (f.missing) console.error("    missing identifier: " + f.missing);
+        if (f.error)   console.error("    error: " + f.error);
+        if (f.stack)   console.error("    stack: " + f.stack);
+      });
+    }
   } finally {
     await built.app.shutdown();
   }

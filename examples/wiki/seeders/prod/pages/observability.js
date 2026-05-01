@@ -125,7 +125,7 @@ module.exports = {
   '});',
   '',
   '// Wire it as the b.observability tap and any event() call ships:',
-  'b.observability._setTap(otel.tapHandler);',
+  'b.observability.setTap(otel.tapHandler);',
   '',
   'otel.recordCounter("http.requests", 1, { method: "GET", status: 200 });',
   'otel.recordObservation("http.duration_ms", 142, { route: "/api/x" });',

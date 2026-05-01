@@ -8,6 +8,8 @@ upgrading across more than a few patches at a time.
 
 ## v0.6.x
 
+- **0.6.8** (2026-05-01) — wiki primitive-section validator: presence + opts diff + example execution against canonical fixture
+- **0.6.7** (2026-05-01) — db.role.switched audit + per-role metrics + API snapshot baseline
 - **0.6.6** (2026-05-01) — request-time DB role binding + Postgres RLS migrations
 - **0.6.5** (2026-05-01) — b.db.declareView + b.externalDb.migrate
 - **0.6.4** (2026-05-01) — wiki schema docs realigned with the actual lib API
@@ -73,7 +75,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.3.x
 
-- **0.3.39** (2026-04-29) — MIGRATING.md generator scans deprecate() calls in lib/
+- **0.3.39** (2026-04-29) — MIGRATING.md generator scans deprecate calls in lib/
 - **0.3.38** (2026-04-29) — LTS-CALENDAR.md publishes the major-cadence + algorithm posture
 - **0.3.37** (2026-04-29) — bundled pure-JS mTLS engine + vendor-update.sh + CHANGELOG + thanks page
 - **0.3.36** (2026-04-29) — prepack guard refuses to publish any path that matches a gitignore rule
@@ -88,15 +90,15 @@ upgrading across more than a few patches at a time.
 - **0.3.27** (2026-04-29) — Dockerfile pre-builds public/dist in deps stage so runtime container boots cleanly under --cap-drop ALL
 - **0.3.26** (2026-04-29) — operator-facing env-var surface, GitHub-side ops docs, contribution standards
 - **0.3.25** (2026-04-29) — env-var surface documented across Dockerfile, docker-compose.prod, DEPLOY.md, README; smoke-test GHCR login fix
-- **0.3.24** (2026-04-29) — CI + release-container workflows brought to hermitstash parity (structured output, multi-arch, cosign, post-publish smoke)
+- **0.3.24** (2026-04-29) — CI + release-container workflows brought (structured output, multi-arch, cosign, post-publish smoke)
 - **0.3.23** (2026-04-29) — _runVault and _runBackup refactored to use b.cliHelpers (sweep complete across the three CLI commands the helper was designed for)
 - **0.3.22** (2026-04-29) — blamejs api-key CLI; b.cliHelpers shared primitive for headless app + reporter shape
 - **0.3.21** (2026-04-29) — blamejs backup CLI: inspect / verify / extract; backup encryption format documented
 - **0.3.20** (2026-04-29) — drop redundant Windows-flaky audit.flush perf assertion
 - **0.3.19** (2026-04-29) — wiki docs for the unwired primitives surface
 - **0.3.18** (2026-04-29) — blamejs vault CLI: seal / unseal / rotate / status
-- **0.3.17** (2026-04-29) — Tier-A validateOpts coverage extended to remaining operator-facing primitives (i18n, bundler, migrations, seeders, template, jobs, cookies, log, mtlsCa, staticServe, handlers, websocket, pqcGate, tracing, metrics — 15 more factories now reject typo'd opts at boot). Coverage is now ~39/lib primitives with the helper; the remaining handful (app-shutdown, chain-writer, dev, error-page, nonce-store, protocol-dispatcher, render, session, pqc-agent) are either internal-only — operators don't construct them directly — or have a single required-key surface where typo guards add no value.
-- **0.3.16** (2026-04-29) — Tier-A config validation, CSRF cookie mode, HTML balance, dynamic Cache-Control, URL canonicalization
+- **0.3.17** (2026-04-29) — validateOpts coverage extended to remaining operator-facing primitives (i18n, bundler, migrations, seeders, template, jobs, cookies, log, mtlsCa, staticServe, handlers, websocket, pqcGate, tracing, metrics — 15 more factories now reject typo'd opts at boot). Coverage is now ~39/lib primitives with the helper; the remaining handful (app-shutdown, chain-writer, dev, error-page, nonce-store, protocol-dispatcher, render, session, pqc-agent) are either internal-only — operators don't construct them directly — or have a single required-key surface where typo guards add no value.
+- **0.3.16** (2026-04-29) — config validation, CSRF cookie mode, HTML balance, dynamic Cache-Control, URL canonicalization
 - **0.3.15** (2026-04-29) — cors: accept Origin: null when Sec-Fetch-Site is same-origin (browsers send opaque Origin: null on form-navigation POSTs from a page whose response sets Referrer-Policy: no-referrer; the Fetch-metadata Sec-Fetch-Site header is the matching disambiguation signal — same-origin or none means accept, anything else stays refused)
 - **0.3.14** (2026-04-29) — Dockerfile hotfix + lint as release gate
 - **0.3.13** (2026-04-29) — CI lint scans + Wolfi container + Trivy two-step + lint cleanup
@@ -133,7 +135,7 @@ upgrading across more than a few patches at a time.
 - **0.2.25** (2026-04-28) — b.slug
 - **0.2.24** (2026-04-28) — b.retry primitive
 - **0.2.23** (2026-04-28) — test helpers consolidate
-- **0.2.22** (2026-04-28) — tier-aware input validation
+- **0.2.22** (2026-04-28) — input validation
 - **0.2.21** (2026-04-28) — defineClass.factory replaces per-module _err wrappers
 - **0.2.20** (2026-04-28) — b.requestHelpers + metrics _normalizeLabelArg
 - **0.2.19** (2026-04-28) — audit.safeEmit replaces per-module _emit wrappers
@@ -195,22 +197,22 @@ upgrading across more than a few patches at a time.
 - **0.1.78** (2026-04-27) — pqc-agent: locked-posture HTTPS agent + http-client refactor — slice 2
 - **0.1.77** (2026-04-27) — pqc-gate: TCP-level PQC enforcement on ClientHello — slice 1
 - **0.1.76** (2026-04-27) — bundler: content-hashed asset pipeline + manifest — complete
-- **0.1.75** (2026-04-27) — dev: file-watch + child-process restart engine — slice 6 ( complete)
+- **0.1.75** (2026-04-27) — dev: file-watch + child-process restart engine — slice 6 (complete)
 - **0.1.74** (2026-04-27) — cli: bin/blamejs + migrate up/down/status — slice 5
 - **0.1.73** (2026-04-27) — migrations: public up/down/status runner — slice 4
 - **0.1.72** (2026-04-27) — cookies: parse/serialize + sealed-value access gate — slice 3
 - **0.1.71** (2026-04-27) — errors-page: rich dev page + safe prod page; middleware shim — slice 2
 - **0.1.70** (2026-04-27) — log: structured JSON logging with request-id correlation — slice 1
-- **0.1.69** (2026-04-27) — scheduler: cron + interval over jobs/queue — slice 5 ( complete)
+- **0.1.69** (2026-04-27) — scheduler: cron + interval over jobs/queue — slice 5 (complete)
 - **0.1.68** (2026-04-27) — mail: generalize http transport, demote resend to thin preset
 - **0.1.67** (2026-04-27) — mail: contract + console/memory/smtp/resend transports — slice 4
 - **0.1.66** (2026-04-26) — jobs (define + enqueue + in-process worker) + createApp wiring — slices 2/3
 - **0.1.65** (2026-04-26) — createApp factory — slice 1
-- **0.1.64** (2026-04-26) — forms + csrfProtect — slice 4 ( complete)
+- **0.1.64** (2026-04-26) — forms + csrfProtect — slice 4 (complete)
 - **0.1.63** (2026-04-26) — staticServe: file serving + ETag + SRI integrity — slice 3
 - **0.1.62** (2026-04-26) — render: HTTP response helpers — slice 2
 - **0.1.61** (2026-04-26) — template engine (eval-free interpreter) — slice 1
-- **0.1.60** (2026-04-26) — auth.jwt with SLH-DSA-SHAKE-256f default — slice 5/5 ( complete)
+- **0.1.60** (2026-04-26) — auth.jwt with SLH-DSA-SHAKE-256f default — slice 5/5 (complete)
 - **0.1.59** (2026-04-26) — middleware.attachUser + middleware.requireAuth — slice 4
 - **0.1.58** (2026-04-26) — auth.passkey (WebAuthn / FIDO2) — slice 3
 - **0.1.57** (2026-04-26) — TOTP defaults match spec (HMAC-SHA512 / 128-byte secret / 8 digits / 30s) + crypto.random truncation fix
@@ -221,7 +223,7 @@ upgrading across more than a few patches at a time.
 - **0.1.52** (2026-04-26) — consent_log integrity parity with audit_log (closes the cluster spec storage move)
 - **0.1.51** (2026-04-26) — queue jobs move to external-db in cluster mode
 - **0.1.50** (2026-04-26) — sessions move to external-db in cluster mode
-- **0.1.49** (2026-04-26) — boot-time vault-key consistency check (closes cluster spec phase 4)
+- **0.1.49** (2026-04-26) — boot-time vault-key consistency check (closes cluster spec)
 - **0.1.48** (2026-04-26) — boot-time audit-tip rollback detection in cluster mode
 - **0.1.47** (2026-04-26) — fix handlers.drain unbounded loop on recursive emit (cluster-mode audit hang)
 - **0.1.46** (2026-04-26) — cluster-mode audit-tip fencing-token guard
@@ -278,7 +280,7 @@ upgrading across more than a few patches at a time.
 - **0.0.18** (2026-04-26) — strip internal-process narrative from framework comments
 - **0.0.17** (2026-04-25) — internal adoption sweep + functional scale helpers
 - **0.0.16** (2026-04-25) — atomic file I/O + safe parsers (XML, CSV)
-- **0.0.15** (2026-04-25) — HTTP middleware: request lifecycle hardening ( begin)
+- **0.0.15** (2026-04-25) — HTTP middleware: request lifecycle hardening (begin)
 - **0.0.14** (2026-04-25) — external DB (Shape B: app-data-only, bring-your-own-client)
 - **0.0.13** (2026-04-25) — log streaming + redaction + bidirectional command channel
 - **0.0.12** (2026-04-25) — queue dispatcher + local SQLite-backed protocol

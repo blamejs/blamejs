@@ -99,6 +99,25 @@ jobs:
         # the bump in package.json so the new surface is tracked.
         run: node scripts/check-api-snapshot.js
 
+  wiki-section-convention:
+    name: Wiki primitive-section convention
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node 24 LTS
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Validate every primitive section ships heading + opts + prose + example
+        # Fast signal — no app boot, just walks the page seeders. The
+        # wiki-e2e job runs the same validator before its boot, so a
+        # convention break fails this job immediately AND short-circuits
+        # the heavier e2e run.
+        run: node examples/wiki/test/validate-primitive-sections.js
+
   lint-eslint:
     name: ESLint (lib + examples + tests)
     runs-on: ubuntu-latest

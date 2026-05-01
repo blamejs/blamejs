@@ -99,7 +99,8 @@ The smoke target is `OK — N checks passed` ending with a count higher than the
    - `cd examples/wiki && rm -rf data data-e2e && node test/e2e.js` ends with `OK — N checks passed`
    - `npx eslint@10 --max-warnings 0 .` exits 0
    - `node scripts/check-api-snapshot.js` exits 0 — guards the public API surface against accidental breaking changes. Intentional surface changes regenerate the baseline (`node scripts/refresh-api-snapshot.js`) and commit the updated `api-snapshot.json` alongside the change.
-5. **Commit message style:** lowercase imperative, no AI references, no `Co-Authored-By` trailers from generators. The first line is a one-sentence summary; the body explains *why* and *what tradeoff*. See git log for examples.
+   - `node examples/wiki/test/validate-primitive-sections.js` exits 0 — every primitive section in the wiki has the four pieces (heading + opts + prose + example). Runs automatically inside the wiki e2e step too, but the standalone run gives a fast local signal when only docs changed.
+5. **Commit message style:** lowercase imperative. The first line is a one-sentence summary; the body explains *why* and *what tradeoff*. See git log for examples.
 6. **Open the PR.** The `Lint summary` CI check is required to pass before merge — it aggregates ESLint + Hadolint + ShellCheck and posts a sticky comment on the PR with the results.
 7. **Review feedback** is usually one round. Reviewers focus on:
    - Does this match the framework's existing patterns? (Audit-existing-code: did you sweep internals for replaceable patterns?)

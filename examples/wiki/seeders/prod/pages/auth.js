@@ -309,7 +309,7 @@ module.exports = {
   '<p>State storage is a <code>b.cache</code> instance the operator passes in — memory backend for single-process apps, cluster backend for shared state across nodes. Cache backend errors fail <em>open</em>: when Redis dies, lockouts release rather than locking the operator out of their own admin account. <code>auth.lockout.cache_error</code> observability fires so ops dashboards see the outage.</p>',
   '<p>Admin unlock for support tickets is a first-class operation:</p>',
   '<pre><code class="language-javascript">router.post("/admin/users/:id/unlock",',
-  '  perms.middleware("user.unlock"),',
+  '  perms.require("user:unlock"),',
   '  async function (req, res) {',
   '    await loginLock.unlock(req.params.id, {',
   '      req,                                           // 5 W\'s of the admin go on the audit row',

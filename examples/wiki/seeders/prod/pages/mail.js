@@ -51,7 +51,7 @@ module.exports = {
   '  text:    "Welcome to the wiki",',
   '  html:    welcomeTemplate(user),',
   '});</code></pre>',
-  '<p>Transports: SMTP (with STARTTLS), Postmark, SES, Resend, generic HTTP, and a <code>log</code>-only transport for development. All share the same <code>send</code> shape. Templates and i18n integrate via <code>b.template</code> + <code>b.i18n</code>.</p>',
+  '<p>Transports: SMTP (with STARTTLS), Resend, generic HTTP, and <code>console</code> / <code>memory</code> for development. All share the same <code>send</code> shape. Templates and i18n integrate via <code>b.template</code> + <code>b.i18n</code>.</p>',
 
   '<h2 id="attachments">Attachments &amp; inline images <a class="anchor" href="#attachments">#</a></h2>',
   '<p>Pass an <code>attachments</code> array on any <code>send()</code> call. Each entry is <code>{ filename, content, contentType?, contentDisposition?, cid? }</code> where <code>content</code> is a Buffer or string. The builder emits <code>multipart/mixed</code> wrapping the body, base64-encodes each attachment with line wrapping per RFC 2045, and sets <code>Content-Disposition: attachment</code> by default. Setting <code>cid</code> auto-switches that part to <code>Content-Disposition: inline</code> with a matching <code>Content-ID</code> header so HTML bodies reference it via <code>&lt;img src="cid:logo-1"&gt;</code>. Mixing <code>text</code> + <code>html</code> + attachments wraps the body parts in an inner <code>multipart/alternative</code> so plain-text-only clients still render. The Resend transport forwards attachments natively as base64 with <code>content_id</code>.</p>',
@@ -79,6 +79,7 @@ module.exports = {
   '  canonicalization:  "relaxed/relaxed" | "simple/simple" | ...,',
   '                                           // default: "relaxed/relaxed"',
   '  bodyLength:        number,               // default: null — sign first N bytes (l= tag)',
+  '  audit:             AuditTap,              // default: null',
   '}</code></pre>',
   '<pre><code class="language-javascript">var signer = b.mail.dkim.create({',
   '  domain:     "example.com",',
