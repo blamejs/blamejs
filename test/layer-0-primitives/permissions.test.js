@@ -452,6 +452,63 @@ function testTierA() {
     function () { b.permissions.create({ roles: { a: ["*"] }, audit: {} }); }, "BAD_OPT");
 }
 
+// ---- v0.6.6 — dbRole role-table integration ----
+
+function testDbRoleFor() {
+  var p = b.permissions.create({
+    roles: {
+      admin:   { extends: ["app"], permissions: ["users:delete"] },
+      app:     { permissions: ["users:read", "users:write"], dbRole: "app_user" },
+      analyst: { permissions: ["users:read"],                dbRole: "analytics_user" },
+      viewer:  { permissions: ["users:read"] }, // no dbRole declared
+    },
+  });
+
+  check("dbRoleFor: actor with single role returns its dbRole",
+    p.dbRoleFor({ roles: ["analyst"] }) === "analytics_user");
+
+  check("dbRoleFor: actor with role that has no dbRole walks extends",
+    p.dbRoleFor({ roles: ["admin"] }) === "app_user");
+
+  check("dbRoleFor: actor with multiple roles — first wins",
+    p.dbRoleFor({ roles: ["analyst", "app"] }) === "analytics_user");
+
+  check("dbRoleFor: viewer (no dbRole anywhere) → null",
+    p.dbRoleFor({ roles: ["viewer"] }) === null);
+
+  check("dbRoleFor: empty roles → null",
+    p.dbRoleFor({ roles: [] }) === null);
+
+  check("dbRoleFor: scopes-only actor → null",
+    p.dbRoleFor({ scopes: ["users:read"] }) === null);
+
+  check("dbRoleFor: null input → null",
+    p.dbRoleFor(null) === null);
+
+  // Request-shape input → resolver fires.
+  var req = _mockReq({ url: "/x" });
+  req.user = { roles: ["app"] };
+  check("dbRoleFor: request-shape input passes through resolver",
+    p.dbRoleFor(req) === "app_user");
+
+  // dbRole validates as a SQL identifier at create() — bad shape throws here.
+  function rejectsCreate(label, opts, re) {
+    var threw = null;
+    try { b.permissions.create(opts); } catch (e) { threw = e; }
+    check("permissions.create rejects: " + label,
+      threw && (re.test(threw.code || "") || re.test(threw.message || "")));
+  }
+  rejectsCreate("non-string dbRole",
+    { roles: { x: { permissions: ["a:b"], dbRole: 42 } } },
+    /BAD_ROLE/);
+  rejectsCreate("empty dbRole",
+    { roles: { x: { permissions: ["a:b"], dbRole: "" } } },
+    /BAD_ROLE/);
+  rejectsCreate("malformed dbRole identifier",
+    { roles: { x: { permissions: ["a:b"], dbRole: "bad name" } } },
+    /BAD_ROLE/);
+}
+
 // ---- Run ----
 
 async function run() {
@@ -476,6 +533,7 @@ async function run() {
   await testAuditSuccessOptOut();
   await testFiveWsAuditPropagation();
   testTierA();
+  testDbRoleFor();
 }
 
 module.exports = { run: run };

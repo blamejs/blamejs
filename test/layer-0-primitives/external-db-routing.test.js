@@ -202,6 +202,158 @@ async function run() {
   rejectsReplicas("non-integer weight",
     [{ connect: replica1.connect, query: replica1.query, weight: 1.5 }], /INVALID_CONFIG/);
 
+  // ---- dbRoleBackends + ALS-routed backend pick (v0.6.6) ----
+  b.externalDb._resetForTest();
+  var appDriver       = _trackingDriver("app");
+  var analyticsDriver = _trackingDriver("analytics");
+  b.externalDb.init({
+    backends: {
+      appMain:       {
+        connect: appDriver.connect,       query: appDriver.query,
+        close:   appDriver.close,         ping:  appDriver.ping,
+      },
+      analyticsMain: {
+        connect: analyticsDriver.connect, query: analyticsDriver.query,
+        close:   analyticsDriver.close,   ping:  analyticsDriver.ping,
+      },
+    },
+    defaultBackend:  "appMain",
+    dbRoleBackends:  {
+      app_user:       "appMain",
+      analytics_user: "analyticsMain",
+    },
+  });
+
+  // Default: no ALS role → defaultBackend.
+  await b.externalDb.query("SELECT 1");
+  check("dbRoleBackends: no role → defaultBackend",
+    appDriver.seen.length > 0 && analyticsDriver.seen.length === 0);
+
+  // runAs("analytics_user") routes read.query to analyticsMain.
+  appDriver.seen.length = 0;
+  analyticsDriver.seen.length = 0;
+  await b.externalDb.runAs("analytics_user", async function () {
+    await b.externalDb.read.query("SELECT 1");
+    check("runAs: currentRole inside scope",
+      b.externalDb.currentRole() === "analytics_user");
+  });
+  check("runAs: read.query routed by ALS role",
+    analyticsDriver.seen.length > 0 && appDriver.seen.length === 0);
+  check("runAs: ALS clears outside scope",
+    b.externalDb.currentRole() === null);
+
+  // Explicit { backend: ... } always wins over ALS role.
+  appDriver.seen.length = 0;
+  analyticsDriver.seen.length = 0;
+  await b.externalDb.runAs("analytics_user", async function () {
+    await b.externalDb.query("SELECT 1", [], { backend: "appMain" });
+  });
+  check("dbRoleBackends: explicit backend overrides ALS role",
+    appDriver.seen.length > 0 && analyticsDriver.seen.length === 0);
+
+  // Unmapped role → defaultBackend.
+  appDriver.seen.length = 0;
+  analyticsDriver.seen.length = 0;
+  await b.externalDb.runAs("admin_user", async function () {
+    await b.externalDb.query("SELECT 1");
+  });
+  check("dbRoleBackends: unmapped role → defaultBackend",
+    appDriver.seen.length > 0 && analyticsDriver.seen.length === 0);
+
+  // bad role identifier shape rejected at init.
+  function rejectsInit(label, opts, codeRe) {
+    b.externalDb._resetForTest();
+    var threw = null;
+    try { b.externalDb.init(opts); } catch (e) { threw = e; }
+    check("dbRoleBackends rejects: " + label,
+      threw && (codeRe.test(threw.code || "") || codeRe.test(threw.message || "")));
+    b.externalDb._resetForTest();
+  }
+  rejectsInit("non-object map",
+    { backends: { x: { connect: appDriver.connect, query: appDriver.query } },
+      dbRoleBackends: ["a"] },
+    /INVALID_CONFIG/);
+  rejectsInit("malformed role identifier",
+    { backends: { x: { connect: appDriver.connect, query: appDriver.query } },
+      dbRoleBackends: { "bad name": "x" } },
+    /INVALID_CONFIG/);
+  rejectsInit("backend reference does not exist",
+    { backends: { x: { connect: appDriver.connect, query: appDriver.query } },
+      dbRoleBackends: { app_user: "missing" } },
+    /INVALID_CONFIG/);
+
+  // ---- runAs input validation ----
+  b.externalDb._resetForTest();
+  b.externalDb.init({
+    backends: {
+      x: { connect: appDriver.connect, query: appDriver.query },
+    },
+  });
+  function rejectsRunAs(label, fn, re) {
+    var threw = null;
+    try { fn(); } catch (e) { threw = e; }
+    check("runAs rejects: " + label, threw && re.test(threw.code || "") || re.test((threw && threw.message) || ""));
+  }
+  rejectsRunAs("non-fn body",
+    function () { b.externalDb.runAs("x", "not a fn"); },
+    /INVALID_FN/);
+  rejectsRunAs("malformed role identifier",
+    function () { b.externalDb.runAs("bad name", function () {}); },
+    /sql\/bad-shape|INVALID/);
+
+  // ---- transaction sessionGucs (v0.6.6 D4b) ----
+  b.externalDb._resetForTest();
+  var txDriver = _trackingDriver("tx");
+  b.externalDb.init({
+    backends: {
+      main: { connect: txDriver.connect, query: txDriver.query, close: txDriver.close },
+    },
+  });
+
+  txDriver.seen.length = 0;
+  await b.externalDb.transaction(async function (tx) {
+    await tx.query("SELECT 1");
+  }, {
+    sessionGucs: {
+      "app.tenant_id":  "abc-123",
+      "app.scale":      42,
+      "app.dryRun":     false,
+    },
+  });
+  check("sessionGucs: SET LOCAL string literal escaped",
+    txDriver.seen.indexOf("SET LOCAL \"app\".\"tenant_id\" = 'abc-123'") !== -1);
+  check("sessionGucs: SET LOCAL numeric value emitted raw",
+    txDriver.seen.indexOf('SET LOCAL "app"."scale" = 42') !== -1);
+  check("sessionGucs: SET LOCAL boolean rendered as true/false",
+    txDriver.seen.indexOf('SET LOCAL "app"."dryRun" = false') !== -1);
+  check("sessionGucs: SET LOCAL emitted AFTER BEGIN",
+    txDriver.seen.indexOf("BEGIN") < txDriver.seen.indexOf("SET LOCAL \"app\".\"tenant_id\" = 'abc-123'"));
+
+  // SQL-string escaping for embedded quotes.
+  txDriver.seen.length = 0;
+  await b.externalDb.transaction(async function (tx) {
+    await tx.query("SELECT 1");
+  }, {
+    sessionGucs: { "app.note": "alice's tenant" },
+  });
+  check("sessionGucs: embedded single quote doubled per SQL standard",
+    txDriver.seen.indexOf("SET LOCAL \"app\".\"note\" = 'alice''s tenant'") !== -1);
+
+  // bad sessionGucs shapes throw at the call site.
+  async function rejectsTx(label, gucs, re) {
+    var threw = null;
+    try {
+      await b.externalDb.transaction(async function () {}, { sessionGucs: gucs });
+    } catch (e) { threw = e; }
+    check("sessionGucs rejects: " + label,
+      threw && (re.test(threw.code || "") || re.test(threw.message || "")));
+  }
+  await rejectsTx("array shape",        ["a"],                    /INVALID_SESSION_GUCS/);
+  await rejectsTx("bad name",           { "bad name": "x" },      /INVALID_SESSION_GUCS|sql\//);
+  await rejectsTx("null value",         { "app.x": null },        /INVALID_SESSION_GUCS/);
+  await rejectsTx("Infinity number",    { "app.x": Infinity },    /INVALID_SESSION_GUCS/);
+  await rejectsTx("object value",       { "app.x": { y: 1 } },    /INVALID_SESSION_GUCS/);
+
   // ---- Final clean ----
   b.externalDb._resetForTest();
 }

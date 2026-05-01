@@ -335,6 +335,15 @@ async function run() {
            /connectAs/.test(compliancePatterns.body));
     assert("compliance-patterns page covers read-replica routing",
            /read\.query|replicaFallbackToPrimary/.test(compliancePatterns.body));
+    assert("compliance-patterns page covers dbRoleFor middleware",
+           /dbRoleFor/.test(compliancePatterns.body) &&
+           /dbRoleBackends/.test(compliancePatterns.body));
+    assert("compliance-patterns page covers declareRowPolicy + sessionGucs",
+           /declareRowPolicy/.test(compliancePatterns.body) &&
+           /sessionGucs/.test(compliancePatterns.body));
+    assert("compliance-patterns page documents tenant-per-row vs tenant-per-schema",
+           /tenant-per-row/i.test(compliancePatterns.body) &&
+           /tenant-per-schema/i.test(compliancePatterns.body));
 
     var backupRestore = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/backup-restore",
