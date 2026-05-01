@@ -147,7 +147,7 @@ async function testPolicyValidation() {
     await reject("rejects empty columns",      "t", { columns: [], factors: ["totp"] }, /breakglass\/bad-policy/);
     await reject("rejects missing factors",    "t", { columns: ["x"] }, /breakglass\/bad-policy/);
     await reject("rejects unknown factor",     "t", { columns: ["x"], factors: ["sms"] }, /breakglass\/bad-policy/);
-    await reject("rejects passkey in 0.5.0",   "t", { columns: ["x"], factors: ["passkey"] }, /breakglass\/bad-policy/);
+    await reject("rejects unknown factor 'sms'",   "t", { columns: ["x"], factors: ["sms"] }, /breakglass\/bad-policy/);
     await reject("rejects non-boolean cryptographic",
                                                "t", { columns: ["x"], factors: ["totp"], cryptographic: "yes" }, /breakglass\/bad-policy/);
     await reject("rejects bad onLockedAccess", "t", { columns: ["x"], factors: ["totp"], onLockedAccess: "panic" }, /breakglass\/bad-policy/);
@@ -606,6 +606,219 @@ async function testMigrateModelAtoModelB() {
   }
 }
 
+// ---- v0.5.2: passkey factor + service-account bypass + admin tools ----
+
+function testV052Surface() {
+  check("breakGlass.unsealRowAsService is fn",  typeof b.breakGlass.unsealRowAsService === "function");
+  check("breakGlass.listActiveAll is fn",       typeof b.breakGlass.listActiveAll === "function");
+  check("breakGlass.revokeAll is fn",           typeof b.breakGlass.revokeAll === "function");
+}
+
+async function testPasskeyAcceptedInPolicy() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns: ["ssn"], factors: ["passkey"],
+    });
+    var p = await b.breakGlass.policy.get("patients");
+    check("passkey factor accepted in policy",   p && p.factors[0] === "passkey");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testPasskeyFactorPath() {
+  // We don't have a real WebAuthn fixture handy; verify the factor
+  // dispatch + rejection of malformed assertions.
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns: ["ssn"], factors: ["passkey"],
+    });
+    var threw = null;
+    try {
+      await b.breakGlass.grant({
+        req:    _fakeReq(),
+        table:  "patients",
+        reason: "investigating ticket #12345 for compliance review",
+        factor: { type: "passkey" /* missing all the fields */ },
+      });
+    } catch (e) { threw = e; }
+    check("passkey: malformed assertion rejected as bad-factor",
+          threw && /breakglass\/bad-factor/.test(threw.code));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testServiceAccountBypassPolicyValidation() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    function reject(label, sab, codeRe) {
+      return b.breakGlass.policy.set("t", {
+        columns: ["x"], factors: ["totp"],
+        serviceAccountBypass: sab,
+      }).then(
+        function () { check("sab.validate: " + label + " (should throw)", false); },
+        function (e) { check("sab.validate: " + label, codeRe.test(e.code || "")); }
+      );
+    }
+    await reject("rejects non-object",    "yes",                            /breakglass\/bad-policy/);
+    await reject("rejects enabled false", { enabled: false, apiKeyIds: ["x"], requireRole: "y" }, /breakglass\/bad-policy/);
+    await reject("rejects empty apiKeyIds", { enabled: true, apiKeyIds: [], requireRole: "y" }, /breakglass\/bad-policy/);
+    await reject("rejects missing requireRole", { enabled: true, apiKeyIds: ["x"] }, /breakglass\/bad-policy/);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testServiceAccountBypassHappyPath() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    var jid = await b.queue.enqueue("svc-q", { secret: "row-payload-svc" });
+
+    await b.breakGlass.policy.set("_blamejs_jobs", {
+      columns: ["payload"], factors: ["totp"],
+      serviceAccountBypass: {
+        enabled:     true,
+        apiKeyIds:   ["ak-svc-deidentify-job"],
+        requireRole: "service:phi-reader",
+      },
+    });
+    var serviceReq = {
+      apiKey: {
+        id:     "ak-svc-deidentify-job",
+        scopes: ["service:phi-reader"],
+      },
+      socket:  { remoteAddress: "10.0.0.1" },
+      headers: { "user-agent": "blamejs-svc" },
+      method:  "GET",
+      url:     "/cron/deid",
+    };
+    var row = await b.breakGlass.unsealRowAsService(serviceReq, "_blamejs_jobs", jid.jobId,
+      { reason: "nightly de-identification run" });
+    check("bypass: returns the row",
+          row && typeof row.payload === "string" && row.payload.indexOf("row-payload-svc") !== -1);
+
+    try { await b.queue.shutdown({ timeoutMs: 200 }); } catch (_e) {}
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testServiceAccountBypassRefusalPaths() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    var jid = await b.queue.enqueue("svc-deny-q", { secret: "x" });
+
+    // Policy WITHOUT serviceAccountBypass — bypass path must refuse.
+    await b.breakGlass.policy.set("_blamejs_jobs", {
+      columns: ["payload"], factors: ["totp"],
+    });
+    var threw = null;
+    try {
+      await b.breakGlass.unsealRowAsService(
+        { apiKey: { id: "ak-x", scopes: [] } }, "_blamejs_jobs", jid.jobId);
+    } catch (e) { threw = e; }
+    check("bypass: refuses when not configured",
+          threw && /breakglass\/bypass-not-configured/.test(threw.code));
+
+    // Now with bypass configured but apiKey not in allowlist
+    await b.breakGlass.policy.set("_blamejs_jobs", {
+      columns: ["payload"], factors: ["totp"],
+      serviceAccountBypass: {
+        enabled: true, apiKeyIds: ["ak-allowed"], requireRole: "service:reader",
+      },
+    });
+    threw = null;
+    try {
+      await b.breakGlass.unsealRowAsService(
+        { apiKey: { id: "ak-other", scopes: ["service:reader"] } },
+        "_blamejs_jobs", jid.jobId);
+    } catch (e) { threw = e; }
+    check("bypass: refuses unknown apiKey id",
+          threw && /breakglass\/bypass-unauthorized/.test(threw.code));
+
+    // apiKey in allowlist but missing role
+    threw = null;
+    try {
+      await b.breakGlass.unsealRowAsService(
+        { apiKey: { id: "ak-allowed", scopes: ["service:other"] } },
+        "_blamejs_jobs", jid.jobId);
+    } catch (e) { threw = e; }
+    check("bypass: refuses without required role",
+          threw && /breakglass\/bypass-unauthorized/.test(threw.code));
+
+    // No req.apiKey at all
+    threw = null;
+    try {
+      await b.breakGlass.unsealRowAsService(_fakeReq(), "_blamejs_jobs", jid.jobId);
+    } catch (e) { threw = e; }
+    check("bypass: refuses when req has no apiKey",
+          threw && /breakglass\/bypass-no-apikey/.test(threw.code));
+
+    try { await b.queue.shutdown({ timeoutMs: 200 }); } catch (_e) {}
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testListActiveAllAndRevokeAll() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("t1", { columns: ["c"], factors: ["totp"], maxRowsPerGrant: 3 });
+    await b.breakGlass.policy.set("t2", { columns: ["c"], factors: ["totp"], maxRowsPerGrant: 3 });
+
+    var totp = _validTotp();
+    var g1 = await b.breakGlass.grant({
+      req: _fakeReq(), table: "t1",
+      reason: "compliance review per ticket #1",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    var totp2 = _validTotp();
+    var g2 = await b.breakGlass.grant({
+      req: _fakeReq(), table: "t2",
+      reason: "compliance review per ticket #2",
+      factor: { type: "totp", code: totp2.code, secret: totp2.secret },
+    });
+    void g1; void g2;
+
+    var all = await b.breakGlass.listActiveAll();
+    check("listActiveAll: returns both grants",  all.length === 2);
+
+    var t1Only = await b.breakGlass.listActiveAll({ table: "t1" });
+    check("listActiveAll: filters by table",     t1Only.length === 1 && t1Only[0].scopeTable === "t1");
+
+    // revokeAll requires actor or table scope
+    var threw = null;
+    try { await b.breakGlass.revokeAll({}); } catch (e) { threw = e; }
+    check("revokeAll: refuses unbounded",
+          threw && /breakglass\/bad-revoke-criteria/.test(threw.code));
+
+    var result = await b.breakGlass.revokeAll({ table: "t1", reason: "ir-test" });
+    check("revokeAll: reports revokedCount",     result && result.revokedCount === 1);
+
+    var afterRevoke = await b.breakGlass.listActiveAll();
+    check("revokeAll: t1 grant gone",             afterRevoke.length === 1 && afterRevoke[0].scopeTable === "t2");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   testSurface();
   await testPolicyCRUD();
@@ -624,6 +837,14 @@ async function run() {
   await testEncryptCellRejectsBadColumn();
   await testCryptographicUnsealRow();
   await testMigrateModelAtoModelB();
+  // v0.5.2 passkey + bypass + admin
+  testV052Surface();
+  await testPasskeyAcceptedInPolicy();
+  await testPasskeyFactorPath();
+  await testServiceAccountBypassPolicyValidation();
+  await testServiceAccountBypassHappyPath();
+  await testServiceAccountBypassRefusalPaths();
+  await testListActiveAllAndRevokeAll();
 }
 
 module.exports = { run: run };

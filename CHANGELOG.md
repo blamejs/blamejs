@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.1** (2026-04-30) — b.breakGlass: per-cell encryption + context binding + migrate
 - **0.5.0** (2026-04-30) — b.breakGlass: column-policy / row-enforcement step-up auth
 
 ## v0.4.x
