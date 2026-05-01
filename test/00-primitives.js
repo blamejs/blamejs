@@ -10569,11 +10569,27 @@ function testCookiesSerialize() {
   threw = null; try { b.cookies.serialize("a", "1", { maxAge: "forever" }); } catch (e) { threw = e; }
   check("serialize rejects non-integer maxAge",    threw && threw.code === "cookies/invalid-attr");
 
-  // CRLF in domain/path is stripped (defense in depth, since these are
-  // operator-controlled but could come from config)
-  var s7 = b.cookies.serialize("a", "1", { domain: "evil.com\r\nX-Hack: 1", path: "/" });
-  check("serialize strips CRLF from domain",
-        s7.indexOf("\r") === -1 && s7.indexOf("\n") === -1 && /Domain=evil\.com/.test(s7));
+  // CRLF in path is stripped (defense in depth — operator-controlled
+  // but could come from config). The domain attribute now throws Tier-A
+  // on malformed input rather than scrubbing-and-passing, so the same
+  // hostile input is caught at the call site.
+  var s7 = b.cookies.serialize("a", "1", { domain: "evil.com", path: "/admin\r\nX-Hack: 1" });
+  check("serialize strips CRLF from path",
+        s7.indexOf("\r") === -1 && s7.indexOf("\n") === -1 && /Path=\/admin/.test(s7));
+  // Domain Tier-A — anything that isn't a valid host name throws.
+  threw = null;
+  try { b.cookies.serialize("a", "1", { domain: "evil.com\r\nX-Hack: 1" }); }
+  catch (e) { threw = e; }
+  check("serialize rejects malformed domain attr",
+        threw && threw.code === "cookies/invalid-attr");
+  threw = null;
+  try { b.cookies.serialize("a", "1", { domain: "https://evil.com" }); }
+  catch (e) { threw = e; }
+  check("serialize rejects URL as domain",
+        threw && threw.code === "cookies/invalid-attr");
+  // Leading-dot form is tolerated for legacy compat.
+  var s8 = b.cookies.serialize("a", "1", { domain: ".example.com" });
+  check("serialize accepts leading-dot domain", /Domain=\.example\.com/.test(s8));
 }
 
 function testCookiesInstanceDefaults() {

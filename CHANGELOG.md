@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.5.x
 
+- **0.5.6** (2026-04-30) — break-glass: trustProxy honored, cache require hoisted
 - **0.5.5** (2026-04-30) — strict default CSP + IPv6 special-range expansion
 - **0.5.4** (2026-04-30) — close SSRF DNS-rebinding window with pinned outbound DNS
 - **0.5.3** (2026-04-30) — security cleanup: trustProxy primitive + Vary merge + HSTS gate
