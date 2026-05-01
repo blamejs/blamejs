@@ -85,7 +85,7 @@ module.exports = {
   '',
   'var zipBytes = archive.toBuffer();',
   'archive.writeTo("/tmp/export.zip");           // sync to disk',
-  'var sha256 = archive.digest();                 // for integrity logs',
+  'var digest = archive.digest();                 // SHA3-512 hex, for integrity logs',
   '',
   'archive.entryCount;   // → 3</code></pre>',
   '<p>Format support: stored + deflate (auto-fallback to STORE when deflate doesn\'t shrink), UTF-8 file names (EFS bit), per-file mtime. Path-traversal defense: backslashes normalized to forward slashes; leading slashes stripped; <code>..</code> segments rejected at <code>addFile()</code> time. ZIP64, ZIP-native password encryption, streaming write, and reading are intentionally out-of-scope — operators with those needs reach for a different toolset.</p>',

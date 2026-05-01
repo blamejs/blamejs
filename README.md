@@ -17,7 +17,7 @@ The modern Node app is a 1,200-package supply-chain liability with no LTS calend
 
 ## Status
 
-Pre-1.0. Usable end-to-end — operators can build production apps on it today; the surface is still subject to change before 1.0. Recent line is **v0.6.3** ([releases](https://github.com/blamejs/blamejs/releases) · [npm](https://www.npmjs.com/package/@blamejs/core) · [container](https://github.com/blamejs/blamejs/pkgs/container/blamejs-wiki)).
+Pre-1.0. Usable end-to-end — operators can build production apps on it today; the surface is still subject to change before 1.0. The latest release lives on [GitHub](https://github.com/blamejs/blamejs/releases), [npm](https://www.npmjs.com/package/@blamejs/core), and the [container registry](https://github.com/blamejs/blamejs/pkgs/container/blamejs-wiki).
 
 ```js
 var b = require("@blamejs/core");

@@ -87,7 +87,7 @@ The test suite has four layers:
 
 A new framework primitive lands with at least layer-0 tests. New middleware lands with layer-2 tests. New CLI subcommand lands with a `test/layer-0-primitives/cli-X.test.js` round-trip test (see `cli-vault.test.js`, `cli-backup.test.js`, `cli-api-key.test.js` for the shape).
 
-The smoke target is `OK — N checks passed` ending with a count higher than the previous release. Wiki e2e is currently at 122; new operator-facing routes/features should add e2e checks.
+The smoke target is `OK — N checks passed` ending with a count higher than the previous release. New operator-facing routes / primitives add their own checks to `examples/wiki/test/e2e.js`.
 
 ## The PR loop
 

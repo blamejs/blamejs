@@ -34,15 +34,14 @@ We coordinate with the reporter on disclosure — typical embargo is 14 days pos
 
 ## Supported versions
 
-Pre-1.0, the supported version is the most-recent published patch on the most-recent minor (`v0.3.x` at time of writing). Older minors do not receive security backports unless the issue is critical AND the operator base on the older minor is non-trivial.
+Pre-1.0, the supported version is the most-recent published patch on the most-recent minor. Older minors do not receive security backports unless the issue is critical AND the operator base on the older minor is non-trivial.
 
 Once 1.0 ships, the LTS calendar takes effect: each major gets 18 months of security-only patches after the next major's release.
 
 | Version range | Security patches |
 |---|---|
-| `v0.3.x` (current) | yes — until v0.4 ships |
-| Older `v0.x.y` | no |
-| `< v0.1` (pre-public) | no |
+| Latest `v0.x` minor — current patch line | yes |
+| Older `v0.x` patch lines | no |
 
 ---
 
@@ -136,6 +135,6 @@ This is the minimum-viable security posture for a production deployment. The fra
 
 ## Reporting CVEs in vendored dependencies
 
-The framework vendors all crypto libraries under `lib/vendor/` (currently `@noble/ciphers`, `@noble/hashes`, `@noble/post-quantum`, `@simplewebauthn/server`, `argon2`). Vulnerabilities found upstream that affect blamejs are tracked in the project's [Security tab](https://github.com/blamejs/blamejs/security/advisories). Operators subscribed to the repo's security advisories receive a notification on every published advisory.
+The framework vendors all crypto libraries under `lib/vendor/`; the authoritative list with versions and licenses lives in [`lib/vendor/MANIFEST.json`](lib/vendor/MANIFEST.json). Vulnerabilities found upstream that affect blamejs are tracked in the project's [Security tab](https://github.com/blamejs/blamejs/security/advisories). Operators subscribed to the repo's security advisories receive a notification on every published advisory.
 
 We aim to ship a vendored-dep refresh release within 7 days of an upstream patch landing for any High / Critical CVE in our vendored set, faster for Critical-with-active-exploitation. The vendor-update workflow (`scripts/vendor-update.sh`) keeps the manifest, license, and provenance metadata in sync; every refresh release notes the from→to versions of every changed library.

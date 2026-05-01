@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.6.x
 
+- **0.6.10** (2026-05-01) — README / SECURITY / CONTRIBUTING / wiki: removed stale version stamps and an inaccurate vendored-dep list; SECURITY now points at `lib/vendor/MANIFEST.json` for the authoritative vendor list; supported-versions table no longer pins to a specific minor; wiki archive example names the digest variable correctly (was `sha256`, output is SHA3-512 hex)
 - **0.6.9** (2026-05-01) — b.archive.zip().digest() returns a SHA3-512 hex string (was SHA-256); operators reconciling against an external SHA-256 must hash the bytes themselves
 - **0.6.8** (2026-05-01) — wiki primitive-section validator: presence + opts diff + example execution against canonical fixture
 - **0.6.7** (2026-05-01) — db.role.switched audit + per-role metrics + API snapshot baseline
