@@ -139,6 +139,8 @@ function testThreeFrameworkUsages() {
         b.logStream.PROTOCOLS.indexOf("webhook") !== -1);
   check("logStream.PROTOCOLS includes otlp (shipped in v0.6.24)",
         b.logStream.PROTOCOLS.indexOf("otlp") !== -1);
+  check("logStream.PROTOCOLS includes cloudwatch (shipped in v0.6.25)",
+        b.logStream.PROTOCOLS.indexOf("cloudwatch") !== -1);
   check("logStream.DEFERRED_PROTOCOLS still includes syslog",
         b.logStream.DEFERRED_PROTOCOLS.indexOf("syslog") !== -1);
   check("objectStore.PROTOCOLS includes sigv4",

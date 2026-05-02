@@ -90,6 +90,28 @@ services:
       # overlay; the operator can flip OFF for a controlled brown-out
       # maintenance window.
       WIKI_REQUIRE_PROD_ASSERTS: ${WIKI_REQUIRE_PROD_ASSERTS:-1}
+      # Posture overrides — production deploys typically pin all three
+      # to "wrapped" / "encrypted" explicitly so a missing passphrase
+      # falls into the assertProduction gate instead of silently going
+      # plaintext.
+      WIKI_VAULT_MODE:           ${WIKI_VAULT_MODE:-wrapped}
+      WIKI_DB_AT_REST:           ${WIKI_DB_AT_REST:-encrypted}
+      WIKI_AUDIT_SIGNING_MODE:   ${WIKI_AUDIT_SIGNING_MODE:-wrapped}
+      # Framework-level audit-sign mode fallback (read by lib/db.js when
+      # the app's init() doesn't set it explicitly).
+      BLAMEJS_AUDIT_SIGNING_MODE: ${BLAMEJS_AUDIT_SIGNING_MODE:-wrapped}
+      # Encrypted-DB tmpfs working directory — required when atRest is
+      # "encrypted" (the framework refuses to boot otherwise). /dev/shm
+      # is a tmpfs on every Linux distro the GHCR image runs on.
+      BLAMEJS_TMPDIR:            ${BLAMEJS_TMPDIR:-/dev/shm}
+      # Bind address — Caddy is in the same network namespace, so
+      # binding to localhost-only is safe and reduces external attack
+      # surface.
+      WIKI_BIND:                 ${WIKI_BIND:-127.0.0.1}
+      # Fully-qualified site URL — required behind the Caddy TLS
+      # terminator so canonical headers + OAuth callbacks emit the
+      # public host.
+      WIKI_SITE_URL:             ${WIKI_SITE_URL:-https://blamejs.com}
       # ---- Framework (vault, audit, deprecation reporting) ----
       # BLAMEJS_VAULT_PASSPHRASE — when set, the wiki auto-flips
       # vault to `wrapped` mode + DB to encrypted-at-rest. Without
@@ -150,6 +172,22 @@ services:
       BLAMEJS_SOCKET_NO_DELAY:           ${BLAMEJS_SOCKET_NO_DELAY:-1}
       BLAMEJS_SOCKET_KEEPALIVE:          ${BLAMEJS_SOCKET_KEEPALIVE:-1}
       BLAMEJS_SOCKET_KEEPALIVE_DELAY_MS: ${BLAMEJS_SOCKET_KEEPALIVE_DELAY_MS:-}
+      # ---- Optional log-stream sink (b.logStream.bootFromEnv) ----
+      # Production deploys typically forward to OTel/CloudWatch/SIEM.
+      # Pick the protocol; populate the matching opts.
+      BLAMEJS_LOG_STREAM_PROTOCOL:           ${BLAMEJS_LOG_STREAM_PROTOCOL:-}
+      BLAMEJS_LOG_STREAM_MIN_LEVEL:          ${BLAMEJS_LOG_STREAM_MIN_LEVEL:-info}
+      BLAMEJS_LOG_STREAM_URL:                ${BLAMEJS_LOG_STREAM_URL:-}
+      BLAMEJS_LOG_STREAM_TOKEN:              ${BLAMEJS_LOG_STREAM_TOKEN:-}
+      BLAMEJS_LOG_STREAM_SERVICE_NAME:       ${BLAMEJS_LOG_STREAM_SERVICE_NAME:-blamejs-wiki}
+      BLAMEJS_LOG_STREAM_SERVICE_VERSION:    ${BLAMEJS_LOG_STREAM_SERVICE_VERSION:-}
+      AWS_REGION:                            ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID:                     ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY:                 ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN:                     ${AWS_SESSION_TOKEN:-}
+      BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_GROUP:  ${BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_GROUP:-}
+      BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM: ${BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM:-}
+      BLAMEJS_LOG_STREAM_PATH:               ${BLAMEJS_LOG_STREAM_PATH:-}
       # ---- Standard Node ----
       NODE_ENV:  ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}

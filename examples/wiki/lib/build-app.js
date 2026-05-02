@@ -209,6 +209,13 @@ async function buildApp(opts) {
   // configure entirely via env without touching code.
   b.network.bootFromEnv({ env: process.env, audit: b.audit });
 
+  // Optional log-stream sink — driven by BLAMEJS_LOG_STREAM_PROTOCOL
+  // and friends (BLAMEJS_LOG_STREAM_URL, AWS_*, etc.). Framework-level
+  // env vars; bootFromEnv reads them, validates, and wires the
+  // matching backend. Skipped silently when the protocol env var is
+  // unset, so dev `npm start` keeps stdout-only logging.
+  b.logStream.bootFromEnv({ env: process.env });
+
   // Boot-time security policy assertions. WIKI_REQUIRE_PROD_ASSERTS=1
   // makes the wiki refuse to boot when the operator's production
   // posture is incomplete (vault not wrapped, db not encrypted, etc.).

@@ -47,6 +47,28 @@ services:
       # by default so dev `docker compose up` works without setting
       # every production knob; flip on for production deploys.
       WIKI_REQUIRE_PROD_ASSERTS: ${WIKI_REQUIRE_PROD_ASSERTS:-}
+      # Posture overrides — flip from the auto-detect (vault passphrase
+      # presence → wrapped) to an explicit choice. WIKI_* are app-level;
+      # BLAMEJS_AUDIT_SIGNING_MODE is the framework-level fallback the
+      # audit-sign primitive reads when init() leaves mode unset.
+      WIKI_VAULT_MODE:           ${WIKI_VAULT_MODE:-}
+      WIKI_DB_AT_REST:           ${WIKI_DB_AT_REST:-}
+      WIKI_AUDIT_SIGNING_MODE:   ${WIKI_AUDIT_SIGNING_MODE:-}
+      BLAMEJS_AUDIT_SIGNING_MODE: ${BLAMEJS_AUDIT_SIGNING_MODE:-}
+      # Temporary-file directory for the encrypted-DB working file. The
+      # framework requires either opts.tmpDir or BLAMEJS_TMPDIR when
+      # atRest is "encrypted"; default unset so the dev path uses the
+      # OS tmpdir, prod overlay pins a tmpfs path.
+      BLAMEJS_TMPDIR:            ${BLAMEJS_TMPDIR:-}
+      # Bind address (default 0.0.0.0). Operators behind a reverse-proxy
+      # constraining to localhost set "127.0.0.1".
+      WIKI_BIND:                 ${WIKI_BIND:-}
+      # Fully-qualified site URL — emitted in canonical-link headers,
+      # passwordless-login redirects, OAuth client_id callbacks. Required
+      # when running behind a TLS terminator (the wiki can't infer the
+      # public scheme + host from the inbound request when the proxy
+      # rewrites them).
+      WIKI_SITE_URL:             ${WIKI_SITE_URL:-}
       # ---- Network configurability (b.network.bootFromEnv) ----
       # NTP — comma-separated server list, timeout (ms), tunable warn /
       # fatal drift thresholds (ms). Default servers pool.ntp.org +
@@ -97,6 +119,29 @@ services:
       BLAMEJS_SOCKET_NO_DELAY:           ${BLAMEJS_SOCKET_NO_DELAY:-}
       BLAMEJS_SOCKET_KEEPALIVE:          ${BLAMEJS_SOCKET_KEEPALIVE:-}
       BLAMEJS_SOCKET_KEEPALIVE_DELAY_MS: ${BLAMEJS_SOCKET_KEEPALIVE_DELAY_MS:-}
+      # ---- Optional log-stream sink (b.logStream.bootFromEnv) ----
+      # Framework-level env config: BLAMEJS_LOG_STREAM_PROTOCOL selects
+      # the sink (local | webhook | otlp | cloudwatch); per-protocol
+      # opts populate from the BLAMEJS_LOG_STREAM_* and standard AWS_*
+      # env vars below. When the protocol var is unset, the framework
+      # keeps stdout-only logging — operators flip it on per deploy.
+      BLAMEJS_LOG_STREAM_PROTOCOL:           ${BLAMEJS_LOG_STREAM_PROTOCOL:-}
+      BLAMEJS_LOG_STREAM_MIN_LEVEL:          ${BLAMEJS_LOG_STREAM_MIN_LEVEL:-}
+      # webhook + otlp shared opts:
+      BLAMEJS_LOG_STREAM_URL:                ${BLAMEJS_LOG_STREAM_URL:-}
+      BLAMEJS_LOG_STREAM_TOKEN:              ${BLAMEJS_LOG_STREAM_TOKEN:-}
+      # otlp-only opts:
+      BLAMEJS_LOG_STREAM_SERVICE_NAME:       ${BLAMEJS_LOG_STREAM_SERVICE_NAME:-}
+      BLAMEJS_LOG_STREAM_SERVICE_VERSION:    ${BLAMEJS_LOG_STREAM_SERVICE_VERSION:-}
+      # cloudwatch-only opts (AWS_* are standard AWS SDK vars):
+      AWS_REGION:                            ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID:                     ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY:                 ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN:                     ${AWS_SESSION_TOKEN:-}
+      BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_GROUP:  ${BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_GROUP:-}
+      BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM: ${BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM:-}
+      # local-only opt:
+      BLAMEJS_LOG_STREAM_PATH:               ${BLAMEJS_LOG_STREAM_PATH:-}
     volumes:
       - wiki-data:/data
     healthcheck:

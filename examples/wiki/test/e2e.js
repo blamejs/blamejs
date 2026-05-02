@@ -13,6 +13,7 @@ var fs = require("node:fs");
 var b = require("@blamejs/core");
 var { buildApp } = require("../lib/build-app");
 var sectionValidator = require("./validate-primitive-sections");
+var envSnapshotValidator = require("./validate-env-snapshot");
 
 var DATA_DIR = path.join(__dirname, "..", "data-e2e");
 var ADMIN_EMAIL = "admin-e2e@blamejs.com";
@@ -755,6 +756,33 @@ async function run() {
     }
     assert("completeness: scanned ≥10 internal links",     allInternalLinks.size >= 10);
     assert("completeness: scanned ≥3 code-block languages", allLanguages.size >= 3);
+
+    // ---- env-var snapshot gate ----
+    // Catches drift between the wiki's source `process.env.X` reads,
+    // the framework's `safeEnv.readVar("X")` reads (in lib/), and the
+    // env knobs declared in docker-compose.yml + docker-compose.prod.yml.
+    // Same UX as api-snapshot — refresh with BLAMEJS_UPDATE_ENV_SNAPSHOT=1.
+    var envCaptured = envSnapshotValidator.captureSnapshot();
+    var envVerdict  = envSnapshotValidator.compareSnapshot(envCaptured);
+    assert("env-snapshot: file exists (run BLAMEJS_UPDATE_ENV_SNAPSHOT=1 if missing)",
+      envVerdict.initialized);
+    assert("env-snapshot: no drift between captured + committed snapshot (" +
+      envVerdict.drift.length + " field(s) drifted)",
+      envVerdict.drift.length === 0);
+    if (envVerdict.drift.length > 0) {
+      envVerdict.drift.forEach(function (d) {
+        var sign = d.kind === "added" ? "+" : "-";
+        console.error("  env-snapshot " + sign + " " + d.field + ": " + d.keys.join(", "));
+      });
+    }
+    assert("env-snapshot: no source-only / compose-only gaps (" +
+      envVerdict.gaps.length + " gap(s))",
+      envVerdict.gaps.length === 0);
+    if (envVerdict.gaps.length > 0) {
+      envVerdict.gaps.forEach(function (g) {
+        console.error("  env-snapshot " + g.side + ": " + g.key);
+      });
+    }
 
     // Every language used in a docs code block must be loadable by
     // the Prism bundle we ship.

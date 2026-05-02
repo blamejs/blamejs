@@ -181,6 +181,9 @@ function _envFn(name, fallback) {
     OTEL_TOKEN:          "test-otel-token",
     APP_VERSION:         "1.0.0-test",
     SIEM_HMAC_SECRET:    "wiki-validator-hmac",
+    AWS_ACCESS_KEY_ID:   "AKIATEST",
+    AWS_SECRET_ACCESS_KEY: "test-secret-access-key",
+    AWS_SESSION_TOKEN:   "",
   };
   return Object.prototype.hasOwnProperty.call(fakes, name) ? fakes[name] : (fallback || "");
 }
