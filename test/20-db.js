@@ -371,6 +371,62 @@ async function testReservedTableProtection() {
   }
 }
 
+async function testCrossSchemaAttach() {
+  // Real cross-schema execution test — ATTACH DATABASE a second
+  // sqlite file as 'audit', create a table inside the attached
+  // schema, then exercise b.db.from('audit.events') end-to-end. The
+  // db-query layer-0 tests prove SQL-shape; this test proves the
+  // qualified path actually executes against the underlying engine.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-xschema-"));
+  try {
+    await setupTestDb(tmpDir);
+    var attachedPath = path.join(tmpDir, "audit.db");
+    b.db.prepare("ATTACH DATABASE ? AS audit").run(attachedPath);
+    b.db.prepare(
+      'CREATE TABLE IF NOT EXISTS "audit"."events" (' +
+      '  _id     TEXT PRIMARY KEY,' +
+      '  action  TEXT NOT NULL,' +
+      '  actor   TEXT,' +
+      '  ts      INTEGER NOT NULL' +
+      ')'
+    ).run();
+
+    // Insert via b.db.from("audit.events") — schema-qualified.
+    var inserted = b.db.from("audit.events").insertOne({
+      action: "test.action", actor: "u-1", ts: 1,
+    });
+    check("cross-schema insertOne returns auto _id",
+          typeof inserted._id === "string" && inserted._id.length > 0);
+
+    // Read back via the qualified name.
+    var rows = b.db.from("audit.events").where({ action: "test.action" }).all();
+    check("cross-schema select round-trips",
+          rows.length === 1 && rows[0].actor === "u-1");
+
+    // count() round-trip.
+    var n = b.db.from("audit.events").where({ actor: "u-1" }).count();
+    check("cross-schema count() respects where",  n === 1);
+
+    // Update on qualified name.
+    var changed = b.db.from("audit.events")
+      .where({ _id: inserted._id })
+      .updateOne({ action: "test.action.updated" });
+    check("cross-schema updateOne returns true",  changed === true);
+    var refetched = b.db.from("audit.events").where({ _id: inserted._id }).first();
+    check("cross-schema update persisted",        refetched.action === "test.action.updated");
+
+    // Delete.
+    var deleted = b.db.from("audit.events").where({ _id: inserted._id }).deleteOne();
+    check("cross-schema deleteOne returns true",  deleted === true);
+    check("cross-schema row gone after delete",
+          b.db.from("audit.events").where({ _id: inserted._id }).first() === null);
+
+    b.db.prepare("DETACH DATABASE audit").run();
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- run() ----
 
 async function run() {
@@ -392,6 +448,9 @@ async function run() {
   await testDbStreamRawWithUnseal();
   await testDbStreamFromQueryAutoUnseal();
   await testDbStreamErrorPropagates();
+
+  // schema-qualified table support
+  await testCrossSchemaAttach();
 }
 
 // v0.4.13 — streaming reads
