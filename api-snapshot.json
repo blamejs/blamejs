@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.6.12",
-  "createdAt": "2026-05-02T00:59:52.991Z",
+  "frameworkVersion": "0.6.14",
+  "createdAt": "2026-05-02T02:55:55.355Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -657,6 +657,140 @@
                 }
               }
             },
+            "DEFAULT_POLICY": {
+              "type": "object",
+              "members": {
+                "breachCheck": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "breachThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "complexity": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "denyContextSubstrings": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "dictionary": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "failClosed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "forbidCommon": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "hibpEndpoint": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "hibpTimeoutMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "historyMinDistance": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "minLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mustRotateAfterMs": {
+                  "type": "primitive",
+                  "valueType": "null"
+                }
+              }
+            },
+            "POLICY_PROFILES": {
+              "type": "object",
+              "members": {
+                "hipaa-aal2": {
+                  "type": "object",
+                  "members": {
+                    "breachCheck": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "complexity": {
+                      "type": "object",
+                      "members": {
+                        "minCategories": {
+                          "type": "primitive",
+                          "valueType": "number"
+                        },
+                        "minRunRepeat": {
+                          "type": "primitive",
+                          "valueType": "number"
+                        },
+                        "minSequenceLength": {
+                          "type": "primitive",
+                          "valueType": "number"
+                        }
+                      }
+                    },
+                    "historyMinDistance": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "minLength": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "mustRotateAfterMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "nist-aal2": {
+                  "type": "object",
+                  "members": {
+                    "breachCheck": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "minLength": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "pci-4.0": {
+                  "type": "object",
+                  "members": {
+                    "breachCheck": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "historyMinDistance": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "minLength": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "mustRotateAfterMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                }
+              }
+            },
             "hash": {
               "type": "function",
               "arity": 2
@@ -664,6 +798,10 @@
             "needsRehash": {
               "type": "function",
               "arity": 2
+            },
+            "policy": {
+              "type": "function",
+              "arity": 1
             },
             "verify": {
               "type": "function",
@@ -1249,6 +1387,19 @@
         }
       }
     },
+    "configDrift": {
+      "type": "object",
+      "members": {
+        "ConfigDriftError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "consent": {
       "type": "object",
       "members": {
@@ -1601,6 +1752,10 @@
           "type": "function",
           "arity": 3
         },
+        "eraseRow": {
+          "type": "function",
+          "arity": 2
+        },
         "getSchema": {
           "type": "function",
           "arity": 1
@@ -1849,6 +2004,19 @@
         }
       }
     },
+    "dualControl": {
+      "type": "object",
+      "members": {
+        "DualControlError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "errorPage": {
       "type": "object",
       "members": {
@@ -2059,6 +2227,23 @@
               "arity": 2
             }
           }
+        }
+      }
+    },
+    "fileType": {
+      "type": "object",
+      "members": {
+        "FileTypeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "assertOneOf": {
+          "type": "function",
+          "arity": 3
+        },
+        "detect": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
@@ -2649,6 +2834,10 @@
           "arity": 1
         },
         "health": {
+          "type": "function",
+          "arity": 1
+        },
+        "networkAllowlist": {
           "type": "function",
           "arity": 1
         },
@@ -3464,6 +3653,19 @@
         }
       }
     },
+    "retention": {
+      "type": "object",
+      "members": {
+        "RetentionError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "retry": {
       "type": "object",
       "members": {
@@ -3965,6 +4167,36 @@
         }
       }
     },
+    "security": {
+      "type": "object",
+      "members": {
+        "DEFAULT_RESOLVERS": {
+          "type": "object",
+          "members": {
+            "auditSigning": {
+              "type": "function",
+              "arity": 0
+            },
+            "dbAtRest": {
+              "type": "function",
+              "arity": 0
+            },
+            "vault": {
+              "type": "function",
+              "arity": 0
+            }
+          }
+        },
+        "SecurityAssertError": {
+          "type": "function",
+          "arity": 4
+        },
+        "assertProduction": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "seeders": {
       "type": "object",
       "members": {
@@ -4044,7 +4276,7 @@
         },
         "verify": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         }
       }
     },

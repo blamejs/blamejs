@@ -119,6 +119,18 @@ var EXEMPTIONS = {
     "compound section that demonstrates retry + circuit-breaker composition — `guarded` references the breaker example's local",
   "websockets:b.websocketchannels.create(opts)":
     "example wires router.ws() with operator-supplied per-channel auth handlers",
+  "compliance-patterns:b.dualcontrol.create(opts)":
+    "example references operator actors (actor1, actor2) — pedagogical IDs, not in harness scope",
+  "compliance-patterns:b.configdrift.create(opts)":
+    "example references operator log sink (log.warn) — operator-side wiring",
+  "compliance-patterns:b.security.assertproduction(opts)":
+    "example references process.env.WIKI_ADMIN_PASSWORD (operator-side env) and asserts boot-time posture",
+  "safe-parsers:b.filetype.detect(buffer, opts?)":
+    "example references uploadedBuffer (per-request value from a route handler — operator-side)",
+  "safe-parsers:b.filetype.assertoneof(buffer, allowlist, opts?)":
+    "example references uploadedBuffer + res (per-request values — operator-side)",
+  "auth:b.auth.password.policy(opts)":
+    "example references user.passwordHashHistory / user.passwordSetAt (per-account state read from DB — operator-side)",
   "observability:b.audit.safeemit(event)":
     "example shows compound emission in a route handler — references operator-side `body` from req parsing",
 };

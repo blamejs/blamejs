@@ -111,6 +111,43 @@ jobs:
           npm install --no-package-lock --omit=dev --install-links
           node test/e2e.js
 
+      - name: Generate CycloneDX SBOM
+        # `npm sbom` ships with npm 10+ (Node 24 LTS). Generates a
+        # CycloneDX 1.5 JSON file from package.json + the lockfile.
+        # blamejs has zero npm runtime deps so the SBOM is small —
+        # the value is the discoverability signal (operators / supply-
+        # chain scanners can verify there's nothing hidden) plus the
+        # CI gate that catches a leaked dep being added.
+        run: |
+          npm sbom --sbom-format cyclonedx --omit dev > sbom.cyclonedx.json
+          echo "[sbom] wrote sbom.cyclonedx.json ($(wc -c < sbom.cyclonedx.json) bytes)"
+          # Refuse the publish if any runtime dep snuck in. The framework's
+          # zero-dep contract says lib/vendor/ holds everything; runtime
+          # deps in package.json would silently break that.
+          RUNTIME_DEPS=$(node -e "
+            var s = JSON.parse(require('fs').readFileSync('sbom.cyclonedx.json', 'utf8'));
+            var comps = (s.components || []).filter(function (c) {
+              return c.scope !== 'optional' && c.scope !== 'excluded' &&
+                     c['bom-ref'] !== s.metadata.component['bom-ref'];
+            });
+            console.log(comps.length);
+          ")
+          if [ "$RUNTIME_DEPS" -gt 0 ]; then
+            echo "::error::SBOM lists $RUNTIME_DEPS runtime dependency component(s)."
+            echo "::error::blamejs ships zero npm runtime deps — vendor any new dep into lib/vendor/."
+            exit 1
+          fi
+
+      - name: Attach SBOM as release asset
+        if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG:      v${{ steps.version.outputs.version }}
+        run: |
+          # Upload alongside the GitHub release the operator (or this
+          # workflow's release-creation step) already published.
+          gh release upload "$TAG" sbom.cyclonedx.json --repo "$GITHUB_REPOSITORY" --clobber
+
       - name: Publish to npm (with SLSA provenance)
         if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}
         run: npm publish --provenance --access public

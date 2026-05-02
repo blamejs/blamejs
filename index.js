@@ -159,6 +159,11 @@ var seeders = require("./lib/seeders");
 var i18n = require("./lib/i18n");
 var notify = require("./lib/notify");
 var testing = require("./lib/testing");
+var configDrift = require("./lib/config-drift");
+var security = require("./lib/security-assert");
+var fileType = require("./lib/file-type");
+var dualControl = require("./lib/dual-control");
+var retention = require("./lib/retention");
 
 module.exports = {
   crypto:           crypto,
@@ -266,6 +271,11 @@ module.exports = {
   i18n:             i18n,
   notify:           notify,
   testing:          testing,
+  configDrift:      configDrift,
+  security:         security,
+  fileType:         fileType,
+  dualControl:      dualControl,
+  retention:        retention,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

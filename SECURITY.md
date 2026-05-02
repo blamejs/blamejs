@@ -126,7 +126,17 @@ This is the minimum-viable security posture for a production deployment. The fra
 
 **Application**
 - [ ] Use `b.permissions` for every state-changing route (don't gate on `req.user` truthiness alone)
+- [ ] For high-privilege scopes, set `requireMfa: true` (per-role on the role spec OR per-route via `perms.require(scope, { requireMfa: true, mfaWindowMs: C.TIME.minutes(15) })`) and stamp `req.user.mfaAuthenticated = true` + `req.user.mfaAt = Date.now()` after a successful TOTP / passkey step-up
+- [ ] For destructive operations (data purge, key rotation, financial close), wire `b.dualControl.create({ minApprovers: 2, consumeLockMs: C.TIME.minutes(2), approverRoles: ["security-officer"], minReasonLength: 20 })` and gate the consumer on `consume(grantId).ready`
 - [ ] For Postgres backends serving narrowed views or row-level-security policies, mount `b.middleware.dbRoleFor` so the request-time DB role is bound from the actor's permissions role; pair `b.db.declareRowPolicy` migrations with `b.externalDb.transaction({ sessionGucs })` for per-tenant binding
+- [ ] For password-using auth: configure `b.auth.password.policy({ profile: "pci-4.0" })` (or `nist-aal2` / `hipaa-aal2`) and call `policy.check()` on every signup AND password change; pass `policy.shouldRotate(passwordSetAt)` through the login response so the UI can prompt rotation; pass the user's last-N stored hashes to `policy.reuseProhibited()` on change flows
+- [ ] For session security: pass `{ req }` to `b.session.create()` and `b.session.verify()` so the IP / UA fingerprint is captured and checked; for high-value sessions (admin, finance) set `requireFingerprintMatch: true` OR `maxAnomalyScore: 0.7` with an operator-supplied `scorer(input)` function (impossible-travel detection, geo-distance, etc.)
+- [ ] For inbound admin paths reachable on the public network: mount `b.middleware.networkAllowlist({ paths: ["/admin"], allowedCidrs: [...] })` as the in-process CIDR fence above the application-layer auth gate
+- [ ] For outbound integrations: pin destination hosts via `b.httpClient.request({ allowedHosts: ["api.partner.com", ".internal.example.com"] })` so a compromised process can't reach arbitrary upstreams
+- [ ] For file-upload routes: gate on magic bytes via `b.fileType.assertOneOf(buffer, ["image", "application/pdf"])` — never trust the client-supplied `Content-Type` alone
+- [ ] For data with a TTL (GDPR Art. 17, PCI 3.1, retention windows): declare retention rules via `b.retention.create({ db, audit }).declare({ name, table, ageField, ttlMs, action: "erase" })` and run on a `b.scheduler` cadence; honour legal-hold via `legalHoldField`
+- [ ] At boot in production: call `await b.security.assertProduction({ vault: "wrapped", dbAtRest: "encrypted", auditSigning: "wrapped", ntpStrict: true, requireEnv: ["BLAMEJS_VAULT_PASSPHRASE"], dataDir: "./data" })` to refuse to start on weak posture instead of warning
+- [ ] At boot: call `await b.configDrift.create({ dataDir, audit }).checkpoint({ allowedOrigins, csp, vaultMode, ... })` so the next boot detects + audits any silent runtime config change
 - [ ] Audit all `{{{ raw }}}` template outputs — these bypass HTML escape
 - [ ] Run `blamejs api-snapshot compare --file ./api-snapshot.json` in CI to catch removed methods or changed signatures before they ship
 - [ ] Subscribe to the `blamejs-security-announce` mailing list for advisories

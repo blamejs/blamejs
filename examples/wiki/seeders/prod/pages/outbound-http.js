@@ -108,6 +108,17 @@ module.exports = {
   '<h2 id="safe-url">Safe URL parsing <a class="anchor" href="#safe-url">#</a></h2>',
   '<p><code>b.safeUrl.parse(input, { allowedProtocols, allowUserinfo })</code> validates a URL\'s shape and protocol before any network I/O sees it. Defaults accept <code>https:</code> only — <code>file:</code>, <code>data:</code>, <code>javascript:</code>, plain <code>http:</code>, and other schemes are rejected. Operators with internal cleartext endpoints opt in via <code>safeUrl.ALLOW_HTTP_ALL</code> or <code>safeUrl.ALLOW_HTTP_TLS</code>. URLs that carry <code>user:pass@</code> credentials in the authority are also rejected by default (those leak into request logs / metric labels / trace spans); legacy endpoints that REQUIRE userinfo opt in per call via <code>{ allowUserinfo: true }</code>. The IP-range guard is a separate concern handled by <code>b.ssrfGuard</code>.</p>',
 
+  '<h2 id="allowed-hosts">Outbound destination allowlist <a class="anchor" href="#allowed-hosts">#</a></h2>',
+  '<p>SafeUrl gates protocol + userinfo, ssrfGuard gates IP class — the third layer is the destination hostname. <code>b.httpClient.request({ allowedHosts })</code> restricts outbound requests to a named set of hosts. Operators with strict egress policies pin the upstreams the app is allowed to talk to so a compromised process can\'t reach arbitrary destinations.</p>',
+  '<pre><code class="language-javascript">await b.httpClient.request({',
+  '  url: "https://api.partner.com/orders",',
+  '  allowedHosts: [',
+  '    "api.partner.com",                          // exact match',
+  '    ".internal.example.com",                     // suffix match (".x" matches "a.x" + "x")',
+  '  ],',
+  '});</code></pre>',
+  '<p>A request to a host outside the allowlist throws with code <code>HOST_DISALLOWED</code> before the socket opens.</p>',
+
   '<h2 id="webhook">Webhook signer + verifier <a class="anchor" href="#webhook">#</a></h2>',
   '<p><code>b.webhook</code> covers two halves: <code>signer</code> for outbound deliveries you author, <code>verifier</code> for inbound deliveries from third parties. The framework owns the wire shape so operators don\'t hand-roll HMAC code per integration.</p>',
   '<pre><code class="language-javascript">// Outbound — sign + deliver',

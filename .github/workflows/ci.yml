@@ -99,6 +99,31 @@ jobs:
         # the bump in package.json so the new surface is tracked.
         run: node scripts/check-api-snapshot.js
 
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # gitleaks scans full history on a non-shallow checkout, so an
+          # accidentally-committed secret in any prior commit on the
+          # branch is caught even if a later commit reverts it. The
+          # ref-history fetch matches the npm publish workflow's depth.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        # gitleaks-action ships its own binary; no vendoring into the
+        # repo, no install step. Default ruleset catches AWS keys, GCP
+        # credentials, GitHub tokens, npm tokens, generic high-entropy
+        # strings. The framework's vendored crypto fixtures live under
+        # lib/vendor/ and are explicitly allowlisted in .gitleaks.toml
+        # so the bundled noble-ciphers / argon2 binaries don't trip
+        # entropy heuristics.
+        uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   wiki-section-convention:
     name: Wiki primitive-section convention
     runs-on: ubuntu-latest
