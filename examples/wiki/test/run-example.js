@@ -318,6 +318,12 @@ function _runCode(code) {
     "factor", "title", "saveHandler",
     "pg", "connectPrimary", "connectReplica", "connectReplica1", "connectReplica2",
     "rawConnect", "rawQuery", "operatorPgClient", "log", "db",
+    // Additional operator-side stubs added to support compound
+    // primitive examples (handler / middleware / helper references
+    // that the original prose-shaped sections embedded in multi-line
+    // call patterns).
+    "app", "authMiddleware", "loginHandler", "users", "template",
+    "metrics", "currentToken", "largeBuffer", "body", "loginUrl", "meUrl",
   ]);
   var fakeConnect = function () { return _fakePgClient().connect(); };
   var noopThen = function () { return Promise.resolve({ rows: [], rowCount: 0 }); };
@@ -376,7 +382,46 @@ function _runCode(code) {
     fakeConnect, fakeConnect, fakeConnect, fakeConnect, fakeConnect,
     noopThen, _fakePgClient(),
     { warn: function () {}, info: function () {}, error: function () {}, debug: function () {} },
-    b.db                  // db
+    b.db,                 // db
+    // Operator-side stubs:
+    {                     // app — Express-/router-shape stub. Examples that
+                          // call app.use(mw) record the registration without
+                          // actually mounting a server.
+      use:    function () { return this; },
+      get:    function () { return this; },
+      post:   function () { return this; },
+      put:    function () { return this; },
+      patch:  function () { return this; },
+      delete: function () { return this; },
+      head:   function () { return this; },
+      listen: function () { return { close: function () {} }; },
+      close:  function () {},
+    },
+    function (_req, _res, next) { next && next(); },  // authMiddleware
+    function (_req, _res, next) { next && next(); },  // loginHandler
+    {                     // users — db-model stub (.create, .findOne, .updateOne, etc.)
+      create:     async function (row) { return Object.assign({ _id: "u-stub" }, row); },
+      findOne:    async function () { return null; },
+      findMany:   async function () { return []; },
+      updateOne:  async function () { return true; },
+      deleteOne:  async function () { return true; },
+      count:      async function () { return 0; },
+    },
+    {                     // template — template engine stub (.create / .precompileAll / .render)
+      create:        function () { return this; },
+      precompileAll: function () { return this; },
+      render:        function () { return ""; },
+    },
+    {                     // metrics — observability counter stub
+      counter:   function () { return { inc: function () {}, observe: function () {} }; },
+      histogram: function () { return { observe: function () {} }; },
+      gauge:     function () { return { set: function () {}, inc: function () {}, dec: function () {} }; },
+    },
+    function () { return "wiki-validator-token-stub"; },  // currentToken
+    Buffer.alloc(64),     // largeBuffer
+    { foo: "bar" },       // body — generic request body
+    "https://example.test/login",   // loginUrl
+    "https://example.test/me"       // meUrl
   );
 }
 
