@@ -321,7 +321,7 @@ module.exports = {
   '<p>The same primitive composes around any "X attempts to do Y" surface — TOTP code entry, password-reset code submission, passkey verification, second-factor brute force. Each operator-named instance keeps its own counter namespace so login and TOTP attempts decay and lock independently.</p>',
 
   '<h2 id="password-policy">Password policy <a class="anchor" href="#password-policy">#</a></h2>',
-  '<p><code>b.auth.password.policy(opts)</code> gates weak credentials BEFORE Argon2id locks them in — minimum length, common-password denylist, context-substring denial (e.g. password contains the email\'s localpart), and optional <a href="https://haveibeenpwned.com/Passwords">HaveIBeenPwned</a> k-anonymity breach check. Argon2id covers offline brute force; this primitive covers online weak / reused / phished credentials.</p>',
+  '<p><code>b.auth.password.policy(opts)</code> gates weak credentials BEFORE Argon2id locks them in — minimum length, common-password denylist (the bundled <a href="https://github.com/danielmiessler/SecLists/blob/master/Passwords/Common-Credentials/10k-most-common.txt">SecLists top-10000</a> from <a href="https://github.com/danielmiessler/SecLists">Daniel Miessler / SecLists contributors</a>, CC-BY-3.0, ships at <code>lib/vendor/common-passwords-top-10000.txt</code> — thank you to the SecLists project for keeping a curated baseline freely redistributable), context-substring denial (e.g. password contains the email\'s localpart), and optional <a href="https://haveibeenpwned.com/Passwords">HaveIBeenPwned</a> k-anonymity breach check. Argon2id covers offline brute force; this primitive covers online weak / reused / phished credentials.</p>',
   '<h3>b.auth.password.policy(opts) <a class="anchor" href="#password-policy-call">#</a></h3>',
   '<pre><code class="language-javascript">{',
   '  profile:                "nist-aal2" | "pci-4.0" | "hipaa-aal2" | undefined,',
@@ -329,7 +329,8 @@ module.exports = {
   '                                                  //   per-field opts below override the profile defaults',
   '  minLength:              number,                  // default: 8 (NIST 800-63B floor)',
   '  maxLength:              number,                  // default: 4096 (Argon2 cap)',
-  '  forbidCommon:           Array<string>,           // operator-supplied weak passwords',
+  '  forbidCommon:           Array<string>,           // operator-supplied additional weak passwords (additive over the bundled 10k)',
+  '  useBundledCommon:       boolean,                 // default: true — load the bundled SecLists top-10000 set',
   '  dictionary:             Array<string>,           // forbidden substrings (brand / product names)',
   '  denyContextSubstrings:  boolean,                 // default: true (block password containing email/username)',
   '  breachCheck:            null | "haveibeenpwned", // default: null',

@@ -57,3 +57,19 @@ Used for:    Pure-JS mTLS CA. Self-signed CA generation (ECDSA P-384, SHA-384),
              asn1js, pvtsutils, pvutils, and the @peculiar/asn1-* schema
              chain).
 --------------------------------------------------------------------------------
+Component:   SecLists — 10k-most-common.txt
+Version:     master snapshot (bundled 2026-05-02)
+Source:      https://github.com/danielmiessler/SecLists
+             https://github.com/danielmiessler/SecLists/blob/master/Passwords/Common-Credentials/10k-most-common.txt
+License:     CC-BY-3.0
+Copyright:   Copyright (c) Daniel Miessler and SecLists contributors
+Used for:    Top-10000 most-common (breach-derived) passwords. Loaded by
+             b.auth.password.policy() to satisfy NIST 800-63B §5.1.1.2's
+             "previously breached, dictionary, repetitive/sequential,
+             context-specific" check. Operators with deeper enforcement
+             (HIBP downloads, NCSC 100k) layer on top via opts.forbidCommon
+             — the bundled set is additive. Bundled at lib/vendor/
+             common-passwords-top-10000.txt; thank you to the SecLists
+             project maintainers for keeping a curated, freely-redistributable
+             baseline.
+--------------------------------------------------------------------------------
