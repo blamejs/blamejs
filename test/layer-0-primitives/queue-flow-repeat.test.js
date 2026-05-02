@@ -54,12 +54,16 @@ async function testRepeatCronReEnqueuesAfterComplete() {
     await _waitFor(function () { return seen >= 1; }, 3000);
 
     // After complete, a second pending row should exist for the next minute.
-    var nowMs = Date.now();
+    // The cron rounds UP to the next whole-minute boundary, so availableAt
+    // lands on a :00 second boundary in the future relative to when
+    // complete() ran. enqueue() honours opts.availableAt directly, so the
+    // boundary survives the round-trip without drift.
     var pending = await b.db.from("_blamejs_jobs")
       .where({ queueName: "cron-q", status: "pending" }).all();
     check("repeat: a follow-up pending row was scheduled",  pending.length === 1);
-    check("repeat: next availableAt is in the future",
-          Number(pending[0].availableAt) > nowMs);
+    var availableAt = Number(pending[0].availableAt);
+    check("repeat: next availableAt is on a minute boundary",
+          availableAt % 60000 === 0);
     check("repeat: follow-up carries the same cron",
           pending[0].repeatCron === "* * * * *");
 
