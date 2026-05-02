@@ -23,8 +23,8 @@ async function run() {
   if (!caddy.ok) throw new Error("caddy unreachable: " + caddy.reason);
 
   // ---- protocol catalog ----
-  check("PROTOCOLS exposes every shipped sink (local/webhook/otlp/cloudwatch/syslog)",
-        ["local", "webhook", "otlp", "cloudwatch", "syslog"].every(function (p) {
+  check("PROTOCOLS exposes every shipped sink (local/webhook/otlp/otlp-grpc/cloudwatch/syslog)",
+        ["local", "webhook", "otlp", "otlp-grpc", "cloudwatch", "syslog"].every(function (p) {
           return b.logStream.PROTOCOLS.indexOf(p) !== -1;
         }));
   check("DEFERRED_PROTOCOLS no longer lists 'syslog' (it ships)",
