@@ -98,4 +98,6 @@ fi
 chmod 644 "$CERT_DIR"/*.key "$CERT_DIR"/*.combined.pem 2>/dev/null || true
 
 touch "$CERT_DIR/.complete"
-echo "[pki-init] done — $(ls "$CERT_DIR" | wc -l) files in $CERT_DIR"
+# find -maxdepth/-mindepth 1 lists immediate children (files + dirs)
+# safely; ls + wc -l is fragile on filenames with newlines.
+echo "[pki-init] done — $(find "$CERT_DIR" -maxdepth 1 -mindepth 1 | wc -l) files in $CERT_DIR"

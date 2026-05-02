@@ -4,7 +4,7 @@ check is required to pass before merge — local pre-flight:
 
   node test/smoke.js
   cd examples/wiki && rm -rf data data-e2e && node test/e2e.js
-  npx eslint@10 --max-warnings 0 .
+  npx eslint@latest --max-warnings 0 .
 
 See CONTRIBUTING.md for the full PR loop + house rules. Security-
 sensitive patches: don't open here, see SECURITY.md.
@@ -49,7 +49,7 @@ Closes #
 
 - [ ] `node test/smoke.js` passes — count: `____`
 - [ ] `examples/wiki/test/e2e.js` passes — count: `____`
-- [ ] `npx eslint@10 --max-warnings 0 .` exits 0
+- [ ] `npx eslint@latest --max-warnings 0 .` exits 0
 - [ ] New tests added for the new behavior:
   - [ ] Layer 0 (primitive)
   - [ ] Layer 1 (state-touching)

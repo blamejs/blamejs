@@ -23,7 +23,7 @@ node test/smoke.js
 cd examples/wiki && rm -rf data data-e2e && node test/e2e.js
 
 # 4. Run lint as a pre-commit gate (CI runs all three)
-npx eslint@10 --max-warnings 0 .
+npx eslint@latest --max-warnings 0 .
 docker run --rm -i hadolint/hadolint < examples/wiki/Dockerfile
 shellcheck $(git ls-files '*.sh')
 
@@ -106,7 +106,8 @@ The smoke target is `OK — N checks passed` ending with a count higher than the
 4. **Fail-loud verification before push:**
    - `node test/smoke.js` ends with `OK — N checks passed`
    - `cd examples/wiki && rm -rf data data-e2e && node test/e2e.js` ends with `OK — N checks passed`
-   - `npx eslint@10 --max-warnings 0 .` exits 0
+   - `npx eslint@latest --max-warnings 0 .` exits 0
+   - `shellcheck $(git ls-files '*.sh')` exits 0 — every tracked shell script (vendor-update, docker-stack init scripts, etc.) parses clean. CI runs the same gate via `ludeeus/action-shellcheck`; surface lint findings before the push.
    - `node scripts/check-api-snapshot.js` exits 0 — guards the public API surface against accidental breaking changes. Intentional surface changes regenerate the baseline (`node scripts/refresh-api-snapshot.js`) and commit the updated `api-snapshot.json` alongside the change.
    - `node examples/wiki/test/validate-primitive-sections.js` exits 0 — every primitive section in the wiki has the four pieces (heading + opts + prose + example). Runs automatically inside the wiki e2e step too, but the standalone run gives a fast local signal when only docs changed.
 5. **Commit message style:** lowercase imperative. The first line is a one-sentence summary; the body explains *why* and *what tradeoff*. See git log for examples.
