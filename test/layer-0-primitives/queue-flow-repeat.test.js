@@ -247,10 +247,64 @@ async function testFlowValidation() {
   check("flow: rejects duplicate child name",  threw);
 }
 
+// Round-trip preservation regression gate — enqueue({availableAt: T})
+// stores T in the row; future-self reads back exactly T. Catches the
+// v0.6.21 bug shape ("primitive computes precise value, silently re-
+// derives a less precise version on the way to storage") for any
+// caller that wires availableAt directly.
+async function testEnqueueRoundTripsAvailableAt() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    // Three precise targets — sub-second, exact second, far future
+    var targets = [
+      Date.now() + 12345,           // ms-precision in the future
+      Date.now() + 60000,           // exactly one minute out
+      1888000000999,                // arbitrary future (ms precision)
+    ];
+    for (var i = 0; i < targets.length; i++) {
+      var T = targets[i];
+      await b.queue.enqueue("rt-q", { i: i }, { availableAt: T });
+      var rows = await b.db.from("_blamejs_jobs")
+        .where({ queueName: "rt-q", status: "pending" }).all();
+      var row = rows.find(function (r) {
+        // Compare the exact ms — round-trip preservation is what we test.
+        return Number(r.availableAt) === T;
+      });
+      check("enqueue round-trips availableAt=" + T + " exactly", !!row);
+    }
+    // delaySeconds-only path still works (no availableAt provided)
+    var beforeMs = Date.now();
+    await b.queue.enqueue("rt-q", { tag: "rel" }, { delaySeconds: 5 });
+    var relRows = await b.db.from("_blamejs_jobs")
+      .where({ queueName: "rt-q", status: "pending" }).all();
+    var relRow = relRows.find(function (r) {
+      var aa = Number(r.availableAt);
+      return aa >= beforeMs + 5000 && aa <= beforeMs + 5000 + 100;
+    });
+    check("enqueue with delaySeconds only computes nowMs+5000ms", !!relRow);
+    // Both opts present — availableAt wins, delaySeconds is ignored
+    var explicitT = Date.now() + 30000;
+    await b.queue.enqueue("rt-q", { tag: "both" }, {
+      availableAt:  explicitT,
+      delaySeconds: 999,    // would be 999s if it won — but it shouldn't
+    });
+    var bothRows = await b.db.from("_blamejs_jobs")
+      .where({ queueName: "rt-q", status: "pending" }).all();
+    var bothRow = bothRows.find(function (r) { return Number(r.availableAt) === explicitT; });
+    check("enqueue with both opts: availableAt wins, delaySeconds ignored", !!bothRow);
+  } finally {
+    try { await b.queue.shutdown({ timeoutMs: 500 }); } catch (_e) {}
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   await testFlowSurface();
   await testRepeatCronReEnqueuesAfterComplete();
   await testRepeatStopsOnFinalFailure();
+  await testEnqueueRoundTripsAvailableAt();
   await testFlowLinearChain();
   await testFlowDiamondWaitsForAllDeps();
   await testFlowCycleDetection();
