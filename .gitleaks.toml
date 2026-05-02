@@ -9,16 +9,20 @@ title = "blamejs gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Vendored binaries + crypto-fixture entropy in tests"
+# gitleaks 8.21+ requires the [[allowlists]] (plural) form; the
+# singular [allowlist] is deprecated and rejected when [[allowlists]]
+# is also present. Each [[allowlists]] block is independent — a finding
+# is suppressed if ANY block matches.
 
-# Vendored deps (lib/vendor/) ship pre-built CJS bundles + native
-# argon2 prebuilds for every supported platform. The bundles inline
-# enough random-shaped lookup tables that gitleaks' entropy detector
-# trips on them every run. The framework's own SECURITY.md + manifest
-# already cover provenance for these bytes — gitleaks adding noise on
-# top isn't a useful signal.
+[[allowlists]]
+description = "Vendored binaries + crypto-fixture entropy in tests"
 paths = [
+  # Vendored deps (lib/vendor/) ship pre-built CJS bundles + native
+  # argon2 prebuilds for every supported platform. The bundles inline
+  # enough random-shaped lookup tables that gitleaks' entropy detector
+  # trips on them every run. The framework's own SECURITY.md + manifest
+  # already cover provenance for these bytes — gitleaks adding noise on
+  # top isn't a useful signal.
   '''lib/vendor/.*''',
   # Test fixtures: tests embed deterministic test keys (vault/audit/
   # webhook signing) for round-trip exercises. They're plainly named
@@ -38,9 +42,11 @@ paths = [
   '''sbom\.json''',
 ]
 
-# Doc strings that intentionally name credential-shaped placeholders
-# (BEARER tokens, API keys) inside example code blocks. The patterns
-# below match operator-facing docs; real credentials don't ship there.
+[[allowlists]]
+description = "Doc-string credential-shaped placeholders"
+# Patterns that match operator-facing docs; real credentials don't ship
+# there. BEARER token templates, hunter2-style example passphrases,
+# the wiki validator's deterministic test JWT secret.
 regexes = [
   '''Authorization: Bearer <[A-Za-z0-9_-]+>''',
   '''hunter2-?pass-?[A-Za-z0-9-]+''',
@@ -48,6 +54,8 @@ regexes = [
   '''blamejs-(?:wiki-validator-|test-)?passphrase[A-Za-z0-9-]*''',
 ]
 
+[[allowlists]]
+description = "Pre-config-landing commits (audited manually)"
 # Commits made before this config landed predate the secret-scan gate
 # and were already audited manually. Pinning the SHA prevents the new
 # scan from blocking the next push on noise from the old history.
@@ -56,19 +64,15 @@ regexes = [
 commits = [
   # v0.4.x-era smoke.js had ~2500 lines (pre layer-N-* split). The
   # `redact({ field: "REDACTED" })` line at 2415 trips the jwt rule on
-  # the placeholder string used by b.redact tests. Path allowlist
-  # ALSO covers it for current scans; this commits entry covers the
-  # `gitleaks git` history scan path.
+  # the placeholder string used by b.redact tests.
   "74e627ea0fea39f06e01fe424a19724bea37aee8",
 ]
 
+[[allowlists]]
+description = "Historical false-positive: REDACTED placeholder in old smoke.js"
 # Fingerprint allowlist — last-resort suppression for specific
 # rule+commit+file+line combos. Format:
 #   "<commit-sha>:<file-path>:<rule-id>:<line>"
-# Used when the path-based allowlist can't precisely target a
-# transient false-positive.
-[[allowlists]]
-description = "Historical false-positive: REDACTED placeholder in old smoke.js"
 fingerprints = [
   "74e627ea0fea39f06e01fe424a19724bea37aee8:test/smoke.js:jwt:2415",
 ]
