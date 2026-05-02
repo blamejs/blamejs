@@ -113,6 +113,7 @@ var time = require("./lib/time");
 var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
 var mailBounce = require("./lib/mail-bounce");
+var pubsub = require("./lib/pubsub");
 var websocketChannels = require("./lib/websocket-channels");
 var nonceStore = require("./lib/nonce-store");
 var scheduler = require("./lib/scheduler");
@@ -227,6 +228,7 @@ module.exports = {
   uuid:             uuid,
   mail:             mail,
   mailBounce:       mailBounce,
+  pubsub:            pubsub,
   websocketChannels: websocketChannels,
   nonceStore:        nonceStore,
   scheduler:        scheduler,

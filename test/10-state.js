@@ -420,8 +420,8 @@ async function testFrameworkSchemaEnsure() {
           result.tables.indexOf("_blamejs_scheduler_ticks") !== -1);
     check("ensureSchema includes _blamejs_rate_limit_counters",
           result.tables.indexOf("_blamejs_rate_limit_counters") !== -1);
-    check("ensureSchema includes _blamejs_ws_messages",
-          result.tables.indexOf("_blamejs_ws_messages") !== -1);
+    check("ensureSchema includes _blamejs_pubsub_messages",
+          result.tables.indexOf("_blamejs_pubsub_messages") !== -1);
     check("ensureSchema includes _blamejs_cache",
           result.tables.indexOf("_blamejs_cache") !== -1);
     check("ensureSchema includes _blamejs_seeders",

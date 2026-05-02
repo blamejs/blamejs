@@ -269,7 +269,7 @@ async function testCustomBackend() {
 
 async function testUnknownBackendRejected() {
   var threw = null;
-  try { b.websocketChannels.create({ backend: "redis" }); } catch (e) { threw = e; }
+  try { b.websocketChannels.create({ backend: "made-up-backend" }); } catch (e) { threw = e; }
   check("unknown backend rejected at create()",
         threw && threw.code === "UNKNOWN_BACKEND");
 }
