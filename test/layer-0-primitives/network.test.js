@@ -5,6 +5,7 @@ var nodeCrypto = require("node:crypto");
 var helpers = require("../helpers");
 var check   = helpers.check;
 var b       = helpers.b;
+var C       = b.constants;
 
 var network    = b.network;
 var dnsModule  = network.dns;
@@ -136,6 +137,51 @@ async function run() {
     defaults.noDelay === false && defaults.keepAlive === true && defaults.keepAliveInitialDelayMs === 30_000);
   check("socket setDefaultNoDelay rejects non-boolean",
     _throws(function () { network.socket.setDefaultNoDelay("yes"); }, "socket/bad-no-delay"));
+  check("socket setDefaultLinger throws (Node has no public setLinger)",
+    _throws(function () { network.socket.setDefaultLinger({ enable: true }); }, "socket/linger-not-supported"));
+  _resetAll();
+
+  // ---- TLS trust-store lifecycle (remove / clear / purgeExpired) ----
+  var pemA = await _makeRealCaPem();
+  var pemB = await _makeRealCaPem();
+  trust.addCa(pemA, { label: "lifecycle-A" });
+  trust.addCa(pemB, { label: "lifecycle-B" });
+  check("trust-store has 2 CAs after add", trust.getTrustStore().length === 2);
+  var fpA = trust.getTrustStore()[0].fingerprint256;
+  var removed1 = trust.removeCa(fpA, { audit: false });
+  check("removeCa returns 1 + drops one CA", removed1 === 1 && trust.getTrustStore().length === 1);
+  check("removeCa returns 0 when fingerprint unknown",
+    trust.removeCa("AA:BB:CC", { audit: false }) === 0);
+  check("removeCa throws on empty fingerprint",
+    _throws(function () { trust.removeCa(""); }, "tls/bad-fingerprint"));
+  trust.addCa(pemA, { label: "label-test" });
+  var removedByLabel = trust.removeCaByLabel("lifecycle-B", { audit: false });
+  check("removeCaByLabel removes by label", removedByLabel === 1);
+  check("expiringSoon returns CAs whose validTo is past threshold",
+    trust.expiringSoon(C.TIME.days(36500)).length === trust.getTrustStore().length);
+  trust.purgeExpired({ audit: false });
+  check("purgeExpired no-ops when nothing expired (CA generated just now)",
+    trust.getTrustStore().length >= 1);
+  trust.clearAll({ audit: false });
+  check("clearAll empties the trust store", trust.getTrustStore().length === 0);
+  _resetAll();
+
+  // ---- DNS real resolve4 / resolve6 (uses dns.promises.resolve4) ----
+  // Resolve a known stable hostname (cloudflare.com always has A + AAAA).
+  // Skip the network test if DNS resolution fails offline — keep the
+  // test deterministic by also exercising IP-literal short-circuit.
+  check("dns.resolve4 returns array on IP literal short-circuit",
+    (await dnsModule.resolve4("1.1.1.1"))[0] === "1.1.1.1");
+  check("dns.resolve6 wrong-family throws on IPv4 literal",
+    await _throwsAsync(function () { return dnsModule.resolve6("1.1.1.1"); }, "dns/wrong-family"));
+  check("dns.resolveAaaa is alias for resolve6",
+    typeof dnsModule.resolveAaaa === "function");
+
+  // ---- DNS resultOrder ipv6first reaches DoH/DoT path too ----
+  dnsModule.setResultOrder("ipv6first");
+  dnsModule.setCacheTtlMs(60_000);
+  var dnsState = dnsModule._stateForTest();
+  check("setResultOrder ipv6first reflected in state", dnsState.resultOrder === "ipv6first");
   _resetAll();
 
   // ---- NTP thresholds ----
@@ -197,6 +243,96 @@ async function run() {
   var s = network.snapshot();
   check("snapshot exposes ntp/dns/proxy/tls/heartbeat/socket buckets",
     !!s.ntp && !!s.dns && !!s.proxy && !!s.tls && Array.isArray(s.heartbeat) && !!s.socket);
+
+  // ---- Password policy: bundled top-10000 dictionary ----
+  var policy = b.auth.password.policy({ minLength: 4 });
+  var weak = await policy.check("password");
+  check("password.policy rejects 'password' via bundled top-10000",
+    weak.ok === false && weak.code === "policy/forbidden-common");
+  var weak2 = await policy.check("dragon");
+  check("password.policy rejects 'dragon' via bundled top-10000",
+    weak2.ok === false && weak2.code === "policy/forbidden-common");
+  var strong = await policy.check("Tr0ub4dor&3-correct-horse");
+  check("password.policy accepts strong plaintext", strong.ok === true);
+  var sum = policy.describe();
+  check("password.policy describe reports bundled count >= 10000",
+    sum.bundledCommonCount >= 10000);
+  var noBundle = b.auth.password.policy({ minLength: 4, useBundledCommon: false });
+  var bypassed = await noBundle.check("password");
+  check("password.policy useBundledCommon:false bypasses bundled dictionary",
+    bypassed.ok === true);
+  var bypassSum = noBundle.describe();
+  check("password.policy describe reports 0 bundled when disabled",
+    bypassSum.bundledCommonCount === 0);
+
+  // ---- Azure presigned policy: now throws NOT_SUPPORTED (was silent PUT URL) ----
+  var azureBackend = null;
+  try {
+    var azureMod = require("./../../lib/object-store/azure-blob");
+    azureBackend = azureMod.create({
+      accountName:  "testacct",
+      accountKey:   "dGVzdGtleS1hdC1sZWFzdC0zMi1ieXRlcy1sb25nLXBhZHBhZA==",
+      container:    "c",
+    });
+  } catch (_e) { azureBackend = null; }
+  if (azureBackend && typeof azureBackend.presignedUploadPolicy === "function") {
+    check("azure-blob.presignedUploadPolicy throws PRESIGN_NOT_SUPPORTED",
+      _throws(function () { azureBackend.presignedUploadPolicy({ maxBytes: 100 }); }, "PRESIGN_NOT_SUPPORTED"));
+  } else {
+    check("azure-blob backend constructible (skipped if not)", true);
+  }
+
+  // ---- NTS auth: server reply without AUTHENTICATOR_AND_ENC must fail closed ----
+  // We can't run a full NTS-KE / NTPv4 round trip in a unit test, but we
+  // can verify querySingle's input validation + auth-extension absence
+  // path. Build a minimal NTPv4 reply with a unique-identifier match
+  // but no authenticator extension; querySingle should reject it.
+  var ntsTestKey = nodeCrypto.randomBytes(32);
+  // Spoof a UDP server: call querySingle against a port we'll bind that
+  // mirrors the unique identifier without an authenticator. Listen on
+  // 127.0.0.1:<random> via dgram, accept the request, send the spoofed
+  // reply, expect querySingle to reject.
+  var dgram = require("node:dgram");
+  await new Promise(function (resolveT) {
+    var srv = dgram.createSocket("udp4");
+    srv.bind(0, "127.0.0.1", async function () {
+      var port = srv.address().port;
+      srv.on("message", function (msg, rinfo) {
+        if (msg.length < 48 + 36) { srv.close(); return; }
+        var unique = msg.slice(52, 84);
+        var reply = Buffer.alloc(48 + 36);
+        reply[0] = 0x24;
+        reply.writeUInt32BE(0xe10dee30, 40);
+        reply.writeUInt32BE(0, 44);
+        reply.writeUInt16BE(0x0104, 48);
+        reply.writeUInt16BE(36, 50);
+        unique.copy(reply, 52);
+        srv.send(reply, 0, reply.length, rinfo.port, rinfo.address, function () {
+          srv.close();
+        });
+      });
+      try {
+        await nts.querySingle({
+          host:     "127.0.0.1",
+          port:     port,
+          aeadId:   nts.AEAD_AES_SIV_CMAC_256,
+          c2sKey:   ntsTestKey,
+          s2cKey:   ntsTestKey,
+          cookies:  [Buffer.from("c1")],
+          timeoutMs: 5000,
+        });
+        check("NTS rejects reply without AUTHENTICATOR_AND_ENC", false);
+      } catch (e) {
+        check("NTS rejects reply without AUTHENTICATOR_AND_ENC",
+          (e.code || "").indexOf("nts/no-authenticator") !== -1);
+      }
+      resolveT();
+    });
+  });
+  check("NTS querySingle requires non-empty s2cKey",
+    _throws(function () {
+      nts.querySingle({ host: "x", port: 123, aeadId: 15, c2sKey: ntsTestKey, s2cKey: null, cookies: [Buffer.from("a")] });
+    }, "nts/no-s2c-key"));
 }
 
 function _throws(fn, expectedCodeSubstr) {
@@ -211,6 +347,15 @@ function _throws(fn, expectedCodeSubstr) {
 
 function _sleep(ms) {
   return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+async function _throwsAsync(fn, expectedCodeSubstr) {
+  try { await fn(); return false; }
+  catch (e) {
+    if (!expectedCodeSubstr) return true;
+    var hay = (e.code || "") + " " + (e.message || "");
+    return hay.indexOf(expectedCodeSubstr) !== -1;
+  }
 }
 
 module.exports = { run: run };

@@ -6,8 +6,10 @@
  * storage need a signed PUT URL the client can use without holding
  * AWS credentials. SigV4 backends (S3, R2, MinIO, Wasabi, Tigris,
  * DO Spaces, IDrive e2, Linode, Storj) implement query-string SigV4
- * presigning; non-S3-compatible backends (local, http-put, gcs,
- * azure-blob) throw PRESIGN_NOT_SUPPORTED with guidance.
+ * presigning; gcs implements POST policy via service-account RSA
+ * signing; local + http-put + azure-blob throw PRESIGN_NOT_SUPPORTED
+ * with guidance (azure SAS has no body-size cap, local + http-put
+ * have no signing convention).
  *
  * Run standalone: `node test/layer-0-primitives/storage-presigned-url.test.js`
  * Or via smoke:   `node test/smoke.js`
@@ -572,19 +574,19 @@ async function testPresignedUploadPolicyAzureClientOnly() {
       defaultClassification: "operational",
     });
 
-    var policy = b.storage.presignedUploadPolicy("a.bin", {
-      classification: "operational",
-      expiresIn:      600,
-      maxBytes:       2 * 1024 * 1024,
-      contentType:    "image/jpeg",
-    });
-    check("azure policy: method = PUT (SAS)",     policy.method === "PUT");
-    check("azure policy: fields = null",          policy.fields === null);
-    check("azure policy: enforcement = client-only", policy.enforcement === "client-only");
-    check("azure policy: enforcementNote present",
-                                                  typeof policy.enforcementNote === "string" &&
-                                                  policy.enforcementNote.length > 0);
-    check("azure policy: SAS URL with sig param", /[?&]sig=/.test(policy.url));
+    var azureThrew = null;
+    try {
+      b.storage.presignedUploadPolicy("a.bin", {
+        classification: "operational",
+        expiresIn:      600,
+        maxBytes:       2 * 1024 * 1024,
+        contentType:    "image/jpeg",
+      });
+    } catch (e) { azureThrew = e; }
+    check("azure policy: throws PRESIGN_NOT_SUPPORTED (Azure SAS has no body-size cap)",
+      azureThrew && azureThrew.code === "PRESIGN_NOT_SUPPORTED");
+    check("azure policy: error message names presignedUploadUrl as the alternative",
+      azureThrew && /presignedUploadUrl/i.test(azureThrew.message));
   } finally {
     b.storage._resetForTest();
     await teardownTestDb(tmpDir);

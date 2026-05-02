@@ -32,7 +32,7 @@ on:
         default: true
 
 permissions:
-  contents: read
+  contents: write   # gh release upload needs write to attach assets to the release
   id-token: write   # OIDC token for npm provenance attestation
 
 concurrency:

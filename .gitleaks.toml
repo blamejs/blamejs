@@ -27,6 +27,7 @@ paths = [
   '''test/00-primitives\.js''',
   '''test/40-consumers\.js''',
   '''test/50-integration\.js''',
+  '''test/smoke\.js''',
   '''test/helpers/.*''',
   # Wiki seeders embed example tokens / secrets in code blocks for
   # documentation purposes (e.g. "WIKI_WEBHOOK_SECRET=hunter2-pad-pad").
@@ -52,4 +53,22 @@ regexes = [
 # scan from blocking the next push on noise from the old history.
 # Operators rotating real secrets STILL must follow the SECURITY.md
 # breach-response process — the skip is for false-positives only.
-commits = []
+commits = [
+  # v0.4.x-era smoke.js had ~2500 lines (pre layer-N-* split). The
+  # `redact({ field: "REDACTED" })` line at 2415 trips the jwt rule on
+  # the placeholder string used by b.redact tests. Path allowlist
+  # ALSO covers it for current scans; this commits entry covers the
+  # `gitleaks git` history scan path.
+  "74e627ea0fea39f06e01fe424a19724bea37aee8",
+]
+
+# Fingerprint allowlist — last-resort suppression for specific
+# rule+commit+file+line combos. Format:
+#   "<commit-sha>:<file-path>:<rule-id>:<line>"
+# Used when the path-based allowlist can't precisely target a
+# transient false-positive.
+[[allowlists]]
+description = "Historical false-positive: REDACTED placeholder in old smoke.js"
+fingerprints = [
+  "74e627ea0fea39f06e01fe424a19724bea37aee8:test/smoke.js:jwt:2415",
+]
