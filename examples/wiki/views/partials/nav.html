@@ -1,32 +1,13 @@
-<li><a href="/welcome">Welcome</a></li>
-<li class="nav-section">Data</li>
-<li><a href="/database">Database</a></li>
-<li><a href="/object-store">Object Store</a></li>
-<li><a href="/queue-cache">Queue &amp; Cache</a></li>
-<li class="nav-section">Identity</li>
-<li><a href="/auth">Authentication</a></li>
-<li><a href="/access-control">Access Control</a></li>
-<li class="nav-section">Crypto</li>
-<li><a href="/crypto-vault">Crypto &amp; Vault</a></li>
-<li><a href="/network-crypto">Network Crypto</a></li>
-<li class="nav-section">HTTP</li>
-<li><a href="/routing">Routing</a></li>
-<li><a href="/middleware">Middleware</a></li>
-<li><a href="/outbound-http">Outbound HTTP</a></li>
-<li class="nav-section">Validation</li>
-<li><a href="/safe-parsers">Safe Parsers</a></li>
-<li class="nav-section">Communication</li>
-<li><a href="/websockets">WebSockets</a></li>
-<li><a href="/mail">Mail</a></li>
-<li><a href="/notifications">Notifications</a></li>
-<li class="nav-section">Tools</li>
-<li><a href="/observability">Observability</a></li>
-<li><a href="/testing">Testing</a></li>
-<li><a href="/i18n-locale">i18n &amp; Locale</a></li>
-<li><a href="/format-helpers">Format Helpers</a></li>
-<li class="nav-section">Compliance</li>
-<li><a href="/compliance-patterns">Compliance Patterns</a></li>
-<li class="nav-section">Production</li>
-<li><a href="/cluster">Cluster Mode</a></li>
-<li><a href="/reliability">Reliability</a></li>
-<li><a href="/backup-restore">Backup &amp; Restore</a></li>
+<li><a href="/welcome"{% if currentPath == '/welcome' %} aria-current="page"{% endif %}>Welcome</a></li>
+{% for group in nav %}
+<li class="nav-group-li">
+  <details class="nav-group"{% if currentGroup == group.name %} open{% endif %}>
+    <summary class="nav-section">{{ group.name }}</summary>
+    <ul class="nav-group-items">
+    {% for item in group.items %}
+      <li><a href="/{{ item.slug }}"{% if currentPath == '/' + item.slug %} aria-current="page"{% endif %}>{{ item.title }}</a></li>
+    {% endfor %}
+    </ul>
+  </details>
+</li>
+{% endfor %}

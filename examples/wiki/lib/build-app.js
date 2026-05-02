@@ -189,6 +189,28 @@ async function buildApp(opts) {
   var trustProxy = process.env.WIKI_TRUST_PROXY === "true" ||
                    process.env.WIKI_TRUST_PROXY === "1";
 
+  // Network allowlist for /admin paths — when WIKI_ADMIN_ALLOWED_CIDRS
+  // is set (comma-separated CIDR list), the wiki mounts
+  // b.middleware.networkAllowlist as the in-process CIDR fence above
+  // the application-layer auth gate. Operators behind a reverse proxy
+  // typically configure this at the proxy / NACL layer instead and
+  // leave the env var unset; this is the in-process fallback.
+  var adminAllowedCidrs = (process.env.WIKI_ADMIN_ALLOWED_CIDRS || "")
+    .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+  // Optional deny-list for the same paths — "10.0.0.0/8 except
+  // 10.0.99.0/24" patterns. Comma-separated CIDR list; empty = no
+  // deny rules.
+  var adminDeniedCidrs = (process.env.WIKI_ADMIN_DENIED_CIDRS || "")
+    .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+
+  // Boot-time security policy assertions. WIKI_REQUIRE_PROD_ASSERTS=1
+  // makes the wiki refuse to boot when the operator's production
+  // posture is incomplete (vault not wrapped, db not encrypted, etc.).
+  // Default off so a developer's `npm start` doesn't have to set every
+  // production knob; production deploys flip this on in the .env.
+  var requireProdAsserts = process.env.WIKI_REQUIRE_PROD_ASSERTS === "true" ||
+                           process.env.WIKI_REQUIRE_PROD_ASSERTS === "1";
+
   // ---- Posture auto-detect ----
   // The wiki ships in plaintext defaults so a quick local boot just works.
   // When the operator sets BLAMEJS_VAULT_PASSPHRASE in the env, the wiki
@@ -238,6 +260,20 @@ async function buildApp(opts) {
     },
     routes: function (router) {
       router.use(healthChecks.middleware());
+      // CIDR fence on /admin paths when WIKI_ADMIN_ALLOWED_CIDRS is
+      // set. Mounted FIRST so a probe from a disallowed network gets
+      // a 404 (default denyStatus) before any other middleware runs.
+      // The fence stays inert (no-op middleware) when the env var is
+      // unset — operators using a reverse proxy / NACL leave this off.
+      if (adminAllowedCidrs.length > 0) {
+        router.use(b.middleware.networkAllowlist({
+          paths:        ["/admin", "/admin/", "/healthz/internal"],
+          allowedCidrs: adminAllowedCidrs,
+          deniedCidrs:  adminDeniedCidrs,
+          trustProxy:   trustProxy,
+          audit:        b.audit,
+        }));
+      }
       router.use(b.middleware.bodyParser({ urlencoded: true, json: true }));
       var nonceMw = b.middleware.cspNonce();
       router.use(nonceMw);
@@ -354,6 +390,23 @@ async function buildApp(opts) {
   });
   // Schedule timers ref the event loop; in tests we want to skip start
   // to avoid keeping the process alive. Operators (server.js) call start.
+
+  // Production-posture gate. WIKI_REQUIRE_PROD_ASSERTS=1 in the .env
+  // makes the wiki refuse to boot when the operator's posture is
+  // incomplete. Default off so a developer's `npm start` doesn't have
+  // to set every production knob.
+  if (requireProdAsserts) {
+    await b.security.assertProduction({
+      audit:    b.audit,
+      vault:    "wrapped",
+      dbAtRest: "encrypted",
+      auditSigning: "wrapped",
+      ntpStrict:    true,
+      forbidNodeEnv: ["development", "dev", "test"],
+      requireEnv:    ["WIKI_ADMIN_PASSWORD", "BLAMEJS_VAULT_PASSPHRASE", "BLAMEJS_AUDIT_SIGNING_PASSPHRASE"],
+      dataDir:       dataDir,
+    });
+  }
 
   return {
     app:       app,

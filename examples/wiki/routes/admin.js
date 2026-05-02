@@ -11,8 +11,10 @@
 // the route shapes here stay the same.
 
 var b = require("@blamejs/core");
+var nav = require("../lib/nav");
 
 function _layoutData(req, ctx) {
+  var pathname = (req.url || "/").split("?")[0];
   return {
     cspNonce:    (req.res && req.res.locals && req.res.locals.cspNonce) || "",
     locale:      req.locale || "en",
@@ -22,6 +24,9 @@ function _layoutData(req, ctx) {
     searchQuery: "",
     title:       "",
     assets:      (ctx && ctx.assets) || {},
+    nav:          nav.NAV_GROUPS,
+    currentGroup: nav.groupForPath(pathname),
+    currentPath:  pathname,
   };
 }
 

@@ -28,6 +28,22 @@
  *   WIKI_VAULT_MODE                     "wrapped" | "plaintext" (override)
  *   WIKI_DB_AT_REST                     "encrypted" | "plain" (override)
  *   WIKI_AUDIT_SIGNING_MODE             "wrapped" | "plaintext" (override)
+ *
+ *   Security hardening (read directly by lib/build-app.js):
+ *
+ *   WIKI_TRUST_PROXY                    "1" / "true" — honour x-forwarded-proto for
+ *                                       cookie Secure-flag detection. Set ONLY when
+ *                                       behind a TLS terminator (Caddy / Nginx /
+ *                                       cloud LB) that injects the header.
+ *   WIKI_ADMIN_ALLOWED_CIDRS            comma-separated CIDR list. When set, mounts
+ *                                       b.middleware.networkAllowlist as the in-process
+ *                                       CIDR fence on /admin paths. Empty = no fence.
+ *   WIKI_ADMIN_DENIED_CIDRS             comma-separated CIDR list of explicit denies
+ *                                       (deny-then-allow precedence). Empty = no
+ *                                       deny rules.
+ *   WIKI_REQUIRE_PROD_ASSERTS           "1" / "true" — at boot, run
+ *                                       b.security.assertProduction(...) and refuse
+ *                                       to boot when production posture is incomplete.
  */
 
 var path = require("node:path");

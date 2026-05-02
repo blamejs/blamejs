@@ -4,6 +4,7 @@
 // b.template (mounted by createApp), and b.db.prepare for lookups.
 
 var b = require("@blamejs/core");
+var nav = require("../lib/nav");
 
 // Layout-data shape shared by both the per-request render path and the
 // cacheable render path. The cspNonce field is the only thing that
@@ -31,6 +32,14 @@ function _layoutData(req, ctx, nonce) {
     description: DEFAULT_DESCRIPTION,
     ogImage:     siteUrl + "/img/blamejs-logo.png",
     ogType:      "website",
+    // Sidebar nav: data-driven via NAV_GROUPS so the partial renders
+    // a {% for %} loop with <details open> on the section containing
+    // the current page. groupForPath returns null for routes outside
+    // the wiki nav (admin, login, etc.) — every section starts
+    // collapsed in that case.
+    nav:          nav.NAV_GROUPS,
+    currentGroup: nav.groupForPath(pathname),
+    currentPath:  pathname,
   };
 }
 function _layoutDataLive(req, ctx) {

@@ -30,6 +30,12 @@
 #   LOG_LEVEL=info
 #   BLAMEJS_DEPRECATIONS=warn
 #
+#   # security hardening (production overlay defaults shown)
+#   WIKI_TRUST_PROXY=1                              # honour x-forwarded-proto from Caddy
+#   WIKI_REQUIRE_PROD_ASSERTS=1                     # refuse to boot on weak posture
+#   WIKI_ADMIN_ALLOWED_CIDRS=10.0.0.0/8,192.168.0.0/16   # in-process CIDR fence on /admin
+#   WIKI_ADMIN_DENIED_CIDRS=                        # deny-then-allow precedence
+#
 # The operator points DNS A/AAAA records for blamejs.com + www.blamejs.com
 # at the host running this stack, opens 80/443 inbound, and Caddy does
 # the rest on first boot.
@@ -59,6 +65,31 @@ services:
       WIKI_ADMIN_PASSWORD:  ${WIKI_ADMIN_PASSWORD:?WIKI_ADMIN_PASSWORD must be set in .env for production}
       WIKI_WEBHOOK_URL:     ${WIKI_WEBHOOK_URL:-}
       WIKI_WEBHOOK_SECRET:  ${WIKI_WEBHOOK_SECRET:-}
+      # ---- Wiki security hardening ----
+      # Caddy terminates TLS in this stack and injects x-forwarded-*,
+      # so trust-proxy is on by default in the production overlay.
+      # The cookie Secure flag honours x-forwarded-proto when this
+      # is set; without it, only req.socket.encrypted counts and a
+      # misconfigured deploy can't accept attacker-supplied
+      # x-forwarded-proto: https as proof a request was over TLS.
+      WIKI_TRUST_PROXY:     ${WIKI_TRUST_PROXY:-1}
+      # In-process CIDR fence on /admin paths. The production overlay
+      # leaves this empty by default — the operator sets the corporate
+      # bastion / VPN / cloud-LB private CIDRs in their .env. Both
+      # forms (allow + optional deny for "10/8 except 10.0.99/24"
+      # patterns) are operator-settable. Empty = no fence (operators
+      # using a network NACL or proxy-side IP filter typically gate
+      # there instead and leave this blank).
+      WIKI_ADMIN_ALLOWED_CIDRS: ${WIKI_ADMIN_ALLOWED_CIDRS:-}
+      WIKI_ADMIN_DENIED_CIDRS:  ${WIKI_ADMIN_DENIED_CIDRS:-}
+      # Refuse to boot when the production-posture assertions fail
+      # (vault not wrapped, db at-rest plain, audit-sign plaintext,
+      # NTP strict disabled, BLAMEJS_VAULT_PASSPHRASE missing,
+      # WIKI_ADMIN_PASSWORD missing, dataDir POSIX-mode > 0o750,
+      # NODE_ENV=development/test). On by default in the production
+      # overlay; the operator can flip OFF for a controlled brown-out
+      # maintenance window.
+      WIKI_REQUIRE_PROD_ASSERTS: ${WIKI_REQUIRE_PROD_ASSERTS:-1}
       # ---- Framework (vault, audit, deprecation reporting) ----
       # BLAMEJS_VAULT_PASSPHRASE — when set, the wiki auto-flips
       # vault to `wrapped` mode + DB to encrypted-at-rest. Without

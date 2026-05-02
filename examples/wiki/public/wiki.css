@@ -141,11 +141,75 @@ a:hover, a:focus { color: var(--link-hover); text-decoration: underline; }
   background: rgba(12, 92, 208, 0.06);
   text-decoration: none;
 }
-.rail-nav a.is-active {
+.rail-nav a.is-active,
+.rail-nav a[aria-current="page"] {
   background: var(--brand-soft);
   color: var(--brand-strong);
   font-weight: 500;
   box-shadow: inset 2px 0 0 var(--brand);
+}
+
+/* ---- Collapsible nav groups ----------------------------------------
+   The sidebar nav groups every wiki page under a concern bucket
+   (Data / Identity / HTTP / etc.) inside a <details> element. Default
+   state is COLLAPSED so the rail isn't a wall of links the operator
+   has to scroll past — only the section containing the current page
+   gets the {open} attribute server-side. The disclosure marker is a
+   custom rotating glyph so the rail doesn't render the browser's
+   default ▶ triangle, which doesn't match the neon theme.
+*/
+.rail-nav .nav-group-li { margin: 0.1rem 0; }
+.rail-nav details.nav-group {
+  margin: 0;
+}
+/* Strip the default disclosure triangle (Chrome / Safari / Firefox). */
+.rail-nav details.nav-group > summary {
+  list-style: none;
+}
+.rail-nav details.nav-group > summary::-webkit-details-marker {
+  display: none;
+}
+.rail-nav summary.nav-section {
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  padding: 0.45rem 0.6rem;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.rail-nav summary.nav-section:hover {
+  background: rgba(12, 92, 208, 0.04);
+  color: var(--fg);
+}
+/* Custom disclosure glyph: ▸ collapsed → ▾ open. Drawn as a CSS
+   pseudo-element so the open/closed state is purely a CSS rotation —
+   no JS needed (the wiki's strict CSP blocks inline script). */
+.rail-nav summary.nav-section::before {
+  content: "▸";
+  display: inline-block;
+  width: 0.7em;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  transition: transform 120ms ease-in-out;
+}
+.rail-nav details[open] > summary.nav-section::before {
+  transform: rotate(90deg);
+}
+.rail-nav .nav-group-items {
+  list-style: none;
+  margin: 0.15rem 0 0.4rem 0.85rem;
+  padding: 0;
+  border-left: 1px solid var(--border-soft);
+}
+.rail-nav .nav-group-items li { margin: 0; }
+.rail-nav .nav-group-items a {
+  padding-left: 0.85rem;
 }
 
 .rail-foot {
