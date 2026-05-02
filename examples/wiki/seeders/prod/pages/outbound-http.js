@@ -105,6 +105,27 @@ module.exports = {
   '}</code></pre>',
   '<p>Classification helpers (<code>classify(ip)</code>, <code>isPrivate(ip)</code>, <code>isLoopback(ip)</code>, <code>isCloudMetadata(ip)</code>, <code>cidrContains(cidr, ip)</code>) cover the offline cases — operators building a custom validator (e.g. to refuse a Slack webhook hostname) compose these without DNS round-trips.</p>',
 
+  '<h3>b.ssrfGuard.classify(ip) <a class="anchor" href="#ssrf-classify">#</a></h3>',
+  '<p>Offline IP classifier. Returns one of <code>"private"</code>, <code>"loopback"</code>, <code>"link-local"</code>, <code>"cloud-metadata"</code>, <code>"ula"</code>, <code>"reserved"</code>, <code>"public"</code>. Pure synchronous function — operators building a custom validator (e.g. to refuse a Slack webhook hostname before storing it) call <code>classify</code> after their own DNS resolution without a second round-trip through <code>checkUrl</code>.</p>',
+  '<pre><code class="language-javascript">b.ssrfGuard.classify("169.254.169.254");      // → "cloud-metadata"',
+  'b.ssrfGuard.classify("10.0.0.5");              // → "private"',
+  'b.ssrfGuard.classify("127.0.0.1");             // → "loopback"',
+  'b.ssrfGuard.classify("8.8.8.8");               // → "public"</code></pre>',
+
+  '<h3>b.safeUrl.parse(input, opts?) <a class="anchor" href="#safe-url-parse">#</a></h3>',
+  '<pre><code class="language-javascript">{',
+  '  allowedProtocols: [string],               // default: ["https:"]',
+  '  allowUserinfo:    boolean,                // default: false — reject user:pass@ form',
+  '  errorClass:       errorClass,             // default: SafeUrlError',
+  '}</code></pre>',
+  '<p>Validates a URL\'s shape and protocol before any network I/O sees it. Defaults accept <code>https:</code> only — <code>file:</code>, <code>data:</code>, <code>javascript:</code>, plain <code>http:</code>, and other schemes are rejected. URLs that carry <code>user:pass@</code> credentials in the authority are rejected by default (those leak into request logs / metric labels / trace spans); legacy endpoints that REQUIRE userinfo opt in via <code>{ allowUserinfo: true }</code>. Returns the parsed <code>URL</code> instance on success. The IP-range guard is a separate concern handled by <code>b.ssrfGuard</code>.</p>',
+  '<pre><code class="language-javascript">var u = b.safeUrl.parse("https://api.example.com/v1/things?id=42");',
+  '// u.hostname === "api.example.com", u.pathname === "/v1/things"',
+  '',
+  '// rejection: scheme not in allowlist',
+  'try { b.safeUrl.parse("file:///etc/passwd"); }',
+  'catch (e) { /* SafeUrlError code: PROTOCOL_NOT_ALLOWED */ }</code></pre>',
+
   '<h2 id="safe-url">Safe URL parsing <a class="anchor" href="#safe-url">#</a></h2>',
   '<p><code>b.safeUrl.parse(input, { allowedProtocols, allowUserinfo })</code> validates a URL\'s shape and protocol before any network I/O sees it. Defaults accept <code>https:</code> only — <code>file:</code>, <code>data:</code>, <code>javascript:</code>, plain <code>http:</code>, and other schemes are rejected. Operators with internal cleartext endpoints opt in via <code>safeUrl.ALLOW_HTTP_ALL</code> or <code>safeUrl.ALLOW_HTTP_TLS</code>. URLs that carry <code>user:pass@</code> credentials in the authority are also rejected by default (those leak into request logs / metric labels / trace spans); legacy endpoints that REQUIRE userinfo opt in per call via <code>{ allowUserinfo: true }</code>. The IP-range guard is a separate concern handled by <code>b.ssrfGuard</code>.</p>',
 
