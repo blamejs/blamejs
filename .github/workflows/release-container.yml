@@ -70,7 +70,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Run Hadolint (strict, all severities)
-        uses: hadolint/hadolint-action@v3
+        uses: hadolint/hadolint-action@master
         with:
           dockerfile: examples/wiki/Dockerfile
           config:     .hadolint.yaml

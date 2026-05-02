@@ -224,7 +224,7 @@ jobs:
         # that conflict with our intentional patterns.
         if: always()
         id: hadolint
-        uses: hadolint/hadolint-action@v3
+        uses: hadolint/hadolint-action@master
         with:
           dockerfile: examples/wiki/Dockerfile
           config:     .hadolint.yaml
