@@ -121,6 +121,7 @@ function testSurface() {
   check("bucketOps.create is a function",
         typeof b.objectStore.bucketOps.create === "function");
   var ops = b.objectStore.bucketOps.create({
+    protocol: "sigv4",
     region: "us-east-1", accessKeyId: "x", secretAccessKey: "y",
     endpoint: "http://127.0.0.1:1",
     allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,

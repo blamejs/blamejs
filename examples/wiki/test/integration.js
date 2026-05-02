@@ -115,6 +115,7 @@ async function _setupEnv() {
 async function _ensureMinioBucket(bucket) {
   // bucketOps requires accessKeyId / secretAccessKey at the top level.
   var ops = b.objectStore.bucketOps.create({
+    protocol:         "sigv4",
     endpoint:         "http://127.0.0.1:9000",
     region:           "us-east-1",
     accessKeyId:      "blamejs",

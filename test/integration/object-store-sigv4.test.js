@@ -25,6 +25,7 @@ function _runOnEndpoint(label, endpoint, extraConfig) {
 
   return (async function () {
     var opsCfg = Object.assign({
+      protocol:        "sigv4",
       endpoint:        endpoint,
       region:          REGION,
       accessKeyId:     ACCESS,
