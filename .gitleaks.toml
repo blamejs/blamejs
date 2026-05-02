@@ -55,24 +55,22 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "Pre-config-landing commits (audited manually)"
+description = "Pre-config-landing commits (audited manually) + their fingerprints"
 # Commits made before this config landed predate the secret-scan gate
 # and were already audited manually. Pinning the SHA prevents the new
 # scan from blocking the next push on noise from the old history.
 # Operators rotating real secrets STILL must follow the SECURITY.md
 # breach-response process — the skip is for false-positives only.
+#
+# fingerprints are a finer-grained suppression on top of commits —
+# gitleaks 8.21+ requires at least one of (commits/paths/regexes/
+# stopwords) per block, so we combine the two-level suppression here.
 commits = [
   # v0.4.x-era smoke.js had ~2500 lines (pre layer-N-* split). The
   # `redact({ field: "REDACTED" })` line at 2415 trips the jwt rule on
   # the placeholder string used by b.redact tests.
   "74e627ea0fea39f06e01fe424a19724bea37aee8",
 ]
-
-[[allowlists]]
-description = "Historical false-positive: REDACTED placeholder in old smoke.js"
-# Fingerprint allowlist — last-resort suppression for specific
-# rule+commit+file+line combos. Format:
-#   "<commit-sha>:<file-path>:<rule-id>:<line>"
 fingerprints = [
   "74e627ea0fea39f06e01fe424a19724bea37aee8:test/smoke.js:jwt:2415",
 ]
