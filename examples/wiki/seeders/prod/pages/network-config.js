@@ -125,7 +125,7 @@ module.exports = {
   '  env:   process.env,    // default',
   '  audit: true,           // default true: emit network.boot.from_env',
   '}</code></pre>',
-  '<p>Single boot routine that reads every <code>BLAMEJS_*</code> network env var listed above plus the standard proxy vars, applies the configuration in the right order (DNS / proxy / trust before the first outbound socket opens), and audits the resolved snapshot so a forensic review can reconstruct exactly what posture the process booted with. Call once during app boot; subsequent calls re-read env. <code>b.network.snapshot()</code> dumps the live state for ops dashboards or a CLI command like <code>blamejs network status</code>.</p>',
+  '<p>Single boot routine that reads every <code>BLAMEJS_*</code> network env var listed above plus the standard proxy vars, applies the configuration in the right order (DNS / proxy / trust before the first outbound socket opens), and audits the resolved snapshot so a forensic review can reconstruct exactly what posture the process booted with. Call once during app boot; subsequent calls re-read env. <code>b.network.snapshot()</code> dumps the live state — wire it into a /healthz handler or a custom diagnostics route to inspect the booted posture from outside the process.</p>',
   '<pre><code class="language-javascript">// At app boot, before b.createApp:',
   'b.network.bootFromEnv({ env: process.env, audit: b.audit });',
   '',

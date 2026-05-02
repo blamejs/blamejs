@@ -14,6 +14,7 @@ var b = require("@blamejs/core");
 var { buildApp } = require("../lib/build-app");
 var sectionValidator = require("./validate-primitive-sections");
 var envSnapshotValidator = require("./validate-env-snapshot");
+var cliSnapshotValidator = require("./validate-cli-snapshot");
 
 var DATA_DIR = path.join(__dirname, "..", "data-e2e");
 var ADMIN_EMAIL = "admin-e2e@blamejs.com";
@@ -781,6 +782,32 @@ async function run() {
     if (envVerdict.gaps.length > 0) {
       envVerdict.gaps.forEach(function (g) {
         console.error("  env-snapshot " + g.side + ": " + g.key);
+      });
+    }
+
+    // ---- CLI surface snapshot gate ----
+    // Catches drift between lib/cli.js (subcommands + flags), README's
+    // CLI section, and wiki references. Same UX as api-snapshot +
+    // env-snapshot — refresh with BLAMEJS_UPDATE_CLI_SNAPSHOT=1.
+    var cliCaptured = cliSnapshotValidator.captureSnapshot();
+    var cliVerdict  = cliSnapshotValidator.compareSnapshot(cliCaptured);
+    assert("cli-snapshot: file exists (run BLAMEJS_UPDATE_CLI_SNAPSHOT=1 if missing)",
+      cliVerdict.initialized);
+    assert("cli-snapshot: no drift between captured + committed snapshot (" +
+      cliVerdict.drift.length + " field(s) drifted)",
+      cliVerdict.drift.length === 0);
+    if (cliVerdict.drift.length > 0) {
+      cliVerdict.drift.forEach(function (d) {
+        var sign = d.kind === "added" ? "+" : "-";
+        console.error("  cli-snapshot " + sign + " " + d.field + ": " + d.keys.join(", "));
+      });
+    }
+    assert("cli-snapshot: no cli-only / readme-only gaps (" +
+      cliVerdict.gaps.length + " gap(s))",
+      cliVerdict.gaps.length === 0);
+    if (cliVerdict.gaps.length > 0) {
+      cliVerdict.gaps.forEach(function (g) {
+        console.error("  cli-snapshot " + g.side + ": " + g.key);
       });
     }
 

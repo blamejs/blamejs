@@ -100,14 +100,14 @@ This is the minimum-viable security posture for a production deployment. The fra
 - [ ] Rotate the vault passphrase quarterly: `blamejs vault rotate`
 
 **Audit chain**
-- [ ] Run `blamejs audit verify` weekly via cron — detects any tampering since the last checkpoint
+- [ ] Run `blamejs audit verify-chain --db <path>` weekly via cron — walks the live audit chain end-to-end and reports tampering with `breakAt` / `breakRowId` / expected-vs-actual prevHash
 - [ ] Rotate the audit signing key annually (or per compliance schedule)
 - [ ] Archive old audit rows monthly: `blamejs audit archive --before <date> --out ./audit-archives/`
 - [ ] Back up the audit-archive bundles to a separate location with a different passphrase
 
 **Backups**
 - [ ] Schedule nightly backups via the framework's `b.backup` primitive (encrypted with `BLAMEJS_BACKUP_PASSPHRASE`, separate from vault passphrase)
-- [ ] Test restore quarterly: `blamejs backup verify --bundle <latest>` then a full `extract` round-trip into a staging environment
+- [ ] Test restore quarterly: `blamejs backup verify --bundle <latest>` then a full `blamejs restore apply` round-trip into a staging environment (with `blamejs restore rollback` as the documented escape hatch)
 - [ ] Off-site at least one bundle (different region / cloud / physical location)
 - [ ] Retain bundles per compliance window; the prev-hash chain across bundles makes silent deletion detectable
 

@@ -58,7 +58,7 @@ module.exports = {
   '  <li>Set <code>BLAMEJS_VAULT_PASSPHRASE</code> to a strong CSPRNG-generated value (≥ 32 chars).</li>',
   '  <li>Set <code>BLAMEJS_AUDIT_SIGNING_PASSPHRASE</code> to a different, equally-strong value.</li>',
   '  <li>Store both in a secret manager (1Password, AWS Secrets Manager, sops-encrypted file, etc.) — never in git, never in shell history, never in the same secret entry as the database backup passphrase.</li>',
-  '  <li>Schedule a quarterly rotation: <code>blamejs vault rotate</code> and <code>blamejs audit verify-signing</code> after each rotation.</li>',
+  '  <li>Schedule a quarterly rotation: <code>blamejs vault rotate</code> and <code>blamejs audit verify-chain</code> after each rotation.</li>',
   '</ul>',
 
   '<h3 id="first-deploy-image">Image &amp; runtime <a class="anchor" href="#first-deploy-image">#</a></h3>',

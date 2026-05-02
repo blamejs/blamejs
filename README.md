@@ -76,8 +76,9 @@ blamejs seed          run | status                                --db <path> --
 blamejs dev           --command <cmd> [--watch <dir>...]
 blamejs api-snapshot  capture | compare                           --file <path>
 blamejs api-key       issue | revoke | list | rotate | verify     --data-dir <path> --namespace <ns>
-blamejs audit         archive | export | verify | purge           --data-dir <path>
+blamejs audit         archive | export | verify-bundle | verify-chain | purge   --data-dir <path>
 blamejs backup        inspect | verify | extract                  --bundle <path>
+blamejs restore       list | inspect | apply | rollback | list-rollbacks         --data-dir <path> --bundle <dir>
 blamejs mtls          status | show-cert | init | issue | issue-p12  --data-dir <path>
 blamejs vault         status | seal | unseal | rotate             --data-dir <path>
 blamejs security      assert                                      --data-dir <path>
