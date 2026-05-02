@@ -41,7 +41,22 @@ var SOURCE_ONLY_ALLOWED = {
   "NODE_ENV":  "Node-builtin runtime knob; standard, not a wiki opt",
   "HOSTNAME":  "OS-supplied; used as cloudwatch log-stream discriminator",
   "PORT":      "Standard convention; WIKI_PORT is the canonical wiki opt",
-  "LOG_LEVEL": "Standard convention; BLAMEJS_LOG_STREAM_MIN_LEVEL is the framework-level opt",
+  "LOG_LEVEL": "Standard convention; BLAMEJS_LOG_STREAM_MIN_LEVEL is the framework opt",
+  // WIKI_INTEGRATION_* — test-only knobs read by build-app.js when
+  // WIKI_INTEGRATION_TEST=1 to wire test backends. Production deploys
+  // never set them; they're driven by scripts/test-wiki-integration.js
+  // not by docker-compose.
+  "WIKI_INTEGRATION_TEST":                    "test-only mount-gate for /test/* routes",
+  "WIKI_INTEGRATION_SMTP_HOST":               "test-only — SMTP host for the integration mail transport",
+  "WIKI_INTEGRATION_SMTP_PORT":               "test-only — SMTP port for the integration mail transport",
+  "WIKI_INTEGRATION_SMTP_EHLO":               "test-only — SMTP EHLO name",
+  "WIKI_INTEGRATION_SMTP_REJECT_UNAUTHORIZED": "test-only — STARTTLS verify toggle for the integration transport",
+  "WIKI_INTEGRATION_S3_ENDPOINT":             "test-only — S3-compatible endpoint (MinIO) for the integration object-store",
+  "WIKI_INTEGRATION_S3_REGION":               "test-only — region for the integration sigv4 backend",
+  "WIKI_INTEGRATION_S3_BUCKET":               "test-only — bucket name for the integration object-store",
+  "WIKI_INTEGRATION_S3_ACCESS_KEY":           "test-only — access key for the integration sigv4 backend",
+  "WIKI_INTEGRATION_S3_SECRET_KEY":           "test-only — secret key for the integration sigv4 backend",
+  "WIKI_INTEGRATION_MTLS_DIR":                "test-only — dataDir for the integration mtls-ca instance",
 };
 
 // Env vars in docker-compose that we KNOW shouldn't be read at app

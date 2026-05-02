@@ -216,12 +216,57 @@ async function buildApp(opts) {
   // unset, so dev `npm start` keeps stdout-only logging.
   b.logStream.bootFromEnv({ env: process.env });
 
-  // Optional queue backend — apps that use b.queue / b.jobs call
-  // b.queue.bootFromEnv() at boot to wire either the local SQLite
-  // backend (default) or the Redis backend (BLAMEJS_QUEUE_PROTOCOL=redis).
-  // The wiki itself doesn't enqueue any background work, so this is a
-  // no-op on the wiki app and stays commented as a doc-by-example.
-  //   b.queue.bootFromEnv({ env: process.env });
+  // Queue backend — local SQLite by default; Redis when
+  // BLAMEJS_QUEUE_PROTOCOL=redis + BLAMEJS_QUEUE_REDIS_URL set. Wired
+  // unconditionally so the wiki picks up the operator's env-driven
+  // choice without code changes; integration tests rely on this to
+  // exercise both backends through the same app entrypoint.
+  b.queue.bootFromEnv({ env: process.env });
+
+  // Integration-test mode — mount /test/* routes and wire test-only
+  // primitives (alt cache, mail transport, object-store backend) when
+  // WIKI_INTEGRATION_TEST=1. Production deploys MUST NOT set this var;
+  // the routes are guarded by the mount-gate below and otherwise
+  // unreachable.
+  var integrationMode = process.env.WIKI_INTEGRATION_TEST === "1";
+  var testCache = null;
+  var testMail = null;
+  var testObjectStore = null;
+  var testMtlsCa = null;
+  if (integrationMode) {
+    testCache = b.cache.create({
+      namespace: "wiki.integration.cache",
+      audit:     b.audit,
+    });
+    if (process.env.WIKI_INTEGRATION_SMTP_HOST) {
+      testMail = b.mail.transports.smtp({
+        host:               process.env.WIKI_INTEGRATION_SMTP_HOST,
+        port:               parseInt(process.env.WIKI_INTEGRATION_SMTP_PORT || "1025", 10),
+        ehloName:           process.env.WIKI_INTEGRATION_SMTP_EHLO || "blamejs-wiki",
+        timeoutMs:          5000,
+        rejectUnauthorized: process.env.WIKI_INTEGRATION_SMTP_REJECT_UNAUTHORIZED !== "false",
+      });
+    }
+    if (process.env.WIKI_INTEGRATION_S3_ENDPOINT) {
+      testObjectStore = b.objectStore.buildBackend({
+        name:             "wiki-integration-s3",
+        protocol:         "sigv4",
+        endpoint:         process.env.WIKI_INTEGRATION_S3_ENDPOINT,
+        region:           process.env.WIKI_INTEGRATION_S3_REGION || "us-east-1",
+        bucket:           process.env.WIKI_INTEGRATION_S3_BUCKET,
+        accessKeyId:      process.env.WIKI_INTEGRATION_S3_ACCESS_KEY,
+        secretAccessKey:  process.env.WIKI_INTEGRATION_S3_SECRET_KEY,
+        forcePathStyle:   true,
+        allowInternal:    true,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        classifications:  ["operational"],
+        residencyTag:     "unrestricted",
+      });
+    }
+    if (process.env.WIKI_INTEGRATION_MTLS_DIR) {
+      testMtlsCa = b.mtlsCa.create({ dataDir: process.env.WIKI_INTEGRATION_MTLS_DIR });
+    }
+  }
 
   // Boot-time security policy assertions. WIKI_REQUIRE_PROD_ASSERTS=1
   // makes the wiki refuse to boot when the operator's production
@@ -297,6 +342,22 @@ async function buildApp(opts) {
       router.use(b.middleware.bodyParser({ urlencoded: true, json: true }));
       var nonceMw = b.middleware.cspNonce();
       router.use(nonceMw);
+
+      // Integration-test routes are mounted BEFORE attachUser /
+      // csrfProtect / staticServe so the test suite doesn't have to
+      // round-trip a CSRF token for every POST. The whole namespace
+      // is gated by WIKI_INTEGRATION_TEST=1; production deploys must
+      // never set that env var. The path-prefix /test/ keeps the
+      // namespace well-separated from any production route.
+      if (integrationMode) {
+        var integrationRoutes = require("../routes/integration");
+        integrationRoutes.register(router, {
+          testCache:       testCache,
+          testMail:        testMail,
+          testObjectStore: testObjectStore,
+          mtlsCa:          testMtlsCa,
+        });
+      }
       router.use(b.middleware.compression());
       router.use(i18n.middleware());
 
@@ -313,16 +374,17 @@ async function buildApp(opts) {
           return { userId: row.id, email: row.email, scopes: scopes };
         },
       }));
-      router.use(b.middleware.csrfProtect({
-        // Double-submit cookie pattern: csrfProtect issues a token via
-        // cookie on first GET, exposes it on req.csrfToken for the
-        // template to render in <input name="csrf">, and on POST
-        // verifies the form-submitted value matches the cookie.
-        // SameSite=Lax blocks cross-site form POSTs from carrying the
-        // cookie, so the comparison fails for CSRF attempts.
-        cookie:    { name: "wiki_csrf" },
-        fieldName: "csrf",   // wiki templates use <input name="csrf">
-      }));
+      // CSRF — double-submit cookie pattern. Integration mode (gated
+      // by WIKI_INTEGRATION_TEST=1, never set in production) skips
+      // CSRF entirely so test POSTs against /test/* don't have to
+      // round-trip a token cookie. Production deployments always run
+      // with the full middleware stack.
+      if (!integrationMode) {
+        router.use(b.middleware.csrfProtect({
+          cookie:    { name: "wiki_csrf" },
+          fieldName: "csrf",   // wiki templates use <input name="csrf">
+        }));
+      }
       router.use(b.staticServe.create({
         root: path.join(__dirname, "..", "public"),
       }));
