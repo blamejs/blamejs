@@ -70,7 +70,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Run Hadolint (strict, all severities)
-        uses: hadolint/hadolint-action@v3.3.0
+        uses: hadolint/hadolint-action@v3
         with:
           dockerfile: examples/wiki/Dockerfile
           config:     .hadolint.yaml
@@ -93,7 +93,7 @@ jobs:
           echo "found=$count" >> "$GITHUB_OUTPUT"
       - name: Run ShellCheck
         if: steps.sh.outputs.found != '0'
-        uses: ludeeus/action-shellcheck@2.0.0
+        uses: ludeeus/action-shellcheck@master
         with:
           severity: style
           format:   tty
@@ -170,7 +170,7 @@ jobs:
       # Dockerfile misconfiguration. ignore-unfixed: false so unpatched
       # upstream CVEs surface for the next patch's fix log.
       - name: Trivy scan — visibility (all severities, no fail)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.IMAGE }}:${{ steps.tags.outputs.scan_tag }}
           severity:  'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
@@ -183,7 +183,7 @@ jobs:
       # Fails the release on CRITICAL/HIGH with fix available. Doesn't
       # block on unfixed upstream CVEs.
       - name: Trivy scan — release gate (CRITICAL/HIGH fixed)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref:      ${{ env.IMAGE }}:${{ steps.tags.outputs.scan_tag }}
           severity:       'CRITICAL,HIGH'

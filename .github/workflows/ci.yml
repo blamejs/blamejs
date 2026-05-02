@@ -112,17 +112,42 @@ jobs:
           # ref-history fetch matches the npm publish workflow's depth.
           fetch-depth: 0
 
+      - name: Install gitleaks
+        # Pull the OSS gitleaks binary directly from GitHub releases.
+        # The `gitleaks/gitleaks-action` wrapper requires a commercial
+        # license (GITLEAKS_LICENSE secret) for organization accounts,
+        # which is unsuitable for an open-source project. The
+        # underlying `gitleaks` binary itself stays Apache-2.0 and has
+        # no such requirement — install + invoke it directly. We track
+        # the LATEST release rather than pinning a version: gitleaks
+        # is a security gate, new rules ship to catch new attack
+        # patterns, and pinning would silently miss improvements to
+        # the detection set. Aligns with the framework's forward-
+        # looking-defaults policy.
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1)
+          if [ -z "$GITLEAKS_VERSION" ]; then
+            echo "::error::Could not resolve latest gitleaks release tag from GitHub API"
+            exit 1
+          fi
+          echo "[gitleaks] resolved latest release: v${GITLEAKS_VERSION}"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
       - name: Run gitleaks
-        # gitleaks-action ships its own binary; no vendoring into the
-        # repo, no install step. Default ruleset catches AWS keys, GCP
-        # credentials, GitHub tokens, npm tokens, generic high-entropy
-        # strings. The framework's vendored crypto fixtures live under
-        # lib/vendor/ and are explicitly allowlisted in .gitleaks.toml
-        # so the bundled noble-ciphers / argon2 binaries don't trip
-        # entropy heuristics.
-        uses: gitleaks/gitleaks-action@v2.3.9
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Default ruleset catches AWS keys, GCP credentials, GitHub
+        # tokens, npm tokens, generic high-entropy strings. The
+        # framework's vendored crypto fixtures live under lib/vendor/
+        # and are explicitly allowlisted in .gitleaks.toml so the
+        # bundled noble-ciphers / argon2 binaries don't trip entropy
+        # heuristics. --redact strips secret values from the report so
+        # an accidentally-leaked one doesn't get re-printed in CI logs.
+        run: |
+          gitleaks git --config=.gitleaks.toml --redact --verbose --exit-code=1
 
   wiki-section-convention:
     name: Wiki primitive-section convention
@@ -166,7 +191,7 @@ jobs:
         id: eslint
         run: |
           set +e
-          OUTPUT=$(npx --yes eslint@10 --max-warnings 0 . 2>&1)
+          OUTPUT=$(npx --yes eslint@latest --max-warnings 0 . 2>&1)
           EXIT_CODE=$?
           set -e
 
@@ -199,7 +224,7 @@ jobs:
         # that conflict with our intentional patterns.
         if: always()
         id: hadolint
-        uses: hadolint/hadolint-action@v3.3.0
+        uses: hadolint/hadolint-action@v3
         with:
           dockerfile: examples/wiki/Dockerfile
           config:     .hadolint.yaml
@@ -238,10 +263,10 @@ jobs:
       - name: Detect shell scripts
         id: sh
         run: |
-          # ludeeus/action-shellcheck@2.0.0 fails when there are no
-          # *.sh files (shellcheck itself exits 3 on empty input).
-          # Skip the lint step when nothing matches; flip back on the
-          # moment a tracked .sh appears.
+          # ludeeus/action-shellcheck fails when there are no *.sh
+          # files (shellcheck itself exits 3 on empty input). Skip the
+          # lint step when nothing matches; flip back on the moment a
+          # tracked .sh appears.
           count=$(git ls-files '*.sh' | wc -l)
           echo "Tracked .sh files: $count"
           git ls-files '*.sh' || true
