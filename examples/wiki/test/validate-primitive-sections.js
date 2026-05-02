@@ -133,6 +133,16 @@ var EXEMPTIONS = {
     "example references user.passwordHashHistory / user.passwordSetAt (per-account state read from DB — operator-side)",
   "observability:b.audit.safeemit(event)":
     "example shows compound emission in a route handler — references operator-side `body` from req parsing",
+  "network-config:b.network.ntp.bootcheck(opts) / setthresholds(opts":
+    "boot-check example dials real NTP/UDP — operator-network-only path",
+  "network-config:b.network.ntp.nts.query(opts) — authenticated ntp":
+    "NTS query negotiates with a live NTS-KE server over TLS — operator-network-only path",
+  "network-config:b.network.dns.lookup(host, opts?) / setservers / s":
+    "DNS examples resolve real hostnames against an operator-pinned resolver — sandbox can't simulate",
+  "network-config:b.network.proxy.fromenv() / set(opts) / shouldprox":
+    "proxy example calls outbound https through a tunnel that the harness can't reach",
+  "network-config:b.network.tls.addca(pemorpath, opts?) / addcabundl":
+    "addCa example loads operator-supplied PEM file from disk and dials internal HTTPS — operator-network-only",
 };
 
 // Primitive signature pattern: heading begins with `b.module.method`

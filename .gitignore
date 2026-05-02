@@ -13,6 +13,7 @@
 !.hadolint.yaml
 !.nvmrc
 !.npmrc
+!.gitleaks.toml
 
 # Build / dependencies
 node_modules/

@@ -203,6 +203,12 @@ async function buildApp(opts) {
   var adminDeniedCidrs = (process.env.WIKI_ADMIN_DENIED_CIDRS || "")
     .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
 
+  // Network configurability — read NTP / DNS / proxy / DPI-trust / socket
+  // env vars and apply them before the framework's outbound code paths
+  // open any sockets. Operators in air-gapped or proxied environments
+  // configure entirely via env without touching code.
+  b.network.bootFromEnv({ env: process.env, audit: b.audit });
+
   // Boot-time security policy assertions. WIKI_REQUIRE_PROD_ASSERTS=1
   // makes the wiki refuse to boot when the operator's production
   // posture is incomplete (vault not wrapped, db not encrypted, etc.).

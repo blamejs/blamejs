@@ -1,0 +1,55 @@
+title = "blamejs gitleaks config"
+
+# Inherit gitleaks' default ruleset (AWS keys, GCP creds, GitHub tokens,
+# npm tokens, generic high-entropy strings, etc.) and add framework-
+# specific allowlists below. New rules CAN be added here when the
+# framework gains a new credential shape it wants the scan to catch
+# (e.g. WIKI_WEBHOOK_SECRET in operator config); for now the defaults
+# are the policy.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored binaries + crypto-fixture entropy in tests"
+
+# Vendored deps (lib/vendor/) ship pre-built CJS bundles + native
+# argon2 prebuilds for every supported platform. The bundles inline
+# enough random-shaped lookup tables that gitleaks' entropy detector
+# trips on them every run. The framework's own SECURITY.md + manifest
+# already cover provenance for these bytes — gitleaks adding noise on
+# top isn't a useful signal.
+paths = [
+  '''lib/vendor/.*''',
+  # Test fixtures: tests embed deterministic test keys (vault/audit/
+  # webhook signing) for round-trip exercises. They're plainly named
+  # `test-*` / `fixture-*` and never reach prod.
+  '''test/.*\.test\.js''',
+  '''test/00-primitives\.js''',
+  '''test/40-consumers\.js''',
+  '''test/50-integration\.js''',
+  '''test/helpers/.*''',
+  # Wiki seeders embed example tokens / secrets in code blocks for
+  # documentation purposes (e.g. "WIKI_WEBHOOK_SECRET=hunter2-pad-pad").
+  # Each example is operator-readable and obviously fake.
+  '''examples/wiki/seeders/.*''',
+  # Reference SBOM file (committed alongside the package) carries the
+  # vendored package versions, not credentials.
+  '''sbom\.json''',
+]
+
+# Doc strings that intentionally name credential-shaped placeholders
+# (BEARER tokens, API keys) inside example code blocks. The patterns
+# below match operator-facing docs; real credentials don't ship there.
+regexes = [
+  '''Authorization: Bearer <[A-Za-z0-9_-]+>''',
+  '''hunter2-?pass-?[A-Za-z0-9-]+''',
+  '''wiki-validator-jwt-secret''',
+  '''blamejs-(?:wiki-validator-|test-)?passphrase[A-Za-z0-9-]*''',
+]
+
+# Commits made before this config landed predate the secret-scan gate
+# and were already audited manually. Pinning the SHA prevents the new
+# scan from blocking the next push on noise from the old history.
+# Operators rotating real secrets STILL must follow the SECURITY.md
+# breach-response process — the skip is for false-positives only.
+commits = []

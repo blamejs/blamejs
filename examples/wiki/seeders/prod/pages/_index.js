@@ -16,6 +16,7 @@ module.exports = [
   require("./" + "routing"),
   require("./" + "middleware"),
   require("./" + "outbound-http"),
+  require("./" + "network-config"),
   require("./" + "safe-parsers"),
   require("./" + "websockets"),
   require("./" + "mail"),

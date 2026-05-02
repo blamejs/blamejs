@@ -23,6 +23,7 @@ var NAV_GROUPS = [
     { slug: "routing",         title: "Routing" },
     { slug: "middleware",      title: "Middleware" },
     { slug: "outbound-http",   title: "Outbound HTTP" },
+    { slug: "network-config",  title: "Network Configurability" },
   ] },
   { name: "Validation", items: [
     { slug: "safe-parsers",    title: "Safe Parsers" },

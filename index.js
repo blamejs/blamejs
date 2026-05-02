@@ -164,6 +164,7 @@ var security = require("./lib/security-assert");
 var fileType = require("./lib/file-type");
 var dualControl = require("./lib/dual-control");
 var retention = require("./lib/retention");
+var network = require("./lib/network");
 
 module.exports = {
   crypto:           crypto,
@@ -276,6 +277,7 @@ module.exports = {
   fileType:         fileType,
   dualControl:      dualControl,
   retention:        retention,
+  network:          network,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

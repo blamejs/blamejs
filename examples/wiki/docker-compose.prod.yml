@@ -108,6 +108,48 @@ services:
       BLAMEJS_AUDIT_PASSPHRASE: ${BLAMEJS_AUDIT_PASSPHRASE:-}
       # BLAMEJS_DEPRECATIONS — "warn" (default) | "throw" | "silent".
       BLAMEJS_DEPRECATIONS: ${BLAMEJS_DEPRECATIONS:-warn}
+      # ---- Network configurability — production tightening ----
+      # NTP strict mode is on by default in prod (refuse to boot at
+      # >=fatal drift). NTS gives authenticated time; pin to operator-
+      # trusted NTS-KE servers for HIPAA / PCI / FIPS-aligned shops.
+      BLAMEJS_NTP_STRICT:            ${BLAMEJS_NTP_STRICT:-1}
+      BLAMEJS_NTP_SERVERS:           ${BLAMEJS_NTP_SERVERS:-}
+      BLAMEJS_NTP_TIMEOUT_MS:        ${BLAMEJS_NTP_TIMEOUT_MS:-}
+      BLAMEJS_NTP_DRIFT_WARN_MS:     ${BLAMEJS_NTP_DRIFT_WARN_MS:-}
+      BLAMEJS_NTP_DRIFT_FATAL_MS:    ${BLAMEJS_NTP_DRIFT_FATAL_MS:-}
+      BLAMEJS_NTS_SERVERS:           ${BLAMEJS_NTS_SERVERS:-}
+      BLAMEJS_NTS_REQUIRE:           ${BLAMEJS_NTS_REQUIRE:-}
+      # DNS — production deploys typically pin internal resolvers and
+      # set a short cache TTL plus an explicit lookup timeout (Node
+      # has none natively; the OS resolver default can be 30s+).
+      BLAMEJS_DNS_SERVERS:           ${BLAMEJS_DNS_SERVERS:-}
+      BLAMEJS_DNS_RESULT_ORDER:      ${BLAMEJS_DNS_RESULT_ORDER:-}
+      BLAMEJS_DNS_FAMILY:            ${BLAMEJS_DNS_FAMILY:-}
+      BLAMEJS_DNS_LOOKUP_TIMEOUT_MS: ${BLAMEJS_DNS_LOOKUP_TIMEOUT_MS:-2000}
+      BLAMEJS_DNS_CACHE_TTL_MS:      ${BLAMEJS_DNS_CACHE_TTL_MS:-30000}
+      BLAMEJS_DOH_PROVIDER:          ${BLAMEJS_DOH_PROVIDER:-}
+      BLAMEJS_DOH_URL:               ${BLAMEJS_DOH_URL:-}
+      BLAMEJS_DOT_HOST:              ${BLAMEJS_DOT_HOST:-}
+      BLAMEJS_DOT_PORT:              ${BLAMEJS_DOT_PORT:-}
+      # Outbound HTTP proxy — required in many corporate networks where
+      # outbound is funnelled through a tunnel. NO_PROXY exempts
+      # internal mesh hosts.
+      HTTP_PROXY:                    ${HTTP_PROXY:-}
+      HTTPS_PROXY:                   ${HTTPS_PROXY:-}
+      NO_PROXY:                      ${NO_PROXY:-}
+      ALL_PROXY:                     ${ALL_PROXY:-}
+      BLAMEJS_PROXY_AUTH:            ${BLAMEJS_PROXY_AUTH:-}
+      # DPI / corporate-trust CA. Every CA add is audited; the prod
+      # security gate refuses to boot when a CA is installed unless
+      # allowDpiTrust:true is passed to security.assertProduction().
+      BLAMEJS_EXTRA_CA_CERTS:        ${BLAMEJS_EXTRA_CA_CERTS:-}
+      BLAMEJS_EXTRA_CA_CERTS_DIR:    ${BLAMEJS_EXTRA_CA_CERTS_DIR:-}
+      BLAMEJS_USE_SYSTEM_TRUST:      ${BLAMEJS_USE_SYSTEM_TRUST:-}
+      # TCP tuning — keep alive on by default; tune initial-delay for
+      # long-lived idle pools.
+      BLAMEJS_SOCKET_NO_DELAY:           ${BLAMEJS_SOCKET_NO_DELAY:-1}
+      BLAMEJS_SOCKET_KEEPALIVE:          ${BLAMEJS_SOCKET_KEEPALIVE:-1}
+      BLAMEJS_SOCKET_KEEPALIVE_DELAY_MS: ${BLAMEJS_SOCKET_KEEPALIVE_DELAY_MS:-}
       # ---- Standard Node ----
       NODE_ENV:  ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}
