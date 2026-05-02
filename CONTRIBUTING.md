@@ -26,6 +26,15 @@ cd examples/wiki && rm -rf data data-e2e && node test/e2e.js
 npx eslint@10 --max-warnings 0 .
 docker run --rm -i hadolint/hadolint < examples/wiki/Dockerfile
 shellcheck $(git ls-files '*.sh')
+
+# 5. Optional: bring up the integration-test fixture stack and run live tests
+#    against real backends (redis / postgres / mysql / mongo / minio /
+#    rabbitmq / nats / syslog / ntp / mailpit / coredns + haproxy / caddy /
+#    mitmproxy / squid). Skipped by smoke; opt-in for changes that need to
+#    validate against real services with strict TLS verification.
+docker compose -f docker-compose.test.yml up -d --wait
+node scripts/test-integration.js
+docker compose -f docker-compose.test.yml down -v
 ```
 
 **Requirements:** Node.js 24+ (current active LTS). The framework targets `node:sqlite`, `Intl.PluralRules`, modern `crypto` primitives, and other recent built-ins. Anything older is out of scope.

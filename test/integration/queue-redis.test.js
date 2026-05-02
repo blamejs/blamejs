@@ -22,6 +22,7 @@ var check = helpers.check;
 var queueRedis = require("../../lib/queue-redis");
 var redisClient = require("../../lib/redis-client");
 var services = require("../helpers/services");
+var cryptoField = require("../../lib/crypto-field");
 var b = require("../../");
 
 async function _ping(url) {
@@ -83,10 +84,14 @@ async function run() {
   }
 
   // Init the framework's vault so cryptoField.sealRow has a key to
-  // work with. The queue's payload field is sealed in FRAMEWORK_SCHEMA.
+  // work with. The queue's payload + lastError fields are sealed in
+  // FRAMEWORK_SCHEMA — without registering the table here, unsealRow
+  // is a no-op on dlqList reads and the lastError comes back as the
+  // vault-sealed envelope instead of the plaintext error message.
   var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-queue-redis-"));
   if (typeof b.vault._resetForTest === "function") b.vault._resetForTest();
   await b.vault.init({ dataDir: dataDir, mode: "plaintext" });
+  cryptoField.registerTable("_blamejs_jobs", { sealedFields: ["payload", "lastError"] });
 
   var prefix = "blamejs:test-queue-" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
   await _flushTestPrefix(url, prefix);
