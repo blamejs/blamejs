@@ -1,6 +1,6 @@
 {
   "name": "@blamejs/core",
-  "version": "0.6.19",
+  "version": "0.6.20",
   "description": "The Node framework that owns its stack.",
   "license": "Apache-2.0",
   "author": "blamejs contributors",
@@ -65,7 +65,8 @@
     "LTS-CALENDAR.md",
     "MIGRATING.md",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "sbom.cyclonedx.json"
   ],
   "scripts": {
     "test": "node test/smoke.js",

@@ -30,7 +30,16 @@ function main() {
     process.stderr.write("[prepack-guard] npm pack reported zero files\n");
     process.exit(1);
   }
-  var paths = files.map(function (f) { return f.path; });
+  // Generated artifacts intended to ship in the tarball — these are
+  // gitignored on purpose (so a stray local generation doesn't pollute
+  // the repo) but are listed in package.json `files` because the CI
+  // workflow generates them just-in-time before publish. Skip the guard
+  // for these specific paths.
+  var GENERATED_ALLOWED = new Set([
+    "sbom.cyclonedx.json",
+  ]);
+  var paths = files.map(function (f) { return f.path; })
+    .filter(function (p) { return !GENERATED_ALLOWED.has(p); });
 
   var check = _run("git", ["check-ignore", "--verbose", "--no-index", "--stdin"], {
     input: paths.join("\n") + "\n",
