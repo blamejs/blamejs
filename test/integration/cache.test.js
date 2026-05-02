@@ -160,6 +160,65 @@ async function run() {
   await clusterBackend.clear();
   await cluster.close();
   await client.close();
+
+  // ---- built-in redis backend (b.cache.create({backend:"redis"})) ----
+  // The "redis" backend ships with the framework now (v0.6.32 / E1).
+  // No operator-side glue needed — just a redisUrl.
+  var rsvc = await services.requireService("redis");
+  if (!rsvc.ok) throw new Error("redis unreachable: " + rsvc.reason);
+  var redisCache = b.cache.create({
+    backend:    "redis",
+    redisUrl:   rsvc.url + "/13",
+    namespace:  "test-rcache-" + Date.now(),
+    ttlMs:      60000,
+    audit:      b.audit,
+  });
+
+  await redisCache.set("k1", "redis-cache-value");
+  check("redis-backend: set + get round-trip",
+        (await redisCache.get("k1")) === "redis-cache-value");
+  check("redis-backend: has returns true",
+        (await redisCache.has("k1")) === true);
+  await redisCache.del("k1");
+  check("redis-backend: del removes key",
+        (await redisCache.get("k1")) === undefined);
+
+  // Object value round-trip (JSON-serialized inside the backend)
+  await redisCache.set("obj", { hello: "world", n: 42, arr: [1, 2, 3] });
+  var obj = await redisCache.get("obj");
+  check("redis-backend: complex value JSON-roundtrips",
+        obj && obj.hello === "world" && obj.n === 42 && obj.arr.length === 3);
+
+  // Short-TTL set: Redis PEXPIREAT honours ttlMs
+  await redisCache.set("ttlk", "expires-soon", { ttlMs: 200 });
+  check("redis-backend: short-ttl set works",
+        (await redisCache.get("ttlk")) === "expires-soon");
+  await new Promise(function (res) { setTimeout(res, 350); });
+  check("redis-backend: post-ttl get returns undefined (Redis expired)",
+        (await redisCache.get("ttlk")) === undefined);
+
+  // Tag-based invalidation — backend's invalidateTag fans out + cleans
+  await redisCache.set("a", "1", { tags: ["group-x"] });
+  await redisCache.set("b", "2", { tags: ["group-x", "group-y"] });
+  await redisCache.set("c", "3", { tags: ["group-y"] });
+  await redisCache.invalidateTag("group-x");
+  check("redis-backend: invalidateTag drops keys carrying the tag",
+        (await redisCache.get("a")) === undefined &&
+        (await redisCache.get("b")) === undefined);
+  check("redis-backend: invalidateTag preserves keys NOT carrying the tag",
+        (await redisCache.get("c")) === "3");
+
+  // wrap() — single-flight memoization through the redis backend
+  var redisCalls = 0;
+  var rv1 = await redisCache.wrap("memo-k", function () { redisCalls += 1; return "from-redis-wrap"; });
+  var rv2 = await redisCache.wrap("memo-k", function () { redisCalls += 1; return "from-redis-wrap"; });
+  check("redis-backend: wrap cache-miss invokes fn",
+        rv1 === "from-redis-wrap");
+  check("redis-backend: wrap cache-hit reuses through Redis",
+        rv2 === "from-redis-wrap" && redisCalls === 1);
+
+  await redisCache.clear();
+  await redisCache.close();
 }
 
 module.exports = { run: run };
