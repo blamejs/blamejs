@@ -108,6 +108,7 @@ function _isFrameworkBootSource(p) {
     "lib/network.js", "lib/network-dns.js", "lib/network-proxy.js",
     "lib/network-tls.js", "lib/network-heartbeat.js",
     "lib/log-stream.js",
+    "lib/queue.js",
     "lib/db.js",
   ];
   for (var i = 0; i < known.length; i++) {

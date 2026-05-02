@@ -142,6 +142,17 @@ services:
       BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM: ${BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM:-}
       # local-only opt:
       BLAMEJS_LOG_STREAM_PATH:               ${BLAMEJS_LOG_STREAM_PATH:-}
+      # ---- Optional Redis-backed queue (b.queue.bootFromEnv) ----
+      # When BLAMEJS_QUEUE_PROTOCOL=redis, the framework swaps the local
+      # SQLite-backed queue for a shared Redis queue — multi-replica
+      # apps coordinate through Redis instead of relying on cluster
+      # leadership for queue ownership. Defaults to local when unset.
+      BLAMEJS_QUEUE_PROTOCOL:                ${BLAMEJS_QUEUE_PROTOCOL:-}
+      BLAMEJS_QUEUE_REDIS_URL:               ${BLAMEJS_QUEUE_REDIS_URL:-}
+      BLAMEJS_QUEUE_REDIS_PASSWORD:          ${BLAMEJS_QUEUE_REDIS_PASSWORD:-}
+      BLAMEJS_QUEUE_REDIS_USERNAME:          ${BLAMEJS_QUEUE_REDIS_USERNAME:-}
+      BLAMEJS_QUEUE_REDIS_TLS:               ${BLAMEJS_QUEUE_REDIS_TLS:-}
+      BLAMEJS_QUEUE_REDIS_KEY_PREFIX:        ${BLAMEJS_QUEUE_REDIS_KEY_PREFIX:-}
     volumes:
       - wiki-data:/data
     healthcheck:

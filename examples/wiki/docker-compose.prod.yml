@@ -188,6 +188,16 @@ services:
       BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_GROUP:  ${BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_GROUP:-}
       BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM: ${BLAMEJS_LOG_STREAM_CLOUDWATCH_LOG_STREAM:-}
       BLAMEJS_LOG_STREAM_PATH:               ${BLAMEJS_LOG_STREAM_PATH:-}
+      # ---- Optional Redis-backed queue (b.queue.bootFromEnv) ----
+      # Multi-replica deploys typically wire BLAMEJS_QUEUE_PROTOCOL=redis
+      # so app replicas share a single queue without each needing to be
+      # cluster leader. Defaults to local when unset.
+      BLAMEJS_QUEUE_PROTOCOL:                ${BLAMEJS_QUEUE_PROTOCOL:-}
+      BLAMEJS_QUEUE_REDIS_URL:               ${BLAMEJS_QUEUE_REDIS_URL:-}
+      BLAMEJS_QUEUE_REDIS_PASSWORD:          ${BLAMEJS_QUEUE_REDIS_PASSWORD:-}
+      BLAMEJS_QUEUE_REDIS_USERNAME:          ${BLAMEJS_QUEUE_REDIS_USERNAME:-}
+      BLAMEJS_QUEUE_REDIS_TLS:               ${BLAMEJS_QUEUE_REDIS_TLS:-}
+      BLAMEJS_QUEUE_REDIS_KEY_PREFIX:        ${BLAMEJS_QUEUE_REDIS_KEY_PREFIX:-}
       # ---- Standard Node ----
       NODE_ENV:  ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}

@@ -216,6 +216,13 @@ async function buildApp(opts) {
   // unset, so dev `npm start` keeps stdout-only logging.
   b.logStream.bootFromEnv({ env: process.env });
 
+  // Optional queue backend — apps that use b.queue / b.jobs call
+  // b.queue.bootFromEnv() at boot to wire either the local SQLite
+  // backend (default) or the Redis backend (BLAMEJS_QUEUE_PROTOCOL=redis).
+  // The wiki itself doesn't enqueue any background work, so this is a
+  // no-op on the wiki app and stays commented as a doc-by-example.
+  //   b.queue.bootFromEnv({ env: process.env });
+
   // Boot-time security policy assertions. WIKI_REQUIRE_PROD_ASSERTS=1
   // makes the wiki refuse to boot when the operator's production
   // posture is incomplete (vault not wrapped, db not encrypted, etc.).

@@ -133,8 +133,10 @@ function testThreeFrameworkUsages() {
   // expose dispatcher-driven PROTOCOLS / DEFERRED_PROTOCOLS arrays.
   check("queue.PROTOCOLS includes local",
         b.queue.PROTOCOLS.indexOf("local") !== -1);
-  check("queue.DEFERRED_PROTOCOLS includes redis",
-        b.queue.DEFERRED_PROTOCOLS.indexOf("redis") !== -1);
+  check("queue.PROTOCOLS includes redis (shipped in v0.6.27)",
+        b.queue.PROTOCOLS.indexOf("redis") !== -1);
+  check("queue.DEFERRED_PROTOCOLS still includes sqs",
+        b.queue.DEFERRED_PROTOCOLS.indexOf("sqs") !== -1);
   check("logStream.PROTOCOLS includes webhook",
         b.logStream.PROTOCOLS.indexOf("webhook") !== -1);
   check("logStream.PROTOCOLS includes otlp (shipped in v0.6.24)",
