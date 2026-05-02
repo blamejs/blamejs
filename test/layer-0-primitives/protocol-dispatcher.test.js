@@ -137,8 +137,10 @@ function testThreeFrameworkUsages() {
         b.queue.DEFERRED_PROTOCOLS.indexOf("redis") !== -1);
   check("logStream.PROTOCOLS includes webhook",
         b.logStream.PROTOCOLS.indexOf("webhook") !== -1);
-  check("logStream.DEFERRED_PROTOCOLS includes otlp",
-        b.logStream.DEFERRED_PROTOCOLS.indexOf("otlp") !== -1);
+  check("logStream.PROTOCOLS includes otlp (shipped in v0.6.24)",
+        b.logStream.PROTOCOLS.indexOf("otlp") !== -1);
+  check("logStream.DEFERRED_PROTOCOLS still includes syslog",
+        b.logStream.DEFERRED_PROTOCOLS.indexOf("syslog") !== -1);
   check("objectStore.PROTOCOLS includes sigv4",
         b.objectStore.PROTOCOLS.indexOf("sigv4") !== -1);
 }

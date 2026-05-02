@@ -178,6 +178,9 @@ function _envFn(name, fallback) {
     SLACK_WEBHOOK_URL:   "http://127.0.0.1:65535/slack",
     DISCORD_WEBHOOK_URL: "http://127.0.0.1:65535/discord",
     PAGERDUTY_URL:       "http://127.0.0.1:65535/pd",
+    OTEL_TOKEN:          "test-otel-token",
+    APP_VERSION:         "1.0.0-test",
+    SIEM_HMAC_SECRET:    "wiki-validator-hmac",
   };
   return Object.prototype.hasOwnProperty.call(fakes, name) ? fakes[name] : (fallback || "");
 }
