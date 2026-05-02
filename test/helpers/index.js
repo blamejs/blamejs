@@ -52,6 +52,7 @@ module.exports = {
   // Driver fakes
   _makeFakeDriver:         _drivers._makeFakeDriver,
   _makeSqliteDriver:       _drivers._makeSqliteDriver,
+  _makeFakeMysqlDriver:    _drivers._makeFakeMysqlDriver,
   _makeFakeServiceAccount: _drivers._makeFakeServiceAccount,
 
   // HTTP mocks

@@ -24,6 +24,7 @@ var os     = helpers.os;
 var path   = helpers.path;
 var check  = helpers.check;
 var _makeSqliteDriver        = helpers._makeSqliteDriver;
+var _makeFakeMysqlDriver     = helpers._makeFakeMysqlDriver;
 
 async function testVaultWrapRoundTrip() {
   var fastOpts = { memoryCost: 1024, timeCost: 1, parallelism: 1, saltLength: 16 };
@@ -332,6 +333,86 @@ async function testClusterProviderRenewalRace() {
   }
 }
 
+async function testClusterProviderMysqlDialect() {
+  // MySQL dialect uses a different acquire shape (INSERT ... ON
+  // DUPLICATE KEY UPDATE with IF()-gated columns + follow-up SELECT)
+  // and ?-placeholders. The fake mysql driver emulates the per-column
+  // IF() semantics so we can test acquire / renew / takeover / release
+  // semantics without a real MySQL connection.
+  var driver = _makeFakeMysqlDriver();
+  try {
+    b.externalDb.init({
+      backends: {
+        "ops": { connect: driver.connect, query: driver.query, close: driver.close, dialect: "mysql" },
+      },
+    });
+    var providerFactory = require(path.join(__dirname, "..", "lib", "cluster-provider-db"));
+    var pA = providerFactory.create({ externalDbBackend: "ops", dialect: "mysql" });
+    var pB = providerFactory.create({ externalDbBackend: "ops", dialect: "mysql" });
+
+    // Reject unsupported dialect.
+    var threwBad = null;
+    try { providerFactory.create({ externalDbBackend: "ops", dialect: "oracle" }); }
+    catch (e) { threwBad = e; }
+    check("mysql provider: rejects unsupported dialect 'oracle'",
+          threwBad && threwBad.code === "UNSUPPORTED_DIALECT");
+
+    await pA.ensureSchema();
+    var sqlSeen = driver._loggedSql();
+    check("mysql provider: ensureSchema emits CREATE TABLE _blamejs_leader",
+          sqlSeen.some(function (e) { return /CREATE TABLE IF NOT EXISTS _blamejs_leader/.test(e.sql); }));
+    check("mysql provider: emits VARCHAR for primary-key columns",
+          sqlSeen.some(function (e) { return /VARCHAR\(64\) PRIMARY KEY/.test(e.sql); }));
+    check("mysql provider: skips Postgres-only CHECK constraint",
+          !sqlSeen.some(function (e) { return /_blamejs_leader[\s\S]*CHECK \(scope = 'leader'\)/.test(e.sql); }));
+
+    var leaseA = await pA.acquireLease("node-A", b.constants.TIME.seconds(30));
+    check("mysql provider: acquireLease succeeds on empty DB",  leaseA !== null);
+    check("mysql provider: first lease has fencingToken = 1",   leaseA.fencingToken === 1);
+    check("mysql provider: emitted INSERT...ON DUPLICATE KEY",
+          sqlSeen.some(function (e) { return /ON DUPLICATE KEY UPDATE/.test(e.sql); }));
+    check("mysql provider: uses ? placeholders not $1",
+          sqlSeen.some(function (e) { return /VALUES\s*\(\s*'leader',\s*\?,/.test(e.sql); }));
+    check("mysql provider: gates fencingToken with IF(expiresAt < ?, ...)",
+          sqlSeen.some(function (e) { return /fencingToken = IF\(expiresAt < \?, fencingToken \+ 1, fencingToken\)/.test(e.sql); }));
+
+    // Second node blocked while A holds.
+    var leaseB = await pB.acquireLease("node-B", b.constants.TIME.seconds(30));
+    check("mysql provider: B blocked while A holds non-expired", leaseB === null);
+
+    // Renew preserves fencingToken.
+    var renewed = await pA.renewLease(leaseA);
+    check("mysql provider: renewLease keeps fencingToken",       renewed.fencingToken === 1);
+
+    // Takeover after expiry. Force expiresAt to the past to simulate
+    // expiry without a real time-pause; same fencingToken state as A's
+    // current acquire.
+    var fencingBeforeTakeover = renewed.fencingToken;
+    driver._state()._blamejs_leader.expiresAt = 0;
+    var leaseTakeover = await pB.acquireLease("node-B", b.constants.TIME.seconds(30));
+    check("mysql provider: B takes over after expiry",           leaseTakeover !== null);
+    check("mysql provider: takeover bumps fencingToken",
+          leaseTakeover.fencingToken === fencingBeforeTakeover + 1);
+
+    // Old leader's renew throws LEASE_LOST.
+    var threwRenew = null;
+    try { await pA.renewLease(renewed); }
+    catch (e) { threwRenew = e; }
+    check("mysql provider: old leader's renewLease throws LEASE_LOST",
+          threwRenew && threwRenew.code === "LEASE_LOST");
+
+    // currentLeader sees B.
+    var current = await pB.currentLeader();
+    check("mysql provider: currentLeader reports B",             current.nodeId === "node-B");
+
+    await pB.releaseLease(leaseTakeover);
+    var afterRelease = await pB.currentLeader();
+    check("mysql provider: currentLeader null after release",    afterRelease === null);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+  }
+}
+
 async function testClusterInitAndRequireLeader() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cluster-"));
   var dbPath = path.join(tmpDir, "cluster.db");
@@ -510,6 +591,7 @@ async function run() {
   await testClusterProviderTwoNodeContention();
   await testClusterProviderTakeoverAfterExpiry();
   await testClusterProviderRenewalRace();
+  await testClusterProviderMysqlDialect();
   await testClusterInitAndRequireLeader();
 
   // framework-schema (DDL emitter + table-name resolver)
@@ -532,6 +614,7 @@ module.exports = {
   testClusterProviderTwoNodeContention:     testClusterProviderTwoNodeContention,
   testClusterProviderTakeoverAfterExpiry:   testClusterProviderTakeoverAfterExpiry,
   testClusterProviderRenewalRace:           testClusterProviderRenewalRace,
+  testClusterProviderMysqlDialect:          testClusterProviderMysqlDialect,
   testClusterInitAndRequireLeader:          testClusterInitAndRequireLeader,
   testFrameworkSchemaEnsure:                testFrameworkSchemaEnsure,
   testFrameworkSchemaTableNameMapping:      testFrameworkSchemaTableNameMapping,

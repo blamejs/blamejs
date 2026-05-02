@@ -81,6 +81,108 @@ function _makeSqliteDriver(dbPath) {
   };
 }
 
+/**
+ * Fake MySQL driver — emulates just enough of MySQL's wire semantics
+ * to exercise lib/cluster-provider-db's MySQL dialect path:
+ *
+ *   - `?` placeholders (not `$1..$N`)
+ *   - Affected-row count surfaces as `affectedRows` (mysql2 style)
+ *   - `INSERT ... ON DUPLICATE KEY UPDATE` with `IF(<predicate>, x, y)`
+ *     evaluates the predicate against existing-row state and copies
+ *     the appropriate column.
+ *   - `SELECT ... FROM _blamejs_leader WHERE scope = 'leader'` returns
+ *     the current row (or empty if absent).
+ *
+ * The store is a single object keyed by row primary key; the cluster
+ * provider only ever touches the `_blamejs_leader` and
+ * `_blamejs_cluster_state` tables, both of which have a one-row
+ * 'leader' / 'state' singleton.
+ */
+function _makeFakeMysqlDriver() {
+  var rows = { _blamejs_leader: null, _blamejs_cluster_state: null };
+  var loggedSql = [];
+  var clientCounter = 0;
+  return {
+    connect: async function () { clientCounter += 1; return { id: clientCounter }; },
+    query: async function (_client, sql, params) {
+      params = params || [];
+      loggedSql.push({ sql: sql, params: params.slice() });
+      var t = sql.trim();
+      // CREATE / ALTER — accept silently.
+      if (/^CREATE TABLE IF NOT EXISTS/i.test(t)) return { rows: [], affectedRows: 0 };
+      if (/^ALTER TABLE/i.test(t))                return { rows: [], affectedRows: 0 };
+
+      // INSERT ... ON DUPLICATE KEY UPDATE — only modeled for
+      // _blamejs_leader since that's the only place the provider uses
+      // it. Existing-row predicate is `expiresAt < ?` for every IF().
+      var inLeader = /INSERT INTO _blamejs_leader/i.test(t) &&
+                     /ON DUPLICATE KEY UPDATE/i.test(t);
+      if (inLeader) {
+        // params: [nodeId, leaseId, acquiredAt, expiresAt, endpoint,
+        //          nowMs, nowMs, nowMs, nowMs, nowMs, nowMs]
+        var newRow = {
+          scope: "leader", nodeId: params[0], leaseId: params[1],
+          acquiredAt: params[2], expiresAt: params[3], endpoint: params[4],
+          fencingToken: 1,
+        };
+        var existing = rows._blamejs_leader;
+        if (!existing) {
+          rows._blamejs_leader = newRow;
+        } else {
+          var nowPredicate = params[5];
+          if (existing.expiresAt < nowPredicate) {
+            // Steal — IF() → use VALUES(*) for non-fencingToken cols,
+            // bump fencingToken.
+            existing.nodeId       = newRow.nodeId;
+            existing.leaseId      = newRow.leaseId;
+            existing.acquiredAt   = newRow.acquiredAt;
+            existing.endpoint     = newRow.endpoint;
+            existing.fencingToken = existing.fencingToken + 1;
+            existing.expiresAt    = newRow.expiresAt;
+          }
+          // else: row preserved untouched.
+        }
+        return { rows: [], affectedRows: 1 };
+      }
+
+      // UPDATE _blamejs_leader SET expiresAt = ?, endpoint = ?
+      // WHERE scope='leader' AND nodeId=? AND leaseId=?
+      var renewMatch = /^UPDATE _blamejs_leader SET[\s\S]*expiresAt = \?[\s\S]*WHERE scope = 'leader' AND nodeId = \? AND leaseId = \?/i.test(t);
+      if (renewMatch) {
+        var r = rows._blamejs_leader;
+        if (r && r.nodeId === params[2] && r.leaseId === params[3]) {
+          r.expiresAt = params[0];
+          r.endpoint  = params[1];
+          return { rows: [], affectedRows: 1 };
+        }
+        return { rows: [], affectedRows: 0 };
+      }
+
+      // UPDATE _blamejs_leader SET expiresAt = 0 WHERE ... (release)
+      var releaseMatch = /^UPDATE _blamejs_leader SET[\s\S]*expiresAt = 0/i.test(t);
+      if (releaseMatch) {
+        var rr = rows._blamejs_leader;
+        if (rr && rr.nodeId === params[0] && rr.leaseId === params[1]) {
+          rr.expiresAt = 0;
+        }
+        return { rows: [], affectedRows: 1 };
+      }
+
+      // SELECT FROM _blamejs_leader WHERE scope = 'leader'
+      if (/^SELECT[\s\S]+FROM _blamejs_leader WHERE scope = 'leader'/i.test(t)) {
+        var rl = rows._blamejs_leader;
+        if (!rl) return { rows: [], affectedRows: 0 };
+        return { rows: [Object.assign({}, rl)], affectedRows: 1 };
+      }
+
+      throw new Error("fake mysql driver: unknown SQL: " + t);
+    },
+    close: async function () { /* no-op */ },
+    _loggedSql: function () { return loggedSql; },
+    _state: function () { return rows; },
+  };
+}
+
 function _makeFakeServiceAccount() {
   var nodeCrypto = require("crypto");
   var pair = nodeCrypto.generateKeyPairSync("rsa", {
@@ -100,5 +202,6 @@ function _makeFakeServiceAccount() {
 module.exports = {
   _makeFakeDriver:         _makeFakeDriver,
   _makeSqliteDriver:       _makeSqliteDriver,
+  _makeFakeMysqlDriver:    _makeFakeMysqlDriver,
   _makeFakeServiceAccount: _makeFakeServiceAccount,
 };
