@@ -3,17 +3,16 @@
  * Live log-stream sink test — exercises lib/log-stream.js's webhook
  * sink against a real HTTP receiver (the Caddy fixture's :8080 echoes
  * 200 on every request, sufficient to confirm the framework's sink
- * code path serializes + posts records correctly).
- *
- * Also covers the "local" sink which writes to disk and the deferred
- * syslog protocol which must throw PROTOCOL_NOT_IMPLEMENTED. Together
- * these tests assert every shipped + every advertised-but-deferred
- * protocol behaves as documented.
+ * code path serializes + posts records correctly), the local file sink,
+ * and the syslog sink across udp / tcp / tls transports against the
+ * docker syslog-ng container which writes to /var/log/blamejs-test.log.
  */
+var child_process = require("node:child_process");
 var fs   = require("node:fs");
+var http = require("node:http");
 var os   = require("node:os");
 var path = require("node:path");
-var http = require("node:http");
+var tls  = require("node:tls");
 var helpers = require("../helpers");
 var check = helpers.check;
 var services = require("../helpers/services");
@@ -23,15 +22,13 @@ async function run() {
   var caddy = await services.requireService("caddy");
   if (!caddy.ok) throw new Error("caddy unreachable: " + caddy.reason);
 
-  // ---- protocol catalog: deferred protocols throw PROTOCOL_NOT_IMPLEMENTED ----
-  // log-stream's deferred map currently lists 'syslog'. Asking for it
-  // must raise a clear error rather than silently dropping records.
-  check("PROTOCOLS exposes shipped sinks (local/webhook/otlp/cloudwatch)",
-        ["local", "webhook", "otlp", "cloudwatch"].every(function (p) {
+  // ---- protocol catalog ----
+  check("PROTOCOLS exposes every shipped sink (local/webhook/otlp/cloudwatch/syslog)",
+        ["local", "webhook", "otlp", "cloudwatch", "syslog"].every(function (p) {
           return b.logStream.PROTOCOLS.indexOf(p) !== -1;
         }));
-  check("DEFERRED_PROTOCOLS lists 'syslog' so operators see a clear error",
-        b.logStream.DEFERRED_PROTOCOLS.indexOf("syslog") !== -1);
+  check("DEFERRED_PROTOCOLS no longer lists 'syslog' (it ships)",
+        b.logStream.DEFERRED_PROTOCOLS.indexOf("syslog") === -1);
 
   // ---- local sink: writes records to disk ----
   if (typeof b.logStream._resetForTest === "function") b.logStream._resetForTest();
@@ -105,21 +102,109 @@ async function run() {
   check("webhook sink: error level preserved",
         /"level":\s*"error"/.test(allText));
 
-  // ---- deferred syslog protocol: must throw PROTOCOL_NOT_IMPLEMENTED ----
-  if (typeof b.logStream._resetForTest === "function") b.logStream._resetForTest();
-  var threw = null;
-  try {
+  // ---- syslog sink: udp / tcp against the docker syslog-ng ----
+  // The docker container appends every record to /var/log/blamejs-test.log
+  // regardless of which transport it arrived on. We emit a uniquely-tagged
+  // record per transport, flush, then docker-exec to confirm each tag
+  // landed on disk.
+  var syslog = await services.requireService("syslog");
+  if (!syslog.ok) throw new Error("syslog unreachable: " + syslog.reason);
+
+  // Truncate the log file so prior runs don't poison the assertions.
+  child_process.execFileSync("docker",
+    ["exec", "blamejs-test-syslog", "truncate", "-s", "0", "/var/log/blamejs-test.log"],
+    { stdio: "pipe" });
+
+  var transports = [
+    { name: "udp", url: "udp://127.0.0.1:5514", tag: "blamejs-udp-" + Date.now() },
+    { name: "tcp", url: "tcp://127.0.0.1:5514", tag: "blamejs-tcp-" + Date.now() },
+  ];
+
+  for (var i = 0; i < transports.length; i += 1) {
+    var t = transports[i];
+    if (typeof b.logStream._resetForTest === "function") b.logStream._resetForTest();
     b.logStream.init({
-      sinks: {
-        far: { protocol: "syslog", host: "127.0.0.1", port: 5514 },
-      },
+      sinks: { syslog: { protocol: "syslog", url: t.url, appName: t.tag } },
+      minLevel: "debug",
     });
-  } catch (e) { threw = e; }
-  check("syslog protocol throws PROTOCOL_NOT_IMPLEMENTED (operator-visible)",
-        threw && threw.code &&
-        /PROTOCOL_NOT_IMPLEMENTED|deferred|not yet/i.test(threw.code + " " + threw.message));
-  check("syslog error mentions the protocol name",
-        threw && threw.message && /syslog/i.test(threw.message));
+    b.logStream.info("syslog-event-via-" + t.name, { transport: t.name });
+    await new Promise(function (r) { setTimeout(r, 500); });
+    await b.logStream.shutdown();
+  }
+  await new Promise(function (r) { setTimeout(r, 250); });
+  var syslogLog = child_process.execFileSync("docker",
+    ["exec", "blamejs-test-syslog", "cat", "/var/log/blamejs-test.log"],
+    { stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
+
+  for (var j = 0; j < transports.length; j += 1) {
+    var trj = transports[j];
+    check("syslog " + trj.name + ": record landed in /var/log/blamejs-test.log",
+          syslogLog.indexOf(trj.tag) !== -1);
+  }
+
+  // ---- syslog TLS sink: against an ad-hoc tls.createServer ----
+  // The docker syslog-ng container's TLS port forwarded through Docker
+  // Desktop on Windows is flaky — handshakes succeed standalone but
+  // race the framework's reconnect loop. We assert the on-the-wire
+  // framing the framework produces (RFC 6587 octet-counting + RFC 5424
+  // message body) against a Node-side TLS receiver instead, which
+  // exercises every code path in lib/log-stream-syslog.js's TLS branch.
+  // Use the docker syslog cert + key directly — easier than re-issuing.
+  var serverCert = child_process.execFileSync("docker",
+    ["exec", "blamejs-test-syslog", "cat", "/certs/syslog.crt"],
+    { stdio: "pipe" }).toString("utf8");
+  var serverKey  = child_process.execFileSync("docker",
+    ["exec", "blamejs-test-syslog", "cat", "/certs/syslog.key"],
+    { stdio: "pipe" }).toString("utf8");
+  var caPath = process.env.BLAMEJS_TEST_CA_PATH;
+  var ca = caPath ? fs.readFileSync(caPath) : undefined;
+  var received = "";
+  var tlsServer = tls.createServer({ cert: serverCert, key: serverKey },
+    function (sock) { sock.on("data", function (buf) { received += buf.toString("utf8"); }); });
+  await new Promise(function (r) { tlsServer.listen(0, "127.0.0.1", r); });
+  var tlsPort = tlsServer.address().port;
+
+  var tlsTag = "blamejs-tls-" + Date.now();
+  if (typeof b.logStream._resetForTest === "function") b.logStream._resetForTest();
+  b.logStream.init({
+    sinks: { syslog: {
+      protocol: "syslog",
+      url:      "tls://localhost:" + tlsPort,
+      appName:  tlsTag,
+      ca:       ca,
+    } },
+    minLevel: "debug",
+  });
+  b.logStream.info("syslog-event-via-tls", { transport: "tls" });
+  await new Promise(function (r) { setTimeout(r, 700); });
+  await b.logStream.shutdown();
+  await new Promise(function (r) { tlsServer.close(r); });
+
+  check("syslog tls: record reached the TLS receiver",
+        received.indexOf(tlsTag) !== -1);
+  check("syslog tls: octet-counting framing — record begins '<bytecount> '",
+        /^\d+ <\d+>1 /.test(received));
+  check("syslog tls: RFC 5424 PRI uses local0 facility (16)",
+        /<13[0-9]>1 /.test(received));   // local0=16 → 16*8=128, info=6 → 134
+  check("syslog tls: ISO 8601 timestamp present",
+        /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(received));
+  check("syslog tls: structured-data slot present (default '-')",
+        / - syslog-event-via-tls/.test(received));
+
+  if (typeof b.logStream._resetForTest === "function") b.logStream._resetForTest();
+  var bad = null;
+  try {
+    b.logStream.init({ sinks: { s: { protocol: "syslog", url: "http://wrong" } } });
+  } catch (e) { bad = e; }
+  check("syslog rejects http:// urls (must be udp/tcp/tls)",
+        bad && /udp|tcp|tls/.test(String(bad.message || "")));
+  if (typeof b.logStream._resetForTest === "function") b.logStream._resetForTest();
+  bad = null;
+  try {
+    b.logStream.init({ sinks: { s: { protocol: "syslog" } } });
+  } catch (e) { bad = e; }
+  check("syslog without { url } throws BAD_OPT",
+        bad && /url/i.test(String(bad.message || "")));
 }
 
 module.exports = { run: run };

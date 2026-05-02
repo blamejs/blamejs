@@ -25,10 +25,17 @@ fi
 mkdir -p "$CERT_DIR"
 cd "$CERT_DIR"
 
-echo "[pki-init] generating Ed25519 CA..."
-openssl genpkey -algorithm ED25519 -out ca.key
-openssl req -x509 -new -key ca.key -out ca.crt -days "$DAYS" \
-  -subj "/CN=blamejs-test-ca/O=blamejs-test/C=US"
+# Preserve an existing CA across .complete-only resets so that
+# already-issued leaves keep chaining. Only generate a new CA when none
+# is present.
+if [ -f "$CERT_DIR/ca.crt" ] && [ -f "$CERT_DIR/ca.key" ]; then
+  echo "[pki-init] reusing existing CA (ca.crt + ca.key present)"
+else
+  echo "[pki-init] generating Ed25519 CA..."
+  openssl genpkey -algorithm ED25519 -out ca.key
+  openssl req -x509 -new -key ca.key -out ca.crt -days "$DAYS" \
+    -subj "/CN=blamejs-test-ca/O=blamejs-test/C=US"
+fi
 
 # Service list — each gets a leaf cert covering the docker-network
 # hostname, the host-bind 127.0.0.1 / [::1], and localhost.
@@ -41,7 +48,15 @@ for SVC in $SERVICES; do
   fi
   echo "[pki-init] issuing leaf cert for $SVC..."
 
-  openssl genpkey -algorithm ED25519 -out "$SVC.key"
+  # syslog-ng's TLS module in this image doesn't accept Ed25519 server
+  # certs cleanly (handshake aborts before ClientHello completes); fall
+  # back to ECDSA P-256 just for that fixture. All other services serve
+  # Ed25519 leaves and the framework's TLS client verifies them OK.
+  if [ "$SVC" = "syslog" ]; then
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$SVC.key"
+  else
+    openssl genpkey -algorithm ED25519 -out "$SVC.key"
+  fi
 
   cat > "/tmp/$SVC.cnf" <<EOF
 [req]

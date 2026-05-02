@@ -268,6 +268,166 @@ async function run() {
     await mock5.close();
   }
 
+  // ---- autoCreate: true wires CreateLogGroup + CreateLogStream before PutLogEvents ----
+  var seenTargets = [];
+  var mockAC = await _mockCloudWatch({
+    responder: function (req, res) {
+      seenTargets.push(req.headers["x-amz-target"]);
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/x-amz-json-1.1");
+      res.end("{}");
+    },
+  });
+  try {
+    var sinkAC = cw.create({
+      region:          "us-east-1",
+      accessKeyId:     "AKIA",
+      secretAccessKey: "secret",
+      logGroupName:    "auto-group",
+      logStreamName:   "auto-stream",
+      endpoint:        mockAC.url,
+      autoCreate:      true,
+      batchSize:       1,
+      maxBatchAgeMs:   50,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:   true,
+    });
+    sinkAC.emit({ ts: Date.now(), level: "info", message: "auto-create" });
+    await _sleep(250);
+    check("autoCreate: CreateLogGroup issued",
+      seenTargets.indexOf("Logs_20140328.CreateLogGroup") !== -1);
+    check("autoCreate: CreateLogStream issued",
+      seenTargets.indexOf("Logs_20140328.CreateLogStream") !== -1);
+    check("autoCreate: PutLogEvents issued AFTER both Create calls",
+      seenTargets.indexOf("Logs_20140328.PutLogEvents") >
+        seenTargets.indexOf("Logs_20140328.CreateLogStream"));
+    await sinkAC.close();
+  } finally {
+    await mockAC.close();
+  }
+
+  // ---- autoCreate: ResourceAlreadyExistsException is treated as success ----
+  var seenTargetsAE = [];
+  var mockAE = await _mockCloudWatch({
+    responder: function (req, res) {
+      var t = req.headers["x-amz-target"];
+      seenTargetsAE.push(t);
+      if (/CreateLogGroup|CreateLogStream/.test(t)) {
+        res.statusCode = 400;
+        res.setHeader("content-type", "application/x-amz-json-1.1");
+        res.end(JSON.stringify({
+          __type:  "ResourceAlreadyExistsException",
+          message: "The specified log group already exists",
+        }));
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/x-amz-json-1.1");
+      res.end("{}");
+    },
+  });
+  try {
+    var sinkAE = cw.create({
+      region:          "us-east-1",
+      accessKeyId:     "AKIA",
+      secretAccessKey: "secret",
+      logGroupName:    "exists-group",
+      logStreamName:   "exists-stream",
+      endpoint:        mockAE.url,
+      autoCreate:      true,
+      batchSize:       1,
+      maxBatchAgeMs:   50,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:   true,
+    });
+    sinkAE.emit({ ts: Date.now(), level: "info", message: "exists" });
+    await _sleep(250);
+    check("autoCreate: ResourceAlreadyExists on group does not abort PutLogEvents",
+      seenTargetsAE.indexOf("Logs_20140328.PutLogEvents") !== -1);
+    await sinkAE.close();
+  } finally {
+    await mockAE.close();
+  }
+
+  // ---- autoCreate: hard CreateLogGroup failure drops events with reason ----
+  var seenAFTargets = [];
+  var droppedAF = [];
+  var mockAF = await _mockCloudWatch({
+    responder: function (req, res) {
+      var t = req.headers["x-amz-target"];
+      seenAFTargets.push(t);
+      if (t === "Logs_20140328.CreateLogGroup") {
+        res.statusCode = 500;
+        res.setHeader("content-type", "application/x-amz-json-1.1");
+        res.end(JSON.stringify({ __type: "InternalServerError", message: "boom" }));
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/x-amz-json-1.1");
+      res.end("{}");
+    },
+  });
+  try {
+    var sinkAF = cw.create({
+      region:          "us-east-1",
+      accessKeyId:     "AKIA",
+      secretAccessKey: "secret",
+      logGroupName:    "fail-group",
+      logStreamName:   "fail-stream",
+      endpoint:        mockAF.url,
+      autoCreate:      true,
+      batchSize:       1,
+      maxBatchAgeMs:   50,
+      onDrop:          function (d) { droppedAF.push(d); },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:   true,
+    });
+    sinkAF.emit({ ts: Date.now(), level: "info", message: "doomed" });
+    await _sleep(250);
+    check("autoCreate: hard CreateLogGroup failure drops the buffered batch",
+      droppedAF.length >= 1 && droppedAF[0].reason === "autocreate-failed");
+    check("autoCreate: PutLogEvents NOT issued when autoCreate fails",
+      seenAFTargets.indexOf("Logs_20140328.PutLogEvents") === -1);
+    await sinkAF.close();
+  } finally {
+    await mockAF.close();
+  }
+
+  // ---- autoCreate: false (default) skips Create calls entirely ----
+  var seenDefTargets = [];
+  var mockDef = await _mockCloudWatch({
+    responder: function (req, res) {
+      seenDefTargets.push(req.headers["x-amz-target"]);
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/x-amz-json-1.1");
+      res.end("{}");
+    },
+  });
+  try {
+    var sinkDef = cw.create({
+      region:          "us-east-1",
+      accessKeyId:     "AKIA",
+      secretAccessKey: "secret",
+      logGroupName:    "pre-existing-group",
+      logStreamName:   "pre-existing-stream",
+      endpoint:        mockDef.url,
+      // autoCreate omitted — defaults false
+      batchSize:       1,
+      maxBatchAgeMs:   50,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      allowInternal:   true,
+    });
+    sinkDef.emit({ ts: Date.now(), level: "info", message: "no-create" });
+    await _sleep(200);
+    check("autoCreate default false: no Create calls issued",
+      seenDefTargets.every(function (t) {
+        return t === "Logs_20140328.PutLogEvents";
+      }));
+    await sinkDef.close();
+  } finally {
+    await mockDef.close();
+  }
+
   // ---- Batch splitting on size cap ----
   // Build 5 events that fit batchSize but bust the 1-MiB cap. Each is
   // ~250 KiB; 5 of them = 1.25 MiB — should be split into 4 + 1.

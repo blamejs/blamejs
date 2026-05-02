@@ -143,8 +143,10 @@ function testThreeFrameworkUsages() {
         b.logStream.PROTOCOLS.indexOf("otlp") !== -1);
   check("logStream.PROTOCOLS includes cloudwatch (shipped in v0.6.25)",
         b.logStream.PROTOCOLS.indexOf("cloudwatch") !== -1);
-  check("logStream.DEFERRED_PROTOCOLS still includes syslog",
-        b.logStream.DEFERRED_PROTOCOLS.indexOf("syslog") !== -1);
+  check("logStream.PROTOCOLS includes syslog",
+        b.logStream.PROTOCOLS.indexOf("syslog") !== -1);
+  check("logStream.DEFERRED_PROTOCOLS is empty",
+        b.logStream.DEFERRED_PROTOCOLS.length === 0);
   check("objectStore.PROTOCOLS includes sigv4",
         b.objectStore.PROTOCOLS.indexOf("sigv4") !== -1);
 }
