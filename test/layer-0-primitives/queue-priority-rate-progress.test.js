@@ -121,6 +121,22 @@ async function testRateLimitValidation() {
     b.queue.consume("any", function () {}, { rateLimit: { max: "5", perSeconds: 1 } });
   } catch (_e) { threw = true; }
   check("rateLimit: rejects non-numeric max",     threw);
+
+  function rejects(label, opts) {
+    var t = false;
+    try { b.queue.consume("any", function () {}, { rateLimit: opts }); }
+    catch (_e) { t = true; }
+    check("rateLimit: " + label,  t);
+  }
+  rejects("rejects negative max",        { max: -1, perSeconds: 1 });
+  rejects("rejects zero max",            { max: 0, perSeconds: 1 });
+  rejects("rejects fractional max",      { max: 1.5, perSeconds: 1 });
+  rejects("rejects NaN max",             { max: NaN, perSeconds: 1 });
+  rejects("rejects Infinity max",        { max: Infinity, perSeconds: 1 });
+  rejects("rejects negative perSeconds", { max: 5, perSeconds: -1 });
+  rejects("rejects zero perSeconds",     { max: 5, perSeconds: 0 });
+  rejects("rejects NaN perSeconds",      { max: 5, perSeconds: NaN });
+  rejects("rejects Infinity perSeconds", { max: 5, perSeconds: Infinity });
 }
 
 async function testProgressEmitsAuditAndObservability() {

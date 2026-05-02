@@ -12877,6 +12877,35 @@ function testUrlSafeErrorClassInjection() {
         rejected.permanent === true);
 }
 
+function testUrlSafeRejectsUserinfo() {
+  var u = b.safeUrl;
+  // Default: reject URLs that carry user:pass@ credentials in the
+  // authority. They leak into request logs / metric labels / error
+  // messages — credential placement belongs in headers or a credential
+  // store, not the URL.
+  var rejected = null;
+  try { u.parse("https://user:pass@example.com/api"); }
+  catch (e) { rejected = e; }
+  check("url-safe: rejects URL with userinfo by default",
+        rejected !== null && rejected.code === "safe-url/userinfo-disallowed");
+
+  var rejectedUserOnly = null;
+  try { u.parse("https://user@example.com/api"); }
+  catch (e) { rejectedUserOnly = e; }
+  check("url-safe: rejects URL with username-only userinfo by default",
+        rejectedUserOnly !== null && rejectedUserOnly.code === "safe-url/userinfo-disallowed");
+
+  // Explicit opt-in for legacy endpoints that REQUIRE userinfo.
+  var allowed = u.parse("https://user:pass@example.com/api", { allowUserinfo: true });
+  check("url-safe: allowUserinfo:true accepts URL with credentials",
+        allowed.username === "user" && allowed.password === "pass");
+
+  // Plain URL with no userinfo passes either way.
+  var plain = u.parse("https://example.com/api");
+  check("url-safe: plain URL passes default",
+        plain.username === "" && plain.password === "");
+}
+
 function testUrlSafeAllowAny() {
   var u = b.safeUrl;
   var schemes = ["http://h/", "https://h/", "ws://h/", "wss://h/"];
@@ -15899,6 +15928,7 @@ async function run() {
   testUrlSafeMalformed();
   testUrlSafeUrlInstancePassThrough();
   testUrlSafeErrorClassInjection();
+  testUrlSafeRejectsUserinfo();
   testUrlSafeAllowAny();
   // http-client primitive (used by 5 protocol adapters)
   await testHttpClientBasic();

@@ -105,7 +105,18 @@ The wiki ships with development-friendly defaults (`vault: { mode: "plaintext" }
 3. Change `db.atRest` to `"encrypted"` (default; requires tmpfs at `/dev/shm` or `BLAMEJS_TMPDIR`)
 4. Change `db.auditSigning.mode` to `"wrapped"`
 5. Deploy behind a TLS-terminating reverse proxy OR enable `b.pqcGate`
-6. Set `WIKI_ADMIN_PASSWORD` to a strong value managed by your secret-store
+6. Set `WIKI_TRUST_PROXY=1` if (and only if) the wiki sits behind a reverse proxy that injects `x-forwarded-proto`. With trustProxy off (the default), the wiki ignores `x-forwarded-proto` for cookie Secure-flag detection, so a misconfigured deployment can't accept attacker-supplied `x-forwarded-proto: https` as proof a request was over TLS.
+7. Set `WIKI_ADMIN_PASSWORD` to a strong value managed by your secret-store
+
+## Trust model for editable page bodies
+
+Page bodies are stored verbatim and rendered as raw HTML (the template uses `{{{ body }}}`, not `{{ body }}`). This is **intentional**, but it means:
+
+- **Anyone with admin credentials can ship arbitrary HTML / `<script>` / `<style>` to every page reader.** The `wiki:admin` scope is fully equivalent to "operator-trusted to author the rendered output."
+- The framework's strict CSP (no `'unsafe-inline'`) blocks inline `<script>` even from admin-authored bodies — an XSS payload pasted into a page would not execute. This is the framework's defense-in-depth, not a license to lower CSP.
+- The save-time `b.htmlBalance.check()` is for shape correctness (unclosed tags would otherwise eat surrounding layout), **not** for sanitization.
+
+Adopters who plan to expand the editor surface beyond a single trusted admin should swap `{{{ body }}}` for sanitized rendering. The framework does not ship an HTML sanitizer primitive; the recommended pattern is to vendor a maintained sanitizer (DOMPurify-equivalent) and wrap it in a small `b.sanitize`-shape helper module — same vendoring discipline as `lib/vendor/MANIFEST.json`. Run sanitization at **save** time so the stored body is already safe; running it at render time means an XSS payload sits in the database in case the sanitizer ever regresses.
 
 ## File layout
 

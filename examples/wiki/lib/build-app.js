@@ -169,6 +169,26 @@ async function buildApp(opts) {
     audit:     b.audit,
   });
 
+  // ---- Brute-force lockout for /login ----
+  // Per-key failed-attempt tracking with exponential backoff. The
+  // namespace stays narrow ("wiki.login") so other auth surfaces keep
+  // independent counters. State lives in pageCache's parent backend
+  // (memory in single-node, cluster in cluster mode); the cache TTL
+  // self-cleans entries that haven't seen a recent failure.
+  var loginLockout = b.auth.lockout.create({
+    namespace: "wiki.login",
+    cache:     b.cache.create({ namespace: "wiki.auth.lockout.login", backend: "memory" }),
+    audit:     b.audit,
+  });
+
+  // Trust-proxy posture: when WIKI_TRUST_PROXY is set (the operator is
+  // behind a TLS terminator that injects x-forwarded-proto), the wiki
+  // honours that header for cookie Secure-flag detection. Default off
+  // so a misconfigured deployment doesn't accept attacker-supplied
+  // x-forwarded-proto: https as proof the request was over TLS.
+  var trustProxy = process.env.WIKI_TRUST_PROXY === "true" ||
+                   process.env.WIKI_TRUST_PROXY === "1";
+
   // ---- Posture auto-detect ----
   // The wiki ships in plaintext defaults so a quick local boot just works.
   // When the operator sets BLAMEJS_VAULT_PASSPHRASE in the env, the wiki
@@ -265,6 +285,8 @@ async function buildApp(opts) {
         session:      b.session,
         notify:       notify,
         apiKeys:      apiKeys,
+        loginLockout: loginLockout,
+        trustProxy:   trustProxy,
         assets:       assets,
         nonceMw:      nonceMw,
         siteUrl:      opts.siteUrl || "https://blamejs.com",

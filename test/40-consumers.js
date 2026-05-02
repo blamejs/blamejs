@@ -75,6 +75,23 @@ async function testSession() {
     var afterTouch = await b.session.verify(s1.token);
     check("touch updates lastActivity",             afterTouch.lastActivity > t0);
 
+    // touch's extendBy is bounded by the same MAX_TTL_MS as create / rotate
+    // (10 years). Repeated touches with arbitrary extendBy values
+    // can't push expiresAt past that bound.
+    var extendThrew = null;
+    try { await b.session.touch(s1.token, { extendBy: 1000 * 60 * 60 * 24 * 365 * 100 }); }
+    catch (e) { extendThrew = e; }
+    check("touch rejects extendBy beyond MAX_TTL_MS",
+          extendThrew && /exceeds maximum/.test(extendThrew.message || ""));
+    var negThrew = null;
+    try { await b.session.touch(s1.token, { extendBy: -1 }); }
+    catch (e) { negThrew = e; }
+    check("touch rejects negative extendBy",        negThrew !== null);
+    var nanThrew = null;
+    try { await b.session.touch(s1.token, { extendBy: NaN }); }
+    catch (e) { nanThrew = e; }
+    check("touch rejects NaN extendBy",             nanThrew !== null);
+
     // destroyAllForUser
     var s2 = await b.session.create({ userId: "u-1" });
     var s3 = await b.session.create({ userId: "u-2" });
@@ -2146,6 +2163,19 @@ async function testMiddlewareRequireAuth() {
     check("requireAuth: unauth browser → 401 status",      cap4.status === 401);
     check("requireAuth: unauth browser → text/plain",
           cap4.headers["content-type"].indexOf("text/plain") === 0);
+
+    // 4b. Content-Type: application/json on the REQUEST body is NOT
+    // a signal — it describes what the client SENT, not what they
+    // want back. Server-to-server POST with no Accept header lands
+    // on the default text/plain branch (or the redirect branch when
+    // opts.redirectTo is set).
+    var req4c = _mockReq({ headers: { "content-type": "application/json" } });
+    var res4c = _mockRes();
+    mw(req4c, res4c, function () {});
+    var cap4c = res4c._captured();
+    check("requireAuth: req Content-Type JSON alone → text/plain (not JSON)",
+          cap4c.status === 401 &&
+          cap4c.headers["content-type"].indexOf("text/plain") === 0);
 
     // 5. Unauthenticated browser-y request WITH redirectTo → 302
     var mwRedirect = b.middleware.requireAuth({ redirectTo: "/auth/login" });

@@ -35,6 +35,19 @@ function register(router, ctx) {
   var session = ctx.session;
   var notify = ctx.notify;
   var apiKeys = ctx.apiKeys;
+  var loginLockout = ctx.loginLockout;
+  var trustProxy = ctx.trustProxy;
+
+  // Resolve the cookie Secure attribute through the framework's
+  // trust-proxy-aware protocol detector. With trustProxy:false (the
+  // default), x-forwarded-proto is ignored and only req.socket.encrypted
+  // counts — preventing an attacker from spoofing https with a header
+  // injection. Operators behind a real TLS terminator opt in via
+  // WIKI_TRUST_PROXY=1 in build-app.js.
+  function _secureCookieFlag(req) {
+    return b.requestHelpers.requestProtocol(req, { trustProxy: trustProxy }) === "https"
+      ? "; Secure" : "";
+  }
 
   // ---- Login form ----
   router.get("/login", function (req, res) {
@@ -50,18 +63,32 @@ function register(router, ctx) {
     var password = String(body.password || "");
     var data = Object.assign(_layoutData(req, ctx), { title: "Sign in" });
 
-    function _showError(msg) {
+    function _showError(msg, status) {
       data.error = msg;
-      return b.render.htmlString(res, template.render("login", data), { status: 401 });
+      return b.render.htmlString(res, template.render("login", data),
+        { status: status || 401 });
     }
 
-    if (!email || !password) return _showError("Email and password are required.");
+    if (!email || !password) return _showError("Email and password are required.", 400);
+
+    // Pre-check the lockout BEFORE the Argon2 verify — a locked-out
+    // attacker shouldn't get to keep burning ~250ms of CPU per try.
+    // Lockout state is keyed on the submitted email so an attacker
+    // probing many users can't lock the legitimate user out by
+    // hammering a different account.
+    var lockState = await loginLockout.check(email);
+    if (lockState.locked) {
+      var retryAfterMs = Math.max(0, lockState.lockedUntil - Date.now());
+      res.setHeader("Retry-After", Math.ceil(retryAfterMs / 1000).toString());
+      return _showError("Too many failed attempts. Try again later.", 429);
+    }
 
     // Look up admin row. Single-admin shape — table has at most one row.
     var row = db.prepare(
       "SELECT id, email, passwordHash FROM admin_users WHERE email = ? LIMIT 1"
     ).get(email);
     if (!row) {
+      await loginLockout.recordFailure(email, { req: req });
       audit.safeEmit({
         action:   "wiki.login.failure",
         outcome:  "failure",
@@ -73,6 +100,7 @@ function register(router, ctx) {
     // b.auth.password.verify(stored, plain) — argument order matters
     var ok = await passwordAuth.verify(row.passwordHash, password);
     if (!ok) {
+      await loginLockout.recordFailure(email, { req: req });
       audit.safeEmit({
         action:   "wiki.login.failure",
         outcome:  "failure",
@@ -81,6 +109,9 @@ function register(router, ctx) {
       });
       return _showError("Invalid credentials.");
     }
+    // Successful auth clears the failure counter and any pending
+    // lockout for this email.
+    await loginLockout.recordSuccess(email, { req: req });
     // Build a session bound to this admin. session.create returns
     // { token, expiresAt } — the cookie value is the token, max-age
     // mirrors expiresAt. The scope stored on the session is the actual
@@ -89,10 +120,8 @@ function register(router, ctx) {
     // honored or the comparison only works by string-coincidence.
     var sess = await session.create({ userId: row.id, data: { email: row.email, scopes: ["wiki:admin"] } });
     var maxAge = Math.max(0, Math.floor((sess.expiresAt - Date.now()) / 1000));
-    var secure = (req.socket && req.socket.encrypted) ||
-      (req.headers && req.headers["x-forwarded-proto"] === "https") ? "; Secure" : "";
     res.setHeader("Set-Cookie",
-      "wiki_sid=" + sess.token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + maxAge + secure);
+      "wiki_sid=" + sess.token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + maxAge + _secureCookieFlag(req));
     audit.safeEmit({
       action:   "wiki.login.success",
       outcome:  "success",
@@ -106,9 +135,8 @@ function register(router, ctx) {
     if (req.session && req.session.id) {
       await session.destroy(req.session.id);
     }
-    var secureLogout = (req.socket && req.socket.encrypted) ||
-      (req.headers && req.headers["x-forwarded-proto"] === "https") ? "; Secure" : "";
-    res.setHeader("Set-Cookie", "wiki_sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" + secureLogout);
+    res.setHeader("Set-Cookie",
+      "wiki_sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" + _secureCookieFlag(req));
     audit.safeEmit({
       action:   "wiki.logout",
       outcome:  "success",

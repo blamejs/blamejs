@@ -477,6 +477,38 @@ async function run() {
              !/INTERNAL_ERROR|trailing tokens|template:/i.test(routeResp.body));
     }
 
+    // ---- Brute-force lockout on /login ----
+    // Hammer /login with bad credentials for an unknown email; after
+    // a few attempts the lockout primitive should respond 429 and
+    // include a Retry-After header. Use a different email than the
+    // valid admin so the legitimate account isn't locked.
+    var bfEmail = "bf-target@example.test";
+    var lockoutHit = false;
+    for (var bfAttempt = 0; bfAttempt < 8; bfAttempt++) {
+      var bfBody = "csrf=" + encodeURIComponent(csrf) +
+        "&email=" + encodeURIComponent(bfEmail) +
+        "&password=wrong-pass-" + bfAttempt;
+      var bfResp = await _request({
+        method: "POST", host: "127.0.0.1", port: port, path: "/login",
+        headers: Object.assign({}, BROWSER_HEADERS, {
+          "content-type":   "application/x-www-form-urlencoded",
+          "content-length": Buffer.byteLength(bfBody),
+          "origin":         "http://127.0.0.1:" + port,
+          "sec-fetch-site": "same-origin",
+          "cookie":         cookieHeader,
+        }),
+      }, bfBody);
+      if (bfResp.statusCode === 429) {
+        lockoutHit = true;
+        assert("lockout response carries Retry-After header",
+               typeof bfResp.headers["retry-after"] === "string" &&
+               /^\d+$/.test(bfResp.headers["retry-after"]));
+        break;
+      }
+    }
+    assert("brute-force lockout engages within 8 bad-cred attempts",
+           lockoutHit === true);
+
     // Negative case: malformed CSRF on POST must be refused (403 with
     // "CSRF token mismatch" — the form value doesn't match the cookie).
     var badCsrfBody = "csrf=deadbeef" +
