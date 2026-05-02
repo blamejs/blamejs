@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.6.8",
-  "createdAt": "2026-05-01T22:26:15.059Z",
+  "frameworkVersion": "0.6.12",
+  "createdAt": "2026-05-02T00:59:52.991Z",
   "exports": {
     "apiKey": {
       "type": "object",

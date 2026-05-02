@@ -244,7 +244,7 @@ module.exports = {
   '',
   '// touch opts:',
   '{',
-  '  extendBy:  number,                       // default: 0 — bump expiresAt by N ms',
+  '  extendBy:  number,                       // default: 0 — bump expiresAt by N ms (max C.TIME.days(3650))',
   '}</code></pre>',
   '<pre><code class="language-javascript">// Login',
   'var { token, expiresAt } = await b.session.create({ userId: "u-42", data: { role: "editor" } });',

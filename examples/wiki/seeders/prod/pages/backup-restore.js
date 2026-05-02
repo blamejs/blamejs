@@ -9,6 +9,7 @@ module.exports = {
 
   '<h2 id="backup">Backup <a class="anchor" href="#backup">#</a></h2>',
   '<p><code>b.backup</code> snapshots the framework DB plus any operator-declared collections to a configured backup location. Backups are end-to-end encrypted at the <em>file</em> layer — every blob in the bundle is independently authenticated, and the bundle\'s vault key is wrapped under the operator\'s backup passphrase so the bundle alone is opaque on disk.</p>',
+  '<p>By default the pre-snapshot DB flush is best-effort — a flush failure logs and the snapshot proceeds against whatever\'s on disk. Operators on encrypted-at-rest with hard freshness requirements (compliance, audit, point-in-time recovery) opt in to fail-closed via <code>b.backup.create({ requireFlush: true })</code>: a flush failure then aborts the backup so a stale snapshot never lands in storage.</p>',
 
   '<h3 id="backup-format">Encryption format <a class="anchor" href="#backup-format">#</a></h3>',
   '<table>',
@@ -43,6 +44,7 @@ module.exports = {
 
   '<h2 id="restore">Restore <a class="anchor" href="#restore">#</a></h2>',
   '<p><code>b.restore</code> + <code>b.restoreBundle</code> + <code>b.restoreRollback</code> implement the live-restore path: pull a bundle, stage it next to the live data dir, swap atomically, and roll back on failure. The framework refuses to restore into a running process — operators stop the app first, run restore, then start the app against the restored data dir.</p>',
+  '<p>Pulled-bundle footprint is bounded — both against the storage-reported size before pull AND against the actually-pulled bytes/file-count after (defense-in-depth in case a backend lied). Defaults are 4 GiB / 100K files; tighten via <code>b.restore.create({ maxPulledBytes, maxPulledFiles })</code> for environments where a tampered or oversized object should fail loudly instead of filling the staging dir.</p>',
   '<pre><code class="language-bash">blamejs restore apply \\',
   '  --data-dir   ./data \\',
   '  --bundle     ./bundles/2026-04-29T12-00-00Z-abc/ \\',
