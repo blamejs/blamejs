@@ -212,6 +212,85 @@ async function run() {
     var sz6b = await qr.size(Q6);
     check("purge: post-purge size 0", sz6b === 0);
 
+    // ---- priority ordering — high-priority job leased first ----
+    var QP = "priority";
+    await qr.enqueue(QP, { p: "low-1" },  { priority: 0 });
+    await qr.enqueue(QP, { p: "low-2" },  { priority: 0 });
+    await qr.enqueue(QP, { p: "high-1" }, { priority: 10 });
+    await qr.enqueue(QP, { p: "low-3" },  { priority: 0 });
+    await qr.enqueue(QP, { p: "high-2" }, { priority: 5 });
+    var leasedPrio = await qr.lease(QP, 5000, 2);
+    check("priority: leased first batch picks priority=10 first",
+          leasedPrio.length === 2 &&
+          leasedPrio[0].payload && leasedPrio[0].payload.p === "high-1");
+    check("priority: second leased is priority=5 (not any priority=0)",
+          leasedPrio[1].payload && leasedPrio[1].payload.p === "high-2");
+    for (var pi = 0; pi < leasedPrio.length; pi++) await qr.complete(leasedPrio[pi].jobId);
+    var leasedRest = await qr.lease(QP, 5000, 5);
+    check("priority: remaining 3 priority=0 jobs lease in availableAt order",
+          leasedRest.length === 3);
+    for (var pj = 0; pj < leasedRest.length; pj++) await qr.complete(leasedRest[pj].jobId);
+
+    // ---- flow dependsOn cascade — child A depends on parent's completion ----
+    var QF = "flow-fan";
+    var flowId = "flow-" + Date.now();
+    var enqParent = await qr.enqueue(QF, { step: "parent" }, {
+      flowId: flowId, flowChildName: "parent",
+    });
+    var enqChild = await qr.enqueue(QF, { step: "child" }, {
+      flowId:        flowId,
+      flowChildName: "child",
+      // Child held until parent done; framework convention: high
+      // availableAt prevents lease until cascade flips it back to now.
+      availableAt:   Date.now() + 24 * 3600 * 1000,
+      dependsOn:     ["parent"],
+    });
+    check("flow: parent + child enqueued under same flowId",
+          typeof enqParent.jobId === "string" && typeof enqChild.jobId === "string");
+    var sizeBefore = await qr.size(QF);
+    check("flow: queue size = 2 before parent runs",  sizeBefore === 2);
+    // Lease + complete the parent.
+    var parentLease = await qr.lease(QF, 5000, 1);
+    check("flow: only the parent is leasable (child held by future availableAt)",
+          parentLease.length === 1 &&
+          parentLease[0].payload && parentLease[0].payload.step === "parent");
+    await qr.complete(parentLease[0].jobId);
+    // Child should now be released to availableAt=now.
+    await new Promise(function (r) { setTimeout(r, 50); });
+    var childLease = await qr.lease(QF, 5000, 1);
+    check("flow: child released after parent.complete (cascade fired)",
+          childLease.length === 1 &&
+          childLease[0].payload && childLease[0].payload.step === "child");
+    await qr.complete(childLease[0].jobId);
+
+    // ---- flow with multiple deps — child waits for ALL parents ----
+    var QF2 = "flow-multi-dep";
+    var flowId2 = "flow2-" + Date.now();
+    await qr.enqueue(QF2, { step: "p1" }, { flowId: flowId2, flowChildName: "p1" });
+    await qr.enqueue(QF2, { step: "p2" }, { flowId: flowId2, flowChildName: "p2" });
+    await qr.enqueue(QF2, { step: "joiner" }, {
+      flowId:        flowId2,
+      flowChildName: "joiner",
+      availableAt:   Date.now() + 24 * 3600 * 1000,
+      dependsOn:     ["p1", "p2"],
+    });
+    // Complete p1 — joiner should still be held by p2.
+    var l1 = await qr.lease(QF2, 5000, 1);
+    check("flow-multi: only one parent ready at a time (joiner held)",
+          l1.length === 1);
+    await qr.complete(l1[0].jobId);
+    await new Promise(function (r) { setTimeout(r, 50); });
+    var l2 = await qr.lease(QF2, 5000, 1);
+    check("flow-multi: still only one parent (joiner not yet released)",
+          l2.length === 1 && l2[0].payload && l2[0].payload.step !== "joiner");
+    // Complete p2 — NOW joiner cascades.
+    await qr.complete(l2[0].jobId);
+    await new Promise(function (r) { setTimeout(r, 50); });
+    var l3 = await qr.lease(QF2, 5000, 1);
+    check("flow-multi: joiner released only after BOTH parents done",
+          l3.length === 1 && l3[0].payload && l3[0].payload.step === "joiner");
+    await qr.complete(l3[0].jobId);
+
     // ---- concurrent leasers don't double-lease ----
     var Q7 = "concurrent";
     for (var ci = 0; ci < 5; ci++) {
