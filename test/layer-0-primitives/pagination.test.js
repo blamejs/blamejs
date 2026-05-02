@@ -38,7 +38,10 @@ function _mockQuery(rows, opts) {
     return q;
   };
   q.orderBy = function (f, d) {
-    q._orderBy = { field: f, direction: (d || "asc").toLowerCase() };
+    var entry = { field: f, direction: (d || "asc").toLowerCase() };
+    if (q._orderBy === null) { q._orderBy = entry; return q; }
+    if (Array.isArray(q._orderBy)) { q._orderBy.push(entry); return q; }
+    q._orderBy = [q._orderBy, entry];
     return q;
   };
   q.limit  = function (n) { q._limit = n;  return q; };
@@ -46,11 +49,14 @@ function _mockQuery(rows, opts) {
   q.all = function () {
     var sorted = q._backingRows.slice();
     if (q._orderBy) {
-      var f = q._orderBy.field;
-      var asc = q._orderBy.direction === "asc";
+      var entries = Array.isArray(q._orderBy) ? q._orderBy : [q._orderBy];
       sorted.sort(function (a, b) {
-        if (a[f] < b[f]) return asc ? -1 : 1;
-        if (a[f] > b[f]) return asc ?  1 : -1;
+        for (var i = 0; i < entries.length; i++) {
+          var f = entries[i].field;
+          var asc = entries[i].direction === "asc";
+          if (a[f] < b[f]) return asc ? -1 : 1;
+          if (a[f] > b[f]) return asc ?  1 : -1;
+        }
         return 0;
       });
     }
@@ -178,7 +184,11 @@ async function testPaginationCursorFirstPage() {
   check("first page: prevCursor null (first call)", page.prevCursor === null);
   check("first page: items in _id-asc order",     page.items[0]._id === "id-000" && page.items[9]._id === "id-009");
   var state = b.pagination.decodeCursor(page.nextCursor, "k");
-  check("first page: nextCursor encodes lastId",  state.id === "id-009" && state.forward === true);
+  check("first page: nextCursor encodes lastId in vals[]",
+        Array.isArray(state.vals) && state.vals[state.vals.length - 1] === "id-009" &&
+        state.forward === true);
+  check("first page: nextCursor encodes orderKey for _id-asc",
+        Array.isArray(state.orderKey) && state.orderKey[0] === "_id:asc");
 }
 
 async function testPaginationCursorFollowChain() {
@@ -399,6 +409,60 @@ async function run() {
   await testPaginationCursorWhereRawCondition();
   await testPaginationCursorVersionMismatch();
   await testPaginationQueryWhereRaw();
+  await testPaginationCursorMultiColumn();
+}
+
+async function testPaginationCursorMultiColumn() {
+  // Build a dataset with ties on createdAt — multi-column ORDER BY
+  // (createdAt DESC, _id ASC) breaks ties stably.
+  var rows = [];
+  for (var t = 5; t >= 1; t--) {
+    for (var n = 0; n < 3; n++) {
+      rows.push({ _id: "id-" + t + "-" + n, createdAt: t * 1000 });
+    }
+  }
+  // First page: limit 4, multi-column orderBy
+  var q1 = _mockQuery(rows);
+  var p1 = await b.pagination.cursor(q1, {
+    secret:  "k",
+    limit:   4,
+    orderBy: [{ column: "createdAt", direction: "desc" }, { column: "_id", direction: "asc" }],
+  });
+  check("multi-column: returns 4 items",  p1.items.length === 4);
+  check("multi-column: hasMore=true",     p1.hasMore === true);
+  check("multi-column: items respect createdAt DESC + _id ASC",
+        p1.items[0].createdAt === 5000 && p1.items[0]._id === "id-5-0" &&
+        p1.items[3].createdAt === 4000 && p1.items[3]._id === "id-4-0");
+  var s1 = b.pagination.decodeCursor(p1.nextCursor, "k");
+  check("multi-column: cursor encodes both column values",
+        Array.isArray(s1.vals) && s1.vals.length === 2 &&
+        s1.vals[0] === 4000 && s1.vals[1] === "id-4-0");
+  check("multi-column: cursor encodes orderKey for both columns",
+        Array.isArray(s1.orderKey) && s1.orderKey[0] === "createdAt:desc" &&
+        s1.orderKey[1] === "_id:asc");
+  // Cursor reused with a single-column orderBy mid-flight is rejected
+  var qm = _mockQuery(rows);
+  var threw = null;
+  try {
+    await b.pagination.cursor(qm, {
+      secret:  "k",
+      limit:   4,
+      orderBy: "_id",
+      cursor:  p1.nextCursor,
+    });
+  } catch (e) { threw = e; }
+  check("multi-column: orderBy mismatch on follow rejects",
+        threw && (threw.code === "pagination/cursor-mismatch" || threw.code === "pagination/bad-orderby"));
+  // Bad entry shape rejected at config-time
+  var threw2 = null;
+  try {
+    await b.pagination.cursor(_mockQuery(rows), {
+      secret:  "k",
+      orderBy: [{ column: "createdAt", direction: "sideways" }],
+    });
+  } catch (e) { threw2 = e; }
+  check("multi-column: bad direction rejected",
+        threw2 && threw2.code === "pagination/bad-orderby");
 }
 
 module.exports = { run: run };

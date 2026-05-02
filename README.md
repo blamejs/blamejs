@@ -71,18 +71,26 @@ Full primitive-by-primitive docs live at [blamejs.com](https://blamejs.com), whi
 `blamejs` ships an operator-facing CLI for the recurring ops work. Each subcommand boots a headless app instance from `--data-dir` (no HTTP listener), runs the operation, and shuts down. Same vault + DB + audit chain the running app uses.
 
 ```
-blamejs migrate    up | down | status                   --db <path> [--dir <path>]
-blamejs seed       run | status                         --db <path> --env <name> [--dir <path>]
-blamejs vault      status | seal | unseal | rotate      --data-dir <path>
-blamejs backup     inspect | verify | extract           --bundle <dir>
-blamejs api-key    issue | revoke | list | rotate | verify   --data-dir <path> --namespace <ns>
-blamejs mtls       status | show-cert | init | issue | issue-p12   --data-dir <path>
-blamejs audit      archive | export | verify-bundle | purge
-blamejs api-snapshot   capture | compare                --file <path>
-blamejs dev        --command <cmd> [--watch <dir>...]
+blamejs migrate       up | down | status                          --db <path> [--dir <path>]
+blamejs seed          run | status                                --db <path> --env <name> [--dir <path>]
+blamejs dev           --command <cmd> [--watch <dir>...]
+blamejs api-snapshot  capture | compare                           --file <path>
+blamejs api-key       issue | revoke | list | rotate | verify     --data-dir <path> --namespace <ns>
+blamejs audit         archive | export | verify | purge           --data-dir <path>
+blamejs backup        inspect | verify | extract                  --bundle <path>
+blamejs mtls          status | show-cert | init | issue | issue-p12  --data-dir <path>
+blamejs vault         status | seal | unseal | rotate             --data-dir <path>
+blamejs security      assert                                      --data-dir <path>
+blamejs config-drift  inspect | verify                            --data-dir <path>
+blamejs file-type     detect <file>                               [--allowlist image,pdf,...]
+blamejs password      check                                       --plaintext "..." [--profile pci-4.0|nist-aal2|hipaa-aal2] [--breach-check] [--email <e>] [--username <u>]
+blamejs erase         --table <t> --row-id <id> --confirm         --data-dir <path>
+blamejs retention     preview | run                               --data-dir <path> --table <t> --age-field <col> --ttl-ms <n> [--action soft-delete|delete|erase] [--soft-delete-field <col>]
+blamejs version
+blamejs help [<command>]
 ```
 
-Pass `--help` to any subcommand for the full flag list. Passphrases for crypto-backed operations resolve from the appropriate env var (`BLAMEJS_VAULT_PASSPHRASE`, `BLAMEJS_BACKUP_PASSPHRASE`, `BLAMEJS_AUDIT_PASSPHRASE`) so they don't end up in shell history.
+Pass `--help` to any subcommand for the full flag list (`blamejs api-key --help` etc.). Passphrases for crypto-backed operations resolve from the appropriate env var (`BLAMEJS_VAULT_PASSPHRASE`, `BLAMEJS_BACKUP_PASSPHRASE`, `BLAMEJS_AUDIT_PASSPHRASE`) so they don't end up in shell history.
 
 ## Reference app + deployment
 

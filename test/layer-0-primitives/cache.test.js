@@ -766,7 +766,7 @@ async function testInvalidateTagAuditEmit() {
   await c.close();
 }
 
-async function testInvalidateTagOnClusterThrows() {
+async function testInvalidateTagOnCluster() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cache-"));
   await setupTestDb(tmpDir);
   try {
@@ -774,10 +774,23 @@ async function testInvalidateTagOnClusterThrows() {
       namespace: "v411cluster",
       backend:   "cluster",
     });
-    var threw = false;
-    try { await c.invalidateTag("anything"); }
-    catch (e) { threw = e && e.code === "NOT_SUPPORTED"; }
-    check("invalidateTag on cluster: NOT_SUPPORTED", threw);
+    await c.set("u-1", { name: "alice" }, { tags: ["user", "tier:free"] });
+    await c.set("u-2", { name: "bob" },   { tags: ["user", "tier:pro"] });
+    await c.set("p-1", { sku: "x" },      { tags: ["product"] });
+    check("cluster getTags returns set tags",
+      JSON.stringify((await c.getTags("u-1")).sort()) === JSON.stringify(["tier:free", "user"]));
+    var purged = await c.invalidateTag("user");
+    check("cluster invalidateTag purges all entries with the tag", purged === 2);
+    check("cluster invalidateTag dropped the tagged keys",
+      (await c.get("u-1")) === undefined && (await c.get("u-2")) === undefined);
+    check("cluster invalidateTag spared untagged keys",
+      (await c.get("p-1")).sku === "x");
+    var unpurged = await c.invalidateTag("nonexistent-tag");
+    check("cluster invalidateTag returns 0 for unused tag", unpurged === 0);
+    // Re-set with overlapping tag — verify multi-tag rotation on update
+    await c.set("u-1", { name: "alice2" }, { tags: ["user", "tier:enterprise"] });
+    check("cluster set replaces tags on update",
+      JSON.stringify((await c.getTags("u-1")).sort()) === JSON.stringify(["tier:enterprise", "user"]));
     await c.close();
   } finally {
     await teardownTestDb(tmpDir);
@@ -845,7 +858,7 @@ async function run() {
   await testTagsAndInvalidateTag();
   await testTagsValidateFormat();
   await testInvalidateTagAuditEmit();
-  await testInvalidateTagOnClusterThrows();
+  await testInvalidateTagOnCluster();
 }
 
 module.exports = { run: run };
