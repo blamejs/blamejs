@@ -12471,6 +12471,39 @@ function testTomlSecurityRejections() {
   catch (e) { threwSize = e.code === "toml/too-large"; }
   check("toml: maxBytes enforced",                 threwSize);
 
+  // v0.6.63 — dotted-key path depth cap. Pre-fix the parser walked
+  // arbitrarily deep table headers `[a.b.c.d…]` without applying the
+  // existing maxDepth (which only ran in _parseValue for arrays /
+  // inline tables); a 10K-segment path then stack-overflowed the
+  // recursive _normalize walker post-parse.
+  function _toml10kPath() {
+    var seg = "";
+    for (var i = 0; i < 10000; i++) seg += "a.";
+    return "[" + seg + "final]\nx = 1";
+  }
+  var threwDepth = false;
+  try { b.parsers.toml.parse(_toml10kPath()); }
+  catch (e) { threwDepth = e.code === "toml/too-deep"; }
+  check("toml: dotted-key 10k path rejects toml/too-deep (no stack overflow)",
+        threwDepth);
+  // 100 segments at default maxDepth=100 → at the +1 boundary, still rejects
+  function _tomlPath(n) {
+    var seg = "";
+    for (var i = 0; i < n; i++) seg += "a.";
+    return "[" + seg + "final]\nx = 1";
+  }
+  var ok99 = b.parsers.toml.parse(_tomlPath(99));
+  check("toml: 99-segment dotted-key under default depth: ok",
+        ok99 && typeof ok99 === "object");
+  var threw150 = false;
+  try { b.parsers.toml.parse(_tomlPath(150)); }
+  catch (e) { threw150 = e.code === "toml/too-deep"; }
+  check("toml: 150-segment dotted-key over default: rejects",  threw150);
+  // Operator override
+  var ok500 = b.parsers.toml.parse(_tomlPath(500), { maxDepth: 1000 });
+  check("toml: maxDepth: 1000 opt allows 500-segment path",
+        ok500 && typeof ok500 === "object");
+
   // Integer overflow
   var threwOverflow = false;
   try { b.parsers.toml.parse("big = 9223372036854775807"); }
