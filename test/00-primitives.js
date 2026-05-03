@@ -11479,6 +11479,22 @@ function testSchedulerCronParser() {
   check("cron 4-field rejects",                   threw && threw.code === "scheduler/invalid-cron");
   threw = null; try { b.scheduler.parseCron("*/0 * * * *"); } catch (e) { threw = e; }
   check("cron */0 step rejects",                  threw && threw.code === "scheduler/invalid-cron");
+
+  // v0.6.65 — step exceeding the field's range silently degenerated to
+  // a single-fire schedule (e.g. `*/99999 * * * *` = "minute 0 of every
+  // hour"). Operators typing this clearly meant something else; reject
+  // explicitly so the typo surfaces at boot.
+  check("cron */60 (= range size) accepts",
+        b.scheduler.parseCron("*/60 * * * *") !== null);
+  threw = null; try { b.scheduler.parseCron("*/61 * * * *"); } catch (e) { threw = e; }
+  check("cron */61 minute step over range: rejects",
+        threw && threw.code === "scheduler/invalid-cron");
+  threw = null; try { b.scheduler.parseCron("*/99999 * * * *"); } catch (e) { threw = e; }
+  check("cron */99999 minute step rejects (was silent before v0.6.65)",
+        threw && threw.code === "scheduler/invalid-cron");
+  threw = null; try { b.scheduler.parseCron("* */25 * * *"); } catch (e) { threw = e; }
+  check("cron hour */25 step over range: rejects",
+        threw && threw.code === "scheduler/invalid-cron");
 }
 
 function testSchedulerNextCronFire() {
