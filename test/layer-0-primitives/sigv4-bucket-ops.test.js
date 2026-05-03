@@ -790,6 +790,117 @@ async function testGetObjectLegalHoldNotConfigured() {
   }
 }
 
+// ---- Audit + observability emissions (v0.6.53) ----
+
+function _captureAudit() {
+  var captured = [];
+  return {
+    safeEmit: function (e) { captured.push(e); },
+    captured: captured,
+    byAction: function (a) { return captured.filter(function (e) { return e.action === a; }); },
+  };
+}
+function _captureObs() {
+  var captured = [];
+  return {
+    event: function (n, v, l) { captured.push({ name: n, value: v, labels: l }); },
+    captured: captured,
+    byName: function (n) { return captured.filter(function (e) { return e.name === n; }); },
+  };
+}
+
+async function testAuditObservabilityWiring() {
+  var auditCap = _captureAudit();
+  var obsCap   = _captureObs();
+  var fake = _fakeS3({
+    onGetObjectLock: function () {
+      return { statusCode: 200, body:
+        '<?xml version="1.0"?><ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>' };
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(Object.assign({}, _baseConfig(port), {
+      audit:         auditCap,
+      observability: obsCap,
+    }));
+    await ops.create("audit-bucket");
+    await ops.setObjectLockConfiguration("audit-bucket", { mode: "GOVERNANCE", days: 30 });
+    await ops.getObjectLockConfiguration("audit-bucket");
+    await ops.setObjectRetention("audit-bucket", "k", {
+      mode: "COMPLIANCE",
+      retainUntil: new Date(Date.now() + 60000),
+    });
+    await ops.setObjectRetention("audit-bucket", "k", {
+      mode: "GOVERNANCE",
+      retainUntil: new Date(Date.now() + 60000),
+      bypassGovernance: true,
+    });
+    await ops.setObjectLegalHold("audit-bucket", "k", "ON");
+    await ops.delete("audit-bucket");
+
+    // Audit assertions
+    check("audit emits objectstore.bucket.create",
+          auditCap.byAction("objectstore.bucket.create").length === 1);
+    check("audit emits objectstore.bucket.setObjectLockConfiguration with mode",
+          auditCap.byAction("objectstore.bucket.setObjectLockConfiguration").length === 1 &&
+          auditCap.byAction("objectstore.bucket.setObjectLockConfiguration")[0].metadata.mode === "GOVERNANCE");
+    check("audit emits objectstore.object.setRetention twice (one bypassGovernance)",
+          auditCap.byAction("objectstore.object.setRetention").length === 2 &&
+          auditCap.byAction("objectstore.object.setRetention")[1].metadata.bypassGovernance === true);
+    check("audit emits objectstore.object.setLegalHold with status",
+          auditCap.byAction("objectstore.object.setLegalHold").length === 1 &&
+          auditCap.byAction("objectstore.object.setLegalHold")[0].metadata.status === "ON");
+    check("audit emits objectstore.bucket.delete with existed:true",
+          auditCap.byAction("objectstore.bucket.delete").length === 1 &&
+          auditCap.byAction("objectstore.bucket.delete")[0].metadata.existed === true);
+    // Reads emit observability counter but NOT audit
+    check("audit does NOT emit getObjectLockConfiguration (read-only op)",
+          auditCap.byAction("objectstore.bucket.getObjectLockConfiguration").length === 0);
+
+    // Observability assertions
+    check("obs emits getObjectLockConfiguration",
+          obsCap.byName("objectstore.bucket.getObjectLockConfiguration").length === 1);
+    check("obs labels carry bypassGovernance flag",
+          obsCap.byName("objectstore.object.setRetention")[1].labels.bypassGovernance === "true");
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testAuditSuccessFalseDisablesSuccessAudit() {
+  var auditCap = _captureAudit();
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(Object.assign({}, _baseConfig(port), {
+      audit:        auditCap,
+      auditSuccess: false,
+    }));
+    await ops.create("quiet-bucket");
+    check("auditSuccess:false suppresses success audit",
+          auditCap.byAction("objectstore.bucket.create").length === 0);
+
+    // But failure-audit still fires
+    var fakeErr = _fakeS3({ createErr: { status: 409, code: "BucketAlreadyOwnedByYou" } });
+    var port2 = await listenOnRandomPort(fakeErr.server);
+    try {
+      var ops2 = bucketOps.create(Object.assign({}, _baseConfig(port2), {
+        audit:        auditCap,
+        auditSuccess: false,
+      }));
+      try { await ops2.create("collide"); } catch (_e) { /* expected */ }
+      check("auditFailures still fires when auditSuccess:false",
+            auditCap.byAction("objectstore.bucket.create").length === 1 &&
+            auditCap.byAction("objectstore.bucket.create")[0].outcome === "failure");
+    } finally {
+      await new Promise(function (r) { fakeErr.server.close(function () { r(); }); });
+    }
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
 async function run() {
   testSurface();
   testFactoryValidation();
@@ -819,6 +930,9 @@ async function run() {
   await testGetObjectLockConfigurationNotConfigured();
   await testGetObjectRetentionNotConfigured();
   await testGetObjectLegalHoldNotConfigured();
+  // v0.6.53 — audit + observability emissions
+  await testAuditObservabilityWiring();
+  await testAuditSuccessFalseDisablesSuccessAudit();
 }
 
 module.exports = { run: run };
