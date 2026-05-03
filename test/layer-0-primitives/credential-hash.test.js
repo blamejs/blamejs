@@ -170,6 +170,50 @@ async function run() {
   await testNeedsRehash();
   await testObservabilityEmission();
   await testRejectsBadOpts();
+  await testVerifyRejectsShortPayload();
+}
+
+// v0.6.64 — verify() now enforces the same 16-byte minimum payload that
+// hash() enforces. Pre-fix the asymmetry was a real risk: hash() refused
+// to *create* a hash shorter than 16 bytes, but verify() silently
+// accepted any length, including 1-byte payloads where collision space
+// is 256 (brute-forceable in microseconds). A storage bug or attacker
+// tampering that truncated the stored envelope produced a verifiable
+// but catastrophically weak hash.
+async function testVerifyRejectsShortPayload() {
+  var ch = b.credentialHash;
+  var C = require("../../lib/constants");
+  // Hand-craft a 1-byte payload that would have matched
+  // SHAKE256("password",1)[0] before the fix.
+  var nodeCrypto = require("node:crypto");
+  var oneByte = nodeCrypto.createHash("shake256", { outputLength: 1 })
+    .update("password").digest();
+  var attackEnv = Buffer.from(
+    [C.CREDENTIAL_MAGIC, C.CRED_HASH_IDS.SHAKE256, oneByte[0]]
+  ).toString("base64");
+  check("verify rejects 1-byte payload (pre-fix this was true)",
+        (await ch.verify("password", attackEnv)) === false);
+
+  // 15 bytes — one shy of the minimum
+  var fifteenBytes = nodeCrypto.createHash("shake256", { outputLength: 15 })
+    .update("password").digest();
+  var fifteenEnv = Buffer.concat([
+    Buffer.from([C.CREDENTIAL_MAGIC, C.CRED_HASH_IDS.SHAKE256]),
+    fifteenBytes,
+  ]).toString("base64");
+  check("verify rejects 15-byte payload (one below minimum)",
+        (await ch.verify("password", fifteenEnv)) === false);
+
+  // 16 bytes — at minimum, accepts
+  var sixteenHash = await ch.hash("password", { params: { length: 16 } });
+  check("verify accepts legitimate 16-byte hash",
+        (await ch.verify("password", sixteenHash)) === true);
+
+  // hash() symmetric: rejects < 16
+  var threwShort = false;
+  try { await ch.hash("password", { params: { length: 15 } }); }
+  catch (e) { threwShort = e.code === "credential-hash/bad-opt"; }
+  check("hash() rejects length < 16",  threwShort);
 }
 
 module.exports = { run: run };
