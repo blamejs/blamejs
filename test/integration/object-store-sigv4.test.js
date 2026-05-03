@@ -106,6 +106,20 @@ function _runOnEndpoint(label, endpoint, extraConfig) {
           Buffer.isBuffer(bigBuf) && Buffer.compare(bigBuf, bigPayload) === 0);
     await bigBackend.delete(bigKey);
 
+    // v0.6.51 — getObjectLockConfiguration on a non-lock-enabled bucket
+    // returns clean { enabled: false, ... } instead of throwing the
+    // underlying S3 ObjectLockConfigurationNotFoundError. Run this
+    // before delete (bucket must still exist).
+    var nonLockOps = b.objectStore.bucketOps.create(opsCfg);
+    var nonLockBucket = "blamejs-nolock-" + label + "-" + Date.now();
+    await nonLockOps.create(nonLockBucket);
+    var nonLockCfg = await nonLockOps.getObjectLockConfiguration(nonLockBucket);
+    check("[" + label + "] getObjectLockConfiguration on non-lock bucket: enabled=false",
+          nonLockCfg.enabled === false);
+    check("[" + label + "] getObjectLockConfiguration on non-lock bucket: mode=null",
+          nonLockCfg.mode === null);
+    await nonLockOps.delete(nonLockBucket);
+
     await ops.delete(bucket);
     check("[" + label + "] bucketOps.delete: bucket dropped", true);
   })();
@@ -136,6 +150,16 @@ function _runObjectLockOnEndpoint(label, endpoint, extraConfig) {
     await ops.create(bucket, { objectLockEnabled: true });
     check("[lock-" + label + "] create with objectLockEnabled", true);
 
+    // v0.6.51 — get*-on-unset-state returns clean defaults instead of
+    // throwing. Lock-enabled bucket but no default-rule → enabled:true,
+    // mode:null. Object that's never had retention/legal-hold set → null
+    // / "OFF".
+    var initialLockCfg = await ops.getObjectLockConfiguration(bucket);
+    check("[lock-" + label + "] no-default-rule lock-bucket: enabled=true",
+          initialLockCfg.enabled === true);
+    check("[lock-" + label + "] no-default-rule lock-bucket: mode=null",
+          initialLockCfg.mode === null);
+
     var beCfg = Object.assign({
       name:            "minio-lock-" + label,
       protocol:        "sigv4",
@@ -157,6 +181,14 @@ function _runObjectLockOnEndpoint(label, endpoint, extraConfig) {
     var key = "compliance-doc.txt";
     await backend.put(key, Buffer.from("filing-2026-Q1"));
     check("[lock-" + label + "] put object", true);
+
+    // v0.6.51 — pre-set state, get*-on-object returns clean defaults.
+    var preRet = await ops.getObjectRetention(bucket, key);
+    check("[lock-" + label + "] no-retention object: mode=null",
+          preRet.mode === null && preRet.retainUntil === null);
+    var preLh = await ops.getObjectLegalHold(bucket, key);
+    check("[lock-" + label + "] no-legal-hold object: status=OFF",
+          preLh.status === "OFF");
 
     // Per-object retention.
     var retainUntil = new Date(Date.now() + 5000);  // 5 s

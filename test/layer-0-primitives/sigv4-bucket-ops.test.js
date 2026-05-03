@@ -711,6 +711,85 @@ async function testLegalHold() {
   }
 }
 
+// ---- Not-configured response paths (v0.6.51) ----
+
+async function testGetObjectLockConfigurationNotConfigured() {
+  var fake = _fakeS3({
+    onGetObjectLock: function () {
+      return {
+        statusCode: 404,
+        body: '<?xml version="1.0"?><Error>' +
+              '<Code>ObjectLockConfigurationNotFoundError</Code>' +
+              '<Message>Object Lock configuration does not exist for this bucket</Message>' +
+              '</Error>',
+      };
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var rv = await ops.getObjectLockConfiguration("my-bucket");
+    check("getObjectLockConfiguration on no-lock bucket returns enabled=false",
+          rv.enabled === false);
+    check("getObjectLockConfiguration on no-lock bucket returns mode=null",
+          rv.mode === null);
+    check("getObjectLockConfiguration on no-lock bucket returns days=null",
+          rv.days === null);
+    check("getObjectLockConfiguration on no-lock bucket returns years=null",
+          rv.years === null);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testGetObjectRetentionNotConfigured() {
+  var fake = _fakeS3({
+    onGetObjectRetention: function () {
+      return {
+        statusCode: 400,
+        body: '<?xml version="1.0"?><Error>' +
+              '<Code>NoSuchObjectLockConfiguration</Code>' +
+              '<Message>The specified object does not have any retention configuration</Message>' +
+              '</Error>',
+      };
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var rv = await ops.getObjectRetention("my-bucket", "k");
+    check("getObjectRetention on un-set object returns mode=null",
+          rv.mode === null);
+    check("getObjectRetention on un-set object returns retainUntil=null",
+          rv.retainUntil === null);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testGetObjectLegalHoldNotConfigured() {
+  var fake = _fakeS3({
+    onGetLegalHold: function () {
+      return {
+        statusCode: 400,
+        body: '<?xml version="1.0"?><Error>' +
+              '<Code>NoSuchObjectLockConfiguration</Code>' +
+              '<Message>The specified object does not have any legal hold</Message>' +
+              '</Error>',
+      };
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var rv = await ops.getObjectLegalHold("my-bucket", "k");
+    check("getObjectLegalHold on no-hold object returns status=OFF",
+          rv.status === "OFF");
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
 async function run() {
   testSurface();
   testFactoryValidation();
@@ -736,6 +815,10 @@ async function run() {
   await testSetObjectRetentionValidation();
   await testGetObjectRetention();
   await testLegalHold();
+  // v0.6.51 — not-configured response paths return clean defaults
+  await testGetObjectLockConfigurationNotConfigured();
+  await testGetObjectRetentionNotConfigured();
+  await testGetObjectLegalHoldNotConfigured();
 }
 
 module.exports = { run: run };
