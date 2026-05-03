@@ -7601,6 +7601,17 @@ function testSafeSchemaStringPrimitive() {
 
   check("string().email accepts valid",            s.string().email().parse("a@b.co") === "a@b.co");
   check("string().email rejects invalid",          s.string().email().safeParse("not-an-email").ok === false);
+  // v0.6.61 — RFC 5321 §4.5.3.1.3 caps an address at 254 chars. Without
+  // this bound, .email() left operators open to a 50 KB email passing
+  // validation and feeding unbounded string columns / log lines downstream.
+  check("string().email accepts 254 chars (RFC limit)",
+        s.string().email().parse("a".repeat(248) + "@b.com").length === 254);
+  check("string().email rejects 255 chars",
+        s.string().email().safeParse("a".repeat(249) + "@b.com").ok === false);
+  check("string().email rejects 500 chars",
+        s.string().email().safeParse("a".repeat(495) + "@b.com").ok === false);
+  check("string().email rejects oversize w/ correct error code",
+        s.string().email().safeParse("a".repeat(495) + "@b.com").errors[0].code === "string/email-too-long");
 
   check("string().url accepts https",              s.string().url().parse("https://x.io") === "https://x.io");
   check("string().url rejects bare",               s.string().url().safeParse("x.io").ok === false);
