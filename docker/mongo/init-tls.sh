@@ -9,4 +9,9 @@ cp /certs/ca.crt /etc/mongo-tls/ca.pem
 chmod 600 /etc/mongo-tls/server.pem
 chmod 644 /etc/mongo-tls/ca.pem
 # mongo container runs as `mongodb` user; chown if the user exists.
-id mongodb >/dev/null 2>&1 && chown mongodb:mongodb /etc/mongo-tls/* || true
+# Plain if/then/else — the `&& X || true` shorthand trips SC2015 because
+# X failing would let the `|| true` fire as if `id` had failed, which is
+# not what we want here.
+if id mongodb >/dev/null 2>&1; then
+  chown mongodb:mongodb /etc/mongo-tls/*
+fi
