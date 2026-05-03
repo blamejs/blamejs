@@ -779,6 +779,23 @@ function testAuthTotpGenerateAndVerifyRoundTrip() {
   var step = t.verify(secret, code);
   check("verify returns the matched step number (truthy)",    typeof step === "number" && step > 0);
   check("verify rejects wrong code",                          t.verify(secret, "00000000") === false);
+  // v0.6.56 — input normalisation: every authenticator UI / clipboard
+  // paste introduces whitespace + common separators ("123 456",
+  // "123-456", "123.456", "123_456"). The framework strips these
+  // before timing-safe comparison. Letters / other characters do NOT
+  // get stripped — those are real input errors, not paste artefacts.
+  check("verify accepts code with spaces",
+        t.verify(secret, code.slice(0, 4) + " " + code.slice(4)) === step);
+  check("verify accepts code with dashes",
+        t.verify(secret, code.slice(0, 4) + "-" + code.slice(4)) === step);
+  check("verify accepts code with dots",
+        t.verify(secret, code.slice(0, 4) + "." + code.slice(4)) === step);
+  check("verify accepts code with underscores",
+        t.verify(secret, code.slice(0, 4) + "_" + code.slice(4)) === step);
+  check("verify accepts code with leading/trailing whitespace",
+        t.verify(secret, "  " + code + "\t") === step);
+  check("verify rejects code with letter-substitution (real typo, not paste)",
+        t.verify(secret, code.slice(0, 4) + "X" + code.slice(4)) === false);
 }
 
 function testAuthTotpDriftWindow() {
