@@ -7615,6 +7615,15 @@ function testSafeSchemaStringPrimitive() {
 
   check("string().url accepts https",              s.string().url().parse("https://x.io") === "https://x.io");
   check("string().url rejects bare",               s.string().url().safeParse("x.io").ok === false);
+  // v0.6.62 — RFC 7230 §3.1.1 8 KB recommendation. Without this bound,
+  // .url() accepted multi-megabyte URLs that fed unbounded values
+  // through downstream HTTP clients / SSRF gates / log lines.
+  check("string().url accepts 8192 chars (limit)",
+        s.string().url().parse("https://x.io/" + "a".repeat(8192 - 13)).length === 8192);
+  check("string().url rejects 8193 chars",
+        s.string().url().safeParse("https://x.io/" + "a".repeat(8193 - 13)).ok === false);
+  check("string().url rejects 10 MB w/ correct error code",
+        s.string().url().safeParse("https://x.io/" + "a".repeat(100000)).errors[0].code === "string/url-too-long");
 
   check("string().uuid accepts v4",                s.string().uuid().parse("123e4567-e89b-42d3-a456-426614174000") === "123e4567-e89b-42d3-a456-426614174000");
   check("string().uuid rejects invalid",           s.string().uuid().safeParse("not-a-uuid").ok === false);
@@ -12897,6 +12906,21 @@ function testUrlSafeMalformed() {
   try { u.parse(null); }
   catch (e) { nullMissing = e; }
   check("url-safe: null rejects",            nullMissing !== null);
+
+  // v0.6.62 — 8 KB cap (RFC 7230 §3.1.1 guidance). Pre-fix the
+  // framework walked multi-megabyte URLs through Node's parser before
+  // the SSRF / protocol / userinfo gates even ran.
+  var ok8k = u.parse("https://x.io/" + "a".repeat(8192 - 13));
+  check("url-safe: accepts 8192 chars",      ok8k && ok8k.toString().length === 8192);
+  var tooLong = null;
+  try { u.parse("https://x.io/" + "a".repeat(8193 - 13)); }
+  catch (e) { tooLong = e; }
+  check("url-safe: rejects 8193 chars",      tooLong !== null);
+  check("url-safe: too-long error code",     tooLong.code === "safe-url/too-long");
+  // Operator override
+  var allowed = u.parse("https://x.io/" + "a".repeat(20000), { maxUrlLength: 50000 });
+  check("url-safe: maxUrlLength opt overrides default",
+        allowed && allowed.toString().length > 8192);
 }
 
 function testUrlSafeUrlInstancePassThrough() {
