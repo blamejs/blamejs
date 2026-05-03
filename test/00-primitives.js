@@ -8057,6 +8057,66 @@ function testAuditToolsSurface() {
   check("b.auditTools.BUNDLE_FORMAT is set",    b.auditTools.BUNDLE_FORMAT === "blamejs-audit-bundle-v1");
 }
 
+// v0.6.66 — audit-chain canonicalize handles non-plain types correctly.
+// Pre-fix Map / Set / Symbol / function silently encoded as `{}` (silent
+// data loss in stored audit rows), BigInt threw raw "Do not know how to
+// serialize" mid-emit (DoS on any operator routing bigint IDs into
+// audit metadata), and circular references threw the un-wrapped
+// JSON.stringify error instead of a clean framework Error.
+function testAuditChainCanonicalize() {
+  var ac = b.auditChain;
+  check("auditChain.canonicalize is a function",   typeof ac.canonicalize === "function");
+
+  // Plain types — round-trip preserved
+  check("plain object",
+    ac.canonicalize({ a: 1, b: "x" }) === '{"a":1,"b":"x"}');
+  check("Buffer → hex",
+    ac.canonicalize({ a: Buffer.from("hello") }) === '{"a":"68656c6c6f"}');
+  check("Uint8Array → hex",
+    ac.canonicalize({ a: new Uint8Array([1, 2, 3]) }) === '{"a":"010203"}');
+  check("Date → ISO string",
+    ac.canonicalize({ a: new Date("2026-01-01") }) === '{"a":"2026-01-01T00:00:00.000Z"}');
+  check("undefined → null",
+    ac.canonicalize({ a: undefined }) === '{"a":null}');
+
+  // BigInt → string (stops the DoS mid-emit)
+  check("BigInt → decimal string",
+    ac.canonicalize({ a: BigInt(123) }) === '{"a":"123"}');
+  check("huge BigInt preserved as string",
+    ac.canonicalize({ a: BigInt("99999999999999999999999") }) ===
+    '{"a":"99999999999999999999999"}');
+
+  // Non-serialisable types reject cleanly (was silent data loss)
+  function expectThrow(label, value, expectInMsg) {
+    var threw = null;
+    try { ac.canonicalize({ a: value }); } catch (e) { threw = e; }
+    check("canonicalize rejects " + label,
+          threw && threw.message.indexOf(expectInMsg) !== -1);
+  }
+  expectThrow("Map",      new Map(),        "Map");
+  expectThrow("Set",      new Set(),        "Set");
+  expectThrow("RegExp",   /abc/,            "RegExp");
+  expectThrow("Symbol",   Symbol("s"),      "symbol");
+  expectThrow("function", function () {},   "function");
+
+  // Circular reference throws clean framework error (not raw JSON err)
+  var circ = {}; circ.self = circ;
+  var threwCirc = null;
+  try { ac.canonicalize(circ); } catch (e) { threwCirc = e; }
+  check("canonicalize rejects circular reference cleanly",
+        threwCirc && /circular reference/.test(threwCirc.message));
+
+  // Nested cases — array of bigints, Date inside array, Uint8Array nested
+  check("nested array of BigInts",
+    ac.canonicalize({ a: [BigInt(1), BigInt(2)] }) === '{"a":["1","2"]}');
+  check("Date inside array",
+    ac.canonicalize({ a: [new Date("2026-01-01")] }) ===
+    '{"a":["2026-01-01T00:00:00.000Z"]}');
+  check("Uint8Array nested in object",
+    ac.canonicalize({ a: { b: new Uint8Array([1, 2, 3]) } }) ===
+    '{"a":{"b":"010203"}}');
+}
+
 async function testAuditToolsArchiveAndVerify() {
   var fx = _auditToolsFixture();
   try {
@@ -15825,6 +15885,7 @@ async function run() {
   // events — moved to test/layer-0-primitives/events.test.js
   // audit-tools — operator tooling on the audit chain
   testAuditToolsSurface();
+  testAuditChainCanonicalize();
   await testAuditToolsArchiveAndVerify();
   await testAuditToolsExportSliceAndVerify();
   await testAuditToolsVerifyBundleRejectsWrongPassphrase();
