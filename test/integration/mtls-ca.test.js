@@ -232,6 +232,21 @@ async function run() {
     try { ca.revoke("AABB", { reason: "made-up" }); } catch (e) { threwBadReason = e; }
     check("revoke: unknown reason throws bad-reason",
           threwBadReason && /bad-reason/.test(threwBadReason.code || ""));
+    // v0.6.52 — serial gibberish must be rejected, not silently
+    // normalised to a single-hex-char serial. Pre-fix: "xyz-not-hex"
+    // stripped to "e" and registered a phantom revocation row.
+    var threwGarbageSerial = null;
+    try { ca.revoke("xyz-not-hex"); } catch (e) { threwGarbageSerial = e; }
+    check("revoke: gibberish serial 'xyz-not-hex' throws bad-serial",
+          threwGarbageSerial && /bad-serial/.test(threwGarbageSerial.code || ""));
+    var threwWhitespaceOnly = null;
+    try { ca.revoke("   "); } catch (e) { threwWhitespaceOnly = e; }
+    check("revoke: whitespace-only serial throws bad-serial",
+          threwWhitespaceOnly && /bad-serial/.test(threwWhitespaceOnly.code || ""));
+    var threwGarbage2 = null;
+    try { ca.revoke("nope"); } catch (e) { threwGarbage2 = e; }
+    check("revoke: 'nope' (no hex digits) throws bad-serial",
+          threwGarbage2 && /bad-serial/.test(threwGarbage2.code || ""));
 
     // CRL generation against the real engine + real CA.
     var crl = await ca.generateCrl();
