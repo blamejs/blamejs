@@ -410,6 +410,53 @@ async function run() {
   await testPaginationCursorVersionMismatch();
   await testPaginationQueryWhereRaw();
   await testPaginationCursorMultiColumn();
+  // v0.6.60 — non-plain types in cursor state
+  testPaginationEncodeDateRoundTrip();
+  testPaginationEncodeRejectsNonPlainTypes();
+  testPaginationEncodeRejectsCircularRef();
+}
+
+function testPaginationEncodeDateRoundTrip() {
+  var secret = b.crypto.generateBytes(32);
+  var d = new Date("2026-05-03T12:34:56.000Z");
+  var token = b.pagination.encodeCursor({ d: d }, secret);
+  var decoded = b.pagination.decodeCursor(token, secret);
+  // Pre-fix: Object.keys(new Date()) returned [] so the cursor encoded as
+  // {} and the operator's Date silently became an empty object on decode.
+  // Post-fix: Date serialises to its ISO string (matches stdlib JSON
+  // .stringify semantics).
+  check("encodeCursor preserves Date as ISO string",
+        decoded.d === "2026-05-03T12:34:56.000Z");
+}
+
+function testPaginationEncodeRejectsNonPlainTypes() {
+  var secret = b.crypto.generateBytes(32);
+  function expectBadState(label, value) {
+    var threw = null;
+    try { b.pagination.encodeCursor({ x: value }, secret); }
+    catch (e) { threw = e; }
+    check("encodeCursor rejects " + label,
+          threw && threw.code === "pagination/bad-state");
+  }
+  // Pre-fix: each of these silently became {} or {"0":...,"1":...}.
+  // Post-fix: clean structured rejection so operators don't lose data.
+  expectBadState("Buffer",      Buffer.from("abc"));
+  expectBadState("Uint8Array",  new Uint8Array([1, 2, 3]));
+  expectBadState("Map",         new Map([["a", 1]]));
+  expectBadState("Set",         new Set([1, 2]));
+  expectBadState("RegExp",      /abc/);
+}
+
+function testPaginationEncodeRejectsCircularRef() {
+  var secret = b.crypto.generateBytes(32);
+  var o = {}; o.self = o;
+  var threw = null;
+  try { b.pagination.encodeCursor(o, secret); }
+  catch (e) { threw = e; }
+  // Pre-fix: stack overflow from unbounded recursion.
+  // Post-fix: clean structured rejection.
+  check("encodeCursor rejects circular reference cleanly",
+        threw && threw.code === "pagination/bad-state");
 }
 
 async function testPaginationCursorMultiColumn() {
