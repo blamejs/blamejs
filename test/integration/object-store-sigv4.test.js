@@ -91,6 +91,122 @@ function _runOnEndpoint(label, endpoint, extraConfig) {
   })();
 }
 
+// Object Lock surface — bucket created with objectLockEnabled: true.
+// Exercises the v0.6.47 surface (setObjectLockConfiguration / set+get
+// ObjectRetention / set+get ObjectLegalHold) AND the v0.6.49 wire-form
+// fix where the trailing `=` after subresource queries (`?retention=`,
+// `?legal-hold=`, `?object-lock=`) caused MinIO + strict S3 to interpret
+// the request as a body PUT and reject it with "Object is WORM
+// protected and cannot be overwritten" instead of routing to the
+// retention/legal-hold handler.
+function _runObjectLockOnEndpoint(label, endpoint, extraConfig) {
+  var bucket = "blamejs-lock-" + label + "-" + Date.now();
+  return (async function () {
+    var opsCfg = Object.assign({
+      protocol:        "sigv4",
+      endpoint:        endpoint,
+      region:          REGION,
+      accessKeyId:     ACCESS,
+      secretAccessKey: SECRET,
+      allowInternal:   true,
+      forcePathStyle:  true,
+    }, extraConfig);
+    var ops = b.objectStore.bucketOps.create(opsCfg);
+
+    await ops.create(bucket, { objectLockEnabled: true });
+    check("[lock-" + label + "] create with objectLockEnabled", true);
+
+    var beCfg = Object.assign({
+      name:            "minio-lock-" + label,
+      protocol:        "sigv4",
+      endpoint:        endpoint,
+      region:          REGION,
+      bucket:          bucket,
+      accessKeyId:     ACCESS,
+      secretAccessKey: SECRET,
+      allowInternal:   true,
+      forcePathStyle:  true,
+      classifications: ["operational"],
+      residencyTag:    "unrestricted",
+    }, extraConfig);
+    var backend = b.objectStore.buildBackend(beCfg);
+
+    // Put an object first so we have a target for retention + legal hold
+    // before we configure bucket-level retention (otherwise auto-applied
+    // retention from the bucket config makes the object immutable).
+    var key = "compliance-doc.txt";
+    await backend.put(key, Buffer.from("filing-2026-Q1"));
+    check("[lock-" + label + "] put object", true);
+
+    // Per-object retention.
+    var retainUntil = new Date(Date.now() + 5000);  // 5 s
+    var setRet = await ops.setObjectRetention(bucket, key, {
+      mode:        "GOVERNANCE",
+      retainUntil: retainUntil,
+    });
+    check("[lock-" + label + "] setObjectRetention applied",
+          setRet.applied === true);
+
+    var gotRet = await ops.getObjectRetention(bucket, key);
+    check("[lock-" + label + "] getObjectRetention mode echoed",
+          gotRet.mode === "GOVERNANCE");
+    check("[lock-" + label + "] getObjectRetention retainUntil is Date",
+          gotRet.retainUntil instanceof Date && !isNaN(gotRet.retainUntil.getTime()));
+
+    // Per-object legal hold.
+    var setLh = await ops.setObjectLegalHold(bucket, key, "ON");
+    check("[lock-" + label + "] setObjectLegalHold ON applied",
+          setLh.applied === true);
+    var gotLh = await ops.getObjectLegalHold(bucket, key);
+    check("[lock-" + label + "] getObjectLegalHold reads ON",
+          gotLh.status === "ON");
+
+    // (We don't assert that delete() blocks while legal hold is ON
+    // because Object-Lock buckets are versioned — `delete()` creates a
+    // delete-marker version regardless of legal hold; the *actual* data
+    // version remains protected. Asserting framework-level success is
+    // not the right WORM test; real protection is verified by the
+    // setObjectLegalHold round-trip + getObjectLegalHold readback above.)
+
+    // Bucket-level default retention.
+    var setLockCfg = await ops.setObjectLockConfiguration(bucket, {
+      mode:  "GOVERNANCE",
+      days:  1,
+    });
+    check("[lock-" + label + "] setObjectLockConfiguration applied",
+          setLockCfg.applied === true);
+    var gotLockCfg = await ops.getObjectLockConfiguration(bucket);
+    check("[lock-" + label + "] getObjectLockConfiguration enabled",
+          gotLockCfg.enabled === true);
+    check("[lock-" + label + "] getObjectLockConfiguration mode echoed",
+          gotLockCfg.mode === "GOVERNANCE");
+    check("[lock-" + label + "] getObjectLockConfiguration days echoed",
+          gotLockCfg.days === 1);
+
+    // Cleanup: legal hold OFF, bypassGovernance to shorten retention,
+    // wait for retention to lapse, then delete object + bucket.
+    await ops.setObjectLegalHold(bucket, key, "OFF");
+    await ops.setObjectRetention(bucket, key, {
+      mode:               "GOVERNANCE",
+      retainUntil:        new Date(Date.now() + 1500),
+      bypassGovernance:   true,
+    });
+    check("[lock-" + label + "] bypassGovernance shortens retention", true);
+    await new Promise(function (r) { setTimeout(r, 2000); });
+    await backend.delete(key);
+    // Object-Lock buckets are versioned, so the delete above creates a
+    // delete-marker rather than removing the versioned data — `bucketOps
+    // .delete` (DELETE /bucket) refuses to drop a bucket with noncurrent
+    // versions or delete-markers (S3 spec). The framework doesn't expose
+    // a recursive delete (operators with that need reach for `aws s3 rb
+    // --force` or Terraform), so leave the bucket. The test bucket name
+    // includes Date.now() so re-runs don't collide; MinIO container reset
+    // sweeps it.
+    try { await ops.delete(bucket); } catch (_e) { /* expected on WORM bucket */ }
+    check("[lock-" + label + "] cleanup OK", true);
+  })();
+}
+
 async function run() {
   var svc = await services.requireService("minio");
   if (!svc.ok) throw new Error("minio unreachable: " + svc.reason);
@@ -110,6 +226,14 @@ async function run() {
   // 127.0.0.1; node:tls forbids IP literals as servername).
   await _runOnEndpoint("tls", "https://localhost:9443", {
     ca: caPem,
+  });
+
+  // ---- Object Lock variant (HTTP only — no benefit from doing it twice
+  //      and the WORM cleanup adds 2s of sleep which we don't want
+  //      duplicated). Exercises the v0.6.47 lib + v0.6.49 wire-form fix
+  //      against live MinIO. ----
+  await _runObjectLockOnEndpoint("http", "http://127.0.0.1:9000", {
+    allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
   });
 }
 

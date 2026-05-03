@@ -501,7 +501,10 @@ async function testSetObjectLockConfiguration() {
     check("setObjectLockConfiguration mode echoed",    rv.mode === "GOVERNANCE");
     var req = fake.requests[0];
     check("PUT method used",                  req.method === "PUT");
-    check("URL has ?object-lock query",       /\?object-lock/.test(req.url));
+    check("URL has ?object-lock query (bare subresource)",
+          /\?object-lock$|\?object-lock&/.test(req.url));
+    check("URL object-lock has no '=' suffix",
+          !/\?object-lock=/.test(req.url));
     var bodyStr = req.body.toString("utf8");
     check("body has ObjectLockEnabled=Enabled",
           /<ObjectLockEnabled>Enabled<\/ObjectLockEnabled>/.test(bodyStr));
@@ -579,8 +582,10 @@ async function testSetObjectRetention() {
     check("setObjectRetention echoes mode + retainUntil",
           rv.mode === "COMPLIANCE" && rv.retainUntil === until);
     var req = fake.requests[0];
-    check("URL has ?retention query",
-          /\?retention/.test(req.url));
+    check("URL has ?retention query (bare subresource, no trailing =)",
+          /\?retention$|\?retention&/.test(req.url));
+    check("URL retention query has no '=' suffix (S3 strict-mode bug fix)",
+          !/\?retention=/.test(req.url));
     check("URL has the encoded object key",
           /\/path\/to\/file\.txt/.test(req.url));
     var bodyStr = req.body.toString("utf8");
@@ -684,7 +689,10 @@ async function testLegalHold() {
     check("setObjectLegalHold applied",  rv.applied === true);
     check("setObjectLegalHold status echoed", rv.status === "ON");
     var req = fake.requests[0];
-    check("URL has ?legal-hold query", /\?legal-hold/.test(req.url));
+    check("URL has ?legal-hold query (bare subresource)",
+          /\?legal-hold$|\?legal-hold&/.test(req.url));
+    check("URL legal-hold has no '=' suffix",
+          !/\?legal-hold=/.test(req.url));
     var body = req.body.toString("utf8");
     check("body has Status=ON", /<Status>ON<\/Status>/.test(body));
 
