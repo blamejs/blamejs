@@ -12263,6 +12263,25 @@ async function testAtomicFile() {
     catch (e) { syncMissingRejected = e.code === "ENOENT"; }
     check("atomicFile readSync ENOENT on missing",   syncMissingRejected);
 
+    // v0.6.68 — maxBytes must be a positive finite integer. Pre-fix
+    // `Infinity` bypassed the OOM cap entirely (`stat.size > Infinity`
+    // is always false → unbounded read). Same bug class as the
+    // v0.6.57 boundedChunkCollector fix.
+    function _expectMaxBytesBadOpt(label, maxBytes) {
+      var threw = null;
+      try { b.atomicFile.readSync(p, { maxBytes: maxBytes }); }
+      catch (e) { threw = e; }
+      check("atomicFile readSync rejects maxBytes=" + label,
+            threw && threw.code === "atomic-file/bad-opt");
+    }
+    _expectMaxBytesBadOpt("Infinity",  Infinity);
+    _expectMaxBytesBadOpt("NaN",       NaN);
+    _expectMaxBytesBadOpt("0",         0);
+    _expectMaxBytesBadOpt("negative", -1);
+    _expectMaxBytesBadOpt("3.5 (non-int)", 3.5);
+    _expectMaxBytesBadOpt("string",    "100");
+    _expectMaxBytesBadOpt("null",      null);
+
     // Crash safety: tmp file should NOT remain after success
     var tmpFiles = fs.readdirSync(tmpDir).filter(function (f) { return /\.tmp-/.test(f); });
     check("atomicFile cleans up tmp on success",     tmpFiles.length === 0);
