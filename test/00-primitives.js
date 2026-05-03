@@ -12813,6 +12813,23 @@ function testBufferSafeBoundedChunkCollector() {
   try { bs.boundedChunkCollector({}); }
   catch (e) { threwBadArg = e.code === "buffer/bad-arg"; }
   check("collector: requires maxBytes", threwBadArg);
+
+  // v0.6.57 — maxBytes must be positive finite integer. Pre-fix:
+  // Infinity defeated the OOM cap entirely; 3.5 set a fractional cap
+  // that confused chunk arithmetic. Both now reject at boot.
+  function _expectBadArg(label, opts) {
+    var threw = false;
+    try { bs.boundedChunkCollector(opts); }
+    catch (e) { threw = e.code === "buffer/bad-arg"; }
+    check("collector: rejects " + label, threw);
+  }
+  _expectBadArg("Infinity",          { maxBytes: Infinity });
+  _expectBadArg("non-integer 3.5",   { maxBytes: 3.5 });
+  _expectBadArg("negative",          { maxBytes: -1 });
+  _expectBadArg("zero",              { maxBytes: 0 });
+  _expectBadArg("NaN",               { maxBytes: NaN });
+  _expectBadArg("string 100",        { maxBytes: "100" });
+  _expectBadArg("null",              { maxBytes: null });
 }
 
 // ---- url-safe ----
