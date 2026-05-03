@@ -43,7 +43,11 @@ jobs:
   publish:
     name: Lint, smoke, publish
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30-min cap covers the now-larger smoke surface (~7200+ checks) +
+    # wiki e2e + sbom + the cold npx eslint pull. v0.6.38 → v0.6.53
+    # all timed out at the previous 15-min cap, leaving npm registry
+    # stuck at v0.6.37. Bumped 2026-05-03 along with v0.6.54.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -96,10 +100,29 @@ jobs:
           fi
           echo "Resolved version: $PKG_VERSION (tag-push: ${GITHUB_REF#refs/tags/})"
 
-      # Run the same lint posture release-container.yml's lint gate runs
-      # — a tag-time regression must fail the publish before it lands.
+      # Lint gate. ESLint covers the framework JS surface; shellcheck
+      # covers vendor-update.sh + docker init scripts (these ARE in the
+      # npm tarball, so a regression should fail the publish). Hadolint
+      # stays in release-container.yml only — the Dockerfile is
+      # container-only and is not part of the npm artifact.
       - name: ESLint (max-warnings 0)
         run: npx --yes eslint@latest --max-warnings 0 .
+
+      - name: Detect shell scripts
+        id: sh
+        run: |
+          count=$(git ls-files '*.sh' | wc -l)
+          echo "Tracked .sh files: $count"
+          git ls-files '*.sh' || true
+          echo "found=$count" >> "$GITHUB_OUTPUT"
+
+      - name: ShellCheck
+        if: steps.sh.outputs.found != '0'
+        uses: ludeeus/action-shellcheck@master
+        with:
+          severity: style
+          format:   tty
+          check_together: 'yes'
 
       - name: Framework smoke
         run: node test/smoke.js
