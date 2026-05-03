@@ -202,6 +202,60 @@ async function run() {
       check("status: surfaces CA presence",
             typeof st === "object" && st !== null);
     }
+
+    // ---- revocation registry + CRL (v0.6.45) ----
+    check("revoke: function present",       typeof ca.revoke === "function");
+    check("isRevoked: function present",    typeof ca.isRevoked === "function");
+    check("getRevocations: function present", typeof ca.getRevocations === "function");
+    check("generateCrl: function present",  typeof ca.generateCrl === "function");
+    var startCount = ca.getRevocations().length;
+    var revoked = ca.revoke("0xABC123", { reason: "key-compromise" });
+    check("revoke: returns the recorded entry",
+          revoked && revoked.serialNumber === "abc123" && revoked.reason === "key-compromise");
+    check("revoke: reasonCode mapped to RFC 5280 code 1",
+          revoked.reasonCode === 1);
+    check("isRevoked('0xABC123') === true",  ca.isRevoked("0xABC123") === true);
+    check("isRevoked: serial-format-agnostic (lowercase hex match)",
+          ca.isRevoked("ABC123") === true && ca.isRevoked("abc:12:3") === true);
+    check("isRevoked: unknown serial → false",
+          ca.isRevoked("DEADBEEF") === false);
+    var dup = ca.revoke("ABC123", { reason: "key-compromise" });
+    check("revoke is idempotent — same revokedAt on duplicate call",
+          dup.revokedAt === revoked.revokedAt);
+    check("getRevocations: registry grew by 1",
+          ca.getRevocations().length === startCount + 1);
+    var threwBadSerial = null;
+    try { ca.revoke(""); } catch (e) { threwBadSerial = e; }
+    check("revoke: empty serial throws bad-serial",
+          threwBadSerial && /bad-serial/.test(threwBadSerial.code || ""));
+    var threwBadReason = null;
+    try { ca.revoke("AABB", { reason: "made-up" }); } catch (e) { threwBadReason = e; }
+    check("revoke: unknown reason throws bad-reason",
+          threwBadReason && /bad-reason/.test(threwBadReason.code || ""));
+
+    // CRL generation against the real engine + real CA.
+    var crl = await ca.generateCrl();
+    check("generateCrl: returns crlPem",
+          typeof crl.crlPem === "string" && /^-----BEGIN (?:X509 )?CRL-----/m.test(crl.crlPem));
+    check("generateCrl: entryCount matches getRevocations.length",
+          crl.entryCount === ca.getRevocations().length);
+    check("generateCrl: nextUpdate ~7 days after thisUpdate by default",
+          crl.nextUpdate.getTime() - crl.thisUpdate.getTime() > 6.5 * 24 * 60 * 60 * 1000);
+    check("generateCrl: persisted to ca.crl on disk",
+          fs.existsSync(crl.path) &&
+          /BEGIN (?:X509 )?CRL/.test(fs.readFileSync(crl.path, "utf8")));
+    // CRL signature: parse via node:crypto and confirm issuer matches CA subject.
+    // node:crypto.X509Certificate doesn't parse CRLs directly, but we can at
+    // least confirm the PEM structure + base64-decoded DER size is plausible.
+    var derBytes = Buffer.from(crl.crlPem.replace(/-----.*-----|\s/g, ""), "base64");
+    check("CRL DER decodes to a non-trivial sequence",
+          derBytes.length > 100);
+
+    // Persist new revocation, regenerate CRL, confirm entry count grows.
+    ca.revoke("CAFEBABE", { reason: "superseded" });
+    var crl2 = await ca.generateCrl();
+    check("generateCrl: picks up new revocations on regenerate",
+          crl2.entryCount === crl.entryCount + 1);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
