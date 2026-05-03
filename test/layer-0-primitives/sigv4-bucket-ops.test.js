@@ -78,6 +78,43 @@ function _fakeS3(behavior) {
         res.end();
         return;
       }
+      // Object Lock configuration (bucket-level).
+      if (parsed.searchParams.has("object-lock")) {
+        if (req.method === "GET" && behavior.onGetObjectLock) {
+          var ol = behavior.onGetObjectLock();
+          res.writeHead(ol.statusCode, ol.headers || { "Content-Type": "application/xml" });
+          res.end(ol.body || "");
+          return;
+        }
+        // PUT just acks
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+      // Per-object retention.
+      if (parsed.searchParams.has("retention")) {
+        if (req.method === "GET" && behavior.onGetObjectRetention) {
+          var ret = behavior.onGetObjectRetention();
+          res.writeHead(ret.statusCode, ret.headers || { "Content-Type": "application/xml" });
+          res.end(ret.body || "");
+          return;
+        }
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+      // Per-object legal hold.
+      if (parsed.searchParams.has("legal-hold")) {
+        if (req.method === "GET" && behavior.onGetLegalHold) {
+          var lh = behavior.onGetLegalHold();
+          res.writeHead(lh.statusCode, lh.headers || { "Content-Type": "application/xml" });
+          res.end(lh.body || "");
+          return;
+        }
+        res.writeHead(200);
+        res.end();
+        return;
+      }
       // CreateBucket — PUT /<bucket>/ (path-style) with optional XML body.
       if (req.method === "PUT") {
         if (behavior.createErr) {
@@ -131,6 +168,18 @@ function testSurface() {
   check("instance.list is fn",         typeof ops.list === "function");
   check("instance.setLifecycle is fn", typeof ops.setLifecycle === "function");
   check("instance.setCorsRules is fn", typeof ops.setCorsRules === "function");
+  check("instance.setObjectLockConfiguration is fn",
+        typeof ops.setObjectLockConfiguration === "function");
+  check("instance.getObjectLockConfiguration is fn",
+        typeof ops.getObjectLockConfiguration === "function");
+  check("instance.setObjectRetention is fn",
+        typeof ops.setObjectRetention === "function");
+  check("instance.getObjectRetention is fn",
+        typeof ops.getObjectRetention === "function");
+  check("instance.setObjectLegalHold is fn",
+        typeof ops.setObjectLegalHold === "function");
+  check("instance.getObjectLegalHold is fn",
+        typeof ops.getObjectLegalHold === "function");
 }
 
 // ---- Config validation ----
@@ -420,6 +469,240 @@ async function testSetCorsRulesSendsXml() {
   }
 }
 
+// ---- Object Lock tests (v0.6.47) ----
+
+async function testCreateBucketObjectLockEnabled() {
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    await ops.create("locked-bucket", { objectLockEnabled: true });
+    var req = fake.requests[0];
+    check("createBucket+objectLockEnabled sets x-amz-bucket-object-lock-enabled header",
+          req.headers["x-amz-bucket-object-lock-enabled"] === "true");
+    // Default (no opt) should NOT set the header.
+    fake.requests.length = 0;
+    await ops.create("regular-bucket");
+    check("createBucket without opt does NOT set object-lock header",
+          fake.requests[0].headers["x-amz-bucket-object-lock-enabled"] == null);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testSetObjectLockConfiguration() {
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var rv = await ops.setObjectLockConfiguration("my-bucket",
+      { mode: "GOVERNANCE", days: 365 });
+    check("setObjectLockConfiguration applied=true",  rv.applied === true);
+    check("setObjectLockConfiguration mode echoed",    rv.mode === "GOVERNANCE");
+    var req = fake.requests[0];
+    check("PUT method used",                  req.method === "PUT");
+    check("URL has ?object-lock query",       /\?object-lock/.test(req.url));
+    var bodyStr = req.body.toString("utf8");
+    check("body has ObjectLockEnabled=Enabled",
+          /<ObjectLockEnabled>Enabled<\/ObjectLockEnabled>/.test(bodyStr));
+    check("body has Mode=GOVERNANCE",
+          /<Mode>GOVERNANCE<\/Mode>/.test(bodyStr));
+    check("body has Days=365",
+          /<Days>365<\/Days>/.test(bodyStr));
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testSetObjectLockConfigurationValidation() {
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    async function shouldThrow(label, opts, codeRe) {
+      var threw = null;
+      try { await ops.setObjectLockConfiguration("my-bucket", opts); }
+      catch (e) { threw = e; }
+      check("validation: " + label,
+            threw && codeRe.test(threw.code || ""));
+    }
+    await shouldThrow("rejects bad mode",
+      { mode: "WORM" }, /INVALID_OBJECT_LOCK/);
+    await shouldThrow("rejects days+years together",
+      { mode: "COMPLIANCE", days: 30, years: 1 }, /INVALID_OBJECT_LOCK/);
+    await shouldThrow("rejects negative days",
+      { mode: "COMPLIANCE", days: -5 }, /INVALID_OBJECT_LOCK/);
+    await shouldThrow("rejects fractional days",
+      { mode: "COMPLIANCE", days: 1.5 }, /INVALID_OBJECT_LOCK/);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testGetObjectLockConfiguration() {
+  var fake = _fakeS3({
+    onGetObjectLock: function () {
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/xml" },
+        body: '<?xml version="1.0"?>' +
+              '<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled>' +
+              '<Rule><DefaultRetention><Mode>COMPLIANCE</Mode><Years>1</Years></DefaultRetention></Rule>' +
+              '</ObjectLockConfiguration>',
+      };
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var rv = await ops.getObjectLockConfiguration("my-bucket");
+    check("getObjectLockConfiguration returns enabled=true",   rv.enabled === true);
+    check("getObjectLockConfiguration returns mode=COMPLIANCE", rv.mode === "COMPLIANCE");
+    check("getObjectLockConfiguration returns years=1",        rv.years === 1);
+    check("getObjectLockConfiguration returns days=null",      rv.days === null);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testSetObjectRetention() {
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var until = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    var rv = await ops.setObjectRetention("my-bucket", "path/to/file.txt", {
+      mode:        "COMPLIANCE",
+      retainUntil: until,
+    });
+    check("setObjectRetention applied",  rv.applied === true);
+    check("setObjectRetention echoes mode + retainUntil",
+          rv.mode === "COMPLIANCE" && rv.retainUntil === until);
+    var req = fake.requests[0];
+    check("URL has ?retention query",
+          /\?retention/.test(req.url));
+    check("URL has the encoded object key",
+          /\/path\/to\/file\.txt/.test(req.url));
+    var bodyStr = req.body.toString("utf8");
+    check("body has Mode=COMPLIANCE",
+          /<Mode>COMPLIANCE<\/Mode>/.test(bodyStr));
+    check("body has RetainUntilDate ISO 8601",
+          /<RetainUntilDate>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(bodyStr));
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testSetObjectRetentionBypassGovernance() {
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var until = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await ops.setObjectRetention("my-bucket", "doc.pdf", {
+      mode:               "GOVERNANCE",
+      retainUntil:        until,
+      bypassGovernance:   true,
+    });
+    var req = fake.requests[0];
+    check("bypassGovernance:true sets x-amz-bypass-governance-retention header",
+          req.headers["x-amz-bypass-governance-retention"] === "true");
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testSetObjectRetentionValidation() {
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    async function shouldThrow(label, opts, codeRe) {
+      var threw = null;
+      try { await ops.setObjectRetention("my-bucket", "k", opts); }
+      catch (e) { threw = e; }
+      check("retention validation: " + label,
+            threw && codeRe.test(threw.code || ""));
+    }
+    await shouldThrow("rejects missing mode",
+      { retainUntil: new Date(Date.now() + 1000) }, /INVALID_RETENTION/);
+    await shouldThrow("rejects bad mode",
+      { mode: "WORM", retainUntil: new Date(Date.now() + 1000) }, /INVALID_RETENTION/);
+    await shouldThrow("rejects past retainUntil",
+      { mode: "COMPLIANCE", retainUntil: new Date(Date.now() - 1000) }, /INVALID_RETENTION/);
+    await shouldThrow("rejects non-Date retainUntil",
+      { mode: "COMPLIANCE", retainUntil: "2027-01-01" }, /INVALID_RETENTION/);
+    var threwKey = null;
+    try { await ops.setObjectRetention("my-bucket", "",
+            { mode: "COMPLIANCE", retainUntil: new Date(Date.now()+1000) }); }
+    catch (e) { threwKey = e; }
+    check("retention validation: rejects empty key",
+          threwKey && /INVALID_KEY/.test(threwKey.code || ""));
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testGetObjectRetention() {
+  var until = new Date(Date.now() + 100000);
+  var fake = _fakeS3({
+    onGetObjectRetention: function () {
+      return {
+        statusCode: 200,
+        body: '<?xml version="1.0"?>' +
+              '<Retention><Mode>GOVERNANCE</Mode>' +
+              '<RetainUntilDate>' + until.toISOString() + '</RetainUntilDate>' +
+              '</Retention>',
+      };
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var rv = await ops.getObjectRetention("my-bucket", "k");
+    check("getObjectRetention mode=GOVERNANCE", rv.mode === "GOVERNANCE");
+    check("getObjectRetention retainUntil is a Date",
+          rv.retainUntil instanceof Date && !isNaN(rv.retainUntil.getTime()));
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+async function testLegalHold() {
+  var fake = _fakeS3({
+    onGetLegalHold: function () {
+      return {
+        statusCode: 200,
+        body: '<?xml version="1.0"?><LegalHold><Status>ON</Status></LegalHold>',
+      };
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(_baseConfig(port));
+    var rv = await ops.setObjectLegalHold("my-bucket", "k", "ON");
+    check("setObjectLegalHold applied",  rv.applied === true);
+    check("setObjectLegalHold status echoed", rv.status === "ON");
+    var req = fake.requests[0];
+    check("URL has ?legal-hold query", /\?legal-hold/.test(req.url));
+    var body = req.body.toString("utf8");
+    check("body has Status=ON", /<Status>ON<\/Status>/.test(body));
+
+    var got = await ops.getObjectLegalHold("my-bucket", "k");
+    check("getObjectLegalHold parses status from XML", got.status === "ON");
+
+    var threw = null;
+    try { await ops.setObjectLegalHold("my-bucket", "k", "MAYBE"); }
+    catch (e) { threw = e; }
+    check("legal hold rejects bad status",
+          threw && /INVALID_LEGAL_HOLD/.test(threw.code || ""));
+    var threwOff = await ops.setObjectLegalHold("my-bucket", "k", "OFF");
+    check("legal hold accepts OFF",  threwOff.status === "OFF");
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
 async function run() {
   testSurface();
   testFactoryValidation();
@@ -435,6 +718,16 @@ async function run() {
   await testListBuckets();
   await testSetLifecycleSendsXml();
   await testSetCorsRulesSendsXml();
+  // v0.6.47 — Object Lock
+  await testCreateBucketObjectLockEnabled();
+  await testSetObjectLockConfiguration();
+  await testSetObjectLockConfigurationValidation();
+  await testGetObjectLockConfiguration();
+  await testSetObjectRetention();
+  await testSetObjectRetentionBypassGovernance();
+  await testSetObjectRetentionValidation();
+  await testGetObjectRetention();
+  await testLegalHold();
 }
 
 module.exports = { run: run };
