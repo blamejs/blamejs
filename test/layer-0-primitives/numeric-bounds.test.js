@@ -99,6 +99,19 @@ function testConsumersRejectInfinity() {
   _expect("mailBounce rejects maxBytes Infinity",
     function () { b.mailBounce.handler({ vendor: "postmark", maxBytes: Infinity }); },
     "mail-bounce/bad-opt");
+
+  // v0.6.70 — csp-nonce middleware. Pre-fix the typeof-only check
+  // accepted Infinity / NaN, then crashed per-request inside
+  // crypto.generateBytes(Infinity) with ERR_OUT_OF_RANGE.
+  _expect("csp-nonce rejects nonceBytes Infinity",
+    function () { b.middleware.cspNonce({ nonceBytes: Infinity }); },
+    "csp-nonce/bad-nonce-bytes");
+  _expect("csp-nonce rejects nonceBytes NaN",
+    function () { b.middleware.cspNonce({ nonceBytes: NaN }); },
+    "csp-nonce/bad-nonce-bytes");
+  _expect("csp-nonce rejects nonceBytes 1.5",
+    function () { b.middleware.cspNonce({ nonceBytes: 16.5 }); },
+    "csp-nonce/bad-nonce-bytes");
 }
 
 function testConsumersAcceptLegitimate() {
