@@ -86,6 +86,26 @@ function _runOnEndpoint(label, endpoint, extraConfig) {
     check("[" + label + "] list after delete: object gone",
           !afterDelete.items.some(function (it) { return it.key === key; }));
 
+    // ---- multipart upload + round-trip (covers the v0.6.50 ?uploads
+    // wire-form fix; until now multipart had only mock-server coverage). ----
+    var bigBackendCfg = Object.assign({}, beCfg, {
+      name:                    "minio-mp-" + label,
+      multipartThresholdBytes: 1,                   // force multipart for any > 0 byte
+      partSizeBytes:           5 * 1024 * 1024,     // S3 minimum
+    });
+    var bigBackend = b.objectStore.buildBackend(bigBackendCfg);
+    var bigKey     = "mp-" + Math.floor(Math.random() * 1e6) + ".bin";
+    // 6 MiB → 2 parts (5 MiB + 1 MiB) so we exercise the multi-part loop
+    // not the single-part edge case.
+    var bigPayload = Buffer.alloc(6 * 1024 * 1024, 0x55);
+    await bigBackend.put(bigKey, bigPayload, { contentType: "application/octet-stream" });
+    check("[" + label + "] multipart put: returned (no throw)", true);
+    var bigGot = await bigBackend.get(bigKey);
+    var bigBuf = Buffer.isBuffer(bigGot) ? bigGot : (bigGot && bigGot.body);
+    check("[" + label + "] multipart get: bytes round-trip exactly",
+          Buffer.isBuffer(bigBuf) && Buffer.compare(bigBuf, bigPayload) === 0);
+    await bigBackend.delete(bigKey);
+
     await ops.delete(bucket);
     check("[" + label + "] bucketOps.delete: bucket dropped", true);
   })();
