@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.5",
-  "createdAt": "2026-05-04T20:05:02.098Z",
+  "frameworkVersion": "0.7.6",
+  "createdAt": "2026-05-04T20:53:13.285Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2403,6 +2403,10 @@
           "type": "function",
           "arity": 4
         },
+        "GuardAllError": {
+          "type": "function",
+          "arity": 4
+        },
         "GuardCsvError": {
           "type": "function",
           "arity": 4
@@ -2601,6 +2605,43 @@
         "workerThreadGate": {
           "type": "function",
           "arity": 2
+        }
+      }
+    },
+    "guardAll": {
+      "type": "object",
+      "members": {
+        "GUARDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardAllError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SHARED_POSTURES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "SHARED_PROFILES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "byContentType": {
+          "type": "function",
+          "arity": 1
+        },
+        "byExtension": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "list": {
+          "type": "function",
+          "arity": 0
         }
       }
     },
@@ -2849,6 +2890,10 @@
             }
           }
         },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "FORMULA_PREFIXES": {
           "type": "instance",
           "ctorName": "Array"
@@ -2856,6 +2901,14 @@
         "GuardCsvError": {
           "type": "function",
           "arity": 4
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
         },
         "PROFILES": {
           "type": "object",

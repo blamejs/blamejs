@@ -328,7 +328,7 @@ function _runCode(code) {
     // The preprocessor strips `var path = require("path")` lines, so we
     // pass the real modules in directly; examples reference them as if
     // already required.
-    "path", "os",
+    "path", "os", "fs",
   ]);
   var fakeConnect = function () { return _fakePgClient().connect(); };
   var noopThen = function () { return Promise.resolve({ rows: [], rowCount: 0 }); };
@@ -428,7 +428,8 @@ function _runCode(code) {
     "https://example.test/login",   // loginUrl
     "https://example.test/me",      // meUrl
     path,                  // node:path
-    os                     // node:os
+    os,                    // node:os
+    fs                     // node:fs
   );
 }
 
