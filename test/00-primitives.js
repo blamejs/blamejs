@@ -14311,6 +14311,33 @@ function testWebSocketHandshake() {
   check("computeAcceptKey: RFC 6455 example",
         ws.computeAcceptKey("dGhlIHNhbXBsZSBub25jZQ==") === "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 
+  // Custom handshakeGuid — operators with closed-ecosystem clients
+  // running their own magic string pass it via opts.handshakeGuid on
+  // the route. Using a different GUID produces a different accept key
+  // (otherwise the override would be a no-op, defeating the purpose).
+  var customGuid = "258EAFA5-E914-47DA-95CA-5AB5DC11CE46";
+  var customAccept = ws.computeAcceptKey("dGhlIHNhbXBsZSBub25jZQ==", customGuid);
+  check("computeAcceptKey: custom GUID produces different accept key",
+        customAccept !== "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" && customAccept.length > 0);
+  // Empty / undefined GUID falls through to the RFC default — doesn't
+  // accidentally produce a third (broken) accept key value.
+  check("computeAcceptKey: empty/undefined GUID falls back to RFC default",
+        ws.computeAcceptKey("dGhlIHNhbXBsZSBub25jZQ==", "") === "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" &&
+        ws.computeAcceptKey("dGhlIHNhbXBsZSBub25jZQ==", null) === "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+  // handleUpgrade rejects a malformed handshakeGuid at config time —
+  // typo class catches early instead of producing a broken accept-key
+  // the client can't verify, where the failure mode would be opaque.
+  var threw = false;
+  try {
+    ws.handleUpgrade(
+      { method: "GET", headers: { "upgrade": "websocket", "connection": "Upgrade",
+                                   "sec-websocket-key": "x", "sec-websocket-version": "13" } },
+      { write: function () {}, destroy: function () {}, on: function () {} },
+      Buffer.alloc(0),
+      { handshakeGuid: "not-a-uuid" });
+  } catch (e) { threw = e.message.indexOf("UUID-shaped") !== -1; }
+  check("handleUpgrade: malformed handshakeGuid rejected at config time", threw);
+
   // validateUpgradeRequest happy path
   var goodReq = {
     method: "GET",
