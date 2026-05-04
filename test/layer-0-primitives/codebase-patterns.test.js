@@ -409,7 +409,7 @@ function testNoStrayConsoleCalls() {
 
 function testNoUnresolvedMarkers() {
   // class: unresolved-marker — TODO / FIXME / HACK / XXX
-  var matches = _scan(/\b(TODO|FIXME|HACK|XXX)(?::|\s)/);
+  var matches = _scan(/\b(defer|TODO|FIXME|HACK|XXX)(?::|\s)/);
   matches = _filterMarkers(matches, "unresolved-marker");
   _report("no TODO / FIXME / HACK / XXX markers in lib/",
     matches);
@@ -421,7 +421,7 @@ function testNoTierTerminologyInLib() {
   // feedback_no_tier_terminology.md — internal validation-policy labels
   // shouldn't appear in lib/ comments or strings; describe the behavior
   // in plain terms instead.
-  var matches = _scan(/\bTier[- ]?(A|B|C)\b/i, { skipComments: false });
+  var matches = _scan(/\bTier[- ]?(A|B|C|1|2|3)\b/i, { skipComments: false });
   matches = _filterMarkers(matches, "tier-terminology");
   _report("no Tier-A / Tier-B / Tier-C terminology in lib/", matches);
 }
@@ -1306,8 +1306,8 @@ function testNoDuplicateCodeBlocks() {
   //     biggest-N hits are surfaced first because they represent the
   //     largest primitive opportunities.
   var SHINGLE_SIZES = [60, 50, 40, 30, 22, 16, 12, 8];
-  var MIN_DISTINCT_FILES = 3;          // ≥ 3 files share the shape
-  var MIN_DISTINCT_TOKENS = 6;
+  var MIN_DISTINCT_FILES = 2;          // ≥ 3 files share the shape
+  var MIN_DISTINCT_TOKENS = 5;
   var _MAX_REPORTED_PER_LENGTH = 5000;
 
   var files = _libFiles();
@@ -2144,6 +2144,21 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\/\^\[A-Za-z_\]\[A-Za-z0-9_\]\*\$\//,
     allowlist: ["lib/safe-sql.js"],
     reason: "SQL identifier validation is now safeSql.DEFAULT_IDENTIFIER_RE. The lib/safe-sql.js definition keeps the literal.",
+  },
+  {
+    id: "inline-redis-client-opts-forwarding",
+    primitive: "redisClient.pickClientOpts(cfg, prefix?)",
+    // Match the literal 9-key opts construction `{ url, password, username,
+    // tls, ca, servername, connectTimeoutMs, commandTimeoutMs,
+    // maxReconnectAttempts }` that cache-redis / pubsub-redis / queue-redis
+    // / etc. previously each rolled by hand to forward to redisClient.create.
+    // Detect via the distinctive triple `connectTimeoutMs ... commandTimeoutMs
+    // ... maxReconnectAttempts` appearing within a small window (those three
+    // keys uniquely identify a redis-client opts bag — no other framework
+    // primitive uses all three together).
+    regex: /connectTimeoutMs[\s\S]{0,300}?commandTimeoutMs[\s\S]{0,300}?maxReconnectAttempts/,
+    allowlist: ["lib/redis-client.js"],
+    reason: "Extracted to redisClient.pickClientOpts(cfg, prefix?) — single helper that returns the 9-key opts bag. cache-redis / pubsub-redis / queue-redis route through it. New redis-using primitives must call pickClientOpts; never hand-roll the 9-key forward.",
   },
   {
     id: "inline-buffer-byte-equality-loop",

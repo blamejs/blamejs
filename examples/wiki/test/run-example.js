@@ -324,6 +324,11 @@ function _runCode(code) {
     // call patterns).
     "app", "authMiddleware", "loginHandler", "users", "template",
     "metrics", "currentToken", "largeBuffer", "body", "loginUrl", "meUrl",
+    // Node built-ins commonly needed by examples that mkdir / join paths.
+    // The preprocessor strips `var path = require("path")` lines, so we
+    // pass the real modules in directly; examples reference them as if
+    // already required.
+    "path", "os",
   ]);
   var fakeConnect = function () { return _fakePgClient().connect(); };
   var noopThen = function () { return Promise.resolve({ rows: [], rowCount: 0 }); };
@@ -421,7 +426,9 @@ function _runCode(code) {
     Buffer.alloc(64),     // largeBuffer
     { foo: "bar" },       // body — generic request body
     "https://example.test/login",   // loginUrl
-    "https://example.test/me"       // meUrl
+    "https://example.test/me",      // meUrl
+    path,                  // node:path
+    os                     // node:os
   );
 }
 

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.6.17",
-  "createdAt": "2026-05-02T04:03:20.122Z",
+  "frameworkVersion": "0.7.4",
+  "createdAt": "2026-05-04T16:31:00.084Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -711,6 +711,10 @@
                 "mustRotateAfterMs": {
                   "type": "primitive",
                   "valueType": "null"
+                },
+                "useBundledCommon": {
+                  "type": "primitive",
+                  "valueType": "boolean"
                 }
               }
             },
@@ -1127,6 +1131,28 @@
         "create": {
           "type": "function",
           "arity": 1
+        },
+        "engine": {
+          "type": "object",
+          "members": {
+            "fromEsbuild": {
+              "type": "function",
+              "arity": 2
+            },
+            "passthrough": {
+              "type": "object",
+              "members": {
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "transform": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -1233,6 +1259,10 @@
           "valueType": "string"
         },
         "MTLS_USAGE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "RESTORE_USAGE": {
           "type": "primitive",
           "valueType": "string"
         },
@@ -1460,6 +1490,10 @@
         "BYTES": {
           "type": "object",
           "members": {
+            "bytes": {
+              "type": "function",
+              "arity": 1
+            },
             "gib": {
               "type": "function",
               "arity": 1
@@ -2247,6 +2281,64 @@
         }
       }
     },
+    "fileUpload": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "allowedFileTypes": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "incompleteTtlMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxActiveUploadsPerActor": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxChunkBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxChunks": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxFileBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxIdleMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxStagingBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxStreamReassemblyBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "FileUploadError": {
+          "type": "function",
+          "arity": 4
+        },
+        "UPLOAD_ID_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "forms": {
       "type": "object",
       "members": {
@@ -2307,6 +2399,10 @@
           "type": "function",
           "arity": 4
         },
+        "FileUploadError": {
+          "type": "function",
+          "arity": 4
+        },
         "FrameworkError": {
           "type": "function",
           "arity": 2
@@ -2347,6 +2443,10 @@
           "type": "function",
           "arity": 4
         },
+        "RedisError": {
+          "type": "function",
+          "arity": 4
+        },
         "SchedulerError": {
           "type": "function",
           "arity": 4
@@ -2360,6 +2460,10 @@
           "arity": 4
         },
         "SlugError": {
+          "type": "function",
+          "arity": 4
+        },
+        "StaticServeError": {
           "type": "function",
           "arity": 4
         },
@@ -2483,6 +2587,10 @@
             "DEFAULTS": {
               "type": "object",
               "members": {
+                "flushDebounceMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "persist": {
                   "type": "primitive",
                   "valueType": "string"
@@ -2557,6 +2665,27 @@
         "create": {
           "type": "function",
           "arity": 1
+        },
+        "messageFormat": {
+          "type": "object",
+          "members": {
+            "I18nMessageFormatError": {
+              "type": "function",
+              "arity": 4
+            },
+            "format": {
+              "type": "function",
+              "arity": 3
+            },
+            "looksLikeMessageFormat": {
+              "type": "function",
+              "arity": 1
+            },
+            "parse": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
@@ -2617,6 +2746,10 @@
           "type": "function",
           "arity": 0
         },
+        "makeViaOrFallback": {
+          "type": "function",
+          "arity": 2
+        },
         "runWithRequestId": {
           "type": "function",
           "arity": 2
@@ -2637,6 +2770,10 @@
         "PROTOCOLS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "bootFromEnv": {
+          "type": "function",
+          "arity": 1
         },
         "debug": {
           "type": "function",
@@ -2909,6 +3046,14 @@
             "caKeySealed": {
               "type": "primitive",
               "valueType": "string"
+            },
+            "crl": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "revocations": {
+              "type": "primitive",
+              "valueType": "string"
             }
           }
         },
@@ -2941,6 +3086,10 @@
           "type": "function",
           "arity": 1
         },
+        "generateCrl": {
+          "type": "function",
+          "arity": 1
+        },
         "packageP12": {
           "type": "function",
           "arity": 1
@@ -2948,6 +3097,306 @@
         "signClientCert": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "members": {
+        "NetworkError": {
+          "type": "function",
+          "arity": 4
+        },
+        "bootFromEnv": {
+          "type": "function",
+          "arity": 1
+        },
+        "dns": {
+          "type": "object",
+          "members": {
+            "DnsError": {
+              "type": "function",
+              "arity": 4
+            },
+            "clearCache": {
+              "type": "function",
+              "arity": 0
+            },
+            "getServers": {
+              "type": "function",
+              "arity": 0
+            },
+            "lookup": {
+              "type": "function",
+              "arity": 2
+            },
+            "nodeLookup": {
+              "type": "function",
+              "arity": 3
+            },
+            "resolve4": {
+              "type": "function",
+              "arity": 1
+            },
+            "resolve6": {
+              "type": "function",
+              "arity": 1
+            },
+            "resolveAaaa": {
+              "type": "function",
+              "arity": 1
+            },
+            "setCacheTtlMs": {
+              "type": "function",
+              "arity": 2
+            },
+            "setFamily": {
+              "type": "function",
+              "arity": 1
+            },
+            "setLookupTimeoutMs": {
+              "type": "function",
+              "arity": 1
+            },
+            "setResultOrder": {
+              "type": "function",
+              "arity": 1
+            },
+            "setServers": {
+              "type": "function",
+              "arity": 1
+            },
+            "useDnsOverHttps": {
+              "type": "function",
+              "arity": 1
+            },
+            "useDnsOverTls": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "heartbeat": {
+          "type": "object",
+          "members": {
+            "HeartbeatError": {
+              "type": "function",
+              "arity": 4
+            },
+            "start": {
+              "type": "function",
+              "arity": 1
+            },
+            "status": {
+              "type": "function",
+              "arity": 1
+            },
+            "statuses": {
+              "type": "function",
+              "arity": 0
+            },
+            "stop": {
+              "type": "function",
+              "arity": 1
+            },
+            "stopAll": {
+              "type": "function",
+              "arity": 0
+            }
+          }
+        },
+        "ntp": {
+          "type": "object",
+          "members": {
+            "bootCheck": {
+              "type": "function",
+              "arity": 1
+            },
+            "checkDrift": {
+              "type": "function",
+              "arity": 1
+            },
+            "getServers": {
+              "type": "function",
+              "arity": 0
+            },
+            "getThresholds": {
+              "type": "function",
+              "arity": 0
+            },
+            "nts": {
+              "type": "object",
+              "members": {
+                "AEAD_AES_SIV_CMAC_256": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "AEAD_CHACHA20_POLY1305": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NtsError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "aesSivDecrypt": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "aesSivEncrypt": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "performKeHandshake": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "query": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "querySingle": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "querySingle": {
+              "type": "function",
+              "arity": 2
+            },
+            "setServers": {
+              "type": "function",
+              "arity": 1
+            },
+            "setThresholds": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "proxy": {
+          "type": "object",
+          "members": {
+            "ProxyError": {
+              "type": "function",
+              "arity": 4
+            },
+            "agentFor": {
+              "type": "function",
+              "arity": 1
+            },
+            "fromEnv": {
+              "type": "function",
+              "arity": 1
+            },
+            "set": {
+              "type": "function",
+              "arity": 1
+            },
+            "shouldProxy": {
+              "type": "function",
+              "arity": 1
+            },
+            "snapshot": {
+              "type": "function",
+              "arity": 0
+            }
+          }
+        },
+        "snapshot": {
+          "type": "function",
+          "arity": 0
+        },
+        "socket": {
+          "type": "object",
+          "members": {
+            "applyToSocket": {
+              "type": "function",
+              "arity": 1
+            },
+            "defaults": {
+              "type": "function",
+              "arity": 0
+            },
+            "setDefaultKeepAlive": {
+              "type": "function",
+              "arity": 1
+            },
+            "setDefaultLinger": {
+              "type": "function",
+              "arity": 1
+            },
+            "setDefaultNoDelay": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "members": {
+            "TlsTrustError": {
+              "type": "function",
+              "arity": 4
+            },
+            "addCa": {
+              "type": "function",
+              "arity": 2
+            },
+            "addCaBundle": {
+              "type": "function",
+              "arity": 2
+            },
+            "applyToContext": {
+              "type": "function",
+              "arity": 1
+            },
+            "captureBaselineFingerprints": {
+              "type": "function",
+              "arity": 0
+            },
+            "clearAll": {
+              "type": "function",
+              "arity": 1
+            },
+            "detectBaselineDrift": {
+              "type": "function",
+              "arity": 0
+            },
+            "expiringSoon": {
+              "type": "function",
+              "arity": 1
+            },
+            "getCaPems": {
+              "type": "function",
+              "arity": 0
+            },
+            "getTrustStore": {
+              "type": "function",
+              "arity": 0
+            },
+            "isSystemTrustEnabled": {
+              "type": "function",
+              "arity": 0
+            },
+            "purgeExpired": {
+              "type": "function",
+              "arity": 1
+            },
+            "removeCa": {
+              "type": "function",
+              "arity": 2
+            },
+            "removeCaByLabel": {
+              "type": "function",
+              "arity": 2
+            },
+            "useSystemTrust": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
@@ -3014,6 +3463,14 @@
     "ntpCheck": {
       "type": "object",
       "members": {
+        "DEFAULT_DRIFT_FATAL_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_DRIFT_WARN_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
         "DEFAULT_SERVERS": {
           "type": "instance",
           "ctorName": "Array"
@@ -3030,9 +3487,17 @@
           "type": "function",
           "arity": 1
         },
+        "getThresholds": {
+          "type": "function",
+          "arity": 0
+        },
         "querySingle": {
           "type": "function",
           "arity": 2
+        },
+        "setThresholds": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -3050,9 +3515,40 @@
         "bucketOps": {
           "type": "object",
           "members": {
+            "PROTOCOLS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "azure-blob": {
+              "type": "object",
+              "members": {
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
             "create": {
               "type": "function",
               "arity": 1
+            },
+            "gcs": {
+              "type": "object",
+              "members": {
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "sigv4": {
+              "type": "object",
+              "members": {
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
             }
           }
         },
@@ -3062,98 +3558,14 @@
         }
       }
     },
-    "objectStoreRetry": {
-      "type": "object",
-      "members": {
-        "CircuitBreaker": {
-          "type": "function",
-          "arity": 2
-        },
-        "DEFAULT_BREAKER": {
-          "type": "object",
-          "members": {
-            "cooldownMs": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "failureThreshold": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "successThreshold": {
-              "type": "primitive",
-              "valueType": "number"
-            }
-          }
-        },
-        "DEFAULT_RETRY": {
-          "type": "object",
-          "members": {
-            "baseDelayMs": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "jitterFactor": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "maxAttempts": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "maxDelayMs": {
-              "type": "primitive",
-              "valueType": "number"
-            }
-          }
-        },
-        "NON_RETRYABLE_HTTP_STATUS": {
-          "type": "instance",
-          "ctorName": "Array"
-        },
-        "RETRYABLE_HTTP_STATUS": {
-          "type": "instance",
-          "ctorName": "Array"
-        },
-        "RETRYABLE_NET_ERRORS": {
-          "type": "instance",
-          "ctorName": "Array"
-        },
-        "STATES": {
-          "type": "object",
-          "members": {
-            "CLOSED": {
-              "type": "primitive",
-              "valueType": "string"
-            },
-            "HALF_OPEN": {
-              "type": "primitive",
-              "valueType": "string"
-            },
-            "OPEN": {
-              "type": "primitive",
-              "valueType": "string"
-            }
-          }
-        },
-        "backoffDelay": {
-          "type": "function",
-          "arity": 2
-        },
-        "isRetryable": {
-          "type": "function",
-          "arity": 1
-        },
-        "withRetry": {
-          "type": "function",
-          "arity": 2
-        }
-      }
-    },
     "observability": {
       "type": "object",
       "members": {
         "event": {
+          "type": "function",
+          "arity": 3
+        },
+        "safeEvent": {
           "type": "function",
           "arity": 3
         },
@@ -3228,6 +3640,19 @@
               "arity": 2
             },
             "readVar": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "ini": {
+          "type": "object",
+          "members": {
+            "IniSafeError": {
+              "type": "function",
+              "arity": 4
+            },
+            "parse": {
               "type": "function",
               "arity": 2
             }
@@ -3450,6 +3875,19 @@
         }
       }
     },
+    "pubsub": {
+      "type": "object",
+      "members": {
+        "PubsubError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "queue": {
       "type": "object",
       "members": {
@@ -3460,6 +3898,10 @@
         "PROTOCOLS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "bootFromEnv": {
+          "type": "function",
+          "arity": 1
         },
         "consume": {
           "type": "function",
@@ -3560,6 +4002,95 @@
     "requestHelpers": {
       "type": "object",
       "members": {
+        "HTTP_STATUS": {
+          "type": "object",
+          "members": {
+            "BAD_GATEWAY": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "BAD_REQUEST": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "CONFLICT": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "FORBIDDEN": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "GATEWAY_TIMEOUT": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "INTERNAL_SERVER_ERROR": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "METHOD_NOT_ALLOWED": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "NOT_FOUND": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "NOT_MODIFIED": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "NO_CONTENT": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "OK": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "PARTIAL_CONTENT": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "PAYLOAD_TOO_LARGE": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "PRECONDITION_FAILED": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "RANGE_NOT_SATISFIABLE": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "SERVICE_UNAVAILABLE": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "TOO_MANY_REQUESTS": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "UNAUTHORIZED": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "UNAVAILABLE_FOR_LEGAL_REASONS": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "UNPROCESSABLE_CONTENT": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "UNSUPPORTED_MEDIA_TYPE": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
         "appendVary": {
           "type": "function",
           "arity": 2
@@ -3798,6 +4329,14 @@
           "type": "function",
           "arity": 3
         },
+        "makeDropCallback": {
+          "type": "function",
+          "arity": 2
+        },
+        "makeScheduledFlush": {
+          "type": "function",
+          "arity": 2
+        },
         "repeating": {
           "type": "function",
           "arity": 3
@@ -3805,6 +4344,10 @@
         "safeAwait": {
           "type": "function",
           "arity": 1
+        },
+        "safeInvoke": {
+          "type": "function",
+          "arity": 3
         },
         "sleep": {
           "type": "function",
@@ -3827,13 +4370,33 @@
     "safeBuffer": {
       "type": "object",
       "members": {
+        "CRLF_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "HEX_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
         "SafeBufferError": {
           "type": "function",
           "arity": 2
         },
+        "TRAILING_HSPACE_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
         "boundedChunkCollector": {
           "type": "function",
           "arity": 1
+        },
+        "hasCrlf": {
+          "type": "function",
+          "arity": 1
+        },
+        "isHex": {
+          "type": "function",
+          "arity": 2
         },
         "normalizeText": {
           "type": "function",
@@ -3843,7 +4406,36 @@
           "type": "function",
           "arity": 1
         },
+        "stripCrlf": {
+          "type": "function",
+          "arity": 2
+        },
+        "stripTrailingHspace": {
+          "type": "function",
+          "arity": 1
+        },
         "toBuffer": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "safeEnv": {
+      "type": "object",
+      "members": {
+        "SafeEnvError": {
+          "type": "function",
+          "arity": 3
+        },
+        "load": {
+          "type": "function",
+          "arity": 2
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "readVar": {
           "type": "function",
           "arity": 2
         }
@@ -4554,6 +5146,10 @@
     "time": {
       "type": "object",
       "members": {
+        "ISO_MS_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
         "TimeError": {
           "type": "function",
           "arity": 4
@@ -4585,6 +5181,10 @@
         "startOfDay": {
           "type": "function",
           "arity": 2
+        },
+        "toIso8601NoMs": {
+          "type": "function",
+          "arity": 1
         },
         "toParts": {
           "type": "function",
@@ -4645,6 +5245,10 @@
     "vault": {
       "type": "object",
       "members": {
+        "VaultError": {
+          "type": "function",
+          "arity": 4
+        },
         "getCurrentPassphrase": {
           "type": "function",
           "arity": 0
@@ -5009,11 +5613,11 @@
         },
         "buildUpgradeResponse": {
           "type": "function",
-          "arity": 2
+          "arity": 4
         },
         "computeAcceptKey": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         },
         "handleExtendedConnect": {
           "type": "function",
