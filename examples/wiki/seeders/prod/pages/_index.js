@@ -23,6 +23,7 @@ module.exports = [
   require("./" + "notifications"),
   require("./" + "file-upload"),
   require("./" + "guard-csv"),
+  require("./" + "guard-html"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),

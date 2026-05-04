@@ -85,6 +85,7 @@ var websocket = require("./lib/websocket");
 var safeUrl = require("./lib/safe-url");
 var gateContract = require("./lib/gate-contract");
 var guardCsv = require("./lib/guard-csv");
+var guardHtml = require("./lib/guard-html");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -211,6 +212,7 @@ module.exports = {
   safeUrl:          safeUrl,
   gateContract:     gateContract,
   guardCsv:         guardCsv,
+  guardHtml:        guardHtml,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,
