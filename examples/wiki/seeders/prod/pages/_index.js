@@ -24,6 +24,7 @@ module.exports = [
   require("./" + "file-upload"),
   require("./" + "guard-csv"),
   require("./" + "guard-html"),
+  require("./" + "guard-svg"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),

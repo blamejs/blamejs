@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.7",
-  "createdAt": "2026-05-04T21:33:03.637Z",
+  "frameworkVersion": "0.7.8",
+  "createdAt": "2026-05-04T22:53:43.562Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2415,6 +2415,10 @@
           "type": "function",
           "arity": 4
         },
+        "GuardSvgError": {
+          "type": "function",
+          "arity": 4
+        },
         "HandlerError": {
           "type": "function",
           "arity": 4
@@ -2546,6 +2550,10 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "buildGuardGate": {
+          "type": "function",
+          "arity": 3
+        },
         "buildProfile": {
           "type": "function",
           "arity": 1
@@ -2586,11 +2594,35 @@
           "type": "function",
           "arity": 1
         },
+        "extractBytesAsText": {
+          "type": "function",
+          "arity": 1
+        },
+        "lookupCompliancePosture": {
+          "type": "function",
+          "arity": 4
+        },
+        "makeProfileBuilder": {
+          "type": "function",
+          "arity": 1
+        },
+        "makeRulePackLoader": {
+          "type": "function",
+          "arity": 2
+        },
         "multiplexGates": {
           "type": "function",
           "arity": 2
         },
+        "resolveProfileAndPosture": {
+          "type": "function",
+          "arity": 2
+        },
         "runGate": {
+          "type": "function",
+          "arity": 3
+        },
+        "runIssueValidator": {
           "type": "function",
           "arity": 3
         },
@@ -3671,6 +3703,625 @@
           "arity": 1
         },
         "escapeText": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardSvg": {
+      "type": "object",
+      "members": {
+        "ANIMATION_SAFE_TARGETS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ANIMATION_TAGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "BALANCED_ALLOWED_TAGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "allowAnimation": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowedTags": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cssPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "allowAnimation": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowExternalRefs": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowedTags": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cssPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "allowAnimation": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowExternalRefs": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowedTags": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cssPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urlSchemes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "allowAnimation": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowExternalRefs": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowedTags": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cssPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DANGEROUS_ATTRS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DANGEROUS_SCHEMES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DANGEROUS_TAGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "allowAnimation": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "allowExternalRefs": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "allowImageData": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "allowedAttrNames": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "allowedAttrs": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "allowedTags": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "cdataPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "cssPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "doctypePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAttrValueBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxAttrsPerTag": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxElementCount": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxUseDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "processingInstrPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "svgzPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "urlSchemes": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardSvgError": {
+          "type": "function",
+          "arity": 4
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PERMISSIVE_ALLOWED_TAGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowAnimation": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowExternalRefs": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowImageData": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowedAttrNames": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "allowedAttrs": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "allowedTags": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cssPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerTag": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElementCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUseDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgzPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urlSchemes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowAnimation": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowExternalRefs": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowImageData": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowedAttrNames": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "allowedAttrs": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "allowedTags": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cssPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerTag": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElementCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUseDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgzPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urlSchemes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowAnimation": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowExternalRefs": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowImageData": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowedAttrNames": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "allowedAttrs": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "allowedTags": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cssPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerTag": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElementCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUseDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgzPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urlSchemes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "SAFE_SCHEMES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "STRICT_ALLOWED_TAGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "URL_ATTRS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
           "type": "function",
           "arity": 1
         },

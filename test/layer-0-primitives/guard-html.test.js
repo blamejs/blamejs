@@ -203,14 +203,14 @@ function testGuardHtmlBidi() {
 }
 
 function testGuardHtmlNullByte() {
-  var nb = " ";
+  var nb = String.fromCharCode(0);
   var rv = b.guardHtml.validate("<p>x" + nb + "y</p>", { profile: "strict" });
   check("null byte detected",
         rv.issues.some(function (issue) { return issue.kind === "null-byte"; }));
 }
 
 function testGuardHtmlControlChar() {
-  var ctrl = "";   // BEL
+  var ctrl = String.fromCharCode(7);   // BEL
   var rv = b.guardHtml.validate("<p>x" + ctrl + "y</p>", { profile: "strict" });
   check("C0 control char detected",
         rv.issues.some(function (issue) { return issue.kind === "control-char"; }));

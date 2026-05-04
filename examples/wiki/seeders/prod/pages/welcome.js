@@ -126,6 +126,7 @@ module.exports = {
   '  <li><a href="/file-upload">File Upload</a> — chunked upload with hash verification + atomic finalize</li>',
   '  <li><a href="/guard-csv">CSV content safety</a> — formula-injection / bidi / control-char detection + sanitize + gate composition</li>',
   '  <li><a href="/guard-html">HTML content safety</a> — XSS / DOM-clobbering / mXSS / dangerous-tag / event-handler / dangerous-URL-scheme / CSS-injection detection + token-level sanitize + escapeText/escapeAttr</li>',
+  '  <li><a href="/guard-svg">SVG content safety</a> — script / foreignObject / animate-href-hijack / DOCTYPE billion-laughs / XXE / SVGZ / SSRF cross-origin &lt;use&gt; / CSS-injection detection + sanitize</li>',
   '  <li><a href="/guard-all">Guard-all aggregator</a> — every shipped guard ON by default; opt-out per guard with audited reason; one-line wiring into staticServe + fileUpload</li>',
   '</ul>',
   '<h3 id="next-observability">Observability &amp; tools <a class="anchor" href="#next-observability">#</a></h3>',
