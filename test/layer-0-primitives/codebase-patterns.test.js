@@ -1638,6 +1638,14 @@ function testNoDuplicateCodeBlocks() {
       reason: "guard-* family ABI — each guard's gate() factory header is `function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(opts.name || ..., opts, async function (ctx) { var text = gateContract.extractBytesAsText(ctx); if (!text) return serve; var rv = validate(text, opts); ...` — that header IS the family contract. The bodies past `var rv = validate(...)` diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ unconditionally). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the gate-shape from anyone reading the guard source.",
     },
     {
+      files: ["lib/guard-csv.js", "lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
+      reason: "guard-* family ABI extended to include filename. Same family-ABI reason as the csv/html/svg cluster — the gate() factory header through to validate() call is the family contract. filename's gate body diverges past `var rv = validate(name, opts)` because it operates on filename strings (not bytes) and has its own sanitize-eligibility branching across the larger reject-policy vocabulary (traversal/reservedChar/reservedName/ads/pathSeparators/leadingTrailing).",
+    },
+    {
+      files: ["lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
+      reason: "guard-* family PROFILES literal block — all three define the same shared-vocabulary keys (strict / balanced / permissive profiles each with bidiPolicy / controlPolicy / nullBytePolicy / zeroWidthPolicy ... cascade). The keys are the family-shared policy vocabulary; the values diverge per guard (csv/html/svg have allowedTags + URL schemes; filename has reservedChar + path-separator policies). Cannot consolidate into a shared profile object because each guard's vocabulary subset is real domain-specific configuration.",
+    },
+    {
       files: ["lib/api-snapshot.js", "lib/break-glass.js", "lib/deprecate.js"],
       reason: "Two-arg required-string validation pattern — different domains coincidentally share the `if (!opts || typeof opts !== 'object') ... if (typeof X !== 'string' || X.length === 0)` shape. Sites use file-specific error classes that diverge from the framework standard signature.",
     },
@@ -1878,6 +1886,20 @@ var KNOWN_ANTIPATTERNS = [
     regex: /forensicEvidenceStore:\s*opts\.forensicEvidenceStore[\s\S]{0,400}?onAudit:\s*opts\.onAudit/,
     allowlist: ["lib/gate-contract.js"],
     reason: "Extracted across guard-csv / guard-html / guard-svg gate(opts) factories. Every guard's gate() body forwarded the same ~16-key opts bag (mode / audit / observability / forensicEvidenceStore / cache / hooks / runtime cap / ...) to gateContract.defineGate; centralized so each guard's gate() body is just the check function plus a label.",
+  },
+  {
+    id: "inline-bad-input-issue-result",
+    primitive: "gateContract.badInputResultIfNotStringOrBuffer(input)",
+    regex: /typeof\s+input\s*!==\s*["']string["']\s*&&\s*!Buffer\.isBuffer\(input\)\s*\)\s*\{\s*return\s*\{\s*ok:\s*false,\s*issues:\s*\[\s*\{\s*kind:\s*["']bad-input["']/,
+    allowlist: ["lib/gate-contract.js"],
+    reason: "Extracted across guard-svg / guard-filename validate paths that need raw-Buffer input pre-conversion (svg for SVGZ magic, filename for overlong-UTF-8 byte scan). The bad-input fallback `{ ok: false, issues: [{ kind: bad-input, ... }] }` return shape was identical. Sanitize throw paths (different control-flow) are distinct and stay inline.",
+  },
+  {
+    id: "inline-aggregate-issues",
+    primitive: "gateContract.aggregateIssues(issues)",
+    regex: /return\s*\{\s*ok:\s*!issues\.some\(function\s*\(i\)\s*\{\s*return\s+i\.severity\s*===\s*["']critical["']\s*\|\|\s*i\.severity\s*===\s*["']high["']/,
+    allowlist: ["lib/gate-contract.js"],
+    reason: "Extracted across guard-* validate paths that build the { ok, issues } result. The 5-line ok-aggregation tail (no critical/high → ok=true) was identical across guards; consolidated.",
   },
   {
     id: "inline-issue-validator-entry",

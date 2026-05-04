@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.8",
-  "createdAt": "2026-05-04T22:53:43.562Z",
+  "frameworkVersion": "0.7.9",
+  "createdAt": "2026-05-04T23:21:18.517Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2411,6 +2411,10 @@
           "type": "function",
           "arity": 4
         },
+        "GuardFilenameError": {
+          "type": "function",
+          "arity": 4
+        },
         "GuardHtmlError": {
           "type": "function",
           "arity": 4
@@ -2549,6 +2553,14 @@
         "MODES": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "aggregateIssues": {
+          "type": "function",
+          "arity": 1
+        },
+        "badInputResultIfNotStringOrBuffer": {
+          "type": "function",
+          "arity": 1
         },
         "buildGuardGate": {
           "type": "function",
@@ -3180,6 +3192,585 @@
           "arity": 1
         },
         "serialize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardFilename": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "leadingTrailingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "adsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingTrailingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pathSeparatorsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requireAscii": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "reservedCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "shellExecExtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "adsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingTrailingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pathSeparatorsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requireAscii": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "reservedCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "shellExecExtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "adsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pathSeparatorsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "shellExecExtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "adsPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extensionAllowlist": {
+              "type": "primitive",
+              "valueType": "null"
+            },
+            "homoglyphPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "leadingTrailingPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxComponents": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pathSeparatorsPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "requireAscii": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "requireSingleDot": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "reservedCharPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "reservedNamePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "shellExecExtPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "traversalPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "unicodeNormalization": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardFilenameError": {
+          "type": "function",
+          "arity": 4
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "adsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "extensionAllowlist": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingTrailingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxComponents": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pathSeparatorsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requireAscii": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireSingleDot": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "reservedCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "shellExecExtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unicodeNormalization": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "adsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "extensionAllowlist": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingTrailingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxComponents": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pathSeparatorsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requireAscii": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireSingleDot": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "reservedCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "shellExecExtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unicodeNormalization": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "adsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "extensionAllowlist": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingTrailingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxComponents": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pathSeparatorsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requireAscii": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireSingleDot": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "reservedCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "shellExecExtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unicodeNormalization": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "SHELL_EXEC_EXTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "WIN_RESERVED_NAMES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
           "type": "function",
           "arity": 2
         },
