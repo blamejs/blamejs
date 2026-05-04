@@ -1642,6 +1642,18 @@ function testNoDuplicateCodeBlocks() {
       reason: "guard-* family ABI extended to include filename. Same family-ABI reason as the csv/html/svg cluster — the gate() factory header through to validate() call is the family contract. filename's gate body diverges past `var rv = validate(name, opts)` because it operates on filename strings (not bytes) and has its own sanitize-eligibility branching across the larger reject-policy vocabulary (traversal/reservedChar/reservedName/ads/pathSeparators/leadingTrailing).",
     },
     {
+      files: ["lib/guard-archive.js", "lib/guard-csv.js", "lib/guard-filename.js"],
+      reason: "guard-* family bottom-of-file helpers — buildProfile / compliancePosture / loadRulePack lines are now uniformly `var X = gateContract.makeXxx(...)`; the file-tail shape across guards is `var buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(name, COMPLIANCE_POSTURES, _err, prefix); } var _xRulePacks = gateContract.makeRulePackLoader(GuardXError, prefix); var loadRulePack = _xRulePacks.load; module.exports = { ... };`. The shape is the contract; the values diverge per guard.",
+    },
+    {
+      files: ["lib/guard-archive.js", "lib/guard-csv.js", "lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
+      reason: "Extended-family ABI cluster — same family-shared bottom-of-file helper surface across all five guards. See guard-archive/csv/filename cluster reason above; html/svg join because they ship the same helpers.",
+    },
+    {
+      files: ["lib/guard-archive.js", "lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
+      reason: "guard-* family PROFILES literal block — all four define the same shared-vocabulary keys (strict / balanced / permissive profiles each with bidiPolicy / controlPolicy / nullBytePolicy / zeroWidthPolicy ... cascade). The keys are the family-shared policy vocabulary; the values diverge per guard (csv/html/svg have allowedTags + URL schemes; filename has reservedChar + path-separator policies; archive has symlink/hardlink/ratio/depth caps).",
+    },
+    {
       files: ["lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
       reason: "guard-* family PROFILES literal block — all three define the same shared-vocabulary keys (strict / balanced / permissive profiles each with bidiPolicy / controlPolicy / nullBytePolicy / zeroWidthPolicy ... cascade). The keys are the family-shared policy vocabulary; the values diverge per guard (csv/html/svg have allowedTags + URL schemes; filename has reservedChar + path-separator policies). Cannot consolidate into a shared profile object because each guard's vocabulary subset is real domain-specific configuration.",
     },

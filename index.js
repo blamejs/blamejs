@@ -88,6 +88,7 @@ var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
 var guardSvg = require("./lib/guard-svg");
 var guardFilename = require("./lib/guard-filename");
+var guardArchive = require("./lib/guard-archive");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -217,6 +218,7 @@ module.exports = {
   guardHtml:        guardHtml,
   guardSvg:         guardSvg,
   guardFilename:    guardFilename,
+  guardArchive:     guardArchive,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,

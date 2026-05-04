@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.9",
-  "createdAt": "2026-05-04T23:21:18.517Z",
+  "frameworkVersion": "0.7.10",
+  "createdAt": "2026-05-04T23:44:16.968Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2407,6 +2407,10 @@
           "type": "function",
           "arity": 4
         },
+        "GuardArchiveError": {
+          "type": "function",
+          "arity": 4
+        },
         "GuardCsvError": {
           "type": "function",
           "arity": 4
@@ -2690,6 +2694,777 @@
         "list": {
           "type": "function",
           "arity": 0
+        }
+      }
+    },
+    "guardArchive": {
+      "type": "object",
+      "members": {
+        "ARCHIVE_EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "absolutePathPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "caseInsensitiveCollisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filenameProfile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "hardlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAggregateRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCompressionRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNestedDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTotalBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sparseEntryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "symlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "absolutePathPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "caseInsensitiveCollisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filenameProfile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "hardlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAggregateRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCompressionRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNestedDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTotalBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sparseEntryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "symlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "absolutePathPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "caseInsensitiveCollisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filenameProfile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "hardlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAggregateRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCompressionRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNestedDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTotalBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sparseEntryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "symlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "absolutePathPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "caseInsensitiveCollisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filenameProfile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "hardlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAggregateRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCompressionRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNestedDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTotalBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sparseEntryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "symlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "absolutePathPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "caseInsensitiveCollisionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "duplicateNamePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "encryptionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "filenameProfile": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hardlinkPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAggregateRatio": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxCompressionRatio": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxEntries": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxEntryBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxNestedDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxTotalBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nestedArchivePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "sparseEntryPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "symlinkPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "traversalPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardArchiveError": {
+          "type": "function",
+          "arity": 4
+        },
+        "MAGIC_SIGNATURES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "absolutePathPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "caseInsensitiveCollisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filenameProfile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "hardlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAggregateRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCompressionRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNestedDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTotalBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sparseEntryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "symlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "absolutePathPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "caseInsensitiveCollisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filenameProfile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "hardlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAggregateRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCompressionRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNestedDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTotalBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sparseEntryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "symlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "absolutePathPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "caseInsensitiveCollisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filenameProfile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "hardlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAggregateRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCompressionRatio": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEntryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNestedDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTotalBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sparseEntryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "symlinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "traversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "checkExtractionPath": {
+          "type": "function",
+          "arity": 2
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "inspectMagic": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "validateEntries": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

@@ -128,6 +128,7 @@ module.exports = {
   '  <li><a href="/guard-html">HTML content safety</a> — XSS / DOM-clobbering / mXSS / dangerous-tag / event-handler / dangerous-URL-scheme / CSS-injection detection + token-level sanitize + escapeText/escapeAttr</li>',
   '  <li><a href="/guard-svg">SVG content safety</a> — script / foreignObject / animate-href-hijack / DOCTYPE billion-laughs / XXE / SVGZ / SSRF cross-origin &lt;use&gt; / CSS-injection detection + sanitize</li>',
   '  <li><a href="/guard-filename">Filename content safety</a> — path-traversal / null-byte truncation / Windows reserved names / NTFS ADS / RTLO bidi spoofing / overlong UTF-8 / shell-exec extension / double-extension detection + sanitize</li>',
+  '  <li><a href="/guard-archive">Archive content safety</a> — zip-slip / symlink + hardlink escape / decompression-ratio bombs / total-size + entry-count + per-entry-size caps / nested-archive depth / duplicate-entry / encryption-mismatch / format-claim-mismatch detection</li>',
   '  <li><a href="/guard-all">Guard-all aggregator</a> — every shipped guard ON by default; opt-out per guard with audited reason; one-line wiring into staticServe + fileUpload</li>',
   '</ul>',
   '<h3 id="next-observability">Observability &amp; tools <a class="anchor" href="#next-observability">#</a></h3>',
