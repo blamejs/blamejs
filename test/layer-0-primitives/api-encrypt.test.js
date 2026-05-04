@@ -688,6 +688,343 @@ async function testApiEncryptClientRejectsBadResponse() {
   check("client rejects response missing _ct",    threw && threw.code === "CLIENT_RESPONSE_SHAPE");
 }
 
+// ---- per-session keying mode (v0.7.3) ----
+
+async function testApiEncryptPerSessionDefaultIsPerRequest() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({ keypair: keypair, audit: false });
+  check("apiEncrypt: default keying is per-request", mw.keying === "per-request");
+  check("apiEncrypt: per-request mode has no sessionStore", mw.sessionStore === null);
+}
+
+async function testApiEncryptPerSessionRejectsBadKeyingValue() {
+  var keypair = _serverKeypair();
+  var threw = null;
+  try {
+    b.middleware.apiEncrypt({ keypair: keypair, audit: false, keying: "every-second" });
+  } catch (e) { threw = e; }
+  check("apiEncrypt: rejects keying='every-second' at create-time",
+        threw && /keying must be 'per-request' .* or 'per-session'/.test(threw.message));
+}
+
+async function testApiEncryptPerSessionRejectsBadTtl() {
+  var keypair = _serverKeypair();
+  var threw = null;
+  try {
+    b.middleware.apiEncrypt({
+      keypair: keypair, audit: false,
+      keying: "per-session", sessionTtlMs: -1,
+    });
+  } catch (e) { threw = e; }
+  check("apiEncrypt: rejects negative sessionTtlMs",
+        threw && /sessionTtlMs/.test(threw.message));
+}
+
+async function testApiEncryptPerSessionRejectsBadStore() {
+  var keypair = _serverKeypair();
+  var threw = null;
+  try {
+    b.middleware.apiEncrypt({
+      keypair: keypair, audit: false,
+      keying: "per-session",
+      sessionStore: { get: function () {} },   // missing set / delete
+    });
+  } catch (e) { threw = e; }
+  check("apiEncrypt: rejects sessionStore missing set/delete",
+        threw && /sessionStore must expose/.test(threw.message));
+}
+
+async function testApiEncryptPerSessionBootstrapAndReuse() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypair:        keypair,
+    audit:          false,
+    keying:         "per-session",
+    sessionTtlMs:   60_000,
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  // First request — bootstrap envelope
+  var first = clientCtx.encryptRequest({ user: "alice" });
+  check("per-session first req: has _ek", typeof first.body._ek === "string");
+  check("per-session first req: has _sid (UUID)",
+        typeof first.body._sid === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(first.body._sid));
+  check("per-session first req: _ctr starts at 1", first.body._ctr === 1);
+
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = first.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: true, n: 1 }); });
+  await fin1;
+  check("per-session first req: 200", res1._endedStatus === 200);
+
+  var resp1 = JSON.parse(res1._captured);
+  check("per-session response: has _sid", resp1._sid === first.body._sid);
+  check("per-session response: has _ctr=1", resp1._ctr === 1);
+  check("per-session response: no _ek (response is session-keyed)", !resp1._ek);
+  var plain1 = first.decryptResponse(resp1);
+  check("per-session response decrypts: ok=true n=1", plain1.ok === true && plain1.n === 1);
+
+  // Second request — reuse session, no _ek
+  var second = clientCtx.encryptRequest({ user: "alice", action: "ping" });
+  check("per-session second req: NO _ek (KEM amortized)", !second.body._ek);
+  check("per-session second req: NO _nonce (counter replaces nonce)", !second.body._nonce);
+  check("per-session second req: same _sid as first", second.body._sid === first.body._sid);
+  check("per-session second req: _ctr=2", second.body._ctr === 2);
+
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = second.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mw(req2, res2, function () {
+    check("per-session second req: req.body decrypted",
+          req2.body.user === "alice" && req2.body.action === "ping");
+    res2.json({ ok: true, n: 2 });
+  });
+  await fin2;
+  check("per-session second req: 200", res2._endedStatus === 200);
+  var resp2 = JSON.parse(res2._captured);
+  check("per-session response 2: _ctr=2 (monotonic)", resp2._ctr === 2);
+  var plain2 = second.decryptResponse(resp2);
+  check("per-session response 2 decrypts", plain2.n === 2);
+}
+
+async function testApiEncryptPerSessionUnknownSid() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypair: keypair, audit: false, keying: "per-session",
+  });
+  // Subsequent-shape request with sid the server has never seen.
+  var req = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req.body = {
+    _ct: Buffer.from("nope").toString("base64"),
+    _ts: Date.now(),
+    _sid: "12345678-1234-4234-8234-123456789012",
+    _ctr: 5,
+  };
+  var res = _mkRes();
+  var fin = _newFinish(res);
+  await mw(req, res, function () {
+    check("middleware did NOT call next on unknown sid", false);
+  });
+  await fin;
+  check("per-session unknown-sid: 401", res._endedStatus === 401);
+  check("per-session unknown-sid: body says session-unknown",
+        /session-unknown/.test(res._captured));
+}
+
+async function testApiEncryptPerSessionCounterReplay() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypair: keypair, audit: false, keying: "per-session",
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  // Bootstrap + valid second request bring server's lastReqCtr to 2
+  var first = clientCtx.encryptRequest({ n: 1 });
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = first.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: 1 }); });
+  await fin1;
+
+  var second = clientCtx.encryptRequest({ n: 2 });
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = second.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mw(req2, res2, function () { res2.json({ ok: 2 }); });
+  await fin2;
+
+  // Replay the SECOND request — same _ctr=2 as already-seen.
+  var req3 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req3.body = second.body;
+  var res3 = _mkRes();
+  var fin3 = _newFinish(res3);
+  await mw(req3, res3, function () {
+    check("replay should NOT reach next()", false);
+  });
+  await fin3;
+  check("per-session replayed counter: 400", res3._endedStatus === 400);
+}
+
+async function testApiEncryptPerSessionExpiry() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypair: keypair, audit: false,
+    keying: "per-session",
+    sessionTtlMs: 1,                // 1ms — expires immediately
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  var first = clientCtx.encryptRequest({ n: 1 });
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = first.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: 1 }); });
+  await fin1;
+
+  // Wait so the session row is past expiresAt.
+  await new Promise(function (r) { setTimeout(r, 20); });
+
+  var second = clientCtx.encryptRequest({ n: 2 });
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = second.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mw(req2, res2, function () {
+    check("expired session should NOT reach next()", false);
+  });
+  await fin2;
+  check("per-session expired: 401", res2._endedStatus === 401);
+  check("per-session expired: body says session-expired or session-unknown",
+        /session-expired|session-unknown/.test(res2._captured));
+}
+
+async function testApiEncryptPerSessionMaxResponses() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypair:             keypair,
+    audit:               false,
+    keying:              "per-session",
+    sessionMaxResponses: 1,                // session ends after 1 response
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  var first = clientCtx.encryptRequest({ n: 1 });
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = first.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: 1 }); });
+  await fin1;
+  check("per-session maxResponses first req: 200", res1._endedStatus === 200);
+
+  // Second request exceeds the cap.
+  var second = clientCtx.encryptRequest({ n: 2 });
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = second.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mw(req2, res2, function () {
+    check("rotated session should NOT reach next()", false);
+  });
+  await fin2;
+  check("per-session maxResponses exceeded: 401", res2._endedStatus === 401);
+  check("per-session maxResponses exceeded: body says rotation-required",
+        /session-rotation-required/.test(res2._captured));
+}
+
+async function testApiEncryptPerSessionResponseCounterMonotonic() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypair: keypair, audit: false, keying: "per-session",
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  var first = clientCtx.encryptRequest({ n: 1 });
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = first.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: 1 }); });
+  await fin1;
+  var resp1 = JSON.parse(res1._captured);
+  // Client tampers: replays the same response (same _ctr).
+  var threw = null;
+  try { first.decryptResponse(resp1); }
+  catch (_e) { /* first decrypt fine */ }
+
+  // Now submit the second request and feed back response 1 again — client
+  // helper rejects because counter is not strictly increasing.
+  var second = clientCtx.encryptRequest({ n: 2 });
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = second.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mw(req2, res2, function () { res2.json({ ok: 2 }); });
+  await fin2;
+  threw = null;
+  try { second.decryptResponse(resp1); } catch (e) { threw = e; }
+  check("client rejects replayed response (counter not strictly increasing)",
+        threw && threw.code === "CLIENT_RESPONSE_REPLAY");
+}
+
+async function testApiEncryptPerSessionSessionInfo() {
+  var keypair = _serverKeypair();
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+  var info0 = clientCtx.sessionInfo();
+  check("sessionInfo before any request: sid is null",  info0.sid === null);
+  check("sessionInfo before any request: reqCtr=0",    info0.reqCtr === 0);
+  clientCtx.encryptRequest({ x: 1 });
+  var info1 = clientCtx.sessionInfo();
+  check("sessionInfo after first req: sid populated",   typeof info1.sid === "string");
+  check("sessionInfo after first req: reqCtr=1",       info1.reqCtr === 1);
+  clientCtx.encryptRequest({ x: 2 });
+  var info2 = clientCtx.sessionInfo();
+  check("sessionInfo after second req: reqCtr=2",      info2.reqCtr === 2);
+  check("sessionInfo: sid stable across requests",      info1.sid === info2.sid);
+}
+
+async function testApiEncryptPerSessionResetRotates() {
+  var keypair = _serverKeypair();
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+  var first = clientCtx.encryptRequest({ n: 1 });
+  var sid1 = first.body._sid;
+  clientCtx.resetSession();
+  var second = clientCtx.encryptRequest({ n: 2 });
+  check("client resetSession rotates sid",              second.body._sid !== sid1);
+  check("client resetSession resets ctr to 1",          second.body._ctr === 1);
+  check("client resetSession: bootstrap envelope again", typeof second.body._ek === "string");
+}
+
+async function testApiEncryptObservabilityCounters() {
+  var keypair = _serverKeypair();
+  var emitted = [];
+  var fakeObs = {
+    safeEvent: function (name, value, labels) {
+      emitted.push({ name: name, value: value, labels: labels });
+    },
+    event: function () {},
+  };
+  var mw = b.middleware.apiEncrypt({
+    keypair:       keypair,
+    audit:         false,
+    keying:        "per-session",
+    observability: fakeObs,
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+  var first = clientCtx.encryptRequest({ n: 1 });
+  var req = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req.body = first.body;
+  var res = _mkRes();
+  var fin = _newFinish(res);
+  await mw(req, res, function () { res.json({ ok: 1 }); });
+  await fin;
+  var hasCreated = emitted.some(function (e) { return e.name === "apiEncrypt.session.created"; });
+  check("observability emits apiEncrypt.session.created on bootstrap", hasCreated);
+}
+
 async function run() {
   await testNonceStoreSurface();
   await testNonceStoreMemoryBasics();
@@ -716,6 +1053,21 @@ async function run() {
   await testApiEncryptDerivedPruneInterval();
   await testApiEncryptHttpClientHelperShape();
   await testApiEncryptHttpClientRoundTrip();
+
+  // v0.7.3 — per-session keying mode
+  await testApiEncryptPerSessionDefaultIsPerRequest();
+  await testApiEncryptPerSessionRejectsBadKeyingValue();
+  await testApiEncryptPerSessionRejectsBadTtl();
+  await testApiEncryptPerSessionRejectsBadStore();
+  await testApiEncryptPerSessionBootstrapAndReuse();
+  await testApiEncryptPerSessionUnknownSid();
+  await testApiEncryptPerSessionCounterReplay();
+  await testApiEncryptPerSessionExpiry();
+  await testApiEncryptPerSessionMaxResponses();
+  await testApiEncryptPerSessionResponseCounterMonotonic();
+  await testApiEncryptPerSessionSessionInfo();
+  await testApiEncryptPerSessionResetRotates();
+  await testApiEncryptObservabilityCounters();
 }
 
 module.exports = { run: run };
