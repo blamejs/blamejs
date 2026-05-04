@@ -1911,6 +1911,40 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Extracted across primitives. Centralizes the non-negative-finite numeric check.",
   },
   {
+    id: "inline-optional-non-empty-string-array-validation",
+    primitive: "validateOpts.optionalNonEmptyStringArray(value, label, ErrorClass, code?)",
+    // Match the four-line cascade `if (opts.X !== undefined) { if
+    // (!Array.isArray(opts.X)) throw ... ; for (i...) if (typeof opts.X[i]
+    // !== "string" || opts.X[i].length === 0) throw }` — recurring across
+    // api-key (scopes), file-upload (allowedFileTypes), seeders (dependsOn),
+    // i18n (rtlLanguages / eagerLocales), and others.
+    regex: /!\s*Array\.isArray\s*\(\s*\w+\.\w+\s*\)[\s\S]{0,400}?typeof\s+\w+\.\w+\s*\[\s*\w+\s*\]\s*!==\s*["']string["']\s*\|\|\s*\w+\.\w+\s*\[\s*\w+\s*\]\.length\s*===\s*0/,
+    allowlist: ["lib/validate-opts.js"],
+    reason: "Extracted to validateOpts.optionalNonEmptyStringArray. Replaces the per-file `if (X !== undefined) { if (!Array.isArray) throw; for (i) if (typeof !== string || === '') throw }` cascade with one call.",
+  },
+  {
+    id: "inline-optional-object-with-method-validation",
+    primitive: "validateOpts.optionalObjectWithMethod(value, method, label, ErrorClass, code?, description?)",
+    // Match the literal duck-typed-handle shape: `if (opts.X !== undefined
+    // && opts.X !== null) { if (typeof opts.X !== "object" || typeof
+    // opts.X.method !== "function") throw }` — recurring across file-upload
+    // (permissions.check), notify (queue.enqueue), seeders (db.prepare),
+    // webhook (nonceStore.checkAndInsert).
+    regex: /\w+\.\w+\s*!==\s*undefined\s*&&\s*\w+\.\w+\s*!==\s*null[\s\S]{0,200}?typeof\s+\w+\.\w+\s*!==\s*["']object["']\s*\|\|\s*typeof\s+\w+\.\w+\.\w+\s*!==\s*["']function["']/,
+    allowlist: [
+      "lib/validate-opts.js",
+      // http-client.jar checks TWO methods (cookieHeaderFor + setFromResponse)
+      // — the helper validates a single method, so refactoring would
+      // silently drop one of the two checks.
+      "lib/http-client.js",
+      // mail.dkimSigner uses MailError(code, msg, permanent) — the
+      // 3-arg constructor signature drops the permanent flag if routed
+      // through validateOpts._throw which calls new errorClass(code, msg).
+      "lib/mail.js",
+    ],
+    reason: "Extracted to validateOpts.optionalObjectWithMethod. Replaces the recurring `if (X !== undefined && X !== null) { if (typeof X !== 'object' || typeof X.method !== 'function') throw }` shape used to validate optional duck-typed handles. Allowlisted sites either check multiple methods or use a 3-arg error constructor that the helper would drop.",
+  },
+  {
     id: "inline-audit-emit-wrapper",
     primitive: "validateOpts.makeAuditEmitter(audit)",
     // Detect the literal `audit.safeEmit(Object.assign({ action: action },

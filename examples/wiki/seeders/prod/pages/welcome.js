@@ -123,6 +123,7 @@ module.exports = {
   '  <li><a href="/websockets">WebSockets</a> — connection primitive + channel/room fan-out</li>',
   '  <li><a href="/mail">Mail</a> — multipart, attachments, DKIM, calendar invites, bounce intake</li>',
   '  <li><a href="/notifications">Notifications</a> — generic dispatcher + framework events</li>',
+  '  <li><a href="/file-upload">File Upload</a> — chunked upload with hash verification + atomic finalize</li>',
   '</ul>',
   '<h3 id="next-observability">Observability &amp; tools <a class="anchor" href="#next-observability">#</a></h3>',
   '<ul>',

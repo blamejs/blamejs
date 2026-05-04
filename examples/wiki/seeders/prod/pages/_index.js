@@ -21,6 +21,7 @@ module.exports = [
   require("./" + "websockets"),
   require("./" + "mail"),
   require("./" + "notifications"),
+  require("./" + "file-upload"),
   require("./" + "observability"),
   require("./" + "testing"),
   require("./" + "i18n-locale"),

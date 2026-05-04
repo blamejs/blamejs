@@ -2276,6 +2276,473 @@ async function testStaticServeIntegrityHelper() {
   }
 }
 
+// ---- staticServe v0.7.x v1-defensible-feature tests ----
+
+async function _staticTestServer(opts) {
+  var http = require("http");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  if (opts.files) {
+    var keys = Object.keys(opts.files);
+    for (var ki = 0; ki < keys.length; ki++) _writeFile(dir, keys[ki], opts.files[keys[ki]]);
+  }
+  b.staticServe._resetCacheForTest();
+  var serveOpts = Object.assign({ root: dir }, opts.create || {});
+  var fn = b.staticServe.create(serveOpts);
+  var server = http.createServer(function (req, res) {
+    fn(req, res, function () { res.writeHead(404); res.end("not found"); });
+  });
+  var port = await listenOnRandomPort(server);
+  return {
+    dir: dir, fn: fn, server: server, port: port,
+    cleanup: function () {
+      server.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+async function _statusOnly(port, urlPath, reqHeaders, method) {
+  // Bypass httpClient and use raw http so we capture status + headers +
+  // body for every response class (200/206/304/4xx/5xx alike). httpClient
+  // throws on non-2xx without retaining response headers, which the
+  // download tests need for Content-Range / Retry-After / etc.
+  var http = require("http");
+  var resp = await new Promise(function (resolve, reject) {
+    var req = http.request({
+      method: method || "GET",
+      hostname: "127.0.0.1",
+      port: port,
+      path: urlPath,
+      headers: reqHeaders || {},
+    }, function (res) {
+      var chunks = [];
+      res.on("data", function (c) { chunks.push(c); });
+      res.on("end", function () {
+        resolve({ statusCode: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) });
+      });
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  // Server-side post-flush handlers (audit emit, observability counter,
+  // bandwidth consumption update, concurrency-slot release) run after the
+  // pipe's res.end fires. Wait for the server's stream "end" listener to
+  // have run + any queued microtasks (cache.set inside _consumeBandwidth)
+  // before the test inspects emission state.
+  await new Promise(function (r) { setTimeout(r, 30); });
+  return resp;
+}
+
+async function testStaticServeRangeBasic() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "abcdefghijklmnopqrstuvwxyz" } });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin", { "Range": "bytes=0-4" });
+    check("static.range basic: 206 status",                 r.statusCode === 206);
+    check("static.range basic: Content-Range bytes 0-4/26",
+          r.headers["content-range"] === "bytes 0-4/26");
+    check("static.range basic: Content-Length 5",           Number(r.headers["content-length"]) === 5);
+    check("static.range basic: body is 'abcde'",            r.body.toString("utf8") === "abcde");
+    check("static.range basic: Accept-Ranges: bytes",       r.headers["accept-ranges"] === "bytes");
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeRangeSuffix() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "abcdefghij" } });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin", { "Range": "bytes=-3" });
+    check("static.range suffix: 206 status",                r.statusCode === 206);
+    check("static.range suffix: body is last 3 bytes",      r.body.toString("utf8") === "hij");
+    check("static.range suffix: Content-Range tail",        r.headers["content-range"] === "bytes 7-9/10");
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeRangeOpenEnd() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "abcdefghij" } });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin", { "Range": "bytes=4-" });
+    check("static.range open-end: 206",                      r.statusCode === 206);
+    check("static.range open-end: body is from 4 to end",   r.body.toString("utf8") === "efghij");
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeRangeUnsatisfiable() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "short" } });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin", { "Range": "bytes=100-200" });
+    check("static.range unsatisfiable: 416",                 r.statusCode === 416);
+    check("static.range unsatisfiable: Content-Range bytes */5",
+          r.headers["content-range"] === "bytes */5");
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeRangeMultiRefused() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "abcdefghij" } });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin", { "Range": "bytes=0-2,5-7" });
+    check("static.range multi: 416 (multipart/byteranges not v1)",
+          r.statusCode === 416);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeAcceptRangesOff() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "abc" }, create: { acceptRanges: false } });
+  try {
+    // Range header present BUT acceptRanges: false → server ignores Range,
+    // returns full 200 with no Accept-Ranges header.
+    var r = await _statusOnly(ctx.port, "/a.bin", { "Range": "bytes=0-1" });
+    check("static.acceptRanges off: ignores Range → 200",   r.statusCode === 200);
+    check("static.acceptRanges off: full body returned",    r.body.toString("utf8") === "abc");
+    check("static.acceptRanges off: no Accept-Ranges hdr",  !r.headers["accept-ranges"]);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeIfMatchPrecondition() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "hello" } });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin", { "If-Match": '"not-a-real-etag"' });
+    check("static.if-match mismatch: 412",                   r.statusCode === 412);
+    var ok = await _statusOnly(ctx.port, "/a.bin", { "If-Match": "*" });
+    check("static.if-match wildcard: 200",                   ok.statusCode === 200);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeIfModifiedSince() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "x" } });
+  try {
+    // future date → file not modified since then → 304
+    var future = new Date(Date.now() + 60_000).toUTCString();
+    var r = await _statusOnly(ctx.port, "/a.bin", { "If-Modified-Since": future });
+    check("static.if-modified-since future: 304",            r.statusCode === 304);
+    // past date → file modified since → 200
+    var past = new Date(Date.now() - 60_000_000).toUTCString();
+    var r2 = await _statusOnly(ctx.port, "/a.bin", { "If-Modified-Since": past });
+    check("static.if-modified-since past: 200",              r2.statusCode === 200);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeIfUnmodifiedSince() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "x" } });
+  try {
+    // past date → file modified since → 412
+    var past = new Date(Date.now() - 60_000_000).toUTCString();
+    var r = await _statusOnly(ctx.port, "/a.bin", { "If-Unmodified-Since": past });
+    check("static.if-unmodified-since past: 412",            r.statusCode === 412);
+    // future date → file not modified since → 200
+    var future = new Date(Date.now() + 60_000).toUTCString();
+    var r2 = await _statusOnly(ctx.port, "/a.bin", { "If-Unmodified-Since": future });
+    check("static.if-unmodified-since future: 200",          r2.statusCode === 200);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServePermissionsGate() {
+  var allow = false;
+  var permissions = {
+    check: function (req, scope) {
+      void req; void scope;
+      return allow;
+    },
+  };
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "secret" },
+    create: { permissions: permissions },
+  });
+  try {
+    var denied = await _statusOnly(ctx.port, "/a.bin");
+    check("static.permissions deny: 403",                    denied.statusCode === 403);
+    allow = true;
+    var ok = await _statusOnly(ctx.port, "/a.bin");
+    check("static.permissions allow: 200",                   ok.statusCode === 200);
+    check("static.permissions allow: body served",           ok.body.toString("utf8") === "secret");
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeRetentionGate() {
+  var servable = true;
+  var retention = {
+    isServable: function (absPath, ctx) { void absPath; void ctx; return servable; },
+  };
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "data" },
+    create: { retention: retention },
+  });
+  try {
+    var ok = await _statusOnly(ctx.port, "/a.bin");
+    check("static.retention servable: 200",                  ok.statusCode === 200);
+    servable = false;
+    var blocked = await _statusOnly(ctx.port, "/a.bin");
+    check("static.retention blocked: 451",                   blocked.statusCode === 451);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeRevokeViaInstance() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "data" } });
+  try {
+    var ok = await _statusOnly(ctx.port, "/a.bin");
+    check("static.revoke before: 200",                        ok.statusCode === 200);
+    var absPath = path.join(ctx.dir, "a.bin");
+    await ctx.fn.revoke(absPath);
+    var blocked = await _statusOnly(ctx.port, "/a.bin");
+    check("static.revoke after: 404 (opaque)",                blocked.statusCode === 404);
+    await ctx.fn.unrevoke(absPath);
+    var restored = await _statusOnly(ctx.port, "/a.bin");
+    check("static.unrevoke: 200 again",                       restored.statusCode === 200);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeRevokeStoreOpt() {
+  var revoked = new Set();
+  var revokeStore = {
+    isRevoked: function (key) { return revoked.has(key); },
+    revoke:    function (key) { revoked.add(key); return { ok: true }; },
+    unrevoke:  function (key) { revoked.delete(key); return { ok: true }; },
+  };
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "data" },
+    create: { revokeStore: revokeStore },
+  });
+  try {
+    revoked.add(path.join(ctx.dir, "a.bin"));
+    var blocked = await _statusOnly(ctx.port, "/a.bin");
+    check("static.revokeStore: 404 when revoked",             blocked.statusCode === 404);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeMimeAllowlist() {
+  // Use a real PNG magic-byte prefix so b.fileType.detect classifies it.
+  var pngHeader = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(64, 0),
+  ]);
+  var ctx = await _staticTestServer({
+    files: {},
+    create: {
+      fileType: b.fileType,
+      allowedFileTypes: ["image/png"],
+    },
+  });
+  fs.writeFileSync(path.join(ctx.dir, "img.png"), pngHeader);
+  try {
+    var ok = await _statusOnly(ctx.port, "/img.png");
+    check("static.mime allowlist: png served when in list",   ok.statusCode === 200);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeMimeAllowlistRejected() {
+  var pngHeader = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(64, 0),
+  ]);
+  var ctx = await _staticTestServer({
+    files: {},
+    create: {
+      fileType: b.fileType,
+      allowedFileTypes: ["image/jpeg"],
+    },
+  });
+  fs.writeFileSync(path.join(ctx.dir, "img.png"), pngHeader);
+  try {
+    var rejected = await _statusOnly(ctx.port, "/img.png");
+    check("static.mime allowlist: png rejected when not in list",
+          rejected.statusCode === 415);
+  } finally { ctx.cleanup(); }
+}
+
+function testStaticServeMimeRequiresFileType() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  try {
+    var threw = null;
+    try {
+      b.staticServe.create({
+        root: dir,
+        allowedFileTypes: ["image/png"],
+        // fileType: missing
+      });
+    } catch (e) { threw = e; }
+    check("static.allowedFileTypes without fileType throws",
+          threw && /fileType primitive is not wired/.test(threw.message));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function testStaticServeOnServeHook() {
+  var seen = [];
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "hello" },
+    create: {
+      onServe: async function (info) {
+        seen.push({ urlPath: info.urlPath, size: info.size });
+        info.headers["X-Custom"] = "watermark-applied";
+      },
+    },
+  });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin");
+    check("static.onServe: hook ran",                         seen.length === 1 &&
+                                                              seen[0].urlPath === "/a.bin");
+    check("static.onServe: hook can mutate headers",          r.headers["x-custom"] === "watermark-applied");
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeOnServeThrows500() {
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "x" },
+    create: {
+      onServe: async function () { throw new Error("operator-bug"); },
+    },
+  });
+  try {
+    var r = await _statusOnly(ctx.port, "/a.bin");
+    check("static.onServe throws: 500",                       r.statusCode === 500);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeAuditEmission() {
+  var emitted = [];
+  var fakeAudit = {
+    safeEmit: function (entry) { emitted.push(entry); },
+  };
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "hello" },
+    create: { audit: fakeAudit },
+  });
+  try {
+    await _statusOnly(ctx.port, "/a.bin");
+    check("static.audit success: emission count",             emitted.length === 1);
+    check("static.audit success: action name",                emitted[0].action === "staticServe.serve.success");
+    check("static.audit success: outcome=success",            emitted[0].outcome === "success");
+    check("static.audit success: resource present",           emitted[0].resource === "/a.bin");
+    check("static.audit success: size present",               typeof emitted[0].size === "number");
+    check("static.audit success: contentType present",        typeof emitted[0].contentType === "string");
+
+    // Failure emission via permissions.deny path
+    emitted.length = 0;
+    var ctx2 = await _staticTestServer({
+      files: { "a.bin": "x" },
+      create: {
+        audit: fakeAudit,
+        permissions: { check: function () { return false; } },
+      },
+    });
+    try {
+      await _statusOnly(ctx2.port, "/a.bin");
+      check("static.audit failure: emission",                 emitted.length === 1);
+      check("static.audit failure: action name",              emitted[0].action === "staticServe.serve.failure");
+      check("static.audit failure: reason permission_denied", emitted[0].reason === "permission_denied");
+    } finally { ctx2.cleanup(); }
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeAuditSuccessOptOut() {
+  var emitted = [];
+  var fakeAudit = { safeEmit: function (e) { emitted.push(e); } };
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "x" },
+    create: { audit: fakeAudit, auditSuccess: false },
+  });
+  try {
+    await _statusOnly(ctx.port, "/a.bin");
+    check("static.audit auditSuccess:false suppresses success",
+          emitted.length === 0);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeStats() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "abcd" } });
+  try {
+    await _statusOnly(ctx.port, "/a.bin");
+    await _statusOnly(ctx.port, "/a.bin");
+    var s = ctx.fn.stats();
+    check("static.stats: shape has requestsServed",           typeof s.requestsServed === "number");
+    check("static.stats: requestsServed === 2",                s.requestsServed === 2);
+    check("static.stats: bytesServed === 8 (4 bytes × 2)",    s.bytesServed === 8);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeInvalidateMeta() {
+  var ctx = await _staticTestServer({ files: { "a.bin": "v1" } });
+  try {
+    var first = await _statusOnly(ctx.port, "/a.bin");
+    var firstEtag = first.headers["etag"];
+    fs.writeFileSync(path.join(ctx.dir, "a.bin"), "v2-different");
+    // Without invalidate, the cache still holds the v1 mtime — bump mtime
+    var future = (Date.now() + 5000) / 1000;
+    fs.utimesSync(path.join(ctx.dir, "a.bin"), future, future);
+    ctx.fn.invalidateMeta(path.join(ctx.dir, "a.bin"));
+    var second = await _statusOnly(ctx.port, "/a.bin");
+    check("static.invalidateMeta: ETag updated",              second.headers["etag"] !== firstEtag);
+    check("static.invalidateMeta: body reflects new content", second.body.toString("utf8") === "v2-different");
+  } finally { ctx.cleanup(); }
+}
+
+function testStaticServeQuotaRequiresCache() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-"));
+  try {
+    var threw = null;
+    try {
+      b.staticServe.create({
+        root: dir,
+        maxBytesPerActorPerWindowMs: 1024,
+        // cache: missing
+      });
+    } catch (e) { threw = e; }
+    check("static.quota without cache: throws at create",     threw && /quotas require opts.cache/.test(threw.message));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function testStaticServeBandwidthQuotaPerActor() {
+  // In-memory cache-shape stub so the gate can run without depending on
+  // b.cache.create() in this layer-0 test.
+  var store = new Map();
+  var fakeCache = {
+    get: async function (k) { return store.get(k); },
+    set: async function (k, v) { store.set(k, v); return true; },
+  };
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "1234567890" },          // 10 bytes
+    create: {
+      cache: fakeCache,
+      maxBytesPerActorPerWindowMs: 12,         // first request fits, second exceeds
+      bandwidthWindowMs: 60_000,
+    },
+  });
+  try {
+    var first = await _statusOnly(ctx.port, "/a.bin");
+    check("static.bandwidth: first request 200",              first.statusCode === 200);
+    var second = await _statusOnly(ctx.port, "/a.bin");
+    check("static.bandwidth: second request 429 (cap exceeded)",
+          second.statusCode === 429);
+    check("static.bandwidth: Retry-After header",             !!second.headers["retry-after"]);
+  } finally { ctx.cleanup(); }
+}
+
+async function testStaticServeConcurrencyCap() {
+  var store = new Map();
+  var fakeCache = {
+    get: async function (k) { return store.get(k); },
+    set: async function (k, v) { store.set(k, v); return true; },
+  };
+  var ctx = await _staticTestServer({
+    files: { "a.bin": "x" },
+    create: {
+      cache: fakeCache,
+      maxConcurrentDownloadsPerActor: 1,
+    },
+  });
+  try {
+    // Pre-load the cache key so the first request sees current=1 already
+    // (the in-flight slot is incremented by a real previous request, but
+    // we simulate it for determinism).
+    // The fake server is loopback so extractActorContext gives ip=::1 or
+    // 127.0.0.1 depending on the OS dual-stack mode. Pre-load both keys
+    // so whichever the host uses, the cap shows as already-saturated.
+    store.set("static:conc:ip:127.0.0.1", 1);
+    store.set("static:conc:ip:::1", 1);
+    store.set("static:conc:ip:::ffff:127.0.0.1", 1);
+    var r = await _statusOnly(ctx.port, "/a.bin");
+    check("static.concurrency: at cap → 429",                  r.statusCode === 429);
+  } finally { ctx.cleanup(); }
+}
+
 function testStaticServeSurface() {
   check("b.staticServe namespace present",             typeof b.staticServe === "object");
   check("b.staticServe.create is a function",          typeof b.staticServe.create === "function");
@@ -15594,6 +16061,698 @@ function testCryptoAndModuleSurface() {
 
 // ---- run() ----
 
+// ---- b.fileUpload — chunked upload primitive ----
+
+function _fuTmpDir(suffix) {
+  var os = require("node:os");
+  var p = require("node:path");
+  var fs = require("node:fs");
+  var dir = p.join(os.tmpdir(), "fileupload-test-" + suffix + "-" +
+    require("crypto").randomBytes(6).toString("hex"));
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+function _fuChunkSha3(buf) {
+  return require("./../lib/crypto").sha3Hash(buf);
+}
+function _fuFullSha3(pieces) {
+  var h = require("crypto").createHash("sha3-512");
+  for (var i = 0; i < pieces.length; i++) h.update(pieces[i]);
+  return h.digest("hex");
+}
+
+function testFileUploadCreate() {
+  var b = require("./../index");
+  var fs = require("node:fs");
+  var dir = _fuTmpDir("create");
+  // Happy path
+  var u = b.fileUpload.create({ stagingDir: dir });
+  check("fileUpload.create returns acceptChunk fn",
+        typeof u.acceptChunk === "function" &&
+        typeof u.finalize === "function" &&
+        typeof u.purgeIncomplete === "function" &&
+        typeof u.status === "function");
+  check("fileUpload.create ensures stagingDir exists",
+        fs.existsSync(dir) && fs.statSync(dir).isDirectory());
+  // stagingDir required (throws at create-time)
+  var threwMissing = false;
+  try { b.fileUpload.create({}); }
+  catch (e) { threwMissing = e.message.indexOf("stagingDir") !== -1; }
+  check("fileUpload.create rejects missing stagingDir", threwMissing);
+  // stagingDir must be absolute (throws at create-time)
+  var threwRel = false;
+  try { b.fileUpload.create({ stagingDir: "./relative" }); }
+  catch (e) { threwRel = e.message.indexOf("absolute") !== -1; }
+  check("fileUpload.create rejects relative stagingDir", threwRel);
+}
+
+async function testFileUploadInitHappyPath() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("init") });
+  var rv = await u.init({ uploadId: "u-1", actor: { id: "alice" }, metadata: { filename: "x.bin" } });
+  check("fileUpload.init returns uploadId + createdAt + expiresAt",
+        rv.uploadId === "u-1" && typeof rv.createdAt === "number" &&
+        typeof rv.expiresAt === "number" && rv.expiresAt > rv.createdAt);
+  // Refuse re-init of existing upload
+  var threw = false;
+  try { await u.init({ uploadId: "u-1", actor: { id: "alice" } }); }
+  catch (e) { threw = e.code === "UPLOAD_EXISTS"; }
+  check("fileUpload.init refuses re-init of existing uploadId", threw);
+}
+
+async function testFileUploadAcceptChunkRequiresInit() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("requires-init") });
+  var body = Buffer.from("data", "utf8");
+  var threw = false;
+  try {
+    await u.acceptChunk({
+      uploadId: "u-no-init", index: 0, body: body,
+      sha3: _fuChunkSha3(body), actor: { id: "alice" },
+    });
+  } catch (e) { threw = e.code === "UNKNOWN_UPLOAD"; }
+  check("fileUpload.acceptChunk requires init() first", threw);
+}
+
+async function testFileUploadAcceptChunkRoundTrip() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("round-trip") });
+  await u.init({ uploadId: "u-42", actor: { id: "u-42" } });
+  var body = Buffer.from("hello world chunk 0", "utf8");
+  var rv = await u.acceptChunk({
+    uploadId: "u-42", index: 0, body: body,
+    sha3: _fuChunkSha3(body), actor: { id: "u-42" },
+  });
+  check("fileUpload.acceptChunk: returns received: 1",
+        rv.received === 1 && rv.totalBytesAccepted === body.length &&
+        rv.status === "in-progress");
+  var st = u.status("u-42", { actor: { id: "u-42" } });
+  check("fileUpload.status returns enriched info",
+        st && st.received.length === 1 && st.received[0] === 0 &&
+        st.totalBytesAccepted === body.length &&
+        typeof st.createdAt === "number");
+}
+
+async function testFileUploadHashMismatch() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("hash-mismatch") });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var body = Buffer.from("real bytes", "utf8");
+  var threw = false;
+  var threwCode = "";
+  try {
+    await u.acceptChunk({
+      uploadId: "u-1", index: 0, body: body,
+      sha3: _fuChunkSha3(Buffer.from("different bytes", "utf8")),
+      actor: { id: "u-1" },
+    });
+  } catch (e) { threw = true; threwCode = e.code; }
+  check("fileUpload.acceptChunk rejects sha3 mismatch",
+        threw && threwCode === "CHUNK_HASH_MISMATCH");
+}
+
+async function testFileUploadOversizedChunk() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("oversized"), maxChunkBytes: 100 });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var body = Buffer.alloc(200, 0xAB);
+  var threw = false;
+  try {
+    await u.acceptChunk({
+      uploadId: "u-1", index: 0, body: body, sha3: _fuChunkSha3(body), actor: { id: "u-1" },
+    });
+  } catch (e) { threw = e.code === "CHUNK_TOO_LARGE"; }
+  check("fileUpload.acceptChunk rejects body > maxChunkBytes", threw);
+}
+
+async function testFileUploadIdempotentChunkRePut() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("idempotent") });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var body = Buffer.from("idempotent chunk", "utf8");
+  var sha = _fuChunkSha3(body);
+  var rv1 = await u.acceptChunk({ uploadId: "u-1", index: 0, body: body, sha3: sha, actor: { id: "u-1" } });
+  var rv2 = await u.acceptChunk({ uploadId: "u-1", index: 0, body: body, sha3: sha, actor: { id: "u-1" } });
+  check("fileUpload.acceptChunk idempotent re-put with same body",
+        rv1.received === 1 && rv2.received === 1 && rv2.duplicate === true);
+  var body2 = Buffer.from("different bytes for same idx", "utf8");
+  var threw = false;
+  try {
+    await u.acceptChunk({ uploadId: "u-1", index: 0, body: body2, sha3: _fuChunkSha3(body2), actor: { id: "u-1" } });
+  } catch (e) { threw = e.code === "CHUNK_REUSE_MISMATCH"; }
+  check("fileUpload.acceptChunk refuses re-put with different body for same index", threw);
+}
+
+async function testFileUploadFinalize() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("finalize") });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var c0 = Buffer.from("hello ", "utf8");
+  var c1 = Buffer.from("world!", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
+  await u.acceptChunk({ uploadId: "u-1", index: 1, body: c1, sha3: _fuChunkSha3(c1), actor: { id: "u-1" } });
+  var rv = await u.finalize({
+    uploadId: "u-1",
+    manifest: {
+      totalBytes: c0.length + c1.length,
+      sha3:       _fuFullSha3([c0, c1]),
+      chunks: [
+        { index: 0, sha3: _fuChunkSha3(c0) },
+        { index: 1, sha3: _fuChunkSha3(c1) },
+      ],
+    },
+    actor: { id: "u-1" },
+  });
+  check("fileUpload.finalize returns ok + size + sha3",
+        rv.ok === true && rv.size === c0.length + c1.length &&
+        rv.sha3 === _fuFullSha3([c0, c1]));
+  check("fileUpload.finalize removes staging dir on success",
+        u.status("u-1") === null);
+}
+
+async function testFileUploadFinalizeMissingChunk() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("missing") });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var c0 = Buffer.from("only chunk 0", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
+  var threw = false;
+  try {
+    await u.finalize({
+      uploadId: "u-1",
+      manifest: {
+        totalBytes: c0.length + 6,
+        sha3:       _fuFullSha3([c0, Buffer.from("absent", "utf8")]),
+        chunks: [
+          { index: 0, sha3: _fuChunkSha3(c0) },
+          { index: 1, sha3: _fuChunkSha3(Buffer.from("absent", "utf8")) },
+        ],
+      },
+      actor: { id: "u-1" },
+    });
+  } catch (e) { threw = e.code === "MISSING_CHUNK"; }
+  check("fileUpload.finalize rejects when manifest references missing chunk", threw);
+}
+
+async function testFileUploadFinalizeIndexGap() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("indexgap") });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var c0 = Buffer.from("c0", "utf8");
+  var c2 = Buffer.from("c2", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
+  await u.acceptChunk({ uploadId: "u-1", index: 2, body: c2, sha3: _fuChunkSha3(c2), actor: { id: "u-1" } });
+  var threw = false;
+  try {
+    await u.finalize({
+      uploadId: "u-1",
+      manifest: {
+        totalBytes: 4,
+        sha3:       _fuFullSha3([c0, c2]),
+        chunks: [
+          { index: 0, sha3: _fuChunkSha3(c0) },
+          { index: 2, sha3: _fuChunkSha3(c2) },
+        ],
+      },
+      actor: { id: "u-1" },
+    });
+  } catch (e) { threw = e.code === "MANIFEST_INDEX_GAP"; }
+  check("fileUpload.finalize rejects manifest with index gap", threw);
+}
+
+async function testFileUploadFinalizeManifestSizeMismatch() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("sizemismatch") });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var c0 = Buffer.from("12345", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
+  var threw = false;
+  try {
+    await u.finalize({
+      uploadId: "u-1",
+      manifest: {
+        totalBytes: 999,                    // lying about the size
+        sha3:       _fuFullSha3([c0]),
+        chunks:     [{ index: 0, sha3: _fuChunkSha3(c0) }],
+      },
+      actor: { id: "u-1" },
+    });
+  } catch (e) { threw = e.code === "MANIFEST_SIZE_MISMATCH"; }
+  check("fileUpload.finalize rejects mismatched manifest.totalBytes", threw);
+}
+
+async function testFileUploadFinalizeManifestHashMismatch() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("hashmismatch") });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var c0 = Buffer.from("real", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
+  var threw = false;
+  try {
+    await u.finalize({
+      uploadId: "u-1",
+      manifest: {
+        totalBytes: c0.length,
+        sha3:       _fuChunkSha3(Buffer.from("fake", "utf8")), // wrong total hash
+        chunks:     [{ index: 0, sha3: _fuChunkSha3(c0) }],
+      },
+      actor: { id: "u-1" },
+    });
+  } catch (e) { threw = e.code === "MANIFEST_HASH_MISMATCH"; }
+  check("fileUpload.finalize rejects mismatched manifest.sha3", threw);
+}
+
+async function testFileUploadFinalizeFileTooLarge() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({
+    stagingDir:    _fuTmpDir("toolarge"),
+    maxFileBytes:  10,
+    maxChunkBytes: 100,
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "u-1" } });
+  var c0 = Buffer.alloc(20, 0xAB);
+  // Cumulative cap fires at acceptChunk now (the running total
+  // immediately exceeds maxFileBytes), reclaiming the staging dir.
+  var threw = false;
+  try {
+    await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
+  } catch (e) { threw = e.code === "FILE_TOO_LARGE"; }
+  check("fileUpload.acceptChunk rejects when cumulative > maxFileBytes", threw);
+}
+
+async function testFileUploadPathTraversalRejected() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("traversal") });
+  var bad = ["../escape", "/abs", "with/slash", "with\\backslash",
+             "with\0null", "with spaces", "with*glob", ""];
+  var allRejected = true;
+  for (var i = 0; i < bad.length; i++) {
+    var threw = false;
+    try { await u.init({ uploadId: bad[i], actor: { id: "u-1" } }); }
+    catch (e) { threw = e.code === "BAD_UPLOAD_ID"; }
+    if (!threw) allRejected = false;
+  }
+  check("fileUpload: hostile uploadIds (path traversal / null / glob / empty) all rejected",
+        allRejected);
+}
+
+async function testFileUploadPurgeIncomplete() {
+  var b = require("./../index");
+  var fs = require("node:fs");
+  var p = require("node:path");
+  var stagingDir = _fuTmpDir("purge");
+  // Use a fake clock so we can advance "time" past the TTL.
+  var fakeNow = 1700000000000;
+  var u = b.fileUpload.create({
+    stagingDir:      stagingDir,
+    incompleteTtlMs: 1000,                 // 1 second TTL
+    maxIdleMs:       500,
+    clock:           function () { return fakeNow; },
+  });
+  await u.init({ uploadId: "u-incomplete", actor: { id: "u-1" } });
+  var c0 = Buffer.from("incomplete chunk", "utf8");
+  await u.acceptChunk({ uploadId: "u-incomplete", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
+  // Advance fake clock so TTL elapses.
+  fakeNow = fakeNow + 5000;
+  var ud = p.join(stagingDir, "u-incomplete");
+  var rv = await u.purgeIncomplete();
+  check("fileUpload.purgeIncomplete reclaims expired staging dirs",
+        rv.purged === 1 && rv.ids.indexOf("u-incomplete") !== -1);
+  check("fileUpload.purgeIncomplete actually deletes the directory",
+        !fs.existsSync(ud));
+}
+
+async function testFileUploadOnFinalizeCallback() {
+  var b = require("./../index");
+  var captured = null;
+  var u = b.fileUpload.create({
+    stagingDir: _fuTmpDir("oncallback"),
+    onFinalize: async function (info) {
+      captured = info;
+      return { ok: true, key: "uploads/" + info.actor.id + "/" + info.uploadId,
+               size: info.size, sha3: info.sha3 };
+    },
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "u-99" }, metadata: { filename: "payload.bin" } });
+  var c0 = Buffer.from("payload", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-99" } });
+  var rv = await u.finalize({
+    uploadId: "u-1",
+    manifest: {
+      totalBytes: c0.length, sha3: _fuFullSha3([c0]),
+      chunks: [{ index: 0, sha3: _fuChunkSha3(c0) }],
+    },
+    actor: { id: "u-99" },
+  });
+  check("fileUpload.finalize: onFinalize receives uploadId / body / sha3 / size / actor / metadata",
+        captured &&
+        captured.uploadId === "u-1" &&
+        Buffer.isBuffer(captured.body) &&
+        captured.body.toString("utf8") === "payload" &&
+        captured.size === c0.length &&
+        typeof captured.sha3 === "string" && captured.sha3.length === 128 &&
+        captured.actor && captured.actor.id === "u-99" &&
+        captured.metadata && captured.metadata.filename === "payload.bin");
+  check("fileUpload.finalize: onFinalize return value passed through",
+        rv.ok === true && rv.key === "uploads/u-99/u-1" && rv.size === c0.length);
+}
+
+async function testFileUploadMetadataStash() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("metadata") });
+  await u.init({
+    uploadId: "u-1",
+    actor:    { id: "alice" },
+    metadata: { filename: "report.pdf", mimeType: "application/pdf", category: "annual-report" },
+  });
+  var st = u.status("u-1", { actor: { id: "alice" } });
+  check("fileUpload metadata persisted across init → status",
+        st && st.metadata.filename === "report.pdf" &&
+        st.metadata.mimeType === "application/pdf" &&
+        st.metadata.category === "annual-report");
+  // Metadata cap
+  var threw = false;
+  try {
+    await u.init({
+      uploadId: "u-2", actor: { id: "alice" },
+      metadata: { huge: "x".repeat(70000) },
+    });
+  } catch (e) { threw = e.code === "METADATA_TOO_LARGE"; }
+  check("fileUpload.init refuses metadata > METADATA_MAX_BYTES", threw);
+}
+
+async function testFileUploadActorQuota() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({
+    stagingDir: _fuTmpDir("actor-quota"),
+    maxActiveUploadsPerActor: 2,
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  await u.init({ uploadId: "u-2", actor: { id: "alice" } });
+  var threw = false;
+  try { await u.init({ uploadId: "u-3", actor: { id: "alice" } }); }
+  catch (e) { threw = e.code === "ACTOR_QUOTA_EXCEEDED"; }
+  check("fileUpload.init refuses when actor exceeds maxActiveUploadsPerActor", threw);
+  // Different actor not blocked
+  await u.init({ uploadId: "u-4", actor: { id: "bob" } });
+  check("fileUpload.init: per-actor quota does not affect other actors",
+        u.status("u-4", { actor: { id: "bob" } }) !== null);
+}
+
+async function testFileUploadStagingQuota() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({
+    stagingDir:      _fuTmpDir("staging-quota"),
+    maxStagingBytes: 100,                       // tiny cap
+    maxFileBytes:    1000,
+    maxChunkBytes:   1000,
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  // Add ~80 bytes via a chunk; second init within the cap.
+  var body = Buffer.alloc(80, 0xAB);
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: body,
+                        sha3: _fuChunkSha3(body), actor: { id: "alice" } });
+  // Now total bytes accepted = 80, > 100? No, ≤ cap. Force over: another upload pushes total over.
+  await u.init({ uploadId: "u-2", actor: { id: "alice" } });
+  var body2 = Buffer.alloc(80, 0xCD);
+  await u.acceptChunk({ uploadId: "u-2", index: 0, body: body2,
+                        sha3: _fuChunkSha3(body2), actor: { id: "alice" } });
+  // Now total = 160 bytes > 100 cap. Next init blocked.
+  var threw = false;
+  try { await u.init({ uploadId: "u-3", actor: { id: "alice" } }); }
+  catch (e) { threw = e.code === "STAGING_QUOTA_EXCEEDED"; }
+  check("fileUpload.init refuses when total staging > maxStagingBytes", threw);
+}
+
+async function testFileUploadOnChunkHook() {
+  var b = require("./../index");
+  var seen = [];
+  var u = b.fileUpload.create({
+    stagingDir: _fuTmpDir("onchunk"),
+    onChunk: async function (info) {
+      seen.push({ index: info.index, size: info.body.length, metadata: info.metadata });
+    },
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" }, metadata: { tag: "ok" } });
+  var body = Buffer.from("trace me", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: body,
+                        sha3: _fuChunkSha3(body), actor: { id: "alice" } });
+  check("fileUpload.acceptChunk: onChunk hook invoked with chunk info + metadata",
+        seen.length === 1 && seen[0].index === 0 &&
+        seen[0].size === body.length && seen[0].metadata.tag === "ok");
+}
+
+async function testFileUploadOnChunkRejection() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({
+    stagingDir: _fuTmpDir("onchunk-reject"),
+    onChunk: async function (info) {
+      if (info.body.indexOf(Buffer.from("VIRUS")) !== -1) {
+        throw new Error("simulated AV: malware signature detected");
+      }
+    },
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  var clean = Buffer.from("safe payload", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: clean,
+                        sha3: _fuChunkSha3(clean), actor: { id: "alice" } });
+  var dirty = Buffer.from("payload with VIRUS marker", "utf8");
+  var threw = false;
+  try {
+    await u.acceptChunk({ uploadId: "u-1", index: 1, body: dirty,
+                          sha3: _fuChunkSha3(dirty), actor: { id: "alice" } });
+  } catch (e) { threw = e.message.indexOf("malware") !== -1; }
+  check("fileUpload.acceptChunk: onChunk hook rejection refuses the chunk", threw);
+}
+
+async function testFileUploadIdleTimeout() {
+  var b = require("./../index");
+  var fakeNow = 1700000000000;
+  var u = b.fileUpload.create({
+    stagingDir: _fuTmpDir("idle"),
+    maxIdleMs:  1000,
+    clock:      function () { return fakeNow; },
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  var c0 = Buffer.from("first", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0,
+                        sha3: _fuChunkSha3(c0), actor: { id: "alice" } });
+  // Advance past idle timeout
+  fakeNow = fakeNow + 5000;
+  var c1 = Buffer.from("second", "utf8");
+  var threw = false;
+  try {
+    await u.acceptChunk({ uploadId: "u-1", index: 1, body: c1,
+                          sha3: _fuChunkSha3(c1), actor: { id: "alice" } });
+  } catch (e) { threw = e.code === "UPLOAD_IDLE_EXPIRED"; }
+  check("fileUpload.acceptChunk refuses when upload exceeds maxIdleMs since last chunk", threw);
+}
+
+async function testFileUploadStreamReassembly() {
+  var b = require("./../index");
+  var receivedStream = null;
+  var receivedBuffer = null;
+  var u = b.fileUpload.create({
+    stagingDir:                _fuTmpDir("stream"),
+    maxStreamReassemblyBytes:  10,                       // force stream mode
+    maxChunkBytes:             100,
+    onFinalize: async function (info) {
+      receivedBuffer = info.body;
+      receivedStream = info.stream;
+      // Drain stream to verify it works
+      if (info.stream) {
+        var chunks = [];
+        await new Promise(function (resolve, reject) {
+          info.stream.on("data", function (c) { chunks.push(c); });
+          info.stream.on("end", resolve);
+          info.stream.on("error", reject);
+        });
+        return { ok: true, drained: Buffer.concat(chunks).toString("utf8") };
+      }
+      return { ok: true, drained: info.body.toString("utf8") };
+    },
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  var c0 = Buffer.from("hello ", "utf8");
+  var c1 = Buffer.from("world! large enough", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "alice" } });
+  await u.acceptChunk({ uploadId: "u-1", index: 1, body: c1, sha3: _fuChunkSha3(c1), actor: { id: "alice" } });
+  var rv = await u.finalize({
+    uploadId: "u-1",
+    manifest: {
+      totalBytes: c0.length + c1.length,
+      sha3:       _fuFullSha3([c0, c1]),
+      chunks: [
+        { index: 0, sha3: _fuChunkSha3(c0) },
+        { index: 1, sha3: _fuChunkSha3(c1) },
+      ],
+    },
+    actor: { id: "alice" },
+  });
+  check("fileUpload.finalize: above maxStreamReassemblyBytes uses stream mode (body=null, stream≠null)",
+        receivedBuffer === null && receivedStream !== null);
+  check("fileUpload.finalize: stream drains to the original concatenated bytes",
+        rv.drained === "hello world! large enough");
+}
+
+async function testFileUploadStatusEnriched() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("status") });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" }, metadata: { tag: "report" } });
+  var c0 = Buffer.from("data", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "alice" } });
+  var st = u.status("u-1", { actor: { id: "alice" } });
+  check("fileUpload.status returns received indices + total bytes + createdAt + metadata + expiresAt",
+        st &&
+        Array.isArray(st.received) && st.received.length === 1 && st.received[0] === 0 &&
+        st.totalBytesAccepted === c0.length &&
+        typeof st.createdAt === "number" &&
+        typeof st.lastChunkAt === "number" && st.lastChunkAt >= st.createdAt &&
+        st.metadata && st.metadata.tag === "report" &&
+        typeof st.expiresAt === "number" && st.expiresAt > st.createdAt);
+  // Unknown upload returns null
+  check("fileUpload.status returns null for unknown upload",
+        u.status("does-not-exist", { actor: { id: "alice" } }) === null);
+}
+
+async function testFileUploadList() {
+  var b = require("./../index");
+  var u = b.fileUpload.create({ stagingDir: _fuTmpDir("list") });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" }, metadata: { tag: "1" } });
+  await u.init({ uploadId: "u-2", actor: { id: "alice" }, metadata: { tag: "2" } });
+  await u.init({ uploadId: "u-3", actor: { id: "bob" },   metadata: { tag: "3" } });
+  // Default scope: actor sees only their own
+  var aliceList = u.list({ actor: { id: "alice" } });
+  check("fileUpload.list: default-scoped to actor returns 2 of 3 uploads",
+        aliceList.length === 2 &&
+        aliceList.every(function (item) { return item.actorId === "alice"; }));
+  // scopeToActor: false → see everything
+  var allList = u.list({ actor: { id: "alice" }, scopeToActor: false });
+  check("fileUpload.list: scopeToActor:false returns all uploads",
+        allList.length === 3);
+  // Each entry has metadata + createdAt + lastChunkAt + totalBytesAccepted
+  check("fileUpload.list: entries have full enriched shape",
+        aliceList[0].uploadId &&
+        aliceList[0].metadata &&
+        typeof aliceList[0].createdAt === "number" &&
+        typeof aliceList[0].lastChunkAt === "number" &&
+        typeof aliceList[0].totalBytesAccepted === "number");
+}
+
+async function testFileUploadCancel() {
+  var b = require("./../index");
+  var fs = require("node:fs");
+  var p = require("node:path");
+  var stagingDir = _fuTmpDir("cancel");
+  var u = b.fileUpload.create({ stagingDir: stagingDir });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  var c0 = Buffer.from("partial", "utf8");
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "alice" } });
+  // Cancel
+  var rv = await u.cancelUpload("u-1", { actor: { id: "alice" } });
+  check("fileUpload.cancelUpload removes staging + returns ok",
+        rv.ok === true && rv.uploadId === "u-1" &&
+        !fs.existsSync(p.join(stagingDir, "u-1")));
+  // Cancel non-existent → not-found
+  var rv2 = await u.cancelUpload("does-not-exist", { actor: { id: "alice" } });
+  check("fileUpload.cancelUpload returns ok:false for unknown uploadId",
+        rv2.ok === false && rv2.reason === "not-found");
+}
+
+async function testFileUploadPermissionsIntegration() {
+  var b = require("./../index");
+  var calls = [];
+  var fakePerms = {
+    check: function (actor, scope) {
+      calls.push({ actor: actor && actor.id, scope: scope });
+      // Allow init / accept / finalize for alice; deny everything for mallory.
+      return actor && actor.id === "alice";
+    },
+  };
+  var u = b.fileUpload.create({
+    stagingDir:  _fuTmpDir("perms"),
+    permissions: fakePerms,
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  var threw = false;
+  try { await u.init({ uploadId: "u-2", actor: { id: "mallory" } }); }
+  catch (e) { threw = e.code === "PERMISSION_DENIED"; }
+  check("fileUpload.init: permission-denied actor refused with PERMISSION_DENIED",
+        threw && calls.some(function (c) { return c.scope === "fileUpload.init"; }));
+  // Even acceptChunk checks
+  var body = Buffer.from("x", "utf8");
+  var threwAccept = false;
+  try {
+    await u.acceptChunk({ uploadId: "u-1", index: 0, body: body,
+                          sha3: _fuChunkSha3(body), actor: { id: "mallory" } });
+  } catch (e) { threwAccept = e.code === "PERMISSION_DENIED"; }
+  check("fileUpload.acceptChunk: also permission-checked", threwAccept);
+}
+
+async function testFileUploadMimeAllowlist() {
+  var b = require("./../index");
+  // PNG magic: 89 50 4E 47 0D 0A 1A 0A
+  var pngHeader = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                               0, 0, 0, 13, 73, 72, 68, 82]); // partial valid PNG
+  var u = b.fileUpload.create({
+    stagingDir:        _fuTmpDir("mime-ok"),
+    allowedFileTypes:  ["image/*"],
+    fileType:          b.fileType,
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: pngHeader,
+                        sha3: _fuChunkSha3(pngHeader), actor: { id: "alice" } });
+  var rv = await u.finalize({
+    uploadId: "u-1",
+    manifest: {
+      totalBytes: pngHeader.length, sha3: _fuFullSha3([pngHeader]),
+      chunks: [{ index: 0, sha3: _fuChunkSha3(pngHeader) }],
+    },
+    actor: { id: "alice" },
+  });
+  check("fileUpload.finalize: PNG bytes pass image/* allowlist",
+        rv.ok === true && rv.size === pngHeader.length);
+}
+
+async function testFileUploadMimeAllowlistRejected() {
+  var b = require("./../index");
+  // Plain UTF-8 text, not an image
+  var text = Buffer.from("not an image at all", "utf8");
+  var u = b.fileUpload.create({
+    stagingDir:        _fuTmpDir("mime-reject"),
+    allowedFileTypes:  ["image/*"],
+    fileType:          b.fileType,
+  });
+  await u.init({ uploadId: "u-1", actor: { id: "alice" } });
+  await u.acceptChunk({ uploadId: "u-1", index: 0, body: text,
+                        sha3: _fuChunkSha3(text), actor: { id: "alice" } });
+  var threw = false;
+  try {
+    await u.finalize({
+      uploadId: "u-1",
+      manifest: {
+        totalBytes: text.length, sha3: _fuFullSha3([text]),
+        chunks: [{ index: 0, sha3: _fuChunkSha3(text) }],
+      },
+      actor: { id: "alice" },
+    });
+  } catch (e) { threw = e.code === "MIME_NOT_ALLOWED" || e.code === "MIME_NOT_DETECTED"; }
+  check("fileUpload.finalize: non-image bytes rejected by image/* allowlist", threw);
+}
+
+async function testFileUploadMimeAllowlistRequiresFileType() {
+  var b = require("./../index");
+  var threw = false;
+  try {
+    b.fileUpload.create({
+      stagingDir:       _fuTmpDir("mime-misconfig"),
+      allowedFileTypes: ["image/*"],
+      // fileType NOT wired
+    });
+  } catch (e) { threw = e.message.indexOf("fileType primitive is not wired") !== -1; }
+  check("fileUpload.create: allowedFileTypes without fileType primitive throws at boot", threw);
+}
+
 async function run() {
   // entrypoint module-surface sanity
   testCryptoAndModuleSurface();
@@ -15684,6 +16843,32 @@ async function run() {
   await testStaticServeIndexFile();
   await testStaticServeMethodGuard();
   await testStaticServeIntegrityHelper();
+  // v0.7.x download-side audit
+  await testStaticServeRangeBasic();
+  await testStaticServeRangeSuffix();
+  await testStaticServeRangeOpenEnd();
+  await testStaticServeRangeUnsatisfiable();
+  await testStaticServeRangeMultiRefused();
+  await testStaticServeAcceptRangesOff();
+  await testStaticServeIfMatchPrecondition();
+  await testStaticServeIfModifiedSince();
+  await testStaticServeIfUnmodifiedSince();
+  await testStaticServePermissionsGate();
+  await testStaticServeRetentionGate();
+  await testStaticServeRevokeViaInstance();
+  await testStaticServeRevokeStoreOpt();
+  await testStaticServeMimeAllowlist();
+  await testStaticServeMimeAllowlistRejected();
+  testStaticServeMimeRequiresFileType();
+  await testStaticServeOnServeHook();
+  await testStaticServeOnServeThrows500();
+  await testStaticServeAuditEmission();
+  await testStaticServeAuditSuccessOptOut();
+  await testStaticServeStats();
+  await testStaticServeInvalidateMeta();
+  testStaticServeQuotaRequiresCache();
+  await testStaticServeBandwidthQuotaPerActor();
+  await testStaticServeConcurrencyCap();
   // mail — message contract + pluggable transport
   testMailSurface();
   testMailCreateValidation();
@@ -16269,6 +17454,37 @@ async function run() {
   testEnvReadVar();
   // redact primitive
   testRedact();
+  // file-upload primitive
+  testFileUploadCreate();
+  await testFileUploadInitHappyPath();
+  await testFileUploadAcceptChunkRequiresInit();
+  await testFileUploadAcceptChunkRoundTrip();
+  await testFileUploadHashMismatch();
+  await testFileUploadOversizedChunk();
+  await testFileUploadIdempotentChunkRePut();
+  await testFileUploadFinalize();
+  await testFileUploadFinalizeMissingChunk();
+  await testFileUploadFinalizeIndexGap();
+  await testFileUploadFinalizeManifestSizeMismatch();
+  await testFileUploadFinalizeManifestHashMismatch();
+  await testFileUploadFinalizeFileTooLarge();
+  await testFileUploadPathTraversalRejected();
+  await testFileUploadPurgeIncomplete();
+  await testFileUploadOnFinalizeCallback();
+  await testFileUploadMetadataStash();
+  await testFileUploadActorQuota();
+  await testFileUploadStagingQuota();
+  await testFileUploadOnChunkHook();
+  await testFileUploadOnChunkRejection();
+  await testFileUploadIdleTimeout();
+  await testFileUploadStreamReassembly();
+  await testFileUploadStatusEnriched();
+  await testFileUploadList();
+  await testFileUploadCancel();
+  await testFileUploadPermissionsIntegration();
+  await testFileUploadMimeAllowlist();
+  await testFileUploadMimeAllowlistRejected();
+  await testFileUploadMimeAllowlistRequiresFileType();
 }
 
 module.exports = {

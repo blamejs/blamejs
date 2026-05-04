@@ -160,6 +160,7 @@ var testing = require("./lib/testing");
 var configDrift = require("./lib/config-drift");
 var security = require("./lib/security-assert");
 var fileType = require("./lib/file-type");
+var fileUpload = require("./lib/file-upload");
 var dualControl = require("./lib/dual-control");
 var retention = require("./lib/retention");
 var network = require("./lib/network");
@@ -274,6 +275,7 @@ module.exports = {
   configDrift:      configDrift,
   security:         security,
   fileType:         fileType,
+  fileUpload:       fileUpload,
   dualControl:      dualControl,
   retention:        retention,
   network:          network,
