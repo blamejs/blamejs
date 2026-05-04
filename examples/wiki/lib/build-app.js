@@ -17,6 +17,9 @@
 
 var path = require("node:path");
 var b = require("@blamejs/core");
+var adminRoute = require("../routes/admin");
+var integrationRoutes = require("../routes/integration");
+var pagesRoute = require("../routes/pages");
 
 // Strict CSP — drops 'unsafe-inline' from style-src + script-src. All
 // assets are external; cspNonce middleware adds 'nonce-XYZ' when the
@@ -54,7 +57,7 @@ async function buildApp(opts) {
   if (!opts.dataDir) throw new Error("buildApp: opts.dataDir is required");
 
   var dataDir = opts.dataDir;
-  var port = opts.port !== undefined ? opts.port : 8080;
+  var port = opts.port !== undefined ? opts.port : b.constants.BYTES.bytes(8080);
   var adminEmail = opts.adminEmail || "admin@blamejs.com";
   var adminPassword = opts.adminPassword || null;
   var webhookUrl = opts.webhookUrl || null;
@@ -72,7 +75,7 @@ async function buildApp(opts) {
     },
     outdir:   path.join(__dirname, "..", "public", "dist"),
     manifest: "manifest.json",
-    hashLen:  16,
+    hashLen:  b.constants.BYTES.bytes(16),
   });
   var bundleResult = await bundler.build();
   var assets = {};
@@ -186,8 +189,7 @@ async function buildApp(opts) {
   // honours that header for cookie Secure-flag detection. Default off
   // so a misconfigured deployment doesn't accept attacker-supplied
   // x-forwarded-proto: https as proof the request was over TLS.
-  var trustProxy = process.env.WIKI_TRUST_PROXY === "true" ||
-                   process.env.WIKI_TRUST_PROXY === "1";
+  var trustProxy = b.safeEnv.readVar("WIKI_TRUST_PROXY", { type: "boolean", default: false });
 
   // Network allowlist for /admin paths — when WIKI_ADMIN_ALLOWED_CIDRS
   // is set (comma-separated CIDR list), the wiki mounts
@@ -195,12 +197,12 @@ async function buildApp(opts) {
   // the application-layer auth gate. Operators behind a reverse proxy
   // typically configure this at the proxy / NACL layer instead and
   // leave the env var unset; this is the in-process fallback.
-  var adminAllowedCidrs = (process.env.WIKI_ADMIN_ALLOWED_CIDRS || "")
+  var adminAllowedCidrs = (b.safeEnv.readVar("WIKI_ADMIN_ALLOWED_CIDRS") || "")
     .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
   // Optional deny-list for the same paths — "10.0.0.0/8 except
   // 10.0.99.0/24" patterns. Comma-separated CIDR list; empty = no
   // deny rules.
-  var adminDeniedCidrs = (process.env.WIKI_ADMIN_DENIED_CIDRS || "")
+  var adminDeniedCidrs = (b.safeEnv.readVar("WIKI_ADMIN_DENIED_CIDRS") || "")
     .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
 
   // Network configurability — read NTP / DNS / proxy / DPI-trust / socket
@@ -228,7 +230,7 @@ async function buildApp(opts) {
   // WIKI_INTEGRATION_TEST=1. Production deploys MUST NOT set this var;
   // the routes are guarded by the mount-gate below and otherwise
   // unreachable.
-  var integrationMode = process.env.WIKI_INTEGRATION_TEST === "1";
+  var integrationMode = b.safeEnv.readVar("WIKI_INTEGRATION_TEST", { type: "boolean", default: false });
   var testCache = null;
   var testMail = null;
   var testObjectStore = null;
@@ -238,24 +240,26 @@ async function buildApp(opts) {
       namespace: "wiki.integration.cache",
       audit:     b.audit,
     });
-    if (process.env.WIKI_INTEGRATION_SMTP_HOST) {
+    var smtpHost = b.safeEnv.readVar("WIKI_INTEGRATION_SMTP_HOST");
+    if (smtpHost) {
       testMail = b.mail.transports.smtp({
-        host:               process.env.WIKI_INTEGRATION_SMTP_HOST,
-        port:               parseInt(process.env.WIKI_INTEGRATION_SMTP_PORT || "1025", 10),
-        ehloName:           process.env.WIKI_INTEGRATION_SMTP_EHLO || "blamejs-wiki",
-        timeoutMs:          5000,
-        rejectUnauthorized: process.env.WIKI_INTEGRATION_SMTP_REJECT_UNAUTHORIZED !== "false",
+        host:               smtpHost,
+        port:               b.safeEnv.readVar("WIKI_INTEGRATION_SMTP_PORT", { type: "number", default: 1025 }),
+        ehloName:           b.safeEnv.readVar("WIKI_INTEGRATION_SMTP_EHLO") || "blamejs-wiki",
+        timeoutMs:          b.constants.TIME.seconds(5),
+        rejectUnauthorized: b.safeEnv.readVar("WIKI_INTEGRATION_SMTP_REJECT_UNAUTHORIZED") !== "false",
       });
     }
-    if (process.env.WIKI_INTEGRATION_S3_ENDPOINT) {
+    var s3Endpoint = b.safeEnv.readVar("WIKI_INTEGRATION_S3_ENDPOINT");
+    if (s3Endpoint) {
       testObjectStore = b.objectStore.buildBackend({
         name:             "wiki-integration-s3",
         protocol:         "sigv4",
-        endpoint:         process.env.WIKI_INTEGRATION_S3_ENDPOINT,
-        region:           process.env.WIKI_INTEGRATION_S3_REGION || "us-east-1",
-        bucket:           process.env.WIKI_INTEGRATION_S3_BUCKET,
-        accessKeyId:      process.env.WIKI_INTEGRATION_S3_ACCESS_KEY,
-        secretAccessKey:  process.env.WIKI_INTEGRATION_S3_SECRET_KEY,
+        endpoint:         s3Endpoint,
+        region:           b.safeEnv.readVar("WIKI_INTEGRATION_S3_REGION") || "us-east-1",
+        bucket:           b.safeEnv.readVar("WIKI_INTEGRATION_S3_BUCKET"),
+        accessKeyId:      b.safeEnv.readVar("WIKI_INTEGRATION_S3_ACCESS_KEY"),
+        secretAccessKey:  b.safeEnv.readVar("WIKI_INTEGRATION_S3_SECRET_KEY"),
         forcePathStyle:   true,
         allowInternal:    true,
         allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
@@ -263,8 +267,9 @@ async function buildApp(opts) {
         residencyTag:     "unrestricted",
       });
     }
-    if (process.env.WIKI_INTEGRATION_MTLS_DIR) {
-      testMtlsCa = b.mtlsCa.create({ dataDir: process.env.WIKI_INTEGRATION_MTLS_DIR });
+    var mtlsDir = b.safeEnv.readVar("WIKI_INTEGRATION_MTLS_DIR");
+    if (mtlsDir) {
+      testMtlsCa = b.mtlsCa.create({ dataDir: mtlsDir });
     }
   }
 
@@ -273,8 +278,7 @@ async function buildApp(opts) {
   // posture is incomplete (vault not wrapped, db not encrypted, etc.).
   // Default off so a developer's `npm start` doesn't have to set every
   // production knob; production deploys flip this on in the .env.
-  var requireProdAsserts = process.env.WIKI_REQUIRE_PROD_ASSERTS === "true" ||
-                           process.env.WIKI_REQUIRE_PROD_ASSERTS === "1";
+  var requireProdAsserts = b.safeEnv.readVar("WIKI_REQUIRE_PROD_ASSERTS", { type: "boolean", default: false });
 
   // ---- Posture auto-detect ----
   // The wiki ships in plaintext defaults so a quick local boot just works.
@@ -283,13 +287,13 @@ async function buildApp(opts) {
   // + encrypted DB at rest. Same for BLAMEJS_AUDIT_SIGNING_PASSPHRASE →
   // wrapped audit-sign key. WIKI_VAULT_MODE / WIKI_DB_AT_REST /
   // WIKI_AUDIT_SIGNING_MODE override the auto-detect explicitly.
-  var hasVaultPass = !!process.env.BLAMEJS_VAULT_PASSPHRASE;
-  var hasAuditPass = !!process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;
-  var vaultMode    = process.env.WIKI_VAULT_MODE
+  var hasVaultPass = !!b.safeEnv.readVar("BLAMEJS_VAULT_PASSPHRASE");
+  var hasAuditPass = !!b.safeEnv.readVar("BLAMEJS_AUDIT_SIGNING_PASSPHRASE");
+  var vaultMode    = b.safeEnv.readVar("WIKI_VAULT_MODE")
                   || (hasVaultPass ? "wrapped"   : "plaintext");
-  var dbAtRest     = process.env.WIKI_DB_AT_REST
+  var dbAtRest     = b.safeEnv.readVar("WIKI_DB_AT_REST")
                   || (hasVaultPass ? "encrypted" : "plain");
-  var auditMode    = process.env.WIKI_AUDIT_SIGNING_MODE
+  var auditMode    = b.safeEnv.readVar("WIKI_AUDIT_SIGNING_MODE")
                   || (hasAuditPass ? "wrapped"   : "plaintext");
 
   // ---- Boot the app ----
@@ -317,8 +321,11 @@ async function buildApp(opts) {
         credentials: false,
       },
       rateLimit: {
+        // burst sized as 2 minutes' worth of refill at 2 tokens/sec —
+        // an idle visitor accrues a full minute-scale buffer between
+        // bursts so static-asset preloads don't trip the limiter.
         backend:         "memory",
-        burst:           120,
+        burst:           b.constants.TIME.minutes(2),
         refillPerSecond: 2,
         skipPaths:       ["/healthz", "/readyz"],
       },
@@ -350,7 +357,6 @@ async function buildApp(opts) {
       // never set that env var. The path-prefix /test/ keeps the
       // namespace well-separated from any production route.
       if (integrationMode) {
-        var integrationRoutes = require("../routes/integration");
         integrationRoutes.register(router, {
           testCache:       testCache,
           testMail:        testMail,
@@ -391,8 +397,6 @@ async function buildApp(opts) {
 
       // ---- Public + admin routes ----
       // Order: specific paths first, then admin, then /:group catch-all.
-      var pagesRoute = require("../routes/pages");
-      var adminRoute = require("../routes/admin");
       var routeCtx = {
         db:           b.db,
         template:     template,
@@ -432,7 +436,7 @@ async function buildApp(opts) {
       b.db.prepare(
         "INSERT INTO admin_users (id, email, passwordHash, createdAt) VALUES (?, ?, ?, ?)"
       ).run(
-        "admin-" + require("node:crypto").randomBytes(8).toString("hex"),
+        "admin-" + b.crypto.generateToken(b.constants.BYTES.bytes(8)),
         adminEmail,
         hash,
         Date.now()

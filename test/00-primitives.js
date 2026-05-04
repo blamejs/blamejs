@@ -2493,11 +2493,20 @@ function testFormsValidateTypes() {
   r = f.validate({ fields: [{ name: "p", type: "text", maxlength: 5 }]}, { p: "way too long" });
   check("validate: text above maxlength → error",      r.valid === false && /at most 5/.test(r.errors.p));
 
-  // Pattern
-  r = f.validate({ fields: [{ name: "code", type: "text", pattern: "[A-Z]{3}-[0-9]{4}" }]}, { code: "ABC-1234" });
+  // Pattern — RegExp instance only (string patterns refused at config
+  // time so the framework never compiles operator-supplied source on
+  // the request path).
+  var codeRe = /[A-Z]{3}-[0-9]{4}/;
+  r = f.validate({ fields: [{ name: "code", type: "text", pattern: codeRe }]}, { code: "ABC-1234" });
   check("validate: pattern match passes",              r.valid === true);
-  r = f.validate({ fields: [{ name: "code", type: "text", pattern: "[A-Z]{3}-[0-9]{4}" }]}, { code: "abc-12" });
+  r = f.validate({ fields: [{ name: "code", type: "text", pattern: codeRe }]}, { code: "abc-12" });
   check("validate: pattern mismatch → error",          r.valid === false && /invalid format/.test(r.errors.code));
+  // String pattern is a config-time error (operators wrap with `RegExp` at config).
+  var stringPatternThrew = false;
+  try {
+    f.validate({ fields: [{ name: "code", type: "text", pattern: "[A-Z]+" }]}, { code: "ABC" });
+  } catch (e) { stringPatternThrew = /pre-compiled RegExp/.test(e.message); }
+  check("validate: string pattern → throws clear config error", stringPatternThrew);
 
   // Select / radio enum
   r = f.validate({ fields: [
@@ -16806,7 +16815,7 @@ module.exports = {
           client.once("error", reject);
         });
         await new Promise(function (resolve) {
-          if (client.remoteSettings && client.remoteSettings.enableConnectProtocol) return resolve();
+          if (client.remoteSettings && client.remoteSettings.enableConnectProtocol) { resolve(); return; }
           client.once("remoteSettings", resolve);
         });
         return { server: server, client: client, port: port };

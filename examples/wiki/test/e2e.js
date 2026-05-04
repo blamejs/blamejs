@@ -15,6 +15,7 @@ var { buildApp } = require("../lib/build-app");
 var sectionValidator = require("./validate-primitive-sections");
 var envSnapshotValidator = require("./validate-env-snapshot");
 var cliSnapshotValidator = require("./validate-cli-snapshot");
+var codebasePatterns = require("./codebase-patterns.test");
 
 var DATA_DIR = path.join(__dirname, "..", "data-e2e");
 var ADMIN_EMAIL = "admin-e2e@blamejs.com";
@@ -72,8 +73,8 @@ function assert(name, cond) {
 }
 
 async function run() {
-  // Step 0 — wiki primitive-section convention check (rule §11). Runs
-  // before app boot so a structural docs gap surfaces immediately;
+  // Step 0a — wiki primitive-section convention check (rule §11).
+  // Runs before app boot so a structural docs gap surfaces immediately;
   // operators don't pay the boot cost when the gate would have failed
   // anyway.
   var validatorExit = sectionValidator.run({});
@@ -82,6 +83,17 @@ async function run() {
       "(see lines above). Fix the missing pieces or add to the allowlist " +
       "with a one-line reason.");
     process.exit(validatorExit);
+  }
+
+  // Step 0b — wiki codebase-patterns gate. Same bug-class detectors as
+  // the framework's test/layer-0-primitives/codebase-patterns.test.js,
+  // applied to the wiki app's own JS surface. Catches drift in
+  // operator-shipped code on the same patterns that bit the framework.
+  var patternsExit = codebasePatterns.run();
+  if (patternsExit !== 0) {
+    console.error("[wiki-e2e] aborted — codebase-patterns gate failed " +
+      "(see lines above). Fix violations or add documented allow markers.");
+    process.exit(patternsExit);
   }
 
   console.log("[wiki-e2e] booting…");

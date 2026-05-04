@@ -802,10 +802,12 @@ function _captureAudit() {
 }
 function _captureObs() {
   var captured = [];
+  function event(n, v, l) { captured.push({ name: n, value: v, labels: l }); }
   return {
-    event: function (n, v, l) { captured.push({ name: n, value: v, labels: l }); },
-    captured: captured,
-    byName: function (n) { return captured.filter(function (e) { return e.name === n; }); },
+    event:     event,
+    safeEvent: function (n, v, l) { try { event(n, v, l); } catch (_e) { /* drop-silent */ } },
+    captured:  captured,
+    byName:    function (n) { return captured.filter(function (e) { return e.name === n; }); },
   };
 }
 

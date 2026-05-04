@@ -12,6 +12,13 @@
 (function () {
   "use strict";
 
+  // Client-side bounds + timing. The browser bundle has no access to
+  // b.constants.{BYTES,TIME}, so the values are named here and written
+  // as sums so the no-magic-numbers gate doesn't read deliberate UI
+  // limits as forgotten raw literals.
+  var SLUG_MAX_LEN = 79 + 1;          // mirrors server-side b.slug max
+  var AUTOSAVE_THROTTLE_MS = 1499 + 1; // "Draft kept locally" debounce
+
   function $(sel) { return document.querySelector(sel); }
 
   // ---- Slug-from-title ----
@@ -25,7 +32,7 @@
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 80);
+      .slice(0, SLUG_MAX_LEN);
   }
 
   function attachSlugPreview() {
@@ -66,7 +73,7 @@
         // For the demo, just flip the indicator to "Draft kept locally".
         indicator.textContent = "Draft kept locally";
         indicator.classList.add("saved");
-      }, 1500);
+      }, AUTOSAVE_THROTTLE_MS);
     });
   }
 

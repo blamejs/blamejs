@@ -143,6 +143,7 @@ module.exports = {
   '  <li><a href="/cluster">Cluster Mode</a> — leader election, scheduler, NTP check</li>',
   '  <li><a href="/reliability">Reliability</a> — retry, graceful shutdown, deprecation policy</li>',
   '  <li><a href="/backup-restore">Backup &amp; Restore</a> — bundle format, restore tools, first-deploy checklist</li>',
+  '  <li><a href="/quality-contract">Quality Contract</a> — codebase-patterns gate: detectors, inline-shape catalog, cluster allowlist</li>',
   '</ul>',
 
   '<aside class="callout callout-tip">',

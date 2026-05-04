@@ -26,7 +26,6 @@ function testRetrySurface() {
   check("b.retry.STATES.CLOSED",                b.retry.STATES.CLOSED === "closed");
   check("b.retry.STATES.OPEN",                  b.retry.STATES.OPEN === "open");
   check("b.retry.STATES.HALF_OPEN",             b.retry.STATES.HALF_OPEN === "half-open");
-  check("b.objectStoreRetry re-export same",    b.objectStoreRetry.withRetry === b.retry.withRetry);
 }
 
 // ---- isRetryable ----

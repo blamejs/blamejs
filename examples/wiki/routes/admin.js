@@ -68,13 +68,16 @@ function register(router, ctx) {
     var password = String(body.password || "");
     var data = Object.assign(_layoutData(req, ctx), { title: "Sign in" });
 
-    function _showError(msg, status) {
+    function _showError(msg, opts) {
+      var status = (opts && opts.status) || 401;
       data.error = msg;
       return b.render.htmlString(res, template.render("login", data),
-        { status: status || 401 });
+        { status: status });
     }
 
-    if (!email || !password) return _showError("Email and password are required.", 400);
+    if (!email || !password) {
+      return _showError("Email and password are required.", { status: 400 });
+    }
 
     // Pre-check the lockout BEFORE the Argon2 verify — a locked-out
     // attacker shouldn't get to keep burning ~250ms of CPU per try.
@@ -84,8 +87,8 @@ function register(router, ctx) {
     var lockState = await loginLockout.check(email);
     if (lockState.locked) {
       var retryAfterMs = Math.max(0, lockState.lockedUntil - Date.now());
-      res.setHeader("Retry-After", Math.ceil(retryAfterMs / 1000).toString());
-      return _showError("Too many failed attempts. Try again later.", 429);
+      res.setHeader("Retry-After", Math.ceil(retryAfterMs / b.constants.TIME.seconds(1)).toString());
+      return _showError("Too many failed attempts. Try again later.", { status: 429 });
     }
 
     // Look up admin row. Single-admin shape — table has at most one row.
@@ -124,7 +127,7 @@ function register(router, ctx) {
     // checks compare scope strings, so the role/scope split must be
     // honored or the comparison only works by string-coincidence.
     var sess = await session.create({ userId: row.id, data: { email: row.email, scopes: ["wiki:admin"] } });
-    var maxAge = Math.max(0, Math.floor((sess.expiresAt - Date.now()) / 1000));
+    var maxAge = Math.max(0, Math.floor((sess.expiresAt - Date.now()) / b.constants.TIME.seconds(1)));
     res.setHeader("Set-Cookie",
       "wiki_sid=" + sess.token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + maxAge + _secureCookieFlag(req));
     audit.safeEmit({
@@ -220,7 +223,8 @@ function register(router, ctx) {
     // Re-render the edit form with the operator's submitted values + an
     // error banner. Used for any validation failure so the user doesn't
     // lose what they just typed.
-    function _rerenderEdit(errMsg, status) {
+    function _rerenderEdit(errMsg, opts) {
+      var status = (opts && opts.status) || 400;
       var data = Object.assign(_layoutData(req, ctx), {
         title:      groupName && slug ? "Edit " + groupName + "/" + slug : "New page",
         isNew:      !(groupName && slug),
@@ -234,7 +238,7 @@ function register(router, ctx) {
     }
 
     if (!groupName || !slug || !title) {
-      return _rerenderEdit("Group, slug, and title are all required.", 400);
+      return _rerenderEdit("Group, slug, and title are all required.", { status: 400 });
     }
     // Reject malformed HTML at the operator boundary so a forgotten
     // `</div>` doesn't ship and silently break the rendered page (the
@@ -251,8 +255,11 @@ function register(router, ctx) {
         reason:   htmlProblem.code,
         metadata: { message: htmlProblem.message },
       });
-      return _rerenderEdit("Invalid HTML — " + htmlProblem.message +
-        ". Fix the issue and save again; your text is preserved below.", 400);
+      return _rerenderEdit(
+        "Invalid HTML — " + htmlProblem.message +
+          ". Fix the issue and save again; your text is preserved below.",
+        { status: 400 }
+      );
     }
     var now = Date.now();
     var userId = req.user ? req.user.userId : "unknown";

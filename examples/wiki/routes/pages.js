@@ -59,7 +59,8 @@ function _synthDescription(body, fallback) {
   if (!m) return fallback;
   var text = m[1].replace(/<[^>]+>/g, "").replace(/&[a-z0-9#]+;/gi, " ").replace(/\s+/g, " ").trim();
   if (!text) return fallback;
-  if (text.length > 160) text = text.slice(0, 157).trimEnd() + "...";
+  var maxLen = b.constants.BYTES.bytes(160);
+  if (text.length > maxLen) text = text.slice(0, maxLen - 3).trimEnd() + "...";
   return text;
 }
 
@@ -140,7 +141,12 @@ function registerSpecific(router, ctx) {
 
   // ---- Search (FTS5 — operator-side recipe) ----
   router.get("/search", async function (req, res) {
-    var url = new URL(req.url, "http://localhost");
+    // req.url is a path-relative form (`/search?q=…`); safeUrl.parse
+    // requires an absolute URL, so synthesize a localhost origin before
+    // parsing. The host is discarded — only the query string matters.
+    var url = b.safeUrl.parse("http://localhost" + req.url, {
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    });
     var q = (url.searchParams.get("q") || "").trim();
     var hits = [];
     if (q.length > 0 && q.length < 200) {

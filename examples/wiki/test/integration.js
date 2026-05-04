@@ -90,7 +90,7 @@ async function _setupEnv() {
   // env, not code. Mirrors how a real production deploy would wire
   // the backends (BLAMEJS_QUEUE_PROTOCOL=redis with QUEUE_REDIS_URL
   // pointing at the operator's Redis cluster).
-  process.env.WIKI_INTEGRATION_TEST       = "1";
+  process.env.WIKI_INTEGRATION_TEST       = "true";
   process.env.WIKI_INTEGRATION_SMTP_HOST  = "localhost";
   process.env.WIKI_INTEGRATION_SMTP_PORT  = "1025";
 

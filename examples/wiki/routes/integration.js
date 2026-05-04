@@ -19,15 +19,21 @@
  */
 var b = require("@blamejs/core");
 
+// Per-request body cap for the integration test routes — large enough
+// to carry test payloads (cache values, mail bodies, base64-encoded
+// object-store blobs) but bounded so a malformed body never grows
+// unbounded in memory.
+var INTEGRATION_BODY_LIMIT = b.constants.BYTES.mib(1);
+
 function _readJsonBody(req) {
   return new Promise(function (resolve, reject) {
-    if (req.body && typeof req.body === "object") return resolve(req.body);
+    if (req.body && typeof req.body === "object") { resolve(req.body); return; }
     var chunks = [];
     req.on("data", function (c) { chunks.push(c); });
     req.on("end", function () {
       var raw = Buffer.concat(chunks).toString("utf8");
       if (!raw) return resolve({});
-      try { resolve(JSON.parse(raw)); }
+      try { resolve(b.safeJson.parse(raw, { maxBytes: INTEGRATION_BODY_LIMIT })); }
       catch (e) { reject(e); }
     });
     req.on("error", reject);
@@ -49,7 +55,7 @@ function register(router, ctx) {
     try { snap.logSinks = b.logStream.listSinks ? b.logStream.listSinks() : null; } catch (_e) { snap.logSinks = null; }
     try { snap.mtlsCa = ctx.mtlsCa && ctx.mtlsCa.status ? ctx.mtlsCa.status() : null; } catch (_e) { snap.mtlsCa = null; }
     snap.frameworkVersion = b.version;
-    snap.integrationTestMode = process.env.WIKI_INTEGRATION_TEST === "1";
+    snap.integrationTestMode = b.safeEnv.readVar("WIKI_INTEGRATION_TEST", { type: "boolean", default: false });
     _send(res, 200, snap);
   });
 
@@ -60,7 +66,7 @@ function register(router, ctx) {
       if (!body.key || typeof body.key !== "string") {
         return _send(res, 400, { error: "key required" });
       }
-      await ctx.testCache.set(body.key, body.value, { ttlMs: body.ttlMs || 60000 });
+      await ctx.testCache.set(body.key, body.value, { ttlMs: body.ttlMs || b.constants.TIME.minutes(1) });
       _send(res, 200, { ok: true });
     } catch (e) { _send(res, 500, { error: e.message, code: e.code }); }
   });
@@ -144,7 +150,7 @@ function register(router, ctx) {
         url:              body.url,
         headers:          body.headers || {},
         body:             body.body ? Buffer.from(body.body, "utf8") : undefined,
-        idleTimeoutMs:    body.timeoutMs || 5000,
+        idleTimeoutMs:    body.timeoutMs || b.constants.TIME.seconds(5),
         allowedProtocols: body.allowHttp ? b.safeUrl.ALLOW_HTTP_ALL : b.safeUrl.ALLOW_HTTP_TLS,
         allowInternal:    body.allowInternal === true,
       });
@@ -191,7 +197,7 @@ function register(router, ctx) {
     try {
       var server = (req.query && req.query.server) || "127.0.0.1";
       var port = parseInt((req.query && req.query.port) || "12300", 10);
-      var rv = await b.ntpCheck.querySingle(server, { port: port, timeoutMs: 4000 });
+      var rv = await b.ntpCheck.querySingle(server, { port: port, timeoutMs: b.constants.TIME.seconds(4) });
       _send(res, 200, rv);
     } catch (e) { _send(res, 500, { error: e.message, code: e.code }); }
   });

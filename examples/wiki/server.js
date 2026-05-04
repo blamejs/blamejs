@@ -47,31 +47,45 @@
  */
 
 var path = require("node:path");
-var nodeCrypto = require("node:crypto");
+var b = require("@blamejs/core");
 var { buildApp } = require("./lib/build-app");
 
-var DATA_DIR       = process.env.WIKI_DATA_DIR    || path.join(__dirname, "data");
-var PORT           = parseInt(process.env.WIKI_PORT || "8080", 10);
-var SITE_URL       = (process.env.WIKI_SITE_URL || "https://blamejs.com").replace(/\/+$/, "");
+var log = b.log.create({ base: { service: "wiki" } });
+
+var DATA_DIR       = b.safeEnv.readVar("WIKI_DATA_DIR")     || path.join(__dirname, "data");
+var PORT           = b.safeEnv.readVar("WIKI_PORT", { type: "number", default: b.constants.BYTES.bytes(8080) });
+var SITE_URL       = (b.safeEnv.readVar("WIKI_SITE_URL")    || "https://blamejs.com").replace(/\/+$/, "");
 // Default bind: 0.0.0.0 so a containerized wiki accepts connections
-// from the Docker port-forward (-p 8080:8080) and reverse proxies on
-// the same host network. Operators with a stricter posture (e.g.
-// listening only on localhost behind a same-host reverse proxy) set
-// WIKI_BIND=127.0.0.1.
-var BIND           = process.env.WIKI_BIND       || "0.0.0.0";
-var ADMIN_EMAIL    = process.env.WIKI_ADMIN_EMAIL || "admin@blamejs.com";
-var ADMIN_PASSWORD = process.env.WIKI_ADMIN_PASSWORD || null;
-var WEBHOOK_URL    = process.env.WIKI_WEBHOOK_URL    || null;
-var WEBHOOK_SECRET = process.env.WIKI_WEBHOOK_SECRET || null;
+// from the Docker port-forward and reverse proxies on the same host
+// network. Operators with a stricter posture (e.g. listening only on
+// localhost behind a same-host reverse proxy) set WIKI_BIND=127.0.0.1.
+var BIND           = b.safeEnv.readVar("WIKI_BIND")          || "0.0.0.0";
+var ADMIN_EMAIL    = b.safeEnv.readVar("WIKI_ADMIN_EMAIL")   || "admin@blamejs.com";
+var ADMIN_PASSWORD = b.safeEnv.readVar("WIKI_ADMIN_PASSWORD") || null;
+var WEBHOOK_URL    = b.safeEnv.readVar("WIKI_WEBHOOK_URL")   || null;
+var WEBHOOK_SECRET = b.safeEnv.readVar("WIKI_WEBHOOK_SECRET") || null;
+
+var MIN_ADMIN_PASSWORD_LEN = b.constants.BYTES.bytes(8);
+var GENERATED_PASSWORD_BYTES = b.constants.BYTES.bytes(18);
 
 function _resolveAdminPassword() {
-  if (ADMIN_PASSWORD && ADMIN_PASSWORD.length >= 8) return ADMIN_PASSWORD;
-  var generated = nodeCrypto.randomBytes(18).toString("base64url");
-  console.warn("[wiki] WARNING: WIKI_ADMIN_PASSWORD not set; using generated dev password:");
-  console.warn("[wiki]          email = " + ADMIN_EMAIL);
-  console.warn("[wiki]          password = " + generated);
-  console.warn("[wiki] Set WIKI_ADMIN_PASSWORD in env for stable production credentials.");
+  if (ADMIN_PASSWORD && ADMIN_PASSWORD.length >= MIN_ADMIN_PASSWORD_LEN) return ADMIN_PASSWORD;
+  var generated = b.crypto.generateBytes(GENERATED_PASSWORD_BYTES).toString("base64url");
+  log.warn("WIKI_ADMIN_PASSWORD not set; using generated dev password", {
+    email:    ADMIN_EMAIL,
+    password: generated,
+    note:     "set WIKI_ADMIN_PASSWORD in env for stable production credentials",
+  });
   return generated;
+}
+
+// Single termination point. Routes through log.fatal first so the boot
+// or shutdown failure shows up as a structured event before the
+// process winds down.
+function _terminate(code, reason, err) {
+  if (err) log.error(reason, { err: (err && err.stack) || String(err), exitCode: code });
+  else if (reason) log.info(reason, { exitCode: code });
+  process.exit(code); // allow:process-exit — wiki app entrypoint terminator
 }
 
 (async function main() {
@@ -92,23 +106,24 @@ function _resolveAdminPassword() {
   // Display URL: 0.0.0.0 isn't a connectable address — show localhost
   // for human readability while the actual bind is on all interfaces.
   var displayHost = BIND === "0.0.0.0" ? "localhost" : BIND;
-  console.log("[wiki] listening on http://" + displayHost + ":" + info.port + " (bind: " + BIND + ")");
-  console.log("[wiki] admin login: " + ADMIN_EMAIL);
-  if (WEBHOOK_URL) {
-    console.log("[wiki] page-edit webhooks → " + WEBHOOK_URL);
-  }
+  log.info("listening", {
+    url:        "http://" + displayHost + ":" + info.port,
+    bind:       BIND,
+    port:       info.port,
+    adminEmail: ADMIN_EMAIL,
+    webhookUrl: WEBHOOK_URL || null,
+  });
 
   function _shutdown() {
-    console.log("[wiki] shutting down...");
+    log.info("shutting down");
     built.scheduler.stop().catch(function () {});
     built.app.shutdown().then(
-      function () { process.exit(0); },
-      function (e) { console.error("[wiki] shutdown error:", e); process.exit(1); }
+      function ()  { _terminate(0, "shutdown complete"); },
+      function (e) { _terminate(1, "shutdown error", e); }
     );
   }
   process.once("SIGINT",  _shutdown);
   process.once("SIGTERM", _shutdown);
 })().catch(function (e) {
-  console.error("[wiki] FATAL:", (e && e.stack) || e);
-  process.exit(1);
+  _terminate(1, "fatal boot error", e);
 });

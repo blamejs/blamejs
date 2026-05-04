@@ -397,7 +397,7 @@ async function testRetryAndBreaker() {
   var caught = false;
   attempts = 0;
   try {
-    await b.objectStoreRetry.withRetry(transientErr, { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5 });
+    await b.retry.withRetry(transientErr, { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5 });
   } catch (_) { caught = true; }
   check("retry exhausts maxAttempts on transient",     caught && attempts === 3);
 
@@ -412,18 +412,18 @@ async function testRetryAndBreaker() {
     throw e;
   };
   var permCaught = false;
-  try { await b.objectStoreRetry.withRetry(permErr, { maxAttempts: 5 }); }
+  try { await b.retry.withRetry(permErr, { maxAttempts: 5 }); }
   catch (_) { permCaught = true; }
   check("retry does NOT retry permanent errors",       permCaught && attempts === 1);
 
   // Retryable classification
-  check("isRetryable: 503 → true",                     b.objectStoreRetry.isRetryable({ statusCode: 503 }));
-  check("isRetryable: 403 → false",                    !b.objectStoreRetry.isRetryable({ statusCode: 403 }));
-  check("isRetryable: ECONNRESET → true",              b.objectStoreRetry.isRetryable({ code: "ECONNRESET" }));
-  check("isRetryable: ENOENT → false (not in retry set)", !b.objectStoreRetry.isRetryable({ code: "ENOENT" }));
+  check("isRetryable: 503 → true",                     b.retry.isRetryable({ statusCode: 503 }));
+  check("isRetryable: 403 → false",                    !b.retry.isRetryable({ statusCode: 403 }));
+  check("isRetryable: ECONNRESET → true",              b.retry.isRetryable({ code: "ECONNRESET" }));
+  check("isRetryable: ENOENT → false (not in retry set)", !b.retry.isRetryable({ code: "ENOENT" }));
 
   // Circuit breaker
-  var breaker = new b.objectStoreRetry.CircuitBreaker("test", { failureThreshold: 3, cooldownMs: 50, successThreshold: 1 });
+  var breaker = new b.retry.CircuitBreaker("test", { failureThreshold: 3, cooldownMs: 50, successThreshold: 1 });
   check("breaker starts closed",                       breaker.getState() === "closed");
   // Trip it
   for (var i = 0; i < 3; i++) {

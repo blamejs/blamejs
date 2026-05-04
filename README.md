@@ -64,7 +64,7 @@ Full primitive-by-primitive docs live at [blamejs.com](https://blamejs.com), whi
 - **Communication** — [WebSockets](https://blamejs.com/websockets) · [Mail](https://blamejs.com/mail) · [Notifications](https://blamejs.com/notifications)
 - **Tools** — [Observability](https://blamejs.com/observability) · [Testing](https://blamejs.com/testing) · [i18n & Locale](https://blamejs.com/i18n-locale) · [Format Helpers](https://blamejs.com/format-helpers)
 - **Compliance** — [Compliance Patterns](https://blamejs.com/compliance-patterns)
-- **Production** — [Cluster Mode](https://blamejs.com/cluster) · [Reliability](https://blamejs.com/reliability) · [Backup & Restore](https://blamejs.com/backup-restore)
+- **Production** — [Cluster Mode](https://blamejs.com/cluster) · [Reliability](https://blamejs.com/reliability) · [Backup & Restore](https://blamejs.com/backup-restore) · [Quality Contract](https://blamejs.com/quality-contract)
 
 ## CLI
 
@@ -123,6 +123,16 @@ These libraries are exceptional work — blamejs wouldn't exist without them. Al
 ## Why "blamejs"
 
 Because when something breaks, `blame` should know exactly where it lives. We own the stack so you don't have to chase the fault across an ecosystem.
+
+## Quality contract
+
+Every release passes a layered gate at `test/layer-0-primitives/codebase-patterns.test.js` that operates on lib/ source:
+
+- **Bug-class detectors** — raw byte / time literals, `JSON.parse` on operator input without size cap, numeric opts that silently accept `Infinity` / `NaN`, ReDoS-risky regex without length cap, hash / token compares without `timingSafeEqual`, raw `new URL` skipping the SSRF gate, `Math.random()` in security-sensitive paths, and a couple dozen others — each a bug class the framework already swept once and won't re-introduce.
+- **Inline-shape catalog (n=1)** — every primitive that's been extracted (`validateOpts.requireNonEmptyString`, `safeAsync.makeScheduledFlush`, `dbSchema.runInTransaction`, etc.) registers the inline shape it replaced; new code that re-implements the shape fails the gate even if it's the only file matching.
+- **Cluster allowlist (n>=3)** — duplicate-block detection across files. Genuine new clusters get extracted; clusters that resist extraction (parser error class signature mismatches, framework-convention shapes, cross-domain coincidences) get an entry with a documented structural reason. No silent allowlisting.
+
+The gate is part of `node test/smoke.js`; the framework refuses to release without it green.
 
 ## Contributing
 

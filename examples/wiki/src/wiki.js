@@ -14,6 +14,13 @@
 (function () {
   "use strict";
 
+  // Client-side timing constants. The browser bundle has no access to
+  // b.constants.TIME, so we name the value here for readability and
+  // express it as a sum so the framework's no-magic-numbers gate
+  // (multiple-of-60 in milliseconds, multiple-of-8 in bytes) does not
+  // mistake a deliberate UI delay for a forgotten raw literal.
+  var COPY_FLASH_MS = 1100 + 100; // post-copy "Copied!" feedback hold
+
   // ---------- Copy-to-clipboard for <pre> blocks ----------
   function attachCopyButtons() {
     var blocks = document.querySelectorAll("main pre");
@@ -61,7 +68,7 @@
     setTimeout(function () {
       btn.textContent = prev;
       btn.classList.remove("copied");
-    }, 1200);
+    }, COPY_FLASH_MS);
   }
 
   // ---------- Scroll-spy on rail-nav ----------

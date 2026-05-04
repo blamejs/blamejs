@@ -34,6 +34,7 @@ const NODE_GLOBALS = {
   clearImmediate:   "readonly",
   queueMicrotask:   "readonly",
   performance:      "readonly",
+  structuredClone:  "readonly",
   // Web-platform APIs that Node 24 ships
   fetch:            "readonly",
   crypto:           "readonly",
@@ -108,6 +109,13 @@ const COMMON_RULES = {
   "no-octal":                  "error",
   "no-debugger":               "error",
   "no-prototype-builtins":     "error",
+  // Strict equality — `null` allowed for the `== null` / `!= null`
+  // null-or-undefined idiom; everything else must use `===` / `!==`.
+  "eqeqeq":                    ["error", "always", { null: "ignore" }],
+  "no-throw-literal":          "error",
+  "no-promise-executor-return":"error",
+  "default-case":              "error",
+  "no-loss-of-precision":      "error",
 
   // Hygiene rules — code clarity, dead-code removal.
   "no-unused-vars":            ["error", {

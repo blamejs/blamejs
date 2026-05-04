@@ -636,8 +636,8 @@ async function testClusterConsentRollbackDetected() {
       "  console.log('UNEXPECTED-BOOT');\n" +
       "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
     var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
-    check("consent-rollback boot exits with code 1",
-          result.status === 1);
+    check("consent-rollback boot exits via the catch handler (code 99)",
+          result.status === 99);
     check("consent-rollback boot logs the consent-chain message",
           /consent-log rollback detected/i.test(result.stderr || ""));
   } finally {
@@ -843,7 +843,8 @@ async function testClusterVaultKeyMismatchDetected() {
       "  console.log('UNEXPECTED-BOOT');\n" +
       "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
     var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
-    check("vault-key drift boot exits with code 1",       result.status === 1);
+    check("vault-key drift boot exits via the catch handler (code 99)",
+          result.status === 99);
     check("vault-key drift boot logs detection message",
           /vault-key drift detected/i.test(result.stderr || ""));
     check("vault-key drift boot did NOT print UNEXPECTED-BOOT",
@@ -955,8 +956,12 @@ async function testClusterAuditTipRollbackDetected() {
       "  console.log('UNEXPECTED-BOOT');\n" +
       "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
     var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
-    check("rollback boot exits with code 1",
-          result.status === 1);
+    // cluster.init throws ClusterError on rollback detection; the child
+    // script's catch handler exits with code 99. Pre-v0.7.0 the lib called
+    // process.exit(1) unilaterally; the test now asserts the controlled-throw
+    // path so callers can decide their own exit code.
+    check("rollback boot exits via the catch handler (code 99)",
+          result.status === 99);
     check("rollback boot logs detection message",
           /audit-log rollback detected/i.test(result.stderr || ""));
     check("rollback boot did NOT print UNEXPECTED-BOOT (exited before continuing)",
@@ -1020,8 +1025,8 @@ async function testClusterAuditTipRowHashMismatch() {
       "  console.log('UNEXPECTED-BOOT');\n" +
       "})().catch(function (e) { console.error('CHILD-ERR ' + e.message); process.exit(99); });\n";
     var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
-    check("row-hash mismatch boot exits with code 1",
-          result.status === 1);
+    check("row-hash mismatch boot exits via the catch handler (code 99)",
+          result.status === 99);
     check("row-hash mismatch boot logs detection message",
           /row-hash mismatch/i.test(result.stderr || ""));
   } finally {
@@ -1984,8 +1989,8 @@ async function testRollbackDetection() {
       "  await b.db.init({ dataDir: " + JSON.stringify(tmpDir) + ", tmpDir: " + JSON.stringify(path.join(tmpDir, "tmpfs")) + ", schema: [] });\n" +
       "})().catch(function (e) { console.error(e.message); process.exit(99); });\n";
     var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
-    check("rollback boot exits with code 1",                  result.status === 1);
-    check("rollback boot logs detection message",             /rollback detected/i.test(result.stderr || ""));
+    check("rollback boot exits via the catch handler (code 99)", result.status === 99);
+    check("rollback boot logs detection message",                /rollback detected/i.test(result.stderr || ""));
   } finally {
     await teardownTestDb(tmpDir);
   }

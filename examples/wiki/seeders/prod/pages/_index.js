@@ -29,4 +29,5 @@ module.exports = [
   require("./" + "cluster"),
   require("./" + "reliability"),
   require("./" + "backup-restore"),
+  require("./" + "quality-contract"),
 ];

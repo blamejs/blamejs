@@ -57,9 +57,6 @@ var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
 var retry = require("./lib/retry");
-// objectStoreRetry is preserved as a re-export of the canonical b.retry
-// for backward compatibility with consumers of the pre-v0.2.24 surface.
-var objectStoreRetry = require("./lib/object-store/retry");
 var queue = require("./lib/queue");
 var logStream = require("./lib/log-stream");
 var redact = require("./lib/redact");
@@ -90,7 +87,7 @@ var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
 var auth = {
   password: require("./lib/auth/password"),
-  totp:     require("./lib/auth/totp"),
+  totp:     require("./lib/totp"),
   passkey:  require("./lib/auth/passkey"),
   jwt:      require("./lib/auth/jwt"),
   oauth:    require("./lib/auth/oauth"),
@@ -187,7 +184,6 @@ module.exports = {
   storage:          storage,
   objectStore:      objectStore,
   retry:            retry,
-  objectStoreRetry: objectStoreRetry,
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
@@ -195,6 +191,7 @@ module.exports = {
   middleware:       middleware,
   atomicFile:       atomicFile,
   parsers:          parsers,
+  safeEnv:          parsers.env,
   cluster:          cluster,
   frameworkSchema:  frameworkSchema,
   clusterStorage:   clusterStorage,
