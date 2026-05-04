@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.4",
-  "createdAt": "2026-05-04T16:31:00.084Z",
+  "frameworkVersion": "0.7.5",
+  "createdAt": "2026-05-04T20:05:02.098Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -1879,15 +1879,7 @@
               "type": "primitive",
               "valueType": "string"
             },
-            "formulaPrefixChars": {
-              "type": "instance",
-              "ctorName": "Array"
-            },
             "header": {
-              "type": "primitive",
-              "valueType": "boolean"
-            },
-            "preventFormulaInjection": {
               "type": "primitive",
               "valueType": "boolean"
             },
@@ -2407,6 +2399,14 @@
           "type": "function",
           "arity": 2
         },
+        "GateContractError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardCsvError": {
+          "type": "function",
+          "arity": 4
+        },
         "HandlerError": {
           "type": "function",
           "arity": 4
@@ -2516,6 +2516,587 @@
         "tableName": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "gateContract": {
+      "type": "object",
+      "members": {
+        "ACTIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GateContractError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ISSUE_SEVERITIES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "MODES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "byActorTier": {
+          "type": "function",
+          "arity": 2
+        },
+        "byDirection": {
+          "type": "function",
+          "arity": 2
+        },
+        "byRoute": {
+          "type": "function",
+          "arity": 2
+        },
+        "cachingGate": {
+          "type": "function",
+          "arity": 2
+        },
+        "canaryGate": {
+          "type": "function",
+          "arity": 2
+        },
+        "composeGates": {
+          "type": "function",
+          "arity": 2
+        },
+        "composeHooks": {
+          "type": "function",
+          "arity": 1
+        },
+        "contentTypeMux": {
+          "type": "function",
+          "arity": 2
+        },
+        "defineGate": {
+          "type": "function",
+          "arity": 1
+        },
+        "multiplexGates": {
+          "type": "function",
+          "arity": 2
+        },
+        "runGate": {
+          "type": "function",
+          "arity": 3
+        },
+        "shadowMode": {
+          "type": "function",
+          "arity": 3
+        },
+        "summarizeIssues": {
+          "type": "function",
+          "arity": 1
+        },
+        "validateGateShape": {
+          "type": "function",
+          "arity": 3
+        },
+        "workerThreadGate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardCsv": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "piiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullByteHandling": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "piiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullByteHandling": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "piiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullByteHandling": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DANGEROUS_FUNCTIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "bidiCharPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bomPrefix": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "controlCharPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dangerousFunctions": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dateFormat": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "delimiter": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dialectPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "encoding": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "forensicSnippetBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "formulaInjectionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "formulasAllowlist": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "homoglyphPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lineEnding": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "locale": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxCellBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxColumns": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRows": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxTotalBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullByteHandling": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullMarker": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullSemantics": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "numericPrecisionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "piiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "preserveBooleanStrings": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "preserveDateStrings": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "preserveLeadingZeros": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "sanitizeAmplificationCap": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "trailingWhitespacePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "FORMULA_PREFIXES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardCsvError": {
+          "type": "function",
+          "arity": 4
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPrefix": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dateFormat": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dialectPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullByteHandling": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullSemantics": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "numericPrecisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingWhitespacePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "email-attachment": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPrefix": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dateFormat": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dialectPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullByteHandling": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullSemantics": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "numericPrecisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingWhitespacePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPrefix": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dateFormat": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dialectPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullByteHandling": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullSemantics": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "numericPrecisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingWhitespacePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "bidiCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPrefix": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "controlCharPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dateFormat": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dialectPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "formulaInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "homoglyphPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullByteHandling": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullSemantics": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "numericPrecisionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingWhitespacePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "detect": {
+          "type": "function",
+          "arity": 1
+        },
+        "escapeCell": {
+          "type": "function",
+          "arity": 2
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "schema": {
+          "type": "function",
+          "arity": 1
+        },
+        "serialize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

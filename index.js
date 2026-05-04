@@ -83,6 +83,8 @@ httpClient.encrypted = require("./lib/middleware/api-encrypt").httpClient;
 httpClient.cookieJar = require("./lib/http-client-cookie-jar");
 var websocket = require("./lib/websocket");
 var safeUrl = require("./lib/safe-url");
+var gateContract = require("./lib/gate-contract");
+var guardCsv = require("./lib/guard-csv");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
 var auth = {
@@ -206,6 +208,8 @@ module.exports = {
   httpClient:       httpClient,
   websocket:        websocket,
   safeUrl:          safeUrl,
+  gateContract:     gateContract,
+  guardCsv:         guardCsv,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,
   auth:             auth,

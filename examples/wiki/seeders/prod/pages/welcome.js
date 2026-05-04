@@ -124,6 +124,7 @@ module.exports = {
   '  <li><a href="/mail">Mail</a> — multipart, attachments, DKIM, calendar invites, bounce intake</li>',
   '  <li><a href="/notifications">Notifications</a> — generic dispatcher + framework events</li>',
   '  <li><a href="/file-upload">File Upload</a> — chunked upload with hash verification + atomic finalize</li>',
+  '  <li><a href="/guard-csv">CSV content safety</a> — formula-injection / bidi / control-char detection + sanitize + gate composition</li>',
   '</ul>',
   '<h3 id="next-observability">Observability &amp; tools <a class="anchor" href="#next-observability">#</a></h3>',
   '<ul>',

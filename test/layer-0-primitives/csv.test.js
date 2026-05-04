@@ -126,32 +126,15 @@ async function run() {
   check("stringify: alwaysQuote wraps every cell",
         s8.indexOf("\"a\",\"b\"\r\n\"1\",\"2\"") === 0);
 
-  // ---- Excel formula-injection prevention (default ON) ----
-  var dangerous = b.csv.stringify([
-    { name: "=SUM(A1:A10)" },
-    { name: "+CMD|/c calc"  },
-    { name: "-1+2"          },
-    { name: "@SUM(1,2)"     },
-    { name: "\tfoo"         },
-    { name: "\rbar"         },
-    { name: "normal"        },
-  ]);
-  check("stringify: =formula gets '-prefix",  /'=SUM/.test(dangerous));
-  check("stringify: +formula gets '-prefix",  /'\+CMD/.test(dangerous));
-  check("stringify: -formula gets '-prefix",  /'-1\+2/.test(dangerous));
-  check("stringify: @formula gets '-prefix",  /'@SUM/.test(dangerous));
-  check("stringify: TAB-leading gets '-prefix",   /'\tfoo/.test(dangerous));
-  check("stringify: CR-leading gets '-prefix",    /'\rbar/.test(dangerous));
-  check("stringify: normal cell unchanged",   /(^|\n|\r)normal/.test(dangerous));
-
-  // Disabled mode
-  var raw = b.csv.stringify([{ a: "=SUM(A1)" }], { preventFormulaInjection: false });
-  check("stringify: prevention can be disabled", /^a\r\n=SUM\(A1\)/.test(raw));
-
-  // Custom prefix list
-  var custom = b.csv.stringify([{ a: "%danger" }],
-    { formulaPrefixChars: ["%"] });
-  check("stringify: custom formulaPrefixChars",  /'%danger/.test(custom));
+  // ---- b.csv is for trusted-source-only emission ----
+  // RFC 4180 quoting is the only escape work b.csv performs. Cells from
+  // user-supplied input MUST go through b.guardCsv (which handles formula
+  // triggers, dangerous-function denylist, bidi / homoglyph / control /
+  // null / BOM / dialect threats). Confirm b.csv does not pretend to
+  // defend against formula injection itself.
+  var raw = b.csv.stringify([{ a: "=SUM(A1)" }]);
+  check("stringify: leaves =formula cell untouched (no false-confidence prefix)",
+        /^a\r\n=SUM\(A1\)/.test(raw));
 
   // ---- Round-trip ----
   var src = [
@@ -168,12 +151,11 @@ async function run() {
   check("round-trip: embedded newline preserved",
         read[1].note === "line1\nline2");
 
-  // Round-trip with formula-prone cell — note the "'" prefix is preserved
-  // through round-trip (parse doesn't strip it; that's the operator's job
-  // when displaying user-controlled content from a parsed CSV).
+  // Round-trip preserves cell content byte-for-byte (b.csv does no
+  // formula-injection mutation — that's b.guardCsv's responsibility).
   var fz = b.csv.stringify([{ a: "=A1" }]);
   var fzParsed = b.csv.parse(fz);
-  check("round-trip: '-prefix preserved on parse",  fzParsed[0].a === "'=A1");
+  check("round-trip: cell content unchanged",  fzParsed[0].a === "=A1");
 
   // ---- stringify validation ----
   function rejectsS(label, fn, codeRe) {

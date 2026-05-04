@@ -1614,6 +1614,10 @@ function testNoDuplicateCodeBlocks() {
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
+      files: ["lib/api-key.js", "lib/file-upload.js", "lib/static.js"],
+      reason: "_validateOpts function-prelude scaffolding — every primitive's create() opens with `function _validateXxxOpts(opts) { validateOpts.requireObject(opts, ..., XError); validateOpts.requireNonEmptyString(...); validateOpts.optionalXxx(...) }`. Same scaffolding by design; the cascade body differs per primitive's domain. Tracked as conventional-shape false-positive.",
+    },
+    {
       files: ["lib/api-snapshot.js", "lib/break-glass.js", "lib/deprecate.js"],
       reason: "Two-arg required-string validation pattern — different domains coincidentally share the `if (!opts || typeof opts !== 'object') ... if (typeof X !== 'string' || X.length === 0)` shape. Sites use file-specific error classes that diverge from the framework standard signature.",
     },
@@ -2144,6 +2148,29 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\/\^\[A-Za-z_\]\[A-Za-z0-9_\]\*\$\//,
     allowlist: ["lib/safe-sql.js"],
     reason: "SQL identifier validation is now safeSql.DEFAULT_IDENTIFIER_RE. The lib/safe-sql.js definition keeps the literal.",
+  },
+  {
+    id: "inline-optional-plain-object-validation",
+    primitive: "validateOpts.optionalPlainObject(value, label, ErrorClass, code?, description?)",
+    // Match the literal three-line cascade `if (X !== undefined && X !==
+    // null) { if (typeof X !== "object" || Array.isArray(X)) throw ... }`
+    // — the recurring "optional plain object (not array)" validator
+    // shape shared by api-key (metadata), db-declare-view (hashColumns),
+    // db-declare-row-policy, static.js (contentSafety).
+    regex: /\w+\.\w+\s*!==\s*undefined\s*&&\s*\w+\.\w+\s*!==\s*null[\s\S]{0,200}?typeof\s+\w+\.\w+\s*!==\s*["']object["']\s*\|\|\s*Array\.isArray/,
+    allowlist: [
+      "lib/validate-opts.js",
+      // external-db throws ExternalDbError with a 3rd `permanent: true`
+      // arg that the validateOpts._throw factory signature doesn't carry
+      // through. Routing through the helper would silently drop the
+      // permanence flag (which controls retry classification).
+      "lib/external-db.js",
+      // protocol-dispatcher constructs the error inline with multi-line
+      // formatted message details that don't fit the helper's
+      // (label + description) shape.
+      "lib/protocol-dispatcher.js",
+    ],
+    reason: "Extracted to validateOpts.optionalPlainObject. Replaces the recurring `if (X !== undefined && X !== null) { if (typeof X !== 'object' || Array.isArray(X)) throw }` shape used to validate optional plain-object opts. Two sites allowlisted: external-db needs the permanent-flag 3rd arg the helper drops; protocol-dispatcher uses multi-line formatted error messages that don't fit the helper's description slot.",
   },
   {
     id: "inline-redis-client-opts-forwarding",

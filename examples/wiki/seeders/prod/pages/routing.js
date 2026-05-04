@@ -98,6 +98,7 @@ module.exports = {
   '  revokeStore:        { isRevoked, revoke }, // optional — force-revoke registry; serves 404 when revoked',
   '  fileType:           b.fileType,           // required when allowedFileTypes set',
   '  allowedFileTypes:   ["image/png", ...],   // optional — magic-byte MIME allowlist; refuses 415',
+  '  contentSafety:      { ".csv": gate },     // optional — extension-keyed b.gateContract gates (e.g. b.guardCsv.gate(...)) run before headers; sanitize replaces body, refuse returns 415',
   '  // ---- bandwidth + concurrency caps (require opts.cache) ----',
   '  cache:              b.cache,              // required when any quota is set',
   '  maxBytesPerActorPerWindowMs:  number,     // default: 0 (no cap)',

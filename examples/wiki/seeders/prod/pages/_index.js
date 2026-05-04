@@ -22,6 +22,7 @@ module.exports = [
   require("./" + "mail"),
   require("./" + "notifications"),
   require("./" + "file-upload"),
+  require("./" + "guard-csv"),
   require("./" + "observability"),
   require("./" + "testing"),
   require("./" + "i18n-locale"),
