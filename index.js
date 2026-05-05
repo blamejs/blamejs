@@ -101,7 +101,9 @@ var auth = {
   password: require("./lib/auth/password"),
   totp:     require("./lib/totp"),
   passkey:  require("./lib/auth/passkey"),
-  jwt:      require("./lib/auth/jwt"),
+  jwt:      Object.assign({},
+              require("./lib/auth/jwt"),
+              { verifyExternal: require("./lib/auth/jwt-external").verifyExternal }),
   oauth:    require("./lib/auth/oauth"),
   lockout:  require("./lib/auth/lockout"),
 };

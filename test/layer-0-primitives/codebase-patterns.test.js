@@ -1636,6 +1636,13 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/auth/jwt.js", "lib/auth/jwt-external.js", "lib/auth/oauth.js",
+      ],
+      reason: "auth-jwt family — all three files implement JOSE/JWT decode + signature verification against operator-supplied keys. The shared shingle is the canonical 3-part split + base64url decode + safeJson.parse(header/payload) + algorithm allowlist enforcement that every JWT verifier must perform; the divergence is which keys / algorithms / claim-checks each module accepts (PQC algs in jwt.js; classical algs + JWKS in jwt-external.js; full OAuth-discovery + ID-token shape in oauth.js). Extracting the shared decode would split a small primitive across two files for marginal gain. Future consolidation candidate when a 4th JOSE-shaped consumer ships.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/guard-csv.js", "lib/guard-html.js", "lib/guard-svg.js",
         "lib/guard-filename.js", "lib/guard-archive.js", "lib/guard-json.js",
         "lib/guard-yaml.js", "lib/guard-xml.js", "lib/guard-markdown.js",

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.18",
-  "createdAt": "2026-05-05T04:48:56.136Z",
+  "frameworkVersion": "0.7.19",
+  "createdAt": "2026-05-05T05:20:19.695Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -427,6 +427,10 @@
             "verify": {
               "type": "function",
               "arity": 2
+            },
+            "verifyExternal": {
+              "type": "function",
+              "arity": 2
             }
           }
         },
@@ -718,6 +722,23 @@
                 }
               }
             },
+            "OWASP_FLOOR_2026": {
+              "type": "object",
+              "members": {
+                "memoryCostKib": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "parallelism": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "timeCost": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
             "POLICY_PROFILES": {
               "type": "object",
               "members": {
@@ -802,6 +823,10 @@
             "needsRehash": {
               "type": "function",
               "arity": 2
+            },
+            "params": {
+              "type": "function",
+              "arity": 0
             },
             "policy": {
               "type": "function",
@@ -10314,6 +10339,10 @@
           "arity": 1
         },
         "attachUser": {
+          "type": "function",
+          "arity": 1
+        },
+        "bearerAuth": {
           "type": "function",
           "arity": 1
         },
