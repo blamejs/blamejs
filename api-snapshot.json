@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.37",
-  "createdAt": "2026-05-05T16:59:52.139Z",
+  "frameworkVersion": "0.7.38",
+  "createdAt": "2026-05-05T18:07:59.074Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -10908,6 +10908,10 @@
                 "tlsa": {
                   "type": "function",
                   "arity": 2
+                },
+                "verifyChain": {
+                  "type": "function",
+                  "arity": 3
                 }
               }
             },
@@ -10945,6 +10949,10 @@
                     "tlsa": {
                       "type": "function",
                       "arity": 2
+                    },
+                    "verifyChain": {
+                      "type": "function",
+                      "arity": 3
                     }
                   }
                 },

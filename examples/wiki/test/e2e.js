@@ -917,10 +917,11 @@ async function run() {
     // rawQuery, log, etc. Examples that throw at the framework
     // boundary fail the gate — that's drift the wiki author should
     // fix.
-    assert("examples: zero runtime failures across primitive sections (" +
-           execReport.executionFailed.length + " failed, " +
-           execReport.ran + " ran clean)",
-           execReport.executionFailed.length === 0);
+    // Print every failure BEFORE the assert — assert throws on
+    // failure, so anything after it would never execute (and the
+    // operator would never see WHICH example failed). Drift bug
+    // caught when the parallel-fork failure detail wasn't surfacing
+    // to .test-output/wiki-e2e.log.
     if (execReport.executionFailed.length > 0) {
       execReport.executionFailed.forEach(function (f) {
         console.error("  exec fail: " + f.slug + " :: " + f.heading);
@@ -930,6 +931,10 @@ async function run() {
         if (f.stack)   console.error("    stack: " + f.stack);
       });
     }
+    assert("examples: zero runtime failures across primitive sections (" +
+           execReport.executionFailed.length + " failed, " +
+           execReport.ran + " ran clean)",
+           execReport.executionFailed.length === 0);
   } finally {
     await built.app.shutdown();
   }

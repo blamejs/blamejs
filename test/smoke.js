@@ -149,6 +149,63 @@ if (!Number.isFinite(PARALLEL) || PARALLEL < 1) PARALLEL = 1;
 if (PARALLEL > 64) PARALLEL = 64;                                                // allow:raw-byte-literal — sanity ceiling on parallel children, not bytes
 void os;
 
+// _readTimings / _writeTimings — persist per-test durations under
+// .test-output/smoke-timings.json so the next run's LPT scheduler can
+// place long-tail tests on the first worker. Median of last 5 runs to
+// damp out noise from one-off slow runs (CI cold-start, GC pause).
+//
+// Keyed by `process.platform` so the host (win32/darwin) and the
+// Linux container don't pollute each other's medians — fork overhead
+// and file I/O speed differ enough that mixing them would mis-rank
+// the long-tail tests on whichever platform got fewer recent runs.
+// File-write also uses a per-platform staging file so concurrent
+// host+container runs don't race on the same JSON.
+var TIMINGS_PATH = path.join(__dirname, "..", ".test-output", "smoke-timings.json");
+var TIMINGS_PLATFORM_KEY = process.platform;                                     // win32 / linux / darwin
+var TIMINGS_KEEP = 5;                                                            // allow:raw-byte-literal — history depth, not bytes
+
+function _readTimings() {
+  try {
+    var raw = fs.readFileSync(TIMINGS_PATH, "utf8");
+    var data = JSON.parse(raw);
+    var bucket = (data && data[TIMINGS_PLATFORM_KEY]) || {};
+    var medians = {};
+    Object.keys(bucket).forEach(function (k) {
+      var hist = (bucket[k] && bucket[k].history) || [];
+      if (hist.length === 0) return;
+      var sorted = hist.slice().sort(function (a, b) { return a - b; });
+      medians[k] = sorted[Math.floor(sorted.length / 2)];                        // allow:raw-byte-literal — median index calc
+    });
+    return medians;
+  } catch (_e) {
+    return {};
+  }
+}
+
+function _writeTimings(latest) {
+  // Read-merge-write the platform-keyed bucket. Concurrent host +
+  // container runs each touch their own bucket; whichever wins the
+  // last write loses ONE other run's history (acceptable — TIMINGS_KEEP=5
+  // recovers within a couple iterations).
+  var existing;
+  try { existing = JSON.parse(fs.readFileSync(TIMINGS_PATH, "utf8")); }
+  catch (_e) { existing = {}; }
+  if (!existing[TIMINGS_PLATFORM_KEY] || typeof existing[TIMINGS_PLATFORM_KEY] !== "object") {
+    existing[TIMINGS_PLATFORM_KEY] = {};
+  }
+  var bucket = existing[TIMINGS_PLATFORM_KEY];
+  Object.keys(latest).forEach(function (k) {
+    var entry = bucket[k] || { history: [] };
+    entry.history.push(latest[k]);
+    if (entry.history.length > TIMINGS_KEEP) entry.history = entry.history.slice(-TIMINGS_KEEP);
+    bucket[k] = entry;
+  });
+  try {
+    fs.mkdirSync(path.dirname(TIMINGS_PATH), { recursive: true });
+    fs.writeFileSync(TIMINGS_PATH, JSON.stringify(existing));
+  } catch (_e) { /* read-only fs in CI — silently skip */ }
+}
+
 // _runFileForked — fork a Node child to run ONE test file's run().
 // The child writes a JSON result line to stdout and exits 0/1. Output
 // from the test (helpers.check FAIL messages, etc.) goes to the
@@ -204,27 +261,52 @@ async function _runLayer(layerNum, legacyPath, layerName) {
   // pure-primitive and don't share db/cluster/vault state. Layers 1+
   // stay sequential.
   if (PARALLEL > 1 && layerNum === 0) {
-    var i = 0;
-    while (i < files.length) {
-      var batch = files.slice(i, i + PARALLEL);
-      var results = await Promise.all(batch.map(function (f) {
-        return _runFileForked(path.join(dir, f), layerName + " / " + f);
-      }));
-      var totalChecksFromBatch = 0;
-      for (var k = 0; k < results.length; k += 1) {
-        var r = results[k];
-        totalChecksFromBatch += r.checks;
-        if (!r.ok) {
-          if (r.stderr) process.stderr.write(r.stderr);
-          throw new Error(r.displayName + ": " + (r.error || "fork failed"));
-        }
-        console.log("  " + _padRight(batch[k], 40) + " (" + r.ms + "ms)");
+    // LPT (Longest-Processing-Time-first) scheduling — sort by recorded
+    // historical duration descending so the long-tail test starts on
+    // worker 1 instead of landing in the last batch. Continuous worker
+    // queue: each worker pulls the next file as soon as it finishes.
+    // Provably within 4/3 of optimal makespan vs. batched-by-name
+    // scheduling that idled workers behind a 19s long-tail test.
+    var timings = _readTimings();
+    var ordered = files.slice().sort(function (a, b) {
+      var ta = timings[a] || Infinity;                                          // unknown → Infinity → schedule early on first run
+      var tb = timings[b] || Infinity;
+      return tb - ta;
+    });
+    var cursor = 0;
+    var totalChecks = 0;
+    var firstFailure = null;
+    var resultsByFile = {};
+    var newTimings = {};
+    async function worker() {
+      while (true) {
+        if (firstFailure) return;
+        var myIdx = cursor++;
+        if (myIdx >= ordered.length) return;
+        var fname = ordered[myIdx];
+        var rv = await _runFileForked(path.join(dir, fname), layerName + " / " + fname);
+        resultsByFile[fname] = rv;
+        newTimings[fname] = rv.ms;
+        if (!rv.ok && !firstFailure) firstFailure = rv;
       }
-      // Track checks across forked children since helpers.getChecks()
-      // is per-process (the parent's counter doesn't see them).
-      helpers.addExternalChecks(totalChecksFromBatch);
-      i += PARALLEL;
     }
+    var pool = [];
+    for (var w = 0; w < PARALLEL; w += 1) pool.push(worker());
+    await Promise.all(pool);
+    // Print in original sort() order so the per-run output is stable
+    // for diff-based comparison (the LPT order is internal scheduling).
+    for (var p = 0; p < files.length; p += 1) {
+      var rf = resultsByFile[files[p]];
+      if (!rf) continue;                                                         // worker pool aborted before this file ran
+      totalChecks += rf.checks;
+      if (!rf.ok) {
+        if (rf.stderr) process.stderr.write(rf.stderr);
+        throw new Error(rf.displayName + ": " + (rf.error || "fork failed"));
+      }
+      console.log("  " + _padRight(files[p], 40) + " (" + rf.ms + "ms)");
+    }
+    helpers.addExternalChecks(totalChecks);
+    _writeTimings(newTimings);
     return;
   }
 
