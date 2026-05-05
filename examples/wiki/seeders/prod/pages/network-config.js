@@ -164,9 +164,10 @@ module.exports = {
   'var insp = b.network.tls.ct.inspect(fakeCert);',
   '// insp.hasSctExtension === false (no OID in random bytes)',
   '',
-  'var pred = b.network.tls.ct.requireScts({ minScts: 2 });',
+  '// requireScts predicate refuses peer certs without verified SCTs.',
+  'var pred = b.network.tls.ct.requireScts({ minScts: 2, logKeys: {} });',
   'var err = pred({ raw: fakeCert });',
-  '// err is a TlsTrustError with code "tls/ct-no-sct-extension"',
+  '// err is a TlsTrustError with code "tls/ct-not-verified"',
   '</code></pre>',
 
   ].join("\n"),

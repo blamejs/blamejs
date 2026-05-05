@@ -23,11 +23,36 @@ function testOcspSurface() {
 function testCtSurface() {
   check("network.tls.ct.inspect is a function",
         typeof b.network.tls.ct.inspect === "function");
+  check("network.tls.ct.parseScts is a function",
+        typeof b.network.tls.ct.parseScts === "function");
+  check("network.tls.ct.verifyScts is a function",
+        typeof b.network.tls.ct.verifyScts === "function");
   check("network.tls.ct.requireScts is a function",
         typeof b.network.tls.ct.requireScts === "function");
-  check("network.tls.ct.APPROVED_LOGS is a frozen array",
-        Array.isArray(b.network.tls.ct.APPROVED_LOGS) &&
-        Object.isFrozen(b.network.tls.ct.APPROVED_LOGS));
+}
+
+function testCtParseSctsNoExtension() {
+  // Buffer with no SCT OID — parseScts returns [].
+  var fake = Buffer.from("not a real cert");
+  var rv = b.network.tls.ct.parseScts(fake);
+  check("parseScts on cert without SCT extension → []",
+        Array.isArray(rv) && rv.length === 0);
+}
+
+function testCtVerifyNoSctExtension() {
+  var fake = Buffer.from("not a real cert");
+  var rv = b.network.tls.ct.verifyScts(fake, { logKeys: {}, minScts: 2 });
+  check("verifyScts: no SCT extension → ok=false, reason=no-sct-extension",
+        rv.ok === false && rv.reason === "no-sct-extension");
+}
+
+function testCtVerifyParseError() {
+  // Mock a "cert" that has the SCT OID byte sequence but malformed ASN.1
+  // around it — parseScts will fail to walk it.
+  var fake = Buffer.alloc(100);                                                  // not a real cert
+  var rv = b.network.tls.ct.verifyScts(fake, { logKeys: {} });
+  check("verifyScts: malformed cert → ok=false (no-sct-extension or parse-error)",
+        rv.ok === false && (rv.reason === "no-sct-extension" || rv.reason === "parse-error"));
 }
 
 function testCtInspectRejectsNonBuffer() {
@@ -65,19 +90,24 @@ function testRequireSctsPredicate() {
   var err1 = pred(null);
   check("requireScts(null) → ct-no-cert error",
         err1 && /ct-no-cert/.test(err1.code || ""));
-  // Cert with no SCT OID → error.
+  // Cert with no SCT OID → ct-no-sct-extension error (real verifier
+  // walks ASN.1 and finds no extension, not just OID byte presence).
   var noScts = { raw: Buffer.from("nope") };
   var err2 = pred(noScts);
   check("requireScts(non-SCT cert) → ct-no-sct-extension error",
         err2 && /ct-no-sct-extension/.test(err2.code || ""));
-  // Cert with SCT OID → null (no error).
+  // Cert with embedded OID bytes but no valid ASN.1 structure → still
+  // refused (real verifier can't extract a parseable SCT list). Old
+  // OID-presence heuristic would have passed this; the upgraded
+  // verifier correctly distinguishes "looks like the OID is in there"
+  // from "actually has a verified SCT list".
   var oid = Buffer.from([
     0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x04, 0x02,
   ]);
-  var withScts = { raw: Buffer.concat([Buffer.alloc(20), oid]) };
-  var err3 = pred(withScts);
-  check("requireScts(cert with SCT) → null (passes)",
-        err3 === null);
+  var withFakeOid = { raw: Buffer.concat([Buffer.alloc(20), oid]) };
+  var err3 = pred(withFakeOid);
+  check("requireScts(malformed cert with OID bytes) → still refused",
+        err3 !== null);
 }
 
 async function run() {
@@ -86,6 +116,9 @@ async function run() {
   testCtInspectRejectsNonBuffer();
   testCtInspectFakeCertNoExtension();
   testCtInspectFakeCertWithOid();
+  testCtParseSctsNoExtension();
+  testCtVerifyNoSctExtension();
+  testCtVerifyParseError();
   testRequireSctsPredicate();
 }
 

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.7.33",
-  "createdAt": "2026-05-05T15:57:11.107Z",
+  "createdAt": "2026-05-05T16:19:37.646Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -11046,17 +11046,21 @@
             "ct": {
               "type": "object",
               "members": {
-                "APPROVED_LOGS": {
-                  "type": "instance",
-                  "ctorName": "Array"
-                },
                 "inspect": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "parseScts": {
                   "type": "function",
                   "arity": 1
                 },
                 "requireScts": {
                   "type": "function",
                   "arity": 1
+                },
+                "verifyScts": {
+                  "type": "function",
+                  "arity": 2
                 }
               }
             },
