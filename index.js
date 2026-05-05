@@ -1,4 +1,16 @@
 "use strict";
+
+// TLS 1.3 minimum, framework-wide. Sets the default for every TLS
+// socket the process opens — outbound (https.request, mail SMTP+
+// STARTTLS, redis/postgres/mongo with TLS, http-client) AND inbound
+// (https.createServer when blamejs is the listener). Per-call override
+// still works when an operator with a legacy peer needs TLSv1.2.
+// node:tls reads `DEFAULT_MIN_VERSION` once at first TLS use; setting
+// it here, before any framework module loads node:tls, makes the
+// default sticky for the entire process.
+var _tls = require("node:tls");
+_tls.DEFAULT_MIN_VERSION = "TLSv1.3";
+
 /**
  * blamejs — public API entry point.
  *
@@ -83,6 +95,8 @@ httpClient.encrypted = require("./lib/middleware/api-encrypt").httpClient;
 httpClient.cookieJar = require("./lib/http-client-cookie-jar");
 var websocket = require("./lib/websocket");
 var safeUrl = require("./lib/safe-url");
+var safeRedirect = require("./lib/safe-redirect");
+var pick = require("./lib/pick");
 var gateContract = require("./lib/gate-contract");
 var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
@@ -220,6 +234,8 @@ module.exports = {
   httpClient:       httpClient,
   websocket:        websocket,
   safeUrl:          safeUrl,
+  safeRedirect:     safeRedirect,
+  pick:             pick,
   gateContract:     gateContract,
   guardCsv:         guardCsv,
   guardHtml:        guardHtml,

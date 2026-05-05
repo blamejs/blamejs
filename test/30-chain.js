@@ -1736,17 +1736,14 @@ async function testAuditSignMlDsaOptIn() {
 }
 
 async function testAuditSignLegacyFileBackcompat() {
-  // Legacy audit-sign.key files (pre-migration) have no `algorithm`
-  // field. Treat them as ml-dsa-87 — the previous implicit default —
-  // so existing deployments keep verifying their checkpoint chain
-  // after upgrade. Forge a legacy file by hand and verify the load
-  // path picks up ml-dsa-87.
+  // Pre-v1 compat-shim sweep removed the implicit ml-dsa-87 fallback
+  // for key files missing the `algorithm` field. Such files now throw
+  // KEY_FILE_MISSING_ALG at boot — operators rotate the key (deletes
+  // the file and boots fresh) or hand-edit to add the field.
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-asl-"));
   try {
     process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
 
-    // Generate an ML-DSA-87 keypair directly + write the legacy file
-    // shape (no algorithm field).
     var nodeCrypto = require("crypto");
     var pair = nodeCrypto.generateKeyPairSync("ml-dsa-87", {
       publicKeyEncoding:  { type: "spki",  format: "pem" },
@@ -1758,36 +1755,24 @@ async function testAuditSignLegacyFileBackcompat() {
       { mode: 0o600 }
     );
 
-    // Boot with that legacy file present
     process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
     b.cluster._resetForTest();
     b.audit._resetForTest();
     b.vault._resetForTest();
     b.db._resetForTest();
     await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
-    await b.db.init({
-      dataDir:      tmpDir,
-      atRest:       "plain",
-      auditSigning: { mode: "plaintext" },
-      schema:       [],
-    });
 
-    check("legacy file (no algorithm) loads as ml-dsa-87",
-          b.auditSign.getAlgorithm() === "ml-dsa-87");
-    // The key file ON DISK is unchanged — back-compat doesn't rewrite
-    // (would surprise operators); the algorithm is just inferred at
-    // load. Operators who want the field added rotate the key.
-    var stillLegacy = JSON.parse(fs.readFileSync(path.join(tmpDir, "audit-sign.key"), "utf8"));
-    check("legacy file is NOT rewritten with algorithm field",
-          stillLegacy.algorithm === undefined);
-
-    // Pubkey fingerprint matches the original key (no key rotation occurred)
-    var pubFromModule = b.auditSign.getPublicKey();
-    check("legacy pubkey loaded as-is",                   pubFromModule === pair.publicKey);
-
-    var sig = b.auditSign.sign("legacy roundtrip");
-    check("legacy ML-DSA-87 sign+verify works",
-          b.auditSign.verify("legacy roundtrip", sig) === true);
+    var threw = null;
+    try {
+      await b.db.init({
+        dataDir:      tmpDir,
+        atRest:       "plain",
+        auditSigning: { mode: "plaintext" },
+        schema:       [],
+      });
+    } catch (e) { threw = e; }
+    check("legacy file (no algorithm field) refuses to load — explicit alg required",
+          threw && /MISSING_ALG|missing.*algorithm/i.test(threw.code || threw.message || ""));
   } finally {
     await teardownTestDb(tmpDir);
   }

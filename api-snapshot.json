@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.20",
-  "createdAt": "2026-05-05T05:41:50.575Z",
+  "frameworkVersion": "0.7.21",
+  "createdAt": "2026-05-05T05:56:22.523Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -11203,6 +11203,10 @@
         }
       }
     },
+    "pick": {
+      "type": "function",
+      "arity": 3
+    },
     "pqcAgent": {
       "type": "object",
       "members": {
@@ -11952,6 +11956,19 @@
         "validate": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "safeRedirect": {
+      "type": "object",
+      "members": {
+        "DEFAULT_FALLBACK": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "resolve": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
