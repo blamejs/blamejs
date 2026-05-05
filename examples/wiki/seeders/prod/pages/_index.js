@@ -42,6 +42,7 @@ module.exports = [
   require("./" + "guard-graphql"),
   require("./" + "guard-shell"),
   require("./" + "guard-regex"),
+  require("./" + "guard-jsonpath"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),
