@@ -154,6 +154,78 @@ async function testArcVerifyBadSignatures() {
         rv.hops[0].asResult !== "pass");
 }
 
+function _arcHopHeaders(i, cv) {
+  // Synthetic ARC headers — signatures are dummy; the cv= edge tests
+  // exercise the chain-rule validator, not the signature verifier.
+  return "ARC-Authentication-Results: i=" + i + "; example.com; spf=pass\r\n" +
+         "ARC-Message-Signature: i=" + i + "; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+         "ARC-Seal: i=" + i + "; a=rsa-sha256; cv=" + cv + "; d=example.com; s=arc; b=AAAA\r\n";
+}
+
+async function testArcVerifyDuplicateInstance() {
+  // Two ARC-Seal headers at i=1 — chain MUST refuse rather than
+  // silently overwrite the first signer's record.
+  var msg = _arcHopHeaders(1, "none") +
+            "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=attacker.com; s=arc; b=BBBB\r\n" +
+            "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg);
+  check("arc.verify: duplicate instance → fail w/ duplicate-instance reason",
+        rv.chainStatus === "fail" && rv.reason === "duplicate-instance");
+}
+
+async function testArcVerifyNonContiguous() {
+  // i=1 + i=3 (missing i=2) — chain MUST refuse.
+  var msg = _arcHopHeaders(1, "none") +
+            _arcHopHeaders(3, "pass") +
+            "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg);
+  check("arc.verify: non-contiguous instances → fail",
+        rv.chainStatus === "fail" && /incomplete-or-non-contiguous/.test(rv.reason || ""));
+}
+
+async function testArcVerifyTooManyHops() {
+  // Synthesize 51 hops — RFC 8617 §5.1.2 caps at 50.
+  var hopHeaders = "";
+  for (var i = 1; i <= 51; i += 1) {
+    hopHeaders += _arcHopHeaders(i, i === 1 ? "none" : "pass");
+  }
+  var msg = hopHeaders + "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg);
+  check("arc.verify: chain > 50 hops → fail w/ too-many-hops reason",
+        rv.chainStatus === "fail" && rv.reason === "too-many-hops");
+}
+
+async function testArcVerifyHop1CvMustBeNone() {
+  // i=1 with cv=pass — invalid: hop 1 has nothing upstream to validate.
+  var msg = _arcHopHeaders(1, "pass") +
+            "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg);
+  check("arc.verify: i=1 cv=pass → fail w/ i=1-cv-must-be-none reason",
+        rv.chainStatus === "fail" && /i=1-cv-must-be-none/.test(rv.reason || ""));
+}
+
+async function testArcVerifyHop2CvNoneInvalid() {
+  // i=2 with cv=none — invalid: hop 2+ MUST report pass or fail.
+  var msg = _arcHopHeaders(1, "none") +
+            _arcHopHeaders(2, "none") +
+            "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg);
+  check("arc.verify: i=2 cv=none → fail w/ cv=none-invalid-after-hop-1 reason",
+        rv.chainStatus === "fail" && /cv=none-invalid-after-hop-1/.test(rv.reason || ""));
+}
+
+async function testArcVerifyPassAfterFail() {
+  // i=1 cv=none, i=2 cv=fail, i=3 cv=pass — invalid: a hop can't
+  // claim chain pass after upstream observed fail.
+  var msg = _arcHopHeaders(1, "none") +
+            _arcHopHeaders(2, "fail") +
+            _arcHopHeaders(3, "pass") +
+            "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg);
+  check("arc.verify: cv=pass after upstream cv=fail → fail w/ pass-after-upstream-fail reason",
+        rv.chainStatus === "fail" && /pass-after-upstream-fail/.test(rv.reason || ""));
+}
+
 function testDkimVerifySurface() {
   check("mail.dkim.verify is a function",
         typeof b.mail.dkim.verify === "function");
@@ -240,6 +312,12 @@ async function run() {
   await testArcVerifyMissing();
   await testArcVerifyNone();
   await testArcVerifyBadSignatures();
+  await testArcVerifyDuplicateInstance();
+  await testArcVerifyNonContiguous();
+  await testArcVerifyTooManyHops();
+  await testArcVerifyHop1CvMustBeNone();
+  await testArcVerifyHop2CvNoneInvalid();
+  await testArcVerifyPassAfterFail();
   testDkimVerifySurface();
   await testDkimVerifyRoundTrip();
   await testDkimVerifyNoSignature();
