@@ -60,6 +60,8 @@ module.exports = {
   '  methods:         [string],                // default: ["POST", "PUT", "PATCH", "DELETE"]',
   '  trustProxy:      boolean | number,        // default: false — gates Secure-cookie inference',
   '  audit:           auditInstance,           // default: null — emits csrf.rejected',
+  '  checkOrigin:     boolean,                 // default: true — Origin/Referer cross-check on state-changing requests',
+  '  allowedOrigins:  [string],                // default: same-origin — extra origins to accept (e.g. "https://app.example.com")',
   '}</code></pre>',
   '<p>JSON requests are protected by the encrypted session payload itself. Form POSTs (and any non-JSON content type) get a CSRF token via the double-submit cookie pattern (default) or a session-stored token. The two are mutually exclusive — passing both throws at create-time. Default cookie name is <code>__Host-csrf</code> over HTTPS, <code>csrf</code> over plain HTTP. The <code>__Host-</code> prefix forces browsers to refuse the cookie unless it carries Secure + Path=/ + no Domain — closing the malicious-sibling-subdomain override path.</p>',
   '<pre><code class="language-javascript">var csrf = b.middleware.csrfProtect({',

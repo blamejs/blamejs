@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.19",
-  "createdAt": "2026-05-05T05:20:19.695Z",
+  "frameworkVersion": "0.7.20",
+  "createdAt": "2026-05-05T05:41:50.575Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -10375,6 +10375,10 @@
           "arity": 1
         },
         "errorHandler": {
+          "type": "function",
+          "arity": 1
+        },
+        "fetchMetadata": {
           "type": "function",
           "arity": 1
         },
