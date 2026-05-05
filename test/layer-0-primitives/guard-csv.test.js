@@ -293,7 +293,7 @@ function testGuardCsvSurface() {
   check("b.guardCsv.COMPLIANCE_POSTURES has 'hipaa'",   !!b.guardCsv.COMPLIANCE_POSTURES.hipaa);
   check("b.guardCsv.COMPLIANCE_POSTURES has 'pci-dss'", !!b.guardCsv.COMPLIANCE_POSTURES["pci-dss"]);
   check("b.guardCsv.COMPLIANCE_POSTURES has 'gdpr'",    !!b.guardCsv.COMPLIANCE_POSTURES.gdpr);
-  check("b.guardCsv.COMPLIANCE_POSTURES has 'soc2-cc7'", !!b.guardCsv.COMPLIANCE_POSTURES["soc2-cc7"]);
+  check("b.guardCsv.COMPLIANCE_POSTURES has 'soc2'", !!b.guardCsv.COMPLIANCE_POSTURES["soc2"]);
   check("b.guardCsv.FORMULA_PREFIXES is an array",      Array.isArray(b.guardCsv.FORMULA_PREFIXES));
   check("b.guardCsv.GuardCsvError exposed",            typeof b.guardCsv.GuardCsvError === "function");
 }

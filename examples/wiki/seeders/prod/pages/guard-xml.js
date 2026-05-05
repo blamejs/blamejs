@@ -10,7 +10,7 @@ module.exports = {
   '<h2 id="validate">b.guardXml.validate(input, opts) <a class="anchor" href="#validate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:                "strict" | "balanced" | "permissive",',
-  '  compliancePosture:      "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:      "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  doctypePolicy:          "reject" | "allow",          // refused at every profile',
   '  entityPolicy:           "reject" | "allow",',
   '  externalEntityPolicy:   "reject" | "allow",',
@@ -55,7 +55,7 @@ module.exports = {
   '<h2 id="gate">b.guardXml.gate(opts) <a class="anchor" href="#gate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:               "strict" | "balanced" | "permissive",',
-  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  mode:                  "enforce" | "warn-only" | "shadow" | "audit-only" | "log-only" | "canary",',
   '  audit:                 b.audit,',
   '  observability:         b.observability,',
@@ -87,7 +87,7 @@ module.exports = {
   '<p><strong>permissive</strong> — DOCTYPE/ENTITY/external still refused; audit most others; refuse only null bytes; 64 MiB cap; depth 1024.</p>',
 
   '<h2 id="compliance">Compliance postures <a class="anchor" href="#compliance">#</a></h2>',
-  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2-cc7</strong> — strict overlay + forensic snapshots (256 / 256 / 512 bytes).</p>',
+  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2</strong> — strict overlay + forensic snapshots (256 / 256 / 512 bytes).</p>',
   '<p><strong>gdpr</strong> — balanced overlay + 128-byte forensic snippets.</p>',
 
   ].join("\n"),

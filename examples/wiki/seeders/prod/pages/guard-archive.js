@@ -11,7 +11,7 @@ module.exports = {
   '<h2 id="validate-entries">b.guardArchive.validateEntries(entries, opts) <a class="anchor" href="#validate-entries">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:                    "strict" | "balanced" | "permissive",',
-  '  compliancePosture:          "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:          "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  traversalPolicy:            "reject" | "allow",',
   '  absolutePathPolicy:         "reject" | "allow",',
   '  symlinkPolicy:              "reject" | "audit" | "allow",',
@@ -60,7 +60,7 @@ module.exports = {
   '<h2 id="gate">b.guardArchive.gate(opts) <a class="anchor" href="#gate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:               "strict" | "balanced" | "permissive",',
-  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  mode:                  "enforce" | "warn-only" | "shadow" | "audit-only" | "log-only" | "canary",',
   '  audit:                 b.audit,',
   '  observability:         b.observability,',
@@ -101,7 +101,7 @@ module.exports = {
   '<p><strong>permissive</strong> — symlinks + hardlinks within root allowed; nested-depth 4; 100000 entries; 10 GiB total; 1000:1 ratio.</p>',
 
   '<h2 id="compliance">Compliance postures <a class="anchor" href="#compliance">#</a></h2>',
-  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2-cc7</strong> — strict overlay + forensic snapshots.</p>',
+  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2</strong> — strict overlay + forensic snapshots.</p>',
   '<p><strong>gdpr</strong> — balanced overlay + 128-byte forensic snapshots.</p>',
 
   ].join("\n"),

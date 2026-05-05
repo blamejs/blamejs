@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.21",
-  "createdAt": "2026-05-05T05:56:22.523Z",
+  "frameworkVersion": "0.7.22",
+  "createdAt": "2026-05-05T06:07:37.769Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -3027,7 +3027,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "absolutePathPolicy": {
@@ -3639,7 +3639,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "bidiCharPolicy": {
@@ -4384,7 +4384,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "addressCommentPolicy": {
@@ -5112,7 +5112,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "adsPolicy": {
@@ -5676,7 +5676,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "allowedTags": {
@@ -6384,7 +6384,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "bidiPolicy": {
@@ -7224,7 +7224,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "autolinkSchemePolicy": {
@@ -7956,7 +7956,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "allowAnimation": {
@@ -8704,7 +8704,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "bidiPolicy": {
@@ -9420,7 +9420,7 @@
                 }
               }
             },
-            "soc2-cc7": {
+            "soc2": {
               "type": "object",
               "members": {
                 "aliasPolicy": {
@@ -10240,6 +10240,10 @@
               "arity": 2
             },
             "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "dualSigner": {
               "type": "function",
               "arity": 1
             }

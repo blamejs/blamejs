@@ -10,7 +10,7 @@ module.exports = {
   '<h2 id="validate">b.guardSvg.validate(input, opts) <a class="anchor" href="#validate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:                 "strict" | "balanced" | "permissive",',
-  '  compliancePosture:       "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:       "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  bidiPolicy:              "reject" | "strip" | "audit" | "allow",',
   '  controlPolicy:           "reject" | "strip" | "audit" | "allow",',
   '  nullBytePolicy:          "reject" | "strip" | "audit" | "allow",',
@@ -69,7 +69,7 @@ module.exports = {
   '<h2 id="gate">b.guardSvg.gate(opts) <a class="anchor" href="#gate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:               "strict" | "balanced" | "permissive",',
-  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  mode:                  "enforce" | "warn-only" | "shadow" | "audit-only" | "log-only" | "canary",',
   '  audit:                 b.audit,',
   '  observability:         b.observability,',
@@ -111,7 +111,7 @@ module.exports = {
   '<p><strong>permissive</strong> — adds animation elements (with strict attributeName allowlist still enforced). 32 MiB document cap. Element count 262144.</p>',
 
   '<h2 id="compliance">Compliance postures <a class="anchor" href="#compliance">#</a></h2>',
-  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2-cc7</strong> — strict allowlist + reject every threat class + forensic snapshots. pci-dss locks URL allowlist to http / https / mailto / tel.</p>',
+  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2</strong> — strict allowlist + reject every threat class + forensic snapshots. pci-dss locks URL allowlist to http / https / mailto / tel.</p>',
   '<p><strong>gdpr</strong> — balanced allowlist + strip rather than reject. 128-byte forensic snapshots.</p>',
 
   ].join("\n"),

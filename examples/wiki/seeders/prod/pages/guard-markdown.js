@@ -10,7 +10,7 @@ module.exports = {
   '<h2 id="validate">b.guardMarkdown.validate(input, opts) <a class="anchor" href="#validate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:                "strict" | "balanced" | "permissive",',
-  '  compliancePosture:      "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:      "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  rawHtmlPolicy:          "reject" | "audit" | "allow",',
   '  dangerousTagPolicy:     "reject" | "allow",            // refused at every profile',
   '  dangerousSchemePolicy:  "reject" | "audit" | "allow",  // refused at every profile',
@@ -70,7 +70,7 @@ module.exports = {
   '<h2 id="gate">b.guardMarkdown.gate(opts) <a class="anchor" href="#gate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:               "strict" | "balanced" | "permissive",',
-  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  mode:                  "enforce" | "warn-only" | "shadow" | "audit-only" | "log-only" | "canary",',
   '  audit:                 b.audit,',
   '  observability:         b.observability,',
@@ -104,7 +104,7 @@ module.exports = {
   '<p><strong>permissive</strong> — dangerous tags + dangerous schemes still refused (script-tag and javascript: are always universal); raw HTML / reference-links / HTML comments / front-matter all allowed; 64 MiB cap; depth caps 256.</p>',
 
   '<h2 id="compliance">Compliance postures <a class="anchor" href="#compliance">#</a></h2>',
-  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2-cc7</strong> — strict overlay + forensic snapshots (256 / 256 / 512 bytes).</p>',
+  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2</strong> — strict overlay + forensic snapshots (256 / 256 / 512 bytes).</p>',
   '<p><strong>gdpr</strong> — balanced overlay + 128-byte forensic snippets.</p>',
 
   '<h2 id="composition">Composition <a class="anchor" href="#composition">#</a></h2>',

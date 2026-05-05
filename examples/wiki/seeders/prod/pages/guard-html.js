@@ -11,7 +11,7 @@ module.exports = {
   '<h2 id="validate">b.guardHtml.validate(input, opts) <a class="anchor" href="#validate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:                 "strict" | "balanced" | "permissive",  // default "strict"',
-  '  compliancePosture:       "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:       "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  // ---- whole-input policies (override profile) ----',
   '  bidiPolicy:              "reject" | "strip" | "audit" | "allow",',
   '  controlPolicy:           "reject" | "strip" | "audit" | "allow",',
@@ -71,7 +71,7 @@ module.exports = {
   '<h2 id="gate">b.guardHtml.gate(opts) <a class="anchor" href="#gate">#</a></h2>',
   '<pre><code class="language-javascript">{',
   '  profile:               "strict" | "balanced" | "permissive",  // default "strict"',
-  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2-cc7",',
+  '  compliancePosture:     "hipaa" | "pci-dss" | "gdpr" | "soc2",',
   '  mode:                  "enforce" | "warn-only" | "shadow" | "audit-only" | "log-only" | "canary",',
   '  audit:                 b.audit,                          // emits guardHtml.gate.* events',
   '  observability:         b.observability,',
@@ -111,7 +111,7 @@ module.exports = {
   '<p><strong>permissive</strong> — every tag NOT in the dangerous-tags denylist. Adds tabindex / accesskey to allowed attrs. Adds ftp / sftp / ws / wss schemes. Bidi and CSS injection audit-only. 32 MiB document cap.</p>',
 
   '<h2 id="compliance">Compliance postures <a class="anchor" href="#compliance">#</a></h2>',
-  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2-cc7</strong> — strict allowlist + reject on every threat class + forensic snapshot capture (256-byte snippet, 512 for soc2-cc7). pci-dss additionally locks the URL allowlist to http / https / mailto / tel.</p>',
+  '<p><strong>hipaa</strong> / <strong>pci-dss</strong> / <strong>soc2</strong> — strict allowlist + reject on every threat class + forensic snapshot capture (256-byte snippet, 512 for soc2). pci-dss additionally locks the URL allowlist to http / https / mailto / tel.</p>',
   '<p><strong>gdpr</strong> — balanced allowlist + strip rather than reject (operator can serve sanitized output) + 128-byte forensic snapshots.</p>',
 
   ].join("\n"),
