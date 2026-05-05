@@ -98,6 +98,7 @@ var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
 var dora = require("./lib/dora");
+var compliance = require("./lib/compliance");
 var gateContract = require("./lib/gate-contract");
 var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
@@ -238,6 +239,7 @@ module.exports = {
   safeRedirect:     safeRedirect,
   pick:             pick,
   dora:             dora,
+  compliance:       compliance,
   gateContract:     gateContract,
   guardCsv:         guardCsv,
   guardHtml:        guardHtml,

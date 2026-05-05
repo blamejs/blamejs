@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.26",
-  "createdAt": "2026-05-05T12:36:22.004Z",
+  "frameworkVersion": "0.7.27",
+  "createdAt": "2026-05-05T12:54:48.424Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -1416,6 +1416,35 @@
         }
       }
     },
+    "compliance": {
+      "type": "object",
+      "members": {
+        "ComplianceError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KNOWN_POSTURES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "assert": {
+          "type": "function",
+          "arity": 1
+        },
+        "clear": {
+          "type": "function",
+          "arity": 0
+        },
+        "current": {
+          "type": "function",
+          "arity": 0
+        },
+        "set": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "config": {
       "type": "object",
       "members": {
@@ -2480,6 +2509,10 @@
           "arity": 4
         },
         "ClusterProviderError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ComplianceError": {
           "type": "function",
           "arity": 4
         },
