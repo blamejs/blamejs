@@ -345,6 +345,22 @@ async function _runIdentifierGuard(g) {
         !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
 }
 
+async function _runAuthBundleGuard(g) {
+  var fx = g.INTEGRATION_FIXTURES;
+  var gate = g.gate({ profile: "strict" });
+
+  var rvBenign = await gate.check({ authBundle: fx.benignAuthBundle });
+  check("[" + g.NAME + "] direct gate: benign authBundle → serve",
+        rvBenign.ok === true && rvBenign.action === "serve");
+
+  var rvHostile = await gate.check({ authBundle: fx.hostileAuthBundle });
+  check("[" + g.NAME + "] direct gate: hostile authBundle → not serve",
+        rvHostile.action !== "serve");
+
+  check("[" + g.NAME + "] NOT registered in guardAll content-type dispatch",
+        !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
+}
+
 async function _runMetadataGuard(g) {
   var fx = g.INTEGRATION_FIXTURES;
   var gate = g.gate({ profile: "strict" });
@@ -421,6 +437,8 @@ async function testGuardHostIntegrationAdaptive() {
       await _runGraphqlGuard(g);
     } else if (g.KIND === "metadata") {
       await _runMetadataGuard(g);
+    } else if (g.KIND === "auth-bundle") {
+      await _runAuthBundleGuard(g);
     } else {
       check("[" + g.NAME + "] unknown KIND " + JSON.stringify(g.KIND), false);
     }

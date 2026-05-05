@@ -124,6 +124,7 @@ var guardJsonpath = require("./lib/guard-jsonpath");
 var guardTemplate = require("./lib/guard-template");
 var guardImage = require("./lib/guard-image");
 var guardPdf = require("./lib/guard-pdf");
+var guardAuth = require("./lib/guard-auth");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -279,6 +280,7 @@ module.exports = {
   guardTemplate:    guardTemplate,
   guardImage:       guardImage,
   guardPdf:         guardPdf,
+  guardAuth:        guardAuth,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,
