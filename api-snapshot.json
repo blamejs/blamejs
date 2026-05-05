@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.16",
-  "createdAt": "2026-05-05T03:30:13.753Z",
+  "frameworkVersion": "0.7.17",
+  "createdAt": "2026-05-05T04:20:31.799Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2415,6 +2415,10 @@
           "type": "function",
           "arity": 4
         },
+        "GuardEmailError": {
+          "type": "function",
+          "arity": 4
+        },
         "GuardFilenameError": {
           "type": "function",
           "arity": 4
@@ -4053,6 +4057,866 @@
           "arity": 2
         },
         "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardEmail": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "addressCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bareCrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bareLfPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "crlfHeaderInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "displayNameSpoofPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAddressBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaders": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLocalPartBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiAtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "smtpSmugglingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "addressCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bareCrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bareLfPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "crlfHeaderInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "displayNameSpoofPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAddressBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaders": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLocalPartBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiAtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "smtpSmugglingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "addressCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bareCrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bareLfPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "crlfHeaderInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "displayNameSpoofPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAddressBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaders": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLocalPartBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiAtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "smtpSmugglingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "addressCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bareCrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bareLfPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "crlfHeaderInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "displayNameSpoofPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAddressBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaders": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLocalPartBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiAtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "smtpSmugglingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "addressCommentPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "allowedScripts": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bareCrPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bareLfPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bomPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "crlfHeaderInjectionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "displayNameSpoofPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ipLiteralPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAddressBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDomainBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaderLineBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaders": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxLocalPartBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mixedScriptPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "multiAtPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "punycodePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "smtpSmugglingPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardEmailError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "addressCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bareCrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bareLfPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "crlfHeaderInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "displayNameSpoofPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAddressBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaders": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLocalPartBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiAtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "smtpSmugglingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "addressCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedScripts": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "bareCrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bareLfPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "crlfHeaderInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "displayNameSpoofPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAddressBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaders": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLocalPartBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiAtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "smtpSmugglingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "addressCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bareCrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bareLfPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bomPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "crlfHeaderInjectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "displayNameSpoofPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAddressBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaders": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLocalPartBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiAtPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "smtpSmugglingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        },
+        "validateAddress": {
+          "type": "function",
+          "arity": 2
+        },
+        "validateMessage": {
           "type": "function",
           "arity": 2
         }

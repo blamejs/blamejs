@@ -31,6 +31,7 @@ module.exports = [
   require("./" + "guard-yaml"),
   require("./" + "guard-xml"),
   require("./" + "guard-markdown"),
+  require("./" + "guard-email"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),
