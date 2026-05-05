@@ -18,6 +18,50 @@ function testOcspSurface() {
         typeof b.network.tls.ocsp.connect === "function");
   check("network.tls.ocsp.requireStapled is a function",
         typeof b.network.tls.ocsp.requireStapled === "function");
+  check("network.tls.ocsp.inspectMustStaple is a function",
+        typeof b.network.tls.ocsp.inspectMustStaple === "function");
+  check("network.tls.ocsp.requireMustStaple is a function",
+        typeof b.network.tls.ocsp.requireMustStaple === "function");
+}
+
+function testMustStapleInspectMalformed() {
+  var fake = Buffer.from("not a real cert");
+  var rv = b.network.tls.ocsp.inspectMustStaple(fake);
+  check("inspectMustStaple on malformed buffer → mustStaple=false",
+        rv.mustStaple === false);
+  check("inspectMustStaple returns features array",
+        Array.isArray(rv.features));
+}
+
+function testMustStapleInspectRejectsNonBuffer() {
+  var threw = null;
+  try { b.network.tls.ocsp.inspectMustStaple("nope"); }
+  catch (e) { threw = e; }
+  check("inspectMustStaple rejects non-Buffer",
+        threw && /ocsp-bad-input/.test(threw.code || ""));
+}
+
+function testRequireMustStaplePredicateNoCert() {
+  var pred = b.network.tls.ocsp.requireMustStaple();
+  var err = pred(null, {});
+  check("requireMustStaple(null) → ocsp-no-cert",
+        err && /ocsp-no-cert/.test(err.code || ""));
+}
+
+function testRequireMustStaplePredicateNoExtensionPasses() {
+  // Cert without must-staple extension + no staple → predicate returns
+  // null (operator did not opt into enforceUnconditional).
+  var pred = b.network.tls.ocsp.requireMustStaple();
+  var err = pred({ raw: Buffer.from("not a real cert") }, {});
+  check("requireMustStaple on cert without must-staple → null (default)",
+        err === null);
+}
+
+function testRequireMustStapleEnforceUnconditional() {
+  var pred = b.network.tls.ocsp.requireMustStaple({ enforceUnconditional: true });
+  var err = pred({ raw: Buffer.from("not a real cert") }, {});
+  check("requireMustStaple({ enforceUnconditional }) refuses no-staple",
+        err && /ocsp-staple-required/.test(err.code || ""));
 }
 
 function testCtSurface() {
@@ -120,6 +164,11 @@ async function run() {
   testCtVerifyNoSctExtension();
   testCtVerifyParseError();
   testRequireSctsPredicate();
+  testMustStapleInspectMalformed();
+  testMustStapleInspectRejectsNonBuffer();
+  testRequireMustStaplePredicateNoCert();
+  testRequireMustStaplePredicateNoExtensionPasses();
+  testRequireMustStapleEnforceUnconditional();
 }
 
 module.exports = { run: run };

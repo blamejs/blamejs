@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.33",
-  "createdAt": "2026-05-05T16:19:37.646Z",
+  "frameworkVersion": "0.7.36",
+  "createdAt": "2026-05-05T16:40:24.195Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -11095,11 +11095,19 @@
                   "type": "function",
                   "arity": 2
                 },
+                "inspectMustStaple": {
+                  "type": "function",
+                  "arity": 1
+                },
                 "parseResponse": {
                   "type": "function",
                   "arity": 1
                 },
                 "requireGood": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "requireMustStaple": {
                   "type": "function",
                   "arity": 1
                 },
