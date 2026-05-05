@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.30",
-  "createdAt": "2026-05-05T13:57:31.649Z",
+  "frameworkVersion": "0.7.31",
+  "createdAt": "2026-05-05T14:48:58.746Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -10365,7 +10365,7 @@
           "members": {
             "verify": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             }
           }
         },
@@ -10387,6 +10387,10 @@
             "dualSigner": {
               "type": "function",
               "arity": 1
+            },
+            "verify": {
+              "type": "function",
+              "arity": 2
             }
           }
         },
@@ -11083,7 +11087,7 @@
                   "type": "function",
                   "arity": 1
                 },
-                "requireGood": {
+                "requireStapled": {
                   "type": "function",
                   "arity": 1
                 }

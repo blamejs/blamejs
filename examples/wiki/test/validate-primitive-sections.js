@@ -798,6 +798,197 @@ function _validatePage(page, opts) {
   return violations;
 }
 
+// ---- Missing-section enumeration ----
+//
+// The earlier validator only checked that EXISTING wiki sections have
+// the four required pieces (heading + opts + prose + example). It did
+// NOT catch the case where an operator-facing primitive on `b.*`
+// has NO documented section at all. This walker enumerates `b.*`,
+// applies a skip-list for non-primitive surface (constants, internal
+// catalogs, frameworkError class registry, lazyRequire helper, etc.),
+// and reports every undocumented primitive.
+//
+// Pre-v0.7.31 backlog: primitives that pre-existed without a wiki
+// section live in UNDOCUMENTED_BACKLOG below with a one-line reason —
+// they're visible warnings, not gate failures, until backfilled. New
+// primitives shipped from v0.7.31 forward MUST either land with a
+// wiki section OR get added to UNDOCUMENTED_BACKLOG explicitly.
+
+// Top-level keys on `b.*` that are NOT primitives — skipped entirely.
+var BX_SKIP = new Set([
+  "constants",         // compile-time scale helpers, not callable
+  "frameworkError",    // class catalog (typed errors), not a primitive
+  "_modules",          // raw-module advanced access
+  "_internalForTest",  // internal test plumbing
+  "testing",           // test helpers (b.testing.bodyReq etc. — pages document via testing.js page)
+  "lazyRequire",       // build-time helper for circular-dep modules
+  "validateOpts",      // build-time helper used inside primitives
+  "cliHelpers",        // CLI subcommand plumbing
+  "parsers",           // namespace; sub-modules documented under safe-parsers
+  "auth",              // namespace; sub-modules documented per auth.* method
+  "logStream",         // documented under observability page
+  "events",            // documented under observability page
+  "redact",            // documented under observability page
+  "lib",               // raw module access
+]);
+
+// Pre-v0.7.31 primitives without a dedicated wiki section. Each entry
+// names the page it SHOULD be documented under (or notes the reason
+// for the gap). Backfill opportunistically; new primitives don't get
+// added here without an explicit reason.
+var UNDOCUMENTED_BACKLOG = {
+  // === Pre-v0.7.18 — long-standing gaps not addressed in this patch ===
+  "router":             "documented under routing.js page (b.router.Router constructor)",
+  "vaultPassphraseSource": "documented under crypto-vault.js page",
+  "vaultPassphraseOps":  "documented under crypto-vault.js page",
+  "vaultRotate":         "documented under crypto-vault.js page",
+  "auditChain":          "documented under observability.js + compliance-patterns.js pages",
+  "auditTools":          "documented under backup-restore.js page (audit archive flow)",
+  "consent":             "documented under compliance-patterns.js page",
+  "subject":             "documented under compliance-patterns.js page",
+  "atomicFile":          "documented under database.js page (atomic-file-write semantics)",
+  "frameworkSchema":     "documented under database.js page (schema declaration)",
+  "clusterStorage":      "documented under cluster.js page",
+  "handlers":            "documented under routing.js page (handler-style middleware)",
+  "chainWriter":         "documented under observability.js page (audit chain writer)",
+  "websocket":           "documented under websockets.js page",
+  "websocketChannels":   "documented under websockets.js page",
+  "nonceStore":          "documented under crypto-vault.js page (nonce-store primitive)",
+  "ssrfGuard":           "documented under outbound-http.js page",
+  "authHeader":          "documented under outbound-http.js page",
+  "htmlBalance":         "documented under safe-parsers.js page",
+  "csv":                 "documented under safe-parsers.js page",
+  "uuid":                "documented under format-helpers.js page",
+  "time":                "documented under format-helpers.js page",
+  "mailBounce":          "documented under mail.js page",
+  "pubsub":              "documented under queue-cache.js page",
+  "config":              "documented under access-control.js page (config-drift)",
+  "archive":             "documented under file-upload.js page",
+  "breakGlass":          "documented under access-control.js page",
+  "forms":               "documented under middleware.js page (CSRF forms)",
+  "render":              "documented under middleware.js page",
+  "template":            "documented under routing.js page",
+  "errorPage":           "documented under middleware.js page (error-handler)",
+  "cluster":             "documented under cluster.js page",
+  "safeEnv":             "documented under safe-parsers.js page",
+  "safeAsync":           "documented under safe-parsers.js page",
+  "safeBuffer":          "documented under safe-parsers.js page",
+  "safeSql":             "documented under safe-parsers.js page",
+  "safeUrl":             "documented under safe-parsers.js page",
+  "deprecate":           "internal — deprecate() calls flow into MIGRATING.md",
+
+  // === v0.7.18 onward — should be documented but the wiki backfill ===
+  // === landed in v0.7.31 only for the highest-impact subset.        ===
+  "safeRedirect":        "documented under safe-parsers.js page (v0.7.31 backfill)",
+  "pick":                "documented under safe-parsers.js page (v0.7.31 backfill)",
+  "dora":                "documented under compliance-patterns.js page (v0.7.31 backfill)",
+  "compliance":          "documented under compliance-patterns.js page (v0.7.31 backfill)",
+  "retry":               "documented under reliability.js page",
+  "gateContract":        "documented under guard-all.js page (gate composition)",
+  "fileType":            "documented under safe-parsers.js page",
+
+  // === Namespaced primitives whose method-level sections live on the ===
+  // === parent's page (e.g. b.guardEmail.validateAddress is a method   ===
+  // === covered by guard-email.js's b.guardEmail.gate(opts) section).  ===
+  "scheduler":  "documented under reliability.js page (b.scheduler.create scope)",
+  "jobs":       "documented under reliability.js page (b.jobs.create scope)",
+  "backup":     "documented under backup-restore.js page",
+  "restore":    "documented under backup-restore.js page",
+  "i18n":       "documented under i18n-locale.js page",
+  "locale":     "documented under i18n-locale.js page",
+  "seeders":    "documented under database.js page",
+  "boot":       "internal — boot helpers",
+  "log":        "documented under observability.js page",
+  "limit":      "documented under reliability.js page",
+  "cache":      "documented under queue-cache.js page",
+  "cliPassword": "internal — CLI subcommand",
+  "cliAudit":    "internal — CLI subcommand",
+  "cliBackup":   "internal — CLI subcommand",
+  "cliRestore":  "internal — CLI subcommand",
+
+  // === Long-standing primitives that have content on a page but the    ===
+  // === wiki section headings don't begin with `b.X.Y` signature shape. ===
+  // === Validator-blind to non-signature-form headings; these are real  ===
+  // === pages, just structured differently. Backfill the heading shape  ===
+  // === in a future sweep so the validator picks them up.               ===
+  "crypto":         "covered by crypto-vault.js page; headings use prose form, not signature form",
+  "vaultWrap":      "covered by crypto-vault.js page (vault sealing); prose-form headings",
+  "auditSign":      "covered by observability.js page (audit signing); prose-form headings",
+  "objectStore":    "covered by object-store.js page; backend-builder pattern, not flat methods",
+  "createApp":      "covered by routing.js + welcome.js pages (boot pattern); top-level entry",
+  "migrations":     "covered by database.js page (schema migrations); operator wires via opts",
+  "cli":            "internal — `blamejs <subcommand>` CLI plumbing",
+  "dev":            "internal — dev-mode REPL helpers (b.dev.*)",
+  "bundler":        "covered by middleware.js page (asset bundling section)",
+  "mtlsEngine":     "covered by network-config.js + network-crypto.js pages",
+  "backupCrypto":   "covered by backup-restore.js page (envelope crypto)",
+  "backupManifest": "covered by backup-restore.js page (manifest builder)",
+  "backupBundle":   "covered by backup-restore.js page (bundle composition)",
+  "restoreBundle":  "covered by backup-restore.js page (bundle restore)",
+  "restoreRollback":"covered by backup-restore.js page (rollback flow)",
+  "apiSnapshot":    "covered by quality-contract.js page (api-snapshot drift gate)",
+  "metrics":        "covered by observability.js page",
+  "tracing":        "covered by observability.js page",
+  "observability":  "covered by observability.js page",
+  "version":        "literal version string; not a primitive",
+  "smtp":           "covered by mail.js page (b.smtp.* MTA-STS / DANE / TLS-RPT — backfill from v0.7.29 spec)",
+  "fileUpload":     "covered by file-upload.js page",
+  "mtlsCa":         "covered by network-crypto.js page",
+  "pqcGate":        "covered by network-crypto.js page",
+  "pqcAgent":       "covered by network-crypto.js page",
+  "permissions":    "covered by access-control.js page",
+  "apiKey":         "covered by access-control.js page",
+  "webhook":        "covered by outbound-http.js page",
+  "notify":         "covered by notifications.js page",
+  "credentialHash": "covered by access-control.js page",
+  "qualityContract":"covered by quality-contract.js page",
+  "queue":          "covered by queue-cache.js page",
+  "scheduler":      "covered by reliability.js page",
+  "jobs":           "covered by reliability.js page",
+  "guardEmail":     "covered by guard-email.js page",
+  "guardCsv":       "covered by guard-csv.js page",
+  "guardHtml":      "covered by guard-html.js page",
+  "guardSvg":       "covered by guard-svg.js page",
+  "guardArchive":   "covered by guard-archive.js page",
+  "guardJson":      "covered by guard-json.js page",
+  "guardYaml":      "covered by guard-yaml.js page",
+  "guardXml":       "covered by guard-xml.js page",
+  "guardMarkdown":  "covered by guard-markdown.js page",
+  "guardFilename":  "covered by guard-filename.js page",
+  "guardAll":       "covered by guard-all.js page",
+  "protocolDispatcher": "internal — used by primitives that dispatch on envelope-magic + algorithm IDs",
+  "ntpCheck":           "covered by network-config.js page (NTP / NTS clock-drift check)",
+};
+
+function _enumerateBxPrimitives(b, pages) {
+  var keys = Object.keys(b).filter(function (k) { return k[0] !== "_"; });
+
+  // Build a set of every documented primitive signature by walking
+  // the wiki page bodies + extracting every primitive heading.
+  var documented = new Set();
+  for (var p = 0; p < pages.length; p += 1) {
+    var sections = _splitSections(pages[p].body);
+    for (var s = 0; s < sections.length; s += 1) {
+      if (!_isPrimitiveHeading(sections[s].text)) continue;
+      // Extract the leading b.X.Y or b.X path from the signature.
+      var m = sections[s].text.match(/b\.([a-zA-Z][a-zA-Z0-9]*)(?:\.([a-zA-Z][a-zA-Z0-9]*))?/);
+      if (!m) continue;
+      documented.add(m[1]);                                    // top-level
+      if (m[2]) documented.add(m[1] + "." + m[2]);             // method-level
+    }
+  }
+
+  var undocumented = [];
+  for (var k = 0; k < keys.length; k += 1) {
+    var name = keys[k];
+    if (BX_SKIP.has(name)) continue;
+    if (documented.has(name)) continue;
+    if (UNDOCUMENTED_BACKLOG[name]) continue;
+    undocumented.push(name);
+  }
+  return undocumented;
+}
+
 // ---- CLI entry ----
 
 function run(opts) {
@@ -820,13 +1011,28 @@ function run(opts) {
     for (var j = 0; j < v.length; j++) allViolations.push(v[j]);
   }
 
+  // Missing-section enumeration. Every operator-facing primitive on
+  // b.* must either have a wiki section (signature-prefixed heading)
+  // OR be in BX_SKIP / UNDOCUMENTED_BACKLOG. New primitives added
+  // without either path fail the gate.
+  var undocumented = b ? _enumerateBxPrimitives(b, pages) : [];
+
   var enforced = allViolations.filter(function (vi) { return !vi.exempt; });
   var exempted = allViolations.filter(function (vi) { return vi.exempt; });
 
-  if (allViolations.length === 0) {
+  if (allViolations.length === 0 && undocumented.length === 0) {
     console.log("[validate-primitive-sections] OK — every primitive section has heading + opts + prose + example, " +
-      "and every probe-able opts model matches the lib allow-list");
+      "every probe-able opts model matches the lib allow-list, and every operator-facing b.* primitive has a documented section");
     return 0;
+  }
+  if (undocumented.length > 0) {
+    console.error("[validate-primitive-sections] " + undocumented.length +
+      " operator-facing b.* primitive(s) lack a documented wiki section:");
+    for (var ui = 0; ui < undocumented.length; ui += 1) {
+      console.error("  b." + undocumented[ui] + " — add a wiki section (signature-prefixed heading + opts model + " +
+                    "description + example) OR add to UNDOCUMENTED_BACKLOG with a one-line reason in " +
+                    "examples/wiki/test/validate-primitive-sections.js");
+    }
   }
 
   if (enforced.length > 0) {
@@ -871,7 +1077,7 @@ function run(opts) {
   }
 
   if (reportOnly) return 0;
-  return enforced.length > 0 ? 1 : 0;
+  return (enforced.length > 0 || undocumented.length > 0) ? 1 : 0;
 }
 
 module.exports = {

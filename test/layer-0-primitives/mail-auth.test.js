@@ -108,32 +108,125 @@ async function testDmarcEvaluateUnaligned() {
         rv.result === "fail" && rv.recommendedAction === "quarantine");
 }
 
-function testArcVerify() {
-  var msg = "ARC-Seal: i=1; a=rsa-sha256; t=0; cv=none; d=example.com; s=arc; b=...\r\n" +
-            "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; b=...\r\n" +
-            "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
-            "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
-  var rv = b.mail.arc.verify(msg);
-  check("arc.verify: 1 hop with all 3 headers → pass (structural)",
-        rv.chainStatus === "pass" && rv.hopCount === 1 &&
-        rv.hops[0].hasSeal && rv.hops[0].hasMessageSignature &&
-        rv.hops[0].hasAuthenticationResults);
-}
-
-function testArcVerifyMissing() {
-  var msg = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=...\r\n" +
-            // Missing ARC-Message-Signature for instance 1.
+async function testArcVerifyMissing() {
+  var msg = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
             "From: alice@example.com\r\n\r\nbody\r\n";
-  var rv = b.mail.arc.verify(msg);
+  var rv = await b.mail.arc.verify(msg);
   check("arc.verify: incomplete chain → fail",
         rv.chainStatus === "fail");
 }
 
-function testArcVerifyNone() {
+async function testArcVerifyNone() {
   var msg = "From: alice@example.com\r\n\r\nbody\r\n";
-  var rv = b.mail.arc.verify(msg);
+  var rv = await b.mail.arc.verify(msg);
   check("arc.verify: no ARC headers → none",
         rv.chainStatus === "none" && rv.hopCount === 0);
+}
+
+async function testArcVerifyBadSignatures() {
+  // All 3 ARC headers present but the b= values are dummy — signature
+  // verification fails per-hop. Per the security-no-defer rule this
+  // returns fail, NOT pass.
+  var msg = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+            "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+            "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+            "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  // dnsLookup that returns a "valid" key for the signature check —
+  // signatures are dummy so verify fails cleanly with "fail" not "permerror".
+  var dnsLookup = async function (qname) {
+    if (qname === "arc._domainkey.example.com") {
+      // Generate a valid PEM-shape RSA key for the test (operator-side
+      // would be a real DNS-published key). We use a fixed deterministic
+      // key so the test doesn't bind to DNS.
+      var nodeCrypto = require("crypto");
+      var pair = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+      var spki = pair.publicKey.export({ type: "spki", format: "der" });
+      return [["v=DKIM1; k=rsa; p=" + spki.toString("base64")]];
+    }
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+  var rv = await b.mail.arc.verify(msg, { dnsLookup: dnsLookup });
+  check("arc.verify with bad signatures → chainStatus=fail (not pass)",
+        rv.chainStatus === "fail");
+  check("arc.verify per-hop reports amsResult / asResult",
+        rv.hops.length === 1 &&
+        rv.hops[0].amsResult !== "pass" &&
+        rv.hops[0].asResult !== "pass");
+}
+
+function testDkimVerifySurface() {
+  check("mail.dkim.verify is a function",
+        typeof b.mail.dkim.verify === "function");
+}
+
+async function testDkimVerifyRoundTrip() {
+  // Round-trip: sign with a real key, verify with the same key
+  // surfaced via a mocked DNS lookup.
+  var nodeCrypto = require("crypto");
+  var pair = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  var signer = b.mail.dkim.create({
+    domain:     "example.com",
+    selector:   "test",
+    privateKey: pair.privateKey,
+  });
+  var msg = "From: alice@example.com\r\nTo: bob@example.com\r\n" +
+            "Subject: hi\r\nDate: Mon, 5 May 2026 10:00:00 +0000\r\n" +
+            "Message-ID: <abc@example.com>\r\n\r\nHello.\r\n";
+  var signed = signer.sign(msg);
+
+  // Mocked DNS that returns the matching public key as base64 SPKI.
+  var spkiB64 = nodeCrypto.createPublicKey(pair.publicKey)
+    .export({ type: "spki", format: "der" })
+    .toString("base64");
+  var dnsLookup = async function (qname) {
+    if (qname === "test._domainkey.example.com") {
+      return [["v=DKIM1; k=rsa; p=" + spkiB64]];
+    }
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+  var rv = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("dkim.verify round-trip: pass",
+        Array.isArray(rv) && rv.length === 1 && rv[0].result === "pass");
+}
+
+async function testDkimVerifyNoSignature() {
+  var msg = "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.dkim.verify(msg, {});
+  check("dkim.verify with no DKIM-Signature → none",
+        Array.isArray(rv) && rv[0].result === "none");
+}
+
+async function testDkimVerifyTampered() {
+  var nodeCrypto = require("crypto");
+  var pair = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  var signer = b.mail.dkim.create({
+    domain: "example.com", selector: "test", privateKey: pair.privateKey,
+  });
+  var signed = signer.sign(
+    "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n" +
+    "Date: Mon, 5 May 2026 10:00:00 +0000\r\nMessage-ID: <a@example.com>\r\n\r\nbody\r\n"
+  );
+  // Tamper the body after signing.
+  var tampered = signed.replace("body", "EVIL");
+  var spkiB64 = nodeCrypto.createPublicKey(pair.publicKey)
+    .export({ type: "spki", format: "der" }).toString("base64");
+  var dnsLookup = async function (qname) {
+    if (qname === "test._domainkey.example.com") {
+      return [["v=DKIM1; k=rsa; p=" + spkiB64]];
+    }
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+  var rv = await b.mail.dkim.verify(tampered, { dnsLookup: dnsLookup });
+  check("dkim.verify on tampered body → fail",
+        rv[0].result === "fail");
 }
 
 async function run() {
@@ -144,9 +237,13 @@ async function run() {
   testDmarcParse();
   await testDmarcEvaluateAligned();
   await testDmarcEvaluateUnaligned();
-  testArcVerify();
-  testArcVerifyMissing();
-  testArcVerifyNone();
+  await testArcVerifyMissing();
+  await testArcVerifyNone();
+  await testArcVerifyBadSignatures();
+  testDkimVerifySurface();
+  await testDkimVerifyRoundTrip();
+  await testDkimVerifyNoSignature();
+  await testDkimVerifyTampered();
 }
 
 module.exports = { run: run };

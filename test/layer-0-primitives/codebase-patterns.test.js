@@ -1634,10 +1634,11 @@ function testNoDuplicateCodeBlocks() {
       reason: "Same conventional-shape scaffolding as the file-upload/static cluster — every primitive opens its create()/factory with the same `validateOpts.requireObject(...)` cascade plus per-domain numericBounds / requireNonEmptyString calls. The token sequence shingles across primitives that share the convention; the cascades' bodies (api-key columns vs csv profile-resolution vs svg compliance-posture lookup) diverge.",
     },
     {
+      mode:  "family-subset",
       files: [
-        "lib/mail-auth.js", "lib/middleware/body-parser.js", "lib/network-smtp-policy.js",
+        "lib/mail-auth.js", "lib/mail-dkim.js", "lib/middleware/body-parser.js", "lib/network-smtp-policy.js",
       ],
-      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DMARC record parsing, MTA-STS policy text parsing, and the body-parser content-type-parameter parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction. Future consolidation candidate when a 4th k=v record family ships.",
+      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, MTA-STS policy text parsing, and the body-parser content-type-parameter parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction. Future consolidation candidate when a 5th k=v record family ships.",
     },
     {
       mode:  "family-subset",

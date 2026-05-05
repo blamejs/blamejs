@@ -16,8 +16,8 @@ var check   = helpers.check;
 function testOcspSurface() {
   check("network.tls.ocsp.connect is a function",
         typeof b.network.tls.ocsp.connect === "function");
-  check("network.tls.ocsp.requireGood is a function",
-        typeof b.network.tls.ocsp.requireGood === "function");
+  check("network.tls.ocsp.requireStapled is a function",
+        typeof b.network.tls.ocsp.requireStapled === "function");
 }
 
 function testCtSurface() {
