@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.13",
-  "createdAt": "2026-05-05T01:34:33.236Z",
+  "frameworkVersion": "0.7.14",
+  "createdAt": "2026-05-05T01:58:07.171Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2428,6 +2428,10 @@
           "arity": 4
         },
         "GuardSvgError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardYamlError": {
           "type": "function",
           "arity": 4
         },
@@ -6641,6 +6645,770 @@
           "arity": 1
         },
         "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardYaml": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "aliasPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "leadingZeroPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnchors": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDocuments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNodes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScalarLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mergeKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiDocPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "norwayPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "safeCoreTagsAllowed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "aliasPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "leadingZeroPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnchors": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDocuments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNodes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScalarLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mergeKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiDocPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "norwayPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "safeCoreTagsAllowed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "aliasPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "leadingZeroPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnchors": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDocuments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNodes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScalarLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mergeKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiDocPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "norwayPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "safeCoreTagsAllowed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "aliasPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "leadingZeroPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnchors": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDocuments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNodes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScalarLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mergeKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiDocPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "norwayPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "safeCoreTagsAllowed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DANGEROUS_TAG_PREFIXES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "aliasPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "duplicateKeyPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "leadingZeroPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAliasDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxAnchors": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDocuments": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxNodes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxScalarLength": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mergeKeyPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "multiDocPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "norwayPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "safeCoreTagsAllowed": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "tagPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardYamlError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "aliasPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingZeroPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnchors": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDocuments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNodes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScalarLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mergeKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiDocPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "norwayPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "safeCoreTagsAllowed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "aliasPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingZeroPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnchors": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDocuments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNodes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScalarLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mergeKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiDocPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "norwayPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "safeCoreTagsAllowed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "aliasPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "duplicateKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "leadingZeroPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnchors": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDocuments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNodes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScalarLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mergeKeyPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "multiDocPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "norwayPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "safeCoreTagsAllowed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "SAFE_CORE_TAGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
           "type": "function",
           "arity": 2
         },
