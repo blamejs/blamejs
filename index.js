@@ -112,6 +112,7 @@ var guardMarkdown = require("./lib/guard-markdown");
 var guardEmail = require("./lib/guard-email");
 var guardDomain = require("./lib/guard-domain");
 var guardUuid = require("./lib/guard-uuid");
+var guardCidr = require("./lib/guard-cidr");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -255,6 +256,7 @@ module.exports = {
   guardEmail:       guardEmail,
   guardDomain:      guardDomain,
   guardUuid:        guardUuid,
+  guardCidr:        guardCidr,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,

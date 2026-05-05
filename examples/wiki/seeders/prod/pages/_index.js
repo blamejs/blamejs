@@ -34,6 +34,7 @@ module.exports = [
   require("./" + "guard-email"),
   require("./" + "guard-domain"),
   require("./" + "guard-uuid"),
+  require("./" + "guard-cidr"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),
