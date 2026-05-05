@@ -354,10 +354,140 @@ async function testGuardHostIntegrationAdaptive() {
         skipped.length === 0);
 }
 
+// ---- Default-on verification ----
+// Per v0.7.12 — b.fileUpload + b.staticServe wire b.guardAll on by
+// default at strict profile. These tests verify the default-on path
+// AND the explicit opt-out path (audit emission on contentSafety: null
+// / filenameSafety: null).
+
+async function testFileUploadDefaultOn() {
+  var fs = require("fs");
+  var os = require("os");
+  var path = require("path");
+  var capA = _capturingAudit();
+  var stagingDir = path.join(os.tmpdir(), "guard-default-on-fu-" + Date.now());
+  // No contentSafety / filenameSafety opts — relying on strict default.
+  var uploads = b.fileUpload.create({
+    stagingDir: stagingDir,
+    audit:      capA.audit,
+    onFinalize: async function (info) { return { ok: true, key: info.uploadId }; },
+  });
+  // Hostile filename triggers default-on filenameSafety refuse.
+  var actor = { kind: "user", id: "u1" };
+  var bytes = Buffer.from("safe content", "utf8");
+  var sha   = b.crypto.sha3Hash(bytes).toString("hex");
+  var uid   = "default-on-hostile-" + Date.now();
+  await uploads.init({ uploadId: uid, actor: actor,
+    metadata: { filename: "../etc/passwd" } });
+  await uploads.acceptChunk({ uploadId: uid, actor: actor,
+    index: 0, body: bytes, sha3: sha });
+  var threwHostileFn = null;
+  try {
+    await uploads.finalize({ uploadId: uid, actor: actor,
+      manifest: { chunks: [{ index: 0, sha3: sha, size: bytes.length }],
+                  totalBytes: bytes.length, sha3: sha } });
+  } catch (e) { threwHostileFn = e; }
+  check("default-on: fileUpload refuses path-traversal filename without explicit opt",
+        threwHostileFn && /FILENAME_SAFETY|filename/i.test(threwHostileFn.code || ""));
+
+  try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+}
+
+async function testFileUploadOptOutEmitAudit() {
+  var fs = require("fs");
+  var os = require("os");
+  var path = require("path");
+  var capA = _capturingAudit();
+  var stagingDir = path.join(os.tmpdir(), "guard-optout-fu-" + Date.now());
+  // Explicit opt-out of both safety gates.
+  b.fileUpload.create({
+    stagingDir:    stagingDir,
+    audit:         capA.audit,
+    contentSafety: null,
+    filenameSafety: null,
+    contentSafetyDisabledReason:  "integration-test: verifying opt-out audit emission",
+    filenameSafetyDisabledReason: "integration-test: verifying opt-out audit emission",
+    onFinalize: async function () { return { ok: true }; },
+  });
+  var contentDisabledRow = capA.rows.filter(function (r) {
+    return (r.action || r.event) === "fileUpload.contentSafety.disabled";
+  })[0];
+  var filenameDisabledRow = capA.rows.filter(function (r) {
+    return (r.action || r.event) === "fileUpload.filenameSafety.disabled";
+  })[0];
+  check("opt-out: fileUpload contentSafety: null → audit row emitted",
+        !!contentDisabledRow);
+  check("opt-out: fileUpload filenameSafety: null → audit row emitted",
+        !!filenameDisabledRow);
+  check("opt-out: contentSafety audit carries operator reason",
+        contentDisabledRow && /verifying opt-out/.test(
+          (contentDisabledRow.metadata && contentDisabledRow.metadata.reason) || ""));
+
+  try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+}
+
+async function testStaticServeDefaultOn() {
+  var fs = require("fs");
+  var os = require("os");
+  var path = require("path");
+  var dir = path.join(os.tmpdir(), "guard-default-on-ss-" + Date.now());
+  fs.mkdirSync(dir, { recursive: true });
+  // Hostile HTML — default-on contentSafety refuses.
+  fs.writeFileSync(path.join(dir, "hostile.html"),
+    '<p>hi</p><script>alert(1)</script>');
+  var capA = _capturingAudit();
+  var assets = b.staticServe.create({
+    root:  dir,
+    audit: capA.audit,
+    // No contentSafety opt — relying on strict default.
+  });
+  var req = b.testing.bodyReq("GET", { host: "test.local" }, "");
+  req.url = "/hostile.html";
+  req.pathname = "/hostile.html";
+  var res = b.testing.streamingRes();
+  await new Promise(function (resolve) {
+    assets(req, res, function () { resolve(); });
+    res.on("finish", resolve);
+  });
+  check("default-on: staticServe refuses hostile HTML (script tag) → non-2xx",
+        res._statusCode >= 400 && res._statusCode < 600);
+
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+}
+
+async function testStaticServeOptOutEmitAudit() {
+  var fs = require("fs");
+  var os = require("os");
+  var path = require("path");
+  var dir = path.join(os.tmpdir(), "guard-optout-ss-" + Date.now());
+  fs.mkdirSync(dir, { recursive: true });
+  var capA = _capturingAudit();
+  b.staticServe.create({
+    root:                          dir,
+    audit:                         capA.audit,
+    contentSafety:                 null,
+    contentSafetyDisabledReason:   "integration-test: verifying staticServe opt-out audit",
+  });
+  var disabledRow = capA.rows.filter(function (r) {
+    return (r.action || r.event) === "staticServe.contentSafety.disabled";
+  })[0];
+  check("opt-out: staticServe contentSafety: null → audit row emitted",
+        !!disabledRow);
+  check("opt-out: staticServe audit carries operator reason",
+        disabledRow && /verifying staticServe/.test(
+          (disabledRow.metadata && disabledRow.metadata.reason) || ""));
+
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+}
+
 // ---- Run ----
 
 async function run() {
   await testGuardHostIntegrationAdaptive();
+  await testFileUploadDefaultOn();
+  await testFileUploadOptOutEmitAudit();
+  await testStaticServeDefaultOn();
+  await testStaticServeOptOutEmitAudit();
 }
 
 module.exports = { run: run };

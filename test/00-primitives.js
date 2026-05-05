@@ -16393,7 +16393,11 @@ async function testFileUploadOnFinalizeCallback() {
                size: info.size, sha3: info.sha3 };
     },
   });
-  await u.init({ uploadId: "u-1", actor: { id: "u-99" }, metadata: { filename: "payload.bin" } });
+  // .dat is filename-safety-clean (.bin is in the shell-exec
+  // extension family which the default-on strict filenameSafety
+  // refuses; this test verifies metadata round-trip, not the safety
+  // gate).
+  await u.init({ uploadId: "u-1", actor: { id: "u-99" }, metadata: { filename: "payload.dat" } });
   var c0 = Buffer.from("payload", "utf8");
   await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-99" } });
   var rv = await u.finalize({
@@ -16412,7 +16416,7 @@ async function testFileUploadOnFinalizeCallback() {
         captured.size === c0.length &&
         typeof captured.sha3 === "string" && captured.sha3.length === 128 &&
         captured.actor && captured.actor.id === "u-99" &&
-        captured.metadata && captured.metadata.filename === "payload.bin");
+        captured.metadata && captured.metadata.filename === "payload.dat");
   check("fileUpload.finalize: onFinalize return value passed through",
         rv.ok === true && rv.key === "uploads/u-99/u-1" && rv.size === c0.length);
 }
