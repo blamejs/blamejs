@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.43",
-  "createdAt": "2026-05-05T20:36:23.150Z",
+  "frameworkVersion": "0.7.44",
+  "createdAt": "2026-05-05T20:55:14.266Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2589,6 +2589,10 @@
           "arity": 4
         },
         "GuardSvgError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardUuidError": {
           "type": "function",
           "arity": 4
         },
@@ -9384,6 +9388,590 @@
         "URL_ATTRS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardUuid": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bracedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formatPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nilPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urnPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variantPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "versionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bracedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formatPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nilPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urnPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variantPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "versionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bracedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formatPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nilPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urnPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variantPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "versionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bracedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "formatPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nilPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urnPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variantPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "versionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "allowedVersions": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bracedPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "formatPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nilPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "urnPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "variantPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "versionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardUuidError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bracedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "formatPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nilPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urnPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variantPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "versionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bracedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "formatPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nilPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urnPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variantPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "versionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bracedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "formatPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nilPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "urnPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variantPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "versionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
         },
         "buildProfile": {
           "type": "function",
