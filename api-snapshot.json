@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.22",
-  "createdAt": "2026-05-05T06:07:37.769Z",
+  "frameworkVersion": "0.7.23",
+  "createdAt": "2026-05-05T06:27:23.712Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -10589,6 +10589,10 @@
             "useDnsOverTls": {
               "type": "function",
               "arity": 1
+            },
+            "useSystemResolver": {
+              "type": "function",
+              "arity": 0
             }
           }
         },

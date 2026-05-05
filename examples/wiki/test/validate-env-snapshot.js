@@ -57,6 +57,7 @@ var SOURCE_ONLY_ALLOWED = {
   "WIKI_INTEGRATION_S3_ACCESS_KEY":           "test-only — access key for the integration sigv4 backend",
   "WIKI_INTEGRATION_S3_SECRET_KEY":           "test-only — secret key for the integration sigv4 backend",
   "WIKI_INTEGRATION_MTLS_DIR":                "test-only — dataDir for the integration mtls-ca instance",
+  "BLAMEJS_DNS_TRANSPORT":                    "framework runtime opt-out (system|doh|dot) for the default-on DoH; consumed by lib/network-dns.js on first lookup, not at boot",
 };
 
 // Env vars in docker-compose that we KNOW shouldn't be read at app
