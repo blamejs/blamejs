@@ -43,6 +43,7 @@ module.exports = [
   require("./" + "guard-shell"),
   require("./" + "guard-regex"),
   require("./" + "guard-jsonpath"),
+  require("./" + "guard-template"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),

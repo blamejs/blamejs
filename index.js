@@ -121,6 +121,7 @@ var guardGraphql = require("./lib/guard-graphql");
 var guardShell = require("./lib/guard-shell");
 var guardRegex = require("./lib/guard-regex");
 var guardJsonpath = require("./lib/guard-jsonpath");
+var guardTemplate = require("./lib/guard-template");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -273,6 +274,7 @@ module.exports = {
   guardShell:       guardShell,
   guardRegex:       guardRegex,
   guardJsonpath:    guardJsonpath,
+  guardTemplate:    guardTemplate,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,
