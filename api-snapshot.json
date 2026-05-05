@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.32",
-  "createdAt": "2026-05-05T15:32:17.179Z",
+  "frameworkVersion": "0.7.33",
+  "createdAt": "2026-05-05T15:57:11.107Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -11084,6 +11084,18 @@
               "type": "object",
               "members": {
                 "connect": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "evaluate": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "parseResponse": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "requireGood": {
                   "type": "function",
                   "arity": 1
                 },
