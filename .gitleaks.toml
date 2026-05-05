@@ -70,7 +70,14 @@ commits = [
   # `redact({ field: "REDACTED" })` line at 2415 trips the jwt rule on
   # the placeholder string used by b.redact tests.
   "74e627ea0fea39f06e01fe424a19724bea37aee8",
+  # v0.7.28 CHANGELOG entry documents the ML_KEM_768_X25519 envelope
+  # surface; the `privateKey: mlkemPrivateKey` JS-object-literal in
+  # the doc snippet trips the generic-api-key rule on adjacent
+  # high-entropy content. Plain operator-readable doc text, no real
+  # secret. Allowlist matches the same pattern as the 74e627e entry.
+  "fb91792bfe01e3b90478c5a65cbe71affdfdbdb6",
 ]
 fingerprints = [
   "74e627ea0fea39f06e01fe424a19724bea37aee8:test/smoke.js:jwt:2415",
+  "fb91792bfe01e3b90478c5a65cbe71affdfdbdb6:CHANGELOG.md:generic-api-key:11",
 ]
