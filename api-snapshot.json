@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.52",
-  "createdAt": "2026-05-05T22:36:28.978Z",
+  "frameworkVersion": "0.7.53",
+  "createdAt": "2026-05-05T22:45:00.255Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2609,6 +2609,10 @@
           "arity": 4
         },
         "GuardOauthError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardShellError": {
           "type": "function",
           "arity": 4
         },
@@ -11994,6 +11998,558 @@
                   "valueType": "string"
                 },
                 "statePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardShell": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "argHyphenPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "backtickPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cmdMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dollarSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "newlinePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "posixMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "argHyphenPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "backtickPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cmdMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dollarSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "newlinePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "posixMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "argHyphenPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "backtickPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cmdMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dollarSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "newlinePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "posixMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "argHyphenPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "backtickPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cmdMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dollarSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "newlinePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "posixMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "argHyphenPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "backtickPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "cmdMetaPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dollarSubstPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "newlinePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "posixMetaPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "processSubstPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardShellError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "argHyphenPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "backtickPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cmdMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dollarSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "newlinePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "posixMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "argHyphenPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "backtickPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cmdMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dollarSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "newlinePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "posixMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "argHyphenPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "backtickPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cmdMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dollarSubstPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "newlinePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "posixMetaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processSubstPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
