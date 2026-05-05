@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.25",
-  "createdAt": "2026-05-05T12:22:52.339Z",
+  "frameworkVersion": "0.7.26",
+  "createdAt": "2026-05-05T12:36:22.004Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -10855,6 +10855,23 @@
               "type": "function",
               "arity": 1
             },
+            "ct": {
+              "type": "object",
+              "members": {
+                "APPROVED_LOGS": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "inspect": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "requireScts": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
             "detectBaselineDrift": {
               "type": "function",
               "arity": 0
@@ -10874,6 +10891,19 @@
             "isSystemTrustEnabled": {
               "type": "function",
               "arity": 0
+            },
+            "ocsp": {
+              "type": "object",
+              "members": {
+                "connect": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "requireGood": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
             },
             "purgeExpired": {
               "type": "function",
