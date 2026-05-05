@@ -74,6 +74,8 @@ var EXEMPTIONS = {
   // external network endpoint, or a third-party identity provider
   // the validator can't simulate. Each entry lists the reason an
   // operator could read in 5 seconds.
+  "middleware:b.validateopts(opts, allowedkeys, label)":
+    "validateOpts is a positional argument-validator helper — `opts` is the raw operator-passed object passed in, not a configuration-object the validator describes",
   "auth:b.auth.passkey.startregistration(opts) / .verifyre":
     "WebAuthn ceremony — verifyRegistration consumes a browser-side AttestationResponse",
   "auth:b.auth.passkey.startauthentication(opts) / .verify":
@@ -157,7 +159,11 @@ var EXEMPTIONS = {
 //   "Tenant-per-row vs tenant-per-schema"
 //   "Per-cell encryption with context binding"
 //   "Pick your defenses"
-var PRIMITIVE_SIGNATURE_RE = /^\s*(?:<code>\s*)?b\.[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)+/;
+// Match either b.X(args) (top-level function) OR b.X.Y(args)+ (namespaced
+// method). The trailing ( is the disambiguator — bare prose mentions of
+// `b.X` without parens don't match (those are operator-facing references,
+// not signature headings).
+var PRIMITIVE_SIGNATURE_RE = /^\s*(?:<code>\s*)?b\.[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*\s*\(/;
 
 // ---- Parser ----
 
@@ -629,6 +635,11 @@ async function runExamples(b) {
     symbolFailed:    [],
     executionFailed: [],
   };
+
+  // Gather every executable example into a queue first; do the cheap
+  // syntax + symbol checks inline (no forks needed). The expensive
+  // step is the forked runtime — that runs in parallel batches.
+  var pending = [];
   for (var p = 0; p < pages.length; p++) {
     var page = pages[p];
     var sections = _splitSections(page.body);
@@ -653,7 +664,6 @@ async function runExamples(b) {
           });
           continue;
         }
-
         var sym = _checkExampleSymbols(b, decoded);
         if (!sym.ok) {
           report.symbolFailed.push({
@@ -661,24 +671,39 @@ async function runExamples(b) {
           });
           continue;
         }
-
-        var exec = await _executeExampleForked({
-          slug: page.slug, heading: s.text, code: decoded,
-        });
-        if (exec.status === "ran") {
-          report.ran++;
-        } else {
-          report.executionFailed.push({
-            slug: page.slug, heading: s.text,
-            status:  exec.status,
-            error:   exec.error || null,
-            missing: exec.missing || null,
-            stack:   exec.stack || null,
-          });
-        }
+        pending.push({ slug: page.slug, heading: s.text, code: decoded });
       }
     }
   }
+
+  // Parallel execution. SMOKE_PARALLEL respected (capped at 64 to
+  // match the smoke runner) — sequential mode (`SMOKE_PARALLEL=1`)
+  // available as a fallback for diagnosis.
+  var rawN = parseInt(process.env.SMOKE_PARALLEL || "1", 10);
+  var concurrency = (isFinite(rawN) && rawN > 0) ? Math.min(rawN, 64) : 1;
+  var queueIdx = 0;
+  async function _worker() {
+    while (queueIdx < pending.length) {
+      var spec = pending[queueIdx++];
+      var exec = await _executeExampleForked(spec);
+      if (exec.status === "ran") {
+        report.ran++;
+      } else {
+        report.executionFailed.push({
+          slug: spec.slug, heading: spec.heading,
+          status:  exec.status,
+          error:   exec.error || null,
+          missing: exec.missing || null,
+          stack:   exec.stack || null,
+        });
+      }
+    }
+  }
+  var workers = [];
+  for (var w = 0; w < Math.min(concurrency, pending.length); w++) {
+    workers.push(_worker());
+  }
+  await Promise.all(workers);
   return report;
 }
 
@@ -877,12 +902,7 @@ var UNDOCUMENTED_BACKLOG = {
   "safeUrl":             "documented under safe-parsers.js page",
   "deprecate":           "internal — deprecate() calls flow into MIGRATING.md",
 
-  // === v0.7.18 onward — should be documented but the wiki backfill ===
-  // === landed in v0.7.31 only for the highest-impact subset.        ===
-  "safeRedirect":        "documented under safe-parsers.js page (v0.7.31 backfill)",
-  "pick":                "documented under safe-parsers.js page (v0.7.31 backfill)",
-  "dora":                "documented under compliance-patterns.js page (v0.7.31 backfill)",
-  "compliance":          "documented under compliance-patterns.js page (v0.7.31 backfill)",
+  // === v0.7.18 onward — backfill landed in v0.7.32 across multiple pages ===
   "retry":               "documented under reliability.js page",
   "gateContract":        "documented under guard-all.js page (gate composition)",
   "fileType":            "documented under safe-parsers.js page",
@@ -943,8 +963,6 @@ var UNDOCUMENTED_BACKLOG = {
   "credentialHash": "covered by access-control.js page",
   "qualityContract":"covered by quality-contract.js page",
   "queue":          "covered by queue-cache.js page",
-  "scheduler":      "covered by reliability.js page",
-  "jobs":           "covered by reliability.js page",
   "guardEmail":     "covered by guard-email.js page",
   "guardCsv":       "covered by guard-csv.js page",
   "guardHtml":      "covered by guard-html.js page",
