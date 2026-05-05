@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.29",
-  "createdAt": "2026-05-05T13:22:47.519Z",
+  "frameworkVersion": "0.7.30",
+  "createdAt": "2026-05-05T13:57:31.649Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2613,6 +2613,10 @@
           "arity": 4
         },
         "LogStreamError": {
+          "type": "function",
+          "arity": 4
+        },
+        "MailAuthError": {
           "type": "function",
           "arity": 4
         },
@@ -10356,6 +10360,15 @@
           "type": "function",
           "arity": 4
         },
+        "arc": {
+          "type": "object",
+          "members": {
+            "verify": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "create": {
           "type": "function",
           "arity": 1
@@ -10372,6 +10385,32 @@
               "arity": 1
             },
             "dualSigner": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "dmarc": {
+          "type": "object",
+          "members": {
+            "evaluate": {
+              "type": "function",
+              "arity": 1
+            },
+            "parseRecord": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "spf": {
+          "type": "object",
+          "members": {
+            "parseRecord": {
+              "type": "function",
+              "arity": 1
+            },
+            "verify": {
               "type": "function",
               "arity": 1
             }

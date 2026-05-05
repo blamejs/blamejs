@@ -41,7 +41,13 @@ var envSnapshotValidator = require("./validate-env-snapshot");
 var cliSnapshotValidator = require("./validate-cli-snapshot");
 var codebasePatterns = require("./codebase-patterns.test");
 
-var DATA_DIR = path.join(__dirname, "..", "data-e2e");
+// DATA_DIR honors a BLAMEJS_E2E_DATA_DIR override so the host e2e and
+// the Linux-container e2e can run in parallel without colliding on
+// the same disk path. Container invocations set BLAMEJS_E2E_DATA_DIR=
+// /tmp/data-e2e (a path inside the container's overlay FS, not the
+// host-mounted source tree).
+var DATA_DIR = process.env.BLAMEJS_E2E_DATA_DIR ||
+               path.join(__dirname, "..", "data-e2e");
 var ADMIN_EMAIL = "admin-e2e@blamejs.com";
 var ADMIN_PASSWORD = "e2e-test-password-x9k2";
 
