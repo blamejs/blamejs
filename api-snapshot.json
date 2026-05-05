@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.49",
-  "createdAt": "2026-05-05T21:52:09.155Z",
+  "frameworkVersion": "0.7.50",
+  "createdAt": "2026-05-05T22:02:43.876Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2589,6 +2589,10 @@
           "arity": 4
         },
         "GuardJsonError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardJwtError": {
           "type": "function",
           "arity": 4
         },
@@ -8346,6 +8350,850 @@
           "arity": 1
         },
         "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardJwt": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "algAllowlistPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "algNonePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedAlgs": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "critUnknownPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kidTraversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "knownCrit": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPayloadBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSignatureBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requiredClaims": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "typConfusionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "algAllowlistPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "algNonePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedAlgs": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "critUnknownPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kidTraversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "knownCrit": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPayloadBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSignatureBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requiredClaims": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "typConfusionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "algAllowlistPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "algNonePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedAlgs": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "critUnknownPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kidTraversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "knownCrit": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPayloadBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSignatureBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requiredClaims": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "typConfusionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "algAllowlistPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "algNonePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedAlgs": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "critUnknownPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kidTraversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "knownCrit": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPayloadBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSignatureBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requiredClaims": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "typConfusionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "algAllowlistPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "algNonePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "allowedAlgs": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "critUnknownPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "expSanityPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "iatFutureSlackMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "iatSanityPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kidTraversalPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "knownCrit": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaderBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxPayloadBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxSignatureBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nbfFutureSlackMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "nbfSanityPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "requiredClaims": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "typConfusionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardJwtError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "algAllowlistPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "algNonePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedAlgs": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "critUnknownPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "iatFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kidTraversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "knownCrit": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPayloadBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSignatureBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requiredClaims": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "typConfusionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "algAllowlistPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "algNonePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedAlgs": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "critUnknownPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "iatFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kidTraversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "knownCrit": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPayloadBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSignatureBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requiredClaims": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "typConfusionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "algAllowlistPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "algNonePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "allowedAlgs": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "critUnknownPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "iatFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "iatSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kidTraversalPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "knownCrit": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPayloadBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSignatureBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfFutureSlackMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nbfSanityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "requiredClaims": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "typConfusionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "kidSafe": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
           "type": "function",
           "arity": 2
         },
