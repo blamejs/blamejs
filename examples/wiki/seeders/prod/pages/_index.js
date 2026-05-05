@@ -36,6 +36,7 @@ module.exports = [
   require("./" + "guard-uuid"),
   require("./" + "guard-cidr"),
   require("./" + "guard-time"),
+  require("./" + "guard-mime"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),

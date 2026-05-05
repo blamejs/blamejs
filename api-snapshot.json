@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.46",
-  "createdAt": "2026-05-05T21:15:17.169Z",
+  "frameworkVersion": "0.7.47",
+  "createdAt": "2026-05-05T21:39:10.903Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2589,6 +2589,10 @@
           "arity": 4
         },
         "GuardMarkdownError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardMimeError": {
           "type": "function",
           "arity": 4
         },
@@ -9226,6 +9230,526 @@
                   "valueType": "string"
                 },
                 "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardMime": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "parameterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "personalTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "riskyTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unregisteredTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vendorTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "parameterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "personalTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "riskyTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unregisteredTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vendorTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "parameterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "personalTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "riskyTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unregisteredTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vendorTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "parameterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "personalTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "riskyTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unregisteredTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vendorTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "parameterPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "personalTreePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "riskyTypePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "unregisteredTreePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "vendorTreePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "wildcardPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardMimeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "parameterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "personalTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "riskyTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unregisteredTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vendorTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "parameterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "personalTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "riskyTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unregisteredTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vendorTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "parameterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "personalTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "riskyTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unregisteredTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vendorTreePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },

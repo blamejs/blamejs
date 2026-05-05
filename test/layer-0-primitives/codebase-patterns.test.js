@@ -1654,7 +1654,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-filename.js", "lib/guard-archive.js", "lib/guard-json.js",
         "lib/guard-yaml.js", "lib/guard-xml.js", "lib/guard-markdown.js",
         "lib/guard-email.js", "lib/guard-domain.js", "lib/guard-uuid.js",
-        "lib/guard-cidr.js", "lib/guard-time.js",
+        "lib/guard-cidr.js", "lib/guard-time.js", "lib/guard-mime.js",
         // Future family members go here as they ship — the family-
         // subset matcher allows any cluster whose every file is in
         // this list, so adding a new guard doesn't need new entries.
