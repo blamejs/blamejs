@@ -92,6 +92,7 @@ var guardArchive = require("./lib/guard-archive");
 var guardJson = require("./lib/guard-json");
 var guardYaml = require("./lib/guard-yaml");
 var guardXml = require("./lib/guard-xml");
+var guardMarkdown = require("./lib/guard-markdown");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -225,6 +226,7 @@ module.exports = {
   guardJson:        guardJson,
   guardYaml:        guardYaml,
   guardXml:         guardXml,
+  guardMarkdown:    guardMarkdown,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,

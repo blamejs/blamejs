@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.15",
-  "createdAt": "2026-05-05T02:38:52.264Z",
+  "frameworkVersion": "0.7.16",
+  "createdAt": "2026-05-05T03:30:13.753Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2424,6 +2424,10 @@
           "arity": 4
         },
         "GuardJsonError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardMarkdownError": {
           "type": "function",
           "arity": 4
         },
@@ -6001,6 +6005,922 @@
           "arity": 1
         },
         "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardMarkdown": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "autolinkSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeFenceLangPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousTagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "emphasisRunPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "frontMatterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "htmlCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "imageSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAutolinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBlockquoteDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxImages": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRefDefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rawHtmlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "autolinkSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeFenceLangPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousTagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "emphasisRunPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "frontMatterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "htmlCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "imageSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAutolinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBlockquoteDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxImages": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRefDefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rawHtmlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "autolinkSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeFenceLangPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousTagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "emphasisRunPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "frontMatterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "htmlCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "imageSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAutolinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBlockquoteDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxImages": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRefDefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rawHtmlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "autolinkSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeFenceLangPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousTagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "emphasisRunPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "frontMatterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "htmlCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "imageSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAutolinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBlockquoteDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxImages": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRefDefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rawHtmlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "autolinkSchemePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "codeFenceLangPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dangerousSchemePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dangerousTagPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "doctypePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "emphasisRunPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "filePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "frontMatterPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "htmlCommentPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "imageSchemePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAutolinks": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBlockquoteDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxImages": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxLines": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxLinks": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxListDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRefDefs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rawHtmlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "referenceLinkPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardMarkdownError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "autolinkSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeFenceLangPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousTagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "emphasisRunPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "frontMatterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "htmlCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "imageSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAutolinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBlockquoteDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxImages": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRefDefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rawHtmlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "autolinkSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeFenceLangPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousTagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "emphasisRunPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "frontMatterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "htmlCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "imageSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAutolinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBlockquoteDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxImages": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRefDefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rawHtmlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "autolinkSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeFenceLangPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dangerousTagPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "emphasisRunPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "filePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "frontMatterPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "htmlCommentPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "imageSchemePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAutolinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBlockquoteDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxImages": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLinks": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRefDefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rawHtmlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "referenceLinkPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
           "type": "function",
           "arity": 2
         },
