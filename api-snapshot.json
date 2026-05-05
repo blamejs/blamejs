@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.10",
-  "createdAt": "2026-05-04T23:44:16.968Z",
+  "frameworkVersion": "0.7.11",
+  "createdAt": "2026-05-05T00:11:18.693Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2679,6 +2679,14 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "STANDALONE_GUARDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "allGuards": {
+          "type": "function",
+          "arity": 0
+        },
         "byContentType": {
           "type": "function",
           "arity": 1
@@ -3165,6 +3173,35 @@
         "GuardArchiveError": {
           "type": "function",
           "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignEntries": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileEntries": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
         },
         "MAGIC_SIGNATURES": {
           "type": "instance",
@@ -3725,6 +3762,35 @@
           "type": "function",
           "arity": 4
         },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "MIME_TYPES": {
           "type": "instance",
           "ctorName": "Array"
@@ -4281,6 +4347,27 @@
           "type": "function",
           "arity": 4
         },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignFilename": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileFilename": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "NAME": {
           "type": "primitive",
           "valueType": "string"
@@ -4819,6 +4906,35 @@
         "GuardHtmlError": {
           "type": "function",
           "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
         },
         "MIME_TYPES": {
           "type": "instance",
@@ -5386,6 +5502,35 @@
         "GuardSvgError": {
           "type": "function",
           "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
         },
         "MIME_TYPES": {
           "type": "instance",
