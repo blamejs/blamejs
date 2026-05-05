@@ -325,6 +325,26 @@ async function _runFilenameGuard(g) {
         !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
 }
 
+async function _runIdentifierGuard(g) {
+  var fx = g.INTEGRATION_FIXTURES;
+  var gate = g.gate({ profile: "strict" });
+
+  // Benign identifier → serve.
+  var rvBenign = await gate.check({ identifier: fx.benignIdentifier });
+  check("[" + g.NAME + "] direct gate: benign identifier → serve",
+        rvBenign.ok === true && rvBenign.action === "serve");
+
+  // Hostile identifier → not serve.
+  var rvHostile = await gate.check({ identifier: fx.hostileIdentifier });
+  check("[" + g.NAME + "] direct gate: hostile identifier → not serve",
+        rvHostile.action !== "serve");
+
+  // Standalone primitives don't register in guardAll's content-type
+  // dispatch — confirm absence.
+  check("[" + g.NAME + "] NOT registered in guardAll content-type dispatch",
+        !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
+}
+
 // ---- Discovery + dispatcher ----
 
 async function testGuardHostIntegrationAdaptive() {
@@ -345,6 +365,8 @@ async function testGuardHostIntegrationAdaptive() {
       await _runEntriesGuard(g);
     } else if (g.KIND === "filename") {
       await _runFilenameGuard(g);
+    } else if (g.KIND === "identifier") {
+      await _runIdentifierGuard(g);
     } else {
       check("[" + g.NAME + "] unknown KIND " + JSON.stringify(g.KIND), false);
     }

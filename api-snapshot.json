@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.41",
-  "createdAt": "2026-05-05T18:58:03.375Z",
+  "frameworkVersion": "0.7.43",
+  "createdAt": "2026-05-05T20:36:23.150Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2564,6 +2564,10 @@
           "type": "function",
           "arity": 4
         },
+        "GuardDomainError": {
+          "type": "function",
+          "arity": 4
+        },
         "GuardEmailError": {
           "type": "function",
           "arity": 4
@@ -4210,6 +4214,814 @@
           "arity": 1
         },
         "serialize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardDomain": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dgaEntropyThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaMinLabelLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ldhPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabelOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "singleLabelPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "specialUsePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingDotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "underscorePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dgaEntropyThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaMinLabelLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ldhPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabelOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "singleLabelPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "specialUsePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingDotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "underscorePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dgaEntropyThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaMinLabelLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ldhPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabelOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "singleLabelPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "specialUsePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingDotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "underscorePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dgaEntropyThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaMinLabelLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ldhPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabelOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "singleLabelPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "specialUsePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingDotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "underscorePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "allowedScripts": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dgaEntropyThreshold": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "dgaMinLabelLen": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "dgaPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ipLiteralPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ldhPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDomainOctets": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxLabelOctets": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mixedScriptPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "punycodePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "singleLabelPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "specialUsePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "trailingDotPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "underscorePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "wildcardPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardDomainError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileIdentifier": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dgaEntropyThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaMinLabelLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ldhPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabelOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "singleLabelPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "specialUsePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingDotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "underscorePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowedScripts": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dgaEntropyThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaMinLabelLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ldhPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabelOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "singleLabelPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "specialUsePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingDotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "underscorePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowedScripts": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dgaEntropyThreshold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaMinLabelLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "dgaPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ipLiteralPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ldhPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDomainOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabelOctets": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mixedScriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "punycodePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "singleLabelPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "specialUsePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "trailingDotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "underscorePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
           "type": "function",
           "arity": 2
         },
