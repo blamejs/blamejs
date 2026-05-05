@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.36",
-  "createdAt": "2026-05-05T16:40:24.195Z",
+  "frameworkVersion": "0.7.37",
+  "createdAt": "2026-05-05T16:59:52.139Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -10968,9 +10968,17 @@
                 "tlsRpt": {
                   "type": "object",
                   "members": {
+                    "fetchPolicy": {
+                      "type": "function",
+                      "arity": 2
+                    },
                     "recordShape": {
                       "type": "function",
                       "arity": 1
+                    },
+                    "submit": {
+                      "type": "function",
+                      "arity": 2
                     }
                   }
                 }
@@ -10979,9 +10987,17 @@
             "tlsRpt": {
               "type": "object",
               "members": {
+                "fetchPolicy": {
+                  "type": "function",
+                  "arity": 2
+                },
                 "recordShape": {
                   "type": "function",
                   "arity": 1
+                },
+                "submit": {
+                  "type": "function",
+                  "arity": 2
                 }
               }
             }

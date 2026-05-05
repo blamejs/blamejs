@@ -78,6 +78,59 @@ function testTlsRptRecordShape() {
         rpt.policies[0].summary["total-successful-session-count"] === 100);
 }
 
+async function testTlsRptFetchPolicyParsesRua() {
+  // dnsLookup mock returns the published TXT record.
+  var mockedTxt = [["v=TLSRPTv1; rua=mailto:tlsrpt@example.com,https://reports.example.com/v1"]];
+  var dnsLookup = async function () { return mockedTxt; };
+  var rv = await b.network.smtp.tlsRpt.fetchPolicy("example.com", { dnsLookup: dnsLookup });
+  check("fetchPolicy returns version", rv && rv.version === "TLSRPTv1");
+  check("fetchPolicy parses both rua endpoints",
+        rv.rua.length === 2 && /mailto:/.test(rv.rua[0]) && /https:/.test(rv.rua[1]));
+}
+
+async function testTlsRptFetchPolicyMissing() {
+  var dnsLookup = async function () {
+    var e = new Error("not found"); e.code = "ENOTFOUND"; throw e;
+  };
+  var rv = await b.network.smtp.tlsRpt.fetchPolicy("nope.example.com", { dnsLookup: dnsLookup });
+  check("fetchPolicy returns null when no TXT record", rv === null);
+}
+
+async function testTlsRptSubmitMixedRua() {
+  var report = b.network.smtp.tlsRpt.recordShape({
+    organization: "example.com",
+    policies: [{ type: "sts", domain: "example.com" }],
+  });
+  // Mock httpClient — capture the request rather than going to the wire.
+  var captured = null;
+  var fakeHttp = {
+    request: async function (req) {
+      captured = req;
+      return { status: 202, body: Buffer.from("") };
+    },
+  };
+  var rv = await b.network.smtp.tlsRpt.submit(report, {
+    rua:        ["mailto:tls@example.com", "https://reports.example.com/submit"],
+    httpClient: fakeHttp,
+  });
+  check("submit returns one entry per rua", rv.submitted === 2 && rv.results.length === 2);
+  check("mailto entry is ok with prepared body",
+        rv.results[0].kind === "mailto" && rv.results[0].ok === true &&
+        Buffer.isBuffer(rv.results[0].mailto.body));
+  check("https entry POSTed with content-type tlsrpt+gzip",
+        rv.results[1].kind === "https" && rv.results[1].ok === true &&
+        captured.headers["content-type"] === "application/tlsrpt+gzip");
+  check("https body is gzip-compressed",
+        Buffer.isBuffer(captured.body) && captured.body[0] === 0x1f && captured.body[1] === 0x8b);
+}
+
+async function testTlsRptSubmitRejectsEmptyRua() {
+  var threw = null;
+  try { await b.network.smtp.tlsRpt.submit({}, { rua: [] }); }
+  catch (e) { threw = e; }
+  check("submit rejects empty rua", threw && /tls-rpt-bad-rua/.test(threw.code || ""));
+}
+
 async function run() {
   testSurface();
   testMtaStsParse();
@@ -85,6 +138,10 @@ async function run() {
   testMtaStsMatchMx();
   testDaneRecordShape();
   testTlsRptRecordShape();
+  await testTlsRptFetchPolicyParsesRua();
+  await testTlsRptFetchPolicyMissing();
+  await testTlsRptSubmitMixedRua();
+  await testTlsRptSubmitRejectsEmptyRua();
 }
 
 module.exports = { run: run };
