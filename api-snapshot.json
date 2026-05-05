@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.24",
-  "createdAt": "2026-05-05T06:39:39.221Z",
+  "frameworkVersion": "0.7.25",
+  "createdAt": "2026-05-05T12:22:52.339Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2055,6 +2055,77 @@
         }
       }
     },
+    "dora": {
+      "type": "object",
+      "members": {
+        "DoraError": {
+          "type": "function",
+          "arity": 4
+        },
+        "FINAL_REPORT_DEADLINE_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "INITIAL_REPORT_DEADLINE_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "INTERMEDIATE_REPORT_DEADLINE_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAJOR_INCIDENT_THRESHOLDS": {
+          "type": "object",
+          "members": {
+            "affectedClientsAbsolute": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "affectedClientsPercentile": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "durationCriticalProcessMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "economicImpactEur": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "geographicMemberStates": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "SIGNIFICANT_INCIDENT_THRESHOLDS": {
+          "type": "object",
+          "members": {
+            "affectedClientsAbsolute": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "affectedClientsPercentile": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "durationCriticalProcessMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "economicImpactEur": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "dualControl": {
       "type": "object",
       "members": {
@@ -2409,6 +2480,10 @@
           "arity": 4
         },
         "ClusterProviderError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DoraError": {
           "type": "function",
           "arity": 4
         },
