@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.56",
-  "createdAt": "2026-05-05T23:11:08.356Z",
+  "frameworkVersion": "0.7.57",
+  "createdAt": "2026-05-05T23:18:52.645Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2589,6 +2589,10 @@
           "arity": 4
         },
         "GuardHtmlError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardImageError": {
           "type": "function",
           "arity": 4
         },
@@ -8304,6 +8308,528 @@
           "arity": 1
         },
         "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardImage": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "dimensionsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "framesPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxFrames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxWidth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mismatchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgRoutingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unknownMagicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "dimensionsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "framesPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxFrames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxWidth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mismatchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgRoutingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unknownMagicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "dimensionsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "framesPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxFrames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxWidth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mismatchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgRoutingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unknownMagicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "dimensionsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "framesPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxFrames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxWidth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mismatchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgRoutingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unknownMagicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "dimensionsPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "framesPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxFrames": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeight": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxWidth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mismatchPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "polyglotPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "svgRoutingPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "unknownMagicPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardImageError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignMetadata": {
+              "type": "object",
+              "members": {
+                "bytes": {
+                  "type": "instance",
+                  "ctorName": "Buffer"
+                },
+                "declaredMime": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "frames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "height": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "width": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileMetadata": {
+              "type": "object",
+              "members": {
+                "bytes": {
+                  "type": "instance",
+                  "ctorName": "Buffer"
+                },
+                "declaredMime": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "dimensionsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "framesPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxFrames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxWidth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mismatchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgRoutingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unknownMagicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "dimensionsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "framesPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxFrames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxWidth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mismatchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgRoutingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unknownMagicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "dimensionsPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "framesPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxFrames": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxWidth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mismatchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "svgRoutingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unknownMagicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "inspectMagic": {
           "type": "function",
           "arity": 1
         },
