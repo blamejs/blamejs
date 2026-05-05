@@ -345,6 +345,22 @@ async function _runIdentifierGuard(g) {
         !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
 }
 
+async function _runGraphqlGuard(g) {
+  var fx = g.INTEGRATION_FIXTURES;
+  var gate = g.gate({ profile: "strict" });
+
+  var rvBenign = await gate.check({ graphqlRequest: fx.benignGraphqlRequest });
+  check("[" + g.NAME + "] direct gate: benign graphqlRequest → serve",
+        rvBenign.ok === true && rvBenign.action === "serve");
+
+  var rvHostile = await gate.check({ graphqlRequest: fx.hostileGraphqlRequest });
+  check("[" + g.NAME + "] direct gate: hostile graphqlRequest → not serve",
+        rvHostile.action !== "serve");
+
+  check("[" + g.NAME + "] NOT registered in guardAll content-type dispatch",
+        !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
+}
+
 async function _runOauthFlowGuard(g) {
   var fx = g.INTEGRATION_FIXTURES;
   var gate = g.gate({ profile: "strict" });
@@ -385,6 +401,8 @@ async function testGuardHostIntegrationAdaptive() {
       await _runIdentifierGuard(g);
     } else if (g.KIND === "oauth-flow") {
       await _runOauthFlowGuard(g);
+    } else if (g.KIND === "graphql-request") {
+      await _runGraphqlGuard(g);
     } else {
       check("[" + g.NAME + "] unknown KIND " + JSON.stringify(g.KIND), false);
     }

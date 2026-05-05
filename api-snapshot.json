@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.51",
-  "createdAt": "2026-05-05T22:16:33.219Z",
+  "frameworkVersion": "0.7.52",
+  "createdAt": "2026-05-05T22:36:28.978Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2581,6 +2581,10 @@
           "arity": 4
         },
         "GuardFilenameError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardGraphqlError": {
           "type": "function",
           "arity": 4
         },
@@ -6980,6 +6984,736 @@
         "WIN_RESERVED_NAMES": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardGraphql": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "aliasBombPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "batchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "depthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "introspectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasesPerSelection": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQueryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxVariableBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "operationNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "persistedQueryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variableShapePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "aliasBombPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "batchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "depthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "introspectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasesPerSelection": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQueryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxVariableBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "operationNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "persistedQueryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variableShapePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "aliasBombPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "batchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "depthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "introspectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasesPerSelection": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQueryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxVariableBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "operationNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "persistedQueryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variableShapePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "aliasBombPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "batchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "depthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "introspectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasesPerSelection": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQueryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxVariableBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "operationNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "persistedQueryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variableShapePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "aliasBombPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "batchPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "depthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "introspectionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAliasesPerSelection": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBatchSize": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxQueryBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxVariableBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "operationNamePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "persistedQueryPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "variableShapePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardGraphqlError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignGraphqlRequest": {
+              "type": "object",
+              "members": {
+                "operationName": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "query": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileGraphqlRequest": {
+              "type": "object",
+              "members": {
+                "operationName": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "query": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "aliasBombPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "batchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "depthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "introspectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasesPerSelection": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQueryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxVariableBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "operationNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "persistedQueryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variableShapePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "aliasBombPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "batchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "depthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "introspectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasesPerSelection": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQueryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxVariableBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "operationNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "persistedQueryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variableShapePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "aliasBombPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "batchPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "depthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "introspectionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAliasesPerSelection": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQueryBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxVariableBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "operationNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "persistedQueryPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "variableShapePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
         },
         "buildProfile": {
           "type": "function",
