@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.28",
-  "createdAt": "2026-05-05T13:05:54.770Z",
+  "frameworkVersion": "0.7.29",
+  "createdAt": "2026-05-05T13:22:47.519Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2649,6 +2649,10 @@
           "arity": 4
         },
         "SlugError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SmtpPolicyError": {
           "type": "function",
           "arity": 4
         },
@@ -10845,6 +10849,98 @@
             "snapshot": {
               "type": "function",
               "arity": 0
+            }
+          }
+        },
+        "smtp": {
+          "type": "object",
+          "members": {
+            "dane": {
+              "type": "object",
+              "members": {
+                "recordShape": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "tlsa": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            },
+            "mtaSts": {
+              "type": "object",
+              "members": {
+                "fetch": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "matchMx": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "parsePolicy": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "policy": {
+              "type": "object",
+              "members": {
+                "SmtpPolicyError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "dane": {
+                  "type": "object",
+                  "members": {
+                    "recordShape": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "tlsa": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                },
+                "mtaSts": {
+                  "type": "object",
+                  "members": {
+                    "fetch": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "matchMx": {
+                      "type": "function",
+                      "arity": 2
+                    },
+                    "parsePolicy": {
+                      "type": "function",
+                      "arity": 1
+                    }
+                  }
+                },
+                "tlsRpt": {
+                  "type": "object",
+                  "members": {
+                    "recordShape": {
+                      "type": "function",
+                      "arity": 1
+                    }
+                  }
+                }
+              }
+            },
+            "tlsRpt": {
+              "type": "object",
+              "members": {
+                "recordShape": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
             }
           }
         },
