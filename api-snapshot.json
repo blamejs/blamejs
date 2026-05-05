@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.23",
-  "createdAt": "2026-05-05T06:27:23.712Z",
+  "frameworkVersion": "0.7.24",
+  "createdAt": "2026-05-05T06:39:39.221Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -11611,9 +11611,38 @@
     "retention": {
       "type": "object",
       "members": {
+        "COMPLIANCE_RETENTION_FLOOR_MS": {
+          "type": "object",
+          "members": {
+            "dora": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sox": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
         "RetentionError": {
           "type": "function",
           "arity": 4
+        },
+        "complianceFloor": {
+          "type": "function",
+          "arity": 2
         },
         "create": {
           "type": "function",
