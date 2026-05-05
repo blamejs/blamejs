@@ -63,18 +63,35 @@ var REPO_ROOT = path.resolve(__dirname, "..");
 var OUTPUT_DIR = path.join(REPO_ROOT, ".test-output");
 try { fs.mkdirSync(OUTPUT_DIR, { recursive: true }); } catch (_e) { /* best-effort */ }
 var LOG_PATH = path.join(OUTPUT_DIR, "smoke.log");
-var _logStream = fs.createWriteStream(LOG_PATH, { flags: "w" });
+// Open the log fd synchronously and write via fs.writeSync — async
+// streams don't flush their internal buffer when the process exits via
+// uncaughtException, so the persisted log was truncating mid-run.
+// Synchronous fd writes hit disk every call; the log is small (~200KB)
+// so the perf cost is irrelevant compared to "the failure detail
+// actually appears in the log."
+try { fs.unlinkSync(LOG_PATH); } catch (_e) { /* fresh start */ }
+var _logFd = fs.openSync(LOG_PATH, "w");
+
+function _logWrite(chunk) {
+  try {
+    var buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    fs.writeSync(_logFd, buf, 0, buf.length, null);
+  } catch (_e) { /* best-effort */ }
+}
 
 var _origStdoutWrite = process.stdout.write.bind(process.stdout);
 var _origStderrWrite = process.stderr.write.bind(process.stderr);
 process.stdout.write = function (chunk, encoding, cb) {
-  try { _logStream.write(chunk, encoding); } catch (_e) { /* best-effort */ }
+  _logWrite(chunk);
   return _origStdoutWrite(chunk, encoding, cb);
 };
 process.stderr.write = function (chunk, encoding, cb) {
-  try { _logStream.write(chunk, encoding); } catch (_e) { /* best-effort */ }
+  _logWrite(chunk);
   return _origStderrWrite(chunk, encoding, cb);
 };
+process.on("exit", function () {
+  try { fs.closeSync(_logFd); } catch (_e) { /* best-effort */ }
+});
 
 console.log("blamejs v" + b.version + " — smoke test");
 console.log("output: " + LOG_PATH);

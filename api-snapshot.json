@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.38",
-  "createdAt": "2026-05-05T18:07:59.074Z",
+  "frameworkVersion": "0.7.39",
+  "createdAt": "2026-05-05T18:31:02.434Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -11111,6 +11111,10 @@
             "ocsp": {
               "type": "object",
               "members": {
+                "buildRequest": {
+                  "type": "function",
+                  "arity": 1
+                },
                 "connect": {
                   "type": "function",
                   "arity": 1

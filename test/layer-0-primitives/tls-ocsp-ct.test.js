@@ -22,6 +22,98 @@ function testOcspSurface() {
         typeof b.network.tls.ocsp.inspectMustStaple === "function");
   check("network.tls.ocsp.requireMustStaple is a function",
         typeof b.network.tls.ocsp.requireMustStaple === "function");
+  check("network.tls.ocsp.buildRequest is a function",
+        typeof b.network.tls.ocsp.buildRequest === "function");
+}
+
+// Synthesize a minimal RFC 5280-shaped X.509 cert via the framework
+// ASN.1 writers — enough for buildRequest's _extractIssuerNameDerAnd-
+// KeyBitString and _extractLeafSerial walks. Not cryptographically
+// signed; verifies only that the SHAPE is read correctly.
+function _synthesizeMinimalCert(serialBytes, issuerCnBytes, pubKeyBytes) {
+  var asn1 = require("../../lib/asn1-der");
+  // Name ::= SEQUENCE OF RDN; RDN ::= SET OF AttributeTypeAndValue;
+  // Use a single CN attribute for simplicity.
+  var cnOid = asn1.writeOid("2.5.4.3");
+  var cnValue = asn1.writeNode(0x0c, issuerCnBytes);                            // UTF8String
+  var atv = asn1.writeSequence([cnOid, cnValue]);
+  var rdn = asn1.writeNode(0x31, atv);                                           // SET OF
+  var name = asn1.writeSequence([rdn]);
+  // Validity ::= SEQUENCE { notBefore, notAfter } — use UTCTime.
+  var notBefore = asn1.writeNode(0x17, Buffer.from("260101000000Z"));
+  var notAfter  = asn1.writeNode(0x17, Buffer.from("270101000000Z"));
+  var validity = asn1.writeSequence([notBefore, notAfter]);
+  // SPKI ::= SEQUENCE { algorithm AlgorithmIdentifier, subjectPublicKey BIT STRING }
+  var algId = asn1.writeSequence([asn1.writeOid("1.2.840.113549.1.1.1"), asn1.writeNull()]);
+  // BIT STRING wraps: [unusedBits=0x00, ...keyBytes]
+  var spkiBits = asn1.writeNode(0x03, Buffer.concat([Buffer.from([0]), pubKeyBytes]));
+  var spki = asn1.writeSequence([algId, spkiBits]);
+  // version [0] EXPLICIT INTEGER 2 (= v3)
+  var version = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  // tbsCertificate
+  var tbs = asn1.writeSequence([
+    version,
+    asn1.writeInteger(serialBytes),
+    algId,                                                                       // signature algorithm
+    name,                                                                        // issuer
+    validity,
+    name,                                                                        // subject (= issuer for self-signed)
+    spki,
+  ]);
+  var sigBits = asn1.writeNode(0x03, Buffer.from([0, 0, 0, 0]));                 // BIT STRING placeholder
+  var cert = asn1.writeSequence([tbs, algId, sigBits]);
+  return cert;
+}
+
+function testOcspBuildRequestDefaultIncludesNonce() {
+  // Default is nonce ON — security-defaults-on rule.
+  var cert = _synthesizeMinimalCert(Buffer.from([0x12, 0x34, 0x56, 0x78]),
+    Buffer.from("Test CA"), Buffer.from("public-key-bytes-go-here-aaaaaaaaaa"));
+  var rv = b.network.tls.ocsp.buildRequest({
+    leafCertDer:   cert,
+    issuerCertDer: cert,
+  });
+  check("buildRequest returns Buffer",  Buffer.isBuffer(rv.requestDer));
+  check("buildRequest default includes nonce (16 bytes)",
+        Buffer.isBuffer(rv.nonce) && rv.nonce.length === 16);
+  // Parse it back via the same ASN.1 walker.
+  var asn1 = require("../../lib/asn1-der");
+  var top = asn1.readNode(rv.requestDer);
+  check("buildRequest output is a SEQUENCE", top.tag === asn1.TAG.SEQUENCE);
+}
+
+function testOcspBuildRequestExplicitOptOut() {
+  // Operators talking to nonce-ignoring responders opt out via nonce: false.
+  var cert = _synthesizeMinimalCert(Buffer.from([0xab, 0xcd]),
+    Buffer.from("Test CA 2"), Buffer.from("public-key-bytes-2-aaaaaaaaaaaaaa"));
+  var rv = b.network.tls.ocsp.buildRequest({
+    leafCertDer:   cert,
+    issuerCertDer: cert,
+    nonce:         false,
+  });
+  check("buildRequest({ nonce: false }) returns null nonce", rv.nonce === null);
+}
+
+function testOcspBuildRequestNonceLenOutOfRange() {
+  var cert = _synthesizeMinimalCert(Buffer.from([0x01]),
+    Buffer.from("X"), Buffer.from("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYY"));
+  var threw = null;
+  try {
+    b.network.tls.ocsp.buildRequest({
+      leafCertDer: cert, issuerCertDer: cert,
+      nonce: true, nonceLen: 64,
+    });
+  } catch (e) { threw = e; }
+  check("buildRequest refuses RFC 8954 out-of-range nonceLen",
+        threw && /ocsp-bad-nonce-len/.test(threw.code || ""));
+}
+
+function testOcspBuildRequestRejectsBadInput() {
+  var threw = null;
+  try { b.network.tls.ocsp.buildRequest({ leafCertDer: "not-a-buffer", issuerCertDer: Buffer.from("x") }); }
+  catch (e) { threw = e; }
+  check("buildRequest refuses non-Buffer leafCertDer",
+        threw && /ocsp-bad-input/.test(threw.code || ""));
 }
 
 function testMustStapleInspectMalformed() {
@@ -169,6 +261,10 @@ async function run() {
   testRequireMustStaplePredicateNoCert();
   testRequireMustStaplePredicateNoExtensionPasses();
   testRequireMustStapleEnforceUnconditional();
+  testOcspBuildRequestDefaultIncludesNonce();
+  testOcspBuildRequestExplicitOptOut();
+  testOcspBuildRequestNonceLenOutOfRange();
+  testOcspBuildRequestRejectsBadInput();
 }
 
 module.exports = { run: run };
