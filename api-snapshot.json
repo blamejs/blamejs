@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.27",
-  "createdAt": "2026-05-05T12:54:48.424Z",
+  "frameworkVersion": "0.7.28",
+  "createdAt": "2026-05-05T13:05:54.770Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -1637,6 +1637,10 @@
             "ML_KEM_1024_P384": {
               "type": "primitive",
               "valueType": "number"
+            },
+            "ML_KEM_768_X25519": {
+              "type": "primitive",
+              "valueType": "number"
             }
           }
         },
@@ -1771,6 +1775,10 @@
     "crypto": {
       "type": "object",
       "members": {
+        "SUPPORTED_KEM_ALGORITHMS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "decrypt": {
           "type": "function",
           "arity": 2
@@ -1783,6 +1791,10 @@
           "type": "function",
           "arity": 2
         },
+        "encryptMlkem768X25519": {
+          "type": "function",
+          "arity": 2
+        },
         "encryptPacked": {
           "type": "function",
           "arity": 3
@@ -1792,6 +1804,10 @@
           "arity": 1
         },
         "generateEncryptionKeyPair": {
+          "type": "function",
+          "arity": 0
+        },
+        "generateMlkem768X25519KeyPair": {
           "type": "function",
           "arity": 0
         },
