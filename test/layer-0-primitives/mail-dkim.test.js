@@ -284,6 +284,67 @@ function testDkimRejectsLTagBodyLength() {
         threw && /l-tag-forbidden|forbidden/.test(threw.code || threw.message || ""));
 }
 
+async function _signedMessage(keypair) {
+  var signer = b.mail.dkim.create({
+    domain:     "example.com",
+    selector:   "s1",
+    privateKey: keypair.privateKey,
+  });
+  var rfc822 =
+    "From: alice@example.com\r\n" +
+    "To: bob@example.org\r\n" +
+    "Subject: Test\r\n" +
+    "Date: Mon, 5 May 2026 12:00:00 +0000\r\n" +
+    "Message-ID: <abc@example.com>\r\n" +
+    "\r\n" +
+    "Hello world.\r\n";
+  return signer.sign(rfc822);
+}
+
+function _spkiPemToB64(pem) {
+  return pem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, "");
+}
+
+async function testDkimVerifyHappyPath() {
+  var kp = _rsaKeypair();
+  var signed = await _signedMessage(kp);
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
+  var rv = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("verify: result is array", Array.isArray(rv));
+  check("verify: pass on valid signature", rv[0] && rv[0].result === "pass");
+  check("verify: warnings array on pass", Array.isArray(rv[0].warnings));
+}
+
+async function testDkimVerifyKeyCacheHit() {
+  // Same selector/domain twice → second fetch must hit cache.
+  b.mail.dkim._resetDkimKeyCacheForTest();
+  var kp = _rsaKeypair();
+  var signed = await _signedMessage(kp);
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var calls = 0;
+  var dnsLookup = async function () { calls += 1; return [["v=DKIM1; k=rsa; p=" + b64]]; };
+  await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("verify: DNS lookup cached (1 call across 2 verifies)", calls === 1);
+}
+
+async function testDkimVerifySmallKeyRejected() {
+  // Key < 1024 bits must be rejected per RFC 8301 §3.1.
+  var smallKp = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength: 512,
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  b.mail.dkim._resetDkimKeyCacheForTest();
+  var signed = await _signedMessage(smallKp);
+  var b64 = _spkiPemToB64(smallKp.publicKey);
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
+  var rv = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("verify: rejects RSA < 1024 bits",
+        rv[0] && rv[0].result === "fail" && /too small/.test((rv[0].errors || []).join(",")));
+}
+
 async function run() {
   testDkimSurfaceAndValidation();
   testDkimCanonicalization();
@@ -291,6 +352,9 @@ async function run() {
   testDkimEd25519Sign();
   testDkimSignerRejectsBadInput();
   testDkimRejectsLTagBodyLength();
+  await testDkimVerifyHappyPath();
+  await testDkimVerifyKeyCacheHit();
+  await testDkimVerifySmallKeyRejected();
   await testCalendarValidation();
   testCalendarBuilderEmitsTextCalendarPart();
   testCalendarOnlyMessage();
