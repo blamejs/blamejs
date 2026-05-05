@@ -12,6 +12,30 @@ var path = require("node:path");
 var fs = require("node:fs");
 var b = require("@blamejs/core");
 var { buildApp } = require("../lib/build-app");
+
+// Persistent output to .test-output/wiki-e2e.log at the framework
+// repo root so agents iterating on a failing run can grep the file
+// instead of re-running. The .test-output/ dir is gitignored.
+// Tee semantics — original stdout/stderr passthrough preserved so
+// CI annotations + npm exit-code propagation work unchanged.
+(function () {
+  var REPO_ROOT_FOR_LOG = path.resolve(__dirname, "..", "..", "..");
+  var LOG_DIR = path.join(REPO_ROOT_FOR_LOG, ".test-output");
+  try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_e) { /* best-effort */ }
+  var stream;
+  try { stream = fs.createWriteStream(path.join(LOG_DIR, "wiki-e2e.log"), { flags: "w" }); }
+  catch (_e) { return; /* CI runners with read-only checkout: skip log */ }
+  var origStdout = process.stdout.write.bind(process.stdout);
+  var origStderr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = function (c, enc, cb) {
+    try { stream.write(c, enc); } catch (_e) { /* best-effort */ }
+    return origStdout(c, enc, cb);
+  };
+  process.stderr.write = function (c, enc, cb) {
+    try { stream.write(c, enc); } catch (_e) { /* best-effort */ }
+    return origStderr(c, enc, cb);
+  };
+})();
 var sectionValidator = require("./validate-primitive-sections");
 var envSnapshotValidator = require("./validate-env-snapshot");
 var cliSnapshotValidator = require("./validate-cli-snapshot");

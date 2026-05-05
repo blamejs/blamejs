@@ -1638,7 +1638,7 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/guard-csv.js", "lib/guard-html.js", "lib/guard-svg.js",
         "lib/guard-filename.js", "lib/guard-archive.js", "lib/guard-json.js",
-        "lib/guard-yaml.js",
+        "lib/guard-yaml.js", "lib/guard-xml.js",
         // Future family members go here as they ship — the family-
         // subset matcher allows any cluster whose every file is in
         // this list, so adding a new guard doesn't need new entries.
@@ -2438,6 +2438,24 @@ async function run() {
 module.exports = { run: run };
 
 if (require.main === module) {
+  // Persistent output to .test-output/codebase-patterns.log so agents
+  // iterating on a failing run can grep the file instead of re-running.
+  var fsLog   = require("node:fs");
+  var pathLog = require("node:path");
+  var REPO_ROOT = pathLog.resolve(__dirname, "..", "..");
+  var OUT = pathLog.join(REPO_ROOT, ".test-output");
+  try { fsLog.mkdirSync(OUT, { recursive: true }); } catch (_e) { /* best-effort */ }
+  var stream = fsLog.createWriteStream(pathLog.join(OUT, "codebase-patterns.log"), { flags: "w" });
+  var origStdout = process.stdout.write.bind(process.stdout);
+  var origStderr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = function (c, e, cb) {
+    try { stream.write(c, e); } catch (_e) { /* best-effort */ }
+    return origStdout(c, e, cb);
+  };
+  process.stderr.write = function (c, e, cb) {
+    try { stream.write(c, e); } catch (_e) { /* best-effort */ }
+    return origStderr(c, e, cb);
+  };
   run().then(
     function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
     function (e) { console.error("FAIL:", e.stack || e); process.exit(1); }

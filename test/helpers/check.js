@@ -19,8 +19,18 @@ function check(label, condition) {
 function getChecks()         { return _checks; }
 function resetChecksForTest() { _checks = 0; }
 
+// addExternalChecks — the parallel smoke runner forks per-file
+// children; each child runs its own _checks counter in its process
+// and reports it back to the parent. The parent calls this to fold
+// the children's counts into the parent total so the final
+// "OK — N checks passed" line aggregates correctly.
+function addExternalChecks(n) {
+  if (typeof n === "number" && isFinite(n) && n >= 0) _checks += n;
+}
+
 module.exports = {
   check:              check,
   getChecks:          getChecks,
   resetChecksForTest: resetChecksForTest,
+  addExternalChecks:  addExternalChecks,
 };

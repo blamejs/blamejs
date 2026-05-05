@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.14",
-  "createdAt": "2026-05-05T01:58:07.171Z",
+  "frameworkVersion": "0.7.15",
+  "createdAt": "2026-05-05T02:38:52.264Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2428,6 +2428,10 @@
           "arity": 4
         },
         "GuardSvgError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardXmlError": {
           "type": "function",
           "arity": 4
         },
@@ -6627,6 +6631,698 @@
         "URL_ATTRS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardXml": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "entityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "externalEntityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerElement": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "schemaLocationPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xincludePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xmlDsigPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "entityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "externalEntityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerElement": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "schemaLocationPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xincludePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xmlDsigPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "entityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "externalEntityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerElement": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "schemaLocationPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xincludePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xmlDsigPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2-cc7": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "entityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "externalEntityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerElement": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "schemaLocationPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xincludePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xmlDsigPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "cdataPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "doctypePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "entityPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "externalEntityPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAttrValueBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxAttrsPerElement": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxElements": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "processingInstrPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "schemaLocationPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "xincludePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "xmlDsigPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardXmlError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "extension": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "entityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "externalEntityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerElement": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "schemaLocationPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xincludePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xmlDsigPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "entityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "externalEntityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerElement": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "schemaLocationPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xincludePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xmlDsigPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cdataPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "doctypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "entityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "externalEntityPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxAttrValueBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAttrsPerElement": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "processingInstrPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "schemaLocationPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xincludePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "xmlDsigPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
         },
         "buildProfile": {
           "type": "function",

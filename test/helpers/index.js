@@ -40,6 +40,7 @@ module.exports = {
   check:              _check.check,
   getChecks:          _check.getChecks,
   resetChecksForTest: _check.resetChecksForTest,
+  addExternalChecks:  _check.addExternalChecks,
 
   // DB fixtures
   setupTestDb:           _db.setupTestDb,

@@ -29,6 +29,7 @@ module.exports = [
   require("./" + "guard-archive"),
   require("./" + "guard-json"),
   require("./" + "guard-yaml"),
+  require("./" + "guard-xml"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),
