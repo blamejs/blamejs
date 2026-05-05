@@ -345,6 +345,22 @@ async function _runIdentifierGuard(g) {
         !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
 }
 
+async function _runOauthFlowGuard(g) {
+  var fx = g.INTEGRATION_FIXTURES;
+  var gate = g.gate({ profile: "strict" });
+
+  var rvBenign = await gate.check({ oauthFlow: fx.benignOauthFlow });
+  check("[" + g.NAME + "] direct gate: benign oauthFlow → serve",
+        rvBenign.ok === true && rvBenign.action === "serve");
+
+  var rvHostile = await gate.check({ oauthFlow: fx.hostileOauthFlow });
+  check("[" + g.NAME + "] direct gate: hostile oauthFlow → not serve",
+        rvHostile.action !== "serve");
+
+  check("[" + g.NAME + "] NOT registered in guardAll content-type dispatch",
+        !b.guardAll.list().some(function (entry) { return entry.name === g.NAME; }));
+}
+
 // ---- Discovery + dispatcher ----
 
 async function testGuardHostIntegrationAdaptive() {
@@ -367,6 +383,8 @@ async function testGuardHostIntegrationAdaptive() {
       await _runFilenameGuard(g);
     } else if (g.KIND === "identifier") {
       await _runIdentifierGuard(g);
+    } else if (g.KIND === "oauth-flow") {
+      await _runOauthFlowGuard(g);
     } else {
       check("[" + g.NAME + "] unknown KIND " + JSON.stringify(g.KIND), false);
     }

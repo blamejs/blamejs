@@ -116,6 +116,7 @@ var guardCidr = require("./lib/guard-cidr");
 var guardTime = require("./lib/guard-time");
 var guardMime = require("./lib/guard-mime");
 var guardJwt = require("./lib/guard-jwt");
+var guardOauth = require("./lib/guard-oauth");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -263,6 +264,7 @@ module.exports = {
   guardTime:        guardTime,
   guardMime:        guardMime,
   guardJwt:         guardJwt,
+  guardOauth:       guardOauth,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,

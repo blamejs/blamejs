@@ -38,6 +38,7 @@ module.exports = [
   require("./" + "guard-time"),
   require("./" + "guard-mime"),
   require("./" + "guard-jwt"),
+  require("./" + "guard-oauth"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),

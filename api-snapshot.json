@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.50",
-  "createdAt": "2026-05-05T22:02:43.876Z",
+  "frameworkVersion": "0.7.51",
+  "createdAt": "2026-05-05T22:16:33.219Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2601,6 +2601,10 @@
           "arity": 4
         },
         "GuardMimeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardOauthError": {
           "type": "function",
           "arity": 4
         },
@@ -10602,6 +10606,660 @@
                   "valueType": "string"
                 },
                 "wildcardPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardOauth": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "allowedResponseTypes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeReusePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "issuerOnCallbackPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxParamBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pkcePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirectUriPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "responseTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scopeTamperingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "allowedResponseTypes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeReusePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "issuerOnCallbackPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxParamBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pkcePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirectUriPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "responseTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scopeTamperingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "allowedResponseTypes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeReusePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "issuerOnCallbackPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxParamBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pkcePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirectUriPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "responseTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scopeTamperingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "allowedResponseTypes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeReusePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "issuerOnCallbackPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxParamBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pkcePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirectUriPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "responseTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scopeTamperingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "allowedResponseTypes": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "codeReusePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "issuerOnCallbackPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxParamBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pkcePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "redirectUriPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "responseTypePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "scopeTamperingPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "statePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "zeroWidthPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardOauthError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignOauthFlow": {
+              "type": "object",
+              "members": {
+                "code_challenge": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "code_challenge_method": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirect_uri": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "response_type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scope": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "state": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileOauthFlow": {
+              "type": "object",
+              "members": {
+                "redirect_uri": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "response_type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scope": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowedResponseTypes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeReusePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "issuerOnCallbackPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxParamBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pkcePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirectUriPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "responseTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scopeTamperingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowedResponseTypes": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeReusePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "issuerOnCallbackPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxParamBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pkcePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirectUriPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "responseTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scopeTamperingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "zeroWidthPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowedResponseTypes": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "bidiPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "codeReusePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "issuerOnCallbackPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxParamBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pkcePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "redirectUriPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "responseTypePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "scopeTamperingPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statePolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
