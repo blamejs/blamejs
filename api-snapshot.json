@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.47",
-  "createdAt": "2026-05-05T21:39:10.903Z",
+  "frameworkVersion": "0.7.48",
+  "createdAt": "2026-05-05T21:46:10.765Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -1714,6 +1714,10 @@
         "parse": {
           "type": "function",
           "arity": 1
+        },
+        "parseSafe": {
+          "type": "function",
+          "arity": 2
         },
         "serialize": {
           "type": "function",
@@ -13566,6 +13570,10 @@
           "arity": 1
         },
         "compression": {
+          "type": "function",
+          "arity": 1
+        },
+        "cookies": {
           "type": "function",
           "arity": 1
         },
