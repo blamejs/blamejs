@@ -266,12 +266,31 @@ function testSmtpDkimMisconfiguredOptThrows() {
         threw && /smtp-misconfigured/.test(threw.code));
 }
 
+function testDkimRejectsLTagBodyLength() {
+  // DKIM `l=` tag is forbidden — append-after-signature attack vector.
+  // Per M³AAWG / Gmail / Microsoft 365 guidance ("never use l=").
+  // Throws at create-time so the misconfiguration surfaces at boot.
+  var keys = _rsaKeypair();
+  var threw = null;
+  try {
+    b.mail.dkim.create({
+      domain:     "example.com",
+      selector:   "test",
+      privateKey: keys.privateKey,
+      bodyLength: 4,
+    });
+  } catch (e) { threw = e; }
+  check("dkim create refuses opts.bodyLength (l= tag forbidden — append-after-signature)",
+        threw && /l-tag-forbidden|forbidden/.test(threw.code || threw.message || ""));
+}
+
 async function run() {
   testDkimSurfaceAndValidation();
   testDkimCanonicalization();
   testDkimRsaSignProducesHeader();
   testDkimEd25519Sign();
   testDkimSignerRejectsBadInput();
+  testDkimRejectsLTagBodyLength();
   await testCalendarValidation();
   testCalendarBuilderEmitsTextCalendarPart();
   testCalendarOnlyMessage();
