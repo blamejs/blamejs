@@ -45,6 +45,7 @@ module.exports = [
   require("./" + "guard-jsonpath"),
   require("./" + "guard-template"),
   require("./" + "guard-image"),
+  require("./" + "guard-pdf"),
   require("./" + "guard-all"),
   require("./" + "observability"),
   require("./" + "testing"),

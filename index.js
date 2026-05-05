@@ -123,6 +123,7 @@ var guardRegex = require("./lib/guard-regex");
 var guardJsonpath = require("./lib/guard-jsonpath");
 var guardTemplate = require("./lib/guard-template");
 var guardImage = require("./lib/guard-image");
+var guardPdf = require("./lib/guard-pdf");
 var guardAll = require("./lib/guard-all");
 var ssrfGuard = require("./lib/ssrf-guard");
 var authHeader = require("./lib/auth-header");
@@ -277,6 +278,7 @@ module.exports = {
   guardJsonpath:    guardJsonpath,
   guardTemplate:    guardTemplate,
   guardImage:       guardImage,
+  guardPdf:         guardPdf,
   guardAll:         guardAll,
   ssrfGuard:        ssrfGuard,
   authHeader:       authHeader,

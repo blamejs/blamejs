@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.57",
-  "createdAt": "2026-05-05T23:18:52.645Z",
+  "frameworkVersion": "0.7.58",
+  "createdAt": "2026-05-05T23:38:21.600Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2617,6 +2617,10 @@
           "arity": 4
         },
         "GuardOauthError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GuardPdfError": {
           "type": "function",
           "arity": 4
         },
@@ -13108,6 +13112,600 @@
           "arity": 1
         },
         "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardPdf": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "embeddedFileCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "embeddedFilePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "javascriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "launchActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "magicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEmbeddedFileCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "openActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pageCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "embeddedFileCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "embeddedFilePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "javascriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "launchActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "magicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEmbeddedFileCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "openActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pageCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "embeddedFileCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "embeddedFilePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "javascriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "launchActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "magicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEmbeddedFileCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "openActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pageCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "embeddedFileCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "embeddedFilePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forensicSnippetBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "javascriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "launchActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "magicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEmbeddedFileCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "openActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pageCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "embeddedFileCountPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "embeddedFilePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "encryptedPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "javascriptPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "launchActionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "magicPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxEmbeddedFileCount": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxPageCount": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "openActionPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pageCountPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "polyglotPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardPdfError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "benignMetadata": {
+              "type": "object",
+              "members": {
+                "bytes": {
+                  "type": "instance",
+                  "ctorName": "Buffer"
+                },
+                "hasEmbeddedFiles": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "hasJavaScript": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "hasLaunchAction": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "hasOpenAction": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "isEncrypted": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "pageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "hostileBytes": {
+              "type": "instance",
+              "ctorName": "Buffer"
+            },
+            "hostileMetadata": {
+              "type": "object",
+              "members": {
+                "bytes": {
+                  "type": "instance",
+                  "ctorName": "Buffer"
+                },
+                "hasJavaScript": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "embeddedFileCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "embeddedFilePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "javascriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "launchActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "magicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEmbeddedFileCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "openActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pageCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "embeddedFileCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "embeddedFilePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "javascriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "launchActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "magicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEmbeddedFileCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "openActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pageCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "embeddedFileCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "embeddedFilePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encryptedPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "javascriptPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "launchActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "magicPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEmbeddedFileCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPageCount": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRuntimeMs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "openActionPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pageCountPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "polyglotPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "inspectMagic": {
           "type": "function",
           "arity": 1
         },
