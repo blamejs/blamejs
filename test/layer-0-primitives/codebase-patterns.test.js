@@ -1634,28 +1634,15 @@ function testNoDuplicateCodeBlocks() {
       reason: "Same conventional-shape scaffolding as the file-upload/static cluster — every primitive opens its create()/factory with the same `validateOpts.requireObject(...)` cascade plus per-domain numericBounds / requireNonEmptyString calls. The token sequence shingles across primitives that share the convention; the cascades' bodies (api-key columns vs csv profile-resolution vs svg compliance-posture lookup) diverge.",
     },
     {
-      files: ["lib/guard-csv.js", "lib/guard-html.js", "lib/guard-svg.js"],
-      reason: "guard-* family ABI — each guard's gate() factory header is `function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(opts.name || ..., opts, async function (ctx) { var text = gateContract.extractBytesAsText(ctx); if (!text) return serve; var rv = validate(text, opts); ...` — that header IS the family contract. The bodies past `var rv = validate(...)` diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ unconditionally). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the gate-shape from anyone reading the guard source.",
-    },
-    {
-      files: ["lib/guard-csv.js", "lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
-      reason: "guard-* family ABI extended to include filename. Same family-ABI reason as the csv/html/svg cluster — the gate() factory header through to validate() call is the family contract. filename's gate body diverges past `var rv = validate(name, opts)` because it operates on filename strings (not bytes) and has its own sanitize-eligibility branching across the larger reject-policy vocabulary (traversal/reservedChar/reservedName/ads/pathSeparators/leadingTrailing).",
-    },
-    {
-      files: ["lib/guard-archive.js", "lib/guard-csv.js", "lib/guard-filename.js"],
-      reason: "guard-* family bottom-of-file helpers — buildProfile / compliancePosture / loadRulePack lines are now uniformly `var X = gateContract.makeXxx(...)`; the file-tail shape across guards is `var buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(name, COMPLIANCE_POSTURES, _err, prefix); } var _xRulePacks = gateContract.makeRulePackLoader(GuardXError, prefix); var loadRulePack = _xRulePacks.load; module.exports = { ... };`. The shape is the contract; the values diverge per guard.",
-    },
-    {
-      files: ["lib/guard-archive.js", "lib/guard-csv.js", "lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
-      reason: "Extended-family ABI cluster — same family-shared bottom-of-file helper surface across all five guards. See guard-archive/csv/filename cluster reason above; html/svg join because they ship the same helpers.",
-    },
-    {
-      files: ["lib/guard-archive.js", "lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
-      reason: "guard-* family PROFILES literal block — all four define the same shared-vocabulary keys (strict / balanced / permissive profiles each with bidiPolicy / controlPolicy / nullBytePolicy / zeroWidthPolicy ... cascade). The keys are the family-shared policy vocabulary; the values diverge per guard (csv/html/svg have allowedTags + URL schemes; filename has reservedChar + path-separator policies; archive has symlink/hardlink/ratio/depth caps).",
-    },
-    {
-      files: ["lib/guard-filename.js", "lib/guard-html.js", "lib/guard-svg.js"],
-      reason: "guard-* family PROFILES literal block — all three define the same shared-vocabulary keys (strict / balanced / permissive profiles each with bidiPolicy / controlPolicy / nullBytePolicy / zeroWidthPolicy ... cascade). The keys are the family-shared policy vocabulary; the values diverge per guard (csv/html/svg have allowedTags + URL schemes; filename has reservedChar + path-separator policies). Cannot consolidate into a shared profile object because each guard's vocabulary subset is real domain-specific configuration.",
+      mode:  "family-subset",
+      files: [
+        "lib/guard-csv.js", "lib/guard-html.js", "lib/guard-svg.js",
+        "lib/guard-filename.js", "lib/guard-archive.js", "lib/guard-json.js",
+        // Future family members go here as they ship — the family-
+        // subset matcher allows any cluster whose every file is in
+        // this list, so adding a new guard doesn't need new entries.
+      ],
+      reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
     },
     {
       files: ["lib/api-snapshot.js", "lib/break-glass.js", "lib/deprecate.js"],
@@ -1759,7 +1746,14 @@ function testNoDuplicateCodeBlocks() {
     },
   ];
   var _knownClusterSet = Object.create(null);
+  var _familySubsetSets = [];     // entries with mode:"family-subset" → allow any subset
   KNOWN_CLUSTERS.forEach(function (e) {
+    if (e.mode === "family-subset") {
+      var familyFileSet = Object.create(null);
+      e.files.forEach(function (f) { familyFileSet[f] = true; });
+      _familySubsetSets.push(familyFileSet);
+      return;
+    }
     var key = e.files.slice().sort().join("|");
     _knownClusterSet[key] = e;
   });
@@ -1769,7 +1763,19 @@ function testNoDuplicateCodeBlocks() {
     if (r.bestSize < STRONG_MIN_SIZE) return false;
     if (r.fileSet.length < STRONG_MIN_FILES) return false;
     var key = r.fileSet.slice().sort().join("|");
-    if (_knownClusterSet[key]) return false;     // allowlisted
+    if (_knownClusterSet[key]) return false;     // exact-match allowlisted
+    // family-subset: any cluster whose every file is in a registered
+    // family set is allowed. Used for the guard-* family ABI clusters
+    // — adding one new guard creates O(2^N) new file-set combinations,
+    // which exact-match allowlisting can't sustain.
+    for (var fi = 0; fi < _familySubsetSets.length; fi += 1) {
+      var fs = _familySubsetSets[fi];
+      var allInFamily = true;
+      for (var j = 0; j < r.fileSet.length; j += 1) {
+        if (!fs[r.fileSet[j]]) { allInFamily = false; break; }
+      }
+      if (allInFamily) return false;
+    }
     return true;
   });
   // Only the strong-signal cluster is a primitive-extraction
