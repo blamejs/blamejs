@@ -62,6 +62,7 @@ module.exports = {
   '  audit:           auditInstance,           // default: null — emits csrf.rejected',
   '  checkOrigin:     boolean,                 // default: true — Origin/Referer cross-check on state-changing requests',
   '  allowedOrigins:  [string],                // default: same-origin — extra origins to accept (e.g. "https://app.example.com")',
+  '  requireOrigin:   boolean,                 // default: false — refuse browser state-changing requests that omit Origin AND Referer',
   '  requireJsonContentType: boolean,          // default: false — refuse non-JSON state-changing requests outright',
   '}</code></pre>',
   '<p>JSON requests are protected by the encrypted session payload itself. Form POSTs (and any non-JSON content type) get a CSRF token via the double-submit cookie pattern (default) or a session-stored token. The two are mutually exclusive — passing both throws at create-time. Default cookie name is <code>__Host-csrf</code> over HTTPS, <code>csrf</code> over plain HTTP. The <code>__Host-</code> prefix forces browsers to refuse the cookie unless it carries Secure + Path=/ + no Domain — closing the malicious-sibling-subdomain override path.</p>',

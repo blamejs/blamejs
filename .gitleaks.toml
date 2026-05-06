@@ -64,6 +64,12 @@ regexes = [
   # Match a single `eyJ`-prefixed segment of substantive length to
   # cover that split-literal shape too.
   '''eyJ[A-Za-z0-9_-]{20,}''',
+  # KEM-envelope object-literal shapes (`{ privateKey, cipherText }`)
+  # appear in error messages and CHANGELOG entries documenting the
+  # ML_KEM_768X25519 / ML_KEM_1024 surfaces. The string `cipherText`
+  # has high enough adjacent-token entropy to trip the generic-api-
+  # key rule; the literal is a parameter name, not a credential.
+  '''\{\s*privateKey\s*,\s*cipherText\s*\}''',
 ]
 
 [[allowlists]]
@@ -88,8 +94,16 @@ commits = [
   # high-entropy content. Plain operator-readable doc text, no real
   # secret. Allowlist matches the same pattern as the 74e627e entry.
   "fb91792bfe01e3b90478c5a65cbe71affdfdbdb6",
+  # v0.8.0 commit re-stating the same `{ privateKey, cipherText }`
+  # KEM-envelope shape in CHANGELOG.md + lib/crypto.js error
+  # messages. Parameter-name literal, no credential. The regex
+  # allowlist above catches future occurrences.
+  "1a7fef088f29b531d5d4391af6ea611d17f8c644",
 ]
 fingerprints = [
   "74e627ea0fea39f06e01fe424a19724bea37aee8:test/smoke.js:jwt:2415",
   "fb91792bfe01e3b90478c5a65cbe71affdfdbdb6:CHANGELOG.md:generic-api-key:11",
+  "1a7fef088f29b531d5d4391af6ea611d17f8c644:CHANGELOG.md:generic-api-key:11",
+  "1a7fef088f29b531d5d4391af6ea611d17f8c644:lib/crypto.js:generic-api-key:375",
+  "1a7fef088f29b531d5d4391af6ea611d17f8c644:lib/crypto.js:generic-api-key:380",
 ]
