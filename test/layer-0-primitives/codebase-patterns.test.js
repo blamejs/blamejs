@@ -1668,6 +1668,13 @@ function testNoDuplicateCodeBlocks() {
       reason: "Try/catch + drop-silent observability emit — dpop / outbox / static all wrap `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). Three different domains; the 50-token shingle is the swallow shape, not the domain logic.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/db.js", "lib/network-tls.js", "lib/ntp-check.js",
+      ],
+      reason: "Periodic-monitor scaffolding — db.integrityMonitor / network-tls.expiryMonitor / ntpCheck.monitor each spin a `safeAsync.repeating` worker that performs a poll, emits an audit + observability event on every tick, fires an operator hook on threshold crossing, and returns a `.stop()` handle. Three different domains (SQLite corruption / TLS cert expiry / NTP clock drift); the 50-token shingle is the worker scaffold + emit shape, not the domain logic. Future consolidation candidate when a 4th periodic monitor lands.",
+    },
+    {
       files: ["lib/auth/dpop.js", "lib/break-glass.js", "lib/middleware/security-txt.js"],
       reason: "Generic input validation prelude — `if (typeof X !== 'string' || X.length === 0 || /[\\r\\n\\0]/.test(X)) throw` repeats across primitives that gate operator-supplied strings against header-injection bytes (DPoP htm/htu, break-glass reasons, security.txt field values). Three different error classes; the rejection reason is identical but the error code prefix is per-domain.",
     },

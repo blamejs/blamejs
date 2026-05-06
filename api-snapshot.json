@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.99",
-  "createdAt": "2026-05-06T08:59:53.776Z",
+  "frameworkVersion": "0.7.100",
+  "createdAt": "2026-05-06T09:12:21.577Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20805,6 +20805,10 @@
               "arity": 0
             },
             "expiringSoon": {
+              "type": "function",
+              "arity": 1
+            },
+            "expiryMonitor": {
               "type": "function",
               "arity": 1
             },
