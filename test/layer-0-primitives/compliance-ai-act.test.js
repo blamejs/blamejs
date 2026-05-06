@@ -342,7 +342,6 @@ function run() {
     };
   }
 
-  var headersBefore = {};
   var req1 = { headers: {}, url: "/foo" };
   var res1 = _mockRes();
   var nextCalls = 0;
@@ -356,8 +355,7 @@ function run() {
   // Skip on x-skip-ai-act header
   var req2 = { headers: { "x-skip-ai-act": "1" }, url: "/skip" };
   var res2 = _mockRes();
-  var next2 = 0;
-  mw(req2, res2, function () { next2 += 1; });
+  mw(req2, res2, function () { /* next2 — drop-silent */ });
   res2.writeHead(200, {});
   check("middleware: skip on x-skip-ai-act header",      res2._headers["AI-Act-Notice"] == null);
 
@@ -434,11 +432,11 @@ function run() {
 
   // ---- transparency: kinds catalog completeness ----
   for (var i = 0; i < t.BANNER_KINDS.length; i += 1) {
-    var b1 = t.banner({ kind: t.BANNER_KINDS[i] });
+    var bk = t.banner({ kind: t.BANNER_KINDS[i] });
     check("transparency.banner: " + t.BANNER_KINDS[i] + " has text",
-          typeof b1.text === "string" && b1.text.length > 0);
+          typeof bk.text === "string" && bk.text.length > 0);
     check("transparency.banner: " + t.BANNER_KINDS[i] + " has article",
-          typeof b1.article === "string" && b1.article.indexOf("Art. 50") === 0);
+          typeof bk.article === "string" && bk.article.indexOf("Art. 50") === 0);
   }
 
   // ---- watermark with all opts ----

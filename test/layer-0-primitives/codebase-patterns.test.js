@@ -1618,8 +1618,9 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/deprecate.js", "lib/openapi-paths-builder.js", "lib/openapi.js",
         "lib/asyncapi.js", "lib/asyncapi-bindings.js", "lib/mail.js",
+        "lib/inbox.js", "lib/mail-arc-sign.js",
       ],
-      reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError); consolidating would lose the per-module error code.",
+      reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError / InboxError); consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
@@ -1728,10 +1729,11 @@ function testNoDuplicateCodeBlocks() {
         "lib/compliance-sanctions.js", "lib/observability-otlp-exporter.js",
         "lib/compliance-sanctions-fetcher.js",
         "lib/guard-html-wcag.js", "lib/mail-dkim.js",
+        "lib/mail-arc-sign.js",
         "lib/auth/sd-jwt-vc-issuer.js", "lib/auth/sd-jwt-vc-holder.js",
         "lib/auth/dpop.js",
       ],
-      reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Twelve different action vocabularies; consolidating would lose the per-primitive metric name.",
+      reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Different action vocabularies; consolidating would lose the per-primitive metric name.",
     },
     {
       mode:  "family-subset",
@@ -1763,7 +1765,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/middleware/require-methods.js", "lib/middleware/security-txt.js",
         "lib/network-dns.js", "lib/network-heartbeat.js",
         "lib/network-tls.js", "lib/safe-schema.js",
-        "lib/ws-client.js",
+        "lib/ws-client.js", "lib/mail-arc-sign.js",
       ],
       reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` plus per-element non-empty-string check repeats across primitives that take operator-supplied lists (sd-jwt-vc issuer keys, step-up acrValues / requiredAmr, step-up-policy acrAny / amr / requiredAmr atoms, require-methods HTTP-verb allowlist, security-txt contact lines, break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values, ws-client subprotocols). Twelve different domains with file-specific error classes; consolidating would lose the per-module error code.",
     },
@@ -1789,6 +1791,7 @@ function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/mail-auth.js", "lib/mail-dkim.js", "lib/mail-bimi.js",
+        "lib/mail-arc-sign.js",
         "lib/middleware/body-parser.js", "lib/network-smtp-policy.js",
         "lib/auth/step-up.js",
       ],
@@ -1880,6 +1883,18 @@ function testNoDuplicateCodeBlocks() {
     {
       files: ["lib/mail-dkim.js", "lib/metrics.js", "lib/safe-schema.js"],
       reason: "Format-array iteration with predicate check — `for (var i ...) { if (!predicate(arr[i])) throw }`. Generic JS validation pattern across unrelated domains.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/mail-arc-sign.js", "lib/mail-dkim.js", "lib/metrics.js",
+        "lib/safe-schema.js",
+      ],
+      reason: "Same array-iteration-with-predicate shape as the mail-dkim/metrics/safe-schema cluster — mail-arc-sign's headersToSign element validation walks the operator-supplied array of header names with the same `for (var i ...) { if (!predicate(arr[i])) throw }` shape; predicate body differs per domain.",
+    },
+    {
+      files: ["lib/inbox.js", "lib/middleware/span-http-server.js", "lib/outbox.js"],
+      reason: "Transactional-store + span-lifecycle audit prelude — inbox.handle / outbox.relay / span-http-server's response-finish hook each invoke `audit.safeEmit({ action, outcome, metadata })` inside a try/catch swallow on the hot path. Three different domains (dedupe-on-receive vs at-least-once relay vs HTTP request span); the 50-token shingle is the sink-emit shape, not the domain logic.",
     },
     {
       files: ["lib/mail.js", "lib/migrations.js", "lib/seeders.js"],

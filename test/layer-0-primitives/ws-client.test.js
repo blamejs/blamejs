@@ -289,6 +289,52 @@ async function run() {
   await _sleep(600);
   // After 1 attempt fails, no more reconnects.
 
+  // ---- permanent error: 4xx skips reconnect ----
+  var server4xx = await _makeServer({ rejectStatus: 403 });
+  var port4xx = server4xx.address().port;
+  var c11 = b.wsClient.connect("ws://127.0.0.1:" + port4xx, {
+    reconnect: { maxAttempts: 5, baseMs: 50, maxMs: 100 },
+    audit: false,
+  });
+  var c11ErrCount = 0, c11Reconnecting = 0;
+  c11.on("error", function () { c11ErrCount += 1; });
+  c11.on("reconnecting", function () { c11Reconnecting += 1; });
+  await _sleep(500);
+  check("permanent: 403 → no reconnect attempts", c11Reconnecting === 0);
+  check("permanent: error fired once",            c11ErrCount === 1);
+  server4xx.close();
+
+  // ---- close() reason length cap (>123 bytes truncated) ----
+  var serverCl = await _makeServer({});
+  var portCl = serverCl.address().port;
+  var cCl = b.wsClient.connect("ws://127.0.0.1:" + portCl, { reconnect: false, audit: false });
+  await _sleep(200);
+  // Should not throw — close() truncates internally.
+  cCl.close(1000, "x".repeat(500));
+  check("close: long reason truncated, no throw", true);
+  await _sleep(50);
+  serverCl.close();
+
+  // ---- handshakeGuid opt — config-time validation ----
+  rejects("wsClient.connect: bad handshakeGuid",
+    function () { b.wsClient.connect("ws://localhost:1", { handshakeGuid: 42 }); },
+    /handshakeGuid must be/);
+  rejects("wsClient.connect: empty handshakeGuid",
+    function () { b.wsClient.connect("ws://localhost:1", { handshakeGuid: "" }); },
+    /handshakeGuid must be/);
+
+  // Custom GUID accepted at config time. Wire round-trip is exercised in the
+  // ws-client integration test; here we only confirm config-time validation
+  // does not refuse a valid string.
+  var cGuid = b.wsClient.connect("ws://127.0.0.1:1", {
+    handshakeGuid: "MY-CUSTOM-GUID-12345678",
+    reconnect: false, audit: false,
+    handshakeTimeoutMs: 100,
+  });
+  cGuid.on("error", function () {});
+  await _sleep(150);
+  check("wsClient: custom handshakeGuid accepted at config time", true);
+
   console.log("OK — ws-client tests");
 }
 

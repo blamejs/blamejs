@@ -14,7 +14,7 @@ function rejects(label, fn, pattern) {
   check("threw on " + label, threw && (pattern.test ? pattern.test(msg) : msg.indexOf(pattern) !== -1));
 }
 
-async function rejectsAsync(label, fn, pattern) {
+async function _rejectsAsync(label, fn, pattern) {
   var threw = false; var msg = "";
   try { await fn(); } catch (e) { threw = true; msg = e.message; }
   check("threw on " + label, threw && (pattern.test ? pattern.test(msg) : msg.indexOf(pattern) !== -1));
@@ -355,9 +355,8 @@ async function run() {
 
   // ---- audit emissions reach the bus ----
   // Use audit drain helper if available; else just confirm safeEmit doesn't throw.
-  var emitted = 0;
   try {
-    b.audit.subscribeNamespace("auth", function (_event) { emitted += 1; });
+    b.audit.subscribeNamespace("auth", function (_event) { /* drop-silent */ });
   } catch (_e) { /* not all backends support subscribeNamespace; non-fatal */ }
   b.auth.stepUp.evaluate({ claims: { acr: "loa3" }, requirement: { acr: "loa2" } });
   check("evaluate is side-effect-free",            true);

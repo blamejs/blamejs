@@ -64,11 +64,61 @@ function testRecipientShape() {
         threw && /requires.*mlkemPublicKey.*x25519PublicKey/.test(threw.message));
 }
 
+function testDecryptHelper() {
+  check("crypto.decryptMlkem768X25519 is a function",
+        typeof b.crypto.decryptMlkem768X25519 === "function");
+  var k = b.crypto.generateMlkem768X25519KeyPair();
+  var env = b.crypto.encryptMlkem768X25519("hello world", {
+    mlkemPublicKey: k.mlkemPublicKey, x25519PublicKey: k.x25519PublicKey,
+  });
+  var pt = b.crypto.decryptMlkem768X25519(env, {
+    privateKey: k.mlkemPrivateKey, x25519PrivateKey: k.x25519PrivateKey,
+  });
+  check("decryptMlkem768X25519: round-trip", pt === "hello world");
+
+  // generic decrypt() still dispatches by KEM ID
+  var pt2 = b.crypto.decrypt(env, {
+    privateKey: k.mlkemPrivateKey, x25519PrivateKey: k.x25519PrivateKey,
+  });
+  check("decrypt: still dispatches by KEM ID", pt2 === "hello world");
+
+  // Mismatched KEM (ML-KEM-1024 envelope through 768 helper) is refused.
+  var k2 = b.crypto.generateEncryptionKeyPair();
+  var env1024 = b.crypto.encrypt("data", {
+    publicKey: k2.publicKey, ecPublicKey: k2.ecPublicKey,
+  });
+  var threwMis = null;
+  try {
+    b.crypto.decryptMlkem768X25519(env1024, {
+      privateKey: k2.privateKey, x25519PrivateKey: k.x25519PrivateKey,
+    });
+  } catch (e) { threwMis = e; }
+  check("decryptMlkem768X25519: rejects ML-KEM-1024 envelope",
+        threwMis && /KEM ID is/.test(threwMis.message));
+
+  var threwMissing = null;
+  try {
+    b.crypto.decryptMlkem768X25519(env, { privateKey: k.mlkemPrivateKey });
+  } catch (e) { threwMissing = e; }
+  check("decryptMlkem768X25519: missing keys",
+        threwMissing && /requires.*privateKey.*x25519PrivateKey/.test(threwMissing.message));
+
+  var threwBad = null;
+  try {
+    b.crypto.decryptMlkem768X25519(Buffer.from("not-base64-magic").toString("base64"), {
+      privateKey: k.mlkemPrivateKey, x25519PrivateKey: k.x25519PrivateKey,
+    });
+  } catch (e) { threwBad = e; }
+  check("decryptMlkem768X25519: bad envelope",
+        threwBad && /(bad magic byte|KEM ID)/.test(threwBad.message));
+}
+
 async function run() {
   testSurface();
   testGenerateKeypair();
   testRoundTrip();
   testRecipientShape();
+  testDecryptHelper();
 }
 
 module.exports = { run: run };

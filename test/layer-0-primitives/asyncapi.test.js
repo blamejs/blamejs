@@ -885,6 +885,41 @@ function run() {
   var docED2 = aapiED2.toJson();
   check("doc.externalDocs description",          docED2.externalDocs.description === "Detailed external docs");
 
+  // ---- b.asyncapi.parse — external doc validation ----
+  check("b.asyncapi.parse is fn",                typeof b.asyncapi.parse === "function");
+
+  var validAapi = b.asyncapi.create({ info: { title: "T", version: "1.0" } });
+  validAapi.channel("c", { address: "c" });
+  validAapi.operation("op", { action: "send", channel: "c" });
+  var aapiJson = validAapi.toJsonString();
+  var aapiParse = b.asyncapi.parse(aapiJson);
+  check("asyncapi.parse: valid round-trip",      aapiParse.valid === true);
+
+  var dangChannel = b.asyncapi.parse({
+    asyncapi: "3.0.0", info: { title: "T", version: "1.0" },
+    channels: {},
+    operations: { op: { action: "send", channel: { "$ref": "#/channels/ghost" } } },
+  });
+  check("asyncapi.parse: dangling channel",      dangChannel.valid === false);
+
+  var badAction = b.asyncapi.parse({
+    asyncapi: "3.0.0", info: { title: "T", version: "1.0" },
+    channels: { c: { address: "c" } },
+    operations: { op: { action: "publish", channel: { "$ref": "#/channels/c" } } },
+  });
+  check("asyncapi.parse: bad action",            badAction.valid === false);
+
+  var badServer = b.asyncapi.parse({
+    asyncapi: "3.0.0", info: { title: "T", version: "1.0" },
+    servers: { prod: { host: "kafka:9092" } },
+    channels: {}, operations: {},
+  });
+  check("asyncapi.parse: server missing protocol", badServer.valid === false);
+
+  var threwAapi = false; var msgAapi = "";
+  try { b.asyncapi.parse("{not valid"); } catch (e) { threwAapi = true; msgAapi = e.message; }
+  check("asyncapi.parse: bad JSON throws",       threwAapi && /invalid JSON/.test(msgAapi));
+
   console.log("OK — asyncapi tests");
 }
 

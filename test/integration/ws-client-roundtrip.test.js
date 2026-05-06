@@ -24,7 +24,6 @@
  */
 
 var http = require("node:http");
-var crypto = require("node:crypto");
 var helpers = require("../helpers");
 var check = helpers.check;
 

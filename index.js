@@ -224,6 +224,7 @@ var network = require("./lib/network");
 var cloudEvents = require("./lib/cloud-events");
 var dsr = require("./lib/dsr");
 var outbox = require("./lib/outbox");
+var inbox = require("./lib/inbox");
 
 module.exports = {
   crypto:           crypto,
@@ -378,6 +379,7 @@ module.exports = {
   cloudEvents:      cloudEvents,
   dsr:              dsr,
   outbox:           outbox,
+  inbox:            inbox,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

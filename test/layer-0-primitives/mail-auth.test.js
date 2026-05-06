@@ -301,6 +301,104 @@ async function testDkimVerifyTampered() {
         rv[0].result === "fail");
 }
 
+function _rejects(label, fn, pattern) {
+  var threw = false; var msg = "";
+  try { fn(); } catch (e) { threw = true; msg = e.message; }
+  check("threw on " + label, threw && pattern.test(msg));
+}
+
+function testArcSignSurface() {
+  check("mail.arc.sign is a function",          typeof b.mail.arc.sign === "function");
+  check("mail.arc.ALLOWED_CV exposed",          Array.isArray(b.mail.arc.ALLOWED_CV));
+}
+
+function testArcSignChain() {
+  var nodeCrypto = require("crypto");
+  var arcKey = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var arcKeyPem = arcKey.privateKey.export({ format: "pem", type: "pkcs8" });
+  var rfc822 =
+    "From: alice@example.com\r\n" +
+    "To: bob@example.com\r\n" +
+    "Subject: hello\r\n" +
+    "Date: Wed, 06 May 2026 12:00:00 +0000\r\n" +
+    "Message-ID: <1@example.com>\r\n" +
+    "\r\n" +
+    "body body body\r\n";
+
+  // i=1 — initial hop, cv=none.
+  var hop1 = b.mail.arc.sign({
+    rfc822:      rfc822,
+    instance:    1,
+    authservId:  "relay1.example.com",
+    domain:      "relay1.example.com",
+    selector:    "arc",
+    privateKey:  arcKeyPem,
+    algorithm:   "rsa-sha256",
+    cv:          "none",
+    authResults: "spf=pass smtp.mailfrom=alice@example.com",
+  });
+  check("arc.sign: i=1 returns aar",            hop1.aar.indexOf("i=1; relay1.example.com") === 0);
+  check("arc.sign: i=1 returns ams w/ b=",      hop1.ams.indexOf("b=") !== -1);
+  check("arc.sign: i=1 returns as cv=none",     hop1.as.indexOf("cv=none") !== -1);
+  check("arc.sign: rfc822 prepended with AS first", hop1.rfc822.indexOf("ARC-Seal:") === 0);
+  check("arc.sign: rfc822 includes AMS",        hop1.rfc822.indexOf("ARC-Message-Signature:") !== -1);
+  check("arc.sign: rfc822 includes AAR",        hop1.rfc822.indexOf("ARC-Authentication-Results:") !== -1);
+  check("arc.sign: instance/cv on result",      hop1.instance === 1 && hop1.cv === "none");
+
+  // i=2 — second hop, cv=pass over the i=1 chain.
+  var hop2 = b.mail.arc.sign({
+    rfc822:      hop1.rfc822,
+    instance:    2,
+    authservId:  "relay2.example.com",
+    domain:      "relay2.example.com",
+    selector:    "arc",
+    privateKey:  arcKeyPem,
+    algorithm:   "rsa-sha256",
+    cv:          "pass",
+    authResults: "spf=pass smtp.mailfrom=alice@example.com; arc=pass header.s=arc",
+  });
+  check("arc.sign: i=2 cv=pass",                hop2.as.indexOf("cv=pass") !== -1);
+  check("arc.sign: i=2 covers prior chain",     hop2.rfc822.split("ARC-Seal:").length === 3);
+
+  // ed25519 algorithm.
+  var edKey = nodeCrypto.generateKeyPairSync("ed25519");
+  var edKeyPem = edKey.privateKey.export({ format: "pem", type: "pkcs8" });
+  var edHop = b.mail.arc.sign({
+    rfc822:      rfc822,
+    instance:    1,
+    authservId:  "relay-ed.example.com",
+    domain:      "relay-ed.example.com",
+    selector:    "arc",
+    privateKey:  edKeyPem,
+    algorithm:   "ed25519-sha256",
+    cv:          "none",
+    authResults: "spf=pass",
+  });
+  check("arc.sign: ed25519 produces signature", edHop.as.indexOf("a=ed25519-sha256") !== -1);
+
+  _rejects("arc.sign: missing rfc822",
+    function () { b.mail.arc.sign({ instance: 1, authservId: "x", domain: "x", selector: "x", privateKey: arcKeyPem, cv: "none", authResults: "spf=pass" }); },
+    /rfc822/);
+  _rejects("arc.sign: i=1 cv=pass",
+    function () { b.mail.arc.sign({ rfc822: rfc822, instance: 1, authservId: "x", domain: "x", selector: "x", privateKey: arcKeyPem, algorithm: "rsa-sha256", cv: "pass", authResults: "spf=pass" }); },
+    /i=1 requires cv=none/);
+  _rejects("arc.sign: i=2 cv=none",
+    function () { b.mail.arc.sign({ rfc822: hop1.rfc822, instance: 2, authservId: "x", domain: "x", selector: "x", privateKey: arcKeyPem, algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass" }); },
+    /i>=2 disallows cv=none/);
+  _rejects("arc.sign: bad algorithm",
+    function () { b.mail.arc.sign({ rfc822: rfc822, instance: 1, authservId: "x", domain: "x", selector: "x", privateKey: arcKeyPem, algorithm: "md5-rsa", cv: "none", authResults: "spf=pass" }); },
+    /algorithm/);
+  _rejects("arc.sign: CRLF in authResults",
+    function () { b.mail.arc.sign({ rfc822: rfc822, instance: 1, authservId: "x", domain: "x", selector: "x", privateKey: arcKeyPem, algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass\r\nInjected: header" }); },
+    /CR\/LF|injection/);
+  _rejects("arc.sign: chain gap (i=3 with no i=1 i=2)",
+    function () { b.mail.arc.sign({ rfc822: rfc822, instance: 3, authservId: "x", domain: "x", selector: "x", privateKey: arcKeyPem, algorithm: "rsa-sha256", cv: "pass", authResults: "spf=pass" }); },
+    /chain has 0 hops|chain has gap/);
+  _rejects("arc.sign: bad instance (0)",
+    function () { b.mail.arc.sign({ rfc822: rfc822, instance: 0, authservId: "x", domain: "x", selector: "x", privateKey: arcKeyPem, algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass" }); },
+    /instance must be/);
+}
+
 async function run() {
   testSurface();
   testSpfParse();
@@ -318,6 +416,8 @@ async function run() {
   await testArcVerifyHop1CvMustBeNone();
   await testArcVerifyHop2CvNoneInvalid();
   await testArcVerifyPassAfterFail();
+  testArcSignSurface();
+  testArcSignChain();
   testDkimVerifySurface();
   await testDkimVerifyRoundTrip();
   await testDkimVerifyNoSignature();

@@ -813,6 +813,61 @@ function run() {
   var osDoc = apiOpServers.toJson();
   check("op servers override",                   osDoc.paths["/upload"].post.servers[0].url === "https://uploads.example.com");
 
+  // ---- b.openapi.parse — external doc validation ----
+  check("b.openapi.parse is fn",                 typeof b.openapi.parse === "function");
+
+  var validOas = b.openapi.create({ info: { title: "T", version: "1.0" } });
+  validOas.path("get", "/x", { responses: { "200": { description: "ok" } } });
+  var validOasJson = validOas.toJsonString();
+  var oasParse = b.openapi.parse(validOasJson);
+  check("openapi.parse: valid doc round-trip",   oasParse.valid === true);
+  check("openapi.parse: errors empty",           oasParse.errors.length === 0);
+  check("openapi.parse: doc returned",           oasParse.doc.info.title === "T");
+
+  var oasParseObj = b.openapi.parse(validOas.toJson());
+  check("openapi.parse: object input",           oasParseObj.valid === true);
+
+  var badVer = b.openapi.parse({ openapi: "3.0.0", info: { title: "T", version: "1.0" }, paths: {} });
+  check("openapi.parse: wrong version → invalid", badVer.valid === false);
+  check("openapi.parse: error mentions 3.1.x",   badVer.errors.join(",").indexOf("3.1") !== -1);
+
+  var badResp = b.openapi.parse({
+    openapi: "3.1.0", info: { title: "T", version: "1.0" },
+    paths: { "/x": { get: { responses: { "200": {} } } } },
+  });
+  check("openapi.parse: missing description",    badResp.valid === false &&
+                                                  badResp.errors.join(",").indexOf("description is required") !== -1);
+
+  var badPath = b.openapi.parse({
+    openapi: "3.1.0", info: { title: "T", version: "1.0" },
+    paths: { "noslash": { get: { responses: { "200": { description: "ok" } } } } },
+  });
+  check("openapi.parse: missing slash prefix",   badPath.valid === false);
+
+  var badPathParam = b.openapi.parse({
+    openapi: "3.1.0", info: { title: "T", version: "1.0" },
+    paths: { "/x/{id}": { get: {
+      parameters: [{ name: "id", in: "path" }],
+      responses: { "200": { description: "ok" } },
+    }}},
+  });
+  check("openapi.parse: path param missing required",
+                                                  badPathParam.valid === false &&
+                                                  badPathParam.errors.join(",").indexOf("required=true") !== -1);
+
+  var dangling = b.openapi.parse({
+    openapi: "3.1.0", info: { title: "T", version: "1.0" },
+    security: [{ ghost: [] }],
+    paths: { "/x": { get: { responses: { "200": { description: "ok" } } } } },
+  });
+  check("openapi.parse: dangling security",      dangling.valid === false &&
+                                                  dangling.errors.join(",").indexOf("undefined scheme") !== -1);
+
+  rejects("openapi.parse: bad JSON",
+    function () { b.openapi.parse("{not valid json"); }, /invalid JSON/);
+  rejects("openapi.parse: bad input",
+    function () { b.openapi.parse(42); }, /must be a JSON string/);
+
   console.log("OK — openapi tests");
 }
 

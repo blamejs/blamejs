@@ -243,8 +243,9 @@ function run() {
     if (v) onCount += 1; else offCount += 1;
   }
   check("rollout 50%: roughly even split",       Math.abs(onCount - offCount) < 80);
-  check("rollout 50%: stickiness",                rolloutFlag.getBoolean("rollout-feature", { targetingKey: "user-1" }) ===
-                                                  rolloutFlag.getBoolean("rollout-feature", { targetingKey: "user-1" }));
+  var s1 = rolloutFlag.getBoolean("rollout-feature", { targetingKey: "user-1" });
+  var s2 = rolloutFlag.getBoolean("rollout-feature", { targetingKey: "user-1" });
+  check("rollout 50%: stickiness",                s1 === s2);
 
   // ---- environmentVariable provider ----
   process.env.FLAG_NEW_CHECKOUT = "true";
