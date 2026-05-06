@@ -112,5 +112,21 @@ module.exports = {
   '// plaintext === "hello world"',
   '</code></pre>',
 
+  '<h2 id="cert-peer">b.crypto.encryptEnvelopeAsCertPeer / decryptEnvelopeAsCertPeer <a class="anchor" href="#cert-peer">#</a></h2>',
+  '<pre><code class="language-javascript">// encrypt — recipient identified by their TLS cert + ML-KEM-1024 pubkey',
+  'b.crypto.encryptEnvelopeAsCertPeer(plaintext, {',
+  '  peerCertDer:    Buffer | Uint8Array,    // peer\'s TLS cert (DER)',
+  '  peerKemPubkey:  pemString,                // peer\'s ML-KEM-1024 pubkey PEM',
+  '});',
+  '',
+  '// decrypt — this operator\'s cert priv + KEM secret',
+  'b.crypto.decryptEnvelopeAsCertPeer(envelope, {',
+  '  certPrivateKey: KeyObject | pemString,   // operator\'s cert P-384 priv',
+  '  kemSecret:      pemString,                // operator\'s ML-KEM-1024 priv PEM',
+  '});</code></pre>',
+  '<p>Cert-bound envelope variants of <code>encrypt</code> / <code>decrypt</code>. The default <code>encrypt</code> path sources the recipient from a published framework keypair (operator owns both halves). The cert-peer variants source the recipient\'s ECDH P-384 half from a TLS peer cert plus a peer-supplied ML-KEM-1024 pubkey. Wire format is unchanged — the envelope dispatches on the same version bytes and KEM ID.</p>',
+  '<p>Use cases beyond the upcoming <code>b.middleware.apiEncrypt({ recipient: "peer-cert" })</code> strategy: sealed-storage records with peer recipients (operator A seals to operator B\'s TLS cert + KEM pubkey), cross-service messages between cert-identified peers without a shared framework keypair, audit log entries tagged with peer recipients.</p>',
+  '<p>Validation throws at the boundary: <code>crypto/cert-key-not-ecdh-p384</code> when the cert\'s SPKI is not <code>id-ecPublicKey</code> over <code>secp384r1</code>; <code>crypto/peer-cert-missing</code> / <code>crypto/peer-kem-pubkey-missing</code> / <code>crypto/cert-private-key-missing</code> / <code>crypto/kem-secret-missing</code> on missing keys.</p>',
+
 ].join("\n"),
 };

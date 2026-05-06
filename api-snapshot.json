@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.59",
-  "createdAt": "2026-05-05T23:47:26.142Z",
+  "frameworkVersion": "0.7.60",
+  "createdAt": "2026-05-06T00:05:33.286Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -1787,11 +1787,19 @@
           "type": "function",
           "arity": 2
         },
+        "decryptEnvelopeAsCertPeer": {
+          "type": "function",
+          "arity": 2
+        },
         "decryptPacked": {
           "type": "function",
           "arity": 3
         },
         "encrypt": {
+          "type": "function",
+          "arity": 2
+        },
+        "encryptEnvelopeAsCertPeer": {
           "type": "function",
           "arity": 2
         },
