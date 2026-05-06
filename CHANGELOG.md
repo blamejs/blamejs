@@ -8,6 +8,8 @@ upgrading across more than a few patches at a time.
 
 ## v0.8.x
 
+- **0.8.2** (2026-05-06) — eslint fixes for v0.8.1 npm-publish gate. `lib/guard-csv.js` bidi-prefix regex now uses explicit `\uXXXX` escapes (was tripping `no-irregular-whitespace` + `no-misleading-character-class` on the literal-codepoint form). `lib/redact.js` URL-bearer-query detector drops a redundant `\-` escape inside a character class. Functional behaviour unchanged from 0.8.1.
+
 - **0.8.1** (2026-05-06) — Hardening sweep across audit emission, crypto defaults, auth bypass closure, storage / SQLi, HTTP/network surface, supply-chain pin, and observability gaps. Defense-in-depth fixes — no new operator-facing primitives.
 
   **Audit emission** — `audit.safeEmit` now normalises non-canonical outcomes (`ok` / `fail` / `warning` / `duplicate` / `skip` → `success` / `failure`) and replaces hyphens in action-name segments with underscores. The strict regex enforced by `audit.record` was silently dropping events from `b.flag` / `b.outbox` / `b.inbox` / `b.session` (idle / absolute / fingerprint-drift) / `b.db` (integrity-check) / `b.compliance.aiAct` (every Annex III biometric-id log on the operator-facing kinds with hyphens) / `b.config-drift` (low-severity drift) / `b.log-stream` (sink-failure) / `b.pubsub` (publish + publish-failed — also fixes a positional-signature bug at the call site). Two new `codebase-patterns` detectors (`audit-action-with-hyphen`, `non-canonical-audit-outcome`) catch new sites at gate time. Chain-write integrity failures now emit `system.audit.chain_write_dropped` to observability so operators alerting on rate-drop see something even when audit itself is the broken sink.
