@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.90",
-  "createdAt": "2026-05-06T07:34:20.445Z",
+  "frameworkVersion": "0.7.91",
+  "createdAt": "2026-05-06T07:42:52.039Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20601,6 +20601,131 @@
     "observability": {
       "type": "object",
       "members": {
+        "SEMCONV": {
+          "type": "object",
+          "members": {
+            "CLIENT_ADDRESS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CLIENT_PORT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DB_NAMESPACE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DB_OPERATION_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DB_QUERY_TEXT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DB_SYSTEM": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ERROR_TYPE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "EXCEPTION_MESSAGE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "EXCEPTION_STACKTRACE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "EXCEPTION_TYPE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "HTTP_REQUEST_BODY_SIZE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "HTTP_REQUEST_METHOD": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "HTTP_RESPONSE_BODY_SIZE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "HTTP_RESPONSE_STATUS_CODE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "HTTP_ROUTE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MESSAGING_DESTINATION_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MESSAGING_OPERATION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MESSAGING_SYSTEM": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "NETWORK_PEER_ADDRESS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "NETWORK_PROTOCOL_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "NETWORK_PROTOCOL_VERSION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SERVER_ADDRESS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SERVER_PORT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SESSION_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "URL_FULL": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "URL_PATH": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "URL_QUERY": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "URL_SCHEME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "USER_AGENT_ORIGINAL": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "USER_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
         "event": {
           "type": "function",
           "arity": 3
