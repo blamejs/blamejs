@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.78",
-  "createdAt": "2026-05-06T04:48:29.050Z",
+  "frameworkVersion": "0.7.79",
+  "createdAt": "2026-05-06T05:13:55.889Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20292,6 +20292,27 @@
                   "arity": 1
                 },
                 "requireStapled": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "pqc": {
+              "type": "object",
+              "members": {
+                "DEFAULT_KEY_SHARES": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "getKeyShares": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "resetKeyShares": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "setKeyShares": {
                   "type": "function",
                   "arity": 1
                 }
