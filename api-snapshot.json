@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.86",
-  "createdAt": "2026-05-06T06:17:01.938Z",
+  "frameworkVersion": "0.7.87",
+  "createdAt": "2026-05-06T06:24:38.742Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19786,6 +19786,14 @@
         "requireAuth": {
           "type": "function",
           "arity": 1
+        },
+        "requireContentType": {
+          "type": "function",
+          "arity": 2
+        },
+        "requireMethods": {
+          "type": "function",
+          "arity": 2
         },
         "securityHeaders": {
           "type": "function",
