@@ -1643,8 +1643,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/middleware/tus-upload.js",
         "lib/outbox.js",
         "lib/observability-otlp-exporter.js",
+        "lib/compliance-sanctions-fetcher.js",
+        "lib/dsr.js",
       ],
-      reason: "validateOpts factory prelude — every factory primitive (externalDb-migrate / dbRoleFor / web-app-manifest / security-txt / tus-upload / outbox / otlp-exporter) runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Seven different domains with seven different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
+      reason: "validateOpts factory prelude — every factory primitive runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Nine different domains with nine different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
     },
     {
       mode:  "family-subset",
@@ -1689,16 +1691,20 @@ function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/middleware/db-role-for.js", "lib/middleware/tus-upload.js",
-        "lib/outbox.js",
+        "lib/outbox.js", "lib/dsr.js",
+        "lib/compliance-sanctions.js", "lib/observability-otlp-exporter.js",
+        "lib/compliance-sanctions-fetcher.js",
       ],
-      reason: "Audit + observability emit prelude — db-role-for / tus-upload / outbox all wrap their `audit.safeEmit` / `observability.safeEvent` calls in a single try/catch+swallow because both are best-effort observability sinks. Three different action vocabularies; consolidating would lose the per-primitive metric name.",
+      reason: "Audit + observability emit prelude — db-role-for / tus-upload / outbox / dsr / sanctions / otlp-exporter / sanctions-fetcher each wrap `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Seven different action vocabularies; consolidating would lose the per-primitive metric name.",
     },
     {
       mode:  "family-subset",
       files: [
+        "lib/auth/dpop.js", "lib/compliance-sanctions.js", "lib/dora.js",
         "lib/middleware/dpop.js", "lib/outbox.js", "lib/static.js",
+        "lib/compliance-sanctions-fetcher.js", "lib/dsr.js",
       ],
-      reason: "Try/catch + drop-silent observability emit — dpop / outbox / static all wrap `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). Three different domains; the 50-token shingle is the swallow shape, not the domain logic.",
+      reason: "Try/catch + drop-silent observability emit — eight primitives wrap `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
     },
     {
       mode:  "family-subset",

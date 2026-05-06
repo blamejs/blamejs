@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.104",
-  "createdAt": "2026-05-06T10:47:23.009Z",
+  "frameworkVersion": "0.7.105",
+  "createdAt": "2026-05-06T11:08:57.597Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2014,6 +2014,122 @@
         "posturesByJurisdiction": {
           "type": "function",
           "arity": 1
+        },
+        "sanctions": {
+          "type": "object",
+          "members": {
+            "SanctionsError": {
+              "type": "function",
+              "arity": 4
+            },
+            "VALID_ALGORITHMS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "VALID_STRATEGIES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "VALID_TYPES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "aliases": {
+              "type": "object",
+              "members": {
+                "NICKNAME_PAIRS": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "expand": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "fetcher": {
+              "type": "object",
+              "members": {
+                "SanctionsFetcherError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "fuzzy": {
+              "type": "object",
+              "members": {
+                "FuzzyError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "MAX_INPUT_LEN": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "initialsMatch": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "jaro": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "jaroWinkler": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "levenshtein": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "normalize": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "substringContains": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "tokenSetSimilarity": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "tokenize": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "mergeAliases": {
+              "type": "function",
+              "arity": 2
+            },
+            "parseEuCslEntry": {
+              "type": "function",
+              "arity": 1
+            },
+            "parseOfacAliasRow": {
+              "type": "function",
+              "arity": 1
+            },
+            "parseOfacCsvRow": {
+              "type": "function",
+              "arity": 1
+            },
+            "parseUn1267Entry": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "set": {
           "type": "function",
