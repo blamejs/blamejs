@@ -175,6 +175,7 @@ var dev = require("./lib/dev");
 var bundler = require("./lib/bundler");
 var pqcGate = require("./lib/pqc-gate");
 var pqcAgent = require("./lib/pqc-agent");
+var pqcSoftware = require("./lib/pqc-software");
 var vaultRotate = require("./lib/vault/rotate");
 var vaultPassphraseOps = require("./lib/vault/passphrase-ops");
 var mtlsCa = require("./lib/mtls-ca");
@@ -189,6 +190,7 @@ var restore = require("./lib/restore");
 var deprecate = require("./lib/deprecate");
 var apiSnapshot = require("./lib/api-snapshot");
 var openapi = require("./lib/openapi");
+var asyncapi = require("./lib/asyncapi");
 var flag = require("./lib/flag");
 var auditTools = require("./lib/audit-tools");
 var events = require("./lib/events");
@@ -327,6 +329,7 @@ module.exports = {
   bundler:          bundler,
   pqcGate:          pqcGate,
   pqcAgent:         pqcAgent,
+  pqcSoftware:      pqcSoftware,
   vaultRotate:      vaultRotate,
   vaultPassphraseOps: vaultPassphraseOps,
   mtlsCa:           mtlsCa,
@@ -341,6 +344,7 @@ module.exports = {
   deprecate:        deprecate,
   apiSnapshot:      apiSnapshot,
   openapi:          openapi,
+  asyncapi:         asyncapi,
   flag:             flag,
   safeJson:         safeJson,
   safeSchema:       safeSchema,

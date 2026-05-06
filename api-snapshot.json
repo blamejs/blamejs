@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.111",
-  "createdAt": "2026-05-06T14:51:56.429Z",
+  "frameworkVersion": "0.7.112",
+  "createdAt": "2026-05-06T15:38:11.441Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -121,6 +121,130 @@
         "zip": {
           "type": "function",
           "arity": 0
+        }
+      }
+    },
+    "asyncapi": {
+      "type": "object",
+      "members": {
+        "AsyncApiError": {
+          "type": "function",
+          "arity": 4
+        },
+        "VERSION": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "bindings": {
+          "type": "object",
+          "members": {
+            "AsyncApiError": {
+              "type": "function",
+              "arity": 4
+            },
+            "amqp": {
+              "type": "function",
+              "arity": 1
+            },
+            "http": {
+              "type": "function",
+              "arity": 1
+            },
+            "kafka": {
+              "type": "function",
+              "arity": 1
+            },
+            "mqtt": {
+              "type": "function",
+              "arity": 1
+            },
+            "websockets": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "schemaWalk": {
+          "type": "function",
+          "arity": 1
+        },
+        "security": {
+          "type": "object",
+          "members": {
+            "OpenApiError": {
+              "type": "function",
+              "arity": 4
+            },
+            "apiKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "basic": {
+              "type": "function",
+              "arity": 1
+            },
+            "bearer": {
+              "type": "function",
+              "arity": 1
+            },
+            "dpop": {
+              "type": "function",
+              "arity": 1
+            },
+            "mtls": {
+              "type": "function",
+              "arity": 1
+            },
+            "oauth2": {
+              "type": "function",
+              "arity": 1
+            },
+            "openIdConnect": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "toYaml": {
+          "type": "function",
+          "arity": 1
+        },
+        "traits": {
+          "type": "object",
+          "members": {
+            "AsyncApiError": {
+              "type": "function",
+              "arity": 4
+            },
+            "MESSAGE_TRAIT_KEYS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "OPERATION_TRAIT_KEYS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "applyMessage": {
+              "type": "function",
+              "arity": 2
+            },
+            "applyOperation": {
+              "type": "function",
+              "arity": 2
+            },
+            "message": {
+              "type": "function",
+              "arity": 1
+            },
+            "operation": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
@@ -22335,6 +22459,10 @@
           "type": "function",
           "arity": 1
         },
+        "asyncapiServe": {
+          "type": "function",
+          "arity": 1
+        },
         "attachUser": {
           "type": "function",
           "arity": 1
@@ -24043,6 +24171,1557 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "pqcSoftware": {
+      "type": "object",
+      "members": {
+        "DEFAULT_HASH_SIG": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "DEFAULT_KEM": {
+          "type": "object",
+          "members": {
+            "decapsulate": {
+              "type": "function",
+              "arity": 2
+            },
+            "encapsulate": {
+              "type": "function",
+              "arity": 1
+            },
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 0
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "cipherText": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msg": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msgRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "DEFAULT_LATTICE_SIG": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "PqcError": {
+          "type": "function",
+          "arity": 4
+        },
+        "isAvailable": {
+          "type": "function",
+          "arity": 0
+        },
+        "listAlgorithms": {
+          "type": "function",
+          "arity": 0
+        },
+        "ml_dsa_44": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "ml_dsa_65": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "ml_dsa_87": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "ml_kem_1024": {
+          "type": "object",
+          "members": {
+            "decapsulate": {
+              "type": "function",
+              "arity": 2
+            },
+            "encapsulate": {
+              "type": "function",
+              "arity": 1
+            },
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 0
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "cipherText": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msg": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msgRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "ml_kem_512": {
+          "type": "object",
+          "members": {
+            "decapsulate": {
+              "type": "function",
+              "arity": 2
+            },
+            "encapsulate": {
+              "type": "function",
+              "arity": 1
+            },
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 0
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "cipherText": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msg": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msgRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "ml_kem_768": {
+          "type": "object",
+          "members": {
+            "decapsulate": {
+              "type": "function",
+              "arity": 2
+            },
+            "encapsulate": {
+              "type": "function",
+              "arity": 1
+            },
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 0
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "cipherText": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msg": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "msgRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "slh_dsa_sha2_128f": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "slh_dsa_sha2_192f": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "slh_dsa_sha2_256f": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "slh_dsa_shake_128f": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "slh_dsa_shake_192f": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
+        },
+        "slh_dsa_shake_256f": {
+          "type": "object",
+          "members": {
+            "getPublicKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "info": {
+              "type": "object",
+              "members": {
+                "type": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "internal": {
+              "type": "object",
+              "members": {
+                "getPublicKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "info": {
+                  "type": "object",
+                  "members": {
+                    "type": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "keygen": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "lengths": {
+                  "type": "object",
+                  "members": {
+                    "publicKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "secretKey": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "seed": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signRand": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "signature": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            },
+            "lengths": {
+              "type": "object",
+              "members": {
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "seed": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signRand": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "signature": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "prehash": {
+              "type": "function",
+              "arity": 1
+            },
+            "securityLevel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
+            }
+          }
         }
       }
     },

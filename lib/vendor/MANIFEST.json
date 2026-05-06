@@ -18,6 +18,35 @@
         "server": "sha256:5d539dfc9ef47121d4c09bd7256d76448a1f5ac47ee09ac44c78ff6a062af9ab"
       }
     },
+    "@noble/post-quantum": {
+      "version": "0.6.1",
+      "license": "MIT",
+      "author": "Paul Miller",
+      "source": "https://github.com/paulmillr/noble-post-quantum",
+      "_about": "FIPS 203 / 204 / 205 PQC algorithms in pure JS. First-class on both server-side and client-side — interoperable with Node's built-in WebCrypto ML-KEM (a ciphertext encapsulated with Node ML-KEM-1024 decapsulates correctly with b.pqcSoftware.ml_kem_1024 and vice versa). Operators wire it server-side via `b.pqcSoftware.{ml_kem_1024,ml_dsa_87,slh_dsa_shake_256f,...}` (security-first defaults are the highest cat-5 levels), or re-bundle for browser / mobile clients shipping b.middleware.apiEncrypt.client. Older Node versions without the experimental WebCrypto ML-KEM extension can use the vendored bundle as the primary PQC path.",
+      "exports": [
+        "ml_kem512",
+        "ml_kem768",
+        "ml_kem1024",
+        "ml_dsa44",
+        "ml_dsa65",
+        "ml_dsa87",
+        "slh_dsa_sha2_128f",
+        "slh_dsa_sha2_192f",
+        "slh_dsa_sha2_256f",
+        "slh_dsa_shake_128f",
+        "slh_dsa_shake_192f",
+        "slh_dsa_shake_256f"
+      ],
+      "files": {
+        "server": "lib/vendor/noble-post-quantum.cjs"
+      },
+      "bundler": "esbuild --format=cjs --minify --platform=node",
+      "bundledAt": "2026-05-06",
+      "hashes": {
+        "server": "sha256:f9190309daadca4c2e2cc2b76beaa6b96e463429cc3c390bd9f0ceaf7b588c68"
+      }
+    },
     "@simplewebauthn/server": {
       "version": "13.3.0",
       "license": "MIT",

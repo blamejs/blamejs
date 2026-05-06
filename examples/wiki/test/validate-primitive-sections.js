@@ -865,6 +865,8 @@ var UNDOCUMENTED_BACKLOG = {
   // === New primitives shipped without a wiki section yet — backlog. ===
   "openapi":               "shipped v0.7.110 — OpenAPI 3.1 schema-document builder; wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + comprehensive test suite cover usage)",
   "flag":                  "shipped v0.7.111 — OpenFeature feature-flag client; wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + comprehensive test suite cover usage)",
+  "asyncapi":              "shipped v0.7.112 — AsyncAPI 3.0 schema-document builder; wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + comprehensive test suite cover usage)",
+  "pqcSoftware":           "shipped v0.7.112 — pure-JS PQC primitive wrapper around vendored @noble/post-quantum; wiki section deferred — primitive is a thin getter-style accessor, README + JSDoc cover the full API",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one

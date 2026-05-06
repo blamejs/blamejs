@@ -1617,8 +1617,16 @@ function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/deprecate.js", "lib/openapi-paths-builder.js", "lib/openapi.js",
+        "lib/asyncapi.js", "lib/asyncapi-bindings.js", "lib/mail.js",
       ],
-      reason: "validateOpts.requireNonEmptyString-prelude scaffold — three primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError); consolidating would lose the per-module error code.",
+      reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError); consolidating would lose the per-module error code.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/asyncapi-traits.js", "lib/flag-evaluation-context.js", "lib/render.js",
+      ],
+      reason: "Object-property iteration with hasOwnProperty guard idiom — `for (var k in X) if (Object.prototype.hasOwnProperty.call(X, k)) ...` is the standard Object-pollution-defense walk. Three different domains (AsyncAPI trait merge, flag-evaluation context normalisation, render template-context walk); consolidating would couple unrelated primitives.",
     },
     {
       mode:  "family-subset",

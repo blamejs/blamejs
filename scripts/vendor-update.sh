@@ -29,7 +29,7 @@ DATE=$(date +%Y-%m-%d)
 
 # Packages we vendor — kept in sync with MANIFEST.json. Used by --check
 # and --diff-all to know which entries to walk.
-VENDORED_PACKAGES=("@noble/ciphers" "@simplewebauthn/server" "argon2" "peculiar-pki")
+VENDORED_PACKAGES=("@noble/ciphers" "@noble/post-quantum" "@simplewebauthn/server" "argon2" "peculiar-pki")
 
 get_vendored_ver() {
   node -e "var m=require('./$MANIFEST'); var p=m.packages['$1']; console.log(p?p.version:'?')"
@@ -127,6 +127,17 @@ case "$PKG" in
     npx esbuild _entry.mjs --bundle --format=cjs --minify --platform=node --outfile=lib/vendor/noble-ciphers.cjs
     rm _entry.mjs
     sed -i "1s|^|// XChaCha20-Poly1305 — vendored from @noble/ciphers v${INSTALLED_VER} by Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-ciphers\n// Bundled with esbuild. Exports: xchacha20poly1305\n|" lib/vendor/noble-ciphers.cjs
+    ;;
+
+  "@noble/post-quantum")
+    cat > _entry.mjs <<'ENTRY'
+export { ml_kem512, ml_kem768, ml_kem1024 } from "@noble/post-quantum/ml-kem.js";
+export { ml_dsa44, ml_dsa65, ml_dsa87 } from "@noble/post-quantum/ml-dsa.js";
+export { slh_dsa_sha2_128f, slh_dsa_sha2_192f, slh_dsa_sha2_256f, slh_dsa_shake_128f, slh_dsa_shake_192f, slh_dsa_shake_256f } from "@noble/post-quantum/slh-dsa.js";
+ENTRY
+    npx esbuild _entry.mjs --bundle --format=cjs --minify --platform=node --outfile=lib/vendor/noble-post-quantum.cjs
+    rm _entry.mjs
+    sed -i "1s|^|// @noble/post-quantum v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-post-quantum\n// Bundled with esbuild. Exports: ml_kem512 / ml_kem768 / ml_kem1024 (FIPS 203 KEM),\n//   ml_dsa44 / ml_dsa65 / ml_dsa87 (FIPS 204 lattice signatures),\n//   slh_dsa_sha2_*f / slh_dsa_shake_*f (FIPS 205 hash signatures).\n|" lib/vendor/noble-post-quantum.cjs
     ;;
 
   "@simplewebauthn/server")
