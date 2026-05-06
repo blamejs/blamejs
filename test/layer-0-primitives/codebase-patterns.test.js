@@ -1730,6 +1730,14 @@ function testNoDuplicateCodeBlocks() {
       reason: "Middleware factory boilerplate — opts validation + xff/trustProxy parse + helper wiring. Middleware factories share scaffolding by design; consolidating into a base factory would cost more readability than it saves.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/middleware/cookies.js", "lib/middleware/gpc.js",
+        "lib/middleware/headers.js",
+      ],
+      reason: "Threat-detection middleware family — each shares the same `_emitAudit(audit, action, outcome, metadata) { ... try { audit.safeEmit({...}); } catch (_e) { /* drop-silent */ } }` audit-emission shape. Per the validation-tier policy this is the hot-path observability sink shape; extracting would force a shared `audit-emit-drop-silent` primitive — the framework already has audit.safeEmit, and the middleware-local wrapper's value is keeping the drop-silent behavior visible at the call site. Future consolidation candidate.",
+    },
+    {
       files: ["lib/middleware/bot-guard.js", "lib/middleware/cors.js", "lib/middleware/rate-limit.js"],
       reason: "Same middleware-factory cluster as above with rate-limit substituted. Same justification.",
     },

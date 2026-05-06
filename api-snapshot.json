@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.66",
-  "createdAt": "2026-05-06T01:10:42.581Z",
+  "frameworkVersion": "0.7.67",
+  "createdAt": "2026-05-06T01:22:42.184Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19521,6 +19521,10 @@
           "arity": 1
         },
         "fetchMetadata": {
+          "type": "function",
+          "arity": 1
+        },
+        "gpc": {
           "type": "function",
           "arity": 1
         },
