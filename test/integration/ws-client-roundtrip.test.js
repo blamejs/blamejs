@@ -119,7 +119,7 @@ async function run() {
   var server = await _buildServer({});
   var port = server.address().port;
   var client = b.wsClient.connect("ws://127.0.0.1:" + port + "/echo", {
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var openSeen = false, msgSeen = null, closeSeen = null;
   client.on("open",    function () { openSeen = true; });
@@ -150,7 +150,7 @@ async function run() {
   var port2 = server2.address().port;
   var client2 = b.wsClient.connect("ws://127.0.0.1:" + port2 + "/", {
     subprotocols: ["proto-a", "proto-b"],
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   await _sleep(300);
   check("ws-roundtrip: subprotocol intersection chosen", client2.subprotocol === "proto-b");
@@ -164,7 +164,7 @@ async function run() {
   var client3 = b.wsClient.connect("ws://127.0.0.1:" + port3 + "/", {
     pingMs: 200,
     pongMs: 5000,
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   await _sleep(150);
   client3.ping(Buffer.from("ping-data"));
@@ -185,7 +185,7 @@ async function run() {
   var port4 = server4.address().port;
   var client4 = b.wsClient.connect("ws://127.0.0.1:" + port4 + "/", {
     permessageDeflate: true,
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var msg4 = null;
   client4.on("message", function (data) { msg4 = data; });

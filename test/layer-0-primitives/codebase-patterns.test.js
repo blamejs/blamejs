@@ -2549,6 +2549,44 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "Non-crypto byte equality is Buffer.compare(a, b) === 0. ssrf-guard / address-equality call sites migrated. New code must use Buffer.compare or timingSafeEqual; never hand-roll the loop.",
   },
+  {
+    id: "audit-action-with-hyphen",
+    primitive: "audit action `[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+`",
+    // Audit actions with a hyphen segment (e.g. "system.pubsub.publish-failed")
+    // fail the action regex enforced by audit.record(); safeEmit catches the
+    // throw and the event silently drops. The convention is dot-separated
+    // identifiers with underscores, not hyphens. safeEmit normalizes today as
+    // a safety net; new sites should follow the convention directly.
+    regex: /\baction\s*:\s*["'][a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+-/,
+    allowlist: [
+      // The detector itself defines the canonical pattern for documentation;
+      // no production code needs to ship a hyphenated action.
+    ],
+    reason: "Audit action segments use underscores, not hyphens. The action regex in audit.record() rejects hyphens; safeEmit normalizes hyphens to underscores as a safety net but operators reading audit rows expect canonical underscore-form names. The detector requires at least one `.<segment>` before the hyphen to avoid false-positives on domain-level enum keys (e.g. sanitize-action: 'audit-only').",
+  },
+  {
+    id: "non-canonical-audit-outcome",
+    primitive: "outcome ∈ {success, failure, denied}",
+    // Non-canonical outcomes (`ok` / `fail` / `warn` / `warning` / `duplicate` /
+    // `skipped` / `error`) get normalized by safeEmit but reach record() as
+    // strings the strict validator rejects. Use the canonical triple at the
+    // call site so reviewers reading the code see the audit outcome directly.
+    regex: /\boutcome\s*:\s*["'](?:ok|okay|fail|failed|err|error|warn|warning|duplicate|skip|skipped|pass|passed|succeeded|refused|deny)["']/,
+    allowlist: [
+      // safeEmit's normalizer table is the canonical source of the mapping.
+      "lib/audit.js",
+      // observability.js + permissions.js use observability-event outcomes
+      // (deny / ok / fail) for metrics labels — separate vocabulary from the
+      // audit-chain outcome triple. Detector cannot distinguish call shapes.
+      "lib/observability.js",
+      "lib/permissions.js",
+      // dsr.js sourceResult.outcome is a per-source per-ticket outcome with
+      // its own vocabulary (queried / erased / marked-restricted / failed /
+      // skipped) — distinct from the audit-chain outcome triple.
+      "lib/dsr.js",
+    ],
+    reason: "Audit outcomes are the literal strings 'success' / 'failure' / 'denied' at call sites. safeEmit normalizes the common typos as a safety net but the canonical form belongs in code so reviewers reading a primitive see exactly what audit row will land on the chain.",
+  },
 ];
 
 function testKnownAntipatterns() {

@@ -1548,20 +1548,22 @@ async function testAuthJwtReplayDefense() {
   check("second verify refused as replay",
         threwReplay && threwReplay.code === "auth-jwt/replay");
 
-  // Token without jti + replayStore → throws replay-no-jti at config-mistake time
-  var tokenNoJti = await j.sign({ sub: "u" }, {
+  // sign() with expiresInSec auto-mints a jti (16 random bytes b64url)
+  // when the operator didn't supply one — closes the silent-downgrade
+  // hole where a token configured for replay-protection on verify
+  // would have shipped without a jti. The replay path then works.
+  var tokenAutoJti = await j.sign({ sub: "u" }, {
     privateKey: k.privateKey, algorithm: "ML-DSA-87",
     expiresInSec: 60,
   });
-  var threwNoJti = null;
-  try {
-    await j.verify(tokenNoJti, {
-      publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
-      replayStore: noJtiStore,
-    });
-  } catch (e) { threwNoJti = e; }
-  check("replayStore + no jti → auth-jwt/replay-no-jti",
-        threwNoJti && threwNoJti.code === "auth-jwt/replay-no-jti");
+  var autoJtiClaims = JSON.parse(Buffer.from(tokenAutoJti.split(".")[1], "base64url").toString("utf8"));
+  check("expiresInSec auto-mints jti",         typeof autoJtiClaims.jti === "string" && autoJtiClaims.jti.length >= 16);
+  var autoJtiVerified = await j.verify(tokenAutoJti, {
+    publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+    replayStore: noJtiStore,
+  });
+  check("replayStore + auto-mint jti verifies",
+        autoJtiVerified && autoJtiVerified.sub === "u");
 
   // checkAndInsert throwing surfaces as replay-store-failed
   var brokenStore = {
@@ -9538,7 +9540,7 @@ function testMtlsCaSealedRequiredRefusesPlaintextFile() {
 async function testMtlsCaInitCaWithDefaultEngine() {
   var fx = _mtlsCaFixture();
   try {
-    var ca = b.mtlsCa.create({ dataDir: fx.dir, generation: 1 });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, generation: 1, caKeySealedMode: "disabled" });
     var fresh = await ca.initCA();
     check("default engine: initCA returns caCertPem",
           typeof fresh.caCertPem === "string" && /BEGIN CERTIFICATE/.test(fresh.caCertPem));
@@ -9570,7 +9572,7 @@ async function testMtlsCaInitCaWithDefaultEngine() {
 async function testMtlsCaGenerateClientCertWithDefaultEngine() {
   var fx = _mtlsCaFixture();
   try {
-    var ca = b.mtlsCa.create({ dataDir: fx.dir });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "disabled" });
     var leaf = await ca.generateClientCert({ cn: "alice", validityDays: 90 });
     check("default engine: leaf cert PEM emitted",
           typeof leaf.cert === "string" && /BEGIN CERTIFICATE/.test(leaf.cert));
@@ -9595,7 +9597,7 @@ async function testMtlsCaGenerateClientCertWithDefaultEngine() {
 async function testMtlsCaGenerateClientP12WithDefaultEngine() {
   var fx = _mtlsCaFixture();
   try {
-    var ca = b.mtlsCa.create({ dataDir: fx.dir });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "disabled" });
     var bundle = await ca.generateClientP12({ cn: "bob", password: "p12-passphrase-x9k2" });
     check("default engine: p12 is a Buffer",                Buffer.isBuffer(bundle.p12));
     check("default engine: p12 has non-trivial size",       bundle.p12.length > 1000);
@@ -9621,7 +9623,7 @@ async function testMtlsCaInitCaWithEngineGeneratesAndCommits() {
         };
       },
     };
-    var ca = b.mtlsCa.create({ dataDir: fx.dir, generation: 2, engine: engine });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, generation: 2, engine: engine, caKeySealedMode: "disabled" });
     var first = await ca.initCA();
     check("first initCA called engine.generateCa",      generated === true);
     check("first initCA returned engine output",        /ENGINE-CA-CERT-gen=2/.test(first.caCertPem));
@@ -9642,6 +9644,7 @@ async function testMtlsCaInitCaRejectsBadEngineOutput() {
     var ca = b.mtlsCa.create({
       dataDir: fx.dir,
       engine: { generateCa: async function () { return { caCertPem: "ok" /* missing key */ }; } },
+      caKeySealedMode: "disabled",
     });
     var threw = null;
     try { await ca.initCA(); } catch (e) { threw = e; }
@@ -9671,7 +9674,7 @@ async function testMtlsCaGenerateClientCertDelegates() {
         };
       },
     };
-    var ca = b.mtlsCa.create({ dataDir: fx.dir, engine: engine });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, engine: engine, caKeySealedMode: "disabled" });
     var client = await ca.generateClientCert({ cn: "alice", validityDays: 90 });
     check("signClientCert called with cn forwarded",   seenArgs && seenArgs.cn === "alice");
     check("signClientCert received caCertPem",          /ENGINE-CA/.test(seenArgs.caCertPem));
@@ -9683,7 +9686,7 @@ async function testMtlsCaGenerateClientCertDelegates() {
 async function testMtlsCaGenerateClientP12Validation() {
   var fx = _mtlsCaFixture();
   try {
-    var ca = b.mtlsCa.create({ dataDir: fx.dir, engine: { generateCa: async function () { return { caCertPem: "x", caKeyPem: "y" }; } } });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, engine: { generateCa: async function () { return { caCertPem: "x", caKeyPem: "y" }; } }, caKeySealedMode: "disabled" });
     var threw = null;
     try { await ca.generateClientP12({ cn: "alice" }); } catch (e) { threw = e; }
     check("generateClientP12 without password rejected",

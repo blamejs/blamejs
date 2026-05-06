@@ -113,6 +113,7 @@ async function run() {
   var client = b.wsClient.connect("ws://127.0.0.1:" + port + "/", {
     reconnect: false,
     audit: false,
+    allowInternal: true,
   });
   var openSeen = false, msgSeen = null, errSeen = null, closeSeen = null;
   client.on("open", function () { openSeen = true; });
@@ -157,7 +158,7 @@ async function run() {
   // ---- send before open ----
   var server2 = await _makeServer({});
   var port2 = server2.address().port;
-  var c2 = b.wsClient.connect("ws://127.0.0.1:" + port2, { reconnect: false, audit: false });
+  var c2 = b.wsClient.connect("ws://127.0.0.1:" + port2, { reconnect: false, audit: false, allowInternal: true });
   rejects("send: not open yet",
     function () { c2.send("data"); }, /not open/);
   c2.close();
@@ -168,7 +169,7 @@ async function run() {
   var server3 = await _makeServer({ tamperKey: true });
   var port3 = server3.address().port;
   var c3 = b.wsClient.connect("ws://127.0.0.1:" + port3, {
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var c3Err = null;
   c3.on("error", function (e) { c3Err = e; });
@@ -180,7 +181,7 @@ async function run() {
   var server4 = await _makeServer({ rejectStatus: 403 });
   var port4 = server4.address().port;
   var c4 = b.wsClient.connect("ws://127.0.0.1:" + port4, {
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var c4Err = null;
   c4.on("error", function (e) { c4Err = e; });
@@ -193,7 +194,7 @@ async function run() {
   var port5 = server5.address().port;
   var c5 = b.wsClient.connect("ws://127.0.0.1:" + port5, {
     subprotocols: ["json-stream-v1", "msgpack-stream"],
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var c5Open = false;
   c5.on("open", function () { c5Open = true; });
@@ -209,7 +210,7 @@ async function run() {
   var port6 = server6.address().port;
   var c6 = b.wsClient.connect("ws://127.0.0.1:" + port6, {
     subprotocols: ["json-stream-v1"],
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var c6Err = null;
   c6.on("error", function (e) { c6Err = e; });
@@ -224,7 +225,7 @@ async function run() {
   var port7a = server7a.address().port;
   var c7a = b.wsClient.connect("ws://127.0.0.1:" + port7a, {
     headers: { "X-Evil": "value\r\nX-Other: injected" },
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var c7aErr = null;
   c7a.on("error", function (e) { c7aErr = e; });
@@ -237,7 +238,7 @@ async function run() {
   var port7 = server7.address().port;
   var c7 = b.wsClient.connect("ws://127.0.0.1:" + port7, {
     maxMessageBytes: 100,
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   await _sleep(300);
   rejects("send: payload too big",
@@ -250,7 +251,7 @@ async function run() {
   var server8 = await _makeServer({});
   var port8 = server8.address().port;
   var c8 = b.wsClient.connect("ws://127.0.0.1:" + port8 + "/foo", {
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   await _sleep(150);
   check("getter: url",                            c8.url.indexOf("/foo") !== -1);
@@ -266,7 +267,7 @@ async function run() {
   var stubPort = stubServer.address().port;
   var c9 = b.wsClient.connect("ws://127.0.0.1:" + stubPort, {
     handshakeTimeoutMs: 200,
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
   });
   var c9Err = null;
   c9.on("error", function (e) { c9Err = e; });
@@ -280,6 +281,7 @@ async function run() {
     reconnect: { maxAttempts: 1, baseMs: 50, maxMs: 100 },
     handshakeTimeoutMs: 200,
     audit: false,
+    allowInternal: true,
   });
   var c10Err = null, c10Reconnecting = false;
   c10.on("error", function (e) { c10Err = e; });
@@ -295,6 +297,7 @@ async function run() {
   var c11 = b.wsClient.connect("ws://127.0.0.1:" + port4xx, {
     reconnect: { maxAttempts: 5, baseMs: 50, maxMs: 100 },
     audit: false,
+    allowInternal: true,
   });
   var c11ErrCount = 0, c11Reconnecting = 0;
   c11.on("error", function () { c11ErrCount += 1; });
@@ -307,7 +310,7 @@ async function run() {
   // ---- close() reason length cap (>123 bytes truncated) ----
   var serverCl = await _makeServer({});
   var portCl = serverCl.address().port;
-  var cCl = b.wsClient.connect("ws://127.0.0.1:" + portCl, { reconnect: false, audit: false });
+  var cCl = b.wsClient.connect("ws://127.0.0.1:" + portCl, { reconnect: false, audit: false, allowInternal: true });
   await _sleep(200);
   // Should not throw — close() truncates internally.
   cCl.close(1000, "x".repeat(500));
@@ -328,7 +331,7 @@ async function run() {
   // does not refuse a valid string.
   var cGuid = b.wsClient.connect("ws://127.0.0.1:1", {
     handshakeGuid: "MY-CUSTOM-GUID-12345678",
-    reconnect: false, audit: false,
+    reconnect: false, audit: false, allowInternal: true,
     handshakeTimeoutMs: 100,
   });
   cGuid.on("error", function () {});

@@ -581,7 +581,11 @@ async function testSetObjectRetention() {
     check("setObjectRetention applied",  rv.applied === true);
     check("setObjectRetention echoes mode + retainUntil",
           rv.mode === "COMPLIANCE" && rv.retainUntil === until);
-    var req = fake.requests[0];
+    // setObjectRetention now does a GET-before-PUT so it can refuse
+    // client-side when an existing COMPLIANCE retention would be
+    // shortened or bypassed. The PUT request is the LAST one in the
+    // requests array.
+    var req = fake.requests[fake.requests.length - 1];
     check("URL has ?retention query (bare subresource, no trailing =)",
           /\?retention$|\?retention&/.test(req.url));
     check("URL retention query has no '=' suffix (S3 strict-mode bug fix)",
@@ -609,7 +613,8 @@ async function testSetObjectRetentionBypassGovernance() {
       retainUntil:        until,
       bypassGovernance:   true,
     });
-    var req = fake.requests[0];
+    // PUT is the last request after the GET-before-PUT existing-retention check.
+    var req = fake.requests[fake.requests.length - 1];
     check("bypassGovernance:true sets x-amz-bypass-governance-retention header",
           req.headers["x-amz-bypass-governance-retention"] === "true");
   } finally {

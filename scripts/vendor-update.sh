@@ -256,6 +256,16 @@ Object.values(p.files || {}).forEach(function(f) {
 "
 
 echo ""
+echo "=== Refreshing MANIFEST.json sha256 hashes ==="
+# Hashes track the on-disk vendored bundle. Without this final refresh
+# the bundledAt and version fields in MANIFEST.json drift ahead of
+# hashes.server, and the vendor-manifest smoke gate fails on the next
+# test run. Auto-running the refresh keeps the supply-chain integrity
+# story mechanically authoritative rather than relying on operator
+# memory to run the second step.
+node scripts/refresh-vendor-manifest.js || { echo "Manifest hash refresh failed."; exit 1; }
+
+echo ""
 echo "=== Done: $PKG v$INSTALLED_VER vendored ==="
 echo ""
 echo "Next steps:"

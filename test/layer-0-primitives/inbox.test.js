@@ -29,8 +29,16 @@ function _makeFakeExternalDb() {
         if (existing.length === 0) {
           rows.push({ message_id: mid, source: src, received_at: new Date().toISOString(), processed_at: null, metadata_json: args[2] });
           lastChanges = 1;
+          // RETURNING 1 — mirror the SQLite 3.35+ semantics. Fresh
+          // inserts get one row back; duplicates get zero.
+          if (sqlLower.indexOf("returning") !== -1) {
+            return { rows: [{ "1": 1 }] };
+          }
         } else {
           lastChanges = 0;
+          if (sqlLower.indexOf("returning") !== -1) {
+            return { rows: [] };
+          }
         }
         return { rows: [] };
       }
