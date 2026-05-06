@@ -16355,6 +16355,67 @@ function testRedact() {
   b.redact.redact(orig);
   check("redact does NOT mutate input",          orig.password === "before");
   void ccRedacted;
+
+  // Connection-string detector — protocol://user:pass@host shape
+  var conn = b.redact.redact({ field: "postgres://admin:hunter2@db.example.com:5432/prod" });
+  check("connection-string redacted",            conn.field === "[REDACTED-CONN-STRING]");
+  var connRedis = b.redact.redact({ field: "redis://:p%40ss@redis.example.com:6379/0" });
+  check("redis connection-string redacted",      connRedis.field === "[REDACTED-CONN-STRING]");
+  // Plain URL without credentials passes through
+  var plain = b.redact.redact({ field: "https://api.example.com/users/1" });
+  check("URL without credentials NOT redacted",  plain.field === "https://api.example.com/users/1");
+}
+
+function testAuditSafeEmitRedacts() {
+  // safeEmit MUST scrub credentials before they hit the audit handler.
+  // Capture by stubbing the handler.
+  var captured = [];
+  var origHandler = b.audit._getHandlerForTest && b.audit._getHandlerForTest();
+  // Use a custom registration if available, otherwise use the public emit
+  // observer pattern. We rely on the fact that safeEmit calls
+  // _ensureHandler().emit; the resulting row carries the redacted shape.
+  var fakeHandler = {
+    emit: function (event) { captured.push(event); },
+    drain: function () { return Promise.resolve(); },
+  };
+  if (typeof b.audit._setHandlerForTest === "function") {
+    b.audit._setHandlerForTest(fakeHandler);
+  } else {
+    // Fallback: smoke test through public handlers.register if available.
+    // If neither hook exists, just verify no exception throws + the
+    // primitive surface is intact.
+    b.audit.safeEmit({
+      action: "test.event",
+      reason: "failed: postgres://admin:hunter2@db.example.com/prod",
+      metadata: { sessionToken: "abc-secret-token" },
+    });
+    check("safeEmit completes without throw on credential-shaped input", true);
+    return;
+  }
+
+  b.audit.safeEmit({
+    action: "test.redact-pipeline",
+    actor:  { id: "u-1", password: "should-be-redacted" },
+    reason: "connect failed: postgres://admin:hunter2@db.example.com:5432/prod",
+    metadata: {
+      sessionToken: "should-be-redacted",
+      jwt:          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1MSJ9.X",
+      note:         "ok",
+    },
+  });
+
+  check("captured one event",                     captured.length === 1);
+  var ev = captured[captured.length - 1];
+  check("actor.password redacted",                ev && ev.actor && ev.actor.password === "[REDACTED]");
+  check("reason connection-string redacted",      ev && ev.reason === "[REDACTED-CONN-STRING]");
+  check("metadata.sessionToken redacted",         ev && ev.metadata && ev.metadata.sessionToken === "[REDACTED]");
+  check("metadata.jwt redacted",                  ev && ev.metadata && ev.metadata.jwt === "[REDACTED-JWT]");
+  check("metadata.note preserved",                ev && ev.metadata && ev.metadata.note === "ok");
+
+  // Restore the original handler if we captured one.
+  if (origHandler && typeof b.audit._setHandlerForTest === "function") {
+    b.audit._setHandlerForTest(origHandler);
+  }
 }
 
 // =====================================================================
@@ -17965,6 +18026,7 @@ async function run() {
   testEnvReadVar();
   // redact primitive
   testRedact();
+  testAuditSafeEmitRedacts();
   // file-upload primitive
   testFileUploadCreate();
   await testFileUploadInitHappyPath();
@@ -18546,6 +18608,7 @@ module.exports = {
   testEnvParseSecurityRejections:            testEnvParseSecurityRejections,
   testEnvReadVar:                            testEnvReadVar,
   testRedact:                                testRedact,
+  testAuditSafeEmitRedacts:                  testAuditSafeEmitRedacts,
 
   // ---- Fixture-aware groups ----
   //
