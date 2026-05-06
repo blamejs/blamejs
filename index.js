@@ -189,6 +189,7 @@ var restore = require("./lib/restore");
 var deprecate = require("./lib/deprecate");
 var apiSnapshot = require("./lib/api-snapshot");
 var openapi = require("./lib/openapi");
+var flag = require("./lib/flag");
 var auditTools = require("./lib/audit-tools");
 var events = require("./lib/events");
 var safeSchema = require("./lib/safe-schema");
@@ -340,6 +341,7 @@ module.exports = {
   deprecate:        deprecate,
   apiSnapshot:      apiSnapshot,
   openapi:          openapi,
+  flag:             flag,
   safeJson:         safeJson,
   safeSchema:       safeSchema,
   pagination:       pagination,

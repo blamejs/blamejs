@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.110",
-  "createdAt": "2026-05-06T14:20:24.127Z",
+  "frameworkVersion": "0.7.111",
+  "createdAt": "2026-05-06T14:51:56.429Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -4814,6 +4814,90 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "flag": {
+      "type": "object",
+      "members": {
+        "FlagError": {
+          "type": "function",
+          "arity": 4
+        },
+        "cache": {
+          "type": "function",
+          "arity": 2
+        },
+        "context": {
+          "type": "object",
+          "members": {
+            "FlagError": {
+              "type": "function",
+              "arity": 4
+            },
+            "bucketOf": {
+              "type": "function",
+              "arity": 2
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "fromRequest": {
+              "type": "function",
+              "arity": 2
+            },
+            "merge": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "providers": {
+          "type": "object",
+          "members": {
+            "FlagError": {
+              "type": "function",
+              "arity": 4
+            },
+            "environmentVariable": {
+              "type": "function",
+              "arity": 1
+            },
+            "localFile": {
+              "type": "function",
+              "arity": 1
+            },
+            "memory": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "targeting": {
+          "type": "object",
+          "members": {
+            "FlagError": {
+              "type": "function",
+              "arity": 4
+            },
+            "VALID_OPS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "evaluateRules": {
+              "type": "function",
+              "arity": 3
+            },
+            "validateRules": {
+              "type": "function",
+              "arity": 2
+            }
+          }
         }
       }
     },
@@ -22300,6 +22384,10 @@
           "arity": 1
         },
         "fetchMetadata": {
+          "type": "function",
+          "arity": 1
+        },
+        "flagContext": {
           "type": "function",
           "arity": 1
         },
