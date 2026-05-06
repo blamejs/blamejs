@@ -142,6 +142,7 @@ export default [
       "**/data/**",
       "**/data-e2e/**",
       "**/.git/**",
+      ".test-output/**",
     ],
   },
   {

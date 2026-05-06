@@ -1515,6 +1515,102 @@ async function testAuthJwtKidPropagation() {
   check("kid embedded in header",                    decoded.header.kid === "key-2026-04-26");
 }
 
+async function testAuthJwtReplayDefense() {
+  // RFC 7519 §4.1.7 jti claim — when paired with a replayStore, the
+  // verifier refuses to accept the same token twice. Defends against
+  // captured-bearer-token replay (CVE class — token-reuse under TLS-
+  // terminated proxies, log scraping, browser-history exposure,
+  // leaked Authorization headers in shared dev tools).
+  var j = b.auth.jwt;
+  var k = _jwtMlDsaKeypair();
+
+  // First verify — passes; checkAndInsert records the jti.
+  var store = b.nonceStore.create({ backend: "memory" });
+  var noJtiStore = b.nonceStore.create({ backend: "memory" });
+  var token = await j.sign({ sub: "u", jti: "unique-token-1" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    expiresInSec: 60,
+  });
+  var ok = await j.verify(token, {
+    publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+    replayStore: store,
+  });
+  check("first verify passes",                       ok.sub === "u");
+
+  // Second verify — refused with auth-jwt/replay.
+  var threwReplay = null;
+  try {
+    await j.verify(token, {
+      publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+      replayStore: store,
+    });
+  } catch (e) { threwReplay = e; }
+  check("second verify refused as replay",
+        threwReplay && threwReplay.code === "auth-jwt/replay");
+
+  // Token without jti + replayStore → throws replay-no-jti at config-mistake time
+  var tokenNoJti = await j.sign({ sub: "u" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    expiresInSec: 60,
+  });
+  var threwNoJti = null;
+  try {
+    await j.verify(tokenNoJti, {
+      publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+      replayStore: noJtiStore,
+    });
+  } catch (e) { threwNoJti = e; }
+  check("replayStore + no jti → auth-jwt/replay-no-jti",
+        threwNoJti && threwNoJti.code === "auth-jwt/replay-no-jti");
+
+  // checkAndInsert throwing surfaces as replay-store-failed
+  var brokenStore = {
+    checkAndInsert: async function () { throw new Error("redis is down"); },
+  };
+  var token2 = await j.sign({ sub: "u", jti: "unique-token-2" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    expiresInSec: 60,
+  });
+  var threwBroken = null;
+  try {
+    await j.verify(token2, {
+      publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+      replayStore: brokenStore,
+    });
+  } catch (e) { threwBroken = e; }
+  check("replayStore.checkAndInsert throwing → auth-jwt/replay-store-failed",
+        threwBroken && threwBroken.code === "auth-jwt/replay-store-failed");
+
+  // Bad replayStore shape → bad-replay-store
+  var threwShape = null;
+  try {
+    await j.verify(token2, {
+      publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+      replayStore: { hasSeen: function () {} },
+    });
+  } catch (e) { threwShape = e; }
+  check("replayStore without checkAndInsert → auth-jwt/bad-replay-store",
+        threwShape && threwShape.code === "auth-jwt/bad-replay-store");
+
+  // Without replayStore, jti is preserved but no enforcement
+  var tokenJ = await j.sign({ sub: "u", jti: "unique-token-3" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+    expiresInSec: 60,
+  });
+  var ok1 = await j.verify(tokenJ, {
+    publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+  });
+  var ok2 = await j.verify(tokenJ, {
+    publicKey: k.publicKey, algorithms: ["ML-DSA-87"],
+  });
+  check("without replayStore, same token verifies twice (replay defense is opt-in)",
+        ok1.sub === "u" && ok2.sub === "u");
+
+  // Cleanup — close the in-memory backends so the sweep timers stop
+  store.close();
+  noJtiStore.close();
+}
+
 async function testAuthJwtMissingKey() {
   var j = b.auth.jwt;
   var k = _jwtMlDsaKeypair();
@@ -17323,6 +17419,7 @@ async function run() {
   await testAuthJwtMalformedRegisteredClaims();
   await testAuthJwtCritHeaderRejected();
   await testAuthJwtKidPropagation();
+  await testAuthJwtReplayDefense();
   await testAuthJwtMissingKey();
   // handlers primitive
   await testHandlerEmitAndDrain();
@@ -17566,6 +17663,7 @@ module.exports = {
   testAuthJwtMalformedRegisteredClaims:      testAuthJwtMalformedRegisteredClaims,
   testAuthJwtCritHeaderRejected:             testAuthJwtCritHeaderRejected,
   testAuthJwtKidPropagation:                 testAuthJwtKidPropagation,
+  testAuthJwtReplayDefense:                  testAuthJwtReplayDefense,
   testAuthJwtMissingKey:                     testAuthJwtMissingKey,
   testTemplateSurface:                       testTemplateSurface,
   testTemplateEscapeHtml:                    testTemplateEscapeHtml,
