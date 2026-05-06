@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.65",
-  "createdAt": "2026-05-06T01:00:55.205Z",
+  "frameworkVersion": "0.7.66",
+  "createdAt": "2026-05-06T01:10:42.581Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19390,6 +19390,19 @@
               "arity": 1
             },
             "smtp": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "unsubscribe": {
+          "type": "object",
+          "members": {
+            "buildHeaders": {
+              "type": "function",
+              "arity": 1
+            },
+            "handler": {
               "type": "function",
               "arity": 1
             }
