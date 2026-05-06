@@ -213,6 +213,7 @@ var dualControl = require("./lib/dual-control");
 var retention = require("./lib/retention");
 var network = require("./lib/network");
 var cloudEvents = require("./lib/cloud-events");
+var outbox = require("./lib/outbox");
 
 module.exports = {
   crypto:           crypto,
@@ -360,6 +361,7 @@ module.exports = {
   retention:        retention,
   network:          network,
   cloudEvents:      cloudEvents,
+  outbox:           outbox,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

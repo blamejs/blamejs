@@ -1641,8 +1641,31 @@ function testNoDuplicateCodeBlocks() {
         "lib/middleware/web-app-manifest.js",
         "lib/middleware/security-txt.js",
         "lib/middleware/tus-upload.js",
+        "lib/outbox.js",
       ],
-      reason: "validateOpts factory prelude — externalDb-migrate / dbRoleFor / web-app-manifest / security-txt / tus-upload all run the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they're all factory primitives with consistent operator-typo handling. Five different domains, five different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
+      reason: "validateOpts factory prelude — externalDb-migrate / dbRoleFor / web-app-manifest / security-txt / tus-upload / outbox all run the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they're all factory primitives with consistent operator-typo handling. Six different domains, six different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/break-glass.js", "lib/outbox.js", "lib/queue-local.js",
+      ],
+      reason: "Backoff curve / repeating-tick worker scaffolding — break-glass / outbox / queue-local each spin a `safeAsync.repeating` worker that polls a backing store, claims rows under FOR UPDATE SKIP LOCKED, processes, and advances next_attempt_at via a `min(initial * factor^N, max)` exponential cap. Three independent domains with different schemas + different retry semantics; the 50-token shingle is the worker scaffold, not the domain logic.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/middleware/db-role-for.js", "lib/middleware/tus-upload.js",
+        "lib/outbox.js",
+      ],
+      reason: "Audit + observability emit prelude — db-role-for / tus-upload / outbox all wrap their `audit.safeEmit` / `observability.safeEvent` calls in a single try/catch+swallow because both are best-effort observability sinks. Three different action vocabularies; consolidating would lose the per-primitive metric name.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/middleware/dpop.js", "lib/outbox.js", "lib/static.js",
+      ],
+      reason: "Try/catch + drop-silent observability emit — dpop / outbox / static all wrap `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). Three different domains; the 50-token shingle is the swallow shape, not the domain logic.",
     },
     {
       files: ["lib/auth/dpop.js", "lib/break-glass.js", "lib/middleware/security-txt.js"],

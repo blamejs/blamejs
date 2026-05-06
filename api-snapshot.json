@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.89",
-  "createdAt": "2026-05-06T07:12:42.545Z",
+  "frameworkVersion": "0.7.90",
+  "createdAt": "2026-05-06T07:34:20.445Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20623,6 +20623,19 @@
       "type": "object",
       "members": {
         "OtelExportError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "outbox": {
+      "type": "object",
+      "members": {
+        "OutboxError": {
           "type": "function",
           "arity": 4
         },

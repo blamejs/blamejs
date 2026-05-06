@@ -924,6 +924,7 @@ var UNDOCUMENTED_BACKLOG = {
   "protocolDispatcher": "internal — used by primitives that dispatch on envelope-magic + algorithm IDs",
   "ntpCheck":           "covered by network-config.js page (NTP / NTS clock-drift check)",
   "metrics":            "covered by observability.js page",
+  "outbox":             "transactional-outbox primitive — operator-facing surface documented in CHANGELOG v0.7.90; backfill wiki section under reliability.js or queue-cache.js when an operator demonstrates the multi-vendor wiring pattern is stable",
 };
 
 function _enumerateBxPrimitives(b, pages) {
