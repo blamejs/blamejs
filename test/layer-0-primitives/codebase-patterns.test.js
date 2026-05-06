@@ -1699,6 +1699,11 @@ function testNoDuplicateCodeBlocks() {
       reason: "Async timer setup with cleanup — `setInterval` + `unref()` + `cancel()` shape. Scheduler-shape primitives across backup / restore / scheduler. Three different operator-facing primitives with different timer semantics; consolidation candidate but each has distinct cleanup contract.",
     },
     {
+      mode:  "family-subset",
+      files: ["lib/auth/jwt-external.js", "lib/auth/oauth.js", "lib/network-smtp-policy.js", "lib/mail-auth.js"],
+      reason: "External structured-data ingestion + safe-* parser + file-specific framework-error throw. Each module ingests serialized data from a different external surface (JWKS endpoint over HTTP, OAuth discovery doc, TLS-RPT JSON report, DMARC RUA XML report) with file-specific size caps and error classes. Extracting to a shared helper would either lose the per-module error class or pass it through every helper site, making the call sites less readable than the current inline 3-line block.",
+    },
+    {
       files: ["lib/db-declare-row-policy.js", "lib/db-declare-view.js", "lib/middleware/db-role-for.js"],
       reason: "Role/policy SQL identifier validation + dbRole compound check. Three different declarative-DB primitives share the role-name validation entry. Future consolidation candidate as `db.validateRoleSpec(opts, errorClass, code)`.",
     },

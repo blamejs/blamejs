@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.73",
-  "createdAt": "2026-05-06T03:20:51.949Z",
+  "frameworkVersion": "0.7.74",
+  "createdAt": "2026-05-06T03:46:44.354Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19420,9 +19420,22 @@
         "arc": {
           "type": "object",
           "members": {
+            "evaluate": {
+              "type": "function",
+              "arity": 2
+            },
             "verify": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "authResults": {
+          "type": "object",
+          "members": {
+            "emit": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -19457,6 +19470,10 @@
             "evaluate": {
               "type": "function",
               "arity": 1
+            },
+            "parseAggregateReport": {
+              "type": "function",
+              "arity": 2
             },
             "parseRecord": {
               "type": "function",
@@ -20082,6 +20099,10 @@
                       "type": "function",
                       "arity": 2
                     },
+                    "parseReport": {
+                      "type": "function",
+                      "arity": 2
+                    },
                     "recordShape": {
                       "type": "function",
                       "arity": 1
@@ -20098,6 +20119,10 @@
               "type": "object",
               "members": {
                 "fetchPolicy": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "parseReport": {
                   "type": "function",
                   "arity": 2
                 },
