@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.84",
-  "createdAt": "2026-05-06T05:58:53.466Z",
+  "frameworkVersion": "0.7.85",
+  "createdAt": "2026-05-06T06:09:53.194Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -940,6 +940,39 @@
               "arity": 1
             },
             "verify": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "statusList": {
+          "type": "object",
+          "members": {
+            "STATUS_APPLICATION_SPECIFIC": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "STATUS_INVALID": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "STATUS_SUSPENDED": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "STATUS_VALID": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "StatusListError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "fromJwt": {
               "type": "function",
               "arity": 2
             }
