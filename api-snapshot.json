@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.95",
-  "createdAt": "2026-05-06T08:20:47.973Z",
+  "frameworkVersion": "0.7.96",
+  "createdAt": "2026-05-06T08:30:00.009Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -21381,6 +21381,10 @@
           "arity": 1
         },
         "tap": {
+          "type": "function",
+          "arity": 3
+        },
+        "timed": {
           "type": "function",
           "arity": 3
         }
