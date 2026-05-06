@@ -1742,6 +1742,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/middleware/dpop.js", "lib/outbox.js", "lib/static.js",
         "lib/compliance-sanctions-fetcher.js", "lib/dsr.js",
         "lib/auth/sd-jwt-vc-holder.js", "lib/auth/sd-jwt-vc-issuer.js",
+        "lib/middleware/daily-byte-quota.js",
       ],
       reason: "Try/catch + drop-silent observability emit — every primitive wraps `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
     },

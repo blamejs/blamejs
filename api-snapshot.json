@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.5",
-  "createdAt": "2026-05-06T22:08:38.963Z",
+  "frameworkVersion": "0.8.6",
+  "createdAt": "2026-05-06T22:38:03.525Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -102,6 +102,10 @@
           "valueType": "number"
         },
         "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "pidLock": {
           "type": "function",
           "arity": 1
         },
@@ -22533,6 +22537,10 @@
           "arity": 1
         },
         "csrfProtect": {
+          "type": "function",
+          "arity": 1
+        },
+        "dailyByteQuota": {
           "type": "function",
           "arity": 1
         },
