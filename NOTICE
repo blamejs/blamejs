@@ -22,7 +22,23 @@ Source:      https://github.com/paulmillr/noble-ciphers
 License:     MIT
 Copyright:   Copyright (c) 2023 Paul Miller (https://paulmillr.com)
 Used for:    XChaCha20-Poly1305 authenticated encryption (lib/crypto.js,
-             lib/vault-wrap.js, via lib/vendor/noble-ciphers.cjs)
+             lib/vault-wrap.js, via lib/vendor/noble-ciphers.cjs).
+             Thank you to Paul Miller for the audited noble-ciphers suite.
+--------------------------------------------------------------------------------
+Component:   @noble/post-quantum
+Version:     0.6.1
+Source:      https://github.com/paulmillr/noble-post-quantum
+License:     MIT
+Copyright:   Copyright (c) 2024 Paul Miller (https://paulmillr.com)
+Used for:    FIPS 203 ML-KEM (ml_kem_512 / ml_kem_768 / ml_kem_1024),
+             FIPS 204 ML-DSA (ml_dsa_44 / ml_dsa_65 / ml_dsa_87),
+             FIPS 205 SLH-DSA (slh_dsa_sha2_*f / slh_dsa_shake_*f),
+             via lib/vendor/noble-post-quantum.cjs and the b.pqcSoftware
+             framework wrapper (lib/pqc-software.js). Server-side and
+             client-side; ciphertexts FIPS 203 conformant in both
+             directions with Node's built-in WebCrypto ML-KEM. Thank
+             you to Paul Miller for the auditable, dependency-free
+             reference implementation.
 --------------------------------------------------------------------------------
 Component:   @simplewebauthn/server
 Version:     13.3.0
