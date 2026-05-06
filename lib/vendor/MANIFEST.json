@@ -13,7 +13,10 @@
         "server": "lib/vendor/noble-ciphers.cjs"
       },
       "bundler": "esbuild --format=cjs --minify --platform=node",
-      "bundledAt": "2026-04-25"
+      "bundledAt": "2026-04-25",
+      "hashes": {
+        "server": "sha256:ff12219deb2c96e4464cda9646494651953672592108a3ba90f572965900d4bd"
+      }
     },
     "argon2": {
       "version": "0.44.0",
@@ -39,7 +42,11 @@
         "win32-x64"
       ],
       "bundler": "esbuild --format=cjs --platform=node (inlines @phc/format + node-gyp-build)",
-      "bundledAt": "2026-04-25"
+      "bundledAt": "2026-04-25",
+      "hashes": {
+        "server": "sha256:93b8d2fb7f24dc1b3304dc9420844d5e1afc199c41ab1f9a90c8de48cc7c2359",
+        "prebuilds": "sha256-tree:65921b7cf331e0a9430a1b52440da8f26cdf9d215a4cd490edbc4804dd713df3"
+      }
     },
     "@simplewebauthn/server": {
       "version": "13.3.0",
@@ -57,7 +64,10 @@
         "server": "lib/vendor/simplewebauthn-server.cjs"
       },
       "bundler": "esbuild --format=cjs --minify --platform=node --external:crypto --external:node:crypto",
-      "bundledAt": "2026-04-26"
+      "bundledAt": "2026-04-26",
+      "hashes": {
+        "server": "sha256:a9777dca582095d67f17ca24e19a0791de29928555b6b779c2233429175eb3f0"
+      }
     },
     "SecLists-common-passwords-top-10000": {
       "version": "10k-most-common (master)",
@@ -69,7 +79,10 @@
         "server": "lib/vendor/common-passwords-top-10000.txt"
       },
       "bundler": "curl https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt",
-      "bundledAt": "2026-05-02"
+      "bundledAt": "2026-05-02",
+      "hashes": {
+        "server": "sha256:4adb3f0afb4a10cf19ebe48d8c69a46f934bbc8d77c694c210564f9583e7f4ba"
+      }
     },
     "peculiar-pki": {
       "version": "2.0.0+pkijs-3.4.0",
@@ -90,7 +103,10 @@
         "server": "lib/vendor/pki.cjs"
       },
       "bundler": "esbuild --format=cjs --minify --platform=node --external:crypto --external:node:crypto",
-      "bundledAt": "2026-04-29"
+      "bundledAt": "2026-04-29",
+      "hashes": {
+        "server": "sha256:9bbc191afaaa2b1e5757f00480457c08134cdc2c55d541df18d9155bba9cbf77"
+      }
     }
   }
 }
