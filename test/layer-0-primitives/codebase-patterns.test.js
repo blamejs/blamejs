@@ -1622,8 +1622,27 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/middleware/security-txt.js", "lib/middleware/assetlinks.js",
         "lib/middleware/web-app-manifest.js",
+        "lib/middleware/tus-upload.js",
       ],
-      reason: "Static-content middleware family — security.txt / assetlinks / web-app-manifest all build a JSON or text body once at create() and serve it on a single well-known path with the same `if (path !== ...) next()` gate, the same Method-Not-Allowed branch, the same response-header set (Content-Type + Content-Length + Cache-Control + X-Content-Type-Options) and the same observability emit. Three different domains (security disclosure / TWA app-link / PWA manifest), three different bodies; the wrapper shape is conventional. Future consolidation candidate when a 4th well-known emitter ships.",
+      reason: "Static/well-known + TUS-collection middleware family — security.txt / assetlinks / web-app-manifest / tus-upload all gate on a fixed mountPath then branch on req.method, share the headersSent guard + writeHead/end+observability emit shape. Four different domains, four different response bodies and lifecycle semantics. Future consolidation candidate when a 5th well-known emitter ships.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/password.js", "lib/middleware/tus-upload.js",
+        "lib/request-helpers.js",
+      ],
+      reason: "Argon2id PHC-encoder/decoder + TUS metadata + Cookie-attribute parser independently iterate over `key=value` / `key value` token pairs and split on the first separator. The 50-token shingle is the loop+split skeleton; the per-domain semantics (Argon2 cost params vs TUS metadata vs cookie attrs) are different enough that consolidating would erode each parser's domain validation.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/external-db-migrate.js", "lib/middleware/db-role-for.js",
+        "lib/middleware/web-app-manifest.js",
+        "lib/middleware/security-txt.js",
+        "lib/middleware/tus-upload.js",
+      ],
+      reason: "validateOpts factory prelude — externalDb-migrate / dbRoleFor / web-app-manifest / security-txt / tus-upload all run the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they're all factory primitives with consistent operator-typo handling. Five different domains, five different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
     },
     {
       files: ["lib/auth/dpop.js", "lib/break-glass.js", "lib/middleware/security-txt.js"],

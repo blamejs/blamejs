@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.88",
-  "createdAt": "2026-05-06T06:32:41.364Z",
+  "frameworkVersion": "0.7.89",
+  "createdAt": "2026-05-06T07:12:42.545Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -730,6 +730,18 @@
         "passkey": {
           "type": "object",
           "members": {
+            "signalAllAcceptedCredentials": {
+              "type": "function",
+              "arity": 1
+            },
+            "signalCurrentUserDetails": {
+              "type": "function",
+              "arity": 1
+            },
+            "signalUnknownCredential": {
+              "type": "function",
+              "arity": 1
+            },
             "startAuthentication": {
               "type": "function",
               "arity": 1
@@ -19811,6 +19823,10 @@
           "type": "function",
           "arity": 2
         },
+        "tusUpload": {
+          "type": "function",
+          "arity": 1
+        },
         "webAppManifest": {
           "type": "function",
           "arity": 1
@@ -21427,6 +21443,10 @@
     "safeBuffer": {
       "type": "object",
       "members": {
+        "BASE64URL_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
         "CRLF_RE": {
           "type": "instance",
           "ctorName": "RegExp"
