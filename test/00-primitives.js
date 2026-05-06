@@ -14833,9 +14833,16 @@ function testWebSocketHandshake() {
         ws.validateUpgradeRequest(multiConn).ok === true);
 
   // Origin policy
-  var browserReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "origin": "https://app.example.com" }) };
-  check("isOriginAllowed: undefined origins accepts all", ws.isOriginAllowed(browserReq, null) === true);
+  var browserReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "origin": "https://app.example.com", "host": "app.example.com" }) };
+  // Default (origins omitted) enforces same-origin: Origin's host must match Host.
+  check("isOriginAllowed: undefined origins enforces same-origin (match)",
+        ws.isOriginAllowed(browserReq, null) === true);
+  // Cross-origin under default policy is refused.
+  var crossOriginReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "origin": "https://attacker.example", "host": "app.example.com" }) };
+  check("isOriginAllowed: undefined origins enforces same-origin (refuse cross-origin)",
+        ws.isOriginAllowed(crossOriginReq, null) === false);
   check("isOriginAllowed: '*' accepts all",               ws.isOriginAllowed(browserReq, "*") === true);
+  check("isOriginAllowed: '*' bypasses cross-origin",     ws.isOriginAllowed(crossOriginReq, "*") === true);
   check("isOriginAllowed: allowlist match",
         ws.isOriginAllowed(browserReq, ["https://app.example.com"]) === true);
   check("isOriginAllowed: allowlist miss",
@@ -14843,6 +14850,8 @@ function testWebSocketHandshake() {
   // Non-browser client (no Origin header) bypasses origin policy
   check("isOriginAllowed: no Origin header bypasses (non-browser)",
         ws.isOriginAllowed(goodReq, ["https://app.example.com"]) === true);
+  check("isOriginAllowed: no Origin header bypasses (non-browser, default policy)",
+        ws.isOriginAllowed(goodReq, null) === true);
 
   // Subprotocol negotiation
   var protoReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "sec-websocket-protocol": "chat, foo, graphql-ws" }) };
