@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.94",
-  "createdAt": "2026-05-06T08:10:59.849Z",
+  "frameworkVersion": "0.7.95",
+  "createdAt": "2026-05-06T08:20:47.973Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -21050,6 +21050,34 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "CLOUD_ACCOUNT_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CLOUD_PROVIDER": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CLOUD_REGION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CLOUD_RESOURCE_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CONTAINER_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CONTAINER_IMAGE_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CONTAINER_IMAGE_TAG": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "DB_NAMESPACE": {
               "type": "primitive",
               "valueType": "string"
@@ -21066,6 +21094,18 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "DB_VECTOR_QUERY_DIMENSIONS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DB_VECTOR_QUERY_DISTANCE_METRIC": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DB_VECTOR_QUERY_TOP_K": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "ERROR_TYPE": {
               "type": "primitive",
               "valueType": "string"
@@ -21079,6 +21119,82 @@
               "valueType": "string"
             },
             "EXCEPTION_TYPE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_AGENT_DESCRIPTION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_AGENT_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_AGENT_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_OPERATION_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_REQUEST_MAX_TOKENS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_REQUEST_MODEL": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_REQUEST_STOP_SEQUENCES": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_REQUEST_TEMPERATURE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_REQUEST_TOP_K": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_REQUEST_TOP_P": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_RESPONSE_FINISH_REASONS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_RESPONSE_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_RESPONSE_MODEL": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_SYSTEM": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_TOOL_CALL_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_TOOL_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_USAGE_INPUT_TOKENS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_USAGE_OUTPUT_TOKENS": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GEN_AI_USAGE_TOTAL_TOKENS": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -21099,6 +21215,18 @@
               "valueType": "string"
             },
             "HTTP_ROUTE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_DEPLOYMENT_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_NAMESPACE_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_POD_NAME": {
               "type": "primitive",
               "valueType": "string"
             },
