@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.101",
-  "createdAt": "2026-05-06T09:24:22.688Z",
+  "frameworkVersion": "0.7.102",
+  "createdAt": "2026-05-06T09:38:01.369Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20280,6 +20280,10 @@
         "sse": {
           "type": "function",
           "arity": 2
+        },
+        "tracePropagate": {
+          "type": "function",
+          "arity": 1
         },
         "tusUpload": {
           "type": "function",
