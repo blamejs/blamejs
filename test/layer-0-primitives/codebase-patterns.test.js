@@ -1724,12 +1724,13 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/sd-jwt-vc-issuer.js",
+        "lib/auth/sd-jwt-vc-issuer.js", "lib/auth/step-up.js",
+        "lib/auth/step-up-policy.js",
         "lib/break-glass.js", "lib/dsr.js", "lib/middleware/assetlinks.js",
         "lib/network-dns.js", "lib/network-heartbeat.js",
         "lib/network-tls.js", "lib/safe-schema.js",
       ],
-      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (sd-jwt-vc issuer keys, break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values). Eight different domains with file-specific error classes; consolidating would lose the per-module error code.",
+      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (sd-jwt-vc issuer keys, step-up acrValues / requiredAmr, step-up-policy acrAny / amr / requiredAmr atoms, break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values). Ten different domains with file-specific error classes; consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
@@ -1754,8 +1755,9 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/mail-auth.js", "lib/mail-dkim.js", "lib/mail-bimi.js",
         "lib/middleware/body-parser.js", "lib/network-smtp-policy.js",
+        "lib/auth/step-up.js",
       ],
-      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, BIMI record parsing, MTA-STS policy text parsing, and the body-parser content-type-parameter parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction.",
+      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, BIMI record parsing, MTA-STS policy text parsing, the body-parser content-type-parameter parser, and the RFC 7235 / RFC 9470 WWW-Authenticate Bearer challenge parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction.",
     },
     {
       mode:  "family-subset",

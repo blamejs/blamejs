@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.107",
-  "createdAt": "2026-05-06T12:06:12.547Z",
+  "frameworkVersion": "0.7.108",
+  "createdAt": "2026-05-06T13:04:39.887Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -476,6 +476,447 @@
             "meets": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "acr": {
+          "type": "object",
+          "members": {
+            "BUILTIN_AMR": {
+              "type": "object",
+              "members": {
+                "face": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "fpt": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "geo": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "hwk": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "iris": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "kba": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "mca": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "mfa": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "otp": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "pin": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "pop": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "pwd": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "rba": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "retina": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "sc": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "sms": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "swk": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "tel": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "user": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "vbm": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "wia": {
+                  "type": "object",
+                  "members": {
+                    "category": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "phishingResistant": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                }
+              }
+            },
+            "BUILTIN_RANKS": {
+              "type": "object",
+              "members": {
+                "0": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "1": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "2": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "aal1": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "aal2": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "aal3": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "fal1": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "fal2": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "fal3": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "high": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ial1": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ial2": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ial3": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "loa1": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "loa2": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "loa3": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "loa4": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "low": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "phr": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "phrh": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "substantial": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "urn:mace:incommon:iap:bronze": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "urn:mace:incommon:iap:gold": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "urn:mace:incommon:iap:silver": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "amrIncludesPhishingResistant": {
+              "type": "function",
+              "arity": 1
+            },
+            "amrSatisfiesRequiredList": {
+              "type": "function",
+              "arity": 2
+            },
+            "isRegistered": {
+              "type": "function",
+              "arity": 1
+            },
+            "listRegistered": {
+              "type": "function",
+              "arity": 0
+            },
+            "meets": {
+              "type": "function",
+              "arity": 2
+            },
+            "meetsAny": {
+              "type": "function",
+              "arity": 2
+            },
+            "rankOf": {
+              "type": "function",
+              "arity": 1
+            },
+            "register": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "authTime": {
+          "type": "object",
+          "members": {
+            "ageSec": {
+              "type": "function",
+              "arity": 2
+            },
+            "buildClaims": {
+              "type": "function",
+              "arity": 1
+            },
+            "freshEnough": {
+              "type": "function",
+              "arity": 3
+            },
+            "readClaims": {
+              "type": "function",
+              "arity": 1
+            },
+            "recommendMaxAge": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -1063,6 +1504,575 @@
             "fromJwt": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "stepUp": {
+          "type": "object",
+          "members": {
+            "INSUFFICIENT_USER_AUTHENTICATION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "acr": {
+              "type": "object",
+              "members": {
+                "BUILTIN_AMR": {
+                  "type": "object",
+                  "members": {
+                    "face": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "fpt": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "geo": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "hwk": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "iris": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "kba": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "mca": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "mfa": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "otp": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "pin": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "pop": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "pwd": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "rba": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "retina": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "sc": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "sms": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "swk": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "tel": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "user": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "vbm": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "wia": {
+                      "type": "object",
+                      "members": {
+                        "category": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "phishingResistant": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    }
+                  }
+                },
+                "BUILTIN_RANKS": {
+                  "type": "object",
+                  "members": {
+                    "0": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "1": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "2": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "aal1": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "aal2": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "aal3": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "fal1": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "fal2": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "fal3": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "high": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ial1": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ial2": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ial3": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "loa1": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "loa2": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "loa3": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "loa4": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "low": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "phr": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "phrh": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "substantial": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "urn:mace:incommon:iap:bronze": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "urn:mace:incommon:iap:gold": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "urn:mace:incommon:iap:silver": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "amrIncludesPhishingResistant": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "amrSatisfiesRequiredList": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "isRegistered": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "listRegistered": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "meets": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "meetsAny": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "rankOf": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "register": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "authTime": {
+              "type": "object",
+              "members": {
+                "ageSec": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "buildClaims": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "freshEnough": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "readClaims": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "recommendMaxAge": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "buildChallenge": {
+              "type": "function",
+              "arity": 1
+            },
+            "emitAuditRequired": {
+              "type": "function",
+              "arity": 4
+            },
+            "emitAuditSatisfied": {
+              "type": "function",
+              "arity": 4
+            },
+            "evaluate": {
+              "type": "function",
+              "arity": 1
+            },
+            "grant": {
+              "type": "object",
+              "members": {
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "isRevoked": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "list": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "revoke": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "setSigningKey": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            },
+            "parseAuthorizationDetails": {
+              "type": "function",
+              "arity": 1
+            },
+            "parseChallenge": {
+              "type": "function",
+              "arity": 1
+            },
+            "policy": {
+              "type": "object",
+              "members": {
+                "PRESETS": {
+                  "type": "object",
+                  "members": {
+                    "accountRecovery": {
+                      "type": "function",
+                      "arity": 0
+                    },
+                    "adminBulk": {
+                      "type": "function",
+                      "arity": 0
+                    },
+                    "financial": {
+                      "type": "function",
+                      "arity": 0
+                    },
+                    "phiRead": {
+                      "type": "function",
+                      "arity": 0
+                    },
+                    "phiWrite": {
+                      "type": "function",
+                      "arity": 0
+                    },
+                    "sensitiveWrite": {
+                      "type": "function",
+                      "arity": 0
+                    }
+                  }
+                },
+                "acr": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "acrAny": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "amr": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "custom": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "listPresets": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "maxAge": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "phishingResistant": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "preset": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
             }
           }
         },
@@ -20951,6 +21961,10 @@
         "requireMethods": {
           "type": "function",
           "arity": 2
+        },
+        "requireStepUp": {
+          "type": "function",
+          "arity": 1
         },
         "securityHeaders": {
           "type": "function",

@@ -141,6 +141,9 @@ var auth = {
   aal:      require("./lib/auth/aal"),
   statusList: require("./lib/auth/status-list"),
   sdJwtVc:    require("./lib/auth/sd-jwt-vc"),
+  stepUp:     require("./lib/auth/step-up"),
+  acr:        require("./lib/auth/acr-vocabulary"),
+  authTime:   require("./lib/auth/auth-time-tracker"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");
