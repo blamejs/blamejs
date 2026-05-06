@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.105",
-  "createdAt": "2026-05-06T11:08:57.597Z",
+  "frameworkVersion": "0.7.106",
+  "createdAt": "2026-05-06T11:37:46.419Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -9606,6 +9606,390 @@
         "validate": {
           "type": "function",
           "arity": 2
+        },
+        "wcag": {
+          "type": "object",
+          "members": {
+            "GuardHtmlWcagError": {
+              "type": "function",
+              "arity": 4
+            },
+            "SC_REGISTRY": {
+              "type": "object",
+              "members": {
+                "1.1.1": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "1.3.1": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2.4.1": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2.4.11": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2.4.13": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2.4.2": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2.4.4": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2.5.7": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2.5.8": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3.1.1": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3.2.6": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3.3.2": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3.3.7": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3.3.8": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3.3.9": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "4.1.1": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "4.1.2": {
+                  "type": "object",
+                  "members": {
+                    "level": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "VALID_LEVELS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "aria": {
+              "type": "object",
+              "members": {
+                "ARIA_VALUE_SETS": {
+                  "type": "object",
+                  "members": {
+                    "aria-autocomplete": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-checked": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-current": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-disabled": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-expanded": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-haspopup": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-hidden": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-live": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-orientation": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-pressed": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-selected": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "aria-sort": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    }
+                  }
+                },
+                "KNOWN_ROLES": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "ROLE_REQUIRED_PROPS": {
+                  "type": "object",
+                  "members": {
+                    "checkbox": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "combobox": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "heading": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "menuitemcheckbox": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "menuitemradio": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "option": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "radio": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "scrollbar": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "slider": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "spinbutton": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "switch": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    }
+                  }
+                },
+                "audit": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            },
+            "audit": {
+              "type": "function",
+              "arity": 2
+            },
+            "forms": {
+              "type": "object",
+              "members": {
+                "AUTOCOMPLETE_TOKENS": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "audit": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            },
+            "tables": {
+              "type": "object",
+              "members": {
+                "VALID_SCOPE_VALUES": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "audit": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            }
+          }
         }
       }
     },

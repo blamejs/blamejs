@@ -1694,8 +1694,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/outbox.js", "lib/dsr.js",
         "lib/compliance-sanctions.js", "lib/observability-otlp-exporter.js",
         "lib/compliance-sanctions-fetcher.js",
+        "lib/guard-html-wcag.js", "lib/mail-dkim.js",
       ],
-      reason: "Audit + observability emit prelude — db-role-for / tus-upload / outbox / dsr / sanctions / otlp-exporter / sanctions-fetcher each wrap `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Seven different action vocabularies; consolidating would lose the per-primitive metric name.",
+      reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Nine different action vocabularies; consolidating would lose the per-primitive metric name.",
     },
     {
       mode:  "family-subset",
