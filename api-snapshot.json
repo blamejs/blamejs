@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.79",
-  "createdAt": "2026-05-06T05:13:55.889Z",
+  "frameworkVersion": "0.7.80",
+  "createdAt": "2026-05-06T05:24:07.059Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19722,6 +19722,10 @@
           "arity": 1
         },
         "securityHeaders": {
+          "type": "function",
+          "arity": 1
+        },
+        "securityTxt": {
           "type": "function",
           "arity": 1
         },

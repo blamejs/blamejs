@@ -1618,6 +1618,10 @@ function testNoDuplicateCodeBlocks() {
       reason: "Long `field: opts.field` config-passthrough chain coincidentally shingles. guard-all assembles per-guard opts (gate-contract vocabulary); middleware/index forwards createApp opts to per-middleware factories; websocket-channels forwards channel-broker opts. Three different domains, three different vocabulary lists — not consolidatable.",
     },
     {
+      files: ["lib/auth/dpop.js", "lib/break-glass.js", "lib/middleware/security-txt.js"],
+      reason: "Generic input validation prelude — `if (typeof X !== 'string' || X.length === 0 || /[\\r\\n\\0]/.test(X)) throw` repeats across primitives that gate operator-supplied strings against header-injection bytes (DPoP htm/htu, break-glass reasons, security.txt field values). Three different error classes; the rejection reason is identical but the error code prefix is per-domain.",
+    },
+    {
       files: ["lib/network-dns.js", "lib/network-tls.js", "lib/safe-schema.js"],
       reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (DNS resolver IPs, TLS key shares, safe-schema enum values). Three different domains with file-specific error classes; consolidating would lose the per-module error code (dns/bad-servers vs tls/bad-key-shares vs schema-specific shapes).",
     },
