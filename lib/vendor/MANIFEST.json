@@ -15,7 +15,7 @@
       "bundler": "esbuild --format=cjs --minify --platform=node",
       "bundledAt": "2026-04-25",
       "hashes": {
-        "server": "sha256:ff12219deb2c96e4464cda9646494651953672592108a3ba90f572965900d4bd"
+        "server": "sha256:5d539dfc9ef47121d4c09bd7256d76448a1f5ac47ee09ac44c78ff6a062af9ab"
       }
     },
     "argon2": {

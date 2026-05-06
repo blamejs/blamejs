@@ -1,0 +1,26 @@
+# Vendored dependencies — treat as binary so git never rewrites line
+# endings between Windows and Linux checkouts. The framework's vendor
+# manifest pins SHA-256 hashes on the on-disk content; CRLF/LF
+# conversion would break the hash on the off-platform checkout.
+lib/vendor/** -text binary
+
+# Native modules — always binary.
+*.node binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.a binary
+*.glibc binary
+*.musl binary
+
+# Standard binary types.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.tgz binary
+*.pdf binary

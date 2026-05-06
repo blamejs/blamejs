@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.70",
-  "createdAt": "2026-05-06T02:25:39.181Z",
+  "frameworkVersion": "0.7.73",
+  "createdAt": "2026-05-06T03:20:51.949Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -405,6 +405,80 @@
     "auth": {
       "type": "object",
       "members": {
+        "aal": {
+          "type": "object",
+          "members": {
+            "AAL1": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AAL2": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AAL3": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AMR": {
+              "type": "object",
+              "members": {
+                "HARDWARE": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "MTLS": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "PASSKEY": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "PASSWORD": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "PIN": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "SMS": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "TOTP": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "WEBAUTHN": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "BANDS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "KNOWN_METHODS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "fromMethods": {
+              "type": "function",
+              "arity": 1
+            },
+            "isValidBand": {
+              "type": "function",
+              "arity": 1
+            },
+            "meets": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
         "dpop": {
           "type": "object",
           "members": {
@@ -19403,6 +19477,14 @@
             }
           }
         },
+        "toAscii": {
+          "type": "function",
+          "arity": 1
+        },
+        "toUnicode": {
+          "type": "function",
+          "arity": 1
+        },
         "transports": {
           "type": "object",
           "members": {
@@ -19586,6 +19668,10 @@
           "arity": 1
         },
         "requestLog": {
+          "type": "function",
+          "arity": 1
+        },
+        "requireAal": {
           "type": "function",
           "arity": 1
         },

@@ -138,6 +138,7 @@ var auth = {
   oauth:    require("./lib/auth/oauth"),
   lockout:  require("./lib/auth/lockout"),
   dpop:     require("./lib/auth/dpop"),
+  aal:      require("./lib/auth/aal"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");

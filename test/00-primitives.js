@@ -1843,6 +1843,116 @@ async function testAuthDpopPqcMlDsa() {
   check("ML-DSA-87 jwk.alg=ML-DSA-87",          rv.header.jwk.alg === "ML-DSA-87");
 }
 
+// ---- AAL — NIST SP 800-63-4 authentication assurance levels ----
+
+function testAuthAalSurface() {
+  var a = b.auth.aal;
+  check("auth.aal namespace present",            typeof a === "object");
+  check("auth.aal.AAL1 / AAL2 / AAL3 strings",
+        a.AAL1 === "AAL1" && a.AAL2 === "AAL2" && a.AAL3 === "AAL3");
+  check("auth.aal.fromMethods is a function",    typeof a.fromMethods === "function");
+  check("auth.aal.meets is a function",          typeof a.meets === "function");
+  check("auth.aal.isValidBand",
+        a.isValidBand("AAL2") && !a.isValidBand("AAL4"));
+}
+
+function testAuthAalFromMethods() {
+  var a = b.auth.aal;
+
+  // AAL1 — single factor (memorized secret)
+  check("password alone → AAL1",                 a.fromMethods({ password: true }) === "AAL1");
+  check("pin alone → AAL1",                      a.fromMethods({ pin: true }) === "AAL1");
+  check("hardware alone → AAL1",                 a.fromMethods({ hardware: true }) === "AAL1");
+  check("mtls alone → AAL1",                     a.fromMethods({ mtls: true }) === "AAL1");
+
+  // AAL2 — multi-factor
+  check("password + totp → AAL2",                a.fromMethods({ password: true, totp: true }) === "AAL2");
+  check("password + sms → AAL2",                 a.fromMethods({ password: true, sms: true }) === "AAL2");
+  check("password + mtls → AAL2",                a.fromMethods({ password: true, mtls: true }) === "AAL2");
+  check("pin + hardware → AAL3",                 a.fromMethods({ pin: true, hardware: true }) === "AAL3");
+
+  // AAL3 — phishing-resistant multi-factor
+  check("webauthn alone → AAL3",                 a.fromMethods({ webauthn: true }) === "AAL3");
+  check("passkey alone → AAL3",                  a.fromMethods({ passkey: true }) === "AAL3");
+  check("password + webauthn → AAL3",            a.fromMethods({ password: true, webauthn: true }) === "AAL3");
+
+  // No methods asserted → throws
+  var threw = null;
+  try { a.fromMethods({}); } catch (e) { threw = e; }
+  check("empty methods → auth-aal/no-methods",   threw && threw.code === "auth-aal/no-methods");
+
+  // Invalid input
+  threw = null;
+  try { a.fromMethods(null); } catch (e) { threw = e; }
+  check("null methods → auth-aal/bad-methods",   threw && threw.code === "auth-aal/bad-methods");
+}
+
+function testAuthAalMeets() {
+  var a = b.auth.aal;
+  check("AAL3 meets AAL2",                       a.meets("AAL3", "AAL2") === true);
+  check("AAL2 meets AAL2",                       a.meets("AAL2", "AAL2") === true);
+  check("AAL1 does not meet AAL2",               a.meets("AAL1", "AAL2") === false);
+  check("AAL3 meets AAL1",                       a.meets("AAL3", "AAL1") === true);
+  check("invalid band fails meets",              a.meets("AAL4", "AAL2") === false);
+  check("null actual fails meets",               a.meets(null, "AAL2") === false);
+}
+
+async function testRequireAalMiddleware() {
+  // Build a middleware and exercise pass/fail paths against fake req/res.
+  var mw = b.middleware.requireAal({ minimum: "AAL2", audit: false });
+  check("requireAal returns a function",         typeof mw === "function");
+
+  function _fakeRes() {
+    var r = { headersSent: false, statusCode: null, headers: null, body: null };
+    r.writeHead = function (sc, hdrs) { r.statusCode = sc; r.headers = hdrs; r.headersSent = true; };
+    r.end = function (b2) { r.body = b2; };
+    return r;
+  }
+
+  // Below minimum → 401
+  var nextCalled = false;
+  var res = _fakeRes();
+  mw({ user: { aal: "AAL1", id: "u-1" }, url: "/admin", headers: {}, socket: {} }, res, function () { nextCalled = true; });
+  check("AAL1 below AAL2 → 401",                 res.statusCode === 401);
+  check("WWW-Authenticate carries scheme + required",
+        res.headers && /AAL-StepUp/.test(res.headers["WWW-Authenticate"] || "") &&
+        /required="AAL2"/.test(res.headers["WWW-Authenticate"] || ""));
+  check("next not called on deny",               nextCalled === false);
+
+  // At minimum → next()
+  nextCalled = false;
+  res = _fakeRes();
+  mw({ user: { aal: "AAL2", id: "u-1" }, url: "/admin", headers: {}, socket: {} }, res, function () { nextCalled = true; });
+  check("AAL2 meets AAL2 → next()",              nextCalled === true && res.statusCode === null);
+
+  // Above minimum → next()
+  nextCalled = false;
+  res = _fakeRes();
+  mw({ user: { aal: "AAL3", id: "u-1" }, url: "/admin", headers: {}, socket: {} }, res, function () { nextCalled = true; });
+  check("AAL3 meets AAL2 → next()",              nextCalled === true);
+
+  // No user (anonymous) → 401
+  res = _fakeRes();
+  mw({ url: "/admin", headers: {}, socket: {} }, res, function () { });
+  check("no user → 401",                         res.statusCode === 401);
+
+  // Custom getAal opt
+  var mw2 = b.middleware.requireAal({
+    minimum: "AAL3",
+    getAal:  function (req) { return req.headers["x-aal"]; },
+    audit:   false,
+  });
+  res = _fakeRes();
+  nextCalled = false;
+  mw2({ url: "/admin", headers: { "x-aal": "AAL3" }, socket: {} }, res, function () { nextCalled = true; });
+  check("getAal reads custom source",            nextCalled === true);
+
+  // Bad minimum at create time
+  var threw = null;
+  try { b.middleware.requireAal({ minimum: "AAL4" }); } catch (e) { threw = e; }
+  check("bad minimum → auth-aal/bad-minimum",    threw && threw.code === "auth-aal/bad-minimum");
+}
+
 // ---- template — eval-free interpreter ----
 //
 // Each test sets up its own tmpdir + writes the views by hand so the
@@ -17708,6 +17818,10 @@ async function run() {
   await testAuthDpopJwkPrivateLeakRefused();
   await testAuthDpopThumbprint();
   await testAuthDpopPqcMlDsa();
+  testAuthAalSurface();
+  testAuthAalFromMethods();
+  testAuthAalMeets();
+  await testRequireAalMiddleware();
   // handlers primitive
   await testHandlerEmitAndDrain();
   await testHandlerEmitDuringFlushNextCycle();
@@ -17961,6 +18075,10 @@ module.exports = {
   testAuthDpopJwkPrivateLeakRefused:         testAuthDpopJwkPrivateLeakRefused,
   testAuthDpopThumbprint:                    testAuthDpopThumbprint,
   testAuthDpopPqcMlDsa:                      testAuthDpopPqcMlDsa,
+  testAuthAalSurface:                        testAuthAalSurface,
+  testAuthAalFromMethods:                    testAuthAalFromMethods,
+  testAuthAalMeets:                          testAuthAalMeets,
+  testRequireAalMiddleware:                  testRequireAalMiddleware,
   testTemplateSurface:                       testTemplateSurface,
   testTemplateEscapeHtml:                    testTemplateEscapeHtml,
   testTemplateBasicRender:                   testTemplateBasicRender,
