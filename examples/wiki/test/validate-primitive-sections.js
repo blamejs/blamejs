@@ -862,6 +862,9 @@ var BX_SKIP = new Set([
 // for the gap). Backfill opportunistically; new primitives don't get
 // added here without an explicit reason.
 var UNDOCUMENTED_BACKLOG = {
+  // === New primitives shipped without a wiki section yet — backlog. ===
+  "openapi":               "shipped v0.7.110 — OpenAPI 3.1 schema-document builder; wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + comprehensive test suite cover usage)",
+
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
   //     covered by the parent page or a sibling section). ===

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.109",
-  "createdAt": "2026-05-06T13:49:10.084Z",
+  "frameworkVersion": "0.7.110",
+  "createdAt": "2026-05-06T14:20:24.127Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -22323,6 +22323,10 @@
           "type": "function",
           "arity": 1
         },
+        "openapiServe": {
+          "type": "function",
+          "arity": 1
+        },
         "rateLimit": {
           "type": "function",
           "arity": 1
@@ -23589,6 +23593,68 @@
               "arity": 1
             }
           }
+        }
+      }
+    },
+    "openapi": {
+      "type": "object",
+      "members": {
+        "OpenApiError": {
+          "type": "function",
+          "arity": 4
+        },
+        "VERSION": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "schemaWalk": {
+          "type": "function",
+          "arity": 1
+        },
+        "security": {
+          "type": "object",
+          "members": {
+            "OpenApiError": {
+              "type": "function",
+              "arity": 4
+            },
+            "apiKey": {
+              "type": "function",
+              "arity": 1
+            },
+            "basic": {
+              "type": "function",
+              "arity": 1
+            },
+            "bearer": {
+              "type": "function",
+              "arity": 1
+            },
+            "dpop": {
+              "type": "function",
+              "arity": 1
+            },
+            "mtls": {
+              "type": "function",
+              "arity": 1
+            },
+            "oauth2": {
+              "type": "function",
+              "arity": 1
+            },
+            "openIdConnect": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "toYaml": {
+          "type": "function",
+          "arity": 1
         }
       }
     },

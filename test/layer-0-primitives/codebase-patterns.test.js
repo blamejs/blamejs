@@ -1616,6 +1616,13 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/deprecate.js", "lib/openapi-paths-builder.js", "lib/openapi.js",
+      ],
+      reason: "validateOpts.requireNonEmptyString-prelude scaffold — three primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError); consolidating would lose the per-module error code.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/compliance-ai-act-prohibited.js",
         "lib/compliance-ai-act-risk.js",
         "lib/compliance-ai-act-logging.js",
