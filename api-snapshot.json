@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.81",
-  "createdAt": "2026-05-06T05:31:15.873Z",
+  "frameworkVersion": "0.7.82",
+  "createdAt": "2026-05-06T05:41:38.461Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19459,6 +19459,31 @@
           "type": "object",
           "members": {
             "emit": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "bimi": {
+          "type": "object",
+          "members": {
+            "BIMI_VERSION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "BimiError": {
+              "type": "function",
+              "arity": 4
+            },
+            "fetchPolicy": {
+              "type": "function",
+              "arity": 2
+            },
+            "parseRecord": {
+              "type": "function",
+              "arity": 1
+            },
+            "recordShape": {
               "type": "function",
               "arity": 1
             }

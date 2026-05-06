@@ -1646,9 +1646,10 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/mail-auth.js", "lib/mail-dkim.js", "lib/middleware/body-parser.js", "lib/network-smtp-policy.js",
+        "lib/mail-auth.js", "lib/mail-dkim.js", "lib/mail-bimi.js",
+        "lib/middleware/body-parser.js", "lib/network-smtp-policy.js",
       ],
-      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, MTA-STS policy text parsing, and the body-parser content-type-parameter parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction. Future consolidation candidate when a 5th k=v record family ships.",
+      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, BIMI record parsing, MTA-STS policy text parsing, and the body-parser content-type-parameter parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction.",
     },
     {
       mode:  "family-subset",
@@ -1710,8 +1711,8 @@ function testNoDuplicateCodeBlocks() {
     },
     {
       mode:  "family-subset",
-      files: ["lib/auth/jwt-external.js", "lib/auth/oauth.js", "lib/network-smtp-policy.js", "lib/mail-auth.js"],
-      reason: "External structured-data ingestion + safe-* parser + file-specific framework-error throw. Each module ingests serialized data from a different external surface (JWKS endpoint over HTTP, OAuth discovery doc, TLS-RPT JSON report, DMARC RUA XML report) with file-specific size caps and error classes. Extracting to a shared helper would either lose the per-module error class or pass it through every helper site, making the call sites less readable than the current inline 3-line block.",
+      files: ["lib/auth/jwt-external.js", "lib/auth/oauth.js", "lib/network-smtp-policy.js", "lib/mail-auth.js", "lib/mail-bimi.js"],
+      reason: "External structured-data ingestion + safe-* parser + file-specific framework-error throw. Each module ingests serialized data from a different external surface (JWKS endpoint over HTTP, OAuth discovery doc, TLS-RPT JSON report, DMARC RUA XML report, BIMI TXT record) with file-specific size caps and error classes. Extracting to a shared helper would either lose the per-module error class or pass it through every helper site, making the call sites less readable than the current inline 3-line block.",
     },
     {
       files: ["lib/db-declare-row-policy.js", "lib/db-declare-view.js", "lib/middleware/db-role-for.js"],
