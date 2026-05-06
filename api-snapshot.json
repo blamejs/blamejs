@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.91",
-  "createdAt": "2026-05-06T07:42:52.039Z",
+  "frameworkVersion": "0.7.92",
+  "createdAt": "2026-05-06T07:51:37.374Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20664,7 +20664,23 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "MESSAGING_BATCH_MESSAGE_COUNT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MESSAGING_CLIENT_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "MESSAGING_DESTINATION_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MESSAGING_DESTINATION_PARTITION_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MESSAGING_MESSAGE_ID": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -20673,6 +20689,10 @@
               "valueType": "string"
             },
             "MESSAGING_SYSTEM": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "NETWORK_CONNECTION_TYPE": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -20688,6 +20708,38 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "NETWORK_TRANSPORT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "PROCESS_PID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "PROCESS_RUNTIME_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "PROCESS_RUNTIME_VERSION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "RPC_GRPC_STATUS_CODE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "RPC_METHOD": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "RPC_SERVICE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "RPC_SYSTEM": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "SERVER_ADDRESS": {
               "type": "primitive",
               "valueType": "string"
@@ -20696,7 +20748,31 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "SERVICE_INSTANCE_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SERVICE_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SERVICE_VERSION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "SESSION_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "TELEMETRY_SDK_LANGUAGE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "TELEMETRY_SDK_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "TELEMETRY_SDK_VERSION": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -21372,6 +21448,14 @@
         "COMPLIANCE_RETENTION_FLOOR_MS": {
           "type": "object",
           "members": {
+            "appi-jp": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "cra": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "dora": {
               "type": "primitive",
               "valueType": "number"
@@ -21380,7 +21464,19 @@
               "type": "primitive",
               "valueType": "number"
             },
+            "lgpd-br": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "nis2": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "pci-dss": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "pdpa-sg": {
               "type": "primitive",
               "valueType": "number"
             },
@@ -21389,6 +21485,10 @@
               "valueType": "number"
             },
             "sox": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "uk-gdpr": {
               "type": "primitive",
               "valueType": "number"
             }
