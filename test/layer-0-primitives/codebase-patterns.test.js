@@ -1630,9 +1630,9 @@ function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/auth/password.js", "lib/middleware/tus-upload.js",
-        "lib/request-helpers.js",
+        "lib/request-helpers.js", "lib/observability.js",
       ],
-      reason: "Argon2id PHC-encoder/decoder + TUS metadata + Cookie-attribute parser independently iterate over `key=value` / `key value` token pairs and split on the first separator. The 50-token shingle is the loop+split skeleton; the per-domain semantics (Argon2 cost params vs TUS metadata vs cookie attrs) are different enough that consolidating would erode each parser's domain validation.",
+      reason: "Argon2id PHC-encoder/decoder + TUS metadata + Cookie-attribute parser + W3C tracestate parser independently iterate over `key=value` / `key value` token pairs and split on the first separator. The 50-token shingle is the loop+split skeleton; the per-domain semantics (Argon2 cost params vs TUS metadata vs cookie attrs vs trace vendor pairs) are different enough that consolidating would erode each parser's domain validation.",
     },
     {
       mode:  "family-subset",
@@ -1642,8 +1642,41 @@ function testNoDuplicateCodeBlocks() {
         "lib/middleware/security-txt.js",
         "lib/middleware/tus-upload.js",
         "lib/outbox.js",
+        "lib/observability-otlp-exporter.js",
       ],
-      reason: "validateOpts factory prelude — externalDb-migrate / dbRoleFor / web-app-manifest / security-txt / tus-upload / outbox all run the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they're all factory primitives with consistent operator-typo handling. Six different domains, six different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
+      reason: "validateOpts factory prelude — every factory primitive (externalDb-migrate / dbRoleFor / web-app-manifest / security-txt / tus-upload / outbox / otlp-exporter) runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Seven different domains with seven different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/cloud-events.js", "lib/file-upload.js",
+        "lib/observability-otlp-exporter.js", "lib/static.js",
+      ],
+      reason: "JSON-envelope serializer prelude — cloud-events / file-upload / otlp-exporter / static all build a `{ headers, body }` JSON envelope from operator opts via Object.assign + JSON.stringify; validate the resulting payload byte-length; return the rendered Buffer. Four different domains (CloudEvents 1.0 / multipart upload / OTLP/JSON spans / static-asset response), four different content shapes; the 50-token shingle is the envelope-build skeleton.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/cloud-events.js", "lib/external-db-migrate.js",
+        "lib/observability-otlp-exporter.js", "lib/observability-tracer.js",
+      ],
+      reason: "Object.assign + validateOpts shape — cloud-events / external-db-migrate / otlp-exporter / observability-tracer each define an opts validator that calls validateOpts(opts, [...allowed-keys], label) and then merges resource/scope-level defaults via Object.assign. Four different domains; the 50-token shingle is the validator+merge skeleton.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/cloud-events.js", "lib/observability-otlp-exporter.js",
+        "lib/static.js",
+      ],
+      reason: "JSON envelope builder + Content-Type/Length response shape — cloud-events / otlp-exporter / static all build a JSON-serializable response, compute Content-Length, set Content-Type, and emit observability.safeEvent on send. Three different domains, three different envelope payloads.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/file-upload.js", "lib/middleware/span-http-server.js",
+        "lib/static.js",
+      ],
+      reason: "Response-lifecycle hook scaffold — file-upload / span-http-server / static each register `res.on('finish'|'close'|'error', _finish)` to fire a single closure on response completion regardless of which event terminates the response. Three different domains (chunk cleanup / span end / asset audit); the 50-token shingle is the listener wiring + idempotent-closure pattern.",
     },
     {
       mode:  "family-subset",

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.102",
-  "createdAt": "2026-05-06T09:38:01.369Z",
+  "frameworkVersion": "0.7.103",
+  "createdAt": "2026-05-06T10:17:55.999Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20277,9 +20277,17 @@
           "type": "function",
           "arity": 1
         },
+        "spanHttpServer": {
+          "type": "function",
+          "arity": 1
+        },
         "sse": {
           "type": "function",
           "arity": 2
+        },
+        "traceLogCorrelation": {
+          "type": "function",
+          "arity": 1
         },
         "tracePropagate": {
           "type": "function",
@@ -21400,9 +21408,35 @@
             }
           }
         },
+        "baggage": {
+          "type": "object",
+          "members": {
+            "MAX_ENTRIES": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "build": {
+              "type": "function",
+              "arity": 1
+            },
+            "parse": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "event": {
           "type": "function",
           "arity": 3
+        },
+        "otlpExporter": {
+          "type": "object",
+          "members": {
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "safeEvent": {
           "type": "function",
@@ -21427,6 +21461,10 @@
               "type": "function",
               "arity": 1
             },
+            "buildTracestate": {
+              "type": "function",
+              "arity": 1
+            },
             "newParentId": {
               "type": "function",
               "arity": 0
@@ -21436,6 +21474,31 @@
               "arity": 0
             },
             "parse": {
+              "type": "function",
+              "arity": 1
+            },
+            "parseTracestate": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "tracer": {
+          "type": "object",
+          "members": {
+            "VALID_KINDS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "VALID_STATUS_CODES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "spanToTraceparent": {
               "type": "function",
               "arity": 1
             }
@@ -22316,9 +22379,21 @@
           "type": "instance",
           "ctorName": "RegExp"
         },
+        "RFC7230_TCHAR_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "SPAN_ID_HEX_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
         "SafeBufferError": {
           "type": "function",
           "arity": 2
+        },
+        "TRACE_ID_HEX_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
         },
         "TRAILING_HSPACE_RE": {
           "type": "instance",
