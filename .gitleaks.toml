@@ -52,6 +52,13 @@ regexes = [
   '''hunter2-?pass-?[A-Za-z0-9-]+''',
   '''wiki-validator-jwt-secret''',
   '''blamejs-(?:wiki-validator-|test-)?passphrase[A-Za-z0-9-]*''',
+  # JWT compact-serialization shape — base64url `eyJ...` header (decodes
+  # to `{"...`), then dot, then base64url payload + dot + base64url
+  # signature. Documentation and test fixtures legitimately embed JWT-
+  # shaped strings (b.guardJwt + b.guardAuth fixtures, examples in
+  # operator-facing wiki). Real signing keys never appear in compact
+  # serialization shape — they're PEM / DER / PKCS#8.
+  '''eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*''',
 ]
 
 [[allowlists]]
