@@ -137,6 +137,7 @@ var auth = {
               { verifyExternal: require("./lib/auth/jwt-external").verifyExternal }),
   oauth:    require("./lib/auth/oauth"),
   lockout:  require("./lib/auth/lockout"),
+  dpop:     require("./lib/auth/dpop"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");

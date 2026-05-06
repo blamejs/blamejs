@@ -1631,6 +1631,218 @@ async function testAuthJwtMissingKey() {
         threwV && threwV.code === "auth-jwt/missing-key");
 }
 
+// ---- DPoP (RFC 9449) ----
+
+async function testAuthDpopRoundTrip() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  check("auth.dpop namespace present",          typeof b.auth.dpop === "object");
+  check("auth.dpop.buildProof is a function",   typeof d.buildProof === "function");
+  check("auth.dpop.verify is a function",       typeof d.verify === "function");
+  check("auth.dpop.thumbprint is a function",   typeof d.thumbprint === "function");
+
+  // ES256 — the canonical DPoP alg per RFC 9449 §4.2
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var proof = await d.buildProof({
+    htm: "POST",
+    htu: "https://api.example.com/resource?ignored=1",
+    privateKey: ec.privateKey,
+    accessToken: "access-token-xyz",
+  });
+  check("ES256 proof is a 3-part dotted string",
+        typeof proof === "string" && proof.split(".").length === 3);
+
+  var rv = await d.verify(proof, {
+    htm: "POST",
+    htu: "https://api.example.com/resource",
+    accessToken: "access-token-xyz",
+  });
+  check("verify returns header + payload + jkt",
+        rv && rv.header && rv.payload && typeof rv.jkt === "string");
+  check("payload.htm carries the method",       rv.payload.htm === "POST");
+  check("payload.htu strips query string",      rv.payload.htu === "https://api.example.com/resource");
+  check("payload.ath = sha256(access_token)",   typeof rv.payload.ath === "string" && rv.payload.ath.length > 0);
+  check("payload.jti is a non-empty string",    typeof rv.payload.jti === "string" && rv.payload.jti.length > 0);
+  check("header.typ is dpop+jwt",               rv.header.typ === "dpop+jwt");
+  check("header.jwk is embedded",               rv.header.jwk && rv.header.jwk.kty === "EC");
+}
+
+async function testAuthDpopHtmHtuMismatch() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var proof = await d.buildProof({ htm: "POST", htu: "https://api.example.com/r", privateKey: ec.privateKey });
+
+  // htm mismatch
+  var threwM = null;
+  try { await d.verify(proof, { htm: "GET", htu: "https://api.example.com/r" }); }
+  catch (e) { threwM = e; }
+  check("htm mismatch → auth-dpop/htm-mismatch",
+        threwM && threwM.code === "auth-dpop/htm-mismatch");
+
+  // htu mismatch
+  var threwU = null;
+  try { await d.verify(proof, { htm: "POST", htu: "https://evil.example.com/r" }); }
+  catch (e) { threwU = e; }
+  check("htu mismatch → auth-dpop/htu-mismatch",
+        threwU && threwU.code === "auth-dpop/htu-mismatch");
+}
+
+async function testAuthDpopAthBinding() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var proof = await d.buildProof({
+    htm: "POST", htu: "https://api.example.com/r",
+    privateKey: ec.privateKey, accessToken: "tok-A",
+  });
+
+  // ath enforced when accessToken provided to verify
+  var threwM = null;
+  try { await d.verify(proof, { htm: "POST", htu: "https://api.example.com/r", accessToken: "tok-B" }); }
+  catch (e) { threwM = e; }
+  check("ath mismatch → auth-dpop/ath-mismatch",
+        threwM && threwM.code === "auth-dpop/ath-mismatch");
+
+  // missing ath — operator passes accessToken but proof has no ath
+  var noAthProof = await d.buildProof({ htm: "POST", htu: "https://api.example.com/r", privateKey: ec.privateKey });
+  var threwMissing = null;
+  try { await d.verify(noAthProof, { htm: "POST", htu: "https://api.example.com/r", accessToken: "tok-A" }); }
+  catch (e) { threwMissing = e; }
+  check("missing ath when accessToken supplied → auth-dpop/missing-ath",
+        threwMissing && threwMissing.code === "auth-dpop/missing-ath");
+}
+
+async function testAuthDpopReplayDefense() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var store = b.nonceStore.create({ backend: "memory" });
+  var proof = await d.buildProof({ htm: "GET", htu: "https://api.example.com/r", privateKey: ec.privateKey });
+
+  // First verify passes
+  var ok1 = await d.verify(proof, { htm: "GET", htu: "https://api.example.com/r", replayStore: store });
+  check("first verify with replay store ok",    ok1.header.typ === "dpop+jwt");
+
+  // Second verify refused as replay
+  var threwR = null;
+  try { await d.verify(proof, { htm: "GET", htu: "https://api.example.com/r", replayStore: store }); }
+  catch (e) { threwR = e; }
+  check("second verify refused → auth-dpop/replay",
+        threwR && threwR.code === "auth-dpop/replay");
+
+  store.close();
+}
+
+async function testAuthDpopAlgorithmDefenses() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+
+  // alg "none" refused outright
+  var threwNone = null;
+  try {
+    await d.buildProof({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey, algorithm: "none" });
+  } catch (e) { threwNone = e; }
+  check("alg='none' refused at build",
+        threwNone && threwNone.code === "auth-dpop/refused-alg");
+
+  // alg HS256 refused
+  var threwHs = null;
+  try {
+    await d.verify("a.b.c", { htm: "GET", htu: "https://x/y", algorithms: ["HS256"] });
+  } catch (e) { threwHs = e; }
+  check("alg='HS256' refused in allowlist",
+        threwHs && threwHs.code === "auth-dpop/refused-alg");
+
+  // alg-not-allowed when token alg not in opt allowlist
+  var proof = await d.buildProof({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey });
+  var threwAna = null;
+  try { await d.verify(proof, { htm: "GET", htu: "https://x/y", algorithms: ["EdDSA"] }); }
+  catch (e) { threwAna = e; }
+  check("alg-not-allowed when allowlist excludes ES256",
+        threwAna && threwAna.code === "auth-dpop/alg-not-allowed");
+}
+
+async function testAuthDpopIatWindow() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+
+  var nowMs = Date.now();
+  // iat 1000s in the past
+  var staleProof = await d.buildProof({
+    htm: "GET", htu: "https://x/y", privateKey: ec.privateKey,
+    iat: Math.floor(nowMs / 1000) - 1000,
+  });
+  var threw = null;
+  try { await d.verify(staleProof, { htm: "GET", htu: "https://x/y", now: nowMs }); }
+  catch (e) { threw = e; }
+  check("iat-out-of-window when proof is stale",
+        threw && threw.code === "auth-dpop/iat-out-of-window");
+
+  // Larger window accepts the same stale proof
+  var ok = await d.verify(staleProof, {
+    htm: "GET", htu: "https://x/y", now: nowMs, iatWindowSec: 2000,
+  });
+  check("iatWindowSec lets a stale proof through",  ok.payload.htm === "GET");
+}
+
+async function testAuthDpopJwkPrivateLeakRefused() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  // Build a proof, then tamper the embedded JWK to add a private 'd' field
+  var proof = await d.buildProof({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey });
+  var parts = proof.split(".");
+  var hdr = JSON.parse(Buffer.from(parts[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString());
+  hdr.jwk.d = "fake-private-component";
+  parts[0] = Buffer.from(JSON.stringify(hdr)).toString("base64")
+    .replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  var threw = null;
+  try { await d.verify(parts.join("."), { htm: "GET", htu: "https://x/y" }); }
+  catch (e) { threw = e; }
+  check("jwk with 'd' refused → auth-dpop/jwk-has-private",
+        threw && threw.code === "auth-dpop/jwk-has-private");
+}
+
+async function testAuthDpopThumbprint() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var proof = await d.buildProof({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey });
+  var rv = await d.verify(proof, { htm: "GET", htu: "https://x/y" });
+
+  // Thumbprint matches what d.thumbprint() returns for the same jwk
+  var direct = d.thumbprint(rv.header.jwk);
+  check("verify-returned jkt matches thumbprint helper", rv.jkt === direct);
+
+  // expectedThumbprint pass + mismatch
+  var ok = await d.verify(proof, { htm: "GET", htu: "https://x/y", expectedThumbprint: rv.jkt });
+  check("expectedThumbprint match passes",      ok.jkt === rv.jkt);
+
+  var threw = null;
+  try {
+    var differentJkt = "X".repeat(rv.jkt.length);
+    await d.verify(proof, { htm: "GET", htu: "https://x/y", expectedThumbprint: differentJkt });
+  } catch (e) { threw = e; }
+  check("expectedThumbprint mismatch → auth-dpop/thumbprint-mismatch",
+        threw && threw.code === "auth-dpop/thumbprint-mismatch");
+}
+
+async function testAuthDpopPqcMlDsa() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ml = nodeCrypto.generateKeyPairSync("ml-dsa-87");
+  var proof = await d.buildProof({ htm: "POST", htu: "https://api.example.com/r", privateKey: ml.privateKey });
+  check("ML-DSA-87 proof builds",               typeof proof === "string");
+
+  var rv = await d.verify(proof, { htm: "POST", htu: "https://api.example.com/r" });
+  check("ML-DSA-87 verify ok",                  rv.header.alg === "ML-DSA-87");
+  check("ML-DSA-87 jwk.kty=AKP",                rv.header.jwk.kty === "AKP");
+  check("ML-DSA-87 jwk.alg=ML-DSA-87",          rv.header.jwk.alg === "ML-DSA-87");
+}
+
 // ---- template — eval-free interpreter ----
 //
 // Each test sets up its own tmpdir + writes the views by hand so the
@@ -17421,6 +17633,15 @@ async function run() {
   await testAuthJwtKidPropagation();
   await testAuthJwtReplayDefense();
   await testAuthJwtMissingKey();
+  await testAuthDpopRoundTrip();
+  await testAuthDpopHtmHtuMismatch();
+  await testAuthDpopAthBinding();
+  await testAuthDpopReplayDefense();
+  await testAuthDpopAlgorithmDefenses();
+  await testAuthDpopIatWindow();
+  await testAuthDpopJwkPrivateLeakRefused();
+  await testAuthDpopThumbprint();
+  await testAuthDpopPqcMlDsa();
   // handlers primitive
   await testHandlerEmitAndDrain();
   await testHandlerEmitDuringFlushNextCycle();
@@ -17665,6 +17886,15 @@ module.exports = {
   testAuthJwtKidPropagation:                 testAuthJwtKidPropagation,
   testAuthJwtReplayDefense:                  testAuthJwtReplayDefense,
   testAuthJwtMissingKey:                     testAuthJwtMissingKey,
+  testAuthDpopRoundTrip:                     testAuthDpopRoundTrip,
+  testAuthDpopHtmHtuMismatch:                testAuthDpopHtmHtuMismatch,
+  testAuthDpopAthBinding:                    testAuthDpopAthBinding,
+  testAuthDpopReplayDefense:                 testAuthDpopReplayDefense,
+  testAuthDpopAlgorithmDefenses:             testAuthDpopAlgorithmDefenses,
+  testAuthDpopIatWindow:                     testAuthDpopIatWindow,
+  testAuthDpopJwkPrivateLeakRefused:         testAuthDpopJwkPrivateLeakRefused,
+  testAuthDpopThumbprint:                    testAuthDpopThumbprint,
+  testAuthDpopPqcMlDsa:                      testAuthDpopPqcMlDsa,
   testTemplateSurface:                       testTemplateSurface,
   testTemplateEscapeHtml:                    testTemplateEscapeHtml,
   testTemplateBasicRender:                   testTemplateBasicRender,

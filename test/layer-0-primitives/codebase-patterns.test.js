@@ -1644,8 +1644,9 @@ function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/auth/jwt.js", "lib/auth/jwt-external.js", "lib/auth/oauth.js",
+        "lib/auth/dpop.js",
       ],
-      reason: "auth-jwt family — all three files implement JOSE/JWT decode + signature verification against operator-supplied keys. The shared shingle is the canonical 3-part split + base64url decode + safeJson.parse(header/payload) + algorithm allowlist enforcement that every JWT verifier must perform; the divergence is which keys / algorithms / claim-checks each module accepts (PQC algs in jwt.js; classical algs + JWKS in jwt-external.js; full OAuth-discovery + ID-token shape in oauth.js). Extracting the shared decode would split a small primitive across two files for marginal gain. Future consolidation candidate when a 4th JOSE-shaped consumer ships.",
+      reason: "auth-jwt / JOSE family — all four files implement JWS decode + signature verification against operator-supplied or proof-embedded keys. The shared shingle is the canonical 3-part split + base64url decode + safeJson.parse(header/payload) + algorithm allowlist enforcement that every JWS verifier must perform; the divergence is which keys / algorithms / claim-checks each module accepts (PQC algs in jwt.js; classical algs + JWKS in jwt-external.js; full OAuth-discovery + ID-token shape in oauth.js; embedded-jwk DPoP proof in dpop.js with htm/htu/ath/jti claims). Each module's failure-mode codespace (auth-jwt/* vs auth-jwt-external/* vs auth-oauth/* vs auth-dpop/*) is operator-distinguishable so consolidating to a single helper would either lose the distinct error class or pass the class through every helper site. Future consolidation candidate when the JOSE family doubles in size.",
     },
     {
       mode:  "family-subset",

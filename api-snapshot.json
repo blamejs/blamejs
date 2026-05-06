@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.68",
-  "createdAt": "2026-05-06T01:44:16.578Z",
+  "frameworkVersion": "0.7.70",
+  "createdAt": "2026-05-06T02:25:39.181Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -405,6 +405,39 @@
     "auth": {
       "type": "object",
       "members": {
+        "dpop": {
+          "type": "object",
+          "members": {
+            "REFUSED_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "SUPPORTED_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "SUPPORTED_CLASSICAL_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "SUPPORTED_PQC_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "buildProof": {
+              "type": "function",
+              "arity": 1
+            },
+            "thumbprint": {
+              "type": "function",
+              "arity": 1
+            },
+            "verify": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
         "jwt": {
           "type": "object",
           "members": {
@@ -19513,6 +19546,10 @@
           "arity": 1
         },
         "dbRoleFor": {
+          "type": "function",
+          "arity": 1
+        },
+        "dpop": {
           "type": "function",
           "arity": 1
         },
