@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.87",
-  "createdAt": "2026-05-06T06:24:38.742Z",
+  "frameworkVersion": "0.7.88",
+  "createdAt": "2026-05-06T06:32:41.364Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19695,6 +19695,10 @@
           "type": "function",
           "arity": 1
         },
+        "assetlinks": {
+          "type": "function",
+          "arity": 1
+        },
         "attachUser": {
           "type": "function",
           "arity": 1
@@ -19806,6 +19810,10 @@
         "sse": {
           "type": "function",
           "arity": 2
+        },
+        "webAppManifest": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
