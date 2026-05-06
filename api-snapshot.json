@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.97",
-  "createdAt": "2026-05-06T08:39:01.423Z",
+  "frameworkVersion": "0.7.98",
+  "createdAt": "2026-05-06T08:49:34.314Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -20980,6 +20980,10 @@
         "getThresholds": {
           "type": "function",
           "arity": 0
+        },
+        "monitor": {
+          "type": "function",
+          "arity": 1
         },
         "querySingle": {
           "type": "function",
