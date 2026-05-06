@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.4",
-  "createdAt": "2026-05-06T21:42:58.016Z",
+  "frameworkVersion": "0.8.5",
+  "createdAt": "2026-05-06T22:08:38.963Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -22607,6 +22607,10 @@
         "requireMethods": {
           "type": "function",
           "arity": 2
+        },
+        "requireMtls": {
+          "type": "function",
+          "arity": 1
         },
         "requireStepUp": {
           "type": "function",

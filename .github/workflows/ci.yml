@@ -99,6 +99,28 @@ jobs:
         # the bump in package.json so the new surface is tracked.
         run: node scripts/check-api-snapshot.js
 
+  vendor-currency:
+    # Asserts every npm-mapped vendored bundle in lib/vendor/MANIFEST.json
+    # matches the latest registry release. A stale vendored bundle is a
+    # release blocker — the framework's "zero npm runtime deps" rule is
+    # only a security posture if the snapshot we shipped is fresh.
+    name: Vendor currency (vendored bundles vs npm latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Run vendor-currency check
+        # Hits registry.npmjs.org/<pkg>/latest for each npm-mapped entry
+        # (vendored bundles plus per-component versions on meta-bundles
+        # like peculiar-pki). Fails on any "stale" finding. Registry
+        # errors stay advisory unless BLAMEJS_VENDOR_CURRENCY_STRICT=1
+        # so a transient registry hang doesn't block unrelated releases.
+        run: node scripts/check-vendor-currency.js
+
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
