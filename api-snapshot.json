@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.100",
-  "createdAt": "2026-05-06T09:12:21.577Z",
+  "frameworkVersion": "0.7.101",
+  "createdAt": "2026-05-06T09:24:22.688Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -21415,6 +21415,27 @@
         "timed": {
           "type": "function",
           "arity": 3
+        },
+        "traceContext": {
+          "type": "object",
+          "members": {
+            "build": {
+              "type": "function",
+              "arity": 1
+            },
+            "newParentId": {
+              "type": "function",
+              "arity": 0
+            },
+            "newTraceId": {
+              "type": "function",
+              "arity": 0
+            },
+            "parse": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
