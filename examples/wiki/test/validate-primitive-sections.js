@@ -925,6 +925,7 @@ var UNDOCUMENTED_BACKLOG = {
   "ntpCheck":           "covered by network-config.js page (NTP / NTS clock-drift check)",
   "metrics":            "covered by observability.js page",
   "outbox":             "transactional-outbox primitive — operator-facing surface documented in CHANGELOG v0.7.90; backfill wiki section under reliability.js or queue-cache.js when an operator demonstrates the multi-vendor wiring pattern is stable",
+  "dsr":                "Data Subject Rights workflow primitive — operator-facing surface documented in CHANGELOG v0.7.104; backfill wiki section under compliance-patterns.js when an operator demonstrates a multi-source production wiring pattern",
 };
 
 function _enumerateBxPrimitives(b, pages) {

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.103",
-  "createdAt": "2026-05-06T10:17:55.999Z",
+  "frameworkVersion": "0.7.104",
+  "createdAt": "2026-05-06T10:47:23.009Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2819,6 +2819,113 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "dsr": {
+      "type": "object",
+      "members": {
+        "DsrError": {
+          "type": "function",
+          "arity": 4
+        },
+        "POSTURE_DEADLINE_MS": {
+          "type": "object",
+          "members": {
+            "appi-jp": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ccpa": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "default": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "lgpd-br": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "pdpa-sg": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "pipeda-ca": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "pipl-cn": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "uk-gdpr": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "TYPE_MIN_VERIFICATION": {
+          "type": "object",
+          "members": {
+            "access": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "automated-decision": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "erasure": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "object": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "portability": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rectification": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "restriction": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "VALID_REQUEST_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "VALID_STATES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "VALID_VERIFICATION_LEVELS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "dbTicketStore": {
+          "type": "function",
+          "arity": 1
+        },
+        "memoryTicketStore": {
+          "type": "function",
+          "arity": 0
         }
       }
     },

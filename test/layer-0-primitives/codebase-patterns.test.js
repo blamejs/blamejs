@@ -1714,11 +1714,11 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/break-glass.js", "lib/middleware/assetlinks.js",
+        "lib/break-glass.js", "lib/dsr.js", "lib/middleware/assetlinks.js",
         "lib/network-dns.js", "lib/network-heartbeat.js",
         "lib/network-tls.js", "lib/safe-schema.js",
       ],
-      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (break-glass columns, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values). Six different domains with file-specific error classes; consolidating would lose the per-module error code.",
+      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values). Seven different domains with file-specific error classes; consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
