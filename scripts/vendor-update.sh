@@ -137,12 +137,11 @@ case "$PKG" in
     ;;
 
   "argon2")
-    npm install "${PKG}@${VER}" --no-save 2>/dev/null  # re-install with scripts for prebuilds
-    echo "module.exports = require(\"argon2\");" > _entry.cjs
-    npx esbuild _entry.cjs --bundle --format=cjs --platform=node --outfile=lib/vendor/argon2/argon2.cjs
-    rm _entry.cjs
-    rm -rf lib/vendor/argon2/prebuilds
-    cp -r node_modules/argon2/prebuilds lib/vendor/argon2/prebuilds
+    echo "ERROR: argon2 is no longer vendored. The framework uses Node's built-in"
+    echo "       crypto.argon2* (Node 24+) via lib/argon2-builtin.js. Operators"
+    echo "       wanting to override pass an alternative argon2 impl through"
+    echo "       opts to b.auth.password.{hash,verify,needsRehash}."
+    exit 1
     ;;
 
   "peculiar-pki")

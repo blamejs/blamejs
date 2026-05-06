@@ -18,36 +18,6 @@
         "server": "sha256:5d539dfc9ef47121d4c09bd7256d76448a1f5ac47ee09ac44c78ff6a062af9ab"
       }
     },
-    "argon2": {
-      "version": "0.44.0",
-      "license": "MIT",
-      "author": "Ranieri Althoff",
-      "source": "https://github.com/ranisalt/node-argon2",
-      "exports": [
-        "hash",
-        "verify"
-      ],
-      "files": {
-        "server": "lib/vendor/argon2/argon2.cjs",
-        "prebuilds": "lib/vendor/argon2/prebuilds/"
-      },
-      "platforms": [
-        "darwin-arm64",
-        "darwin-x64",
-        "freebsd-arm64",
-        "freebsd-x64",
-        "linux-arm",
-        "linux-arm64",
-        "linux-x64",
-        "win32-x64"
-      ],
-      "bundler": "esbuild --format=cjs --platform=node (inlines @phc/format + node-gyp-build)",
-      "bundledAt": "2026-04-25",
-      "hashes": {
-        "server": "sha256:93b8d2fb7f24dc1b3304dc9420844d5e1afc199c41ab1f9a90c8de48cc7c2359",
-        "prebuilds": "sha256-tree:65921b7cf331e0a9430a1b52440da8f26cdf9d215a4cd490edbc4804dd713df3"
-      }
-    },
     "@simplewebauthn/server": {
       "version": "13.3.0",
       "license": "MIT",

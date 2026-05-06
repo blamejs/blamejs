@@ -24,16 +24,6 @@ Copyright:   Copyright (c) 2023 Paul Miller (https://paulmillr.com)
 Used for:    XChaCha20-Poly1305 authenticated encryption (lib/crypto.js,
              lib/vault-wrap.js, via lib/vendor/noble-ciphers.cjs)
 --------------------------------------------------------------------------------
-Component:   argon2 (node-argon2)
-Version:     0.44.0
-Source:      https://github.com/ranisalt/node-argon2
-License:     MIT
-Copyright:   Copyright (c) 2017 Ranieri Althoff
-Used for:    Argon2id passphrase-derived key derivation in the vault wrap
-             format (lib/vault-wrap.js, via lib/vendor/argon2/). Native
-             prebuilds shipped for darwin-{arm64,x64}, freebsd-{arm64,x64},
-             linux-{arm,arm64,x64}, win32-x64.
---------------------------------------------------------------------------------
 Component:   @simplewebauthn/server
 Version:     13.3.0
 Source:      https://github.com/MasterKale/SimpleWebAuthn

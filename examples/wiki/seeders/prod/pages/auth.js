@@ -30,7 +30,7 @@ module.exports = {
   'if (ok && b.auth.password.needsRehash(stored)) {',
   '  await db.updateUser({ passwordHash: await b.auth.password.hash("hunter2") });',
   '}</code></pre>',
-  '<p>The <code>verify</code> path is timing-safe and <strong>tolerates malformed input by returning false</strong> rather than throwing — login flows treat false as "credentials didn\'t match" without wrapping in try/catch. Plaintext is capped at 4096 UTF-8 bytes (sanity, not security). The Argon2 native module is prebuilt for eight platforms under <code>lib/vendor/argon2/prebuilds/</code>; nothing compiles at install time.</p>',
+  '<p>The <code>verify</code> path is timing-safe and <strong>tolerates malformed input by returning false</strong> rather than throwing — login flows treat false as "credentials didn\'t match" without wrapping in try/catch. Plaintext is capped at 4096 UTF-8 bytes (sanity, not security). Argon2 routes through Node\'s built-in <code>crypto.argon2*</code> API (Node 24+) so no native modules are vendored or compiled at install time.</p>',
 
   '<h2 id="passkeys">Passkeys <a class="anchor" href="#passkeys">#</a></h2>',
   '<p>WebAuthn / FIDO2 sign-in lives behind <code>b.auth.passkey</code>. Four module-level functions for the two ceremonies:</p>',
