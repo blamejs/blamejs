@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.96",
-  "createdAt": "2026-05-06T08:30:00.009Z",
+  "frameworkVersion": "0.7.97",
+  "createdAt": "2026-05-06T08:39:01.423Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2000,6 +2000,18 @@
           "arity": 0
         },
         "describe": {
+          "type": "function",
+          "arity": 1
+        },
+        "list": {
+          "type": "function",
+          "arity": 0
+        },
+        "posturesByDomain": {
+          "type": "function",
+          "arity": 1
+        },
+        "posturesByJurisdiction": {
           "type": "function",
           "arity": 1
         },
