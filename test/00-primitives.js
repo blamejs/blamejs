@@ -3403,6 +3403,56 @@ async function testMailValidation() {
   check("bracketed Name <addr> form accepted",       memory.sent.length === 1);
 }
 
+async function testMailEaiSmtpUtf8() {
+  // RFC 6531/6532/6533 internationalized email — IDN domain + Unicode
+  // local-part. b.mail.send accepts the address and the memory transport
+  // ferries it through; the SMTP transport's SMTPUTF8 negotiation is
+  // exercised by integration tests against real peers.
+  check("b.mail.toAscii is a function",       typeof b.mail.toAscii === "function");
+  check("b.mail.toUnicode is a function",     typeof b.mail.toUnicode === "function");
+  check("toAscii(münchen.example)",
+        b.mail.toAscii("münchen.example") === "xn--mnchen-3ya.example");
+  check("toUnicode(xn--mnchen-3ya.example)",
+        b.mail.toUnicode("xn--mnchen-3ya.example") === "münchen.example");
+  check("toAscii returns null for empty",     b.mail.toAscii("") === null);
+  check("toUnicode returns null for empty",   b.mail.toUnicode("") === null);
+
+  var memory = b.mail.transports.memory();
+  var mailer = b.mail.create({ transport: memory, audit: false });
+
+  // EAI address — Unicode local-part + IDN domain
+  await mailer.send({
+    from:    "sender@example.com",
+    to:      "müller@münchen.example",
+    subject: "Hallo Welt",
+    text:    "Sehr geehrte Damen und Herren",
+  });
+  check("EAI Unicode local + IDN domain accepted",
+        memory.sent.length === 1 &&
+        memory.sent[0].to === "müller@münchen.example");
+
+  // Plain ASCII still works
+  await mailer.send({
+    from:    "sender@example.com",
+    to:      "rcpt@example.com",
+    subject: "ascii",
+    text:    "x",
+  });
+  check("ASCII path remains valid",            memory.sent.length === 2);
+
+  // Invalid IDN domain (empty) refused
+  var threw = null;
+  try { await mailer.send({ from: "a@b.com", to: "x@", text: "x" }); }
+  catch (e) { threw = e; }
+  check("empty IDN domain refused",            threw && threw.code === "mail/invalid-recipient");
+
+  // CRLF in EAI local part still refused (header injection defense)
+  threw = null;
+  try { await mailer.send({ from: "a@b.com", to: "abc\r\nBCC: evil@x.com@münchen.example", text: "x" }); }
+  catch (e) { threw = e; }
+  check("CRLF in EAI address refused",         threw && threw.code === "mail/invalid-recipient");
+}
+
 async function testMailRecipientArrayAndCcBcc() {
   var memory = b.mail.transports.memory();
   var mailer = b.mail.create({ transport: memory, audit: false });
@@ -17210,6 +17260,7 @@ async function run() {
   await testMailSendRoundTripViaMemoryTransport();
   await testMailDefaultsAndOverrides();
   await testMailValidation();
+  await testMailEaiSmtpUtf8();
   await testMailRecipientArrayAndCcBcc();
   await testMailTransportFailureWraps();
   await testMailFunctionAsTransport();
@@ -17945,6 +17996,7 @@ module.exports = {
   testMailSendRoundTripViaMemoryTransport:   testMailSendRoundTripViaMemoryTransport,
   testMailDefaultsAndOverrides:              testMailDefaultsAndOverrides,
   testMailValidation:                        testMailValidation,
+  testMailEaiSmtpUtf8:                       testMailEaiSmtpUtf8,
   testMailRecipientArrayAndCcBcc:            testMailRecipientArrayAndCcBcc,
   testMailTransportFailureWraps:             testMailTransportFailureWraps,
   testMailFunctionAsTransport:               testMailFunctionAsTransport,
