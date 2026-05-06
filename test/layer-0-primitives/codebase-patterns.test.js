@@ -1760,10 +1760,12 @@ function testNoDuplicateCodeBlocks() {
         "lib/auth/sd-jwt-vc-issuer.js", "lib/auth/step-up.js",
         "lib/auth/step-up-policy.js",
         "lib/break-glass.js", "lib/dsr.js", "lib/middleware/assetlinks.js",
+        "lib/middleware/require-methods.js", "lib/middleware/security-txt.js",
         "lib/network-dns.js", "lib/network-heartbeat.js",
         "lib/network-tls.js", "lib/safe-schema.js",
+        "lib/ws-client.js",
       ],
-      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (sd-jwt-vc issuer keys, step-up acrValues / requiredAmr, step-up-policy acrAny / amr / requiredAmr atoms, break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values). Ten different domains with file-specific error classes; consolidating would lose the per-module error code.",
+      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` plus per-element non-empty-string check repeats across primitives that take operator-supplied lists (sd-jwt-vc issuer keys, step-up acrValues / requiredAmr, step-up-policy acrAny / amr / requiredAmr atoms, require-methods HTTP-verb allowlist, security-txt contact lines, break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values, ws-client subprotocols). Twelve different domains with file-specific error classes; consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
@@ -2626,22 +2628,37 @@ module.exports = { run: run };
 if (require.main === module) {
   // Persistent output to .test-output/codebase-patterns.log so agents
   // iterating on a failing run can grep the file instead of re-running.
+  // Synchronous fd writes (mirroring test/smoke.js) — async streams
+  // don't flush before process exit, which previously left the log
+  // empty after a failed run.
   var fsLog   = require("node:fs");
   var pathLog = require("node:path");
   var REPO_ROOT = pathLog.resolve(__dirname, "..", "..");
   var OUT = pathLog.join(REPO_ROOT, ".test-output");
   try { fsLog.mkdirSync(OUT, { recursive: true }); } catch (_e) { /* best-effort */ }
-  var stream = fsLog.createWriteStream(pathLog.join(OUT, "codebase-patterns.log"), { flags: "w" });
+  var LOG_PATH = pathLog.join(OUT, "codebase-patterns.log");
+  try { fsLog.unlinkSync(LOG_PATH); } catch (_e) { /* fresh start */ }
+  var _logFd = fsLog.openSync(LOG_PATH, "w");
+  function _logWrite(chunk) {
+    try {
+      var buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+      fsLog.writeSync(_logFd, buf, 0, buf.length, null);
+    } catch (_e) { /* best-effort */ }
+  }
   var origStdout = process.stdout.write.bind(process.stdout);
   var origStderr = process.stderr.write.bind(process.stderr);
   process.stdout.write = function (c, e, cb) {
-    try { stream.write(c, e); } catch (_e) { /* best-effort */ }
+    _logWrite(c);
     return origStdout(c, e, cb);
   };
   process.stderr.write = function (c, e, cb) {
-    try { stream.write(c, e); } catch (_e) { /* best-effort */ }
+    _logWrite(c);
     return origStderr(c, e, cb);
   };
+  process.on("exit", function () {
+    try { fsLog.closeSync(_logFd); } catch (_e) { /* best-effort */ }
+  });
+  console.log("output: " + LOG_PATH);
   run().then(
     function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
     function (e) { console.error("FAIL:", e.stack || e); process.exit(1); }

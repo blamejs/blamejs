@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.113",
-  "createdAt": "2026-05-06T15:43:09.750Z",
+  "frameworkVersion": "0.7.114",
+  "createdAt": "2026-05-06T16:24:14.325Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -27194,6 +27194,47 @@
           "type": "function",
           "arity": 4
         },
+        "aad": {
+          "type": "object",
+          "members": {
+            "AAD_PREFIX": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AAD_VERSION": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "VaultAadError": {
+              "type": "function",
+              "arity": 4
+            },
+            "buildColumnAad": {
+              "type": "function",
+              "arity": 1
+            },
+            "buildContextAad": {
+              "type": "function",
+              "arity": 1
+            },
+            "isAadSealed": {
+              "type": "function",
+              "arity": 1
+            },
+            "reseal": {
+              "type": "function",
+              "arity": 3
+            },
+            "seal": {
+              "type": "function",
+              "arity": 2
+            },
+            "unseal": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
         "getCurrentPassphrase": {
           "type": "function",
           "arity": 0
@@ -27600,6 +27641,39 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "wsClient": {
+      "type": "object",
+      "members": {
+        "CLOSE_GOING_AWAY": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CLOSE_NORMAL": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OPCODE_BINARY": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OPCODE_TEXT": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "WS_GUID": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "WsClientError": {
+          "type": "function",
+          "arity": 4
+        },
+        "connect": {
+          "type": "function",
+          "arity": 2
         }
       }
     }
