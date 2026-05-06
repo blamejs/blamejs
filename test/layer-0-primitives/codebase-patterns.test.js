@@ -1618,15 +1618,17 @@ function testNoDuplicateCodeBlocks() {
       reason: "Long `field: opts.field` config-passthrough chain coincidentally shingles. guard-all assembles per-guard opts (gate-contract vocabulary); middleware/index forwards createApp opts to per-middleware factories; websocket-channels forwards channel-broker opts. Three different domains, three different vocabulary lists — not consolidatable.",
     },
     {
-      files: ["lib/file-upload.js", "lib/guard-html.js", "lib/static.js"],
-      reason: "Validate-opts scaffolding + per-primitive PROFILES literal block. file-upload and static open with the same `validateOpts.requireObject(...)` cascade; guard-html's PROFILES literal carries the same opt-name vocabulary as both. Three different create()-style entry shapes; the bodies diverge. Same conventional-shape false-positive as the prior validateOpts cluster.",
+      mode:  "family-subset",
+      files: ["lib/file-upload.js", "lib/guard-html.js", "lib/static.js", "lib/cloud-events.js"],
+      reason: "Validate-opts scaffolding + per-primitive PROFILES literal block. file-upload and static open with the same `validateOpts.requireObject(...)` cascade; guard-html's PROFILES literal carries the same opt-name vocabulary as both; cloud-events.wrap performs the same require + optional cascade across spec attributes. Different create()-style entry shapes; the bodies diverge. Same conventional-shape false-positive as the prior validateOpts cluster.",
     },
     {
       files: ["lib/audit.js", "lib/guard-csv.js", "lib/guard-html.js"],
       reason: "Audit emission shape — `audit.emit({ event, outcome, metadata: { ... } })` carries identical token sequence across the audit primitive itself and any consumer that emits structured audit rows. guard-csv and guard-html each emit their own domain events; consolidation is impossible because the audit module IS the canonical emitter and the consumers cannot route through themselves.",
     },
     {
-      files: ["lib/api-key.js", "lib/file-upload.js", "lib/static.js"],
+      mode:  "family-subset",
+      files: ["lib/api-key.js", "lib/file-upload.js", "lib/static.js", "lib/cloud-events.js"],
       reason: "_validateOpts function-prelude scaffolding — every primitive's create() opens with `function _validateXxxOpts(opts) { validateOpts.requireObject(opts, ..., XError); validateOpts.requireNonEmptyString(...); validateOpts.optionalXxx(...) }`. Same scaffolding by design; the cascade body differs per primitive's domain. Tracked as conventional-shape false-positive.",
     },
     {

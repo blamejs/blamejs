@@ -211,6 +211,7 @@ var fileUpload = require("./lib/file-upload");
 var dualControl = require("./lib/dual-control");
 var retention = require("./lib/retention");
 var network = require("./lib/network");
+var cloudEvents = require("./lib/cloud-events");
 
 module.exports = {
   crypto:           crypto,
@@ -357,6 +358,7 @@ module.exports = {
   dualControl:      dualControl,
   retention:        retention,
   network:          network,
+  cloudEvents:      cloudEvents,
   ntpCheck:         ntpCheck,
   version:          constants.version,
 };

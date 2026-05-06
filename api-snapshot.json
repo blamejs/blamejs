@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.77",
-  "createdAt": "2026-05-06T04:30:50.230Z",
+  "frameworkVersion": "0.7.78",
+  "createdAt": "2026-05-06T04:48:29.050Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -1426,6 +1426,31 @@
         "resolvePassphrase": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "cloudEvents": {
+      "type": "object",
+      "members": {
+        "CloudEventsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "REQUIRED_ATTRS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "SPECVERSION": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
+        },
+        "wrap": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
