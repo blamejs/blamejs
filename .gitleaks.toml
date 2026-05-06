@@ -59,6 +59,11 @@ regexes = [
   # operator-facing wiki). Real signing keys never appear in compact
   # serialization shape — they're PEM / DER / PKCS#8.
   '''eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*''',
+  # Source files split JWT fixtures across multiple string literals
+  # for line-length; gitleaks then sees individual base64url segments.
+  # Match a single `eyJ`-prefixed segment of substantive length to
+  # cover that split-literal shape too.
+  '''eyJ[A-Za-z0-9_-]{20,}''',
 ]
 
 [[allowlists]]
