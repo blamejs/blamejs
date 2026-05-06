@@ -10277,19 +10277,37 @@ function testPqcAgentCreateHasPqcPosture() {
 }
 
 function testPqcAgentCannotWeakenCryptoPosture() {
-  // Operator passes weakened opts; the primitive ignores them and the
-  // framework defaults win. This is the primitive's whole point — it
-  // makes "accidentally shipped a downgraded agent" structurally
-  // impossible at the create() boundary.
-  var weakened = b.pqcAgent.create({
+  // Operator-supplied minVersion is silently ignored (TLSv1.3 always
+  // wins). Operator-supplied ecdhCurve outside the framework PQ-
+  // hybrid preference now THROWS (was previously silently overridden);
+  // refusing loudly means an operator who tried to downgrade learns
+  // it at create-time instead of running a process they think is
+  // PQC-hybrid but isn't. Pool tuning (keepAlive, maxSockets) stays
+  // overridable.
+  var threwOnWeakCurve = false;
+  try {
+    b.pqcAgent.create({
+      minVersion: "TLSv1.0",
+      ecdhCurve:  "P-256",
+    });
+  } catch (e) {
+    threwOnWeakCurve = e.message.indexOf("not in the framework PQC-hybrid preference") !== -1;
+  }
+  check("operator-supplied weak ecdhCurve refused at create-time", threwOnWeakCurve);
+
+  // minVersion / pool tuning still honored without an ecdhCurve weakening.
+  var pooled = b.pqcAgent.create({
     minVersion: "TLSv1.0",
-    ecdhCurve:  "P-256",
     keepAlive:  false,    // pool tuning IS overridable
   });
-  check("operator-supplied minVersion ignored",    weakened.options.minVersion === "TLSv1.3");
-  check("operator-supplied ecdhCurve ignored",     weakened.options.ecdhCurve === b.constants.TLS_GROUP_CURVE_STR);
+  check("operator-supplied minVersion ignored",  pooled.options.minVersion === "TLSv1.3");
+  check("framework default ecdhCurve preserved", pooled.options.ecdhCurve === b.constants.TLS_GROUP_CURVE_STR);
   check("operator-supplied keepAlive honored (pool tuning IS overridable)",
-        weakened.keepAlive === false);
+        pooled.keepAlive === false);
+
+  // Caller-supplied STRICTER subset (drop one of the two PQ groups) is honored.
+  var narrowed = b.pqcAgent.create({ ecdhCurve: "X25519MLKEM768" });
+  check("operator-supplied stricter subset honored", narrowed.options.ecdhCurve === "X25519MLKEM768");
 }
 
 function testPqcAgentDefaultIsLazy() {

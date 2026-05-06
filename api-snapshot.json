@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.3",
-  "createdAt": "2026-05-06T21:19:47.400Z",
+  "frameworkVersion": "0.8.4",
+  "createdAt": "2026-05-06T21:42:58.016Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -4126,7 +4126,15 @@
           "type": "function",
           "arity": 1
         },
+        "hashCertFingerprint": {
+          "type": "function",
+          "arity": 1
+        },
         "hmacSha3": {
+          "type": "function",
+          "arity": 2
+        },
+        "isCertRevoked": {
           "type": "function",
           "arity": 2
         },

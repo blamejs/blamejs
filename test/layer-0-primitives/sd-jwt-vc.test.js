@@ -657,10 +657,10 @@ function testExports() {
         sdJwtVc.SUPPORTED_ALGS.indexOf("ES256") !== -1);
   check("SUPPORTED_ALGS includes ML-DSA-87",
         sdJwtVc.SUPPORTED_ALGS.indexOf("ML-DSA-87") !== -1);
-  check("DEFAULT_ALG is ES256",
-        sdJwtVc.DEFAULT_ALG === "ES256");
-  check("DEFAULT_HASH_ALG is sha-256",
-        sdJwtVc.DEFAULT_HASH_ALG === "sha-256");
+  check("DEFAULT_ALG is ML-DSA-87",
+        sdJwtVc.DEFAULT_ALG === "ML-DSA-87");
+  check("DEFAULT_HASH_ALG is sha3-512",
+        sdJwtVc.DEFAULT_HASH_ALG === "sha3-512");
   check("disclosure module exposed",
         typeof sdJwtVc.disclosure.encode === "function");
 }
