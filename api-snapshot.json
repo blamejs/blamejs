@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.67",
-  "createdAt": "2026-05-06T01:22:42.184Z",
+  "frameworkVersion": "0.7.68",
+  "createdAt": "2026-05-06T01:44:16.578Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19707,6 +19707,10 @@
             "resolveAaaa": {
               "type": "function",
               "arity": 1
+            },
+            "resolveSecure": {
+              "type": "function",
+              "arity": 2
             },
             "setCacheTtlMs": {
               "type": "function",
