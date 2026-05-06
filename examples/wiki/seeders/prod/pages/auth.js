@@ -272,7 +272,7 @@ module.exports = {
   '                                           // default: null — preset selector',
   '  issuer:           string,                // override preset / required for generic',
   '  scope:            string[],              // default: preset default or ["openid"]',
-  '  pkce:             boolean,               // default: true',
+  '  pkce:             true,                  // OAuth 2.1 — required, no opt-out',
   '  isOidc:           boolean,               // default: preset value or true',
   '  clockSkewMs:      number,                // default: framework default',
   '  discoveryCacheMs: number,                // default: framework default',

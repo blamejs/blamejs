@@ -6886,6 +6886,20 @@ function testOAuthCreateValidates() {
   check("create: auth0 preset requires auth0Domain", threw && threw.code === "auth-oauth/auth0-domain");
 }
 
+function testOAuthPkceRequired() {
+  // OAuth 2.1 — PKCE is required for all clients, not opt-out.
+  // create({ pkce: false }) throws auth-oauth/pkce-required.
+  var threw = null;
+  try {
+    b.auth.oauth.create({
+      clientId:    "x", clientSecret: "y", redirectUri: "https://app/cb",
+      provider:    "google", pkce: false,
+    });
+  } catch (e) { threw = e; }
+  check("create: pkce: false → auth-oauth/pkce-required",
+        threw && threw.code === "auth-oauth/pkce-required");
+}
+
 function testOAuthPkceGenerator() {
   var p1 = b.auth.oauth._generatePkce();
   check("pkce: verifier 43 chars (base64url 32 bytes)",  p1.verifier.length === 43);
@@ -17346,6 +17360,7 @@ async function run() {
   // auth.oauth — OAuth 2 / OIDC client
   testOAuthSurface();
   testOAuthCreateValidates();
+  testOAuthPkceRequired();
   testOAuthPkceGenerator();
   await testOAuthAuthorizationUrlPreset();
   await testOAuthAuthorizationUrlOidc();
@@ -18052,6 +18067,7 @@ module.exports = {
   testBodyParserSanitizeFilenameUnit:        testBodyParserSanitizeFilenameUnit,
   testOAuthSurface:                          testOAuthSurface,
   testOAuthCreateValidates:                  testOAuthCreateValidates,
+  testOAuthPkceRequired:                     testOAuthPkceRequired,
   testOAuthPkceGenerator:                    testOAuthPkceGenerator,
   testOAuthAuthorizationUrlPreset:           testOAuthAuthorizationUrlPreset,
   testOAuthAuthorizationUrlOidc:             testOAuthAuthorizationUrlOidc,
