@@ -1695,8 +1695,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/compliance-sanctions.js", "lib/observability-otlp-exporter.js",
         "lib/compliance-sanctions-fetcher.js",
         "lib/guard-html-wcag.js", "lib/mail-dkim.js",
+        "lib/auth/sd-jwt-vc-issuer.js", "lib/auth/sd-jwt-vc-holder.js",
+        "lib/auth/dpop.js",
       ],
-      reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Nine different action vocabularies; consolidating would lose the per-primitive metric name.",
+      reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Twelve different action vocabularies; consolidating would lose the per-primitive metric name.",
     },
     {
       mode:  "family-subset",
@@ -1704,8 +1706,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/auth/dpop.js", "lib/compliance-sanctions.js", "lib/dora.js",
         "lib/middleware/dpop.js", "lib/outbox.js", "lib/static.js",
         "lib/compliance-sanctions-fetcher.js", "lib/dsr.js",
+        "lib/auth/sd-jwt-vc-holder.js", "lib/auth/sd-jwt-vc-issuer.js",
       ],
-      reason: "Try/catch + drop-silent observability emit — eight primitives wrap `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
+      reason: "Try/catch + drop-silent observability emit — every primitive wraps `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
     },
     {
       mode:  "family-subset",
@@ -1721,11 +1724,12 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/auth/sd-jwt-vc-issuer.js",
         "lib/break-glass.js", "lib/dsr.js", "lib/middleware/assetlinks.js",
         "lib/network-dns.js", "lib/network-heartbeat.js",
         "lib/network-tls.js", "lib/safe-schema.js",
       ],
-      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values). Seven different domains with file-specific error classes; consolidating would lose the per-module error code.",
+      reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` repeats across primitives that take operator-supplied lists (sd-jwt-vc issuer keys, break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values). Eight different domains with file-specific error classes; consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",

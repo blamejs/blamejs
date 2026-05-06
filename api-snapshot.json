@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.106",
-  "createdAt": "2026-05-06T11:37:46.419Z",
+  "frameworkVersion": "0.7.107",
+  "createdAt": "2026-05-06T12:06:12.547Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -948,6 +948,82 @@
               "arity": 0
             },
             "policy": {
+              "type": "function",
+              "arity": 1
+            },
+            "verify": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "sdJwtVc": {
+          "type": "object",
+          "members": {
+            "DEFAULT_ALG": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "DEFAULT_HASH_ALG": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SUPPORTED_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "SUPPORTED_HASH_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "disclosure": {
+              "type": "object",
+              "members": {
+                "DEFAULT_SALT_BYTES": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "decode": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "encode": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "encodeArrayElement": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
+            },
+            "holder": {
+              "type": "object",
+              "members": {
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "memoryStorage": {
+                  "type": "function",
+                  "arity": 0
+                }
+              }
+            },
+            "issue": {
+              "type": "function",
+              "arity": 1
+            },
+            "issuer": {
+              "type": "object",
+              "members": {
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "present": {
               "type": "function",
               "arity": 1
             },

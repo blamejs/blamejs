@@ -140,6 +140,7 @@ var auth = {
   dpop:     require("./lib/auth/dpop"),
   aal:      require("./lib/auth/aal"),
   statusList: require("./lib/auth/status-list"),
+  sdJwtVc:    require("./lib/auth/sd-jwt-vc"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");
