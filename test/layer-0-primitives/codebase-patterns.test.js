@@ -1614,6 +1614,24 @@ function testNoDuplicateCodeBlocks() {
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/compliance-ai-act-prohibited.js",
+        "lib/compliance-ai-act-risk.js",
+        "lib/compliance-ai-act-logging.js",
+        "lib/compliance-ai-act.js",
+        "lib/compliance-ai-act-transparency.js",
+        "lib/guard-all.js",
+      ],
+      reason: "EU AI Act primitive family + guard-all linear-scan idiom — sibling modules sharing the linear catalog-walk shape (`for (var i = 0; i < ARR.length; i += 1) { if (ARR[i].id === id) return ARR[i]; } return null;`). The AI-Act catalogs diverge (Article 5 prohibited practices vs Annex III high-risk rows vs Article 12 logging fields vs Article 50 transparency banners) and guard-all walks the registered guard-list; consolidating would lose per-domain structure.",
+    },
+    {
+      files: [
+        "lib/compliance-ai-act.js", "lib/gate-contract.js", "lib/mail-auth.js",
+      ],
+      reason: "Long opts-passthrough block where each line is `field: opts.field || null` with the same null-fallback shape. AI-Act annexIVScaffold builds the Annex IV section-1 record; gate-contract assembles content-safety profile; mail-auth builds an authentication-results header. Three different schemas; not consolidatable.",
+    },
+    {
       files: ["lib/guard-all.js", "lib/middleware/index.js", "lib/websocket-channels.js"],
       reason: "Long `field: opts.field` config-passthrough chain coincidentally shingles. guard-all assembles per-guard opts (gate-contract vocabulary); middleware/index forwards createApp opts to per-middleware factories; websocket-channels forwards channel-broker opts. Three different domains, three different vocabulary lists — not consolidatable.",
     },

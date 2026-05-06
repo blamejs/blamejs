@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.108",
-  "createdAt": "2026-05-06T13:04:39.887Z",
+  "frameworkVersion": "0.7.109",
+  "createdAt": "2026-05-06T13:49:10.084Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -3068,6 +3068,391 @@
                 "name": {
                   "type": "primitive",
                   "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "aiAct": {
+          "type": "object",
+          "members": {
+            "ARTICLE_OBLIGATIONS": {
+              "type": "object",
+              "members": {
+                "Art. 10": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 11": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 12": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 13": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 14": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 15": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 27": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 50": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 53": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 55": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "Art. 9": {
+                  "type": "object",
+                  "members": {
+                    "summary": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "title": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "DEADLINES": {
+              "type": "object",
+              "members": {
+                "enteredForce": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "generalPurposeAI": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "highRiskAnnexIII": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "highRiskAnnexIProducts": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "prohibitedPractices": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "transparencyObligations": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "annexIVScaffold": {
+              "type": "function",
+              "arity": 1
+            },
+            "articleObligations": {
+              "type": "function",
+              "arity": 1
+            },
+            "classify": {
+              "type": "function",
+              "arity": 1
+            },
+            "deployerChecklist": {
+              "type": "function",
+              "arity": 1
+            },
+            "emitClassificationAudit": {
+              "type": "function",
+              "arity": 2
+            },
+            "gpai": {
+              "type": "object",
+              "members": {
+                "OBLIGATIONS": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "classify": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "listObligations": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "listArticles": {
+              "type": "function",
+              "arity": 0
+            },
+            "logging": {
+              "type": "object",
+              "members": {
+                "MIN_BIOMETRIC_FIELDS": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "RETENTION_FLOORS": {
+                  "type": "object",
+                  "members": {
+                    "default": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "high-risk-employment": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "high-risk-financial": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "high-risk-law-enforcement": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "buildEvent": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "emit": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "logEvent": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "loggerFor": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "retentionFloorMs": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "prohibited": {
+              "type": "object",
+              "members": {
+                "PROHIBITED_PRACTICES": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "classify": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "getPractice": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "listIds": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "listPractices": {
+                  "type": "function",
+                  "arity": 0
+                }
+              }
+            },
+            "risk": {
+              "type": "object",
+              "members": {
+                "ANNEX_III_USE_CASES": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "classifyAnnexIII": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "getAnnexIII": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "isHighRisk": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "listAnnexIII": {
+                  "type": "function",
+                  "arity": 0
+                },
+                "obligationsFor": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "transparency": {
+              "type": "object",
+              "members": {
+                "BANNER_KINDS": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "BANNER_TEXT_EN": {
+                  "type": "object",
+                  "members": {
+                    "ai-generated-content": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "ai-interaction": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "ai-text-public-interest": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "biometric-categorisation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "deep-fake": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "emotion-recognition": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "banner": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "htmlBanner": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "jsonLdDisclosure": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "metaTags": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "watermark": {
+                  "type": "function",
+                  "arity": 1
                 }
               }
             }
@@ -21854,6 +22239,10 @@
     "middleware": {
       "type": "object",
       "members": {
+        "aiActDisclosure": {
+          "type": "function",
+          "arity": 1
+        },
         "apiEncrypt": {
           "type": "function",
           "arity": 1
