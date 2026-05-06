@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.92",
-  "createdAt": "2026-05-06T07:51:37.374Z",
+  "frameworkVersion": "0.7.93",
+  "createdAt": "2026-05-06T08:01:27.460Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -2296,6 +2296,57 @@
     "dora": {
       "type": "object",
       "members": {
+        "DEADLINES_CRA": {
+          "type": "object",
+          "members": {
+            "earlyWarningMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "finalReportMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "initialReportMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "DEADLINES_HIPAA_BREACH": {
+          "type": "object",
+          "members": {
+            "annualAggregateMs": {
+              "type": "primitive",
+              "valueType": "null"
+            },
+            "individualNoticeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "secretaryNoticeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "DEADLINES_NIS2": {
+          "type": "object",
+          "members": {
+            "earlyWarningMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "finalReportMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "initialReportMs": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
         "DoraError": {
           "type": "function",
           "arity": 4
