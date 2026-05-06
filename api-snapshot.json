@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.7.80",
-  "createdAt": "2026-05-06T05:24:07.059Z",
+  "frameworkVersion": "0.7.81",
+  "createdAt": "2026-05-06T05:31:15.873Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -19694,6 +19694,10 @@
           "arity": 1
         },
         "health": {
+          "type": "function",
+          "arity": 1
+        },
+        "hostAllowlist": {
           "type": "function",
           "arity": 1
         },
