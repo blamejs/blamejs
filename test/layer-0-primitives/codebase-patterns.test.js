@@ -1278,7 +1278,7 @@ function _normalizeJsLine(line) {
   return line;
 }
 
-function testNoDuplicateCodeBlocks() {
+async function testNoDuplicateCodeBlocks() {
   // class: duplicate-block
   // Token-n-gram shingle detection. Each .js file is fully tokenized
   // (with identifiers/strings/numbers/regexes normalized to placeholders),
@@ -1427,34 +1427,7 @@ function testNoDuplicateCodeBlocks() {
       shards[fIdx % workerCount].push(files[fIdx]);
     }
     shards = shards.filter(function (s) { return s.length > 0; });
-    shardResults = _runShingleSync(shards);
-  }
-  function _runShingleSync(shards) {
-    // synchronous blocking await — testNoDuplicateCodeBlocks is sync
-    // by historical convention; rather than thread async/await through
-    // every detector (and the run() orchestrator), block on the
-    // promise via deasync-style Atomics.wait on a SharedArrayBuffer
-    // signalled from the resolver. Node's worker_threads ships with
-    // Atomics + SAB so no extra dep needed.
-    var sab    = new SharedArrayBuffer(4);
-    var signal = new Int32Array(sab);
-    var results = new Array(shards.length);
-    var thrown  = null;
-    var pending = shards.length;
-    shards.forEach(function (shard, idx) {
-      _scanShardInWorker(shard).then(function (res) {
-        results[idx] = res;
-        if (--pending === 0) { Atomics.store(signal, 0, 1); Atomics.notify(signal, 0, 1); }
-      }, function (e) {
-        thrown = e;
-        Atomics.store(signal, 0, 1); Atomics.notify(signal, 0, 1);
-      });
-    });
-    while (Atomics.load(signal, 0) === 0) {
-      Atomics.wait(signal, 0, 0, 50);
-    }
-    if (thrown) throw thrown;
-    return results;
+    shardResults = await Promise.all(shards.map(_scanShardInWorker));
   }
 
   // Merge shard outputs into a single per-(pass, size) seen map, then
@@ -1478,17 +1451,28 @@ function testNoDuplicateCodeBlocks() {
     });
   });
 
+  // Iterate sizes largest-first so cluster.sites end up holding the
+  // bestSize occurrences in a single pass. Within a size, sort the
+  // fingerprints lexically so cluster identity (which fp's
+  // occurrences populate `sites` when multiple fps map to the same
+  // fileSet+size) is invariant under shard-merge order — without
+  // this, parallel runs diverge from in-process runs because shards
+  // contribute fps in different orders.
+  var sortedSizes = Object.keys(seenByPassSize["[exact]"] || {}).map(Number).sort(function (a, b) { return b - a; });
   Object.keys(seenByPassSize).forEach(function (passLabel) {
     var perSize = seenByPassSize[passLabel];
-    Object.keys(perSize).forEach(function (sizeStr) {
-      var n = Number(sizeStr);
-      var seen = perSize[sizeStr];
-      Object.keys(seen).forEach(function (fp) {
+    for (var szi = 0; szi < sortedSizes.length; szi += 1) {
+      var n = sortedSizes[szi];
+      var seen = perSize[String(n)];
+      if (!seen) continue;
+      var fps = Object.keys(seen).sort();
+      for (var fpi = 0; fpi < fps.length; fpi += 1) {
+        var fp = fps[fpi];
         var occ = seen[fp];
         var distinctFiles = {};
         occ.forEach(function (o) { distinctFiles[o.file] = true; });
         var fileList = Object.keys(distinctFiles).sort();
-        if (fileList.length < MIN_DISTINCT_FILES) return;
+        if (fileList.length < MIN_DISTINCT_FILES) continue;
         var key = passLabel + "|" + fileList.join("|");
         if (!clusters[key]) {
           clusters[key] = {
@@ -1501,8 +1485,8 @@ function testNoDuplicateCodeBlocks() {
           clusters[key].bestSize = n;
           clusters[key].sites = occ.slice();
         }
-      });
-    });
+      }
+    }
   });
 
   // Convert clusters to sorted report rows. Bigger shingles + larger
@@ -1560,7 +1544,6 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/deprecate.js:_format",
         "lib/deprecate.js:_validateOpts",
         "lib/openapi-paths-builder.js:_normaliseParameter",
         "lib/openapi-paths-builder.js:_normaliseRequestBody",
@@ -1570,15 +1553,15 @@ function testNoDuplicateCodeBlocks() {
         "lib/asyncapi.js:_addChannel",
         "lib/asyncapi.js:_normaliseMessage",
         "lib/asyncapi.js:_validateServerEntry",
-        "lib/asyncapi.js:_validateServers",
         "lib/asyncapi.js:parse",
         "lib/asyncapi-bindings.js:kafka",
         "lib/mail.js:resendTransport",
-        "lib/inbox.js:_emitAudit",
         "lib/inbox.js:_validateReceiveOpts",
         "lib/mail-arc-sign.js:<unknown>",
+        "lib/a2a.js:createCard",
+        "lib/a2a.js:_validateCardShape",
       ],
-      reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError / InboxError); consolidating would lose the per-module error code.",
+      reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError / InboxError / A2aError); consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
@@ -1728,20 +1711,20 @@ function testNoDuplicateCodeBlocks() {
         "lib/incident-report.js:_emitAudit",
         "lib/incident-report.js:_emitMetric",
         "lib/incident-report.js:create",
-        "lib/incident-report.js:recordFinal",
+        "lib/incident-report.js:get",
         "lib/cra-report.js:_emitAudit",
         "lib/cra-report.js:create",
         "lib/nis2-report.js:_emitAudit",
         "lib/nis2-report.js:create",
         "lib/gdpr-ropa.js:_emitAudit",
         "lib/gdpr-ropa.js:create",
-        "lib/gdpr-ropa.js:remove",
+        "lib/gdpr-ropa.js:get",
         "lib/compliance-eaa.js:_emitAudit",
         "lib/compliance-eaa.js:create",
         "lib/middleware/bot-disclose.js:<unknown>",
         "lib/breach-deadline.js:_emitAudit",
         "lib/breach-deadline.js:createReporter",
-        "lib/breach-deadline.js:fileNotice",
+        "lib/breach-deadline.js:get",
         "lib/ai-adverse-decision.js:_emitAudit",
         "lib/ai-adverse-decision.js:wrap",
         "lib/middleware/age-gate.js:_emitAudit",
@@ -1753,14 +1736,11 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/dpop.js:_b64urlDecode",
         "lib/auth/dpop.js:_canonicalJwk",
         "lib/compliance-sanctions.js:_emitAudit",
         "lib/compliance-sanctions.js:_emitMetric",
-        "lib/compliance-sanctions.js:_levenshteinMatch",
         "lib/compliance-sanctions.js:create",
         "lib/compliance-sanctions.js:screen",
-        "lib/dora.js:_classifyImpl",
         "lib/dora.js:_validateReportInput",
         "lib/middleware/dpop.js:create",
         "lib/outbox.js:_emitAudit",
@@ -1787,21 +1767,21 @@ function testNoDuplicateCodeBlocks() {
         "lib/incident-report.js:_emitAudit",
         "lib/incident-report.js:_emitMetric",
         "lib/incident-report.js:create",
+        "lib/incident-report.js:get",
         "lib/incident-report.js:open",
-        "lib/incident-report.js:recordFinal",
         "lib/cra-report.js:_emitAudit",
         "lib/cra-report.js:create",
         "lib/nis2-report.js:_emitAudit",
         "lib/nis2-report.js:create",
         "lib/gdpr-ropa.js:_emitAudit",
         "lib/gdpr-ropa.js:create",
-        "lib/gdpr-ropa.js:remove",
+        "lib/gdpr-ropa.js:get",
         "lib/compliance-eaa.js:_emitAudit",
         "lib/compliance-eaa.js:create",
         "lib/middleware/bot-disclose.js:_matches",
         "lib/breach-deadline.js:_emitAudit",
         "lib/breach-deadline.js:createReporter",
-        "lib/breach-deadline.js:fileNotice",
+        "lib/breach-deadline.js:get",
         "lib/ai-adverse-decision.js:_emitAudit",
         "lib/ai-adverse-decision.js:wrap",
         "lib/middleware/age-gate.js:_emitAudit",
@@ -1831,17 +1811,21 @@ function testNoDuplicateCodeBlocks() {
         "lib/auth/step-up.js:parseAuthorizationDetails",
         "lib/auth/step-up-policy.js:acr",
         "lib/auth/step-up-policy.js:acrAny",
+        "lib/auth/step-up-policy.js:amr",
         "lib/break-glass.js:_validatePolicySet",
         "lib/dsr.js:create",
         "lib/middleware/assetlinks.js:create",
         "lib/middleware/require-methods.js:create",
         "lib/middleware/security-txt.js:_arrayOfStrings",
         "lib/network-dns.js:_clearCache",
+        "lib/network-dns.js:setServers",
         "lib/network-heartbeat.js:_validateTarget",
         "lib/network-heartbeat.js:start",
-        "lib/network-tls.js:_validateKeyShare",
+        "lib/network-tls.js:setKeyShares",
         "lib/safe-schema.js:_tupleWithRest",
         "lib/safe-schema.js:chain",
+        "lib/safe-schema.js:tuple",
+        "lib/safe-schema.js:union",
         "lib/ws-client.js:connect",
         "lib/mail-arc-sign.js:sign",
       ],
@@ -1905,16 +1889,17 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/jwt.js:<top>",
+        "lib/auth/jwt.js:_b64urlEncode",
         "lib/auth/jwt.js:decode",
         "lib/auth/jwt-external.js:_b64urlDecode",
+        "lib/auth/jwt-external.js:_verifyParamsForAlg",
         "lib/auth/jwt-external.js:verifyExternal",
-        "lib/auth/oauth.js:<top>",
-        "lib/auth/oauth.js:_validateUrl",
+        "lib/auth/oauth.js:_b64urlEncode",
+        "lib/auth/oauth.js:_verifyParamsForAlg",
         "lib/auth/oauth.js:verifyIdToken",
-        "lib/auth/dpop.js:<top>",
         "lib/auth/dpop.js:_b64urlDecode",
-        "lib/auth/dpop.js:_normalizeHtu",
+        "lib/auth/dpop.js:_b64urlEncode",
+        "lib/auth/dpop.js:_signParamsForAlg",
         "lib/auth/dpop.js:verify",
         "lib/auth/status-list.js:_fromB64url",
       ],
@@ -1943,6 +1928,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-archive.js:gate",
         "lib/guard-archive.js:validateEntries",
         "lib/guard-json.js:<top>",
+        "lib/guard-json.js:_detectIssues",
         "lib/guard-json.js:_policyKeyForRuleId",
         "lib/guard-json.js:_scanRawSource",
         "lib/guard-json.js:compliancePosture",
@@ -1961,7 +1947,6 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-xml.js:gate",
         "lib/guard-xml.js:sanitize",
         "lib/guard-xml.js:validate",
-        "lib/guard-markdown.js:_allMatches",
         "lib/guard-markdown.js:_detectIssues",
         "lib/guard-markdown.js:_isDangerousUrl",
         "lib/guard-markdown.js:gate",
@@ -1973,9 +1958,6 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-email.js:_resolveOpts",
         "lib/guard-email.js:gate",
         "lib/guard-email.js:sanitize",
-        "lib/guard-email.js:validate",
-        "lib/guard-email.js:validateAddress",
-        "lib/guard-email.js:validateMessage",
         "lib/guard-domain.js:_resolveOpts",
         "lib/guard-domain.js:_shannonEntropy",
         "lib/guard-domain.js:compliancePosture",
@@ -2058,15 +2040,12 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-image.js:_detectMagicMimes",
         "lib/guard-image.js:gate",
         "lib/guard-image.js:sanitize",
-        "lib/guard-image.js:validate",
         "lib/guard-pdf.js:<top>",
         "lib/guard-pdf.js:_detectIssues",
         "lib/guard-pdf.js:_hasPdfMagic",
         "lib/guard-pdf.js:gate",
         "lib/guard-pdf.js:sanitize",
-        "lib/guard-pdf.js:validate",
         "lib/guard-auth.js:<top>",
-        "lib/guard-auth.js:_detectIssues",
         "lib/guard-auth.js:gate",
         "lib/guard-auth.js:sanitize",
         "lib/guard-auth.js:validate",
@@ -2251,9 +2230,9 @@ function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/middleware/cookies.js:<top>",
-        "lib/middleware/gpc.js:<top>",
-        "lib/middleware/headers.js:<top>",
+        "lib/middleware/cookies.js:_emitAudit",
+        "lib/middleware/gpc.js:_emitAudit",
+        "lib/middleware/headers.js:_emitAudit",
       ],
       reason: "Threat-detection middleware family — each shares the same `_emitAudit(audit, action, outcome, metadata) { ... try { audit.safeEmit({...}); } catch (_e) { /* drop-silent */ } }` audit-emission shape. Per the validation-tier policy this is the hot-path observability sink shape; extracting would force a shared `audit-emit-drop-silent` primitive — the framework already has audit.safeEmit, and the middleware-local wrapper's value is keeping the drop-silent behavior visible at the call site. Future consolidation candidate.",
     },
@@ -2284,9 +2263,9 @@ function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
-        "lib/network-proxy.js:snapshot",
-        "lib/network-tls.js:_emitAuditAdd",
-        "lib/network.js:snapshot",
+        "lib/network-proxy.js:_emitObs",
+        "lib/network-tls.js:_emitObs",
+        "lib/network.js:_emitObs",
       ],
       reason: "Network listener teardown shape — `function reset() { state.X = null; state.Y = null; state.Z = []; ...}`. Each network primitive has a different reset surface; consolidating would force unrelated state into a base contract.",
     },
@@ -2296,9 +2275,9 @@ function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
-        "lib/object-store/azure-blob.js:getResponse",
-        "lib/object-store/gcs.js:getResponse",
-        "lib/object-store/sigv4.js:getResponse",
+        "lib/object-store/azure-blob.js:_buildSasToken",
+        "lib/object-store/gcs.js:presignedUploadPolicy",
+        "lib/object-store/sigv4.js:presignedUploadPolicy",
       ],
       reason: "S3-protocol shared upload shape — multipart-upload state machine fingerprint. Each protocol's upload shape differs in headers / signing / response parsing; common scaffolding (request-helper, response-parse) is already extracted to lib/object-store/http-request.js.",
     },
@@ -3150,7 +3129,7 @@ async function run() {
   testNoBareErrorThrows();
   testNoHandrolledUrlBuild();
   testNoHandrolledRetryLoop();
-  testNoDuplicateCodeBlocks();
+  await testNoDuplicateCodeBlocks();
   testNoStateStampsInPublicDocs();
   testKnownAntipatterns();
 

@@ -133,8 +133,34 @@ function testParseListHeader() {
         JSON.stringify(rh.parseListHeader("\ta\t,\tb\n")) === '["a","b"]');
 }
 
+function testSafeHeadersDistinct() {
+  check("safeHeadersDistinct is fn", typeof b.requestHelpers.safeHeadersDistinct === "function");
+
+  var out = b.requestHelpers.safeHeadersDistinct({
+    rawHeaders: ["Content-Type", "application/json", "X-Foo", "a", "X-Foo", "b"],
+  });
+  check("safeHeadersDistinct: lowercases names", !!out["content-type"] && !!out["x-foo"]);
+  check("safeHeadersDistinct: collects multi values",
+        Array.isArray(out["x-foo"]) && out["x-foo"].length === 2 &&
+        out["x-foo"][0] === "a" && out["x-foo"][1] === "b");
+
+  var hostile = b.requestHelpers.safeHeadersDistinct({
+    rawHeaders: ["__proto__", "polluted", "constructor", "evil", "X-Real", "ok"],
+  });
+  check("safeHeadersDistinct: __proto__ refused",   hostile["__proto__"] === undefined);
+  check("safeHeadersDistinct: constructor refused", hostile.constructor === undefined);
+  check("safeHeadersDistinct: real header passes",  hostile["x-real"] && hostile["x-real"][0] === "ok");
+
+  var np = b.requestHelpers.safeHeadersDistinct({ rawHeaders: ["X-A", "1"] });
+  check("safeHeadersDistinct: null prototype", Object.getPrototypeOf(np) === null);
+
+  var empty = b.requestHelpers.safeHeadersDistinct({});
+  check("safeHeadersDistinct: missing rawHeaders", Object.keys(empty).length === 0);
+}
+
 async function run() {
   testSurface();
+  testSafeHeadersDistinct();
   testResolveRoutePrefersRoutePattern();
   testResolveRouteFallsBackToUrl();
   testResolveRouteEmptyOrMissingUrl();

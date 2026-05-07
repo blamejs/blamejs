@@ -1,8 +1,29 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.14",
-  "createdAt": "2026-05-07T05:06:55.123Z",
+  "frameworkVersion": "0.8.15",
+  "createdAt": "2026-05-07T06:56:24.729Z",
   "exports": {
+    "a2a": {
+      "type": "object",
+      "members": {
+        "canonicalize": {
+          "type": "function",
+          "arity": 1
+        },
+        "createCard": {
+          "type": "function",
+          "arity": 1
+        },
+        "signCard": {
+          "type": "function",
+          "arity": 3
+        },
+        "verifyCard": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
     "ai": {
       "type": "object",
       "members": {
@@ -172,6 +193,23 @@
             "wrap": {
               "type": "function",
               "arity": 1
+            }
+          }
+        },
+        "input": {
+          "type": "object",
+          "members": {
+            "PATTERN_IDS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "classify": {
+              "type": "function",
+              "arity": 2
+            },
+            "refuseIfMalicious": {
+              "type": "function",
+              "arity": 2
             }
           }
         }
@@ -5371,6 +5409,43 @@
         }
       }
     },
+    "darkPatterns": {
+      "type": "object",
+      "members": {
+        "CHANNELS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DarkPatternsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "POSTURES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "assertParity": {
+          "type": "function",
+          "arity": 3
+        },
+        "attest": {
+          "type": "function",
+          "arity": 1
+        },
+        "middleware": {
+          "type": "function",
+          "arity": 1
+        },
+        "recordCancelFlow": {
+          "type": "function",
+          "arity": 1
+        },
+        "recordSignupFlow": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "db": {
       "type": "object",
       "members": {
@@ -6160,6 +6235,14 @@
     "frameworkError": {
       "type": "object",
       "members": {
+        "A2aError": {
+          "type": "function",
+          "arity": 4
+        },
+        "AiInputError": {
+          "type": "function",
+          "arity": 4
+        },
         "ApiKeyError": {
           "type": "function",
           "arity": 4
@@ -6201,6 +6284,10 @@
           "arity": 2
         },
         "GateContractError": {
+          "type": "function",
+          "arity": 4
+        },
+        "GraphqlFederationError": {
           "type": "function",
           "arity": 4
         },
@@ -6332,6 +6419,10 @@
           "type": "function",
           "arity": 4
         },
+        "McpError": {
+          "type": "function",
+          "arity": 4
+        },
         "NotifyError": {
           "type": "function",
           "arity": 4
@@ -6369,6 +6460,10 @@
           "arity": 4
         },
         "SmtpPolicyError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SseError": {
           "type": "function",
           "arity": 4
         },
@@ -6572,6 +6667,19 @@
               "arity": 1
             }
           }
+        }
+      }
+    },
+    "graphqlFederation": {
+      "type": "object",
+      "members": {
+        "guardSdl": {
+          "type": "function",
+          "arity": 1
+        },
+        "queryProbesSdl": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -23698,6 +23806,23 @@
         }
       }
     },
+    "mcp": {
+      "type": "object",
+      "members": {
+        "parseRequest": {
+          "type": "function",
+          "arity": 2
+        },
+        "refuse": {
+          "type": "function",
+          "arity": 4
+        },
+        "serverGuard": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "metrics": {
       "type": "object",
       "members": {
@@ -27310,6 +27435,10 @@
         "resolveRoute": {
           "type": "function",
           "arity": 1
+        },
+        "safeHeadersDistinct": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -28141,6 +28270,31 @@
     "slug": {
       "type": "function",
       "arity": 2
+    },
+    "sse": {
+      "type": "object",
+      "members": {
+        "MAX_DATA_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAX_EVENT_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAX_ID_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "create": {
+          "type": "function",
+          "arity": 3
+        },
+        "serializeEvent": {
+          "type": "function",
+          "arity": 2
+        }
+      }
     },
     "ssrfGuard": {
       "type": "object",

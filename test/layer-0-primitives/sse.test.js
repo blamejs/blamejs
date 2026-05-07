@@ -43,6 +43,21 @@ function _mockReq() {
 async function run() {
   // ---- Surface ----
   check("b.middleware.sse is fn",          typeof b.middleware.sse === "function");
+  check("b.sse is object",                 typeof b.sse === "object");
+  check("b.sse.create is fn",              typeof b.sse.create === "function");
+  check("b.sse.serializeEvent is fn",      typeof b.sse.serializeEvent === "function");
+
+  // ---- Top-level b.sse smoke (low-level surface) ----
+  var lowEv = b.sse.serializeEvent({ event: "msg", id: "1", data: "hi" });
+  check("b.sse.serializeEvent shape", lowEv === "id: 1\nevent: msg\ndata: hi\n\n");
+  var lowMulti = b.sse.serializeEvent({ data: "a\nb" });
+  check("b.sse.serializeEvent multi-line data splits",
+        lowMulti === "data: a\ndata: b\n\n");
+  var lowThrew = null;
+  try { b.sse.serializeEvent({ event: "fake\nevent: hijack", data: "x" }); }
+  catch (e) { lowThrew = e; }
+  check("b.sse.serializeEvent refuses LF in event",
+        lowThrew && lowThrew.code === "INJECTION");
 
   // ---- _formatEvent ----
   var fe = sseModule._formatEvent;
@@ -56,16 +71,17 @@ async function run() {
         fe({ data: "line1\nline2" }) === "data: line1\ndata: line2\n\n");
   check("formatEvent: retry as ms",
         fe({ retry: 2000, data: "" }) === "retry: 2000\ndata: \n\n");
-  check("formatEvent: id strips CRLF",
-        fe({ id: "a\nb", data: "x" }) === "id: ab\ndata: x\n\n");
-
   function rejects(label, fn, re) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
     check("formatEvent: " + label, threw && re.test(threw.message || ""));
   }
-  rejects("rejects negative retry", function () { fe({ retry: -1 }); }, /retry must be/);
-  rejects("rejects NaN retry",      function () { fe({ retry: NaN }); }, /retry must be/);
+  // CVE-2026-33128 / 29085 / 44217 — newline-injection refused, not
+  // silently stripped (silent strip was the original vulnerability).
+  rejects("refuses CRLF in id",     function () { fe({ id: "a\nb", data: "x" }); }, /LF\/CR\/NUL/);
+  rejects("refuses CRLF in event",  function () { fe({ event: "a\nb", data: "x" }); }, /LF\/CR\/NUL/);
+  rejects("rejects negative retry", function () { fe({ retry: -1 }); }, /non-negative/);
+  rejects("rejects NaN retry",      function () { fe({ retry: NaN }); }, /non-negative/);
 
   // ---- create() validation ----
   var threw = null;

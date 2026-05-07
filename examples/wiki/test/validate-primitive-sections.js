@@ -901,6 +901,29 @@ var UNDOCUMENTED_BACKLOG = {
   "gdpr":                  "shipped v0.8.10 — GDPR Article 30 Records of Processing Activities registry + JSON / CSV / Markdown exporter; wiki section deferred (operator-facing surface stable, JSDoc covers the activity shape and legal-basis vocabulary)",
   "breach":                "shipped v0.8.11 — US-state breach-notification deadline registry + multi-state filing reporter; wiki section deferred (operator-facing surface stable, JSDoc covers per-state statutory citations + filing flow; the registry data itself is governed by state legislatures, not framework versions)",
   "ai":                    "shipped v0.8.11 — adverse-decision wrapper for automated decisions affecting consumer rights (GDPR Article 22 / EU AI Act 86 / ECOA / Colorado AI Act / NYC LL 144 / FCRA); wiki section deferred (operator-facing surface stable, JSDoc covers the regime vocabulary + adverseNotice shape)",
+  "sse":                   "shipped v0.8.15 — Server-Sent Events transport with newline-injection refusal (CVE-2026-33128 / 29085 / 44217 class); wiki section deferred to a follow-up patch — operator-facing surface stable, JSDoc + standalone test suite cover usage; b.middleware.sse already documented under routing.js page",
+  "mcp":                   "shipped v0.8.15 — Model Context Protocol server-guard (bearer auth + redirect_uri allowlist + dynamic-register refusal + tool/resource allowlist) — wiki section deferred (operator-facing surface stable, JSDoc + standalone test suite cover the JSON-RPC envelope + guard policy)",
+  "graphqlFederation":     "shipped v0.8.15 — Apollo Federation _service.sdl trust-boundary guard (router-token Bearer + nonce store) — wiki section deferred (operator-facing surface stable, JSDoc + standalone test suite cover the queryProbesSdl detector)",
+  "a2a":                   "shipped v0.8.15 — A2A (Linux Foundation Agentic AI Foundation) v1.x signed agent-card primitive — wiki section deferred (operator-facing surface stable, JSDoc covers signCard / verifyCard / canonicalize)",
+  "darkPatterns":          "shipped v0.8.15 — FTC Negative Option Rule click-to-cancel UX-parity attestation primitive (recordSignupFlow / recordCancelFlow / assertParity / attest / middleware) — wiki section deferred (operator-facing surface stable, JSDoc covers per-posture parity rules)",
+  "ai.input":              "shipped v0.8.15 — prompt-injection input classifier (OWASP LLM01:2025 / NIST COSAIS RFI); wiki section deferred — operator-facing surface stable, JSDoc + standalone test cover the pattern + verdict shape",
+  "sse.create":            "shipped v0.8.15 — wiki section deferred (covered with the b.sse parent backlog entry)",
+  "sse.serializeEvent":    "shipped v0.8.15 — wiki section deferred (covered with the b.sse parent backlog entry)",
+  "mcp.serverGuard":       "shipped v0.8.15 — wiki section deferred (covered with the b.mcp parent backlog entry)",
+  "mcp.parseRequest":      "shipped v0.8.15 — wiki section deferred (covered with the b.mcp parent backlog entry)",
+  "mcp.refuse":            "shipped v0.8.15 — wiki section deferred (covered with the b.mcp parent backlog entry)",
+  "graphqlFederation.guardSdl":      "shipped v0.8.15 — wiki section deferred (covered with the b.graphqlFederation parent backlog entry)",
+  "graphqlFederation.queryProbesSdl":"shipped v0.8.15 — wiki section deferred (covered with the b.graphqlFederation parent backlog entry)",
+  "a2a.signCard":          "shipped v0.8.15 — wiki section deferred (covered with the b.a2a parent backlog entry)",
+  "a2a.verifyCard":        "shipped v0.8.15 — wiki section deferred (covered with the b.a2a parent backlog entry)",
+  "a2a.canonicalize":      "shipped v0.8.15 — wiki section deferred (covered with the b.a2a parent backlog entry)",
+  "a2a.createCard":        "shipped v0.8.15 — wiki section deferred (covered with the b.a2a parent backlog entry)",
+  "darkPatterns.recordSignupFlow":  "shipped v0.8.15 — wiki section deferred (covered with the b.darkPatterns parent backlog entry)",
+  "darkPatterns.recordCancelFlow":  "shipped v0.8.15 — wiki section deferred (covered with the b.darkPatterns parent backlog entry)",
+  "darkPatterns.assertParity":      "shipped v0.8.15 — wiki section deferred (covered with the b.darkPatterns parent backlog entry)",
+  "darkPatterns.attest":            "shipped v0.8.15 — wiki section deferred (covered with the b.darkPatterns parent backlog entry)",
+  "darkPatterns.middleware":        "shipped v0.8.15 — wiki section deferred (covered with the b.darkPatterns parent backlog entry)",
+  "darkPatterns.DarkPatternsError": "shipped v0.8.15 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
@@ -1615,6 +1638,7 @@ var UNDOCUMENTED_BACKLOG = {
   "requestHelpers.requestProtocol":              "covered prose-style under the requestHelpers parent section — backfill per-method signature heading in a future sweep",
   "requestHelpers.resolveActorWithOverride":     "covered prose-style under the requestHelpers parent section — backfill per-method signature heading in a future sweep",
   "requestHelpers.resolveRoute":                 "covered prose-style under the requestHelpers parent section — backfill per-method signature heading in a future sweep",
+  "requestHelpers.safeHeadersDistinct":          "shipped v0.8.15 — Node CVE-2026-21710 wrapper for req.headersDistinct; thin defensive accessor — covered prose-style under the requestHelpers parent section, backfill per-method signature heading in a future sweep",
   // restore — sub-keys covered prose-style under the parent page; backfill per-method signature headings opportunistically.
   "restore.RestoreError":                        "covered prose-style under the restore parent section — backfill per-method signature heading in a future sweep",
   // restoreBundle — sub-keys covered prose-style under the parent page; backfill per-method signature headings opportunistically.

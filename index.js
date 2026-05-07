@@ -94,6 +94,12 @@ var httpClient = require("./lib/http-client");
 httpClient.encrypted = require("./lib/middleware/api-encrypt").httpClient;
 httpClient.cookieJar = require("./lib/http-client-cookie-jar");
 var websocket = require("./lib/websocket");
+var sse = require("./lib/sse");
+var mcp = require("./lib/mcp");
+var graphqlFederation = require("./lib/graphql-federation");
+var aiInput = require("./lib/ai-input");
+var a2a = require("./lib/a2a");
+var darkPatterns = require("./lib/dark-patterns");
 var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
@@ -255,7 +261,7 @@ module.exports = {
   nis2:             { report: require("./lib/nis2-report") },
   gdpr:             { ropa: require("./lib/gdpr-ropa") },
   breach:           require("./lib/breach-deadline"),
-  ai:               { adverseDecision: require("./lib/ai-adverse-decision") },
+  ai:               { adverseDecision: require("./lib/ai-adverse-decision"), input: aiInput },
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
@@ -276,6 +282,11 @@ module.exports = {
   frameworkError:   frameworkError,
   httpClient:       httpClient,
   websocket:        websocket,
+  sse:              sse,
+  mcp:              mcp,
+  graphqlFederation: graphqlFederation,
+  a2a:              a2a,
+  darkPatterns:     darkPatterns,
   safeUrl:          safeUrl,
   safeRedirect:     safeRedirect,
   pick:             pick,
