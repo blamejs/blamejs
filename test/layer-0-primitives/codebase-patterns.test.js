@@ -1743,6 +1743,8 @@ function testNoDuplicateCodeBlocks() {
         "lib/compliance-sanctions-fetcher.js", "lib/dsr.js",
         "lib/auth/sd-jwt-vc-holder.js", "lib/auth/sd-jwt-vc-issuer.js",
         "lib/middleware/daily-byte-quota.js",
+        "lib/auth/access-lock.js",
+        "lib/observability-otlp-exporter.js",
       ],
       reason: "Try/catch + drop-silent observability emit — every primitive wraps `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
     },
@@ -1884,6 +1886,10 @@ function testNoDuplicateCodeBlocks() {
     {
       files: ["lib/mail-dkim.js", "lib/metrics.js", "lib/safe-schema.js"],
       reason: "Format-array iteration with predicate check — `for (var i ...) { if (!predicate(arr[i])) throw }`. Generic JS validation pattern across unrelated domains.",
+    },
+    {
+      files: ["lib/auth/access-lock.js", "lib/config.js", "lib/mail-dkim.js"],
+      reason: "Operator-supplied string-array validation prelude — `Array.isArray(opts.X) ? opts.X.slice() : [] + for-loop with typeof !== string check throwing per-domain error class`. Three different domains (access-lock unlockRoles / config primary-keys / mail-dkim selectors); each loop throws a domain-specific error code on bad entries. Generic shape, not consolidatable.",
     },
     {
       mode:  "family-subset",

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.6",
-  "createdAt": "2026-05-06T22:38:03.525Z",
+  "frameworkVersion": "0.8.7",
+  "createdAt": "2026-05-06T22:53:38.781Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -608,6 +608,23 @@
             "meets": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "accessLock": {
+          "type": "object",
+          "members": {
+            "AccessLockError": {
+              "type": "function",
+              "arity": 4
+            },
+            "VALID_MODES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
             }
           }
         },

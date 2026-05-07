@@ -144,6 +144,7 @@ var auth = {
   stepUp:     require("./lib/auth/step-up"),
   acr:        require("./lib/auth/acr-vocabulary"),
   authTime:   require("./lib/auth/auth-time-tracker"),
+  accessLock: require("./lib/auth/access-lock"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");
