@@ -1881,6 +1881,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/middleware/body-parser.js:_parseHeaderParams",
         "lib/middleware/body-parser.js:_parseMultipartHeaders",
         "lib/network-smtp-policy.js:_parseStsPolicy",
+        "lib/network-smtp-policy.js:_fetchStsTxt",
         "lib/network-smtp-policy.js:tlsRptFetchPolicy",
         "lib/auth/step-up.js:parseChallenge",
       ],
