@@ -79,10 +79,18 @@ async function run() {
   }
 }
 
-module.exports = { run: run };
+async function _testVerifyVendorIntegrity() {
+  var result = b.configDrift.verifyVendorIntegrity();
+  check("configDrift.verifyVendorIntegrity returns ok shape",
+    result && typeof result.ok === "boolean" && Array.isArray(result.mismatches));
+  check("configDrift.verifyVendorIntegrity: vendored files match manifest",
+    result.ok === true && result.mismatches.length === 0);
+}
+
+module.exports = { run: async function () { await run(); await _testVerifyVendorIntegrity(); } };
 
 if (require.main === module) {
-  run().then(
+  module.exports.run().then(
     function () { console.log("[config-drift] OK"); },
     function (e) { console.error(e); process.exit(1); }
   );

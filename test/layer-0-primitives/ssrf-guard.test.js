@@ -10,8 +10,8 @@
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
-
 var ssrf = b.ssrfGuard;
+// (b is also referenced directly to satisfy test-coverage gate's b.* path matcher)
 
 function _stubLookup(addr, family) {
   return function () { return Promise.resolve([{ address: addr, family: family || 4 }]); };
@@ -253,7 +253,27 @@ async function run() {
         noPin === undefined);
 }
 
-module.exports = { run: run };
+async function _testCreateAllowlist() {
+  var threw;
+  try { b.ssrfGuard.createAllowlist({}); } catch (e) { threw = e; }
+  check("createAllowlist: empty allow throws",
+        threw && threw.code === "ssrf-guard/empty-allowlist");
+
+  var egress = b.ssrfGuard.createAllowlist({
+    allow: ["api.partner.example.com", "192.0.2.0/24"],
+    deny:  ["bad.example.com"],
+  });
+  check("createAllowlist: returns assert function",
+        typeof egress.assert === "function");
+
+  var rejected;
+  try { await egress.assert("https://other.example.com/x"); }
+  catch (e) { rejected = e; }
+  check("createAllowlist: hostname not on allowlist refused",
+        rejected && rejected.code === "ssrf-guard/not-on-allowlist");
+}
+
+module.exports = { run: async function () { await run(); await _testCreateAllowlist(); } };
 
 if (require.main === module) {
   run().then(

@@ -972,6 +972,15 @@ var UNDOCUMENTED_BACKLOG = {
   "iabMspa.gpcFromHeaders":   "shipped v0.8.35 — wiki section deferred (covered with the b.iabMspa parent backlog entry)",
   "iabMspa.IabMspaError":     "shipped v0.8.35 — error class export, wiki section deferred",
 
+  // v0.8.39 operator enhancements — deferred wiki entries
+  "configDrift.verifyVendorIntegrity": "shipped v0.8.39 — vendor-manifest integrity check; wiki section deferred (JSDoc + standalone test cover the `lib/vendor/MANIFEST.json` re-hash + audit emit shape)",
+  "ssrfGuard.createAllowlist":         "shipped v0.8.39 — composes ssrfGuard with operator allow/deny CIDR set; wiki section deferred (JSDoc covers shape; egress-allowlist composes on the existing ssrfGuard wiki page)",
+  "auth.atoKillSwitch":                "shipped v0.8.39 — composite ATO kill-switch (b.session.destroyAllForUser + b.auth.lockout.lock + optional b.auth.accessLock flip); wiki section deferred (JSDoc + auth-lockout test cover the trigger shape)",
+  "auth.atoKillSwitch.trigger":        "shipped v0.8.39 — wiki section deferred (covered with b.auth.atoKillSwitch parent)",
+  "auth.atoKillSwitch.AtoKillSwitchError": "shipped v0.8.39 — error class export, wiki section deferred",
+  "network.allowlist":                 "shipped v0.8.39 — `b.network.allowlist.create` is the public entry; wiki section deferred (composes on b.ssrfGuard)",
+  "network.allowlist.create":          "shipped v0.8.39 — wiki section deferred (covered with b.network.allowlist parent)",
+
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
   //     covered by the parent page or a sibling section). ===

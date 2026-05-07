@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.26",
-  "createdAt": "2026-05-07T13:38:15.523Z",
+  "frameworkVersion": "0.8.39",
+  "createdAt": "2026-05-07T16:09:47.266Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -212,6 +212,47 @@
               "arity": 2
             }
           }
+        }
+      }
+    },
+    "aiPref": {
+      "type": "object",
+      "members": {
+        "AiPrefError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INFER_VALUES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "SNIPPET_VALUES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "TRAIN_VALUES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "middleware": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseHeader": {
+          "type": "function",
+          "arity": 1
+        },
+        "refusePaidCrawl": {
+          "type": "function",
+          "arity": 3
+        },
+        "robotsBlock": {
+          "type": "function",
+          "arity": 1
+        },
+        "serializeHeader": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -1259,6 +1300,19 @@
               "arity": 1
             },
             "register": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "atoKillSwitch": {
+          "type": "object",
+          "members": {
+            "AtoKillSwitchError": {
+              "type": "function",
+              "arity": 4
+            },
+            "trigger": {
               "type": "function",
               "arity": 1
             }
@@ -4904,6 +4958,10 @@
         "create": {
           "type": "function",
           "arity": 1
+        },
+        "verifyVendorIntegrity": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -5120,6 +5178,35 @@
         "version": {
           "type": "primitive",
           "valueType": "string"
+        }
+      }
+    },
+    "contentCredentials": {
+      "type": "object",
+      "members": {
+        "ContentCredentialsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "REQUIRED_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "build": {
+          "type": "function",
+          "arity": 1
+        },
+        "required": {
+          "type": "function",
+          "arity": 1
+        },
+        "sign": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 3
         }
       }
     },
@@ -6066,6 +6153,56 @@
               "arity": 2
             }
           }
+        }
+      }
+    },
+    "fapi2": {
+      "type": "object",
+      "members": {
+        "Fapi2Error": {
+          "type": "function",
+          "arity": 4
+        },
+        "SENDER_CONSTRAINTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "assertConformance": {
+          "type": "function",
+          "arity": 1
+        },
+        "assertOAuthConfig": {
+          "type": "function",
+          "arity": 1
+        },
+        "posture": {
+          "type": "function",
+          "arity": 0
+        }
+      }
+    },
+    "fdx": {
+      "type": "object",
+      "members": {
+        "FDX_RESOURCES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "FdxError": {
+          "type": "function",
+          "arity": 4
+        },
+        "bind": {
+          "type": "function",
+          "arity": 1
+        },
+        "consentReceipt": {
+          "type": "function",
+          "arity": 1
+        },
+        "validateResponse": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
@@ -23366,6 +23503,100 @@
         }
       }
     },
+    "iabMspa": {
+      "type": "object",
+      "members": {
+        "ALL_SECTIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DATA_USES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "IabMspaError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SECTION_IDS": {
+          "type": "object",
+          "members": {
+            "7": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "8": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "9": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "10": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "11": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "12": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "13": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "14": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "15": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "16": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "17": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "18": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "19": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "20": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "checkOptOut": {
+          "type": "function",
+          "arity": 2
+        },
+        "gpcFromHeaders": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseGpp": {
+          "type": "function",
+          "arity": 1
+        },
+        "refuseProcessing": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "iabTcf": {
       "type": "object",
       "members": {
@@ -24189,6 +24420,15 @@
         "NetworkError": {
           "type": "function",
           "arity": 4
+        },
+        "allowlist": {
+          "type": "object",
+          "members": {
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "bootFromEnv": {
           "type": "function",
@@ -28390,6 +28630,10 @@
           "type": "function",
           "arity": 1
         },
+        "createAllowlist": {
+          "type": "function",
+          "arity": 1
+        },
         "isCloudMetadata": {
           "type": "function",
           "arity": 1
@@ -28526,6 +28770,31 @@
           "arity": 2
         },
         "restrict": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "tcpa10dlc": {
+      "type": "object",
+      "members": {
+        "DISCLOSURE_PARTIES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "Tcpa10dlcError": {
+          "type": "function",
+          "arity": 4
+        },
+        "lookup": {
+          "type": "function",
+          "arity": 1
+        },
+        "recordConsent": {
+          "type": "function",
+          "arity": 1
+        },
+        "revoke": {
           "type": "function",
           "arity": 2
         }

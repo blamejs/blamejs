@@ -545,7 +545,24 @@ async function run() {
   }
 }
 
-module.exports = { run: run };
+async function _testAtoKillSwitch() {
+  var threw;
+  try { await b.auth.atoKillSwitch.trigger({}); } catch (e) { threw = e; }
+  check("atoKillSwitch.trigger requires userId",
+    threw && /userId/.test(threw.message));
+
+  try { await b.auth.atoKillSwitch.trigger({ userId: "u_42" }); } catch (e) { threw = e; }
+  check("atoKillSwitch.trigger requires reason",
+    threw && /reason/.test(threw.message));
+
+  // Real ATO: needs a session backend wired. Without one, the call would
+  // throw on the destroyAllForUser step. We verify only the validation
+  // path here; the integration test exercises the full flow.
+  check("atoKillSwitch error class registered",
+    typeof b.auth.atoKillSwitch.AtoKillSwitchError === "function");
+}
+
+module.exports = { run: async function () { await run(); await _testAtoKillSwitch(); } };
 
 if (require.main === module) {
   run().then(
