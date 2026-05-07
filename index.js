@@ -107,6 +107,8 @@ var fapi2 = require("./lib/fapi2");
 var contentCredentials = require("./lib/content-credentials");
 var aiPref = require("./lib/ai-pref");
 var fdx = require("./lib/fdx");
+var tcpa10dlc = require("./lib/tcpa-10dlc");
+var iabMspa = require("./lib/iab-mspa");
 var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
@@ -301,6 +303,8 @@ module.exports = {
   contentCredentials: contentCredentials,
   aiPref:           aiPref,
   fdx:              fdx,
+  tcpa10dlc:        tcpa10dlc,
+  iabMspa:          iabMspa,
   safeUrl:          safeUrl,
   safeRedirect:     safeRedirect,
   pick:             pick,

@@ -960,6 +960,17 @@ var UNDOCUMENTED_BACKLOG = {
   "fdx.validateResponse":     "shipped v0.8.31 — wiki section deferred (covered with the b.fdx parent backlog entry)",
   "fdx.consentReceipt":       "shipped v0.8.31 — wiki section deferred (covered with the b.fdx parent backlog entry)",
   "fdx.FdxError":             "shipped v0.8.31 — error class export, wiki section deferred",
+  "tcpa10dlc":                "shipped v0.8.35 — TCPA 10DLC consent-record audit primitive (47 USC §227 / 47 CFR §64.1200 / FCC 1:1 disclosure); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover recordConsent / lookup / revoke shapes)",
+  "tcpa10dlc.recordConsent":  "shipped v0.8.35 — wiki section deferred (covered with the b.tcpa10dlc parent backlog entry)",
+  "tcpa10dlc.lookup":         "shipped v0.8.35 — wiki section deferred (covered with the b.tcpa10dlc parent backlog entry)",
+  "tcpa10dlc.revoke":         "shipped v0.8.35 — wiki section deferred (covered with the b.tcpa10dlc parent backlog entry)",
+  "tcpa10dlc.Tcpa10dlcError": "shipped v0.8.35 — error class export, wiki section deferred",
+  "iabMspa":                  "shipped v0.8.35 — IAB MSPA / GPP universal opt-out signal codec (CCPA §1798.135 + multi-state US privacy laws); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover parseGpp / checkOptOut / refuseProcessing / gpcFromHeaders)",
+  "iabMspa.parseGpp":         "shipped v0.8.35 — wiki section deferred (covered with the b.iabMspa parent backlog entry)",
+  "iabMspa.checkOptOut":      "shipped v0.8.35 — wiki section deferred (covered with the b.iabMspa parent backlog entry)",
+  "iabMspa.refuseProcessing": "shipped v0.8.35 — wiki section deferred (covered with the b.iabMspa parent backlog entry)",
+  "iabMspa.gpcFromHeaders":   "shipped v0.8.35 — wiki section deferred (covered with the b.iabMspa parent backlog entry)",
+  "iabMspa.IabMspaError":     "shipped v0.8.35 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
