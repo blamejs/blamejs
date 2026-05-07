@@ -942,6 +942,12 @@ var UNDOCUMENTED_BACKLOG = {
   "fapi2.assertOAuthConfig":  "shipped v0.8.27 — wiki section deferred (covered with the b.fapi2 parent backlog entry)",
   "fapi2.posture":            "shipped v0.8.27 — wiki section deferred (covered with the b.fapi2 parent backlog entry)",
   "fapi2.Fapi2Error":         "shipped v0.8.27 — error class export, wiki section deferred",
+  "contentCredentials":       "shipped v0.8.28 — California SB-942 / AB-853 + C2PA 2.1 content-provenance manifest builder for AI-generated assets (deadline 2026-08-02); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover the build/sign/verify shapes)",
+  "contentCredentials.build": "shipped v0.8.28 — wiki section deferred (covered with the b.contentCredentials parent backlog entry)",
+  "contentCredentials.sign":  "shipped v0.8.28 — wiki section deferred (covered with the b.contentCredentials parent backlog entry)",
+  "contentCredentials.verify":"shipped v0.8.28 — wiki section deferred (covered with the b.contentCredentials parent backlog entry)",
+  "contentCredentials.required":"shipped v0.8.28 — wiki section deferred (covered with the b.contentCredentials parent backlog entry)",
+  "contentCredentials.ContentCredentialsError":"shipped v0.8.28 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one

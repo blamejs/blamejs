@@ -104,6 +104,7 @@ var budr = require("./lib/budr");
 var secCyber = require("./lib/sec-cyber");
 var iabTcf = require("./lib/iab-tcf");
 var fapi2 = require("./lib/fapi2");
+var contentCredentials = require("./lib/content-credentials");
 var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
@@ -295,6 +296,7 @@ module.exports = {
   secCyber:         secCyber,
   iabTcf:           iabTcf,
   fapi2:            fapi2,
+  contentCredentials: contentCredentials,
   safeUrl:          safeUrl,
   safeRedirect:     safeRedirect,
   pick:             pick,
