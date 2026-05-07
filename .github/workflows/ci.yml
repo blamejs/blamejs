@@ -54,6 +54,13 @@ jobs:
         run: node --version && npm --version
 
       - name: Run framework smoke
+        # NODE_OPTIONS heap bump — codebase-patterns duplicate-block
+        # detector accumulates ~4M shingle-fingerprint entries across
+        # the lib/ corpus. macOS-arm64 CI runners with the 2 GB Node
+        # default OOMed mid-scan; 4 GB is enough headroom for the
+        # whole smoke run including the parallel-shingle pass.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: node test/smoke.js
 
   wiki-e2e:

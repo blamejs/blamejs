@@ -118,7 +118,10 @@ function isBoilerplate(slice) {
   return false;
 }
 
-// Same fingerprints as the inline versions.
+// Same fingerprints as the inline versions. (Hash-based variant
+// tested in v0.8.26 surfaced previously-grouped duplicates as
+// distinct clusters — the join-on-space form preserves the cluster
+// identity the existing KNOWN_CLUSTERS allowlist depends on.)
 function sliceFingerprintExact(slice) {
   return slice.map(function (t) { return t.tok; }).join(" ");
 }
