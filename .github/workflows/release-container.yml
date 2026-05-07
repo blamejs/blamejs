@@ -61,7 +61,10 @@ jobs:
         with:
           node-version: '24'
       - name: Run ESLint (max-warnings 0)
-        run: npx --yes eslint@latest --max-warnings 0 .
+        # Pinned to a known-good eslint version; matches ci.yml /
+        # npm-publish.yml so the three pre-tag gates run identical
+        # eslint logic.
+        run: npx --yes eslint@10.3.0 --max-warnings 0 .
 
   lint-hadolint:
     name: Hadolint (Dockerfiles)

@@ -106,7 +106,12 @@ jobs:
       # stays in release-container.yml only — the Dockerfile is
       # container-only and is not part of the npm artifact.
       - name: ESLint (max-warnings 0)
-        run: npx --yes eslint@latest --max-warnings 0 .
+        # Pinned to a known-good eslint version. `eslint@latest` was
+        # silently letting new rule additions fail the publish gate
+        # on a release that had passed `eslint@<previous>` cleanly the
+        # day before. The pin moves with operator-confirmed bumps,
+        # not whatever the npm registry happens to ship.
+        run: npx --yes eslint@10.3.0 --max-warnings 0 .
 
       - name: Detect shell scripts
         id: sh

@@ -1888,8 +1888,16 @@ function testNoDuplicateCodeBlocks() {
       reason: "Format-array iteration with predicate check — `for (var i ...) { if (!predicate(arr[i])) throw }`. Generic JS validation pattern across unrelated domains.",
     },
     {
-      files: ["lib/auth/access-lock.js", "lib/config.js", "lib/mail-dkim.js"],
-      reason: "Operator-supplied string-array validation prelude — `Array.isArray(opts.X) ? opts.X.slice() : [] + for-loop with typeof !== string check throwing per-domain error class`. Three different domains (access-lock unlockRoles / config primary-keys / mail-dkim selectors); each loop throws a domain-specific error code on bad entries. Generic shape, not consolidatable.",
+      files: ["lib/auth/access-lock.js", "lib/config.js", "lib/mail-dkim.js", "lib/middleware/require-bound-key.js"],
+      reason: "Operator-supplied string-array validation prelude — `Array.isArray(opts.X) ? opts.X.slice() : [] + for-loop with typeof !== string check throwing per-domain error class`. Four different domains (access-lock unlockRoles / config primary-keys / mail-dkim selectors / require-bound-key requiredScopes); each loop throws a domain-specific error code on bad entries. Generic shape, not consolidatable.",
+    },
+    {
+      files: ["lib/auth/access-lock.js", "lib/config.js", "lib/middleware/require-bound-key.js"],
+      reason: "Same string-array validation prelude as the four-file cluster above; the 60-token shingle catches a slightly larger window than the 50-token one when only three of the four files happen to share contiguous validation+normalization+initial-emit logic. Generic JS shape, three different domains.",
+    },
+    {
+      files: ["lib/backup/index.js", "lib/middleware/require-bound-key.js", "lib/restore.js"],
+      reason: "Async-iteration over operator-supplied collection with try/catch + per-item error mapping — backup walks file entries, restore walks archive entries, require-bound-key walks bound-field getters. Three different domains, three different per-item error vocabularies; consolidating would erode each iterator's domain validation.",
     },
     {
       mode:  "family-subset",

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.7",
-  "createdAt": "2026-05-06T22:53:38.781Z",
+  "frameworkVersion": "0.8.8",
+  "createdAt": "2026-05-07T01:16:08.827Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -484,6 +484,14 @@
           "arity": 0
         },
         "init": {
+          "type": "function",
+          "arity": 1
+        },
+        "reSignAll": {
+          "type": "function",
+          "arity": 2
+        },
+        "rotateSigningKey": {
           "type": "function",
           "arity": 1
         },
@@ -2636,6 +2644,23 @@
         "FRAMEWORK_SQL_TIMEOUT_MS": {
           "type": "primitive",
           "valueType": "number"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "circuitBreaker": {
+      "type": "object",
+      "members": {
+        "CircuitBreaker": {
+          "type": "function",
+          "arity": 2
+        },
+        "RetryError": {
+          "type": "primitive",
+          "valueType": "undefined"
         },
         "create": {
           "type": "function",
@@ -21982,6 +22007,10 @@
         "check": {
           "type": "function",
           "arity": 1
+        },
+        "checkSafe": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

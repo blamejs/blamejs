@@ -86,6 +86,19 @@ What blamejs does **not** defend against (operator responsibility):
 
 Algorithm agility is the framework's posture, not just a feature: every encrypted blob carries an envelope header identifying the KEM / cipher / KDF used. New algorithms (HQC when standardized, FrodoKEM, etc.) land as new ID values without breaking existing data — `b.crypto.decrypt` continues to read old blobs while new writes use the new algorithm. See the wiki's [Crypto & Vault](https://blamejs.com/crypto-vault) page for the per-algorithm IDs and the migration path.
 
+### FIPS 140-3 cryptographic boundary
+
+The framework is **not** itself FIPS 140-3 validated; the cryptographic primitives are sourced from two boundaries operators select between:
+
+- **Node.js OpenSSL boundary** — when the framework runs on a Node build linked against an OpenSSL FIPS-validated provider, the framework's hashing, HMAC, ECDH, RSA / EdDSA / ECDSA signing, and AES paths route through that provider. Operators on FedRAMP / DoD deployments configure Node to load the FIPS provider (`openssl fipsinstall` + `OPENSSL_CONF` pointing at the FIPS config) and run with `--force-fips`. The framework does not silently bypass when FIPS is active — every `b.crypto` call reaches the same Node primitives that the FIPS provider gates.
+- **Vendored boundary (default)** — `lib/vendor/noble-ciphers.cjs` (XChaCha20-Poly1305, ChaCha20-Poly1305) and `lib/vendor/noble-post-quantum.cjs` (ML-KEM-1024 / ML-DSA-87 / SLH-DSA-SHAKE-256f) are pure-JS implementations bundled from `@noble/ciphers` + `@noble/post-quantum`. These are **not** FIPS-validated implementations; they implement the FIPS-published algorithms (ML-KEM = FIPS 203, ML-DSA = FIPS 204, SLH-DSA = FIPS 205) but the *implementations themselves* have not undergone the CMVP validation process. Operators in FIPS-mandated environments either:
+  1. Wait for an OpenSSL FIPS provider to ship the post-quantum algorithms (in progress upstream — track [openssl/openssl#19838](https://github.com/openssl/openssl/issues)) and let the Node OpenSSL boundary take over those code paths
+  2. Replace the vendored modules with operator-supplied bindings to a FIPS-validated PQC library and rebuild the framework's vendor manifest (`scripts/vendor-update.sh`)
+
+Argon2id (`lib/vendor/argon2/`) is similarly a vendored pure-JS / WASM implementation — not FIPS-validated. Operators on FIPS-restricted password-hashing requirements pin to PBKDF2-SHA-512 via the Node OpenSSL provider until Argon2 lands in the FIPS provider catalog.
+
+The framework's **classical** hashing (SHA-3 family, HMAC-SHA3-512), **classical** asymmetric (P-384 ECDH for the hybrid KEM), and **TLS** (Node's built-in TLS stack) all route through the Node-linked OpenSSL boundary by default — operators with `--force-fips` get FIPS coverage on every classical primitive without further configuration.
+
 ---
 
 ## Operator security checklist

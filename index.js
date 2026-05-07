@@ -247,6 +247,7 @@ module.exports = {
   storage:          storage,
   objectStore:      objectStore,
   retry:            retry,
+  circuitBreaker:   require("./lib/circuit-breaker"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,

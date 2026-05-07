@@ -868,6 +868,7 @@ var UNDOCUMENTED_BACKLOG = {
   "asyncapi":              "shipped v0.7.112 — AsyncAPI 3.0 schema-document builder; wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + comprehensive test suite cover usage)",
   "pqcSoftware":           "shipped v0.7.112 — pure-JS PQC primitive wrapper around vendored @noble/post-quantum; wiki section deferred — primitive is a thin getter-style accessor, README + JSDoc cover the full API",
   "wsClient":              "shipped v0.7.114 — outbound RFC 6455 WebSocket client; wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + integration test suite cover usage)",
+  "circuitBreaker":        "shipped v0.8.8 — top-level re-export of b.retry.CircuitBreaker for ergonomic discovery alongside b.retry; wiki section deferred (the underlying CircuitBreaker class is documented under the resilience.js page; this primitive is the discovery alias only, not a new behaviour)",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
