@@ -106,6 +106,7 @@ var iabTcf = require("./lib/iab-tcf");
 var fapi2 = require("./lib/fapi2");
 var contentCredentials = require("./lib/content-credentials");
 var aiPref = require("./lib/ai-pref");
+var fdx = require("./lib/fdx");
 var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
@@ -299,6 +300,7 @@ module.exports = {
   fapi2:            fapi2,
   contentCredentials: contentCredentials,
   aiPref:           aiPref,
+  fdx:              fdx,
   safeUrl:          safeUrl,
   safeRedirect:     safeRedirect,
   pick:             pick,

@@ -955,6 +955,11 @@ var UNDOCUMENTED_BACKLOG = {
   "aiPref.robotsBlock":       "shipped v0.8.30 — wiki section deferred (covered with the b.aiPref parent backlog entry)",
   "aiPref.refusePaidCrawl":   "shipped v0.8.30 — wiki section deferred (covered with the b.aiPref parent backlog entry)",
   "aiPref.AiPrefError":       "shipped v0.8.30 — error class export, wiki section deferred",
+  "fdx":                      "shipped v0.8.31 — CFPB §1033 / Financial Data Exchange (FDX 6.0) bind primitive (deadline past 2026-04-01 for $250B+ asset-size banks); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover bind / validateResponse / consentReceipt shapes)",
+  "fdx.bind":                 "shipped v0.8.31 — wiki section deferred (covered with the b.fdx parent backlog entry)",
+  "fdx.validateResponse":     "shipped v0.8.31 — wiki section deferred (covered with the b.fdx parent backlog entry)",
+  "fdx.consentReceipt":       "shipped v0.8.31 — wiki section deferred (covered with the b.fdx parent backlog entry)",
+  "fdx.FdxError":             "shipped v0.8.31 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
