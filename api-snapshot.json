@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.24",
-  "createdAt": "2026-05-07T13:05:49.124Z",
+  "frameworkVersion": "0.8.25",
+  "createdAt": "2026-05-07T13:23:39.297Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -28178,6 +28178,23 @@
           "arity": 3
         },
         "parseCron": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "secCyber": {
+      "type": "object",
+      "members": {
+        "FINDINGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "SecCyberError": {
+          "type": "function",
+          "arity": 4
+        },
+        "eightKArtifact": {
           "type": "function",
           "arity": 1
         }

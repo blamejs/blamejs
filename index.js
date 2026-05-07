@@ -101,6 +101,7 @@ var aiInput = require("./lib/ai-input");
 var a2a = require("./lib/a2a");
 var darkPatterns = require("./lib/dark-patterns");
 var budr = require("./lib/budr");
+var secCyber = require("./lib/sec-cyber");
 var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
@@ -289,6 +290,7 @@ module.exports = {
   a2a:              a2a,
   darkPatterns:     darkPatterns,
   budr:             budr,
+  secCyber:         secCyber,
   safeUrl:          safeUrl,
   safeRedirect:     safeRedirect,
   pick:             pick,

@@ -929,6 +929,9 @@ var UNDOCUMENTED_BACKLOG = {
   "budr.get":         "shipped v0.8.24 — wiki section deferred (covered with the b.budr parent backlog entry)",
   "budr.list":        "shipped v0.8.24 — wiki section deferred (covered with the b.budr parent backlog entry)",
   "budr.BudrError":   "shipped v0.8.24 — error class export, wiki section deferred",
+  "secCyber":         "shipped v0.8.25 — SEC Cybersecurity Disclosure Item 1.05 8-K artifact generator (17 CFR §229.106 / Form 8-K Item 1.05); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover the materiality determination + AG-delay request shapes)",
+  "secCyber.eightKArtifact": "shipped v0.8.25 — wiki section deferred (covered with the b.secCyber parent backlog entry)",
+  "secCyber.SecCyberError":  "shipped v0.8.25 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one

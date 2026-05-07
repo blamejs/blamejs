@@ -417,13 +417,13 @@ function testNoUnresolvedMarkers() {
 
 // ---- Pattern: literal NUL bytes (0x00) in source files ----
 //
-// The Edit / Write tooling decodes JSON ` ` escape sequences into
+// The Edit / Write tooling decodes JSON `\u0000` escape sequences into
 // literal NUL bytes when written to disk. Inside JS regex literals
 // this trips ESLint's `no-control-regex` rule on Linux CI but slips
 // past Windows local lint (encoding-related). Class-of-bug: any file
 // in lib/ containing a literal 0x00 byte should fail the gate at
 // authoring time, not on the npm-publish workflow at tag-push time.
-// To embed NUL semantically, use the JS source escape ` ` (the
+// To embed NUL semantically, use the JS source escape `\u0000` (the
 // six-char sequence backslash + u + 0+0+0+0) — JS regex parses that
 // to a NUL char without ESLint complaining.
 function testNoLiteralNulBytesInSource() {
@@ -1691,8 +1691,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/file-upload.js:_validateCreateOpts",
         "lib/observability-otlp-exporter.js:<unknown>",
         "lib/static.js:_validateCreateOpts",
+        "lib/sec-cyber.js:eightKArtifact",
       ],
-      reason: "JSON-envelope serializer prelude — cloud-events / file-upload / otlp-exporter / static all build a `{ headers, body }` JSON envelope from operator opts via Object.assign + JSON.stringify; validate the resulting payload byte-length; return the rendered Buffer. Four different domains (CloudEvents 1.0 / multipart upload / OTLP/JSON spans / static-asset response), four different content shapes; the 50-token shingle is the envelope-build skeleton.",
+      reason: "JSON-envelope serializer prelude — cloud-events / file-upload / otlp-exporter / static / sec-cyber all build a `{ headers, body }` JSON envelope from operator opts via Object.assign + JSON.stringify; validate the resulting payload byte-length; return the rendered Buffer. Five different domains (CloudEvents 1.0 / multipart upload / OTLP/JSON spans / static-asset response / SEC 8-K Item 1.05 filing artifact), five different content shapes; the 50-token shingle is the envelope-build skeleton.",
     },
     {
       mode:  "family-subset",
@@ -1711,8 +1712,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/cloud-events.js:<unknown>",
         "lib/observability-otlp-exporter.js:<unknown>",
         "lib/static.js:<unknown>",
+        "lib/sec-cyber.js:eightKArtifact",
       ],
-      reason: "JSON envelope builder + Content-Type/Length response shape — cloud-events / otlp-exporter / static all build a JSON-serializable response, compute Content-Length, set Content-Type, and emit observability.safeEvent on send. Three different domains, three different envelope payloads.",
+      reason: "JSON envelope builder + Content-Type/Length response shape — cloud-events / otlp-exporter / static / sec-cyber all build a JSON-serializable response, compute Content-Length, set Content-Type, and emit observability.safeEvent on send. Four different domains, four different envelope payloads.",
     },
     {
       mode:  "family-subset",
