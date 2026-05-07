@@ -103,6 +103,7 @@ var darkPatterns = require("./lib/dark-patterns");
 var budr = require("./lib/budr");
 var secCyber = require("./lib/sec-cyber");
 var iabTcf = require("./lib/iab-tcf");
+var fapi2 = require("./lib/fapi2");
 var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
@@ -293,6 +294,7 @@ module.exports = {
   budr:             budr,
   secCyber:         secCyber,
   iabTcf:           iabTcf,
+  fapi2:            fapi2,
   safeUrl:          safeUrl,
   safeRedirect:     safeRedirect,
   pick:             pick,

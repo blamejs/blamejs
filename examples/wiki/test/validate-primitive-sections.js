@@ -937,6 +937,11 @@ var UNDOCUMENTED_BACKLOG = {
   "iabTcf.requireV23Disclosed":"shipped v0.8.26 — wiki section deferred (covered with the b.iabTcf parent backlog entry)",
   "iabTcf.checkVendor":       "shipped v0.8.26 — wiki section deferred (covered with the b.iabTcf parent backlog entry)",
   "iabTcf.IabTcfError":       "shipped v0.8.26 — error class export, wiki section deferred",
+  "fapi2":                    "shipped v0.8.27 — FAPI 2.0 Final conformance posture (composes existing PAR/DPoP/OAuth 2.1/mTLS); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover the assertion shapes)",
+  "fapi2.assertConformance":  "shipped v0.8.27 — wiki section deferred (covered with the b.fapi2 parent backlog entry)",
+  "fapi2.assertOAuthConfig":  "shipped v0.8.27 — wiki section deferred (covered with the b.fapi2 parent backlog entry)",
+  "fapi2.posture":            "shipped v0.8.27 — wiki section deferred (covered with the b.fapi2 parent backlog entry)",
+  "fapi2.Fapi2Error":         "shipped v0.8.27 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
