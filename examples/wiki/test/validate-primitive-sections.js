@@ -870,6 +870,9 @@ var UNDOCUMENTED_BACKLOG = {
   "wsClient":              "shipped v0.7.114 — outbound RFC 6455 WebSocket client; wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + integration test suite cover usage)",
   "circuitBreaker":        "shipped v0.8.8 — top-level re-export of b.retry.CircuitBreaker for ergonomic discovery alongside b.retry; wiki section deferred (the underlying CircuitBreaker class is documented under the resilience.js page; this primitive is the discovery alias only, not a new behaviour)",
   "incident":              "shipped v0.8.9 — generic 3-stage incident-reporting primitive (24h / 72h / 30d) with regime-keyed deadlines (gdpr / nis2 / dora / cra / hipaa); wiki section deferred to a follow-up patch (operator-facing surface stable, JSDoc + test suite cover the per-regime deadline shape)",
+  "cra":                   "shipped v0.8.10 — EU Cyber Resilience Act incident-reporting wrapper (Article 14 §1 deadlines: 24h / 72h / 14d); composes b.incident.report; wiki section deferred (operator-facing surface stable, JSDoc covers ENISA submission shape)",
+  "nis2":                  "shipped v0.8.10 — NIS2 Directive incident-reporting wrapper (Article 23 §4 deadlines: 24h / 72h / 1 month) with Annex I/II sector codes + essential/important entity types; wiki section deferred",
+  "gdpr":                  "shipped v0.8.10 — GDPR Article 30 Records of Processing Activities registry + JSON / CSV / Markdown exporter; wiki section deferred (operator-facing surface stable, JSDoc covers the activity shape and legal-basis vocabulary)",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one

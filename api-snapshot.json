@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.9",
-  "createdAt": "2026-05-07T01:55:36.746Z",
+  "frameworkVersion": "0.8.10",
+  "createdAt": "2026-05-07T02:21:27.965Z",
   "exports": {
     "apiKey": {
       "type": "object",
@@ -3648,6 +3648,23 @@
           "type": "function",
           "arity": 1
         },
+        "eaa": {
+          "type": "object",
+          "members": {
+            "ComplianceEaaError": {
+              "type": "function",
+              "arity": 4
+            },
+            "VALID_CONFORMANCE": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "list": {
           "type": "function",
           "arity": 0
@@ -4059,6 +4076,24 @@
         "serialize": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "cra": {
+      "type": "object",
+      "members": {
+        "report": {
+          "type": "object",
+          "members": {
+            "CraReportError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
@@ -5509,6 +5544,32 @@
         "workerThreadGate": {
           "type": "function",
           "arity": 2
+        }
+      }
+    },
+    "gdpr": {
+      "type": "object",
+      "members": {
+        "ropa": {
+          "type": "object",
+          "members": {
+            "GdprRopaError": {
+              "type": "function",
+              "arity": 4
+            },
+            "REQUIRED_ACTIVITY_FIELDS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "VALID_LEGAL_BASES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
@@ -22691,6 +22752,10 @@
           "type": "function",
           "arity": 1
         },
+        "botDisclose": {
+          "type": "function",
+          "arity": 1
+        },
         "botGuard": {
           "type": "function",
           "arity": 1
@@ -23437,6 +23502,28 @@
               "arity": 2
             },
             "useSystemTrust": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        }
+      }
+    },
+    "nis2": {
+      "type": "object",
+      "members": {
+        "report": {
+          "type": "object",
+          "members": {
+            "Nis2ReportError": {
+              "type": "function",
+              "arity": 4
+            },
+            "VALID_ENTITY_TYPES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
               "type": "function",
               "arity": 1
             }

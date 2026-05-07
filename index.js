@@ -98,7 +98,9 @@ var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
 var dora = require("./lib/dora");
-var compliance = require("./lib/compliance");
+var compliance = Object.assign({}, require("./lib/compliance"), {
+  eaa: require("./lib/compliance-eaa"),
+});
 var gateContract = require("./lib/gate-contract");
 var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
@@ -249,6 +251,9 @@ module.exports = {
   retry:            retry,
   circuitBreaker:   require("./lib/circuit-breaker"),
   incident:         { report: require("./lib/incident-report") },
+  cra:              { report: require("./lib/cra-report") },
+  nis2:             { report: require("./lib/nis2-report") },
+  gdpr:             { ropa: require("./lib/gdpr-ropa") },
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
