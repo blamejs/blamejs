@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.25",
-  "createdAt": "2026-05-07T13:23:39.297Z",
+  "frameworkVersion": "0.8.26",
+  "createdAt": "2026-05-07T13:38:15.523Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -23363,6 +23363,35 @@
               "arity": 1
             }
           }
+        }
+      }
+    },
+    "iabTcf": {
+      "type": "object",
+      "members": {
+        "IabTcfError": {
+          "type": "function",
+          "arity": 4
+        },
+        "TCF_V23_CORE_VERSION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "TCF_V23_POLICY_VERSION": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "checkVendor": {
+          "type": "function",
+          "arity": 2
+        },
+        "parseString": {
+          "type": "function",
+          "arity": 1
+        },
+        "requireV23Disclosed": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

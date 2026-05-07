@@ -932,6 +932,11 @@ var UNDOCUMENTED_BACKLOG = {
   "secCyber":         "shipped v0.8.25 — SEC Cybersecurity Disclosure Item 1.05 8-K artifact generator (17 CFR §229.106 / Form 8-K Item 1.05); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover the materiality determination + AG-delay request shapes)",
   "secCyber.eightKArtifact": "shipped v0.8.25 — wiki section deferred (covered with the b.secCyber parent backlog entry)",
   "secCyber.SecCyberError":  "shipped v0.8.25 — error class export, wiki section deferred",
+  "iabTcf":                   "shipped v0.8.26 — IAB TCF v2.3 consent string parser + disclosedVendors validator (TCF Policy v2.3 §III.B.5; deadline past 2026-02-28); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover the parse + requireV23 + checkVendor shapes)",
+  "iabTcf.parseString":       "shipped v0.8.26 — wiki section deferred (covered with the b.iabTcf parent backlog entry)",
+  "iabTcf.requireV23Disclosed":"shipped v0.8.26 — wiki section deferred (covered with the b.iabTcf parent backlog entry)",
+  "iabTcf.checkVendor":       "shipped v0.8.26 — wiki section deferred (covered with the b.iabTcf parent backlog entry)",
+  "iabTcf.IabTcfError":       "shipped v0.8.26 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one

@@ -1459,8 +1459,16 @@ async function testNoDuplicateCodeBlocks() {
       });
     });
   }
+  // Cap worker fan-out at 4 — each Worker holds the per-shard
+  // fingerprint map in heap until message-resolve; on macOS-arm64
+  // CI runners (2 GB Node default heap) ~250 files × 8 cores
+  // peaked above the heap-limit and OOMed the smoke run. 4 workers
+  // keeps the parallel speedup (5x faster than single-threaded)
+  // without crossing the memory ceiling on slow runners. Operators
+  // with bigger machines override via HS_PATTERNS_WORKERS=N.
+  var WORKER_CAP = 4;                                                                          // allow:raw-byte-literal — worker fan-out cap, not bytes
   var workerCount = Number(process.env.HS_PATTERNS_WORKERS) ||
-                    Math.min(os.cpus().length, Math.max(1, files.length));
+                    Math.min(os.cpus().length, Math.max(1, files.length), WORKER_CAP);
   var shardResults;
   if (process.env.HS_PATTERNS_NO_THREADS === "1" || workerCount <= 1) {
     var shingleScan = require(path.join(__dirname, "..", "helpers", "_codebase-shingle"));
