@@ -248,6 +248,7 @@ module.exports = {
   objectStore:      objectStore,
   retry:            retry,
   circuitBreaker:   require("./lib/circuit-breaker"),
+  incident:         { report: require("./lib/incident-report") },
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
