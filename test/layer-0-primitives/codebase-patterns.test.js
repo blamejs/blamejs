@@ -1514,6 +1514,58 @@ function testNoDuplicateCodeBlocks() {
     return false;
   }
 
+  // ---- Enclosing-function index ----
+  //
+  // Each duplicate site carries a (file, line) pair; the matcher now
+  // wants (file, fn) tuples so allowlist entries can gate by
+  // file+function instead of by file alone. The index is built lazily
+  // per-file by walking line-by-line for `function NAME (`,
+  // `var NAME = function (`, `exports.NAME = function (`, and the
+  // `NAME (...) {` method-shorthand shape. The most-recent declaration
+  // before the site's first line is the enclosing fn — nested
+  // functions resolve to the innermost match. Sites that fall before
+  // any function declaration belong to `<top>` (module-level).
+  var _fnIndexByFile = Object.create(null);
+  // Recognized declaration shapes — the four forms primitives in this
+  // codebase use to declare top-of-file or factory-internal helpers.
+  // Anonymous function expressions inside object literals (short
+  // method form) are intentionally NOT recognized — they cluster as
+  // their enclosing var/function.
+  var _FN_DECL_PATTERNS = [
+    /^\s*(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/,                                // function NAME (
+    /^\s*var\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function\s*\(/,                      // var NAME = function (
+    /^\s*(?:exports|module\.exports)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function\s*\(/, // exports.NAME = function (
+  ];
+  function _buildFnIndex(rel) {
+    var abs = path.resolve(__dirname, "..", "..", rel);
+    var content;
+    try { content = fs.readFileSync(abs, "utf8"); }
+    catch (_e) { return [{ startLine: 1, name: "<top>" }]; }
+    var lines = content.split(/\r?\n/);
+    var fns = [{ startLine: 1, name: "<top>" }];
+    for (var li = 0; li < lines.length; li++) {
+      var L = lines[li];
+      var m = null;
+      for (var pi = 0; pi < _FN_DECL_PATTERNS.length; pi += 1) {
+        m = L.match(_FN_DECL_PATTERNS[pi]);
+        if (m) break;
+      }
+      if (!m) continue;
+      fns.push({ startLine: li + 1, name: m[1] });
+    }
+    return fns;
+  }
+  function _enclosingFn(rel, line) {
+    if (!_fnIndexByFile[rel]) _fnIndexByFile[rel] = _buildFnIndex(rel);
+    var fns = _fnIndexByFile[rel];
+    var best = fns[0];
+    for (var i = 0; i < fns.length; i++) {
+      if (fns[i].startLine <= line) best = fns[i];
+      else break;
+    }
+    return best.name;
+  }
+
   // Per-(file-set, file-region) cluster: one report per UNIQUE
   // primitive-extraction opportunity. A duplicate run that spans 30
   // overlapping 40-token shingles in the same file-set collapses to
@@ -1604,402 +1656,927 @@ function testNoDuplicateCodeBlocks() {
   // multi-arg-format checks) are inherent to the domain; cross-domain
   // false-matches that share a 50-tok fingerprint by coincidence.
   //
-  // Each entry keys on the SORTED file-set joined by `|`. Adding an
-  // entry requires a documented `reason` and the cluster shows in
-  // the report as "(allowlisted)" so operators see it but the gate
-  // doesn't fail.
+  // Entry shape: every `files` element is `"path:fnName"` —
+  // file-and-function qualified. The matcher pairs each duplicate
+  // site's (file, line) against the enclosing function name and only
+  // allowlists when both file AND function match an entry. New drift
+  // landing in a different function of an already-listed file flags,
+  // because a different function is a different extraction
+  // opportunity.
+  //
+  // For module top-level code (rare — most duplicates are inside
+  // factories/middleware bodies) use the literal token `<top>` as
+  // the fn name.
+  //
+  // Bare `"path"` entries WITHOUT the `:fn` qualifier are rejected
+  // at parse time — operators name the function they're allowlisting
+  // so the audit trail records exactly which body of code shares the
+  // shape.
   var KNOWN_CLUSTERS = [
     {
-      files: ["lib/api-key.js", "lib/db-query.js", "lib/session.js"],
+      files: ["lib/api-key.js:issue", "lib/db-query.js:<top>", "lib/session.js:create"],
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/deprecate.js", "lib/openapi-paths-builder.js", "lib/openapi.js",
-        "lib/asyncapi.js", "lib/asyncapi-bindings.js", "lib/mail.js",
-        "lib/inbox.js", "lib/mail-arc-sign.js",
+        "lib/deprecate.js:_format",
+        "lib/deprecate.js:_validateOpts",
+        "lib/openapi-paths-builder.js:_normaliseParameter",
+        "lib/openapi-paths-builder.js:_normaliseRequestBody",
+        "lib/openapi-paths-builder.js:_normaliseResponses",
+        "lib/openapi.js:_validateServerEntry",
+        "lib/openapi.js:parse",
+        "lib/asyncapi.js:_addChannel",
+        "lib/asyncapi.js:_normaliseMessage",
+        "lib/asyncapi.js:_validateServerEntry",
+        "lib/asyncapi.js:_validateServers",
+        "lib/asyncapi.js:parse",
+        "lib/asyncapi-bindings.js:kafka",
+        "lib/mail.js:resendTransport",
+        "lib/inbox.js:_emitAudit",
+        "lib/inbox.js:_validateReceiveOpts",
+        "lib/mail-arc-sign.js:<unknown>",
       ],
       reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError / InboxError); consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/asyncapi-traits.js", "lib/flag-evaluation-context.js", "lib/render.js",
+        "lib/asyncapi-traits.js:_mergeKey",
+        "lib/flag-evaluation-context.js:merge",
+        "lib/render.js:_mergedHeaders",
       ],
       reason: "Object-property iteration with hasOwnProperty guard idiom — `for (var k in X) if (Object.prototype.hasOwnProperty.call(X, k)) ...` is the standard Object-pollution-defense walk. Three different domains (AsyncAPI trait merge, flag-evaluation context normalisation, render template-context walk); consolidating would couple unrelated primitives.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/compliance-ai-act-prohibited.js",
-        "lib/compliance-ai-act-risk.js",
-        "lib/compliance-ai-act-logging.js",
-        "lib/compliance-ai-act.js",
-        "lib/compliance-ai-act-transparency.js",
-        "lib/guard-all.js",
+        "lib/compliance-ai-act-prohibited.js:getPractice",
+        "lib/compliance-ai-act-risk.js:getAnnexIII",
+        "lib/compliance-ai-act-logging.js:<unknown>",
+        "lib/compliance-ai-act.js:<unknown>",
+        "lib/compliance-ai-act-transparency.js:<unknown>",
+        "lib/guard-all.js:_byName",
       ],
       reason: "EU AI Act primitive family + guard-all linear-scan idiom — sibling modules sharing the linear catalog-walk shape (`for (var i = 0; i < ARR.length; i += 1) { if (ARR[i].id === id) return ARR[i]; } return null;`). The AI-Act catalogs diverge (Article 5 prohibited practices vs Annex III high-risk rows vs Article 12 logging fields vs Article 50 transparency banners) and guard-all walks the registered guard-list; consolidating would lose per-domain structure.",
     },
     {
       files: [
-        "lib/compliance-ai-act.js", "lib/gate-contract.js", "lib/mail-auth.js",
+        "lib/compliance-ai-act.js:annexIVScaffold",
+        "lib/gate-contract.js:defineGate",
+        "lib/mail-auth.js:_shapeAggregateReport",
       ],
       reason: "Long opts-passthrough block where each line is `field: opts.field || null` with the same null-fallback shape. AI-Act annexIVScaffold builds the Annex IV section-1 record; gate-contract assembles content-safety profile; mail-auth builds an authentication-results header. Three different schemas; not consolidatable.",
     },
     {
-      files: ["lib/guard-all.js", "lib/middleware/index.js", "lib/websocket-channels.js"],
+      files: [
+        "lib/guard-all.js:_resolveActiveGuards",
+        "lib/middleware/index.js:<top>",
+        "lib/websocket-channels.js:create",
+      ],
       reason: "Long `field: opts.field` config-passthrough chain coincidentally shingles. guard-all assembles per-guard opts (gate-contract vocabulary); middleware/index forwards createApp opts to per-middleware factories; websocket-channels forwards channel-broker opts. Three different domains, three different vocabulary lists — not consolidatable.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/middleware/security-txt.js", "lib/middleware/assetlinks.js",
-        "lib/middleware/web-app-manifest.js",
-        "lib/middleware/tus-upload.js",
+        "lib/middleware/security-txt.js:create",
+        "lib/middleware/assetlinks.js:create",
+        "lib/middleware/web-app-manifest.js:create",
+        "lib/middleware/tus-upload.js:_handleDelete",
       ],
       reason: "Static/well-known + TUS-collection middleware family — security.txt / assetlinks / web-app-manifest / tus-upload all gate on a fixed mountPath then branch on req.method, share the headersSent guard + writeHead/end+observability emit shape. Four different domains, four different response bodies and lifecycle semantics. Future consolidation candidate when a 5th well-known emitter ships.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/password.js", "lib/middleware/tus-upload.js",
-        "lib/request-helpers.js", "lib/observability.js",
+        "lib/auth/password.js:check",
+        "lib/middleware/tus-upload.js:_parseMetadata",
+        "lib/request-helpers.js:parseQualityList",
+        "lib/observability.js:_parseBaggage",
+        "lib/observability.js:_parseTracestate",
       ],
       reason: "Argon2id PHC-encoder/decoder + TUS metadata + Cookie-attribute parser + W3C tracestate parser independently iterate over `key=value` / `key value` token pairs and split on the first separator. The 50-token shingle is the loop+split skeleton; the per-domain semantics (Argon2 cost params vs TUS metadata vs cookie attrs vs trace vendor pairs) are different enough that consolidating would erode each parser's domain validation.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/external-db-migrate.js", "lib/middleware/db-role-for.js",
-        "lib/middleware/web-app-manifest.js",
-        "lib/middleware/security-txt.js",
-        "lib/middleware/tus-upload.js",
-        "lib/outbox.js",
-        "lib/observability-otlp-exporter.js",
-        "lib/compliance-sanctions-fetcher.js",
-        "lib/dsr.js",
+        "lib/external-db-migrate.js:create",
+        "lib/middleware/db-role-for.js:create",
+        "lib/middleware/web-app-manifest.js:create",
+        "lib/middleware/security-txt.js:create",
+        "lib/middleware/tus-upload.js:_handleDelete",
+        "lib/middleware/tus-upload.js:create",
+        "lib/outbox.js:create",
+        "lib/observability-otlp-exporter.js:<unknown>",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/dsr.js:create",
       ],
       reason: "validateOpts factory prelude — every factory primitive runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Nine different domains with nine different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/cloud-events.js", "lib/file-upload.js",
-        "lib/observability-otlp-exporter.js", "lib/static.js",
+        "lib/cloud-events.js:wrap",
+        "lib/file-upload.js:_validateCreateOpts",
+        "lib/observability-otlp-exporter.js:<unknown>",
+        "lib/static.js:_validateCreateOpts",
       ],
       reason: "JSON-envelope serializer prelude — cloud-events / file-upload / otlp-exporter / static all build a `{ headers, body }` JSON envelope from operator opts via Object.assign + JSON.stringify; validate the resulting payload byte-length; return the rendered Buffer. Four different domains (CloudEvents 1.0 / multipart upload / OTLP/JSON spans / static-asset response), four different content shapes; the 50-token shingle is the envelope-build skeleton.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/cloud-events.js", "lib/external-db-migrate.js",
-        "lib/observability-otlp-exporter.js", "lib/observability-tracer.js",
+        "lib/cloud-events.js:wrap",
+        "lib/external-db-migrate.js:create",
+        "lib/observability-otlp-exporter.js:<unknown>",
+        "lib/observability-tracer.js:create",
+        "lib/ai-adverse-decision.js:wrap",
       ],
-      reason: "Object.assign + validateOpts shape — cloud-events / external-db-migrate / otlp-exporter / observability-tracer each define an opts validator that calls validateOpts(opts, [...allowed-keys], label) and then merges resource/scope-level defaults via Object.assign. Four different domains; the 50-token shingle is the validator+merge skeleton.",
+      reason: "Object.assign + validateOpts shape — cloud-events / external-db-migrate / otlp-exporter / observability-tracer / ai-adverse-decision each define an opts validator that calls validateOpts(opts, [...allowed-keys], label) and then merges resource/scope-level defaults via Object.assign. Five different domains; the 50-token shingle is the validator+merge skeleton.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/cloud-events.js", "lib/observability-otlp-exporter.js",
-        "lib/static.js",
+        "lib/cloud-events.js:<unknown>",
+        "lib/observability-otlp-exporter.js:<unknown>",
+        "lib/static.js:<unknown>",
       ],
       reason: "JSON envelope builder + Content-Type/Length response shape — cloud-events / otlp-exporter / static all build a JSON-serializable response, compute Content-Length, set Content-Type, and emit observability.safeEvent on send. Three different domains, three different envelope payloads.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/file-upload.js", "lib/middleware/span-http-server.js",
-        "lib/static.js",
+        "lib/file-upload.js:create",
+        "lib/middleware/span-http-server.js:create",
+        "lib/static.js:create",
       ],
       reason: "Response-lifecycle hook scaffold — file-upload / span-http-server / static each register `res.on('finish'|'close'|'error', _finish)` to fire a single closure on response completion regardless of which event terminates the response. Three different domains (chunk cleanup / span end / asset audit); the 50-token shingle is the listener wiring + idempotent-closure pattern.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/break-glass.js", "lib/outbox.js", "lib/queue-local.js",
+        "lib/break-glass.js:policyGet",
+        "lib/outbox.js:_processOnce",
+        "lib/queue-local.js:dlqList",
       ],
       reason: "Backoff curve / repeating-tick worker scaffolding — break-glass / outbox / queue-local each spin a `safeAsync.repeating` worker that polls a backing store, claims rows under FOR UPDATE SKIP LOCKED, processes, and advances next_attempt_at via a `min(initial * factor^N, max)` exponential cap. Three independent domains with different schemas + different retry semantics; the 50-token shingle is the worker scaffold, not the domain logic.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/middleware/db-role-for.js", "lib/middleware/tus-upload.js",
-        "lib/outbox.js", "lib/dsr.js",
-        "lib/compliance-sanctions.js", "lib/observability-otlp-exporter.js",
-        "lib/compliance-sanctions-fetcher.js",
-        "lib/guard-html-wcag.js", "lib/mail-dkim.js",
-        "lib/mail-arc-sign.js",
-        "lib/auth/sd-jwt-vc-issuer.js", "lib/auth/sd-jwt-vc-holder.js",
-        "lib/auth/dpop.js",
-        "lib/incident-report.js",
-        "lib/cra-report.js", "lib/nis2-report.js", "lib/gdpr-ropa.js",
-        "lib/compliance-eaa.js", "lib/middleware/bot-disclose.js",
+        "lib/middleware/db-role-for.js:create",
+        "lib/middleware/tus-upload.js:create",
+        "lib/outbox.js:_emitAudit",
+        "lib/outbox.js:create",
+        "lib/dsr.js:create",
+        "lib/compliance-sanctions.js:_emitAudit",
+        "lib/compliance-sanctions.js:_emitMetric",
+        "lib/compliance-sanctions.js:create",
+        "lib/observability-otlp-exporter.js:_emitMetric",
+        "lib/compliance-sanctions-fetcher.js:_emitAudit",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/guard-html-wcag.js:audit",
+        "lib/mail-dkim.js:create",
+        "lib/mail-arc-sign.js:sign",
+        "lib/auth/sd-jwt-vc-issuer.js:_emitAudit",
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/auth/sd-jwt-vc-holder.js:_emitAudit",
+        "lib/auth/sd-jwt-vc-holder.js:create",
+        "lib/auth/dpop.js:<unknown>",
+        "lib/incident-report.js:_emitAudit",
+        "lib/incident-report.js:_emitMetric",
+        "lib/incident-report.js:create",
+        "lib/incident-report.js:recordFinal",
+        "lib/cra-report.js:_emitAudit",
+        "lib/cra-report.js:create",
+        "lib/nis2-report.js:_emitAudit",
+        "lib/nis2-report.js:create",
+        "lib/gdpr-ropa.js:_emitAudit",
+        "lib/gdpr-ropa.js:create",
+        "lib/gdpr-ropa.js:remove",
+        "lib/compliance-eaa.js:_emitAudit",
+        "lib/compliance-eaa.js:create",
+        "lib/middleware/bot-disclose.js:<unknown>",
+        "lib/breach-deadline.js:_emitAudit",
+        "lib/breach-deadline.js:createReporter",
+        "lib/breach-deadline.js:fileNotice",
+        "lib/ai-adverse-decision.js:_emitAudit",
+        "lib/ai-adverse-decision.js:wrap",
+        "lib/middleware/age-gate.js:_emitAudit",
       ],
       reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Different action vocabularies; consolidating would lose the per-primitive metric name.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/dpop.js", "lib/compliance-sanctions.js", "lib/dora.js",
-        "lib/middleware/dpop.js", "lib/outbox.js", "lib/static.js",
-        "lib/compliance-sanctions-fetcher.js", "lib/dsr.js",
-        "lib/auth/sd-jwt-vc-holder.js", "lib/auth/sd-jwt-vc-issuer.js",
-        "lib/middleware/daily-byte-quota.js",
-        "lib/auth/access-lock.js",
-        "lib/observability-otlp-exporter.js",
-        "lib/incident-report.js",
-        "lib/cra-report.js", "lib/nis2-report.js", "lib/gdpr-ropa.js",
-        "lib/compliance-eaa.js", "lib/middleware/bot-disclose.js",
+        "lib/auth/dpop.js:_b64urlDecode",
+        "lib/auth/dpop.js:_canonicalJwk",
+        "lib/compliance-sanctions.js:_emitAudit",
+        "lib/compliance-sanctions.js:_emitMetric",
+        "lib/compliance-sanctions.js:_levenshteinMatch",
+        "lib/compliance-sanctions.js:create",
+        "lib/compliance-sanctions.js:screen",
+        "lib/dora.js:_classifyImpl",
+        "lib/dora.js:_validateReportInput",
+        "lib/middleware/dpop.js:create",
+        "lib/outbox.js:_emitAudit",
+        "lib/outbox.js:create",
+        "lib/static.js:_validateCreateOpts",
+        "lib/compliance-sanctions-fetcher.js:_emitAudit",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/dsr.js:_emitAudit",
+        "lib/dsr.js:_emitMetric",
+        "lib/dsr.js:create",
+        "lib/auth/sd-jwt-vc-holder.js:_emitAudit",
+        "lib/auth/sd-jwt-vc-holder.js:create",
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/auth/sd-jwt-vc-issuer.js:_emitAudit",
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/middleware/daily-byte-quota.js:_emitAudit",
+        "lib/middleware/daily-byte-quota.js:_shouldSkip",
+        "lib/auth/access-lock.js:_emitAudit",
+        "lib/auth/access-lock.js:_emitMetric",
+        "lib/auth/access-lock.js:_isPassthrough",
+        "lib/auth/access-lock.js:create",
+        "lib/observability-otlp-exporter.js:_emitAudit",
+        "lib/observability-otlp-exporter.js:_emitMetric",
+        "lib/incident-report.js:_emitAudit",
+        "lib/incident-report.js:_emitMetric",
+        "lib/incident-report.js:create",
+        "lib/incident-report.js:open",
+        "lib/incident-report.js:recordFinal",
+        "lib/cra-report.js:_emitAudit",
+        "lib/cra-report.js:create",
+        "lib/nis2-report.js:_emitAudit",
+        "lib/nis2-report.js:create",
+        "lib/gdpr-ropa.js:_emitAudit",
+        "lib/gdpr-ropa.js:create",
+        "lib/gdpr-ropa.js:remove",
+        "lib/compliance-eaa.js:_emitAudit",
+        "lib/compliance-eaa.js:create",
+        "lib/middleware/bot-disclose.js:_matches",
+        "lib/breach-deadline.js:_emitAudit",
+        "lib/breach-deadline.js:createReporter",
+        "lib/breach-deadline.js:fileNotice",
+        "lib/ai-adverse-decision.js:_emitAudit",
+        "lib/ai-adverse-decision.js:wrap",
+        "lib/middleware/age-gate.js:_emitAudit",
+        "lib/middleware/age-gate.js:_shouldSkip",
       ],
       reason: "Try/catch + drop-silent observability emit — every primitive wraps `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
     },
     {
       mode:  "family-subset",
-      files: [
-        "lib/db.js", "lib/network-tls.js", "lib/ntp-check.js",
-      ],
+      files: ["lib/db.js:_tick", "lib/network-tls.js:_tick", "lib/ntp-check.js:_tick"],
       reason: "Periodic-monitor scaffolding — db.integrityMonitor / network-tls.expiryMonitor / ntpCheck.monitor each spin a `safeAsync.repeating` worker that performs a poll, emits an audit + observability event on every tick, fires an operator hook on threshold crossing, and returns a `.stop()` handle. Three different domains (SQLite corruption / TLS cert expiry / NTP clock drift); the 50-token shingle is the worker scaffold + emit shape, not the domain logic. Future consolidation candidate when a 4th periodic monitor lands.",
     },
     {
-      files: ["lib/auth/dpop.js", "lib/break-glass.js", "lib/middleware/security-txt.js"],
+      files: [
+        "lib/auth/dpop.js:<unknown>",
+        "lib/break-glass.js:<unknown>",
+        "lib/middleware/security-txt.js:<unknown>",
+      ],
       reason: "Generic input validation prelude — `if (typeof X !== 'string' || X.length === 0 || /[\\r\\n\\0]/.test(X)) throw` repeats across primitives that gate operator-supplied strings against header-injection bytes (DPoP htm/htu, break-glass reasons, security.txt field values). Three different error classes; the rejection reason is identical but the error code prefix is per-domain.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/sd-jwt-vc-issuer.js", "lib/auth/step-up.js",
-        "lib/auth/step-up-policy.js",
-        "lib/break-glass.js", "lib/dsr.js", "lib/middleware/assetlinks.js",
-        "lib/middleware/require-methods.js", "lib/middleware/security-txt.js",
-        "lib/network-dns.js", "lib/network-heartbeat.js",
-        "lib/network-tls.js", "lib/safe-schema.js",
-        "lib/ws-client.js", "lib/mail-arc-sign.js",
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/auth/step-up.js:parseAuthorizationDetails",
+        "lib/auth/step-up-policy.js:acr",
+        "lib/auth/step-up-policy.js:acrAny",
+        "lib/break-glass.js:_validatePolicySet",
+        "lib/dsr.js:create",
+        "lib/middleware/assetlinks.js:create",
+        "lib/middleware/require-methods.js:create",
+        "lib/middleware/security-txt.js:_arrayOfStrings",
+        "lib/network-dns.js:_clearCache",
+        "lib/network-heartbeat.js:_validateTarget",
+        "lib/network-heartbeat.js:start",
+        "lib/network-tls.js:_validateKeyShare",
+        "lib/safe-schema.js:_tupleWithRest",
+        "lib/safe-schema.js:chain",
+        "lib/ws-client.js:connect",
+        "lib/mail-arc-sign.js:sign",
       ],
       reason: "Non-empty-array opt validation prelude — `if (!Array.isArray(opts.X) || opts.X.length === 0) throw` plus per-element non-empty-string check repeats across primitives that take operator-supplied lists (sd-jwt-vc issuer keys, step-up acrValues / requiredAmr, step-up-policy acrAny / amr / requiredAmr atoms, require-methods HTTP-verb allowlist, security-txt contact lines, break-glass columns, dsr sources, assetlinks statements, DNS resolver IPs, heartbeat targets, TLS key shares, safe-schema enum values, ws-client subprotocols). Twelve different domains with file-specific error classes; consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
-      files: ["lib/file-upload.js", "lib/guard-html.js", "lib/static.js", "lib/cloud-events.js"],
+      files: [
+        "lib/file-upload.js:_validateCreateOpts",
+        "lib/guard-html.js:<unknown>",
+        "lib/static.js:_validateCreateOpts",
+        "lib/cloud-events.js:wrap",
+      ],
       reason: "Validate-opts scaffolding + per-primitive PROFILES literal block. file-upload and static open with the same `validateOpts.requireObject(...)` cascade; guard-html's PROFILES literal carries the same opt-name vocabulary as both; cloud-events.wrap performs the same require + optional cascade across spec attributes. Different create()-style entry shapes; the bodies diverge. Same conventional-shape false-positive as the prior validateOpts cluster.",
     },
     {
-      files: ["lib/audit.js", "lib/guard-csv.js", "lib/guard-html.js"],
+      files: ["lib/audit.js:<unknown>", "lib/guard-csv.js:<unknown>", "lib/guard-html.js:<unknown>"],
       reason: "Audit emission shape — `audit.emit({ event, outcome, metadata: { ... } })` carries identical token sequence across the audit primitive itself and any consumer that emits structured audit rows. guard-csv and guard-html each emit their own domain events; consolidation is impossible because the audit module IS the canonical emitter and the consumers cannot route through themselves.",
     },
     {
       mode:  "family-subset",
-      files: ["lib/api-key.js", "lib/file-upload.js", "lib/static.js", "lib/cloud-events.js"],
+      files: [
+        "lib/api-key.js:_validateIssueOpts",
+        "lib/file-upload.js:_validateCreateOpts",
+        "lib/static.js:_validateCreateOpts",
+        "lib/cloud-events.js:wrap",
+      ],
       reason: "_validateOpts function-prelude scaffolding — every primitive's create() opens with `function _validateXxxOpts(opts) { validateOpts.requireObject(opts, ..., XError); validateOpts.requireNonEmptyString(...); validateOpts.optionalXxx(...) }`. Same scaffolding by design; the cascade body differs per primitive's domain. Tracked as conventional-shape false-positive.",
     },
     {
-      files: ["lib/api-key.js", "lib/guard-csv.js", "lib/guard-svg.js"],
+      files: [
+        "lib/api-key.js:<unknown>",
+        "lib/guard-csv.js:<unknown>",
+        "lib/guard-svg.js:<unknown>",
+      ],
       reason: "Same conventional-shape scaffolding as the file-upload/static cluster — every primitive opens its create()/factory with the same `validateOpts.requireObject(...)` cascade plus per-domain numericBounds / requireNonEmptyString calls. The token sequence shingles across primitives that share the convention; the cascades' bodies (api-key columns vs csv profile-resolution vs svg compliance-posture lookup) diverge.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/mail-auth.js", "lib/mail-dkim.js", "lib/mail-bimi.js",
-        "lib/mail-arc-sign.js",
-        "lib/middleware/body-parser.js", "lib/network-smtp-policy.js",
-        "lib/auth/step-up.js",
+        "lib/mail-auth.js:_canonRelaxedHeader",
+        "lib/mail-auth.js:_fetchDmarcRecord",
+        "lib/mail-auth.js:_fetchSpfRecord",
+        "lib/mail-auth.js:_parseArcTagList",
+        "lib/mail-auth.js:_parseDmarcRecord",
+        "lib/mail-auth.js:arcVerify",
+        "lib/mail-dkim.js:_canonHeaderRelaxed",
+        "lib/mail-dkim.js:_parseDkimTagList",
+        "lib/mail-bimi.js:fetchPolicy",
+        "lib/mail-bimi.js:parseRecord",
+        "lib/mail-arc-sign.js:_canonRelaxedHeader",
+        "lib/middleware/body-parser.js:_contentType",
+        "lib/middleware/body-parser.js:_parseHeaderParams",
+        "lib/middleware/body-parser.js:_parseMultipartHeaders",
+        "lib/network-smtp-policy.js:_parseStsPolicy",
+        "lib/network-smtp-policy.js:tlsRptFetchPolicy",
+        "lib/auth/step-up.js:parseChallenge",
       ],
       reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, BIMI record parsing, MTA-STS policy text parsing, the body-parser content-type-parameter parser, and the RFC 7235 / RFC 9470 WWW-Authenticate Bearer challenge parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/jwt.js", "lib/auth/jwt-external.js", "lib/auth/oauth.js",
-        "lib/auth/dpop.js", "lib/auth/status-list.js",
+        "lib/auth/jwt.js:<top>",
+        "lib/auth/jwt.js:decode",
+        "lib/auth/jwt-external.js:_b64urlDecode",
+        "lib/auth/jwt-external.js:verifyExternal",
+        "lib/auth/oauth.js:<top>",
+        "lib/auth/oauth.js:_validateUrl",
+        "lib/auth/oauth.js:verifyIdToken",
+        "lib/auth/dpop.js:<top>",
+        "lib/auth/dpop.js:_b64urlDecode",
+        "lib/auth/dpop.js:_normalizeHtu",
+        "lib/auth/dpop.js:verify",
+        "lib/auth/status-list.js:_fromB64url",
       ],
       reason: "auth-jwt / JOSE family — all five files implement JWS decode + signature verification against operator-supplied or proof-embedded keys. The shared shingle is the canonical 3-part split + base64url decode + safeJson.parse(header/payload) + algorithm allowlist enforcement that every JWS verifier must perform; the divergence is which keys / algorithms / claim-checks each module accepts (PQC algs in jwt.js; classical algs + JWKS in jwt-external.js; full OAuth-discovery + ID-token shape in oauth.js; embedded-jwk DPoP proof in dpop.js with htm/htu/ath/jti claims). Each module's failure-mode codespace (auth-jwt/* vs auth-jwt-external/* vs auth-oauth/* vs auth-dpop/*) is operator-distinguishable so consolidating to a single helper would either lose the distinct error class or pass the class through every helper site. Future consolidation candidate when the JOSE family doubles in size.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/guard-csv.js", "lib/guard-html.js", "lib/guard-svg.js",
-        "lib/guard-filename.js", "lib/guard-archive.js", "lib/guard-json.js",
-        "lib/guard-yaml.js", "lib/guard-xml.js", "lib/guard-markdown.js",
-        "lib/guard-email.js", "lib/guard-domain.js", "lib/guard-uuid.js",
-        "lib/guard-cidr.js", "lib/guard-time.js", "lib/guard-mime.js",
-        "lib/guard-jwt.js", "lib/guard-oauth.js", "lib/guard-graphql.js",
-        "lib/guard-shell.js", "lib/guard-regex.js", "lib/guard-jsonpath.js",
-        "lib/guard-template.js", "lib/guard-image.js", "lib/guard-pdf.js",
-        "lib/guard-auth.js",
-        // Future family members go here as they ship — the family-
-        // subset matcher allows any cluster whose every file is in
-        // this list, so adding a new guard doesn't need new entries.
+        "lib/guard-csv.js:compliancePosture",
+        "lib/guard-csv.js:detect",
+        "lib/guard-csv.js:gate",
+        "lib/guard-html.js:_permissiveAllowed",
+        "lib/guard-html.js:compliancePosture",
+        "lib/guard-html.js:gate",
+        "lib/guard-html.js:sanitize",
+        "lib/guard-svg.js:<top>",
+        "lib/guard-svg.js:_detectIssues",
+        "lib/guard-svg.js:compliancePosture",
+        "lib/guard-svg.js:gate",
+        "lib/guard-svg.js:sanitize",
+        "lib/guard-filename.js:<top>",
+        "lib/guard-filename.js:gate",
+        "lib/guard-filename.js:sanitize",
+        "lib/guard-archive.js:<top>",
+        "lib/guard-archive.js:_detectIssues",
+        "lib/guard-archive.js:gate",
+        "lib/guard-archive.js:validateEntries",
+        "lib/guard-json.js:<top>",
+        "lib/guard-json.js:_policyKeyForRuleId",
+        "lib/guard-json.js:_scanRawSource",
+        "lib/guard-json.js:compliancePosture",
+        "lib/guard-json.js:gate",
+        "lib/guard-json.js:validate",
+        "lib/guard-yaml.js:<top>",
+        "lib/guard-yaml.js:_detectIssues",
+        "lib/guard-yaml.js:compliancePosture",
+        "lib/guard-yaml.js:gate",
+        "lib/guard-yaml.js:parse",
+        "lib/guard-yaml.js:validate",
+        "lib/guard-xml.js:<top>",
+        "lib/guard-xml.js:_detectIssues",
+        "lib/guard-xml.js:_resolveOpts",
+        "lib/guard-xml.js:compliancePosture",
+        "lib/guard-xml.js:gate",
+        "lib/guard-xml.js:sanitize",
+        "lib/guard-xml.js:validate",
+        "lib/guard-markdown.js:_allMatches",
+        "lib/guard-markdown.js:_detectIssues",
+        "lib/guard-markdown.js:_isDangerousUrl",
+        "lib/guard-markdown.js:gate",
+        "lib/guard-markdown.js:sanitize",
+        "lib/guard-markdown.js:validate",
+        "lib/guard-email.js:_detectAddressIssues",
+        "lib/guard-email.js:_detectMessageIssues",
+        "lib/guard-email.js:_parseAddressLine",
+        "lib/guard-email.js:_resolveOpts",
+        "lib/guard-email.js:gate",
+        "lib/guard-email.js:sanitize",
+        "lib/guard-email.js:validate",
+        "lib/guard-email.js:validateAddress",
+        "lib/guard-email.js:validateMessage",
+        "lib/guard-domain.js:_resolveOpts",
+        "lib/guard-domain.js:_shannonEntropy",
+        "lib/guard-domain.js:compliancePosture",
+        "lib/guard-domain.js:gate",
+        "lib/guard-domain.js:sanitize",
+        "lib/guard-domain.js:validate",
+        "lib/guard-uuid.js:<top>",
+        "lib/guard-uuid.js:_detectIssues",
+        "lib/guard-uuid.js:_toCanonicalHex",
+        "lib/guard-uuid.js:compliancePosture",
+        "lib/guard-uuid.js:gate",
+        "lib/guard-uuid.js:sanitize",
+        "lib/guard-uuid.js:validate",
+        "lib/guard-cidr.js:_detectIssues",
+        "lib/guard-cidr.js:_ipv4ToUint32",
+        "lib/guard-cidr.js:_ipv6InReservedRange",
+        "lib/guard-cidr.js:compliancePosture",
+        "lib/guard-cidr.js:gate",
+        "lib/guard-cidr.js:sanitize",
+        "lib/guard-cidr.js:validate",
+        "lib/guard-time.js:<top>",
+        "lib/guard-time.js:_detectIssues",
+        "lib/guard-time.js:_resolveOpts",
+        "lib/guard-time.js:compliancePosture",
+        "lib/guard-time.js:gate",
+        "lib/guard-time.js:sanitize",
+        "lib/guard-time.js:validate",
+        "lib/guard-mime.js:<top>",
+        "lib/guard-mime.js:_detectIssues",
+        "lib/guard-mime.js:_splitTopLevel",
+        "lib/guard-mime.js:compliancePosture",
+        "lib/guard-mime.js:gate",
+        "lib/guard-mime.js:sanitize",
+        "lib/guard-mime.js:validate",
+        "lib/guard-jwt.js:_b64urlDecodeJson",
+        "lib/guard-jwt.js:_detectIssues",
+        "lib/guard-jwt.js:_resolveOpts",
+        "lib/guard-jwt.js:gate",
+        "lib/guard-jwt.js:sanitize",
+        "lib/guard-jwt.js:validate",
+        "lib/guard-oauth.js:<top>",
+        "lib/guard-oauth.js:_resolveOpts",
+        "lib/guard-oauth.js:gate",
+        "lib/guard-oauth.js:sanitize",
+        "lib/guard-graphql.js:<top>",
+        "lib/guard-graphql.js:_detectIssues",
+        "lib/guard-graphql.js:_measureQueryShape",
+        "lib/guard-graphql.js:gate",
+        "lib/guard-graphql.js:sanitize",
+        "lib/guard-shell.js:<top>",
+        "lib/guard-shell.js:_detectIssues",
+        "lib/guard-shell.js:_resolveOpts",
+        "lib/guard-shell.js:compliancePosture",
+        "lib/guard-shell.js:gate",
+        "lib/guard-shell.js:sanitize",
+        "lib/guard-shell.js:validate",
+        "lib/guard-regex.js:<top>",
+        "lib/guard-regex.js:_detectIssues",
+        "lib/guard-regex.js:_resolveOpts",
+        "lib/guard-regex.js:compliancePosture",
+        "lib/guard-regex.js:gate",
+        "lib/guard-regex.js:sanitize",
+        "lib/guard-regex.js:validate",
+        "lib/guard-jsonpath.js:<top>",
+        "lib/guard-jsonpath.js:_detectIssues",
+        "lib/guard-jsonpath.js:_hasDynamicHint",
+        "lib/guard-jsonpath.js:compliancePosture",
+        "lib/guard-jsonpath.js:gate",
+        "lib/guard-jsonpath.js:sanitize",
+        "lib/guard-jsonpath.js:validate",
+        "lib/guard-template.js:<top>",
+        "lib/guard-template.js:_detectIssues",
+        "lib/guard-template.js:_resolveOpts",
+        "lib/guard-template.js:compliancePosture",
+        "lib/guard-template.js:gate",
+        "lib/guard-template.js:sanitize",
+        "lib/guard-template.js:validate",
+        "lib/guard-image.js:<top>",
+        "lib/guard-image.js:_detectIssues",
+        "lib/guard-image.js:_detectMagicMimes",
+        "lib/guard-image.js:gate",
+        "lib/guard-image.js:sanitize",
+        "lib/guard-image.js:validate",
+        "lib/guard-pdf.js:<top>",
+        "lib/guard-pdf.js:_detectIssues",
+        "lib/guard-pdf.js:_hasPdfMagic",
+        "lib/guard-pdf.js:gate",
+        "lib/guard-pdf.js:sanitize",
+        "lib/guard-pdf.js:validate",
+        "lib/guard-auth.js:<top>",
+        "lib/guard-auth.js:_detectIssues",
+        "lib/guard-auth.js:gate",
+        "lib/guard-auth.js:sanitize",
+        "lib/guard-auth.js:validate",
       ],
       reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
     },
     {
-      files: ["lib/api-snapshot.js", "lib/break-glass.js", "lib/deprecate.js"],
+      files: [
+        "lib/api-snapshot.js:write",
+        "lib/break-glass.js:unsealRowAsService",
+        "lib/deprecate.js:alias",
+      ],
       reason: "Two-arg required-string validation pattern — different domains coincidentally share the `if (!opts || typeof opts !== 'object') ... if (typeof X !== 'string' || X.length === 0)` shape. Sites use file-specific error classes that diverge from the framework standard signature.",
     },
     {
-      files: ["lib/atomic-file.js", "lib/deprecate.js", "lib/totp.js"],
+      files: ["lib/atomic-file.js:copyDirRecursive", "lib/deprecate.js:alias", "lib/totp.js:uri"],
       reason: "Two consecutive non-empty-string checks. Sites use AtomicFileError / DeprecateError / TotpError — each with a slightly different constructor signature that doesn't fit requireNonEmptyString. Tracked for future error-class-signature normalization.",
     },
     {
-      files: ["lib/audit-chain.js", "lib/audit-tools.js", "lib/audit.js"],
+      files: [
+        "lib/audit-chain.js:verifyChain",
+        "lib/audit-tools.js:_verifyChainSlice",
+        "lib/audit.js:verifyCheckpoints",
+      ],
       reason: "Audit chain verification loop — `for (var i ...) { if (entry.X !== expected) return { ok: false, ...}}`. Inherent to the audit verification domain; the loop body checks domain-specific invariants.",
     },
     {
-      files: ["lib/audit-sign.js", "lib/framework-schema.js", "lib/vault/index.js"],
+      files: [
+        "lib/audit-sign.js:init",
+        "lib/framework-schema.js:ensureSchema",
+        "lib/vault/index.js:init",
+      ],
       reason: "PQC envelope-validation entry shape — `if (!X || !X.field) throw; var alg = (X.alg || '').toLowerCase(); if (alg !== 'A' && alg !== 'B') throw`. Each module checks its own envelope contract.",
     },
     {
-      files: ["lib/auth/jwt.js", "lib/external-db.js", "lib/http-client.js"],
+      files: [
+        "lib/auth/jwt.js:_requireNumericDate",
+        "lib/external-db.js:_requirePosInt",
+        "lib/http-client.js:_requirePositiveInt",
+      ],
       reason: "Optional-field forwarder pattern — `if (X.A !== undefined) emit('A', X.A); if (X.B !== undefined) emit('B', X.B)`. Each module's emit-specific (jwt claims / db pool stats / http headers).",
     },
     {
-      files: ["lib/backup/bundle.js", "lib/restore-bundle.js", "lib/restore-rollback.js"],
+      files: [
+        "lib/backup/bundle.js:<unknown>",
+        "lib/restore-bundle.js:<unknown>",
+        "lib/restore-rollback.js:<unknown>",
+      ],
       reason: "Bundle file-IO entry — `if (typeof opts.X !== 'string' || !atomicFile.Y(opts.X)) throw; atomicFile.Z(opts.X, ...)`. Backup/restore lifecycle ops share file-validation entry shape; refactoring would consolidate into a backup/restore base helper. Tracked as future opportunity.",
     },
     {
-      files: ["lib/backup/bundle.js", "lib/restore-bundle.js", "lib/vault/rotate.js"],
+      files: [
+        "lib/backup/bundle.js:create",
+        "lib/restore-bundle.js:extract",
+        "lib/vault/rotate.js:rotate",
+      ],
       reason: "Same backup/restore/vault file-IO pattern as above; vault/rotate participates because it uses the same bundle wrapping. Future consolidation candidate.",
     },
     {
-      files: ["lib/backup/index.js", "lib/restore.js", "lib/scheduler.js"],
+      files: [
+        "lib/backup/index.js:_emitAudit",
+        "lib/restore.js:_emitAudit",
+        "lib/scheduler.js:_emit",
+      ],
       reason: "Async timer setup with cleanup — `setInterval` + `unref()` + `cancel()` shape. Scheduler-shape primitives across backup / restore / scheduler. Three different operator-facing primitives with different timer semantics; consolidation candidate but each has distinct cleanup contract.",
     },
     {
       mode:  "family-subset",
-      files: ["lib/auth/jwt-external.js", "lib/auth/oauth.js", "lib/network-smtp-policy.js", "lib/mail-auth.js", "lib/mail-bimi.js"],
+      files: [
+        "lib/auth/jwt-external.js:_fetchJwks",
+        "lib/auth/jwt-external.js:verifyExternal",
+        "lib/auth/oauth.js:_postForm",
+        "lib/auth/oauth.js:verifyIdToken",
+        "lib/network-smtp-policy.js:tlsRptFetchPolicy",
+        "lib/network-smtp-policy.js:tlsRptParseReport",
+        "lib/mail-auth.js:_fetchDmarcRecord",
+        "lib/mail-auth.js:_fetchSpfRecord",
+        "lib/mail-auth.js:dmarcParseAggregateReport",
+        "lib/mail-bimi.js:fetchPolicy",
+      ],
       reason: "External structured-data ingestion + safe-* parser + file-specific framework-error throw. Each module ingests serialized data from a different external surface (JWKS endpoint over HTTP, OAuth discovery doc, TLS-RPT JSON report, DMARC RUA XML report, BIMI TXT record) with file-specific size caps and error classes. Extracting to a shared helper would either lose the per-module error class or pass it through every helper site, making the call sites less readable than the current inline 3-line block.",
     },
     {
-      files: ["lib/db-declare-row-policy.js", "lib/db-declare-view.js", "lib/middleware/db-role-for.js"],
+      files: [
+        "lib/db-declare-row-policy.js:_validateOpts",
+        "lib/db-declare-view.js:_validateOpts",
+        "lib/middleware/db-role-for.js:create",
+      ],
       reason: "Role/policy SQL identifier validation + dbRole compound check. Three different declarative-DB primitives share the role-name validation entry. Future consolidation candidate as `db.validateRoleSpec(opts, errorClass, code)`.",
     },
     {
-      files: ["lib/dual-control.js", "lib/notify.js", "lib/retention.js"],
+      files: ["lib/dual-control.js:request", "lib/notify.js:send", "lib/retention.js:_validateRule"],
       reason: "Required + nested-shape validation — `async function f(opts) { if (!opts || typeof opts !== 'object') throw; if (typeof opts.X !== 'string' || opts.X.field === N) throw }`. Each primitive's specific contract on opts.X varies (purpose / channel / table); compound shape resists generic extraction.",
     },
     {
-      files: ["lib/external-db-migrate.js", "lib/migrations.js", "lib/seeders.js"],
+      files: [
+        "lib/external-db-migrate.js:_loadMigration",
+        "lib/migrations.js:_loadMigration",
+        "lib/seeders.js:_loadSeed",
+      ],
       reason: "Migration runner file-listing + apply pattern. The dbSchema.runInTransaction extraction handled the BEGIN/COMMIT/ROLLBACK; what remains is the file-loading + each-file-apply loop. Inherent to migration-runner domain; each runner has slightly different metadata / environment shape.",
     },
     {
-      files: ["lib/html-balance.js", "lib/object-store/sigv4.js", "lib/parsers/safe-xml.js"],
+      files: [
+        "lib/html-balance.js:<unknown>",
+        "lib/object-store/sigv4.js:<unknown>",
+        "lib/parsers/safe-xml.js:<unknown>",
+      ],
       reason: "Character-class range checks (`(c >= 0xA && c <= 0xZ) || (c >= 0xA2 && c <= 0xZ2)`) appearing in any string-classifier code. Generic JS idiom, not extractable.",
     },
     {
-      files: ["lib/log-stream-cloudwatch.js", "lib/log-stream-otlp.js", "lib/log-stream-webhook.js"],
+      files: [
+        "lib/log-stream-cloudwatch.js:emit",
+        "lib/log-stream-otlp.js:emit",
+        "lib/log-stream-webhook.js:emit",
+      ],
       reason: "Log-stream emit() entry — `} ); if (buffer.length >= cfg.batchSize) { _flush().catch(()=>{}); } else { flushScheduler.schedule(); } return Promise.resolve({ accepted: true, queued: buffer.length });`. The framework's log-stream sinks share this exact emit return shape. Could be a base-factory but each sink's surrounding emit-pre-checks differ.",
     },
     {
-      files: ["lib/mail-dkim.js", "lib/metrics.js", "lib/safe-schema.js"],
+      files: [
+        "lib/mail-dkim.js:<unknown>",
+        "lib/metrics.js:<unknown>",
+        "lib/safe-schema.js:<unknown>",
+      ],
       reason: "Format-array iteration with predicate check — `for (var i ...) { if (!predicate(arr[i])) throw }`. Generic JS validation pattern across unrelated domains.",
     },
     {
-      files: ["lib/auth/access-lock.js", "lib/config.js", "lib/mail-dkim.js", "lib/middleware/require-bound-key.js"],
+      files: [
+        "lib/auth/access-lock.js:create",
+        "lib/config.js:create",
+        "lib/mail-dkim.js:create",
+        "lib/middleware/require-bound-key.js:create",
+      ],
       reason: "Operator-supplied string-array validation prelude — `Array.isArray(opts.X) ? opts.X.slice() : [] + for-loop with typeof !== string check throwing per-domain error class`. Four different domains (access-lock unlockRoles / config primary-keys / mail-dkim selectors / require-bound-key requiredScopes); each loop throws a domain-specific error code on bad entries. Generic shape, not consolidatable.",
     },
     {
-      files: ["lib/auth/access-lock.js", "lib/config.js", "lib/middleware/require-bound-key.js"],
+      files: [
+        "lib/auth/access-lock.js:create",
+        "lib/config.js:create",
+        "lib/middleware/require-bound-key.js:create",
+      ],
       reason: "Same string-array validation prelude as the four-file cluster above; the 60-token shingle catches a slightly larger window than the 50-token one when only three of the four files happen to share contiguous validation+normalization+initial-emit logic. Generic JS shape, three different domains.",
     },
     {
-      files: ["lib/backup/index.js", "lib/middleware/require-bound-key.js", "lib/restore.js"],
+      files: [
+        "lib/backup/index.js:_validateStorage",
+        "lib/middleware/require-bound-key.js:create",
+        "lib/restore.js:_validateStorage",
+      ],
       reason: "Async-iteration over operator-supplied collection with try/catch + per-item error mapping — backup walks file entries, restore walks archive entries, require-bound-key walks bound-field getters. Three different domains, three different per-item error vocabularies; consolidating would erode each iterator's domain validation.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/mail-arc-sign.js", "lib/mail-dkim.js", "lib/metrics.js",
-        "lib/safe-schema.js",
+        "lib/mail-arc-sign.js:sign",
+        "lib/mail-dkim.js:create",
+        "lib/metrics.js:histogram",
+        "lib/safe-schema.js:<unknown>",
       ],
       reason: "Same array-iteration-with-predicate shape as the mail-dkim/metrics/safe-schema cluster — mail-arc-sign's headersToSign element validation walks the operator-supplied array of header names with the same `for (var i ...) { if (!predicate(arr[i])) throw }` shape; predicate body differs per domain.",
     },
     {
-      files: ["lib/inbox.js", "lib/middleware/span-http-server.js", "lib/outbox.js"],
+      files: [
+        "lib/inbox.js:create",
+        "lib/middleware/span-http-server.js:create",
+        "lib/outbox.js:create",
+      ],
       reason: "Transactional-store + span-lifecycle audit prelude — inbox.handle / outbox.relay / span-http-server's response-finish hook each invoke `audit.safeEmit({ action, outcome, metadata })` inside a try/catch swallow on the hot path. Three different domains (dedupe-on-receive vs at-least-once relay vs HTTP request span); the 50-token shingle is the sink-emit shape, not the domain logic.",
     },
     {
-      files: ["lib/mail.js", "lib/migrations.js", "lib/seeders.js"],
+      files: ["lib/mail.js:<unknown>", "lib/migrations.js:<unknown>", "lib/seeders.js:<unknown>"],
       reason: "Identifier/format validation + sql identifier check. Mail uses email-address validators; migrations/seeders use SQL identifier validators. Different domains with the same `function isXValid(s) { return typeof s === 'string' && s.length > 0 && s.length <= MAX && regex.test(s); }` shape.",
     },
     {
-      files: ["lib/middleware/bot-guard.js", "lib/middleware/cors.js", "lib/middleware/csrf-protect.js"],
+      files: [
+        "lib/middleware/bot-guard.js:<unknown>",
+        "lib/middleware/cors.js:<unknown>",
+        "lib/middleware/csrf-protect.js:<unknown>",
+      ],
       reason: "Middleware factory boilerplate — opts validation + xff/trustProxy parse + helper wiring. Middleware factories share scaffolding by design; consolidating into a base factory would cost more readability than it saves.",
     },
     {
       mode:  "family-subset",
       files: [
-        "lib/middleware/cookies.js", "lib/middleware/gpc.js",
-        "lib/middleware/headers.js",
+        "lib/middleware/cookies.js:<top>",
+        "lib/middleware/gpc.js:<top>",
+        "lib/middleware/headers.js:<top>",
       ],
       reason: "Threat-detection middleware family — each shares the same `_emitAudit(audit, action, outcome, metadata) { ... try { audit.safeEmit({...}); } catch (_e) { /* drop-silent */ } }` audit-emission shape. Per the validation-tier policy this is the hot-path observability sink shape; extracting would force a shared `audit-emit-drop-silent` primitive — the framework already has audit.safeEmit, and the middleware-local wrapper's value is keeping the drop-silent behavior visible at the call site. Future consolidation candidate.",
     },
     {
-      files: ["lib/middleware/bot-guard.js", "lib/middleware/cors.js", "lib/middleware/rate-limit.js"],
+      files: [
+        "lib/middleware/bot-guard.js:_checkHeuristics",
+        "lib/middleware/cors.js:create",
+        "lib/middleware/rate-limit.js:_writeBlocked",
+      ],
       reason: "Same middleware-factory cluster as above with rate-limit substituted. Same justification.",
     },
     {
-      files: ["lib/middleware/db-role-for.js", "lib/notify.js", "lib/seeders.js", "lib/webhook.js"],
+      files: [
+        "lib/middleware/db-role-for.js:<unknown>",
+        "lib/notify.js:<unknown>",
+        "lib/seeders.js:<unknown>",
+        "lib/webhook.js:<unknown>",
+      ],
       reason: "Optional-nested-object shape validation — `if (opts.X !== undefined && opts.X !== null) { if (typeof opts.X !== 'object' || typeof opts.X.method !== 'function') throw }`. Each handle has a different method-shape contract (audit / observability / queue / permissions). Future consolidation candidate as `validateOpts.methodShape(value, methodName, label, errorClass)`.",
     },
     {
-      files: ["lib/middleware/db-role-for.js", "lib/seeders.js", "lib/webhook.js"],
+      files: [
+        "lib/middleware/db-role-for.js:<unknown>",
+        "lib/seeders.js:<unknown>",
+        "lib/webhook.js:<unknown>",
+      ],
       reason: "Same nested-shape cluster as above with notify removed. Same justification.",
     },
     {
-      files: ["lib/network-proxy.js", "lib/network-tls.js", "lib/network.js"],
+      files: [
+        "lib/network-proxy.js:snapshot",
+        "lib/network-tls.js:_emitAuditAdd",
+        "lib/network.js:snapshot",
+      ],
       reason: "Network listener teardown shape — `function reset() { state.X = null; state.Y = null; state.Z = []; ...}`. Each network primitive has a different reset surface; consolidating would force unrelated state into a base contract.",
     },
     {
-      files: ["lib/notify.js", "lib/seeders.js", "lib/webhook.js"],
+      files: ["lib/notify.js:<unknown>", "lib/seeders.js:<unknown>", "lib/webhook.js:<unknown>"],
       reason: "Same nested-shape cluster as middleware/db-role-for+notify+seeders+webhook (see above) with db-role-for removed.",
     },
     {
-      files: ["lib/object-store/azure-blob.js", "lib/object-store/gcs.js", "lib/object-store/sigv4.js"],
+      files: [
+        "lib/object-store/azure-blob.js:getResponse",
+        "lib/object-store/gcs.js:getResponse",
+        "lib/object-store/sigv4.js:getResponse",
+      ],
       reason: "S3-protocol shared upload shape — multipart-upload state machine fingerprint. Each protocol's upload shape differs in headers / signing / response parsing; common scaffolding (request-helper, response-parse) is already extracted to lib/object-store/http-request.js.",
     },
     {
-      files: ["lib/object-store/azure-blob.js", "lib/object-store/http-put.js", "lib/object-store/sigv4.js"],
+      files: [
+        "lib/object-store/azure-blob.js:head",
+        "lib/object-store/http-put.js:head",
+        "lib/object-store/sigv4.js:head",
+      ],
       reason: "Same object-store SDK cluster as above with http-put substituted. Same justification.",
     },
     {
-      files: ["lib/object-store/gcs.js", "lib/object-store/sigv4.js", "lib/static.js"],
+      files: [
+        "lib/object-store/gcs.js:<unknown>",
+        "lib/object-store/sigv4.js:<unknown>",
+        "lib/static.js:<unknown>",
+      ],
       reason: "Operator-supplied URL parsing entry — `var parsed = safeUrl.parse(url, { ... }); var hostname = parsed.hostname; ...`. URL extraction shape across object-store backends + static-asset server.",
     },
     {
-      files: ["lib/parsers/safe-env.js", "lib/parsers/safe-toml.js", "lib/parsers/safe-yaml.js"],
+      files: [
+        "lib/parsers/safe-env.js:parse",
+        "lib/parsers/safe-toml.js:parse",
+        "lib/parsers/safe-yaml.js:parse",
+      ],
       reason: "Parser entry — `function parse(input, opts) { opts = opts || {}; if (opts.maxBytes !== undefined && !numericBounds.isPositiveFiniteInt(opts.maxBytes)) throw }`. Parser error classes use `(message, code, line, col)` constructor signature that doesn't fit numericBounds.requireXIfPresent helper. Future opportunity: normalize parser error class signatures to match framework standard.",
     },
   ];
-  var _knownClusterSet = Object.create(null);
-  var _familySubsetSets = [];     // entries with mode:"family-subset" → allow any subset
-  KNOWN_CLUSTERS.forEach(function (e) {
-    if (e.mode === "family-subset") {
-      var familyFileSet = Object.create(null);
-      e.files.forEach(function (f) { familyFileSet[f] = true; });
-      _familySubsetSets.push(familyFileSet);
-      return;
+  // Each KNOWN_CLUSTERS entry's `files` is a list of `path:fn` strings.
+  // Build per-entry matchers and reject malformed entries (bare path
+  // with no `:fn` qualifier) at parse time so the audit trail records
+  // exactly which body of code shares the shape.
+  //
+  // Migration bypass: HS_CLUSTER_MIGRATE=1 in the env relaxes the
+  // bare-path rejection so the detector can run against unmigrated
+  // entries; in that mode every detected strong cluster is dumped
+  // as `MIGRATE-DUMP <files-sorted>::<file:fn>,...` so the operator
+  // can rewrite the entries.
+  var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;
+  function _parseEntryMatchers(entry, idx) {
+    var matchers = [];
+    var seen = Object.create(null);
+    for (var i = 0; i < entry.files.length; i += 1) {
+      var raw = entry.files[i];
+      if (typeof raw !== "string" || raw.length === 0) {
+        throw new Error("KNOWN_CLUSTERS[" + idx + "].files[" + i +
+          "] must be a non-empty string in `path:fnName` form");
+      }
+      var colon = raw.lastIndexOf(":");
+      if (colon === -1) {
+        if (MIGRATE_MODE) {
+          // Bare path under migration mode — treat fn as `*` so it
+          // matches anything; the dump output below shows the operator
+          // what the real fn name is.
+          matchers.push({ file: raw, fn: "*" });
+          continue;
+        }
+        throw new Error("KNOWN_CLUSTERS[" + idx + "].files[" + i +
+          "] = " + JSON.stringify(raw) +
+          " — missing `:fnName` qualifier. Allowlist entries must " +
+          "name the function whose body shares the duplicate shape. " +
+          "Use `<top>` for module-level code.");
+      }
+      var file = raw.slice(0, colon);
+      var fn   = raw.slice(colon + 1);
+      if (file.length === 0 || fn.length === 0) {
+        throw new Error("KNOWN_CLUSTERS[" + idx + "].files[" + i +
+          "] = " + JSON.stringify(raw) +
+          " — empty path or fn after splitting on `:`");
+      }
+      var key = file + ":" + fn;
+      if (seen[key]) continue;
+      seen[key] = true;
+      matchers.push({ file: file, fn: fn });
     }
-    var key = e.files.slice().sort().join("|");
-    _knownClusterSet[key] = e;
+    return matchers;
+  }
+
+  var _exactEntries = [];        // mode unset → cluster's siteSet must equal entry's matcher set
+  var _familyEntries = [];       // mode:"family-subset" → every cluster site covered by ≥1 matcher
+  KNOWN_CLUSTERS.forEach(function (e, idx) {
+    var matchers = _parseEntryMatchers(e, idx);
+    if (e.mode === "family-subset") _familyEntries.push(matchers);
+    else _exactEntries.push(matchers);
   });
+
+  // Compute (file, fn) site set per cluster — unique per file, the
+  // first occurring line in each file decides the enclosing function.
+  // Multiple sites in the same file under different functions are
+  // each represented as a separate (file, fn) tuple.
+  function _siteSetOf(r) {
+    var seen = Object.create(null);
+    var out = [];
+    for (var i = 0; i < r.sites.length; i += 1) {
+      var s = r.sites[i];
+      var fn = _enclosingFn(s.file, s.line);
+      var key = s.file + ":" + fn;
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push({ file: s.file, fn: fn });
+    }
+    return out;
+  }
+  function _siteCoveredBy(site, matchers) {
+    for (var i = 0; i < matchers.length; i += 1) {
+      if (matchers[i].file !== site.file) continue;
+      if (matchers[i].fn === "*") return true;          // migration-mode wildcard
+      if (matchers[i].fn === site.fn) return true;
+    }
+    return false;
+  }
 
   var strong = rows.filter(function (r) {
     if (r.passLabel !== "[exact]") return false;
     if (r.bestSize < STRONG_MIN_SIZE) return false;
     if (r.fileSet.length < STRONG_MIN_FILES) return false;
-    var key = r.fileSet.slice().sort().join("|");
-    if (_knownClusterSet[key]) return false;     // exact-match allowlisted
-    // family-subset: any cluster whose every file is in a registered
-    // family set is allowed. Used for the guard-* family ABI clusters
-    // — adding one new guard creates O(2^N) new file-set combinations,
-    // which exact-match allowlisting can't sustain.
-    for (var fi = 0; fi < _familySubsetSets.length; fi += 1) {
-      var fs = _familySubsetSets[fi];
-      var allInFamily = true;
-      for (var j = 0; j < r.fileSet.length; j += 1) {
-        if (!fs[r.fileSet[j]]) { allInFamily = false; break; }
+
+    var siteSet = _siteSetOf(r);
+
+    if (MIGRATE_MODE) {
+      // Dump every strong cluster's (file, fn) tuples so the operator
+      // can rewrite the KNOWN_CLUSTERS entry. Format:
+      //   MIGRATE-DUMP <sorted-fileset> :: <file:fn>,<file:fn>,...
+      var fileKey = r.fileSet.slice().sort().join("|");
+      var siteKey = siteSet.map(function (s) { return s.file + ":" + s.fn; }).sort().join(",");
+      console.log("MIGRATE-DUMP " + fileKey + " :: " + siteKey);
+    }
+
+    // Exact match: cluster siteSet must equal one entry's matcher set
+    // (every site covered AND every matcher used by some site).
+    for (var ei = 0; ei < _exactEntries.length; ei += 1) {
+      var matchers = _exactEntries[ei];
+      if (matchers.length !== siteSet.length) continue;
+      var allCovered = true;
+      for (var sj = 0; sj < siteSet.length; sj += 1) {
+        if (!_siteCoveredBy(siteSet[sj], matchers)) { allCovered = false; break; }
       }
-      if (allInFamily) return false;
+      if (!allCovered) continue;
+      // Also ensure every matcher hit at least one site (so an entry
+      // can't drift into "matches everything" by accident).
+      var allUsed = true;
+      for (var mi = 0; mi < matchers.length; mi += 1) {
+        var hit = false;
+        for (var sk = 0; sk < siteSet.length; sk += 1) {
+          if (siteSet[sk].file === matchers[mi].file && siteSet[sk].fn === matchers[mi].fn) {
+            hit = true; break;
+          }
+        }
+        if (!hit) { allUsed = false; break; }
+      }
+      if (allUsed) return false;
+    }
+
+    // Family-subset: every site is covered by at least one matcher.
+    // Used for the guard-* family ABI clusters where adding one new
+    // guard creates O(2^N) new file-set combinations.
+    for (var fi2 = 0; fi2 < _familyEntries.length; fi2 += 1) {
+      var fmatchers = _familyEntries[fi2];
+      var fAll = true;
+      for (var fj = 0; fj < siteSet.length; fj += 1) {
+        if (!_siteCoveredBy(siteSet[fj], fmatchers)) { fAll = false; break; }
+      }
+      if (fAll) return false;
     }
     return true;
   });

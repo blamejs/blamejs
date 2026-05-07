@@ -254,6 +254,8 @@ module.exports = {
   cra:              { report: require("./lib/cra-report") },
   nis2:             { report: require("./lib/nis2-report") },
   gdpr:             { ropa: require("./lib/gdpr-ropa") },
+  breach:           require("./lib/breach-deadline"),
+  ai:               { adverseDecision: require("./lib/ai-adverse-decision") },
   queue:            queue,
   logStream:        logStream,
   redact:           redact,

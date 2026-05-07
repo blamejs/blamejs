@@ -1,8 +1,182 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.10",
-  "createdAt": "2026-05-07T02:21:27.965Z",
+  "frameworkVersion": "0.8.11",
+  "createdAt": "2026-05-07T02:54:47.506Z",
   "exports": {
+    "ai": {
+      "type": "object",
+      "members": {
+        "adverseDecision": {
+          "type": "object",
+          "members": {
+            "AdverseDecisionError": {
+              "type": "function",
+              "arity": 4
+            },
+            "REGIME_DEADLINES": {
+              "type": "object",
+              "members": {
+                "ai-act-86": {
+                  "type": "object",
+                  "members": {
+                    "appeal": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "explanation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "humanReview": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "regulation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "colorado-ai-act": {
+                  "type": "object",
+                  "members": {
+                    "appeal": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "explanation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "humanReview": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "regulation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "ecoa-1002.9": {
+                  "type": "object",
+                  "members": {
+                    "appeal": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "explanation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "humanReview": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "regulation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "fcra-615": {
+                  "type": "object",
+                  "members": {
+                    "appeal": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "explanation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "humanReview": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "regulation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "gdpr-22": {
+                  "type": "object",
+                  "members": {
+                    "appeal": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "explanation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "humanReview": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "regulation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "nyc-ll-144": {
+                  "type": "object",
+                  "members": {
+                    "appeal": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "explanation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "humanReview": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "regulation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "operator-defined": {
+                  "type": "object",
+                  "members": {
+                    "appeal": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "explanation": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "humanReview": {
+                      "type": "primitive",
+                      "valueType": "null"
+                    },
+                    "regulation": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "VALID_REGIMES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "wrap": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        }
+      }
+    },
     "apiKey": {
       "type": "object",
       "members": {
@@ -2464,6 +2638,834 @@
         "validate": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "breach": {
+      "type": "object",
+      "members": {
+        "BreachError": {
+          "type": "function",
+          "arity": 4
+        },
+        "deadline": {
+          "type": "object",
+          "members": {
+            "STATE_DEADLINES": {
+              "type": "object",
+              "members": {
+                "AK": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "AL": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "AR": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "AZ": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "CA": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "CO": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "CT": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "DC": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "DE": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "FL": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "GA": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "HI": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "IA": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "ID": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "IL": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "IN": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "KS": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "KY": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "LA": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "MA": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "MD": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "ME": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "MI": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "MN": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "MO": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "MS": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "MT": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "NC": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "ND": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "NE": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "NH": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "NJ": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "NM": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "NV": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "NY": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "OH": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "OK": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "OR": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "PA": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "PR": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "RI": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "SC": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "SD": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "TN": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "TX": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "UT": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "VA": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "VT": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "WA": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "WI": {
+                  "type": "object",
+                  "members": {
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "WV": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "WY": {
+                  "type": "object",
+                  "members": {
+                    "asapCeilingDays": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "days": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "statute": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "WITHOUT_UNREASONABLE_DELAY": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "forStates": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "report": {
+          "type": "object",
+          "members": {
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
@@ -22724,6 +23726,10 @@
     "middleware": {
       "type": "object",
       "members": {
+        "ageGate": {
+          "type": "function",
+          "arity": 1
+        },
         "aiActDisclosure": {
           "type": "function",
           "arity": 1
