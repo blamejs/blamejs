@@ -261,6 +261,12 @@ async function run() {
   // ---- vault rotation breaks prior seals (per design) ----
   // Skip this — would re-init the vault and conflict with concurrent tests
 
+  // b.vault.getDerivedHashSalt — D-H1 per-deployment salt for
+  // crypto-field derivedHashes. Just check the surface here; the
+  // round-trip is exercised through the existing crypto-field tests.
+  check("b.vault.getDerivedHashSalt is fn",
+    typeof b.vault.getDerivedHashSalt === "function");
+
   console.log("OK — vault-aad tests");
 }
 

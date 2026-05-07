@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.41",
-  "createdAt": "2026-05-07T17:14:02.874Z",
+  "frameworkVersion": "0.8.42",
+  "createdAt": "2026-05-07T17:39:27.067Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -794,6 +794,10 @@
           "arity": 1
         },
         "verifyBundle": {
+          "type": "function",
+          "arity": 1
+        },
+        "withRecordedAtIso": {
           "type": "function",
           "arity": 1
         }
@@ -5666,6 +5670,10 @@
           "arity": 1
         },
         "transaction": {
+          "type": "function",
+          "arity": 1
+        },
+        "vacuumAfterErase": {
           "type": "function",
           "arity": 1
         }
@@ -27518,6 +27526,27 @@
         }
       }
     },
+    "processSpawn": {
+      "type": "object",
+      "members": {
+        "FILTER_PATTERNS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ProcessSpawnError": {
+          "type": "function",
+          "arity": 4
+        },
+        "filteredEnv": {
+          "type": "function",
+          "arity": 2
+        },
+        "spawn": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
     "protocolDispatcher": {
       "type": "object",
       "members": {
@@ -29125,6 +29154,10 @@
           }
         },
         "getCurrentPassphrase": {
+          "type": "function",
+          "arity": 0
+        },
+        "getDerivedHashSalt": {
           "type": "function",
           "arity": 0
         },

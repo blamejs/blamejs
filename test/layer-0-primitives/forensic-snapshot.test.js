@@ -30,6 +30,15 @@ async function run() {
   } catch (e) { threw2 = e; }
   check("auditTools.forensicSnapshot: missing reason throws",
     threw2 && /reason/i.test(threw2.message));
+
+  // F-AUD-4 — withRecordedAtIso surfaces ISO-8601 alongside the
+  // existing Unix-ms recordedAt without mutating the canonical row.
+  var ms = 1714896000000;     // 2026-05-05T08:00:00Z
+  var enriched = b.auditTools.withRecordedAtIso({ counter: 1, recordedAt: ms, action: "x.y" });
+  check("withRecordedAtIso: surfaces ISO-8601",
+    enriched.recordedAtIso === new Date(ms).toISOString());
+  check("withRecordedAtIso: preserves recordedAt ms",
+    enriched.recordedAt === ms);
 }
 
 module.exports = { run: run };

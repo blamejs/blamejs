@@ -1002,6 +1002,16 @@ var UNDOCUMENTED_BACKLOG = {
   "auth.password.gate":                "shipped v0.8.41 — process-global semaphore for Argon2id concurrency; wiki section deferred (covered on the auth-password wiki page)",
   "constants.ENVELOPE_FIXED_INFO_LABEL": "shipped v0.8.41 — internal envelope FixedInfo label; not operator-facing (constants exposed for test-vector authoring only)",
 
+  // v0.8.42 — DB hardening + H6 sub-issues + OWASP-1
+  "processSpawn":                      "shipped v0.8.42 — child-process launcher with default secret-stripping; wiki section deferred (covered by JSDoc + standalone test)",
+  "processSpawn.spawn":                "shipped v0.8.42 — wiki section deferred (covered with b.processSpawn parent)",
+  "processSpawn.filteredEnv":          "shipped v0.8.42 — wiki section deferred (covered with b.processSpawn parent)",
+  "processSpawn.FILTER_PATTERNS":      "shipped v0.8.42 — env-name pattern array export; wiki section deferred",
+  "processSpawn.ProcessSpawnError":    "shipped v0.8.42 — error class export, wiki section deferred",
+  "db.vacuumAfterErase":               "shipped v0.8.42 — operator-callable VACUUM; wiki section deferred (covered on b.db wiki page + standalone test)",
+  "auditTools.withRecordedAtIso":      "shipped v0.8.42 — F-AUD-4 ISO-8601 surface helper; wiki section deferred (covered with b.auditTools wiki page)",
+  "vault.getDerivedHashSalt":          "shipped v0.8.42 — D-H1 per-deployment salt accessor; wiki section deferred (internal-facing — used by b.cryptoField; covered on b.vault wiki page)",
+
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
   //     covered by the parent page or a sibling section). ===
