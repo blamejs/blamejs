@@ -15272,6 +15272,184 @@ async function testHttpClientDownloadProgressStream() {
   }
 }
 
+async function testHttpClientOnChunk() {
+  // onChunk fires per response data chunk in BOTH buffer and stream
+  // modes. Use case: hash bytes during download without an extra
+  // Transform pass. This test wires a SHA3-512 hasher into onChunk
+  // and compares the result against an independent hash of the
+  // response body.
+  var http = require("http");
+  var nodeCrypto = require("crypto");
+  var payload = Buffer.alloc(20 * 1024, "x");
+  var expected = nodeCrypto.createHash("sha3-512").update(payload).digest("hex");
+  var server = http.createServer(function (req, res) {
+    res.writeHead(200, { "Content-Length": String(payload.length) });
+    res.end(payload);
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+
+    // buffer mode — onChunk fires alongside collector.push
+    var bufHasher = nodeCrypto.createHash("sha3-512");
+    var bufCount = 0;
+    var got = await httpReq({
+      url:     "http://127.0.0.1:" + port + "/buf",
+      onChunk: function (c) { bufCount++; bufHasher.update(c); },
+    });
+    check("onChunk: buffer mode fired", bufCount >= 1);
+    check("onChunk: buffer mode hash matches body",
+          bufHasher.digest("hex") === expected &&
+          got.body.length === payload.length);
+
+    // stream mode — onChunk fires alongside the passthrough
+    var streamHasher = nodeCrypto.createHash("sha3-512");
+    var streamCount = 0;
+    var streamGot = await httpReq({
+      url:          "http://127.0.0.1:" + port + "/stream",
+      responseMode: "stream",
+      onChunk:      function (c) { streamCount++; streamHasher.update(c); },
+    });
+    var collected = await new Promise(function (resolve, reject) {
+      var chunks = [];
+      streamGot.body.on("data",  function (c) { chunks.push(c); });
+      streamGot.body.on("end",   function ()  { resolve(Buffer.concat(chunks)); });
+      streamGot.body.on("error", reject);
+    });
+    check("onChunk: stream mode fired", streamCount >= 1);
+    check("onChunk: stream mode hash matches body",
+          streamHasher.digest("hex") === expected &&
+          collected.length === payload.length);
+
+    // onChunk that throws does not break the response — drop-silent
+    var threwBody = await httpReq({
+      url:     "http://127.0.0.1:" + port + "/swallow",
+      onChunk: function () { throw new Error("hash-mismatch"); },
+    });
+    check("onChunk: throw is swallowed",
+          threwBody.body.length === payload.length);
+  } finally {
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
+async function testHttpClientStreamingMultipart() {
+  // Streaming multipart from filePath + supplied stream entries.
+  // Server reads the raw body and verifies (a) Content-Type carries
+  // the boundary, (b) the body assembles back to the expected sub-
+  // payloads, (c) Content-Length matches when every source size is
+  // statically resolvable.
+  var http = require("http");
+  var fs = require("fs");
+  var os = require("os");
+  var path = require("path");
+  var nodeStream = require("stream");
+
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mpstream-"));
+  var filePath = path.join(tmpDir, "doc.txt");
+  var fileBytes = Buffer.alloc(8 * 1024, "F");
+  fs.writeFileSync(filePath, fileBytes);
+
+  var seen = null;
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      seen = {
+        contentType:   req.headers["content-type"],
+        contentLength: req.headers["content-length"] || null,
+        bodyLength:    Buffer.concat(chunks).length,
+        body:          Buffer.concat(chunks),
+      };
+      res.writeHead(200);
+      res.end("ok");
+    });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    b.httpClient._resetForTest();
+
+    // filePath entry — size known from fs.statSync, framework can set
+    // Content-Length.
+    var streamFromFn = await httpReq({
+      method: "POST",
+      url:    "http://127.0.0.1:" + port + "/upload",
+      multipart: {
+        fields: { name: "alice" },
+        files: [
+          { field: "doc", filePath: filePath, contentType: "text/plain" },
+        ],
+      },
+    });
+    check("multipart streaming: filePath response 200", streamFromFn.statusCode === 200);
+    check("multipart streaming: filePath sets Content-Length",
+          seen.contentLength !== null);
+    check("multipart streaming: filePath body contains file bytes",
+          seen.body.indexOf(fileBytes) !== -1);
+    check("multipart streaming: filePath body contains field",
+          seen.body.toString("utf8").indexOf('name="name"') !== -1);
+
+    // operator-supplied Readable without size → Content-Length omitted,
+    // Node falls back to chunked transfer.
+    var inMemBytes = Buffer.alloc(4 * 1024, "S");
+    var srcStream = nodeStream.Readable.from((function* () {
+      yield inMemBytes.slice(0, 1024);
+      yield inMemBytes.slice(1024, 2048);
+      yield inMemBytes.slice(2048);
+    })());
+    var streamFromStream = await httpReq({
+      method: "POST",
+      url:    "http://127.0.0.1:" + port + "/upload-stream",
+      multipart: {
+        files: [
+          { field: "blob", stream: srcStream, filename: "blob.bin" },
+        ],
+      },
+    });
+    check("multipart streaming: stream entry response 200", streamFromStream.statusCode === 200);
+    check("multipart streaming: stream entry omits Content-Length",
+          seen.contentLength === null);
+    check("multipart streaming: stream entry body contains stream bytes",
+          seen.body.indexOf(inMemBytes) !== -1);
+
+    // operator-supplied stream WITH explicit size → Content-Length set.
+    var inMemBytes2 = Buffer.alloc(2 * 1024, "T");
+    var srcStream2 = nodeStream.Readable.from([inMemBytes2]);
+    await httpReq({
+      method: "POST",
+      url:    "http://127.0.0.1:" + port + "/upload-stream-sized",
+      multipart: {
+        files: [
+          { field: "blob", stream: srcStream2, size: inMemBytes2.length },
+        ],
+      },
+    });
+    check("multipart streaming: stream + size sets Content-Length",
+          seen.contentLength !== null);
+
+    // Mutually exclusive sources — { content + filePath } refused.
+    var rejected = false;
+    try {
+      await httpReq({
+        method: "POST",
+        url:    "http://127.0.0.1:" + port + "/refused",
+        multipart: {
+          files: [
+            { field: "doc", content: Buffer.from("a"), filePath: filePath },
+          ],
+        },
+      });
+    } catch (e) { rejected = e && /exactly one of/.test(e.message); }
+    check("multipart streaming: refuses { content + filePath }", rejected);
+  } finally {
+    try { fs.unlinkSync(filePath); } catch (_e) { /* ignore */ }
+    try { fs.rmdirSync(tmpDir); }   catch (_e) { /* ignore */ }
+    server.close();
+    b.httpClient._resetForTest();
+  }
+}
+
 function testWebSocketHandshake() {
   var ws = b.websocket;
 
@@ -17987,6 +18165,8 @@ async function run() {
   await testHttpClientUploadProgress();
   await testHttpClientDownloadProgress();
   await testHttpClientDownloadProgressStream();
+  await testHttpClientOnChunk();
+  await testHttpClientStreamingMultipart();
 
   // v0.4.17 cookie jar
   testCookieJarSurface();
