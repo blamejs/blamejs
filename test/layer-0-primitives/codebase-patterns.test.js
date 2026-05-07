@@ -415,6 +415,51 @@ function testNoUnresolvedMarkers() {
     matches);
 }
 
+// ---- Pattern: literal NUL bytes (0x00) in source files ----
+//
+// The Edit / Write tooling decodes JSON ` ` escape sequences into
+// literal NUL bytes when written to disk. Inside JS regex literals
+// this trips ESLint's `no-control-regex` rule on Linux CI but slips
+// past Windows local lint (encoding-related). Class-of-bug: any file
+// in lib/ containing a literal 0x00 byte should fail the gate at
+// authoring time, not on the npm-publish workflow at tag-push time.
+// To embed NUL semantically, use the JS source escape ` ` (the
+// six-char sequence backslash + u + 0+0+0+0) — JS regex parses that
+// to a NUL char without ESLint complaining.
+function testNoLiteralNulBytesInSource() {
+  var fs   = require("node:fs");
+  var path = require("node:path");
+  var hits = [];
+  function walk(dir) {
+    var entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (var i = 0; i < entries.length; i += 1) {
+      var e = entries[i];
+      if (e.name === "vendor" || e.name === "node_modules") continue;
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile() && /\.js$/.test(e.name)) {
+        var b = fs.readFileSync(full);
+        for (var j = 0; j < b.length; j += 1) {
+          if (b[j] === 0) {
+            // Locate the line for a useful error.
+            var line = 1;
+            for (var k = 0; k < j; k += 1) if (b[k] === 0x0a) line += 1;
+            hits.push({
+              file: path.relative(path.resolve(__dirname, "..", ".."), full).replace(/\\/g, "/"),
+              line: line,
+              content: "literal NUL byte at byte " + j + " (use \\u0000 escape in source)",
+            });
+            break;
+          }
+        }
+      }
+    }
+  }
+  walk(path.resolve(__dirname, "..", "..", "lib"));
+  _report("no literal NUL (0x00) bytes in source files (use \\u0000 escape; CI ESLint catches it but Windows local lint may not)",
+    hits);
+}
+
 // ---- Pattern 9: Tier-A/B/C terminology in shipped lib/ ----
 
 function testNoTierTerminologyInLib() {
@@ -1560,8 +1605,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-arc-sign.js:<unknown>",
         "lib/a2a.js:createCard",
         "lib/a2a.js:_validateCardShape",
+        "lib/budr.js:declare",
       ],
-      reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError / InboxError / A2aError); consolidating would lose the per-module error code.",
+      reason: "validateOpts.requireNonEmptyString-prelude scaffold — primitives gate operator-supplied opts with the same `validateOpts.requireNonEmptyString(opts.X, ..., ErrorClass, code)` cascade. Each domain's error class differs (DeprecateError / OpenApiError / AsyncApiError / MailError / InboxError / A2aError / BudrError); consolidating would lose the per-module error code.",
     },
     {
       mode:  "family-subset",
@@ -1730,6 +1776,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/middleware/age-gate.js:_emitAudit",
         "lib/vault/seal-pem-file.js:_emitAudit",
         "lib/vault/seal-pem-file.js:sealPemFile",
+        "lib/budr.js:declare",
       ],
       reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Different action vocabularies; consolidating would lose the per-primitive metric name.",
     },
@@ -1788,6 +1835,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/middleware/age-gate.js:_shouldSkip",
         "lib/vault/seal-pem-file.js:_emitAudit",
         "lib/vault/seal-pem-file.js:sealPemFile",
+        "lib/budr.js:declare",
       ],
       reason: "Try/catch + drop-silent observability emit — every primitive wraps `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
     },
@@ -3097,6 +3145,7 @@ async function run() {
   testHttp2TeardownPaired();
   testNoStrayConsoleCalls();
   testNoUnresolvedMarkers();
+  testNoLiteralNulBytesInSource();
   testNoTierTerminologyInLib();
   testNoInlineRequires();
   testNoMathRandomForSecurity();

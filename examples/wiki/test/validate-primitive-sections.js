@@ -924,6 +924,11 @@ var UNDOCUMENTED_BACKLOG = {
   "darkPatterns.attest":            "shipped v0.8.15 — wiki section deferred (covered with the b.darkPatterns parent backlog entry)",
   "darkPatterns.middleware":        "shipped v0.8.15 — wiki section deferred (covered with the b.darkPatterns parent backlog entry)",
   "darkPatterns.DarkPatternsError": "shipped v0.8.15 — error class export, wiki section deferred",
+  "budr":             "shipped v0.8.24 — RTO/RPO declaration primitive (DORA Art 11 / ISO 22301:2019 / NIST SP 800-34); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover the declaration shape + tier vocabulary)",
+  "budr.declare":     "shipped v0.8.24 — wiki section deferred (covered with the b.budr parent backlog entry)",
+  "budr.get":         "shipped v0.8.24 — wiki section deferred (covered with the b.budr parent backlog entry)",
+  "budr.list":        "shipped v0.8.24 — wiki section deferred (covered with the b.budr parent backlog entry)",
+  "budr.BudrError":   "shipped v0.8.24 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one

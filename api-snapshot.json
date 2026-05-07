@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.15",
-  "createdAt": "2026-05-07T06:56:24.729Z",
+  "frameworkVersion": "0.8.24",
+  "createdAt": "2026-05-07T13:05:49.124Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -3578,6 +3578,35 @@
         "unsealRowAsService": {
           "type": "function",
           "arity": 4
+        }
+      }
+    },
+    "budr": {
+      "type": "object",
+      "members": {
+        "BudrError": {
+          "type": "function",
+          "arity": 4
+        },
+        "CRITICALITIES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "TIERS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "declare": {
+          "type": "function",
+          "arity": 1
+        },
+        "get": {
+          "type": "function",
+          "arity": 1
+        },
+        "list": {
+          "type": "function",
+          "arity": 0
         }
       }
     },
@@ -24349,7 +24378,7 @@
                 },
                 "tlsa": {
                   "type": "function",
-                  "arity": 2
+                  "arity": 3
                 },
                 "verifyChain": {
                   "type": "function",
@@ -24362,7 +24391,7 @@
               "members": {
                 "fetch": {
                   "type": "function",
-                  "arity": 1
+                  "arity": 2
                 },
                 "matchMx": {
                   "type": "function",
@@ -24390,7 +24419,7 @@
                     },
                     "tlsa": {
                       "type": "function",
-                      "arity": 2
+                      "arity": 3
                     },
                     "verifyChain": {
                       "type": "function",
@@ -24403,7 +24432,7 @@
                   "members": {
                     "fetch": {
                       "type": "function",
-                      "arity": 1
+                      "arity": 2
                     },
                     "matchMx": {
                       "type": "function",
