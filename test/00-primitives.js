@@ -15335,6 +15335,44 @@ function testWebSocketHandshake() {
   check("validateUpgradeRequest: accepts multi-token Connection",
         ws.validateUpgradeRequest(multiConn).ok === true);
 
+  // Credential-shaped query parameters refused at upgrade time. The
+  // canonical leak channel is server access logs / browser Referer
+  // header / history. Operators with a non-credential parameter that
+  // happens to share a credential-shaped name opt out per route via
+  // opts.allowQueryAuthParams: true.
+  var refusedParams = [
+    "/ws?access_token=abc",
+    "/ws?bearer=xyz",
+    "/ws?bearer_token=xyz",
+    "/ws?apikey=xyz",
+    "/ws?api_key=xyz",
+    "/ws?api-key=xyz",
+    "/ws?Authorization=Bearer%20xyz",
+    "/ws?other=ok&access_token=xyz",
+  ];
+  for (var rqp = 0; rqp < refusedParams.length; rqp++) {
+    var rReq = Object.assign({}, goodReq, { url: refusedParams[rqp] });
+    var rResult = ws.validateUpgradeRequest(rReq);
+    check("validateUpgradeRequest: refuses credential query param '" + refusedParams[rqp] + "'",
+          rResult.ok === false && rResult.reason && rResult.reason.indexOf("credential-shaped") === 0);
+  }
+  // Operator opt-out lets the upgrade pass.
+  var allowedReq = Object.assign({}, goodReq, { url: "/ws?access_token=abc" });
+  check("validateUpgradeRequest: opts.allowQueryAuthParams=true bypasses credential-param refusal",
+        ws.validateUpgradeRequest(allowedReq, { allowQueryAuthParams: true }).ok === true);
+  // Non-credential query params (overloaded names like 'token' / 'session' /
+  // 'auth') don't trigger refusal. The list is deliberately narrow.
+  var nonCredParams = ["/ws?token=xyz", "/ws?session=abc", "/ws?auth=true", "/ws?key=foo", "/ws"];
+  for (var ncp = 0; ncp < nonCredParams.length; ncp++) {
+    var nReq = Object.assign({}, goodReq, { url: nonCredParams[ncp] });
+    check("validateUpgradeRequest: non-credential query param '" + nonCredParams[ncp] + "' allowed",
+          ws.validateUpgradeRequest(nReq).ok === true);
+  }
+  // Percent-encoded credential param names are decoded before comparison.
+  var encodedReq = Object.assign({}, goodReq, { url: "/ws?%41ccess_token=abc" });
+  check("validateUpgradeRequest: percent-encoded credential param refused",
+        ws.validateUpgradeRequest(encodedReq).ok === false);
+
   // Origin policy
   var browserReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "origin": "https://app.example.com", "host": "app.example.com" }) };
   // Default (origins omitted) enforces same-origin: Origin's host must match Host.
