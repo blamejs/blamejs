@@ -981,6 +981,15 @@ var UNDOCUMENTED_BACKLOG = {
   "network.allowlist":                 "shipped v0.8.39 — `b.network.allowlist.create` is the public entry; wiki section deferred (composes on b.ssrfGuard)",
   "network.allowlist.create":          "shipped v0.8.39 — wiki section deferred (covered with b.network.allowlist parent)",
 
+  // v0.8.40 operator enhancements — deferred wiki entries
+  "honeytoken":                        "shipped v0.8.40 — canary credential framework; wiki section deferred (JSDoc + slot-20 standalone test cover issue / lookup / revoke shapes)",
+  "honeytoken.create":                 "shipped v0.8.40 — wiki section deferred (covered with b.honeytoken parent)",
+  "honeytoken.KINDS":                  "shipped v0.8.40 — kinds enumeration export; wiki section deferred",
+  "honeytoken.HoneytokenError":        "shipped v0.8.40 — error class export, wiki section deferred",
+  "middleware.cspReport":              "shipped v0.8.40 — CSP / Reporting-API endpoint middleware; wiki section deferred (JSDoc + slot-20 standalone test cover the request validation + audit-emit shape)",
+  "auditTools.forensicSnapshot":       "shipped v0.8.40 — forensic-snapshot composer; wiki section deferred (composes on existing b.auditTools.exportSlice — covered on the auditTools wiki page)",
+  "network.tls.pinsetDriftMonitor":    "shipped v0.8.40 — pinset drift monitor; wiki section deferred (composes on the existing expiryMonitor pattern documented under the network-tls wiki page)",
+
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
   //     covered by the parent page or a sibling section). ===

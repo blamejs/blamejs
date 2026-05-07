@@ -226,6 +226,7 @@ var appShutdown = require("./lib/app-shutdown");
 var slug = require("./lib/slug");
 var webhook = require("./lib/webhook");
 var apiKey = require("./lib/api-key");
+var honeytoken = require("./lib/honeytoken");
 var credentialHash = require("./lib/credential-hash");
 var permissions = require("./lib/permissions");
 var cache = require("./lib/cache");
@@ -402,6 +403,7 @@ module.exports = {
   slug:             slug,
   webhook:          webhook,
   apiKey:           apiKey,
+  honeytoken:       honeytoken,
   credentialHash:   credentialHash,
   permissions:      permissions,
   cache:            cache,

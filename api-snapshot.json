@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.39",
-  "createdAt": "2026-05-07T16:09:47.266Z",
+  "frameworkVersion": "0.8.40",
+  "createdAt": "2026-05-07T16:26:54.225Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -782,6 +782,10 @@
           "arity": 1
         },
         "exportSlice": {
+          "type": "function",
+          "arity": 1
+        },
+        "forensicSnapshot": {
           "type": "function",
           "arity": 1
         },
@@ -23338,6 +23342,23 @@
         }
       }
     },
+    "honeytoken": {
+      "type": "object",
+      "members": {
+        "HoneytokenError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KINDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "htmlBalance": {
       "type": "object",
       "members": {
@@ -24196,6 +24217,10 @@
           "type": "function",
           "arity": 1
         },
+        "cspReport": {
+          "type": "function",
+          "arity": 1
+        },
         "csrfProtect": {
           "type": "function",
           "arity": 1
@@ -24896,6 +24921,10 @@
                   "arity": 1
                 }
               }
+            },
+            "pinsetDriftMonitor": {
+              "type": "function",
+              "arity": 1
             },
             "pqc": {
               "type": "object",
