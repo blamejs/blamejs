@@ -1776,6 +1776,8 @@ var UNDOCUMENTED_BACKLOG = {
   // vault — sub-keys covered prose-style under the parent page; backfill per-method signature headings opportunistically.
   "vault.VaultError":                            "covered prose-style under the vault parent section — backfill per-method signature heading in a future sweep",
   "vault.aad":                                   "covered prose-style under the vault parent section — backfill per-method signature heading in a future sweep",
+  "vault.sealPemFile":                           "shipped v0.8.14 — auto-resealing wrapper for at-rest PEM files (ACME renewal driver); JSDoc + tests cover the watch / reseal / recovery flows; wiki section deferred until an operator demonstrates a multi-cert lifecycle worth documenting",
+  "vault.SealPemFileError":                      "framework-error subclass surfaced for instanceof checks in operator handlers; the class itself isn't called as a constructor in tests — every sealPemFile test that triggers it does so by exercising the calling code that throws it",
   "vault.getCurrentPassphrase":                  "covered prose-style under the vault parent section — backfill per-method signature heading in a future sweep",
   "vault.getKeysJson":                           "covered prose-style under the vault parent section — backfill per-method signature heading in a future sweep",
   "vault.getMode":                               "covered prose-style under the vault parent section — backfill per-method signature heading in a future sweep",

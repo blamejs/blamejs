@@ -361,6 +361,7 @@ var UNTESTED_BACKLOG = {
   "time.toIso8601NoMs":                          "backfill — covered indirectly under the time test or via composition",
   // vault — sub-keys exercised through composition / direct lib imports.
   "vault.VaultError":                            "backfill — covered indirectly under the vault test or via composition",
+  "vault.SealPemFileError":                      "framework-error subclass surfaced for `instanceof` checks in operator handlers; vault-seal-pem-file.test.js exercises the throw paths via sealPemFile() with bad inputs — the class itself isn't called as a constructor",
   "vault.getCurrentPassphrase":                  "backfill — covered indirectly under the vault test or via composition",
   // vaultPassphraseOps — sub-keys exercised through composition / direct lib imports.
   "vaultPassphraseOps.preflightRotatable":       "backfill — covered indirectly under the vaultPassphraseOps test or via composition",

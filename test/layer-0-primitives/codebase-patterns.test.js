@@ -1311,208 +1311,19 @@ function testNoDuplicateCodeBlocks() {
   var _MAX_REPORTED_PER_LENGTH = 5000;
 
   var files = _libFiles();
-
-  // Tokenize every file once: { rel, tokens: [{ tok, line }, ...] }.
-  // Each line is normalized then split on whitespace so the cross-file
-  // shingle scan sees the same shape regardless of indentation.
-  var tokenized = [];
-  for (var fi = 0; fi < files.length; fi++) {
-    var rel = _relPath(files[fi]);
-    var content;
-    try { content = fs.readFileSync(files[fi], "utf8"); }
-    catch (_e) { continue; }
-    var lines = content.split(/\r?\n/);
-    var tokens = [];
-    for (var li = 0; li < lines.length; li++) {
-      var rawLine = lines[li];
-      // Strip block-comment lines (rough — multi-line comments may
-      // leak; acceptable noise level).
-      if (/^\s*(\/\/|\*|\/\*)/.test(rawLine)) continue;
-      var norm = _normalizeJsLine(rawLine);
-      if (norm.length === 0) continue;
-      var lineToks = norm.split(/\s+/).filter(function (t) { return t.length > 0; });
-      for (var ti = 0; ti < lineToks.length; ti++) {
-        tokens.push({ tok: lineToks[ti], line: li + 1 });
-      }
-    }
-    tokenized.push({ rel: rel, tokens: tokens });
-  }
-
-  // Two-pass scan:
-  //
-  //   Pass 1 (token-shingle) — fingerprint = exact normalized tokens.
-  //     Catches "same logic, different identifiers" (`var x = …` vs
-  //     `var y = …` after _ID normalization).
-  //
-  //   Pass 2 (skeleton-shingle) — fingerprint replaces ALL keywords
-  //     and identifiers with `T`, leaving only operators / punctuation
-  //     / placeholders. Catches "same control flow, different
-  //     keywords" — e.g., `if (x > 0) { return false; }` and
-  //     `while (n != null) { break; }` collapse to the same skeleton
-  //     `T ( T T T ) { T T ; }`. Surfaces deeper structural twins.
-  var allKeywordsTo = function (slice) {
-    return slice.map(function (t) {
-      var k = t.tok;
-      // Identifier placeholders + keywords + literals collapse to "T";
-      // operators / brackets / punctuation stay as-is so the control-
-      // flow shape is the fingerprint.
-      if (/^[A-Za-z_]/.test(k)) return "T";
-      return k;
-    }).join(" ");
+  var REPO_ROOT_LOCAL = path.resolve(__dirname, "..", "..");
+  var WORKER_PATH = path.join(__dirname, "..", "helpers", "_codebase-shingle-worker.js");
+  var SHINGLE_OPTS_FOR_WORKER = {
+    shingleSizes:      SHINGLE_SIZES,
+    minDistinctTokens: MIN_DISTINCT_TOKENS,
+    repoRoot:          REPO_ROOT_LOCAL,
   };
-  var sliceFingerprint = function (slice) { return slice.map(function (t) { return t.tok; }).join(" "); };
 
-  // Boilerplate-shingle filter: language idioms that legitimately
-  // repeat across files but cannot be extracted to a shared primitive.
-  function _isBoilerplate(slice) {
-    var toks = slice.map(function (t) { return t.tok; });
-    var joined = toks.join(" ");
-    // Module-import sequence — pattern `(var | var { … } =) require
-    // ( _STR ) ;` repeating. Counting `require ( _STR )` occurrences
-    // catches both straight requires and destructuring requires
-    // without needing two regexes. 2+ require-with-string-arg shapes
-    // in the shingle = import block.
-    var requireCallSeq = /\brequire\s+\(\s+_STR\s+\)/g;
-    var requireCalls = (joined.match(requireCallSeq) || []).length;
-    if (requireCalls >= 2) return true;
-    // Single require call dominating a small shingle.
-    if (requireCalls === 1 && slice.length <= 10) return true;
-    // Lazy-require + observability-setup idiom — the framework's
-    // canonical post-import block:
-    //   var observability = lazyRequire(function () { return require("./observability"); });
-    //   function _emitEvent(n, v, l) { observability().safeEvent(n, v, l || {}); }
-    //   var _err = XError.factory;
-    // 5+ files (api-key / credential-hash / permissions / retry / webhook)
-    // share this exact scaffolding. The tokenizer normalizes
-    // `lazyRequire` / `safeEvent` / `_emitEvent` to `_ID`, so we match
-    // the structural shape post-tokenization. Detect any one of:
-    //   - lazy-require boot:
-    //       _ID = _ID ( function ( ) { return require ( _STR ) ; } )
-    //   - safeEvent-shaped invocation:
-    //       _ID ( ) . _ID ( _ID , _ID , _ID || { } )
-    if (/_ID\s+=\s+_ID\s+\(\s+function\s+\(\s+\)\s+\{\s+return\s+require\s+\(\s+_STR\s+\)/.test(joined)) return true;
-    // The tokenizer splits `||` into `| |` (per-char punctuation
-    // splitter), so the safeEvent shape `(...) || {})` joins as
-    // `_ID | | { }` not `_ID || { }`. Match either spelling.
-    if (/_ID\s+\(\s+\)\s+\.\s+_ID\s+\(\s+_ID\s+,\s+_ID\s+,\s+_ID\s+\|\s+\|\s+\{\s+\}\s+\)/.test(joined)) return true;
-    // Audit-emit wrapper: `function _emit(action, info) { if (!audit)
-    // return; try { audit.safeEmit(...); } catch (_e) {} }` — duplicated
-    // verbatim across api-key / cache / notify / seeders / webhook.
-    // Tokenized: `function _ID ( _ID , _ID ) { if ( ! _ID ) return ;
-    // try { _ID . _ID ( _ID . _ID ( ...`. Match the distinctive
-    // `! _ID ) return ; try { _ID . _ID` shape.
-    if (/!\s+_ID\s+\)\s+return\s+;\s+try\s+\{\s+_ID\s+\.\s+_ID\s+\(/.test(joined)) return true;
-    // `cfg` unpacking — every primitive's create() does:
-    //   var cfg = validateOpts.applyDefaults(opts, DEFAULTS);
-    //   var fieldA = cfg.fieldA;
-    //   var fieldB = cfg.fieldB;
-    //   ...
-    // 3+ `var _ID = _ID . _ID ;` declarations in sequence = unpacking
-    // block, not extractable logic.
-    var unpackSeq = /var\s+_ID\s+=\s+_ID\s+\.\s+_ID\s+;/g;
-    var unpacks = (joined.match(unpackSeq) || []).length;
-    if (unpacks >= 2) return true;
-    // String-array literal — `validateOpts(opts, [...allowedKeys], label)`
-    // call sites have a long `_STR , _STR , _STR , ...` run. 4+
-    // string-comma pairs in sequence = allowedKeys array boilerplate.
-    var strCommaSeq = /_STR\s+,\s+_STR\s+,\s+_STR\s+,\s+_STR/g;
-    if (strCommaSeq.test(joined)) return true;
-    // C.TIME / C.BYTES division constants — `_ID . _ID . _ID ( _NUM
-    // ) / _ID . _ID . _ID ( _NUM )` is the framework's idiom for
-    // "X seconds expressed in seconds-units" or "X bytes expressed
-    // in larger units." Always-boilerplate, never-extractable.
-    if (/_ID\s+\.\s+_ID\s+\.\s+_ID\s+\(\s+_NUM\s+\)\s+\/\s+_ID\s+\.\s+_ID\s+\.\s+_ID\s+\(\s+_NUM\s+\)/.test(joined)) return true;
-    // trustProxy / accept-count idiom — `var X = opts.Y === true ||
-    // typeof opts.Y === "number" ? opts.Y : false` — every
-    // middleware that takes trustProxy / accept-count parses it the
-    // same way. Tokenized: `_ID . _ID = = = true | | typeof _ID .
-    // _ID = = = _STR ? _ID . _ID : false`.
-    if (/_ID\s+\.\s+_ID\s+=\s+=\s+=\s+true\s+\|\s+\|\s+typeof\s+_ID\s+\.\s+_ID\s+=\s+=\s+=\s+_STR/.test(joined)) return true;
-    // Optional-nested-shape entry guard — `if ( opts.X !== undefined
-    // && opts.X !== null ) { ... }` — the framework's standard
-    // wrapper around fields that are optional but require a
-    // multi-key shape check inside (resolver, observability handle,
-    // permissions handle, queue handle). The OUTER guard is shared
-    // boilerplate; the INNER check varies. Tokenized: `if ( _ID .
-    // _ID ! = = undefined & & _ID . _ID ! = = null )`.
-    if (/if\s+\(\s+_ID\s+\.\s+_ID\s+!\s+=\s+=\s+undefined\s+&\s+&\s+_ID\s+\.\s+_ID\s+!\s+=\s+=\s+null\s+\)/.test(joined)) return true;
-    // optionalX validation chain — `validateOpts.optionalBoolean(opts.X,
-    // "label", ErrorClass);` repeated in sequence. Tokenized:
-    // `_ID . _ID ( _ID . _ID , _STR , _ID ) ;` × N. 3+ = the canonical
-    // _validateCreateOpts body using the framework primitives correctly.
-    var validateChainSeq = /_ID\s+\.\s+_ID\s+\(\s+_ID\s+\.\s+_ID\s+,\s+_STR\s+,\s+_ID\s+\)\s+;/g;
-    var validateChainCount = (joined.match(validateChainSeq) || []).length;
-    if (validateChainCount >= 2) return true;
-    // FrameworkError-subclass declaration pattern.
-    if (/\bclass\s+_ID\s+extends\s+_ID/.test(joined)) return true;
-    if (/\bclass\s+T\s+extends\s+T/.test(joined)) return true;
-    // `module.exports = { ... }` boilerplate — every file's
-    // public-surface declaration. Match the shape anywhere in the
-    // shingle (start, middle, end) so all overlapping windows that
-    // intersect the export object are filtered.
-    if (/module\s+\.\s+exports\s+=\s+\{/.test(joined)) return true;
-    // The export-object body itself dominates many overlapping
-    // shingles — once `exports = {` is seen, all subsequent windows
-    // are inside the object literal. Detect by `_ID : _ID , _ID :`
-    // density (key-value pairs without expressions in between).
-    var kvPairs = (joined.match(/_ID\s+:\s+_ID\s+,/g) || []).length;
-    if (kvPairs >= 4) return true;
-    // class-static / class-method `defineClass` boilerplate.
-    if (/\bdefineClass\s+\(\s+_STR/.test(joined)) return true;
-    // Module-level constant-declaration block — `var _ID = _ID . _ID
-    // . _ID ( _NUM )` shape (3-level dotted call, e.g.,
-    // `var X = C.TIME.hours(1);` since uppercase tokens like `C` /
-    // `TIME` / `BYTES` collapse to `_ID`). 2+ such declarations in a
-    // shingle means the shingle is the post-imports constants block,
-    // not extractable logic.
-    var constantDeclSeq = /var\s+_ID\s+=\s+_ID\s+\.\s+_ID\s+\.\s+_ID\s+\(\s+_NUM\s+\)\s+;/g;
-    var constantDecls = (joined.match(constantDeclSeq) || []).length;
-    if (constantDecls >= 2) return true;
-    // Two-level dotted-call constant block (`var _ID = _ID . _ID (
-    // _NUM ) ;`) — e.g., raw `Buffer.alloc(32)` or `Math.pow(2, 30)`
-    // sequences. Multiple in a row = config table, not logic.
-    var constantDeclSeq2 = /var\s+_ID\s+=\s+_ID\s+\.\s+_ID\s+\(\s+(?:_NUM|_STR)\s*[),]/g;
-    var constantDecls2 = (joined.match(constantDeclSeq2) || []).length;
-    if (constantDecls2 >= 3) return true;
-    // Pure-declaration density check: if 55%+ of tokens are `=`, `;`,
-    // `,`, `_STR`, or `_NUM`, the shingle is mostly assignments /
-    // literals (config tables, default-opts objects).
-    var declTokens = toks.filter(function (t) {
-      return t === "=" || t === ";" || t === "," || t === ":" ||
-             t === "_STR" || t === "_NUM" || t === "var" || t === "const";
-    }).length;
-    if (declTokens >= Math.floor(slice.length * 0.55)) return true;
-    // Generic JS idioms — character-class-range checks, paired
-    // typeof-throw validation guards, classic for-loop shapes.
-    // These match across unrelated domains (html-balance vs sigv4 vs
-    // safe-xml; auth/password vs csp-nonce vs request-helpers) and
-    // aren't extractable as a primitive — every codebase that
-    // iterates a string or validates two args in a row hits them.
-    //
-    // Character-range comparison (`X >= N && X <= N`) — appears in
-    // any code that classifies characters / bytes / status codes.
-    // `(_ID >= _NUM && _ID <= _NUM)` × 2+ in the same shingle = a
-    // range-classification idiom.
-    var rangeCheckSeq = /_ID\s+>\s+=\s+_NUM\s+&\s+&\s+_ID\s+<\s+=\s+_NUM/g;
-    var rangeChecks = (joined.match(rangeCheckSeq) || []).length;
-    if (rangeChecks >= 2) return true;
-    // Classic for-loop iteration: `for ( var _ID = _NUM ; _ID < _ID
-    // . _ID ; _ID + + )`. Generic JS — appears in dozens of
-    // unrelated places (regex-match iteration, opts-array iteration,
-    // hex-decode, etc.).
-    if (/for\s+\(\s+var\s+_ID\s+=\s+_NUM\s+;\s+_ID\s+<\s+_ID\s+\.\s+_ID\s+;\s+_ID\s+\+\s+\+\s+\)/.test(joined)) return true;
-    // Paired typeof-throw validation guards repeating in sequence —
-    // `if ( typeof _ID ! = = _STR ... ) { throw new _ID ( _STR ,
-    // _STR ) ; }` × 2+. Each individual guard is the
-    // requireNonEmptyString antipattern (already in the catalog),
-    // but the duplicate-block detector sees TWO in a row as a 50-
-    // token shingle. The catalog catches the inline shape per-call;
-    // the duplicate-block detector shouldn't double-report it.
-    var throwTypeofSeq = /if\s+\(\s+typeof\s+_ID[\s\S]{0,40}?\)\s+\{\s+throw\s+new\s+_ID\s+\(\s+_STR\s+,\s+_STR\s+\)\s+;\s+\}/g;
-    var throwTypeofs = (joined.match(throwTypeofSeq) || []).length;
-    if (throwTypeofs >= 2) return true;
-    return false;
-  }
+  // Two-pass scan (exact + skeleton fingerprints) runs inside worker
+  // threads — see test/helpers/_codebase-shingle.js. Each shard
+  // returns a per-pass-per-size fingerprint map; the main thread
+  // merges them and runs the cluster-aggregation logic below.
+
 
   // ---- Enclosing-function index ----
   //
@@ -1578,28 +1389,100 @@ function testNoDuplicateCodeBlocks() {
   // — kept as separate entries so each call site is reported.
   var clusters = {};   // fileSetKey → { fileSet, bestSize, bestPass, sites: [{file, startLine, endLine, size}] }
 
-  function _runPass(passLabel, fingerprintFn) {
-    for (var si = 0; si < SHINGLE_SIZES.length; si++) {
-      var n = SHINGLE_SIZES[si];
-      var seen = {};
-      for (var fi2 = 0; fi2 < tokenized.length; fi2++) {
-        var entry = tokenized[fi2];
-        if (entry.tokens.length < n) continue;
-        for (var ti2 = 0; ti2 + n <= entry.tokens.length; ti2++) {
-          var slice = entry.tokens.slice(ti2, ti2 + n);
-          var distinctMap = {};
-          for (var di = 0; di < slice.length; di++) distinctMap[slice[di].tok] = true;
-          if (Object.keys(distinctMap).length < MIN_DISTINCT_TOKENS) continue;
-          if (_isBoilerplate(slice)) continue;
-          var fp = fingerprintFn(slice);
-          if (!seen[fp]) seen[fp] = [];
-          seen[fp].push({
-            file:     entry.rel,
-            line:     slice[0].line,
-            endLine:  slice[slice.length - 1].line,
-          });
-        }
-      }
+  // Fan files across worker_threads. Each worker tokenizes its shard
+  // and runs the shingle scan, returning a per-pass-per-size
+  // fingerprint map. Main thread merges shard maps (per (pass, size,
+  // fp) key, append site lists) then runs the cluster-aggregation
+  // identical to the previous single-thread version. With 32 cores,
+  // ~250 files split into ~8-file shards: the cross-thread overhead
+  // is tiny vs the savings on the 60-token × 250-file × 8-size scan.
+  //
+  // Knobs: HS_PATTERNS_WORKERS=N overrides the worker count;
+  // HS_PATTERNS_NO_THREADS=1 forces in-process execution (debug /
+  // single-core CI).
+  var Worker = require("worker_threads").Worker;
+  var os     = require("os");
+  function _scanShardInWorker(shardFiles) {
+    return new Promise(function (resolve, reject) {
+      var w = new Worker(WORKER_PATH, {
+        workerData: Object.assign({ files: shardFiles }, SHINGLE_OPTS_FOR_WORKER),
+      });
+      w.once("message", function (msg) { resolve(msg); w.terminate(); });
+      w.once("error", reject);
+      w.once("exit", function (code) {
+        if (code !== 0 && code !== null) reject(new Error("shingle worker exited " + code));
+      });
+    });
+  }
+  var workerCount = Number(process.env.HS_PATTERNS_WORKERS) ||
+                    Math.min(os.cpus().length, Math.max(1, files.length));
+  var shardResults;
+  if (process.env.HS_PATTERNS_NO_THREADS === "1" || workerCount <= 1) {
+    var shingleScan = require(path.join(__dirname, "..", "helpers", "_codebase-shingle"));
+    shardResults = [shingleScan.scanShard(files, SHINGLE_OPTS_FOR_WORKER)];
+  } else {
+    var shards = [];
+    for (var sIdx = 0; sIdx < workerCount; sIdx += 1) shards.push([]);
+    for (var fIdx = 0; fIdx < files.length; fIdx += 1) {
+      shards[fIdx % workerCount].push(files[fIdx]);
+    }
+    shards = shards.filter(function (s) { return s.length > 0; });
+    shardResults = _runShingleSync(shards);
+  }
+  function _runShingleSync(shards) {
+    // synchronous blocking await — testNoDuplicateCodeBlocks is sync
+    // by historical convention; rather than thread async/await through
+    // every detector (and the run() orchestrator), block on the
+    // promise via deasync-style Atomics.wait on a SharedArrayBuffer
+    // signalled from the resolver. Node's worker_threads ships with
+    // Atomics + SAB so no extra dep needed.
+    var sab    = new SharedArrayBuffer(4);
+    var signal = new Int32Array(sab);
+    var results = new Array(shards.length);
+    var thrown  = null;
+    var pending = shards.length;
+    shards.forEach(function (shard, idx) {
+      _scanShardInWorker(shard).then(function (res) {
+        results[idx] = res;
+        if (--pending === 0) { Atomics.store(signal, 0, 1); Atomics.notify(signal, 0, 1); }
+      }, function (e) {
+        thrown = e;
+        Atomics.store(signal, 0, 1); Atomics.notify(signal, 0, 1);
+      });
+    });
+    while (Atomics.load(signal, 0) === 0) {
+      Atomics.wait(signal, 0, 0, 50);
+    }
+    if (thrown) throw thrown;
+    return results;
+  }
+
+  // Merge shard outputs into a single per-(pass, size) seen map, then
+  // run the existing cluster-aggregation. Identical semantics to the
+  // pre-parallel version — workers only handle the per-shard fp
+  // generation, never the cluster identity decision.
+  var seenByPassSize = { "[exact]": {}, "[skeleton]": {} };
+  shardResults.forEach(function (shardOut) {
+    ["exact", "skeleton"].forEach(function (passKey) {
+      var label = passKey === "exact" ? "[exact]" : "[skeleton]";
+      var perSize = shardOut[passKey] || {};
+      Object.keys(perSize).forEach(function (sizeStr) {
+        if (!seenByPassSize[label][sizeStr]) seenByPassSize[label][sizeStr] = {};
+        var dest = seenByPassSize[label][sizeStr];
+        var src  = perSize[sizeStr];
+        Object.keys(src).forEach(function (fp) {
+          if (!dest[fp]) dest[fp] = src[fp];
+          else dest[fp] = dest[fp].concat(src[fp]);
+        });
+      });
+    });
+  });
+
+  Object.keys(seenByPassSize).forEach(function (passLabel) {
+    var perSize = seenByPassSize[passLabel];
+    Object.keys(perSize).forEach(function (sizeStr) {
+      var n = Number(sizeStr);
+      var seen = perSize[sizeStr];
       Object.keys(seen).forEach(function (fp) {
         var occ = seen[fp];
         var distinctFiles = {};
@@ -1615,15 +1498,12 @@ function testNoDuplicateCodeBlocks() {
             sites:     occ.slice(),
           };
         } else if (n > clusters[key].bestSize) {
-          // Bigger shingle hit the same file-set — promote.
           clusters[key].bestSize = n;
           clusters[key].sites = occ.slice();
         }
       });
-    }
-  }
-  _runPass("[exact]",    sliceFingerprint);
-  _runPass("[skeleton]", allKeywordsTo);
+    });
+  });
 
   // Convert clusters to sorted report rows. Bigger shingles + larger
   // file-sets are stronger primitive opportunities — surface first.
@@ -1771,8 +1651,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/observability-otlp-exporter.js:<unknown>",
         "lib/compliance-sanctions-fetcher.js:create",
         "lib/dsr.js:create",
+        "lib/vault/seal-pem-file.js:sealPemFile",
       ],
-      reason: "validateOpts factory prelude — every factory primitive runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Nine different domains with nine different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
+      reason: "validateOpts factory prelude — every factory primitive runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Ten different domains with ten different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
     },
     {
       mode:  "family-subset",
@@ -1864,6 +1745,8 @@ function testNoDuplicateCodeBlocks() {
         "lib/ai-adverse-decision.js:_emitAudit",
         "lib/ai-adverse-decision.js:wrap",
         "lib/middleware/age-gate.js:_emitAudit",
+        "lib/vault/seal-pem-file.js:_emitAudit",
+        "lib/vault/seal-pem-file.js:sealPemFile",
       ],
       reason: "Audit + observability emit prelude — every primitive wraps `audit.safeEmit` / `observability.safeEvent` calls in a try/catch+swallow because both are best-effort observability sinks. Different action vocabularies; consolidating would lose the per-primitive metric name.",
     },
@@ -1923,6 +1806,8 @@ function testNoDuplicateCodeBlocks() {
         "lib/ai-adverse-decision.js:wrap",
         "lib/middleware/age-gate.js:_emitAudit",
         "lib/middleware/age-gate.js:_shouldSkip",
+        "lib/vault/seal-pem-file.js:_emitAudit",
+        "lib/vault/seal-pem-file.js:sealPemFile",
       ],
       reason: "Try/catch + drop-silent observability emit — every primitive wraps `audit().safeEmit({ action, outcome, metadata })` in a try/catch+swallow per the validation-tier policy (drop-silent at hot-path observability sinks). The 50-token shingle is the swallow shape, not the domain logic.",
     },

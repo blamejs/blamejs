@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.12",
-  "createdAt": "2026-05-07T04:20:52.884Z",
+  "frameworkVersion": "0.8.14",
+  "createdAt": "2026-05-07T05:06:55.123Z",
   "exports": {
     "ai": {
       "type": "object",
@@ -28511,6 +28511,10 @@
     "vault": {
       "type": "object",
       "members": {
+        "SealPemFileError": {
+          "type": "function",
+          "arity": 4
+        },
         "VaultError": {
           "type": "function",
           "arity": 4
@@ -28573,6 +28577,10 @@
           "arity": 1
         },
         "seal": {
+          "type": "function",
+          "arity": 1
+        },
+        "sealPemFile": {
           "type": "function",
           "arity": 1
         },
