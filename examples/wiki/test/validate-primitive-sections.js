@@ -990,6 +990,18 @@ var UNDOCUMENTED_BACKLOG = {
   "auditTools.forensicSnapshot":       "shipped v0.8.40 — forensic-snapshot composer; wiki section deferred (composes on existing b.auditTools.exportSlice — covered on the auditTools wiki page)",
   "network.tls.pinsetDriftMonitor":    "shipped v0.8.40 — pinset drift monitor; wiki section deferred (composes on the existing expiryMonitor pattern documented under the network-tls wiki page)",
 
+  // v0.8.41 — crypto/email/TLS impl-vs-spec + B1 / B3 / B5
+  "resourceAccessLock":                "shipped v0.8.41 — three-mode (open/read-only/locked) resource access-lock for non-HTTP resources; wiki section deferred (JSDoc + standalone test cover create / set / permits / assertPermits)",
+  "resourceAccessLock.create":         "shipped v0.8.41 — wiki section deferred (covered with b.resourceAccessLock parent)",
+  "resourceAccessLock.VALID_MODES":    "shipped v0.8.41 — modes enumeration; wiki section deferred",
+  "resourceAccessLock.ResourceAccessLockError": "shipped v0.8.41 — error class export, wiki section deferred",
+  "config.loadDbBacked":               "shipped v0.8.41 — DB-row-backed periodic config hot-reload composer; wiki section deferred (composes on existing b.config wiki page)",
+  "backup.runInWorker":                "shipped v0.8.41 — worker_threads dispatch for heavy backup/restore; wiki section deferred (operator-supplied workerScript wires the actual backup logic)",
+  "canonicalJson":                     "documented under canonical-json.js page; v0.8.41 added stringifyJcs (RFC 8785 strict mode) — covered by the canonical-json-jcs standalone test",
+  "pqcSoftware.runKnownAnswerTest":    "shipped v0.8.41 — boot-time KAT for the vendored ML-KEM-1024; wiki section deferred (covered on the pqcSoftware wiki page)",
+  "auth.password.gate":                "shipped v0.8.41 — process-global semaphore for Argon2id concurrency; wiki section deferred (covered on the auth-password wiki page)",
+  "constants.ENVELOPE_FIXED_INFO_LABEL": "shipped v0.8.41 — internal envelope FixedInfo label; not operator-facing (constants exposed for test-vector authoring only)",
+
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
   //     covered by the parent page or a sibling section). ===

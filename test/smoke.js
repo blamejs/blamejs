@@ -274,6 +274,17 @@ async function _runLayer(layerNum, legacyPath, layerName) {
     .filter(function (f) { return ONLY.length === 0 || ONLY.indexOf(f) !== -1; })
     .sort();
 
+  // Refuse release-named or slot-named test files — tests must live in
+  // per-domain files (one primitive → one test). Catches the antipattern
+  // at smoke entry instead of at the codebase-patterns layer-0 gate.
+  for (var rfi = 0; rfi < files.length; rfi += 1) {
+    var fname = files[rfi];
+    if (/^v\d+-\d+-\d+(-|\.)/i.test(fname) || /^slot-\d+/i.test(fname)) {
+      throw new Error("smoke: refuse release-named test file '" + fname +
+        "' under " + dir + " — split into per-domain test files (one primitive → one test)");
+    }
+  }
+
   // Layer 0 is the only layer eligible for parallel — its tests are
   // pure-primitive and don't share db/cluster/vault state. Layers 1+
   // stay sequential.

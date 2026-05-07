@@ -132,7 +132,47 @@ async function run() {
     /config\/bad-redact-keys/);
 }
 
-module.exports = { run: run };
+async function _testLoadDbBacked() {
+  var threw;
+  try {
+    b.config.loadDbBacked({
+      schema: { safeParse: function () { return { ok: true, value: {} }; }, parse: function () { return {}; } },
+      fetchRows: "not-a-function",
+      intervalMs: 1000,
+    });
+  } catch (e) { threw = e; }
+  helpers.check("config.loadDbBacked: fetchRows must be a function",
+    threw && threw.code === "config/bad-fetch-rows");
+
+  var threw2;
+  try {
+    b.config.loadDbBacked({
+      schema: { safeParse: function () { return { ok: true, value: {} }; }, parse: function () { return {}; } },
+      fetchRows: function () { return []; },
+      intervalMs: -1,
+    });
+  } catch (e) { threw2 = e; }
+  helpers.check("config.loadDbBacked: intervalMs must be positive finite",
+    threw2 && threw2.code === "config/bad-interval");
+}
+
+async function _testHotReload() {
+  var s = b.safeSchema;
+  var cfg = b.config.create({
+    schema: s.object({ X: s.string() }),
+    env: { X: "first" },
+  });
+  helpers.check("config.create: subscribe is a function", typeof cfg.subscribe === "function");
+  helpers.check("config.create: reload is a function",    typeof cfg.reload === "function");
+
+  var observed;
+  cfg.subscribe(function (v) { observed = v; });
+  cfg.reload({ X: "second" });
+  helpers.check("config.reload: value updated", cfg.get("X") === "second");
+  helpers.check("config.reload: subscriber notified", observed && observed.X === "second");
+}
+
+module.exports = { run: async function () { await run(); await _testLoadDbBacked(); await _testHotReload(); } };
 
 if (require.main === module) {
   run().then(

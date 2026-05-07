@@ -227,6 +227,7 @@ var slug = require("./lib/slug");
 var webhook = require("./lib/webhook");
 var apiKey = require("./lib/api-key");
 var honeytoken = require("./lib/honeytoken");
+var resourceAccessLock = require("./lib/resource-access-lock");
 var credentialHash = require("./lib/credential-hash");
 var permissions = require("./lib/permissions");
 var cache = require("./lib/cache");
@@ -404,6 +405,7 @@ module.exports = {
   webhook:          webhook,
   apiKey:           apiKey,
   honeytoken:       honeytoken,
+  resourceAccessLock: resourceAccessLock,
   credentialHash:   credentialHash,
   permissions:      permissions,
   cache:            cache,

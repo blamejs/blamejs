@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.40",
-  "createdAt": "2026-05-07T16:26:54.225Z",
+  "frameworkVersion": "0.8.41",
+  "createdAt": "2026-05-07T17:14:02.874Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1803,6 +1803,10 @@
                 }
               }
             },
+            "gate": {
+              "type": "function",
+              "arity": 1
+            },
             "hash": {
               "type": "function",
               "arity": 2
@@ -2603,6 +2607,10 @@
           "arity": 1
         },
         "recommendedFiles": {
+          "type": "function",
+          "arity": 1
+        },
+        "runInWorker": {
           "type": "function",
           "arity": 1
         }
@@ -4949,6 +4957,10 @@
         "create": {
           "type": "function",
           "arity": 1
+        },
+        "loadDbBacked": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -5072,6 +5084,10 @@
               "valueType": "number"
             }
           }
+        },
+        "ENVELOPE_FIXED_INFO_LABEL": {
+          "type": "primitive",
+          "valueType": "string"
         },
         "ENVELOPE_MAGIC": {
           "type": "primitive",
@@ -26788,6 +26804,10 @@
             }
           }
         },
+        "runKnownAnswerTest": {
+          "type": "function",
+          "arity": 0
+        },
         "slh_dsa_sha2_128f": {
           "type": "object",
           "members": {
@@ -27764,6 +27784,23 @@
           "arity": 1
         },
         "safeHeadersDistinct": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "resourceAccessLock": {
+      "type": "object",
+      "members": {
+        "ResourceAccessLockError": {
+          "type": "function",
+          "arity": 4
+        },
+        "VALID_MODES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "create": {
           "type": "function",
           "arity": 1
         }

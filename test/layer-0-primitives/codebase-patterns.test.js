@@ -460,6 +460,41 @@ function testNoLiteralNulBytesInSource() {
     hits);
 }
 
+// ---- Release-named test files refused ----
+// Tests must live in per-domain files (e.g. honeytoken.test.js,
+// resource-access-lock.test.js) not release-bucket files like
+// `v0-8-41-additions.test.js` or `slot-19-enhancements.test.js`.
+// Buckets accumulate cross-domain assertions, drift in scope, and
+// hide which primitive a test actually exercises. The discipline:
+// one primitive → one test file; share helpers under test/helpers/.
+function testNoReleaseNamedTestFiles() {
+  var fs   = require("node:fs");
+  var path = require("node:path");
+  var hits = [];
+  var releaseRe = /^v\d+-\d+-\d+(-|\.)/i;
+  var slotRe    = /^slot-\d+/i;
+  function walk(dir) {
+    var entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (var i = 0; i < entries.length; i += 1) {
+      var e = entries[i];
+      if (e.name === "node_modules" || e.name === "helpers") continue;
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.isFile() || !/\.test\.js$/.test(e.name)) continue;
+      if (releaseRe.test(e.name) || slotRe.test(e.name)) {
+        hits.push({
+          file: path.relative(path.resolve(__dirname, "..", ".."), full).replace(/\\/g, "/"),
+          line: 1,
+          content: "release-named test file (e.g. v0-8-41-... / slot-19-...) — split into per-domain test files instead",
+        });
+      }
+    }
+  }
+  walk(path.resolve(__dirname, "..", ".."));
+  _report("no release-named or slot-named test files (split into per-domain test files; one primitive → one test)",
+    hits);
+}
+
 // ---- Pattern 9: Tier-A/B/C terminology in shipped lib/ ----
 
 function testNoTierTerminologyInLib() {
@@ -3167,6 +3202,7 @@ async function run() {
   testNoStrayConsoleCalls();
   testNoUnresolvedMarkers();
   testNoLiteralNulBytesInSource();
+  testNoReleaseNamedTestFiles();
   testNoTierTerminologyInLib();
   testNoInlineRequires();
   testNoMathRandomForSecurity();

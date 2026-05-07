@@ -38,9 +38,19 @@ function testActiveMeetsFloor() {
         p.meetsFloor === true);
 }
 
+function testGateSurface() {
+  var threw;
+  try { b.auth.password.gate("not-a-number"); } catch (e) { threw = e; }
+  check("auth.password.gate: non-integer rejected",
+    threw && threw.code === "auth-password/bad-gate");
+  // Setting an integer is accepted silently.
+  b.auth.password.gate(8);
+}
+
 async function run() {
   testParamsSurface();
   testActiveMeetsFloor();
+  testGateSurface();
 }
 
 module.exports = { run: run };

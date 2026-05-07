@@ -16677,7 +16677,7 @@ function testCryptoAndModuleSurface() {
         typeof b.safeAsync.withTimeoutSignal === "function");
 
   // Constants surface
-  check("ENVELOPE_MAGIC = 0xE1",        b.constants.ENVELOPE_MAGIC === 0xE1);
+  check("ENVELOPE_MAGIC = 0xE2 (FixedInfo-bound)", b.constants.ENVELOPE_MAGIC === 0xE2);
   check("ACTIVE.KEM is hybrid",         b.constants.ACTIVE.KEM === b.constants.KEM_IDS.ML_KEM_1024_P384);
   check("ACTIVE.CIPHER is XChaCha20",   b.constants.ACTIVE.CIPHER === b.constants.CIPHER_IDS.XCHACHA20_POLY1305);
   check("ACTIVE.KDF is SHAKE256",       b.constants.ACTIVE.KDF === b.constants.KDF_IDS.SHAKE256);

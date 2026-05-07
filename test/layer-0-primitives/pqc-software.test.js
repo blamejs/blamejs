@@ -80,6 +80,11 @@ function run() {
   // ---- listAlgorithms when bundle missing returns empty ----
   // Cannot easily test without unmounting; trust the runtime path.
 
+  // KAT — boot-time round-trip against the vendored ML-KEM-1024.
+  var kat = b.pqcSoftware.runKnownAnswerTest();
+  check("pqcSoftware.runKnownAnswerTest: ok",
+    kat && kat.ok === true && kat.sharedSecretLength === 32);
+
   console.log("OK — pqc-software tests");
 }
 
