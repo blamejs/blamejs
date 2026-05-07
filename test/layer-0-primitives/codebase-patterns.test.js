@@ -1942,6 +1942,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/network-smtp-policy.js:_fetchStsTxt",
         "lib/network-smtp-policy.js:tlsRptFetchPolicy",
         "lib/auth/step-up.js:parseChallenge",
+        "lib/ai-pref.js:parseHeader",
       ],
       reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, BIMI record parsing, MTA-STS policy text parsing, the body-parser content-type-parameter parser, and the RFC 7235 / RFC 9470 WWW-Authenticate Bearer challenge parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction.",
     },

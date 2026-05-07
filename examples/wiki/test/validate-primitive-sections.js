@@ -948,6 +948,13 @@ var UNDOCUMENTED_BACKLOG = {
   "contentCredentials.verify":"shipped v0.8.28 — wiki section deferred (covered with the b.contentCredentials parent backlog entry)",
   "contentCredentials.required":"shipped v0.8.28 — wiki section deferred (covered with the b.contentCredentials parent backlog entry)",
   "contentCredentials.ContentCredentialsError":"shipped v0.8.28 — error class export, wiki section deferred",
+  "aiPref":                   "shipped v0.8.30 — AIPREF Content-Usage HTTP response header + Cloudflare Content Signals + Pay-Per-Crawl 402 (IETF draft-ietf-aipref-attach-04, deadline 2026-08); wiki section deferred (operator-facing surface stable, JSDoc + standalone test cover middleware + serialize/parse + robots-block shapes)",
+  "aiPref.middleware":        "shipped v0.8.30 — wiki section deferred (covered with the b.aiPref parent backlog entry)",
+  "aiPref.serializeHeader":   "shipped v0.8.30 — wiki section deferred (covered with the b.aiPref parent backlog entry)",
+  "aiPref.parseHeader":       "shipped v0.8.30 — wiki section deferred (covered with the b.aiPref parent backlog entry)",
+  "aiPref.robotsBlock":       "shipped v0.8.30 — wiki section deferred (covered with the b.aiPref parent backlog entry)",
+  "aiPref.refusePaidCrawl":   "shipped v0.8.30 — wiki section deferred (covered with the b.aiPref parent backlog entry)",
+  "aiPref.AiPrefError":       "shipped v0.8.30 — error class export, wiki section deferred",
 
   // === Documented under a parent's wiki page (no signature-form heading
   //     for the namespace itself, but every public method on it has one
