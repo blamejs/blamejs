@@ -95,7 +95,7 @@ async function run() {
 
     // Drain — fs.watch is async on every kernel; give the OS a tick to
     // deliver pending events into the watcher's queue.
-    await new Promise(function (r) { setTimeout(r, 300); });
+    await new Promise(function (r) { setTimeout(r, 1500); });
     w._flushForTest();
 
     var sawA = changes.some(function (e) { return e.relativePath === "a.txt" && e.type === "file"; });
@@ -114,14 +114,14 @@ async function run() {
     changes.length = 0;
     deletes.length = 0;
     fs.unlinkSync(path.join(tmpDir, "a.txt"));
-    await new Promise(function (r) { setTimeout(r, 300); });
+    await new Promise(function (r) { setTimeout(r, 1500); });
     w._flushForTest();
     var sawDelete = deletes.some(function (e) { return e.relativePath === "a.txt"; });
     check("watcher.create: emits onDelete on unlink", sawDelete);
 
     // onChange shape — exercise via fresh write + flush.
     fs.writeFileSync(path.join(tmpDir, "shape.txt"), "1234");
-    await new Promise(function (r) { setTimeout(r, 300); });
+    await new Promise(function (r) { setTimeout(r, 1500); });
     w._flushForTest();
     var shape = changes.find(function (e) { return e.relativePath === "shape.txt"; });
     check("watcher.create: onChange has type/relativePath/fullPath/size/mtime",
@@ -135,7 +135,7 @@ async function run() {
       changes.length = 0;
       try {
         fs.symlinkSync(os.tmpdir(), path.join(tmpDir, "symlink-out"));
-        await new Promise(function (r) { setTimeout(r, 300); });
+        await new Promise(function (r) { setTimeout(r, 1500); });
         w._flushForTest();
         var sawSymlink = changes.some(function (e) { return e.relativePath === "symlink-out"; });
         check("watcher.create: skips symlink events", !sawSymlink);
