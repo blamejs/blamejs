@@ -181,8 +181,8 @@ jobs:
         run: |
           gitleaks git --config=.gitleaks.toml --redact --verbose --exit-code=1
 
-  wiki-section-convention:
-    name: Wiki primitive-section convention
+  wiki-source-comment-blocks:
+    name: Wiki @module / @primitive comment-block convention
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -192,6 +192,13 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.0.0
         with:
           node-version: '24.14.1'
+
+      - name: Install wiki deps (links @blamejs/core for the opts probe)
+        # opts-resolver.js requires @blamejs/core at top-of-file; the
+        # wiki workspace symlinks it via a file: dependency in
+        # examples/wiki/package.json. Run npm install before the
+        # validator so the symlink is present.
+        run: cd examples/wiki && npm install --silent
 
       - name: Validate @module / @primitive comment blocks across lib/
         # Fast signal — no app boot, just walks lib/ for the source-driven

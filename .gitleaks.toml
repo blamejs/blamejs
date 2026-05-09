@@ -107,6 +107,12 @@ commits = [
   # placeholders re-tripped the generic-api-key + stripe-access-token
   # rules. The text was rewritten the next commit; suppress in history.
   "a270ae987b83e1497b76aee41480fbc021f6bf9a",
+  # v0.8.50 CI green-up commit — the CHANGELOG entry quoted the
+  # KEM-recipient destructure shape (`{ privateKey, x25519PrivateKey }`)
+  # while explaining the v0.8.49 fix; gitleaks re-flagged the same
+  # token in the documentation prose. The next commit rewrote the
+  # CHANGELOG entry to avoid the literal shape.
+  "959b44bb322e7559ec106a19bb21784a4ba9dc25",
 ]
 fingerprints = [
   "74e627ea0fea39f06e01fe424a19724bea37aee8:test/smoke.js:jwt:2415",
@@ -124,4 +130,5 @@ fingerprints = [
   "a270ae987b83e1497b76aee41480fbc021f6bf9a:lib/api-key.js:generic-api-key:182",
   "a270ae987b83e1497b76aee41480fbc021f6bf9a:lib/log-stream.js:stripe-access-token:178",
   "a270ae987b83e1497b76aee41480fbc021f6bf9a:lib/crypto.js:generic-api-key:1044",
+  "959b44bb322e7559ec106a19bb21784a4ba9dc25:CHANGELOG.md:generic-api-key:11",
 ]
