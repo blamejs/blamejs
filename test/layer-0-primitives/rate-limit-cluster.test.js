@@ -26,8 +26,14 @@ var _mockReq       = helpers._mockReq;
 var _mockRes       = helpers._mockRes;
 
 function _waitMicrotasks(n) {
+  // Default to 20 ticks (was 5). CI runners under SMOKE_PARALLEL=64
+  // contention need many more setImmediate ticks before the rate-limit
+  // middleware's async take() against the cluster-backend DB has
+  // finished bumping the counter — without enough ticks the next
+  // fire() reads a stale count and the 4th-request-blocked assertion
+  // misfires.
   var p = Promise.resolve();
-  for (var i = 0; i < (n || 5); i++) p = p.then(function () { return new Promise(function (r) { setImmediate(r); }); });
+  for (var i = 0; i < (n || 20); i++) p = p.then(function () { return new Promise(function (r) { setImmediate(r); }); });
   return p;
 }
 
@@ -47,7 +53,7 @@ async function testClusterBackendBasicLimit() {
       var res = _mockRes();
       var nextCalled = false;
       mw(req, res, function () { nextCalled = true; });
-      await _waitMicrotasks(3);
+      await _waitMicrotasks(20);
       return { passed: nextCalled, status: res._captured().status };
     }
 
@@ -86,7 +92,7 @@ async function testClusterBackendIndependentKeys() {
       var res = _mockRes();
       var ok = false;
       mw(req, res, function () { ok = true; });
-      await _waitMicrotasks(3);
+      await _waitMicrotasks(20);
       return ok;
     }
 
@@ -122,7 +128,7 @@ async function testClusterBackendWindowRollover() {
       var res = _mockRes();
       var ok = false;
       mw(req, res, function () { ok = true; });
-      await _waitMicrotasks(3);
+      await _waitMicrotasks(20);
       return ok;
     }
 
@@ -164,7 +170,7 @@ async function testClusterBackendAuditEmit() {
       var res = _mockRes();
       var ok = false;
       mw(req, res, function () { ok = true; });
-      await _waitMicrotasks(3);
+      await _waitMicrotasks(20);
       return ok;
     }
     await fire();   // pass
@@ -202,7 +208,7 @@ async function testCustomBackendObject() {
     var res = _mockRes();
     var ok = false;
     mw(req, res, function () { ok = true; });
-    await _waitMicrotasks(3);
+    await _waitMicrotasks(20);
     return ok;
   }
   check("custom backend: 1st passes",           await fire());
@@ -233,7 +239,7 @@ async function testFailOpenOnBackendError() {
   var res = _mockRes();
   var ok = false;
   mw(req, res, function () { ok = true; });
-  await _waitMicrotasks(3);
+  await _waitMicrotasks(20);
   check("backend error → middleware fails open",  ok === true);
 }
 
@@ -253,7 +259,7 @@ async function testMemoryFixedWindowBasicLimit() {
     var res = _mockRes();
     var ok = false;
     mw(req, res, function () { ok = true; });
-    await _waitMicrotasks(3);
+    await _waitMicrotasks(20);
     return { passed: ok, status: res._captured().status };
   }
 
@@ -280,7 +286,7 @@ async function testMemoryFixedWindowIndependentKeys() {
     var res = _mockRes();
     var ok = false;
     mw(req, res, function () { ok = true; });
-    await _waitMicrotasks(3);
+    await _waitMicrotasks(20);
     return ok;
   }
 
