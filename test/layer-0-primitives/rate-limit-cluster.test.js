@@ -237,6 +237,77 @@ async function testFailOpenOnBackendError() {
   check("backend error → middleware fails open",  ok === true);
 }
 
+// Memory backend, fixed-window algorithm. Cheaper per request than the
+// token-bucket default; matches the cluster-backend boundary semantics
+// without the SQL hop. Operator opts in via `algorithm: "fixed-window"`.
+async function testMemoryFixedWindowBasicLimit() {
+  var mw = b.middleware.rateLimit({
+    backend:   "memory",
+    algorithm: "fixed-window",
+    max:       3,
+    windowMs:  10000,
+  });
+
+  async function fire() {
+    var req = _mockReq();
+    var res = _mockRes();
+    var ok = false;
+    mw(req, res, function () { ok = true; });
+    await _waitMicrotasks(3);
+    return { passed: ok, status: res._captured().status };
+  }
+
+  check("memory/fixed-window: 1st passes", (await fire()).passed);
+  check("memory/fixed-window: 2nd passes", (await fire()).passed);
+  check("memory/fixed-window: 3rd passes", (await fire()).passed);
+  var blocked = await fire();
+  check("memory/fixed-window: 4th blocked with 429",
+        !blocked.passed && blocked.status === 429);
+  mw.close();
+}
+
+async function testMemoryFixedWindowIndependentKeys() {
+  var mw = b.middleware.rateLimit({
+    backend:   "memory",
+    algorithm: "fixed-window",
+    max:       2,
+    windowMs:  10000,
+    keyFn:     function (req) { return req.headers["x-key"] || "default"; },
+  });
+
+  async function fireKey(k) {
+    var req = _mockReq({ headers: { "x-key": k } });
+    var res = _mockRes();
+    var ok = false;
+    mw(req, res, function () { ok = true; });
+    await _waitMicrotasks(3);
+    return ok;
+  }
+
+  check("memory/fixed-window: keyA 1st passes",            await fireKey("a"));
+  check("memory/fixed-window: keyA 2nd passes",            await fireKey("a"));
+  check("memory/fixed-window: keyA 3rd blocked",          !(await fireKey("a")));
+  check("memory/fixed-window: keyB independent — passes",  await fireKey("b"));
+  check("memory/fixed-window: keyB independent — passes",  await fireKey("b"));
+  check("memory/fixed-window: keyB 3rd blocked",          !(await fireKey("b")));
+  mw.close();
+}
+
+function testMemoryAlgorithmDefaultsTokenBucket() {
+  // No `algorithm:` opt → token-bucket default (existing behavior).
+  var mw = b.middleware.rateLimit({ backend: "memory", burst: 5, refillPerSecond: 1 });
+  check("memory: omitted algorithm wires token-bucket", typeof mw === "function");
+  mw.close();
+}
+
+function testMemoryFixedWindowRefusesBadAlgorithm() {
+  var threw = false;
+  try {
+    b.middleware.rateLimit({ backend: "memory", algorithm: "leaky-bucket" });
+  } catch (e) { threw = /algorithm/.test(e.message); }
+  check("memory: unknown algorithm rejected at create()", threw);
+}
+
 async function run() {
   await testClusterBackendBasicLimit();
   await testClusterBackendIndependentKeys();
@@ -245,6 +316,10 @@ async function run() {
   await testCustomBackendObject();
   await testUnknownBackendRejected();
   await testFailOpenOnBackendError();
+  await testMemoryFixedWindowBasicLimit();
+  await testMemoryFixedWindowIndependentKeys();
+  testMemoryAlgorithmDefaultsTokenBucket();
+  testMemoryFixedWindowRefusesBadAlgorithm();
 }
 
 module.exports = { run: run };

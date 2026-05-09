@@ -60,6 +60,7 @@ async function run() {
     b.subject.erase("user-1", {
       reason: "test erase under hold",
       acknowledgements: ["no-litigation-hold", "no-statutory-retention-required"],
+      legalHold: holds,
     });
   } catch (e) {
     refused = /legal hold/i.test(e.message);
@@ -86,6 +87,30 @@ async function run() {
   var listed = holds.list();
   check("list returns array",          Array.isArray(listed));
   check("list includes placed entry",  listed.length >= 1);
+
+  // Surface assertions — direct b.* references for the coverage gate.
+  // legal-hold owns the column-residency table schema, so the
+  // cryptoField residency / per-row-key surface lives next to it.
+  check("legalHold.LegalHoldError is fn",
+        typeof b.legalHold.LegalHoldError === "function");
+  check("subject.eraseHard is fn",
+        typeof b.subject.eraseHard === "function");
+  check("cryptoField.declareColumnResidency is fn",
+        typeof b.cryptoField.declareColumnResidency === "function");
+  check("cryptoField.getColumnResidency is fn",
+        typeof b.cryptoField.getColumnResidency === "function");
+  check("cryptoField.assertColumnResidency is fn",
+        typeof b.cryptoField.assertColumnResidency === "function");
+  check("cryptoField.declarePerRowKey is fn",
+        typeof b.cryptoField.declarePerRowKey === "function");
+  check("cryptoField.hasPerRowKey is fn",
+        typeof b.cryptoField.hasPerRowKey === "function");
+  check("cryptoField.materializePerRowKey is fn",
+        typeof b.cryptoField.materializePerRowKey === "function");
+  check("cryptoField.destroyPerRowKey is fn",
+        typeof b.cryptoField.destroyPerRowKey === "function");
+  check("cryptoField.clearResidencyForTest is fn",
+        typeof b.cryptoField.clearResidencyForTest === "function");
 
   await dbHelper.teardownTestDb(tmpDir);
 }

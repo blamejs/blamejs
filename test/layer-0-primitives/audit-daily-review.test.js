@@ -21,6 +21,8 @@ function testSurface() {
         typeof b.auditDailyReview.create === "function");
   check("frameworkError.AuditDailyReviewError exposed",
         typeof b.frameworkError.AuditDailyReviewError === "function");
+  check("auditDailyReview.AuditDailyReviewError is fn",
+        typeof b.auditDailyReview.AuditDailyReviewError === "function");
   check("SEVERITY_ORDER includes critical",
         b.auditDailyReview.SEVERITY_ORDER.indexOf("critical") !== -1);
 }

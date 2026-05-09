@@ -55,6 +55,8 @@ function testSurface() {
   check("DEFAULTS frozen", Object.isFrozen(b.sessionDeviceBinding.DEFAULTS));
   check("DEFAULTS.ipV4Prefix 24", b.sessionDeviceBinding.DEFAULTS.ipV4Prefix === 24);
   check("DEFAULTS.fingerprintBytes 32", b.sessionDeviceBinding.DEFAULTS.fingerprintBytes === 32);
+  check("sessionDeviceBinding.SessionDeviceBindingError is fn",
+        typeof b.sessionDeviceBinding.SessionDeviceBindingError === "function");
 }
 
 function testCreateRejectsBadOpts() {

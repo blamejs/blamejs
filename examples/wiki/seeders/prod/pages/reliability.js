@@ -87,6 +87,17 @@ module.exports = {
   'scheduled.isPending(); // true',
   'scheduled.cancel();</code></pre>',
 
+  '<h2 id="safe-async-parallel">b.safeAsync.parallel(items, fn, opts?) <a class="anchor" href="#safe-async-parallel">#</a></h2>',
+  '<pre><code class="language-javascript">{',
+  '  concurrency: number,       // default 8, max 256',
+  '  signal:      AbortSignal,  // refuses to dispatch further items on abort',
+  '}</code></pre>',
+  '<p>Bounded-concurrency mapAsync. Runs <code>fn(item, index)</code> over the input list with a continuous worker queue (no Promise.all-batched chunks, so a slow item does not block unrelated items from entering the pool) and resolves with results in input order. The first rejection propagates; in-flight promises run to settle.</p>',
+  '<pre><code class="language-javascript">var doubled = await b.safeAsync.parallel([1, 2, 3, 4], async function (n) {',
+  '  return n * 2;',
+  '}, { concurrency: 2 });',
+  'doubled.join(","); // "2,4,6,8"</code></pre>',
+
   '<h2 id="safe-async-concurrency">b.safeAsync.Semaphore / Mutex / Once <a class="anchor" href="#safe-async-concurrency">#</a></h2>',
   '<p>Small concurrency primitives used by the framework and available to operator extensions: bounded parallelism, exclusive sections, and exactly-once async initialization.</p>',
   '<pre><code class="language-javascript">var sem = new b.safeAsync.Semaphore(2);',

@@ -23,6 +23,10 @@ function testSurface() {
         typeof b.fda21cfr11.electronicSignature.create === "function");
   check("fda21cfr11.assertGxpAudit exposed",
         typeof b.fda21cfr11.assertGxpAudit === "function");
+  check("fda21cfr11.checkGxpAudit is fn",
+        typeof b.fda21cfr11.checkGxpAudit === "function");
+  check("fda21cfr11.Fda21Cfr11Error is fn",
+        typeof b.fda21cfr11.Fda21Cfr11Error === "function");
   check("frameworkError.Fda21Cfr11Error exposed",
         typeof b.frameworkError.Fda21Cfr11Error === "function");
   check("DEFAULT_SIGNATURE_MEANINGS includes 'approval'",

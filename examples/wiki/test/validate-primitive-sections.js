@@ -873,6 +873,7 @@ var BX_SKIP = new Set([
   // and bare module namespaces — not operator-facing primitives.
   // Each carries a per-entry rationale.
   "a2a.verifyCard", // internal helper used by b.a2a primitive for agent-card verification; not a standalone operator API
+  "argParser.parseRaw", // low-level positional+flag splitter used by lib/cli.js internal subcommand handlers; operators reach for argParser.create(), the parseRaw shape is documented inline alongside the primary section
   "aiPref.parseHeader", // header-parser helper used internally by aiPref middleware; consumers use the middleware not the parser
   "aiPref.refusePaidCrawl", // internal predicate used by aiPref middleware to enforce paid-crawl refusal; operator-facing surface is the middleware
   "apiKey.parseFormat", // string-parsing helper used inside apiKey verify/issue paths; not invoked directly by operators

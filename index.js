@@ -209,6 +209,7 @@ var errorPage = require("./lib/error-page");
 var cookies = require("./lib/cookies");
 var migrations = require("./lib/migrations");
 var cli = require("./lib/cli");
+var argParser = require("./lib/arg-parser");
 var dev = require("./lib/dev");
 var bundler = require("./lib/bundler");
 var pqcGate = require("./lib/pqc-gate");
@@ -248,6 +249,7 @@ var apiKey = require("./lib/api-key");
 var honeytoken = require("./lib/honeytoken");
 var resourceAccessLock = require("./lib/resource-access-lock");
 var processSpawn = require("./lib/process-spawn");
+var keychain = require("./lib/keychain");
 var credentialHash = require("./lib/credential-hash");
 var permissions = require("./lib/permissions");
 var cache = require("./lib/cache");
@@ -270,9 +272,14 @@ var inbox = require("./lib/inbox");
 var tenantQuota = require("./lib/tenant-quota");
 var drRunbook = require("./lib/dr-runbook");
 var sandbox = require("./lib/sandbox");
+var workerPool = require("./lib/worker-pool");
 var authBotChallenge = require("./lib/auth-bot-challenge");
 var sessionDeviceBinding = require("./lib/session-device-binding");
 var acme = require("./lib/acme");
+var watcher = require("./lib/watcher");
+var localDbThin = require("./lib/local-db-thin");
+var daemon = require("./lib/daemon");
+var selfUpdate = require("./lib/self-update");
 
 module.exports = {
   crypto:           crypto,
@@ -399,6 +406,7 @@ module.exports = {
   cookies:          cookies,
   migrations:       migrations,
   cli:              cli,
+  argParser:        argParser,
   dev:              dev,
   bundler:          bundler,
   pqcGate:          pqcGate,
@@ -438,6 +446,7 @@ module.exports = {
   honeytoken:       honeytoken,
   resourceAccessLock: resourceAccessLock,
   processSpawn:       processSpawn,
+  keychain:         keychain,
   credentialHash:   credentialHash,
   permissions:      permissions,
   cache:            cache,
@@ -460,10 +469,15 @@ module.exports = {
   tenantQuota:      tenantQuota,
   drRunbook:        drRunbook,
   sandbox:          sandbox,
+  workerPool:       workerPool,
   authBotChallenge: authBotChallenge,
   sessionDeviceBinding: sessionDeviceBinding,
   acme:             acme,
   ntpCheck:         ntpCheck,
   tlsExporter:      tlsExporter,
+  watcher:          watcher,
+  localDb:          { thin: localDbThin.thin, LocalDbThinError: localDbThin.LocalDbThinError },
+  daemon:           daemon,
+  selfUpdate:       selfUpdate,
   version:          constants.version,
 };

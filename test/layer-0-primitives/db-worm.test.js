@@ -28,7 +28,7 @@ async function run() {
   ]);
 
   // Insert a row before WORM declaration to exercise the trigger gate.
-  b.db.from("orders").insert({ _id: "ord-1", userId: "u-1", amount: 100, placedAt: Date.now() });
+  b.db.from("orders").insertOne({ _id: "ord-1", userId: "u-1", amount: 100, placedAt: Date.now() });
 
   var dec = b.db.declareWorm({ tables: ["orders"], posture: "sec-17a-4" });
   check("declareWorm: returns tables",  Array.isArray(dec.tables) && dec.tables[0] === "orders");
@@ -36,7 +36,7 @@ async function run() {
   // Insert another row — INSERT must still succeed under WORM.
   var inserted = false;
   try {
-    b.db.from("orders").insert({ _id: "ord-2", userId: "u-2", amount: 50, placedAt: Date.now() });
+    b.db.from("orders").insertOne({ _id: "ord-2", userId: "u-2", amount: 50, placedAt: Date.now() });
     inserted = true;
   } catch (_e) { inserted = false; }
   check("WORM: INSERT still permitted", inserted);

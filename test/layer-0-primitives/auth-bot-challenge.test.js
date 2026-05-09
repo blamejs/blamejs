@@ -110,6 +110,8 @@ function testSurface() {
   check("STATES frozen", Object.isFrozen(b.authBotChallenge.STATES));
   check("DEFAULTS.threshold 3", b.authBotChallenge.DEFAULTS.threshold === 3);
   check("DEFAULTS.escalationThreshold 6", b.authBotChallenge.DEFAULTS.escalationThreshold === 6);
+  check("authBotChallenge.AuthBotChallengeError is fn",
+        typeof b.authBotChallenge.AuthBotChallengeError === "function");
 }
 
 function testCreateRejectsBadOpts() {

@@ -26,6 +26,8 @@ function testSurface() {
         b.tlsExporter.EXPORTER_LABEL === "EXPORTER-Channel-Binding");
   check("EXPORTER_LENGTH is 32 bytes",
         b.tlsExporter.EXPORTER_LENGTH === 32);
+  check("tlsExporter.TlsExporterError is fn",
+        typeof b.tlsExporter.TlsExporterError === "function");
 }
 
 function testValidationPaths() {

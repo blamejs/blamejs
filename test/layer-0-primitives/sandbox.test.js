@@ -190,7 +190,13 @@ async function testKnownSafeBuiltins() {
   check("KNOWN_SAFE_BUILTINS does NOT include child_process",  !k.child_process);
 }
 
+function testErrorClassExposed() {
+  check("sandbox.SandboxError is fn",
+        typeof b.sandbox.SandboxError === "function");
+}
+
 async function run() {
+  testErrorClassExposed();
   await testHappyPath();
   await testAllowedBuiltins();
   await testBadAllowedRejected();

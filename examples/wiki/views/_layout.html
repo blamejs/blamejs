@@ -48,6 +48,7 @@
 </script>
 </head>
 <body>
+<a href="#main" class="skip-link">Skip to content</a>
 <div class="shell">
 
   <aside class="rail" aria-label="Site navigation">
@@ -88,9 +89,16 @@
     </div>
   </aside>
 
-  <main role="main">
+  <main id="main" role="main">
     {% block content %}{% endblock %}
   </main>
+
+  {% block onthispage %}
+    <aside class="onthispage" aria-labelledby="onthispage-title">
+      <p id="onthispage-title" class="onthispage-title">On this page</p>
+      <ul data-toc></ul>
+    </aside>
+  {% endblock %}
 
 </div>
 

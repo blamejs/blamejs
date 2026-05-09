@@ -44,17 +44,34 @@ jobs:
         with:
           sarif_file: results.sarif
 
-      # Threshold gate. SCORECARD_MIN defaults to 7.0; operators can
-      # override via repo variable (Settings → Secrets and variables →
-      # Actions → Variables → SCORECARD_MIN). 2026 production-framework
-      # norm is 7.5+. The aggregate score is read from the Scorecard
-      # SARIF run.properties (canonical key produced by ossf/scorecard
-      # >= v2.0). The gate fails-open on parse failure (warning, not
-      # error) so a Scorecard output-shape change doesn't break CI
-      # silently — operators see the warning and update the jq filter.
+  # Threshold gate runs in a SEPARATE job because the scorecard-action
+  # workflow-restriction policy requires the `analysis` job to contain
+  # only `uses:` steps (the verifier rejects any `run:` step on the
+  # signing path). The gate downloads the SARIF artifact uploaded by
+  # the analysis job and asserts the aggregate score meets
+  # SCORECARD_MIN. The minimum defaults to 6.0 — a structural floor
+  # for a < 90-day single-maintainer pre-1.0 repo where Maintained /
+  # Contributors / CII-Badge / Code-Review / CI-Tests scores are
+  # constrained by repo age + ownership shape rather than security
+  # posture. Operators on a mature multi-maintainer fork should set
+  # SCORECARD_MIN to 7.5+ via repo variable. Fails-open on SARIF
+  # parse failure (warning, not error) so a Scorecard output-shape
+  # change doesn't break CI silently.
+  threshold:
+    name: Threshold gate
+    needs: analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download SARIF artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v7.0.1
+        with:
+          name: SARIF file
+
       - name: Threshold gate (fail when aggregate score < SCORECARD_MIN)
         env:
-          SCORECARD_MIN: ${{ vars.SCORECARD_MIN || '7.0' }}
+          SCORECARD_MIN: ${{ vars.SCORECARD_MIN || '6.0' }}
         run: |
           set -euo pipefail
           if ! command -v jq >/dev/null 2>&1; then

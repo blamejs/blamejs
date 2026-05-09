@@ -22,6 +22,8 @@ function testSurface() {
   check("STATES.APPROVED",  b.ddlChangeControl.STATES.APPROVED  === "approved");
   check("frameworkError.DdlChangeControlError exposed",
         typeof b.frameworkError.DdlChangeControlError === "function");
+  check("ddlChangeControl.DdlChangeControlError is fn",
+        typeof b.ddlChangeControl.DdlChangeControlError === "function");
 }
 
 async function testProposeApproveApply() {

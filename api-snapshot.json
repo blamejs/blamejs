@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.44",
-  "createdAt": "2026-05-09T03:03:04.578Z",
+  "frameworkVersion": "0.8.45",
+  "createdAt": "2026-05-09T06:20:36.044Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -391,6 +391,19 @@
         "zip": {
           "type": "function",
           "arity": 0
+        }
+      }
+    },
+    "argParser": {
+      "type": "object",
+      "members": {
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseRaw": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -5713,6 +5726,14 @@
           "type": "function",
           "arity": 1
         },
+        "hashFile": {
+          "type": "function",
+          "arity": 2
+        },
+        "hashStream": {
+          "type": "function",
+          "arity": 2
+        },
         "hmacSha3": {
           "type": "function",
           "arity": 2
@@ -5791,6 +5812,10 @@
         "kdf": {
           "type": "function",
           "arity": 2
+        },
+        "namespaceHash": {
+          "type": "function",
+          "arity": 3
         },
         "sha3Hash": {
           "type": "function",
@@ -5975,6 +6000,31 @@
         "stringify": {
           "type": "function",
           "arity": 2
+        }
+      }
+    },
+    "daemon": {
+      "type": "object",
+      "members": {
+        "DEFAULT_STOP_SIGNAL": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "DEFAULT_STOP_TIMEOUT_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DaemonError": {
+          "type": "function",
+          "arity": 4
+        },
+        "start": {
+          "type": "function",
+          "arity": 1
+        },
+        "stop": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -7125,6 +7175,10 @@
           "type": "function",
           "arity": 4
         },
+        "ArgParserError": {
+          "type": "function",
+          "arity": 4
+        },
         "AuditDailyReviewError": {
           "type": "function",
           "arity": 4
@@ -7154,6 +7208,10 @@
           "arity": 4
         },
         "ComplianceError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DaemonError": {
           "type": "function",
           "arity": 4
         },
@@ -7305,6 +7363,10 @@
           "type": "function",
           "arity": 4
         },
+        "HttpClientError": {
+          "type": "function",
+          "arity": 4
+        },
         "HttpSigError": {
           "type": "function",
           "arity": 4
@@ -7317,7 +7379,15 @@
           "type": "function",
           "arity": 4
         },
+        "KeychainError": {
+          "type": "function",
+          "arity": 4
+        },
         "LegalHoldError": {
+          "type": "function",
+          "arity": 4
+        },
+        "LocalDbThinError": {
           "type": "function",
           "arity": 4
         },
@@ -7357,6 +7427,10 @@
           "type": "function",
           "arity": 4
         },
+        "RouterError": {
+          "type": "function",
+          "arity": 4
+        },
         "SandboxError": {
           "type": "function",
           "arity": 4
@@ -7366,6 +7440,10 @@
           "arity": 4
         },
         "SeederError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SelfUpdateError": {
           "type": "function",
           "arity": 4
         },
@@ -7405,7 +7483,15 @@
           "type": "function",
           "arity": 4
         },
+        "WatcherError": {
+          "type": "function",
+          "arity": 4
+        },
         "WebhookError": {
+          "type": "function",
+          "arity": 4
+        },
+        "WorkerPoolError": {
           "type": "function",
           "arity": 4
         },
@@ -24135,6 +24221,10 @@
     "httpClient": {
       "type": "object",
       "members": {
+        "ALLOWED_DOWNLOAD_HASH_ALGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "DEFAULT_AGENT_OPTS": {
           "type": "object",
           "members": {
@@ -24198,11 +24288,19 @@
             }
           }
         },
+        "downloadStream": {
+          "type": "function",
+          "arity": 1
+        },
         "encrypted": {
           "type": "function",
           "arity": 1
         },
         "request": {
+          "type": "function",
+          "arity": 1
+        },
+        "uploadMultipartStream": {
           "type": "function",
           "arity": 1
         }
@@ -24558,6 +24656,27 @@
         }
       }
     },
+    "keychain": {
+      "type": "object",
+      "members": {
+        "KeychainError": {
+          "type": "function",
+          "arity": 4
+        },
+        "remove": {
+          "type": "function",
+          "arity": 1
+        },
+        "retrieve": {
+          "type": "function",
+          "arity": 1
+        },
+        "store": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "lazyRequire": {
       "type": "function",
       "arity": 1
@@ -24574,6 +24693,19 @@
           "arity": 4
         },
         "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "localDb": {
+      "type": "object",
+      "members": {
+        "LocalDbThinError": {
+          "type": "function",
+          "arity": 4
+        },
+        "thin": {
           "type": "function",
           "arity": 1
         }
@@ -25236,6 +25368,19 @@
           "type": "function",
           "arity": 1
         },
+        "byteQuota": {
+          "type": "object",
+          "members": {
+            "ByteQuotaError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "dns": {
           "type": "object",
           "members": {
@@ -25315,6 +25460,10 @@
             "HeartbeatError": {
               "type": "function",
               "arity": 4
+            },
+            "passive": {
+              "type": "function",
+              "arity": 1
             },
             "start": {
               "type": "function",
@@ -25593,6 +25742,10 @@
         "tls": {
           "type": "object",
           "members": {
+            "NetworkTlsError": {
+              "type": "function",
+              "arity": 4
+            },
             "TlsTrustError": {
               "type": "function",
               "arity": 4
@@ -25606,6 +25759,10 @@
               "arity": 2
             },
             "applyToContext": {
+              "type": "function",
+              "arity": 1
+            },
+            "buildOptions": {
               "type": "function",
               "arity": 1
             },
@@ -26545,6 +26702,14 @@
             }
           }
         },
+        "json": {
+          "type": "function",
+          "arity": 2
+        },
+        "multipart": {
+          "type": "function",
+          "arity": 2
+        },
         "toml": {
           "type": "object",
           "members": {
@@ -26709,6 +26874,10 @@
               "valueType": "string"
             }
           }
+        },
+        "KNOWN_TLS_GROUPS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "agent": {
           "type": "instance",
@@ -28782,6 +28951,10 @@
           "type": "function",
           "arity": 2
         },
+        "extractBearer": {
+          "type": "function",
+          "arity": 1
+        },
         "parseListHeader": {
           "type": "function",
           "arity": 2
@@ -29097,6 +29270,10 @@
         "makeScheduledFlush": {
           "type": "function",
           "arity": 2
+        },
+        "parallel": {
+          "type": "function",
+          "arity": 3
         },
         "repeating": {
           "type": "function",
@@ -29836,6 +30013,39 @@
           "arity": 4
         },
         "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "selfUpdate": {
+      "type": "object",
+      "members": {
+        "ALLOWED_HASH_ALGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DEFAULT_HASH_ALG": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "SelfUpdateError": {
+          "type": "function",
+          "arity": 4
+        },
+        "poll": {
+          "type": "function",
+          "arity": 1
+        },
+        "rollback": {
+          "type": "function",
+          "arity": 1
+        },
+        "swap": {
+          "type": "function",
+          "arity": 1
+        },
+        "verify": {
           "type": "function",
           "arity": 1
         }
@@ -30677,6 +30887,19 @@
       "type": "primitive",
       "valueType": "string"
     },
+    "watcher": {
+      "type": "object",
+      "members": {
+        "WatcherError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "webhook": {
       "type": "object",
       "members": {
@@ -30868,6 +31091,43 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "workerPool": {
+      "type": "object",
+      "members": {
+        "DEFAULT_MAX_QUEUE_DEPTH": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "DEFAULT_TASK_TIMEOUT_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAX_QUEUE_DEPTH_CAP": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAX_SIZE": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAX_TASK_TIMEOUT_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MIN_SIZE": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "WorkerPoolError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
