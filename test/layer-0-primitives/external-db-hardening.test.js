@@ -52,15 +52,18 @@ async function run() {
   check("OWASP-3: SET application_name issued on fresh connection",
     d1.seen.some(function (s) { return s === "SET application_name TO 'blamejs-test'"; }));
 
-  // OWASP-3: defaults to 'blamejs' when not provided
+  // OWASP-3: SET fires only when operator opts in via cfg.applicationName.
+  // Default leaves application_name to the driver — issuing SET on every
+  // fresh connection at framework default would double-count queries for
+  // operators (or test fakes) counting per-pool query activity.
   var d2 = _instrumentingDriver();
   b.externalDb._resetForTest();
   b.externalDb.init({
     backends: { main: { connect: d2.connect, query: d2.query, close: d2.close } },
   });
   await b.externalDb.query("SELECT 1");
-  check("OWASP-3: applicationName defaults to 'blamejs'",
-    d2.seen.some(function (s) { return s === "SET application_name TO 'blamejs'"; }));
+  check("OWASP-3: applicationName SET skipped without opt-in",
+    !d2.seen.some(function (s) { return /^SET application_name/.test(s); }));
 
   // OWASP-3: CR / LF / NUL refused at config time
   b.externalDb._resetForTest();

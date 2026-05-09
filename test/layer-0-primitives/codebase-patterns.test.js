@@ -2665,6 +2665,186 @@ async function testNoDuplicateCodeBlocks() {
       ],
       reason: "Subset of the outbox / 21 CFR / external-db-migrate factory cluster covered above. Tracked separately because the 60-token shingle drops below the 5-file threshold once the middleware-dpop / static / vault sites are removed.",
     },
+    {
+      // [fp:c623e683e98d / fp:c5467f38cecc / fp:3831ac4d1b6a / fp:404308d797b1 / fp:8854d4482747]
+      mode:  "family-subset",
+      files: [
+        "lib/ai-adverse-decision.js:_emitAudit",
+        "lib/auth/access-lock.js:_emitAudit",
+        "lib/breach-deadline.js:_emitAudit",
+        "lib/compliance-eaa.js:_emitAudit",
+        "lib/compliance-sanctions.js:_emitAudit",
+        "lib/cra-report.js:_emitAudit",
+        "lib/dsr.js:_emitAudit",
+        "lib/gdpr-ropa.js:_emitAudit",
+        "lib/incident-report.js:_emitAudit",
+        "lib/middleware/age-gate.js:_emitAudit",
+        "lib/middleware/daily-byte-quota.js:_emitAudit",
+        "lib/network-byte-quota.js:_emitAudit",
+        "lib/nis2-report.js:_emitAudit",
+        "lib/observability-otlp-exporter.js:_emitAudit",
+        "lib/vault/seal-pem-file.js:_emitAudit",
+      ],
+      reason: "Network-byte-quota + observability-otlp-exporter extension of the audit + observability emit prelude family already documented above. Each primitive defines a local _emitAudit(action, info) {  try { audit().safeEmit({ action, outcome, metadata }); } catch (_e) { /* drop-silent */ } } shape per the validation-tier policy (drop-silent at hot-path observability sinks). Different action vocabularies (decision.* / accesslock.* / breach.* / dailyquota.* / netquota.* / otlp.export.*) capture per-domain audit namespaces; consolidating would lose the per-primitive metric name.",
+    },
+    {
+      // [fp:b633c0ceaaec / fp:579898bab7df / fp:d5f756a0ac58 / fp:7f568db6d632 / fp:99572742f969 / fp:daf3cde558d6]
+      mode:  "family-subset",
+      files: [
+        "lib/audit-daily-review.js:create",
+        "lib/cloud-events.js:wrap",
+        "lib/daemon.js:_validateStartOpts",
+        "lib/daemon.js:_validateStopOpts",
+        "lib/ddl-change-control.js:create",
+        "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/fdx.js:consentReceipt",
+        "lib/file-upload.js:_validateCreateOpts",
+        "lib/redact.js:installOutboundDlp",
+        "lib/sec-cyber.js:eightKArtifact",
+        "lib/self-update.js:_validateVerifyOpts",
+        "lib/static.js:_validateCreateOpts",
+      ],
+      reason: "Daemon + self-update extension of the validateOpts factory + JSON-envelope cluster documented above. Each primitive's create() / posture() / verify-opts validator runs validateOpts(opts, ALLOWED_KEYS, label) + validateOpts.requireObject + validateOpts.requireNonEmptyString + validateOpts.optionalY then assembles its domain-specific config (DaemonError pidfile / SelfUpdateError tag-and-asset / etc.). Thirteen different domains, thirteen different error classes; consolidating the prelude past the call boundary would surface the wrong error code on operator typos.",
+    },
+    {
+      // [fp:9ee3419bf3f8]
+      mode:  "family-subset",
+      files: [
+        "lib/audit-daily-review.js:create",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/fdx.js:consentReceipt",
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/middleware/dpop.js:create",
+        "lib/outbox.js:create",
+        "lib/static.js:_validateCreateOpts",
+        "lib/vault/seal-pem-file.js:sealPemFile",
+        "lib/watcher.js:_validateOpts",
+      ],
+      reason: "http-client.downloadStream + watcher extension of the factory-create() opts-resolution scaffolding cluster documented above. Each primitive runs applyDefaults(opts, DEFAULTS) + validateOpts.optionalY + validateOpts.optionalZ cascades. Nine different domains (daily review / sanctions fetcher / FDX consent / HTTP download streamer / DPoP / outbox / static / sealed-PEM / file watcher); each closure captures a different downstream binding (HttpClientError vs WatcherError vs OutboxError, etc.).",
+    },
+    {
+      // [fp:c1c6fe5e9ee1] — both 50-tok-10 and 60-tok-5/3 subsets
+      mode:  "family-subset",
+      files: [
+        "lib/ai-adverse-decision.js:wrap",
+        "lib/auth/access-lock.js:create",
+        "lib/breach-deadline.js:createReporter",
+        "lib/compliance-eaa.js:create",
+        "lib/cra-report.js:create",
+        "lib/gdpr-ropa.js:create",
+        "lib/incident-report.js:create",
+        "lib/network-byte-quota.js:create",
+        "lib/nis2-report.js:create",
+        "lib/vault/seal-pem-file.js:sealPemFile",
+      ],
+      reason: "network-byte-quota extension of the reporter-factory family. Each compliance reporter / quota gate runs validateOpts.requireObject(opts, ...) + validateOpts.requireNonEmptyString(opts.regulator, ...) + audit emitter wiring + closure-capture of regulator-specific deadline / threshold / sanction enums (GDPR 72h / CRA 24h+72h / NIS2 24h+72h / EAA / FDA-21CFR11 / netquota daily). Ten different regulator domains, ten different error classes (BreachDeadlineError / CraError / GdprError / IncidentError / NetworkByteQuotaError / NisError / EaaError / VaultError / AccessLockError / AiAdverseDecisionError); consolidating the prelude would lose the per-regime audit code.",
+    },
+    {
+      // [fp:607d83252330]
+      mode:  "family-subset",
+      files: [
+        "lib/ai-adverse-decision.js:wrap",
+        "lib/daemon.js:_validateStartOpts",
+        "lib/fdx.js:consentReceipt",
+        "lib/self-update.js:_validateVerifyOpts",
+        "lib/static.js:_validateCreateOpts",
+      ],
+      reason: "daemon + self-update validation prelude that shares the validateOpts.requireObject + validateOpts.requireNonEmptyString + validateOpts.optionalNonEmptyStringArray cascade with the AI-adverse-decision wrap / FDX consent / static-serve validators. Five different domains, five different error classes (DaemonError pidfile / SelfUpdateError tag / FdxError / AiAdverseDecisionError / StaticError); consolidating would couple unrelated primitives.",
+    },
+    {
+      // [fp:6a0fb79e7569] — both 50-tok-5 and 50-tok-4 subsets
+      mode:  "family-subset",
+      files: [
+        "lib/api-key.js:_validateIssueOpts",
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/self-update.js:_validateVerifyOpts",
+        "lib/tcpa-10dlc.js:recordConsent",
+        "lib/watcher.js:_validateOpts",
+      ],
+      reason: "http-client.downloadStream + self-update + watcher validation prelude that shares the validateOpts.requireNonEmptyString + validateOpts.optionalNonEmptyString + validateOpts.optionalPositiveFinite cascade with api-key issue and TCPA consent-record. Five different domains; consolidating past the call boundary would surface the wrong error code (ApiKeyError / HttpClientError / SelfUpdateError / TcpaError / WatcherError) on operator typos.",
+    },
+    {
+      // [fp:f2d2478213be]
+      files: [
+        "lib/mail-arc-sign.js:sign",
+        "lib/middleware/require-methods.js:create",
+        "lib/network-tls.js:buildOptions",
+        "lib/ws-client.js:connect",
+      ],
+      reason: "validateOpts.requireNonEmptyString + array-membership-check prelude — mail-arc-sign signature header + require-methods method whitelist + network-tls SNI + ws-client connect URL each gate operator-supplied input via validateOpts.requireNonEmptyString then run a follow-up domain check (RFC 8617 ARC tag / RFC 7231 method enum / IDN host / RFC 6455 ws scheme). Four different domains, four different error classes.",
+    },
+    {
+      // [fp:b69223a64fea]
+      files: [
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/mail-arc-sign.js:sign",
+        "lib/tcpa-10dlc.js:recordConsent",
+        "lib/watcher.js:_validateOpts",
+      ],
+      reason: "http-client.downloadStream + watcher extension of the four-way validateOpts.requireNonEmptyString + domain-shape-check cluster — RFC 6376 DKIM tag-list + TCPA-10DLC consent record + HTTP download URL/dest + filesystem watcher path. Four different domains, four different error classes (HttpClientError / MailArcSignError / TcpaError / WatcherError).",
+    },
+    {
+      // [fp:161bc32b677a / fp:ade2ccf74c65 / fp:3f55833e9212]
+      mode:  "family-subset",
+      files: [
+        "lib/middleware/require-content-type.js:_normalizeAllowed",
+        "lib/network-tls.js:_normalizeCaInput",
+        "lib/router.js:_matchCompiled",
+        "lib/sandbox.js:_validateAllowed",
+        "lib/watcher.js:_compileIgnore",
+      ],
+      reason: "watcher.ignore + sandbox.allowed + router.match + tls-ca + content-type-allowed compile-string-or-array idiom. Each primitive accepts an operator-supplied allow/ignore list as string|RegExp|Array<string|RegExp>, normalises every entry through the same `Array.isArray(x) ? x : [x]; for (i...) { if (typeof === 'string') ...; else if (instanceof RegExp) ...; else throw }` skeleton. Five different domains (HTTP content-type whitelist / TLS CA bundle normalisation / router path matcher compiler / sandbox allowlist / watcher gitignore-style matcher); each domain's per-entry validation differs (RFC 6838 token / X.509 PEM / route pattern / glob / gitignore-glob), so the per-element body diverges and only the outer compile loop shingles.",
+    },
+    {
+      // [fp:c8ad2e9c9a17]
+      mode:  "family-subset",
+      files: [
+        "lib/cookies.js:parseSafe",
+        "lib/middleware/headers.js:_detectIssues",
+        "lib/request-helpers.js:extractBearer",
+        "lib/router.js:_matchCompiled",
+      ],
+      reason: "cookies.parseSafe + headers._detectIssues + extractBearer + router._matchCompiled all walk a request-supplied string with the same charCodeAt-driven scan and per-character branch (RFC 6265 cookie-name vs RFC 7230 tchar vs RFC 6750 b64token vs route segment). Four different parsers, four different acceptance grammars; consolidating would force a shared character-class table and lose RFC-specific guards.",
+    },
+    {
+      // [fp:9b9760a9a051]
+      files: [
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/dsr.js:create",
+        "lib/outbox.js:create",
+        "lib/self-update.js:_validatePollOpts",
+      ],
+      reason: "self-update.poll-opts extension of the four-way factory-prelude cluster (sanctions-fetcher / DSR / outbox / self-update) that shares applyDefaults + validateOpts cascade. Four different domains, four different error classes (ComplianceSanctionsFetcherError / DsrError / OutboxError / SelfUpdateError).",
+    },
+    {
+      // [fp:b73d9d193b7b]
+      files: [
+        "lib/audit-daily-review.js:create",
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/static.js:_validateCreateOpts",
+      ],
+      reason: "http-client.downloadStream extension of the audit-daily-review + static-serve validator family — each opens with validateOpts.requireObject(opts, ...) then runs validateOpts.requireNonEmptyString cascades on operator-supplied url / dest / mountPath. Three different domains; consolidating would surface the wrong error code (AuditDailyReviewError / HttpClientError / StaticError) on operator typos.",
+    },
+    {
+      // [fp:9d04e7890893]
+      files: [
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/tcpa-10dlc.js:recordConsent",
+        "lib/watcher.js:_validateOpts",
+      ],
+      reason: "http-client.downloadStream + tcpa-10dlc consent-record + watcher opts validator three-way subset of the validateOpts.requireNonEmptyString prelude family. Three different domains, three different error classes.",
+    },
+    {
+      // [fp:2d057b219b88]
+      files: [
+        "lib/daemon.js:_readPidFile",
+        "lib/daemon.js:_validateStartOpts",
+        "lib/self-update.js:poll",
+        "lib/watcher.js:_compileIgnore",
+      ],
+      reason: "daemon._readPidFile + daemon._validateStartOpts + self-update.poll + watcher._compileIgnore share a fs.readFileSync wrapped in try/catch + length-bound + parse skeleton. Four different domains (PID-file read / start opts validate / GitHub Releases poll / gitignore matcher compile); each handles ENOENT differently and the operator-facing error codes differ. Consolidating would couple unrelated primitives.",
+    },
   ];
   // Each KNOWN_CLUSTERS entry's `files` is a list of `path:fn` strings.
   // Build per-entry matchers and reject malformed entries (bare path
