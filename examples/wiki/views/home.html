@@ -101,6 +101,10 @@ await app.listen({ port: 3000 });</code></pre>
     <h3>WebSockets</h3>
     <p>Per-connection lifecycle + channel/room fan-out.</p>
   </a>
+  <a href="/api-contracts" class="card">
+    <h3>API Contracts</h3>
+    <p>OpenAPI, AsyncAPI, MCP, GraphQL federation, SSE, outbound WebSocket, A2A.</p>
+  </a>
   <a href="/mail" class="card">
     <h3>Mail</h3>
     <p>Multipart, attachments, DKIM, calendar invites, bounce intake.</p>
@@ -108,6 +112,10 @@ await app.listen({ port: 3000 });</code></pre>
   <a href="/notifications" class="card">
     <h3>Notifications</h3>
     <p>Generic dispatcher + framework events.</p>
+  </a>
+  <a href="/guard-overview" class="card">
+    <h3>Guard Family</h3>
+    <p>Category pages for content, data, identifiers, protocols, execution strings, and binary files.</p>
   </a>
   <a href="/observability" class="card">
     <h3>Observability</h3>
@@ -125,6 +133,14 @@ await app.listen({ port: 3000 });</code></pre>
     <h3>Format Helpers</h3>
     <p>CSV, UUID, slug, time, archive, pagination, forms.</p>
   </a>
+  <a href="/ai-governance" class="card">
+    <h3>AI Governance</h3>
+    <p>Feature flags, prompt-input gates, adverse decisions, content credentials, AIPREF.</p>
+  </a>
+  <a href="/regulatory-reporting" class="card">
+    <h3>Regulatory Reporting</h3>
+    <p>RTO/RPO declarations, SEC 8-K artifacts, FDX, TCPA, IAB TCF/MSPA.</p>
+  </a>
   <a href="/compliance-patterns" class="card">
     <h3>Compliance Patterns</h3>
     <p>Sealed columns + break-glass + Postgres role-views, composed.</p>
@@ -136,6 +152,10 @@ await app.listen({ port: 3000 });</code></pre>
   <a href="/reliability" class="card">
     <h3>Reliability</h3>
     <p>Retry, circuit breaker, graceful shutdown, deprecation policy.</p>
+  </a>
+  <a href="/ops-hardening" class="card">
+    <h3>Ops Hardening</h3>
+    <p>Secret-safe spawn, honeytokens, resource locks, FAPI checks, vendor integrity.</p>
   </a>
   <a href="/backup-restore" class="card">
     <h3>Backup &amp; Restore</h3>
@@ -155,7 +175,6 @@ await app.listen({ port: 3000 });</code></pre>
 <p>blamejs vendors a small set of exceptional third-party libraries. Their work is the foundation the framework is built on — every cryptographic operation, passkey handshake, and certificate the framework signs runs through their code. All MIT-licensed; full attribution lives in <a href="https://github.com/blamejs/blamejs/blob/main/NOTICE">NOTICE</a>.</p>
 <ul>
   <li><a href="https://github.com/paulmillr">Paul Miller</a> &mdash; <a href="https://github.com/paulmillr/noble-ciphers">@noble/ciphers</a> (XChaCha20-Poly1305 AEAD) and <a href="https://github.com/paulmillr/noble-post-quantum">@noble/post-quantum</a> (FIPS 203 ML-KEM, FIPS 204 ML-DSA, FIPS 205 SLH-DSA &mdash; the pure-JS PQC suite behind <code>b.pqcSoftware</code>)</li>
-  <li><a href="https://github.com/ranisalt">Ranieri Althoff</a> &mdash; <a href="https://github.com/ranisalt/node-argon2">argon2</a> (Argon2id passphrase hashing)</li>
   <li><a href="https://github.com/MasterKale">Matthew Miller</a> &mdash; <a href="https://github.com/MasterKale/SimpleWebAuthn">@simplewebauthn/server</a> (WebAuthn / passkey verification)</li>
   <li><a href="https://github.com/PeculiarVentures">Peculiar Ventures</a> &mdash; <a href="https://github.com/PeculiarVentures/x509">@peculiar/x509</a> + <a href="https://github.com/PeculiarVentures/PKI.js">pkijs</a> (pure-JS X.509 + PKCS#12 stack behind <code>b.mtlsCa</code>)</li>
   <li><a href="https://github.com/PrismJS/prism">Lea Verou + contributors</a> &mdash; <a href="https://prismjs.com/">Prism</a> (syntax highlighting in the wiki you're reading)</li>

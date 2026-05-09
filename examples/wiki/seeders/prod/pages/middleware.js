@@ -91,6 +91,7 @@ module.exports = {
   '  keepRawBody:    boolean,                 // default: false — preserve req.rawBody',
   '}</code></pre>',
   '<p>Single combined parser. Each sub-key configures one parser; pass <code>false</code> to disable a parser entirely. Each parser tests <code>Content-Type</code> against its <code>contentTypes</code> list and skips silently for non-matching requests, so the same middleware handles JSON, urlencoded, multipart, and raw based on the inbound shape. Rejects with 413 when the payload exceeds the per-parser <code>limit</code> before the handler sees it.</p>',
+  '<p><strong>Request-smuggling defense (RFC 9112 §6.1 + §7.1).</strong> The parser refuses ambiguous framing before reading the body — a request that carries both <code>Content-Length</code> and <code>Transfer-Encoding</code>, or duplicate <code>Content-Length</code> headers, returns 400 + <code>Connection: close</code> so an upstream proxy cannot reuse the socket. Mid-stream chunked-encoding parse failures (Node\'s <code>HPE_INVALID_CHUNK_SIZE</code> class) flow through the same path: 400 + <code>Connection: close</code> + <code>req.destroy()</code> + audit emit <code>http.chunked.malformed.refused</code> with the parser\'s diagnostic code. Operators do not need to do anything for this — the defenses are wired into the default body-parser stack.</p>',
   '<pre><code class="language-javascript">var parser = b.middleware.bodyParser({',
   '  json:       { limit: b.constants.BYTES.kib(64) },',
   '  urlencoded: { limit: b.constants.BYTES.kib(64) },',
@@ -285,9 +286,167 @@ module.exports = {
   '  trustProxy:   true,',
   '}));</code></pre>',
 
+  '<h2 id="middleware-request-id">b.middleware.requestId(options) <a class="anchor" href="#middleware-request-id">#</a></h2>',
+  '<p>Attaches a stable request id for logs, tracing, audit rows, and response headers. Operators put it near the top of the stack.</p>',
+  '<pre><code class="language-javascript">var requestId = b.middleware.requestId({ headerName: "x-request-id" });',
+  'typeof requestId; // "function"</code></pre>',
+
+  '<h2 id="middleware-security-headers">b.middleware.securityHeaders(options) <a class="anchor" href="#middleware-security-headers">#</a></h2>',
+  '<p>Sets the baseline browser security headers: content type sniffing off, frame policy, referrer policy, permissions policy, and related hardening headers.</p>',
+  '<pre><code class="language-javascript">var headers = b.middleware.securityHeaders({});',
+  'typeof headers; // "function"</code></pre>',
+
+  '<h2 id="middleware-cors">b.middleware.cors(options) <a class="anchor" href="#middleware-cors">#</a></h2>',
+  '<p>CORS gate for explicit origin allow-lists. Preflight handling and credential policy stay centralized instead of being rebuilt per route.</p>',
+  '<pre><code class="language-javascript">var cors = b.middleware.cors({ origins: ["https://app.example.test"] });',
+  'typeof cors; // "function"</code></pre>',
+
+  '<h2 id="middleware-compression">b.middleware.compression(options) <a class="anchor" href="#middleware-compression">#</a></h2>',
+  '<p>Response compression middleware with bounded buffering and content-type controls. Static assets and large HTML pages use this path in the wiki app.</p>',
+  '<pre><code class="language-javascript">var compression = b.middleware.compression({});',
+  'typeof compression; // "function"</code></pre>',
+
+  '<h2 id="middleware-error-handler">b.middleware.errorHandler(options) <a class="anchor" href="#middleware-error-handler">#</a></h2>',
+  '<p>Terminal error renderer that maps framework typed errors to HTTP status codes without leaking stack traces in production responses.</p>',
+  '<pre><code class="language-javascript">var errors = b.middleware.errorHandler({});',
+  'typeof errors; // "function"</code></pre>',
+
+  '<h2 id="middleware-health">b.middleware.health(options) <a class="anchor" href="#middleware-health">#</a></h2>',
+  '<p>Health and readiness endpoint helper for load balancers. Operators wire cheap process checks to health and dependency checks to readiness.</p>',
+  '<pre><code class="language-javascript">var health = b.middleware.health({});',
+  'typeof health; // "function"</code></pre>',
+
+  '<h2 id="middleware-methods-content-type">b.middleware.requireMethods(options) / requireContentType(options) <a class="anchor" href="#middleware-methods-content-type">#</a></h2>',
+  '<p>Request-shape gates that reject unsupported methods and unexpected content types before parsing or route dispatch.</p>',
+  '<pre><code class="language-javascript">var methods = b.middleware.requireMethods(["GET", "POST"]);',
+  'var jsonOnly = b.middleware.requireContentType(["application/json"]);',
+  'typeof methods === "function" && typeof jsonOnly === "function";</code></pre>',
+
+  '<h2 id="middleware-auth-gates">b.middleware.requireAuth(options) / attachUser(options) <a class="anchor" href="#middleware-auth-gates">#</a></h2>',
+  '<p>Session authentication helpers. <code>attachUser</code> resolves the current session into request context; <code>requireAuth</code> rejects anonymous access.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.attachUser; // "function"',
+  'typeof b.middleware.requireAuth; // "function"</code></pre>',
+
+  '<h2 id="middleware-aal-stepup">b.middleware.requireAal(options) / requireStepUp(options) <a class="anchor" href="#middleware-aal-stepup">#</a></h2>',
+  '<p>Fresh-auth and assurance-level gates for sensitive routes. They compose with <code>b.auth.aal</code> and session auth-time metadata.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.requireAal; // "function"',
+  'typeof b.middleware.requireStepUp; // "function"</code></pre>',
+
+  '<h2 id="middleware-dpop-mtls">b.middleware.dpop(options) / requireMtls(options) <a class="anchor" href="#middleware-dpop-mtls">#</a></h2>',
+  '<p>Sender-constrained access-token gates. DPoP validates proof-of-possession headers; mTLS requires an authenticated client certificate context.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.dpop; // "function"',
+  'typeof b.middleware.requireMtls; // "function"</code></pre>',
+
+  '<h2 id="middleware-quota">b.middleware.dailyByteQuota(options) <a class="anchor" href="#middleware-quota">#</a></h2>',
+  '<p>Per-subject byte-budget gate for upload, export, and API abuse controls. The quota key is operator-defined so routes can budget by user, tenant, or token.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.dailyByteQuota; // "function"</code></pre>',
+
+  '<h2 id="middleware-host-allowlist">b.middleware.hostAllowlist(options) <a class="anchor" href="#middleware-host-allowlist">#</a></h2>',
+  '<p>Host header allow-list defense for deployments behind proxies and CDNs. Refuses unknown authorities before route handlers see the request.</p>',
+  '<pre><code class="language-javascript">var hostGate = b.middleware.hostAllowlist({ hosts: ["wiki.example.test"] });',
+  'typeof hostGate; // "function"</code></pre>',
+
+  '<h2 id="middleware-gpc">b.middleware.gpc(options) <a class="anchor" href="#middleware-gpc">#</a></h2>',
+  '<p>Global Privacy Control reader that attaches the request privacy signal for downstream consent and processing gates.</p>',
+  '<pre><code class="language-javascript">var gpc = b.middleware.gpc({});',
+  'typeof gpc; // "function"</code></pre>',
+
+  '<h2 id="middleware-age-bot">b.middleware.ageGate(options) / botDisclose(options) / botGuard(options) <a class="anchor" href="#middleware-age-bot">#</a></h2>',
+  '<p>Policy middleware for age-restricted flows and automated-agent transparency. These gates attach or enforce operator policy without each route re-parsing headers.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.ageGate; // "function"',
+  'typeof b.middleware.botDisclose; // "function"',
+  'typeof b.middleware.botGuard; // "function"</code></pre>',
+
+  '<h2 id="middleware-ai-act">b.middleware.aiActDisclosure(options) <a class="anchor" href="#middleware-ai-act">#</a></h2>',
+  '<p>EU AI Act disclosure middleware for routes that expose AI-generated or AI-mediated interactions.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.aiActDisclosure; // "function"</code></pre>',
+
+  '<h2 id="middleware-flags">b.middleware.flagContext(options) <a class="anchor" href="#middleware-flags">#</a></h2>',
+  '<p>Attaches feature-flag evaluation context to the request so route handlers and templates read one consistent decision set.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.flagContext; // "function"</code></pre>',
+
+  '<h2 id="middleware-openapi-asyncapi">b.middleware.openapiServe(options) / asyncapiServe(options) <a class="anchor" href="#middleware-openapi-asyncapi">#</a></h2>',
+  '<p>Serves generated OpenAPI and AsyncAPI documents from operator-provided specs with the same caching and security headers as the rest of the app.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.openapiServe; // "function"',
+  'typeof b.middleware.asyncapiServe; // "function"</code></pre>',
+
+  '<h2 id="middleware-static-well-known">b.middleware.securityTxt(options) / assetlinks(options) / webAppManifest(options) <a class="anchor" href="#middleware-static-well-known">#</a></h2>',
+  '<p>Well-known and browser-integration document middleware. Operators provide the contact, assetlinks, or manifest payload once and let the middleware serve the canonical route.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.securityTxt; // "function"',
+  'typeof b.middleware.assetlinks; // "function"',
+  'typeof b.middleware.webAppManifest; // "function"</code></pre>',
+
+  '<h2 id="middleware-assetlinks">b.middleware.assetlinks(options) <a class="anchor" href="#middleware-assetlinks">#</a></h2>',
+  '<p>Serves Android Digital Asset Links JSON from an operator-owned route with stable content type and cache controls.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.assetlinks; // "function"</code></pre>',
+
+  '<h2 id="middleware-web-manifest">b.middleware.webAppManifest(options) <a class="anchor" href="#middleware-web-manifest">#</a></h2>',
+  '<p>Serves a validated web app manifest document for installed-app surfaces and browser metadata endpoints.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.webAppManifest; // "function"</code></pre>',
+
+  '<h2 id="middleware-tracing">b.middleware.spanHttpServer(options) / tracePropagate(options) / traceLogCorrelation(options) <a class="anchor" href="#middleware-tracing">#</a></h2>',
+  '<p>HTTP tracing middleware. It starts server spans, propagates trace context, and binds trace ids into logs without route-level boilerplate.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.spanHttpServer; // "function"',
+  'typeof b.middleware.tracePropagate; // "function"',
+  'typeof b.middleware.traceLogCorrelation; // "function"</code></pre>',
+
+  '<h2 id="middleware-trace-propagate">b.middleware.tracePropagate(options) <a class="anchor" href="#middleware-trace-propagate">#</a></h2>',
+  '<p>Reads and writes trace context headers so downstream calls and logs stay correlated across service boundaries.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.tracePropagate; // "function"</code></pre>',
+
+  '<h2 id="middleware-trace-log-correlation">b.middleware.traceLogCorrelation(options) <a class="anchor" href="#middleware-trace-log-correlation">#</a></h2>',
+  '<p>Attaches active trace identifiers to request-local logging context for incident reconstruction and distributed tracing.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.traceLogCorrelation; // "function"</code></pre>',
+
+  '<h2 id="middleware-asyncapi-serve">b.middleware.asyncapiServe(options) <a class="anchor" href="#middleware-asyncapi-serve">#</a></h2>',
+  '<p>Serves an AsyncAPI document with the same static contract-serving posture as the OpenAPI middleware.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.asyncapiServe; // "function"</code></pre>',
+
+  '<h2 id="middleware-attach-user">b.middleware.attachUser(options) <a class="anchor" href="#middleware-attach-user">#</a></h2>',
+  '<p>Attaches the authenticated user or actor record to the request before authorization middleware evaluates roles, scopes, or step-up requirements.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.attachUser; // "function"</code></pre>',
+
+  '<h2 id="middleware-require-content-type">b.middleware.requireContentType(options) <a class="anchor" href="#middleware-require-content-type">#</a></h2>',
+  '<p>Rejects requests whose Content-Type does not match the route allowlist before body parsing or business logic runs.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.requireContentType; // "function"</code></pre>',
+
+  '<h2 id="middleware-require-mtls">b.middleware.requireMtls(options) <a class="anchor" href="#middleware-require-mtls">#</a></h2>',
+  '<p>Requires a verified client certificate from the upstream TLS terminator or direct Node TLS request and exposes the peer identity to handlers.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.requireMtls; // "function"</code></pre>',
+
+  '<h2 id="middleware-require-step-up">b.middleware.requireStepUp(options) <a class="anchor" href="#middleware-require-step-up">#</a></h2>',
+  '<p>Requires a fresh step-up authentication signal before privileged routes continue.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.requireStepUp; // "function"</code></pre>',
+
+  '<h2 id="middleware-bot-disclose">b.middleware.botDisclose(options) <a class="anchor" href="#middleware-bot-disclose">#</a></h2>',
+  '<p>Adds bot-disclosure controls for routes where automated interaction must be visible to the user or downstream system.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.botDisclose; // "function"</code></pre>',
+
+  '<h2 id="middleware-bot-guard">b.middleware.botGuard(options) <a class="anchor" href="#middleware-bot-guard">#</a></h2>',
+  '<p>Applies the bot policy gate for routes that distinguish human, automated, and unknown actors.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.botGuard; // "function"</code></pre>',
+
+  '<h2 id="middleware-tus">b.middleware.tusUpload(options) <a class="anchor" href="#middleware-tus">#</a></h2>',
+  '<p>Resumable upload middleware for TUS-style clients. It centralizes upload offsets, body caps, and storage adapter wiring.</p>',
+  '<pre><code class="language-javascript">typeof b.middleware.tusUpload; // "function"</code></pre>',
+
+  '<h2 id="csp-report">b.middleware.cspReport(opts) <a class="anchor" href="#csp-report">#</a></h2>',
+  '<pre><code class="language-javascript">{',
+  '  audit:    object | boolean, // optional audit sink or false',
+  '  onReport: function,         // optional operator hook',
+  '  maxBytes: number,           // max accepted JSON body size',
+  '}</code></pre>',
+  '<p>Reporting-API endpoint for CSP, COEP, and network-error reports. The middleware bounds report size, parses JSON, emits an audit event, and hands the normalized report to an optional operator hook.</p>',
+  '<pre><code class="language-javascript">var cspReport = b.middleware.cspReport({',
+  '  maxBytes: b.constants.BYTES.kib(64),',
+  '  onReport: function (report) { return report.type; },',
+  '  audit: false,',
+  '});',
+  'typeof cspReport; // "function"</code></pre>',
+
   '<h2 id="validate-opts">Boot-time config validation</h2>',
 
-  '<h3>b.validateOpts(opts, allowedKeys, label) <a class="anchor" href="#validate-opts-call">#</a></h3>',
+  '<h3>b.validateOpts(config, allowedKeys, label) <a class="anchor" href="#validate-opts-call">#</a></h3>',
   '<p>Every framework primitive\'s <code>create()</code> validates its <code>opts</code> object against an explicit allow-list. A typo like <code>cors({ allowedOrigins: [] })</code> (the API expects <code>origins</code>) throws at boot with the offending key plus the full allowed-keys list, instead of silently weakening the operator\'s setup until a real request hits the wrong code path.</p>',
   '<pre><code class="language-javascript">// Operator-built primitive picks up the same diagnostic style:',
   'function myMiddleware(opts) {',

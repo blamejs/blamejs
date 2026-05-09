@@ -54,6 +54,38 @@ module.exports = {
   '  await tx.query("UPDATE inventory SET qty = qty - 1 WHERE sku = $1", [sku]);',
   '});</code></pre>',
 
+  '<h2 id="external-db-query">b.externalDb.query(sql, params, options) <a class="anchor" href="#external-db-query">#</a></h2>',
+  '<p>Runs one app-data query through the configured external backend. The wrapper adds pool checkout, retry, circuit-breaker protection, classification/residency routing, role-aware backend selection, and audit metadata without logging SQL unless the operator explicitly opts in.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.query; // "function"</code></pre>',
+
+  '<h2 id="external-db-transaction">b.externalDb.transaction(fn, options) <a class="anchor" href="#external-db-transaction">#</a></h2>',
+  '<p>Runs a multi-statement external database transaction with begin, commit, rollback, optional statement timeout, session GUC binding, and deadlock retry policy. The callback receives a transaction client exposing <code>query(sql, params)</code>.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.transaction; // "function"</code></pre>',
+
+  '<h2 id="external-db-health">b.externalDb.healthCheck(backendName) <a class="anchor" href="#external-db-health">#</a></h2>',
+  '<p>Checks one backend, or every backend when no name is supplied. Backends with a configured <code>ping</code> hook use it; otherwise the framework reports pool and backend metadata from the configured wrapper.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.healthCheck; // "function"</code></pre>',
+
+  '<h2 id="external-db-list">b.externalDb.listBackends() <a class="anchor" href="#external-db-list">#</a></h2>',
+  '<p>Returns configured backend descriptors for diagnostics, admin pages, cluster provider setup, and migration tooling.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.listBackends; // "function"</code></pre>',
+
+  '<h2 id="external-db-shutdown">b.externalDb.shutdown() <a class="anchor" href="#external-db-shutdown">#</a></h2>',
+  '<p>Drains idle pool clients, rejects queued acquisitions, and stops pool reapers during application shutdown.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.shutdown; // "function"</code></pre>',
+
+  '<h2 id="external-db-configure-pool">b.externalDb.configurePool(backendName, options) <a class="anchor" href="#external-db-configure-pool">#</a></h2>',
+  '<p>Resizes an initialized backend pool at runtime. Allowed controls are <code>min</code>, <code>max</code>, and <code>idleTimeoutMs</code>; bad backend names and malformed values fail synchronously.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.configurePool; // "function"</code></pre>',
+
+  '<h2 id="external-db-run-as">b.externalDb.runAs(role, fn) <a class="anchor" href="#external-db-run-as">#</a></h2>',
+  '<p>Binds a database role outside an HTTP request so jobs, schedulers, and CLIs use the same role-aware backend routing as <code>b.middleware.dbRoleFor</code>.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.runAs; // "function"</code></pre>',
+
+  '<h2 id="external-db-current-role">b.externalDb.currentRole() <a class="anchor" href="#external-db-current-role">#</a></h2>',
+  '<p>Returns the role currently bound in the external database role context, or <code>null</code> when no role is active.</p>',
+  '<pre><code class="language-javascript">typeof b.externalDb.currentRole; // "function"</code></pre>',
+
   '<h2 id="cluster">Cluster coordination <a class="anchor" href="#cluster">#</a></h2>',
   '<p>Cluster mode flips on when the operator calls <code>cluster.init()</code>. The primary effect: every replica goes through a lease-based coordination layer for the things only one node should do at a time — schedule ticks, migration application, key rotation, audit-chain compaction.</p>',
   '<h3>b.cluster.init(opts)</h3>',
@@ -76,6 +108,61 @@ module.exports = {
   'await b.cluster.requireLeader();      // throws NotLeaderError on a follower</code></pre>',
   '<p>Leases carry a fencing token — every leaseholder gets a monotonic value; if the lease lapses and a different node picks it up, the new fencing token is strictly greater, and any write the previous holder issues with the old token is rejected by the storage layer. Nothing about a delayed network packet from a former leader can corrupt state.</p>',
   '<p>Vault-key consistency: every node records a hash of its vault keypair on first boot and rejects participation if its hash doesn\'t match the cluster\'s recorded fingerprint. Prevents the silent-corruption shape where a node booted with a different key seals new writes the rest of the cluster can\'t unseal.</p>',
+
+  '<h2 id="cluster-state">b.cluster.isLeader() / isClusterMode() / requireLeader() <a class="anchor" href="#cluster-state">#</a></h2>',
+  '<p>Runtime leadership gates. Mutating primitives call <code>requireLeader</code> when only the active leader may write.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.isLeader; // "function"',
+  'typeof b.cluster.isClusterMode; // "function"',
+  'typeof b.cluster.requireLeader; // "function"</code></pre>',
+
+  '<h2 id="cluster-introspection">b.cluster.currentLeader() / currentNodeId() / fencingToken() <a class="anchor" href="#cluster-introspection">#</a></h2>',
+  '<p>Read-only cluster state for diagnostics, admin pages, and audit metadata.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.currentLeader; // "function"',
+  'typeof b.cluster.currentNodeId; // "function"',
+  'typeof b.cluster.fencingToken; // "function"</code></pre>',
+
+  '<h2 id="cluster-current-node">b.cluster.currentNodeId() <a class="anchor" href="#cluster-current-node">#</a></h2>',
+  '<p>Returns the configured node id for the current process. Operators use it in diagnostics and audit metadata when multiple replicas are online.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.currentNodeId; // "function"</code></pre>',
+
+  '<h2 id="cluster-fencing-token">b.cluster.fencingToken() <a class="anchor" href="#cluster-fencing-token">#</a></h2>',
+  '<p>Returns the current fencing token held by this process, or the neutral value when cluster mode is not active.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.fencingToken; // "function"</code></pre>',
+
+  '<h2 id="cluster-routing">b.cluster.endpoint() / externalDbBackend() / dialect() <a class="anchor" href="#cluster-routing">#</a></h2>',
+  '<p>Coordination backend descriptors used by admin tooling and cluster-aware primitives.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.endpoint; // "function"',
+  'typeof b.cluster.externalDbBackend; // "function"',
+  'typeof b.cluster.dialect; // "function"</code></pre>',
+
+  '<h2 id="cluster-external-backend">b.cluster.externalDbBackend() <a class="anchor" href="#cluster-external-backend">#</a></h2>',
+  '<p>Returns the externalDb backend name used for cluster coordination when the built-in database provider is active.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.externalDbBackend; // "function"</code></pre>',
+
+  '<h2 id="cluster-dialect">b.cluster.dialect() <a class="anchor" href="#cluster-dialect">#</a></h2>',
+  '<p>Returns the coordination backend dialect marker for provider-specific SQL and diagnostics.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.dialect; // "function"</code></pre>',
+
+  '<h2 id="cluster-transitions">b.cluster.onTransition(fn) / discoveryHandler(request) <a class="anchor" href="#cluster-transitions">#</a></h2>',
+  '<p>Transition hooks and discovery endpoint helper for operators that expose cluster state to health or admin planes.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.onTransition; // "function"',
+  'typeof b.cluster.discoveryHandler; // "function"</code></pre>',
+
+  '<h2 id="cluster-discovery">b.cluster.discoveryHandler(request) <a class="anchor" href="#cluster-discovery">#</a></h2>',
+  '<p>Returns a cluster-state response object for operator-controlled discovery and health endpoints.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.discoveryHandler; // "function"</code></pre>',
+
+  '<h2 id="cluster-is-mode">b.cluster.isClusterMode() <a class="anchor" href="#cluster-is-mode">#</a></h2>',
+  '<p>Reports whether cluster mode has been initialized for this process.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.isClusterMode; // "function"</code></pre>',
+
+  '<h2 id="cluster-require-leader">b.cluster.requireLeader() <a class="anchor" href="#cluster-require-leader">#</a></h2>',
+  '<p>Throws when the current process is not the active leader, letting mutating primitives enforce single-writer behavior.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.requireLeader; // "function"</code></pre>',
+
+  '<h2 id="cluster-shutdown">b.cluster.shutdown() <a class="anchor" href="#cluster-shutdown">#</a></h2>',
+  '<p>Stops heartbeat work and releases leadership on process shutdown.</p>',
+  '<pre><code class="language-javascript">typeof b.cluster.shutdown; // "function"</code></pre>',
 
   '<h3 id="cluster-providers">Custom providers <a class="anchor" href="#cluster-providers">#</a></h3>',
   '<p>The default coordination provider is a row-based lease over <code>b.externalDb</code>. Operators with a different coordination substrate (etcd, Consul, ZooKeeper, k8s lease object) implement the <code>{ acquireLease, renewLease, releaseLease, ensureSchema }</code> interface and pass it via <code>cluster.init({ provider: customProvider })</code>.</p>',
@@ -140,5 +227,29 @@ module.exports = {
   '});',
   '// ntp.driftMs / ntp.server / ntp.passed</code></pre>',
   '<p>Override the strict-fail behavior with <code>BLAMEJS_NTP_STRICT=0</code> for environments where boot must proceed despite an NTP failure (logged as a warning instead of fatal). Skip the check entirely with <code>BLAMEJS_SKIP_NTP_CHECK=1</code> — only for genuinely offline / air-gapped deployments where the operator has a different clock-sync mechanism.</p>',
+
+  '<h2 id="ntp-query-single">b.ntpCheck.querySingle(server, options) <a class="anchor" href="#ntp-query-single">#</a></h2>',
+  '<p>Queries one NTP server and returns the measured offset sample used by drift checks.</p>',
+  '<pre><code class="language-javascript">typeof b.ntpCheck.querySingle; // "function"</code></pre>',
+
+  '<h2 id="ntp-check-drift">b.ntpCheck.checkDrift(options) <a class="anchor" href="#ntp-check-drift">#</a></h2>',
+  '<p>Checks clock drift against the configured server list and threshold policy.</p>',
+  '<pre><code class="language-javascript">typeof b.ntpCheck.checkDrift; // "function"</code></pre>',
+
+  '<h2 id="ntp-boot-check">b.ntpCheck.bootCheck(options) <a class="anchor" href="#ntp-boot-check">#</a></h2>',
+  '<p>Runs the boot-time drift gate that can refuse startup when the host clock is outside the configured fatal threshold.</p>',
+  '<pre><code class="language-javascript">typeof b.ntpCheck.bootCheck; // "function"</code></pre>',
+
+  '<h2 id="ntp-monitor">b.ntpCheck.monitor(options) <a class="anchor" href="#ntp-monitor">#</a></h2>',
+  '<p>Starts a background clock-drift monitor for long-running processes.</p>',
+  '<pre><code class="language-javascript">typeof b.ntpCheck.monitor; // "function"</code></pre>',
+
+  '<h2 id="ntp-thresholds-set">b.ntpCheck.setThresholds(options) <a class="anchor" href="#ntp-thresholds-set">#</a></h2>',
+  '<p>Updates warn and fatal drift thresholds for deployments with stricter or looser time-synchronization requirements.</p>',
+  '<pre><code class="language-javascript">typeof b.ntpCheck.setThresholds; // "function"</code></pre>',
+
+  '<h2 id="ntp-thresholds-get">b.ntpCheck.getThresholds() <a class="anchor" href="#ntp-thresholds-get">#</a></h2>',
+  '<p>Returns the active drift thresholds for diagnostics and admin views.</p>',
+  '<pre><code class="language-javascript">typeof b.ntpCheck.getThresholds; // "function"</code></pre>',
 ].join("\n"),
 };

@@ -49,8 +49,31 @@
 
 var fs = require("fs");
 var path = require("path");
+var nodeCrypto = require("crypto");
 var helpers = require("../helpers");
 var check = helpers.check;
+
+// Stable, paste-able cluster fingerprint. The cluster's identity is the
+// canonical normalized token-block from the first cited site — sliced
+// from the file at the recorded line range, comments stripped,
+// whitespace collapsed, hashed with SHA3-256, truncated to 12 hex
+// chars. Operators paste this fingerprint into KNOWN_CLUSTERS when
+// allowlisting a new duplicate-block cluster instead of reconstructing
+// the matching section by hand.
+function _clusterFingerprint(site) {
+  try {
+    var src = fs.readFileSync(site.file, "utf8").split(/\r?\n/);
+    var slice = src.slice(site.line - 1, site.endLine).join("\n");
+    var stripped = slice
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return nodeCrypto.createHash("sha3-256").update(stripped).digest("hex").slice(0, 12);
+  } catch (_e) {
+    return "??????????";
+  }
+}
 
 var LIB_ROOT = path.resolve(__dirname, "..", "..", "lib");
 
@@ -2410,6 +2433,238 @@ async function testNoDuplicateCodeBlocks() {
       ],
       reason: "Parser entry — `function parse(input, opts) { opts = opts || {}; if (opts.maxBytes !== undefined && !numericBounds.isPositiveFiniteInt(opts.maxBytes)) throw }`. Parser error classes use `(message, code, line, col)` constructor signature that doesn't fit numericBounds.requireXIfPresent helper. Future opportunity: normalize parser error class signatures to match framework standard.",
     },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/audit-daily-review.js:create",
+        "lib/cloud-events.js:wrap",
+        "lib/ddl-change-control.js:create",
+        "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/fdx.js:consentReceipt",
+        "lib/file-upload.js:_validateCreateOpts",
+        "lib/redact.js:installOutboundDlp",
+        "lib/sec-cyber.js:eightKArtifact",
+        "lib/static.js:_validateCreateOpts",
+      ],
+      reason: "validateOpts factory + JSON-envelope scaffolding family — each primitive's create() runs `validateOpts(opts, ALLOWED_KEYS, label) + validateOpts.requireObject(...) + validateOpts.requireNonEmptyString(...) + validateOpts.optionalY(...)` then assembles its domain-specific config. Ten different domains (compliance daily review / CloudEvents wrapper / DDL change-control / external-db migration / 21 CFR Part 11 / FDX consent / file-upload validation / outbound DLP / SEC 8-K artifact / static-serve validation); each emits a different error class and a different opts vocabulary. Consolidating the prelude past the call boundary would surface the wrong error code for operator typos.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/ai-adverse-decision.js:wrap",
+        "lib/audit-daily-review.js:create",
+        "lib/cloud-events.js:wrap",
+        "lib/ddl-change-control.js:create",
+        "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/observability-tracer.js:create",
+        "lib/redact.js:installOutboundDlp",
+      ],
+      reason: "Observability-emit + validateOpts prelude family — each primitive opens with the validateOpts cascade then attaches an observability.event call (tracer span / decision audit / DDL approval / migration / 21 CFR signature / DLP scan). Eight different domains; consolidating would force a single emit shape and lose per-primitive event-name conventions.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/audit-daily-review.js:create",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/fdx.js:consentReceipt",
+        "lib/middleware/db-role-for.js:create",
+        "lib/middleware/dpop.js:create",
+        "lib/middleware/tus-upload.js:create",
+        "lib/outbox.js:create",
+        "lib/static.js:_validateCreateOpts",
+        "lib/vault/seal-pem-file.js:sealPemFile",
+      ],
+      reason: "Factory-create() opts-resolution scaffolding family — `var X = applyDefaults(opts, DEFAULTS); validateOpts.optionalY(...); validateOpts.optionalZ(...)` cascades. Eleven different domains (daily review / sanctions fetcher / migration / 21 CFR / FDX / db-role middleware / DPoP / TUS / outbox / static / sealed-PEM); each closure captures a different downstream binding. Same factory-prelude convention as the JSON-envelope cluster above; tracked separately because the file-set varies.",
+    },
+    {
+      files: [
+        "lib/auth/sd-jwt-vc-holder.js:_emitAudit",
+        "lib/auth/sd-jwt-vc-issuer.js:_emitAudit",
+        "lib/compliance-sanctions-fetcher.js:_emitAudit",
+        "lib/compliance-sanctions.js:_emitAudit",
+        "lib/outbox.js:_emitAudit",
+        "lib/tenant-quota.js:_emitAudit",
+      ],
+      reason: "_emitAudit drop-silent helper family — each primitive defines a local `_emitAudit(action, info) { try { audit.safeEmit({ action: action, ...info }); } catch (_e) { /* drop-silent */ } }`. Per the validation-tier policy this is the hot-path observability sink shape; the framework already exposes validateOpts.makeAuditEmitter for the no-arg form, but these sites emit bound action namespaces (`sdjwt.vc.holder.*`, `sanctions.fetcher.*`, `outbox.*`, `tenant.quota.*`) that the call-site closure captures.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/break-glass.js:_validatePolicySet",
+        "lib/compliance-eaa.js:create",
+        "lib/db.js:declareRequireDualControl",
+        "lib/dsr.js:create",
+        "lib/middleware/assetlinks.js:create",
+        "lib/network-heartbeat.js:start",
+      ],
+      reason: "validateOpts.requireNonEmptyString + optionalNonEmptyStringArray prelude family — every entry-point opens with the same required-string + optional-string-array check cascade because the caller-supplied opts share the typo-handling convention. Seven different domains and seven different error classes (SdJwtVcError / BreakGlassError / EaaError / DbError / DsrError / FrameworkError / HeartbeatError); consolidating past the call boundary would surface the wrong error code for operator typos.",
+    },
+    {
+      files: [
+        "lib/auth/dpop.js:_canonicalJwk",
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/compliance-sanctions.js:screen",
+        "lib/dora.js:_validateReportInput",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
+        "lib/incident-report.js:open",
+      ],
+      reason: "Operator-input validation scaffolding shape — `validateOpts.requireObject(input, label, ErrClass); validateOpts.requireNonEmptyString(input.X, ...); validateOpts.requireNonEmptyString(input.Y, ...);` then domain-specific shape checks. Six different domains (DPoP JWK canonicalize / SD-JWT VC store / sanctions screening / DORA report shape / 21 CFR signature / incident-report open); consolidating would force a shared input-validator that the per-domain error class signatures don't fit.",
+    },
+    {
+      files: [
+        "lib/http-message-signature.js:_parseSignatureInput",
+        "lib/mail-auth.js:_parseDmarcRecord",
+        "lib/mail-bimi.js:parseRecord",
+        "lib/mail-dkim.js:_parseDkimTagList",
+        "lib/network-smtp-policy.js:_parseStsPolicy",
+      ],
+      reason: "Header / TXT-record tag-list parser family — each parses its own RFC-defined `tag=value; tag=value` structure (RFC 9421 signature-input / RFC 7489 DMARC / RFC 9165 BIMI / RFC 6376 DKIM / RFC 8461 MTA-STS). Consolidating would erase per-RFC tag-quoting and continuation-line rules; the 60-token shingle is the loop-and-split skeleton.",
+    },
+    {
+      files: [
+        "lib/auth/password.js:check",
+        "lib/http-message-signature.js:_parseSignatureInput",
+        "lib/middleware/tus-upload.js:_parseMetadata",
+        "lib/observability.js:_parseBaggage",
+        "lib/observability.js:_parseTracestate",
+        "lib/request-helpers.js:parseQualityList",
+      ],
+      reason: "key=value / key value parser pair family — Argon2id PHC + RFC 9421 signature-input + TUS Upload-Metadata + W3C baggage + W3C tracestate + RFC 7231 quality-list each independently iterate over key=value tokens splitting on the first separator. Same scaffolding noted in the existing parseQualityList cluster (line 1727); listed again because the file-set differs (sd-jwt-vc-issuer / sanctions screening interactions push fp to a new cluster).",
+    },
+    {
+      files: [
+        "lib/auth/password.js:check",
+        "lib/http-message-signature.js:_parseSignatureInput",
+        "lib/observability.js:_parseBaggage",
+        "lib/observability.js:_parseTracestate",
+      ],
+      reason: "Same key=value parser family as above with TUS / quality-list removed. Same justification.",
+    },
+    {
+      files: [
+        "lib/atomic-file.js:copyDirRecursive",
+        "lib/ddl-change-control.js:approve",
+        "lib/ddl-change-control.js:reject",
+        "lib/deprecate.js:alias",
+        "lib/totp.js:uri",
+      ],
+      reason: "String-format builder shape — `var X = String(arg); if (typeof X !== 'string' || X.length === 0) throw; return X.replace(/.../g, ...) + '...' + Y;`. Atomic-file recursive copy / DDL approve+reject audit-trail / deprecation alias announcer / TOTP otpauth URI construction; five different domains, five different output formats. Tracked together because the validation+concat skeleton shingles.",
+    },
+    {
+      files: [
+        "lib/atomic-file.js:copyDirRecursive",
+        "lib/ddl-change-control.js:reject",
+        "lib/totp.js:uri",
+      ],
+      reason: "Same string-format builder family as above with the DDL approve + deprecate.alias sites removed. Same justification.",
+    },
+    {
+      files: [
+        "lib/auth-bot-challenge.js:create",
+        "lib/auth/jwt.js:_requireNumericDate",
+        "lib/external-db.js:_requirePosInt",
+        "lib/http-client.js:_requirePositiveInt",
+      ],
+      reason: "Per-primitive `_requireXxx(value, label)` numeric-validator helpers — each module rolls a small `function _requirePositiveInt(v, label) { if (typeof v !== 'number' || ...) throw new XError(...); return v; }` because numericBounds throws plain TypeError that doesn't fit per-domain error classes. Future consolidation candidate as numericBounds.requirePositiveIntAs(value, label, errorClass, code).",
+    },
+    {
+      files: [
+        "lib/db-declare-row-policy.js:_validateOpts",
+        "lib/db-declare-view.js:_validateOpts",
+        "lib/legal-hold.js:place",
+        "lib/middleware/db-role-for.js:create",
+      ],
+      reason: "DB-declare opts-validation scaffolding — `validateOpts.requireObject(opts, ...); validateOpts.requireNonEmptyString(opts.tableName, ..., DbError, code); validateOpts.requireNonEmptyString(opts.X, ..., DbError, code);`. Four different db-declare entry points (row-policy / view / legal-hold place / db-role middleware); each emits a different error code on operator typo. Consolidating would lose the per-call code.",
+    },
+    {
+      files: [
+        "lib/db-declare-row-policy.js:_validateOpts",
+        "lib/db-declare-view.js:_validateOpts",
+        "lib/legal-hold.js:place",
+      ],
+      reason: "Same DB-declare opts-validation cluster as above with the db-role-for middleware site removed. Same justification.",
+    },
+    {
+      files: [
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/backup/index.js:scheduleTest",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
+        "lib/incident-report.js:open",
+      ],
+      reason: "Operator-supplied record validation shape — each entry runs `validateOpts.requireObject(input, ...); validateOpts.requireNonEmptyString(input.id, ...); validateOpts.optionalNonEmptyString(input.metadata, ...);` then writes a row through db.from(). Four different domains (SD-JWT VC store / backup test schedule / 21 CFR signature / incident-report); each db row has a different schema.",
+    },
+    {
+      files: [
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
+        "lib/incident-report.js:open",
+      ],
+      reason: "Same operator-supplied record validation cluster as above with the backup-scheduleTest site removed. Same justification.",
+    },
+    {
+      files: [
+        "lib/auth/dpop.js:verify",
+        "lib/backup/index.js:scheduleTest",
+        "lib/break-glass.js:_validatePolicySet",
+        "lib/ddl-change-control.js:propose",
+      ],
+      reason: "Multi-step verification scaffold — `validateOpts.requireObject(...); var X = validateOpts.requireNonEmptyString(...); var Y = validateOpts.optionalNonEmptyString(...); ...; if (cond) throw new XError(...)`. DPoP proof verify / backup scheduleTest / break-glass policy validation / DDL change-control propose. Four different domains, four different validation rules.",
+    },
+    {
+      files: [
+        "lib/auth/dpop.js:verify",
+        "lib/backup/index.js:scheduleTest",
+        "lib/break-glass.js:_validatePolicySet",
+      ],
+      reason: "Same multi-step verification cluster as above with the DDL-propose site removed. Same justification.",
+    },
+    {
+      files: [
+        "lib/asyncapi.js:parse",
+        "lib/backup/manifest.js:validate",
+        "lib/openapi.js:parse",
+      ],
+      reason: "Schema-document parser entry — `function parse(input, opts) { opts = opts || {}; validateOpts.requireObject(input, ...); ... if (input.X === undefined) throw }`. AsyncAPI / OpenAPI parser + backup manifest validator share validation scaffolding because each is a structured-document parser with required top-level fields. Three different schemas (AsyncAPI 3.0 / OpenAPI 3.1 / blamejs backup manifest); consolidating would force a shared schema-walker.",
+    },
+    {
+      files: [
+        "lib/auth-bot-challenge.js:_safeGlobalObs",
+        "lib/auth/lockout.js:_safeGlobalObs",
+        "lib/session-device-binding.js:_safeGlobalObs",
+      ],
+      reason: "_safeGlobalObs drop-silent observability helper — each primitive defines a local `function _safeGlobalObs(action, attrs) { try { observability.event({...}); } catch (_e) { /* drop-silent */ } }` because the global observability binding is module-load-time captured. Three auth-related primitives; the closure captures the per-primitive event-name namespace. Same observability-sink discipline noted in the cookies/gpc/headers _emitAudit cluster.",
+    },
+    {
+      files: [
+        "lib/db-query.js:<top>",
+        "lib/db.js:init",
+        "lib/db.js:stream",
+        "lib/external-db.js:_connectAs",
+      ],
+      reason: "node:sqlite + external-db wiring scaffold — `var statement = database.prepare('...'); var rows = statement.all(...); for (i in rows) { ... }`. db-query top-level statement-cache setup, db.init schema-bootstrap walk, db.stream readable-walk, external-db.js role connect-as walk. Four sites within the db / external-db domain; the SQL bodies and result shapes differ per call.",
+    },
+    {
+      files: [
+        "lib/dual-control.js:create",
+        "lib/legal-hold.js:create",
+        "lib/retention.js:create",
+      ],
+      reason: "Compliance-gate primitive create() factory — `function create(opts) { opts = opts || {}; validateOpts.requireObject(opts, ...); var audit = validateOpts.auditShape(opts.audit, ...); var _emit = validateOpts.makeAuditEmitter(audit); ... return { check, place, release, list }; }`. Three different compliance gates (m-of-n dual-control / legal-hold / retention); each return-shape exposes a different operator-facing surface. Consolidating into a base would couple unrelated primitives.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/outbox.js:create",
+      ],
+      reason: "Subset of the outbox / 21 CFR / external-db-migrate factory cluster covered above. Tracked separately because the 60-token shingle drops below the 5-file threshold once the middleware-dpop / static / vault sites are removed.",
+    },
   ];
   // Each KNOWN_CLUSTERS entry's `files` is a list of `path:fn` strings.
   // Build per-entry matchers and reject malformed entries (bare path
@@ -2558,11 +2813,12 @@ async function testNoDuplicateCodeBlocks() {
   if (strong.length > 0) {
     var strongMatches = strong.map(function (r) {
       var first = r.sites[0];
+      var fp = _clusterFingerprint(first);
       return {
         file:    first.file,
         line:    first.line,
         content: "STRONG-DUP " + r.bestSize + "-tok in " + r.fileSet.length +
-                 " files: " + r.fileSet.slice(0, 5).join(", ") +
+                 " files [fp:" + fp + "]: " + r.fileSet.slice(0, 5).join(", ") +
                  (r.fileSet.length > 5 ? " (+" + (r.fileSet.length - 5) + ")" : "") +
                  " — first @ " + first.file + ":" + first.line + "-" + first.endLine,
       };
@@ -2575,6 +2831,66 @@ async function testNoDuplicateCodeBlocks() {
   } else {
     check("strong-signal duplicate-block (no clusters)", true);
   }
+}
+
+// ---- Pattern 43: url.format( — CVE-2026-21712 IDN crash class ----
+
+function testNoLegacyUrlFormat() {
+  // class: legacy-url-format
+  // CVE-2026-21712 — Node's legacy `url.format()` crashes on
+  // adversarial IDN inputs. The WHATWG URL constructor +
+  // `safeUrl.format` are the supported paths. Even an internal
+  // call site is a smoke risk: a future operator passing
+  // operator-supplied data through the same function would crash
+  // the listener.
+  var matches = _scan(/\burl\.format\(/);
+  matches = _filterMarkers(matches, "legacy-url-format");
+  _report("url.format(...) — use safeUrl.format or new URL() constructor " +
+          "(CVE-2026-21712 IDN crash class)", matches);
+}
+
+// ---- Pattern 44: vendor-deny — axios / xml-crypto / saml class ----
+
+// CVE-2026-25639 / 42033 / 42041 / 40175 — axios prototype-pollution.
+// CVE-2026-25922 / 23687 / 34840 — SAML XML signature wrapping (xml-crypto class).
+// The framework is zero-npm-runtime-deps; this gate ensures no vendor
+// refresh or careless file lands a require() against these packages.
+var VENDOR_DENY_NAMES = [
+  { name: "axios",      cve: "CVE-2026-25639/42033/42041/40175 prototype-pollution" },
+  { name: "xml-crypto", cve: "CVE-2026-25922/23687/34840 SAML XML signature wrapping" },
+  { name: "xml2js",     cve: "SAML XML wrapping class — operator must use a documented opt-in path" },
+  { name: "samlify",    cve: "SAML signature-wrapping class — operator must use a documented opt-in path" },
+];
+
+function testNoDeniedVendors() {
+  // class: vendor-deny
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      for (var di = 0; di < VENDOR_DENY_NAMES.length; di++) {
+        var d = VENDOR_DENY_NAMES[di];
+        var re = new RegExp("require\\([\"']" + d.name + "[\"']\\)");
+        if (re.test(line)) {
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: "require('" + d.name + "') — vendor-denied (" + d.cve + ")",
+          });
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "vendor-deny");
+  _report("vendor-deny — refused dependencies (axios / xml-crypto / SAML class)",
+    bad);
 }
 
 // ---- Pattern 42: state-stamps in user-facing docs (smoke test the wiki) ----
@@ -3238,6 +3554,8 @@ async function run() {
   testNoHandrolledRetryLoop();
   await testNoDuplicateCodeBlocks();
   testNoStateStampsInPublicDocs();
+  testNoLegacyUrlFormat();
+  testNoDeniedVendors();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.

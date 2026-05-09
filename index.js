@@ -51,6 +51,14 @@ _tls.DEFAULT_MIN_VERSION = "TLSv1.3";
  */
 
 var crypto = require("./lib/crypto");
+// Attach RFC 9180 HPKE (lib/crypto-hpke.js) and RFC 9421 HTTP Message
+// Signatures (lib/http-message-signature.js) onto b.crypto so operators
+// reach b.crypto.hpke.seal({...}) / b.crypto.httpSig.sign({...}) without
+// remembering separate top-level namespaces. Implementations live in
+// the dedicated lib files; these are thin aliases.
+crypto.hpke = require("./lib/crypto-hpke");
+crypto.httpSig = require("./lib/http-message-signature");
+var tlsExporter = require("./lib/tls-exporter");
 var router = require("./lib/router");
 var constants = require("./lib/constants");
 var vault = require("./lib/vault");
@@ -59,12 +67,20 @@ var vaultPassphraseSource = require("./lib/vault/passphrase-source");
 var db = require("./lib/db");
 var cryptoField = require("./lib/crypto-field");
 var audit = require("./lib/audit");
+// Attach the audit-tools dispatcher onto b.audit so operators can
+// reach `b.audit.export({ format: "cadf" })` without remembering the
+// audit-tools namespace. The implementation lives in audit-tools; this
+// is a thin alias.
+audit.export = function (opts) {
+  return require("./lib/audit-tools").exportAudit(opts);
+};
 var auditChain = require("./lib/audit-chain");
 var consent = require("./lib/consent");
 var subject = require("./lib/subject");
 var session = require("./lib/session");
 var storage = require("./lib/storage");
 var safeJson = require("./lib/safe-json");
+var safeJsonPath = require("./lib/safe-jsonpath");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
@@ -113,6 +129,9 @@ var safeUrl = require("./lib/safe-url");
 var safeRedirect = require("./lib/safe-redirect");
 var pick = require("./lib/pick");
 var dora = require("./lib/dora");
+var fda21cfr11 = require("./lib/fda-21cfr11");
+var auditDailyReview = require("./lib/audit-daily-review");
+var ddlChangeControl = require("./lib/ddl-change-control");
 var compliance = Object.assign({}, require("./lib/compliance"), {
   eaa: require("./lib/compliance-eaa"),
 });
@@ -242,11 +261,18 @@ var fileType = require("./lib/file-type");
 var fileUpload = require("./lib/file-upload");
 var dualControl = require("./lib/dual-control");
 var retention = require("./lib/retention");
+var legalHold = require("./lib/legal-hold");
 var network = require("./lib/network");
 var cloudEvents = require("./lib/cloud-events");
 var dsr = require("./lib/dsr");
 var outbox = require("./lib/outbox");
 var inbox = require("./lib/inbox");
+var tenantQuota = require("./lib/tenant-quota");
+var drRunbook = require("./lib/dr-runbook");
+var sandbox = require("./lib/sandbox");
+var authBotChallenge = require("./lib/auth-bot-challenge");
+var sessionDeviceBinding = require("./lib/session-device-binding");
+var acme = require("./lib/acme");
 
 module.exports = {
   crypto:           crypto,
@@ -313,6 +339,9 @@ module.exports = {
   safeRedirect:     safeRedirect,
   pick:             pick,
   dora:             dora,
+  fda21cfr11:       fda21cfr11,
+  auditDailyReview: auditDailyReview,
+  ddlChangeControl: ddlChangeControl,
   compliance:       compliance,
   gateContract:     gateContract,
   guardCsv:         guardCsv,
@@ -393,6 +422,7 @@ module.exports = {
   wsClient:         wsClient,
   flag:             flag,
   safeJson:         safeJson,
+  safeJsonPath:     safeJsonPath,
   safeSchema:       safeSchema,
   pagination:       pagination,
   metrics:          metrics,
@@ -421,11 +451,19 @@ module.exports = {
   fileUpload:       fileUpload,
   dualControl:      dualControl,
   retention:        retention,
+  legalHold:        legalHold,
   network:          network,
   cloudEvents:      cloudEvents,
   dsr:              dsr,
   outbox:           outbox,
   inbox:            inbox,
+  tenantQuota:      tenantQuota,
+  drRunbook:        drRunbook,
+  sandbox:          sandbox,
+  authBotChallenge: authBotChallenge,
+  sessionDeviceBinding: sessionDeviceBinding,
+  acme:             acme,
   ntpCheck:         ntpCheck,
+  tlsExporter:      tlsExporter,
   version:          constants.version,
 };

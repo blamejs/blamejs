@@ -120,6 +120,50 @@ module.exports = {
   '<h2 id="break-glass">Break-glass column access <a class="anchor" href="#break-glass">#</a></h2>',
   '<p><code>b.breakGlass</code> gates reads of operator-marked sensitive columns (PHI, credit card fields, SSN, diagnosis, etc.) behind a per-row second-factor authentication. Operator marks columns at the schema level; every row read of those columns requires a fresh, scope-bounded grant tied to a second factor and a documented reason. Each unseal emits a per-row audit event with the 5 W\'s, the grant id, the columns touched, and the reason. Post-incident review can answer "who looked at row #12345 at 14:32, why, and from where".</p>',
   '<p>Default <code>maxRowsPerGrant: 1</code> — each row access is its own discrete authenticated event. Operators with batch workflows (compliance reports etc.) raise the cap explicitly per-table. <code>grantTtl: 15 minutes</code> default. <code>pinIp</code> + <code>sessionPin</code> default <code>true</code> so a stolen grant id can\'t be replayed from a different network or session.</p>',
+
+  '<h2 id="break-glass-init">b.breakGlass.init(options) <a class="anchor" href="#break-glass-init">#</a></h2>',
+  '<p>Bootstraps the break-glass module, clears policy caches, and sets the request-IP trust boundary used when grants pin to client address.</p>',
+  '<pre><code class="language-javascript">b.breakGlass.init({ trustProxy: false });',
+  'typeof b.breakGlass.init; // "function"</code></pre>',
+
+  '<h2 id="break-glass-encrypt-cell">b.breakGlass.encryptCell(plaintext, ctx) <a class="anchor" href="#break-glass-encrypt-cell">#</a></h2>',
+  '<p>Encrypts one glass-locked cell in cryptographic mode. The derived key and AEAD additional data bind the ciphertext to <code>{ table, rowId, column }</code>, so row or column swaps fail closed at decrypt time.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.encryptCell; // "function"</code></pre>',
+
+  '<h2 id="break-glass-decrypt-cell">b.breakGlass.decryptCell(ciphertext, ctx) <a class="anchor" href="#break-glass-decrypt-cell">#</a></h2>',
+  '<p>Decrypts a <code>bgcell:1:</code> ciphertext with the same table, row, and column context used at write time. Operators normally reach it through <code>unsealRow</code>; direct use is for migration and repair tooling.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.decryptCell; // "function"</code></pre>',
+
+  '<h2 id="break-glass-unseal-row">b.breakGlass.unsealRow(grant, table, rowId) <a class="anchor" href="#break-glass-unseal-row">#</a></h2>',
+  '<p>Consumes a valid grant for one row, enforces table scope, TTL, revocation, row limits, and policy columns, then returns the unsealed row while emitting the per-row audit event.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.unsealRow; // "function"</code></pre>',
+
+  '<h2 id="break-glass-revoke">b.breakGlass.revoke(grantId, options) <a class="anchor" href="#break-glass-revoke">#</a></h2>',
+  '<p>Revokes a single active grant and records the revocation reason and actor context on the audit chain.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.revoke; // "function"</code></pre>',
+
+  '<h2 id="break-glass-list-active">b.breakGlass.listActive(options) <a class="anchor" href="#break-glass-list-active">#</a></h2>',
+  '<p>Lists active grants for the actor on the supplied request. It returns only unexpired, unrevoked grants with remaining row capacity.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.listActive; // "function"</code></pre>',
+
+  '<h2 id="break-glass-list-active-all">b.breakGlass.listActiveAll(options) <a class="anchor" href="#break-glass-list-active-all">#</a></h2>',
+  '<p>Admin-facing inspection primitive for active grants across actors, optionally filtered by table or issue time. Operators wire their own authorization gate before exposing it.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.listActiveAll; // "function"</code></pre>',
+
+  '<h2 id="break-glass-revoke-all">b.breakGlass.revokeAll(criteria, options) <a class="anchor" href="#break-glass-revoke-all">#</a></h2>',
+  '<p>Incident-response primitive for mass revocation by actor and/or table. It refuses unscoped calls so operators cannot accidentally revoke every grant without an explicit criterion.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.revokeAll; // "function"</code></pre>',
+
+  '<h2 id="break-glass-migrate">b.breakGlass.migrate(table, options) <a class="anchor" href="#break-glass-migrate">#</a></h2>',
+  '<p>Converts existing rows for a cryptographic policy into per-cell <code>bgcell:1:</code> ciphertexts in batches. The migration is idempotent and reports migrated and skipped row counts.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.migrate; // "function"</code></pre>',
+
+  '<h2 id="break-glass-service-unseal">b.breakGlass.unsealRowAsService(req, table, rowId, options) <a class="anchor" href="#break-glass-service-unseal">#</a></h2>',
+  '<p>Lets explicitly allowed service accounts read a glass-locked row without a human factor. The policy must name allowed api-key ids and a required role; every bypass emits a distinct audit row.</p>',
+  '<pre><code class="language-javascript">typeof b.breakGlass.unsealRowAsService; // "function"</code></pre>',
+
+  '<h2 id="break-glass-flow">Break-glass workflow <a class="anchor" href="#break-glass-flow">#</a></h2>',
+  '<p>The normal operator workflow starts with a table policy, issues a short-lived grant after a second factor, then unseals a row or explicitly declared service path under audit.</p>',
   '<h3>b.breakGlass.policy.set(table, opts)</h3>',
   '<pre><code class="language-javascript">{',
   '  columns:               string[],         // required: true',

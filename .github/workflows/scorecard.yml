@@ -21,25 +21,64 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           persist-credentials: false
 
       - name: Run Scorecard
-        uses: ossf/scorecard-action@v2.4.0
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46  # v2.4.0
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
 
       - name: Upload SARIF artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: SARIF file
           path: results.sarif
           retention-days: 5
 
       - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3
         with:
           sarif_file: results.sarif
+
+      # Threshold gate. SCORECARD_MIN defaults to 7.0; operators can
+      # override via repo variable (Settings → Secrets and variables →
+      # Actions → Variables → SCORECARD_MIN). 2026 production-framework
+      # norm is 7.5+. The aggregate score is read from the Scorecard
+      # SARIF run.properties (canonical key produced by ossf/scorecard
+      # >= v2.0). The gate fails-open on parse failure (warning, not
+      # error) so a Scorecard output-shape change doesn't break CI
+      # silently — operators see the warning and update the jq filter.
+      - name: Threshold gate (fail when aggregate score < SCORECARD_MIN)
+        env:
+          SCORECARD_MIN: ${{ vars.SCORECARD_MIN || '7.0' }}
+        run: |
+          set -euo pipefail
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "::warning::jq not on runner — skipping threshold gate"
+            exit 0
+          fi
+          SCORE=$(jq -r '
+            (.runs[0].properties.aggregateScore
+             // .runs[0].properties["openssf-scorecard-aggregate-score"]
+             // empty)
+          ' results.sarif | head -1)
+          if [ -z "$SCORE" ] || [ "$SCORE" = "null" ]; then
+            echo "::warning::Could not extract aggregate score from results.sarif — skipping threshold gate (Scorecard SARIF output shape may have changed)."
+            exit 0
+          fi
+          echo "[scorecard] aggregate score: ${SCORE} (min: ${SCORECARD_MIN})"
+          BELOW=$(awk -v s="$SCORE" -v t="$SCORECARD_MIN" 'BEGIN{print (s+0 < t+0)}')
+          if [ "$BELOW" = "1" ]; then
+            echo "::error::Scorecard aggregate score ${SCORE} is below the minimum ${SCORECARD_MIN}."
+            echo "::error::See the SARIF artifact and the GitHub Security tab for which checks regressed."
+            exit 1
+          fi
+          {
+            echo "### OpenSSF Scorecard"
+            echo ""
+            echo "Aggregate score: \`${SCORE}\` (min: \`${SCORECARD_MIN}\`) ✅"
+          } >> "$GITHUB_STEP_SUMMARY"
