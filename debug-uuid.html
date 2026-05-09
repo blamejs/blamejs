@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>UUID (generated) &middot; blamejs</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="RFC 4122 v4 (random) + RFC 9562 v7 (time-ordered).">
+<meta name="theme-color" content="#0b0b12">
+<link rel="canonical" href="https://blamejs.com/generated-uuid">
+<link rel="icon" type="image/png" href="/img/blamejs-logo.png">
+<link rel="stylesheet" href="/wiki.css">
+<link rel="stylesheet" href="/vendor/prism.css">
+
+<meta property="og:type" content="article">
+<meta property="og:title" content="UUID (generated) · blamejs">
+<meta property="og:description" content="RFC 4122 v4 (random) + RFC 9562 v7 (time-ordered).">
+<meta property="og:url" content="https://blamejs.com/generated-uuid">
+<meta property="og:site_name" content="blamejs">
+<meta property="og:image" content="https://blamejs.com/img/blamejs-logo.png">
+<meta property="og:image:alt" content="blamejs logo — neon-magenta shield with terminal prompt and JS mark">
+<meta property="og:locale" content="en">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="UUID (generated) · blamejs">
+<meta name="twitter:description" content="RFC 4122 v4 (random) + RFC 9562 v7 (time-ordered).">
+<meta name="twitter:image" content="https://blamejs.com/img/blamejs-logo.png">
+<meta name="twitter:image:alt" content="blamejs logo">
+
+<script type="application/ld+json" nonce="l5YGFusxKSm5PK78wwInyQ==">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "name": "blamejs",
+  "headline": "UUID (generated)",
+  "description": "RFC 4122 v4 (random) + RFC 9562 v7 (time-ordered).",
+  "url": "https://blamejs.com/generated-uuid",
+  "image": "https://blamejs.com/img/blamejs-logo.png",
+  "publisher": {
+    "@type": "Organization",
+    "name": "blamejs",
+    "url": "https://blamejs.com",
+    "logo": {
+      "@type": "ImageObject",
+      "url": "https://blamejs.com/img/blamejs-logo.png"
+    }
+  }
+}
+</script>
+</head>
+<body>
+<a href="#main" class="skip-link">Skip to content</a>
+<div class="shell">
+
+  <aside class="rail" aria-label="Site navigation">
+    <div class="rail-brand">
+      <a href="/">
+        <img src="/img/blamejs-logo.png" alt="blamejs">
+        <span>blamejs</span>
+      </a>
+    </div>
+
+    <form class="rail-search" action="/search" method="get" role="search">
+      <label for="rail-q" class="visually-hidden">Search</label>
+      <input id="rail-q" type="search" name="q" placeholder="Search the docs" value="">
+    </form>
+
+    <div class="symbol-search" role="search">
+      <label for="symbol-q" class="visually-hidden">Find primitive by signature</label>
+      <input id="symbol-q" type="search" autocomplete="off" placeholder="Find b.X.Y…" data-symbol-search>
+      <ul class="symbol-results" data-symbol-results role="listbox" hidden></ul>
+    </div>
+
+    <p class="rail-nav-title">Concern groups</p>
+    <ul class="rail-nav">
+      <li><a href="/welcome">Welcome</a></li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Data</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/database">Database</a></li>
+    
+      <li><a href="/object-store">Object Store</a></li>
+    
+      <li><a href="/queue-cache">Queue &amp; Cache</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Identity</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/auth">Authentication</a></li>
+    
+      <li><a href="/access-control">Access Control</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Crypto</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/crypto-vault">Crypto &amp; Vault</a></li>
+    
+      <li><a href="/network-crypto">Network Crypto</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">HTTP</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/routing">Routing</a></li>
+    
+      <li><a href="/middleware">Middleware</a></li>
+    
+      <li><a href="/outbound-http">Outbound HTTP</a></li>
+    
+      <li><a href="/network-config">Network Configurability</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Validation</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/safe-parsers">Safe Parsers</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Communication</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/websockets">WebSockets</a></li>
+    
+      <li><a href="/mail">Mail</a></li>
+    
+      <li><a href="/notifications">Notifications</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Tools</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/observability">Observability</a></li>
+    
+      <li><a href="/testing">Testing</a></li>
+    
+      <li><a href="/i18n-locale">i18n &amp; Locale</a></li>
+    
+      <li><a href="/format-helpers">Format Helpers</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Compliance</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/compliance-patterns">Compliance Patterns</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Production</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/cluster">Cluster Mode</a></li>
+    
+      <li><a href="/reliability">Reliability</a></li>
+    
+      <li><a href="/backup-restore">Backup &amp; Restore</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Concepts</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/concepts-security-defaults">Security defaults</a></li>
+    
+      <li><a href="/concepts-envelope-versioning">Envelope versioning</a></li>
+    
+      <li><a href="/concepts-validation-discipline">Validation discipline</a></li>
+    
+      <li><a href="/concepts-compliance-postures">Compliance postures</a></li>
+    
+      <li><a href="/concepts-modernity-posture">Modernity posture</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group">
+    <summary class="nav-section">Reference</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/api">API index</a></li>
+    
+      <li><a href="/reference-cli">CLI commands</a></li>
+    
+      <li><a href="/reference-env-vars">Environment variables</a></li>
+    
+      <li><a href="/reference-error-catalog">Error catalog</a></li>
+    
+      <li><a href="/reference-vendored-deps">Vendored dependencies</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+<li class="nav-group-li">
+  <details class="nav-group" open>
+    <summary class="nav-section">Generated</summary>
+    <ul class="nav-group-items">
+    
+      <li><a href="/generated-uuid" aria-current="page">UUID (generated)</a></li>
+    
+    </ul>
+  </details>
+</li>
+
+
+    </ul>
+
+    <p class="rail-nav-title">External</p>
+    <ul class="rail-nav">
+      <li><a href="https://github.com/blamejs/blamejs">GitHub</a></li>
+      <li><a href="https://blamejs.com">blamejs.com</a></li>
+    </ul>
+
+    <div class="rail-foot">
+      
+        <p><a href="/login">Admin login</a></p>
+      
+    </div>
+  </aside>
+
+  <main id="main" role="main">
+    
+<h1>UUID (generated)</h1>
+<p>RFC 4122 v4 (random) + RFC 9562 v7 (time-ordered).</p>
+<p>v4 is fully random — the standard portable choice when ordering doesn't matter. v7 prefixes a 48-bit Unix-millisecond timestamp, then 74 random bits — IDs sort by creation time even lexicographically, ideal as a database PK because B-tree inserts stay near the right edge.</p>
+<p>All entropy comes from <code>b.crypto.generateBytes</code>, which routes through Node's <code>crypto.randomBytes</code> — same source as <code>crypto.randomUUID()</code>.</p>
+<p>Why ship v7 ourselves? Native <code>crypto.randomUUID()</code> only emits v4. v7 is the modern recommendation for any UUID landing in a sortable column (job queues, audit chain extensions, anything where insertion order matters for index locality).</p>
+<h3 id="uuid-v4">b.uuid.v4() <a class="anchor" href="#uuid-v4">#</a></h3>
+<header class="prim-meta"><span class="pill pill-since">0.1.0</span></header>
+<p>Fully random 128-bit UUID. Standard, portable; the default choice when ordering doesn't matter. Returns the canonical 8-4-4-4-12 hex form.</p>
+<pre><code class="language-javascript">b.uuid.v4();
+// > "f47ac10b-58cc-4372-a567-0e02b2c3d479"</code></pre>
+<aside class="callout callout-since"><p class="callout-title">Related</p><p><a href="/api#uuid-v7"><code>b.uuid.v7</code></a> · <a href="/api#uuid-parse"><code>b.uuid.parse</code></a></p></aside>
+<h3 id="uuid-v7">b.uuid.v7(opts?) <a class="anchor" href="#uuid-v7">#</a></h3>
+<header class="prim-meta"><span class="pill pill-since">0.4.0</span></header>
+<pre><code class="language-javascript">{
+  now: number,   // override the timestamp (testing / fixtures)
+}</code></pre>
+<p>RFC 9562 §5.7 time-ordered UUID. The first 48 bits encode a Unix millisecond timestamp (big-endian); the next 4 bits are version (7); the remaining 74 bits are random. IDs generated within the same millisecond sort by their random suffix; across milliseconds they sort by time. B-tree index locality is dramatically better than v4 for INSERT-heavy tables.</p>
+<pre><code class="language-javascript">b.uuid.v7();
+// > "01941bf3-9c4a-7d8e-9c11-3a4b5c6d7e8f"
+//     ^^^^^^^^^^^^^^^^^                  - unix ms
+//                       7                 - version
+//                        ^^^^^^^^^^^^^^^^ - 74 random bits</code></pre>
+<aside class="callout callout-since"><p class="callout-title">Related</p><p><a href="/api#uuid-v4"><code>b.uuid.v4</code></a> · <a href="/api#uuid-parse"><code>b.uuid.parse</code></a></p></aside>
+<h3 id="uuid-parse">b.uuid.parse(str) <a class="anchor" href="#uuid-parse">#</a></h3>
+<header class="prim-meta"><span class="pill pill-since">0.1.0</span></header>
+<p>Strict parse: validates canonical form AND version (1-7) AND RFC 4122 variant. Returns <code>{ ok: true, version, bytes }</code> on success; <code>{ ok: false, reason }</code> on failure. Never throws — operators who want a thrown error layer one on top.</p>
+<pre><code class="language-javascript">b.uuid.parse("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+// > { ok: true, version: 4, bytes: Buffer<...> }
+
+b.uuid.parse("not-a-uuid");
+// > { ok: false, reason: "malformed" }</code></pre>
+<aside class="callout callout-since"><p class="callout-title">Related</p><p><a href="/api#uuid-isvalid"><code>b.uuid.isValid</code></a></p></aside>
+<h3 id="uuid-isvalid">b.uuid.isValid(str) <a class="anchor" href="#uuid-isvalid">#</a></h3>
+<header class="prim-meta"><span class="pill pill-since">0.1.0</span></header>
+<p>Loose shape-only check — returns <code>true</code> for any 8-4-4-4-12 hex string regardless of version or variant bits. Cheap. Use <code>parse()</code> when version/variant matter (most operator code does).</p>
+<pre><code class="language-javascript">b.uuid.isValid("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+// > true</code></pre>
+<aside class="callout callout-since"><p class="callout-title">Related</p><p><a href="/api#uuid-parse"><code>b.uuid.parse</code></a></p></aside>
+<p class="muted">Last updated 2026-05-09T11:02:59.313Z by seeder.</p>
+
+  </main>
+
+  
+    <aside class="onthispage" aria-labelledby="onthispage-title">
+      <p id="onthispage-title" class="onthispage-title">On this page</p>
+      <ul data-toc></ul>
+    </aside>
+  
+
+</div>
+
+<script src="/vendor/prism.js" nonce="l5YGFusxKSm5PK78wwInyQ=="></script>
+<script src="/dist/wiki.f7b807581a44fd79.js" nonce="l5YGFusxKSm5PK78wwInyQ=="></script>
+
+</body>
+</html>

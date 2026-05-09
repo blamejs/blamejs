@@ -99,7 +99,7 @@
   /* Layout columns. */
   --rail-w:        260px;
   --toc-w:         220px;
-  --content-prose: 72ch;
+  --content-prose: 92ch;
   --content-wide:  1100px;
   --max-hero:      1200px;
 
@@ -268,6 +268,73 @@ a:hover, a:focus-visible {
   box-shadow: 0 0 0 3px var(--brand-soft);
 }
 .rail-search input[type="search"]::placeholder { color: var(--fg-subtle); }
+
+/* -------------------- symbol search (sidebar) ----------------------
+   Sibling to .rail-search; offers fuzzy autocomplete over the wiki's
+   primitive index (b.X.Y signatures harvested from every page at
+   boot). Results render in a popdown list inside the rail. */
+.symbol-search {
+  position: relative;
+  margin-bottom: var(--space-4);
+}
+.symbol-search input[type="search"] {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: inherit;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+.symbol-search input[type="search"]:hover { border-color: var(--fg-subtle); }
+.symbol-search input[type="search"]:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.symbol-results {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 10;
+}
+.symbol-results li { margin: 0; }
+.symbol-results a {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+.symbol-results a:hover,
+.symbol-results a.is-active {
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+}
+.symbol-results a .sym-page {
+  float: right;
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--fg-subtle);
+}
+.symbol-results .sym-empty {
+  padding: var(--space-3);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
 
 .rail-nav-title {
   font-size: var(--text-xs);
@@ -737,10 +804,12 @@ main pre:hover .copy-btn,
   border: none !important;
   padding: 0 !important;
   font-size: var(--text-lg);
-  color: var(--fg) !important;
+  color: var(--brand-strong);
   letter-spacing: -0.01em;
+  font-weight: 600;
 }
 .card h3::before { display: none !important; }
+.card:hover h3 { color: var(--brand); }
 .card p {
   margin: 0;
   color: var(--fg-muted);

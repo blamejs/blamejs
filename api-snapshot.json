@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.48",
-  "createdAt": "2026-05-09T10:04:24.906Z",
+  "frameworkVersion": "0.8.49",
+  "createdAt": "2026-05-09T14:31:23.006Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -29432,7 +29432,7 @@
         },
         "canonical": {
           "type": "function",
-          "arity": 2
+          "arity": 1
         },
         "formats": {
           "type": "object",

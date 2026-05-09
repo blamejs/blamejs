@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#0b0b12">
 <link rel="canonical" href="{{ canonical }}">
 <link rel="icon" type="image/png" href="/img/blamejs-logo.png">
-<link rel="stylesheet" href="/wiki.css">
+<link rel="stylesheet" href="{{ assets.css }}">
 <link rel="stylesheet" href="/vendor/prism.css">
 
 <meta property="og:type" content="{{ ogType }}">
@@ -63,6 +63,12 @@
       <label for="rail-q" class="visually-hidden">Search</label>
       <input id="rail-q" type="search" name="q" placeholder="Search the docs" value="{{ searchQuery }}">
     </form>
+
+    <div class="symbol-search" role="search">
+      <label for="symbol-q" class="visually-hidden">Find primitive by signature</label>
+      <input id="symbol-q" type="search" autocomplete="off" placeholder="Find b.X.Y…" data-symbol-search>
+      <ul class="symbol-results" data-symbol-results role="listbox" hidden></ul>
+    </div>
 
     <p class="rail-nav-title">Concern groups</p>
     <ul class="rail-nav">

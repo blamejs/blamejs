@@ -1,46 +1,34 @@
 "use strict";
+// Ordered list of wiki pages.
+//
+// Hand-authored seeders have been removed. The wiki is now driven
+// entirely by:
+//   1. ./api.js         — auto-generated symbol index (require'd
+//                         here so it lands first and can harvest
+//                         every other page's body)
+//   2. _generatedPages() — every entry in examples/wiki/wiki.config.js
+//                          (which itself derives from
+//                          examples/wiki/site.config.js).
+//
+// Adding a new page is one edit to site.config.js. The validators
+// (validate-site-coverage / validate-source-comment-blocks /
+// validate-nav-coverage) gate every consistency invariant.
 
-// Ordered list of wiki pages — imported from the per-page modules.
-// Order matches navigation in views/home.html and the welcome page
-// at pages/welcome.js. Adding a new page is an explicit edit here.
+var path = require("node:path");
+var pageGenerator = require("../../../lib/page-generator");
+var curation = require("../../../wiki.config");
+var LIB_DIR = path.join(__dirname, "..", "..", "..", "..", "..", "lib");
+
+function _generatedPages() {
+  try {
+    return pageGenerator.generateAll(curation, LIB_DIR);
+  } catch (e) {
+     
+    console.warn("[seeders] page-generator failed:", e && e.message);
+    return [];
+  }
+}
 
 module.exports = [
-  require("./" + "welcome"),
-  require("./" + "database"),
-  require("./" + "object-store"),
-  require("./" + "queue-cache"),
-  require("./" + "auth"),
-  require("./" + "access-control"),
-  require("./" + "crypto-vault"),
-  require("./" + "network-crypto"),
-  require("./" + "routing"),
-  require("./" + "middleware"),
-  require("./" + "outbound-http"),
-  require("./" + "network-config"),
-  require("./" + "safe-parsers"),
-  require("./" + "websockets"),
-  require("./" + "api-contracts"),
-  require("./" + "mail"),
-  require("./" + "notifications"),
-  require("./" + "file-upload"),
-  require("./" + "guard-overview"),
-  require("./" + "guard-content"),
-  require("./" + "guard-structured-data"),
-  require("./" + "guard-identifiers"),
-  require("./" + "guard-protocols"),
-  require("./" + "guard-execution"),
-  require("./" + "guard-binary"),
-  require("./" + "guard-aggregate"),
-  require("./" + "observability"),
-  require("./" + "testing"),
-  require("./" + "i18n-locale"),
-  require("./" + "format-helpers"),
-  require("./" + "ai-governance"),
-  require("./" + "regulatory-reporting"),
-  require("./" + "compliance-patterns"),
-  require("./" + "cluster"),
-  require("./" + "reliability"),
-  require("./" + "ops-hardening"),
-  require("./" + "backup-restore"),
-  require("./" + "quality-contract"),
-];
+  require("./" + "api"),
+].concat(_generatedPages());

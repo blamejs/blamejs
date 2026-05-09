@@ -183,6 +183,135 @@
     for (var n = 0; n < entries.length; n++) observer.observe(entries[n]);
   }
 
+  // ---------- Symbol search (sidebar) ----------
+  // Loads the build-time symbol manifest from /dist/symbol-index.json
+  // and offers fuzzy autocomplete over the primitive signatures. The
+  // first result is highlighted; Enter navigates; Esc clears; / from
+  // anywhere outside an input focuses the box.
+  function attachSymbolSearch() {
+    var input   = document.querySelector("[data-symbol-search]");
+    var results = document.querySelector("[data-symbol-results]");
+    if (!input || !results) return;
+
+    function clearResults() {
+      while (results.firstChild) results.removeChild(results.firstChild);
+    }
+
+    var manifest = null;
+    var loadPromise = null;
+    function loadManifest() {
+      if (manifest) return Promise.resolve(manifest);
+      if (loadPromise) return loadPromise;
+      loadPromise = fetch("/symbols.json", { credentials: "same-origin" }) // allow:raw-outbound-http — browser-side script; b.httpClient is Node-server-only
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .then(function (data) { manifest = Array.isArray(data) ? data : []; return manifest; })
+        .catch(function () { manifest = []; return manifest; });
+      return loadPromise;
+    }
+
+    function score(entry, q) {
+      var bare = entry.sigBare || entry.sig || "";
+      var lc = bare.toLowerCase();
+      var qlc = q.toLowerCase();
+      if (lc === qlc) return 100;
+      if (lc.indexOf(qlc) === 0) return 80; // allow:raw-byte-literal — search-rank weight, not bytes
+      if (lc.indexOf("." + qlc) !== -1) return 60; // allow:raw-byte-literal — search-rank weight, not bytes / allow:raw-time-literal — not seconds
+      if (lc.indexOf(qlc) !== -1) return 40; // allow:raw-byte-literal — search-rank weight, not bytes
+      var qi = 0;
+      for (var i = 0; i < lc.length && qi < qlc.length; i++) {
+        if (lc.charAt(i) === qlc.charAt(qi)) qi++;
+      }
+      return qi === qlc.length ? 20 : 0;
+    }
+
+    function render(rows, q) {
+      clearResults();
+      if (rows.length === 0) {
+        var empty = document.createElement("li");
+        empty.className = "sym-empty";
+        empty.textContent = q ? "No matches" : "Type to search…";
+        results.appendChild(empty);
+        results.hidden = false;
+        return;
+      }
+      for (var i = 0; i < rows.length && i < 12; i++) {
+        var r = rows[i];
+        var li = document.createElement("li");
+        li.setAttribute("role", "option");
+        var a = document.createElement("a");
+        a.href = "/" + r.page + "#" + r.anchor;
+        a.textContent = r.sigBare || r.sig;
+        var span = document.createElement("span");
+        span.className = "sym-page";
+        span.textContent = r.title || r.page;
+        a.appendChild(span);
+        if (i === 0) a.classList.add("is-active");
+        li.appendChild(a);
+        results.appendChild(li);
+      }
+      results.hidden = false;
+    }
+
+    function update() {
+      var q = (input.value || "").trim();
+      if (!q) { results.hidden = true; clearResults(); return; }
+      loadManifest().then(function (data) {
+        var scored = [];
+        for (var i = 0; i < data.length; i++) {
+          var s = score(data[i], q);
+          if (s > 0) scored.push({ s: s, e: data[i] });
+        }
+        scored.sort(function (a, b) { return b.s - a.s; });
+        render(scored.map(function (x) { return x.e; }), q);
+      });
+    }
+
+    input.addEventListener("input", update);
+    input.addEventListener("focus", update);
+    input.addEventListener("blur", function () {
+      setTimeout(function () { results.hidden = true; }, 150);
+    });
+    input.addEventListener("keydown", function (e) {
+      var active = results.querySelector("a.is-active");
+      var items  = results.querySelectorAll("a");
+      if (e.key === "Escape") { input.value = ""; results.hidden = true; return; }
+      if (e.key === "ArrowDown" && items.length > 0) {
+        e.preventDefault();
+        var nextIdx = 0;
+        for (var i = 0; i < items.length; i++) {
+          if (items[i] === active) { nextIdx = (i + 1) % items.length; break; }
+        }
+        if (active) active.classList.remove("is-active");
+        items[nextIdx].classList.add("is-active");
+        return;
+      }
+      if (e.key === "ArrowUp" && items.length > 0) {
+        e.preventDefault();
+        var prevIdx = items.length - 1;
+        for (var j = 0; j < items.length; j++) {
+          if (items[j] === active) { prevIdx = (j - 1 + items.length) % items.length; break; }
+        }
+        if (active) active.classList.remove("is-active");
+        items[prevIdx].classList.add("is-active");
+        return;
+      }
+      if (e.key === "Enter" && active) {
+        e.preventDefault();
+        window.location.href = active.getAttribute("href");
+      }
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "/") return;
+      var t = e.target;
+      var tag = t && t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (t && t.isContentEditable)) return;
+      e.preventDefault();
+      input.focus();
+      input.select();
+    });
+  }
+
   // ---------- Anchor permalink: clicking copies URL ----------
   function attachAnchorCopy() {
     var anchors = document.querySelectorAll("main .anchor");
@@ -214,6 +343,7 @@
     attachCopyButtons();
     attachRailScrollSpy();
     buildOnThisPageTOC();
+    attachSymbolSearch();
     attachAnchorCopy();
   });
 })();

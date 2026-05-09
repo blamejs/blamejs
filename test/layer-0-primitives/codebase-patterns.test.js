@@ -1066,6 +1066,10 @@ function testNoHandrolledBufferCollect() {
     if (/\bchunks?\s*\.\s*pop\s*\(/.test(content)) continue;
     var lines = content.split(/\r?\n/);
     for (var li = 0; li < lines.length; li++) {
+      // Skip JSDoc / block-comment continuation lines — operator-facing
+      // example code in @example blocks legitimately shows `Buffer.concat
+      // (chunks)` as the consumer-side shape of stream consumption.
+      if (/^\s*\*/.test(lines[li])) continue;
       if (/Buffer\.concat\s*\(\s*\w*chunks?\b/.test(lines[li])) {
         bad.push({
           file: rel,
@@ -3651,6 +3655,13 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Audit outcomes are the literal strings 'success' / 'failure' / 'denied' at call sites. safeEmit normalizes the common typos as a safety net but the canonical form belongs in code so reviewers reading a primitive see exactly what audit row will land on the chain.",
   },
 ];
+
+// @example placeholder detection lives in
+// examples/wiki/test/validate-source-comment-blocks.js where it can
+// scope precisely to JSDoc @example bodies. A whole-file regex here
+// false-positives on legitimate <RFC-PLACEHOLDER> notation in prose
+// docstrings (RFC 5424 wire-format diagrams, header-field markers,
+// "<T>" timestamp tokens, etc.).
 
 function testKnownAntipatterns() {
   // class: known-antipattern
