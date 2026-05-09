@@ -193,12 +193,12 @@ jobs:
         with:
           node-version: '24.14.1'
 
-      - name: Validate every primitive section ships heading + opts + prose + example
-        # Fast signal — no app boot, just walks the page seeders. The
-        # wiki-e2e job runs the same validator before its boot, so a
-        # convention break fails this job immediately AND short-circuits
-        # the heavier e2e run.
-        run: node examples/wiki/test/validate-primitive-sections.js
+      - name: Validate @module / @primitive comment blocks across lib/
+        # Fast signal — no app boot, just walks lib/ for the source-driven
+        # wiki annotations. The wiki-e2e job runs the same validator
+        # before its boot, so a convention break fails this job
+        # immediately AND short-circuits the heavier e2e run.
+        run: node examples/wiki/test/validate-source-comment-blocks.js
 
   lint-eslint:
     name: ESLint (lib + examples + tests)
