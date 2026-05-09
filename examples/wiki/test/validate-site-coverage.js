@@ -88,9 +88,18 @@ function _libNamespacesWithPrimitives() {
   Object.keys(docs).forEach(function (file) {
     (docs[file].primitives || []).forEach(function (p) {
       var sig = p.tags && p.tags.primitive;
-      if (sig) {
-        var m = String(sig).match(/^b\.([a-zA-Z0-9_]+)/);
-        if (m) ns[m[1]] = true;
+      if (!sig) return;
+      // Index every prefix of the bare path so a curated namespace
+      // entry like `httpClient.cache` / `middleware.clearSiteData` /
+      // `mail.bimi` resolves to the @primitive block whose bare path
+      // equals OR descends from the namespace. Plain first-segment
+      // matching only covers `httpClient` / `middleware` / `mail` and
+      // rejects every nested-namespace curation entry.
+      var bare = String(sig).replace(/\([^)]*\)/g, "").replace(/\s+/g, "")
+        .replace(/^b\./, "");
+      var parts = bare.split(".");
+      for (var i = 1; i <= parts.length; i += 1) {
+        ns[parts.slice(0, i).join(".")] = true;
       }
     });
   });

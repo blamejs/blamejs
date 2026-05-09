@@ -109,6 +109,7 @@ var httpClient = require("./lib/http-client");
 // implementation; httpClient stays free of an api-encrypt dependency.
 httpClient.encrypted = require("./lib/middleware/api-encrypt").httpClient;
 httpClient.cookieJar = require("./lib/http-client-cookie-jar");
+httpClient.cache     = require("./lib/http-client-cache");
 var websocket = require("./lib/websocket");
 var sse = require("./lib/sse");
 var mcp = require("./lib/mcp");
@@ -168,6 +169,7 @@ var auth = {
   password: require("./lib/auth/password"),
   totp:     require("./lib/totp"),
   passkey:  require("./lib/auth/passkey"),
+  fidoMds3: require("./lib/auth/fido-mds3"),
   jwt:      Object.assign({},
               require("./lib/auth/jwt"),
               { verifyExternal: require("./lib/auth/jwt-external").verifyExternal }),
@@ -199,7 +201,10 @@ var csv = require("./lib/csv");
 var time = require("./lib/time");
 var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
+var mailArf = require("./lib/mail-arf");
 var mailBounce = require("./lib/mail-bounce");
+var mailMdn = require("./lib/mail-mdn");
+var publicSuffix = require("./lib/public-suffix");
 var pubsub = require("./lib/pubsub");
 var websocketChannels = require("./lib/websocket-channels");
 var nonceStore = require("./lib/nonce-store");
@@ -396,7 +401,10 @@ module.exports = {
   time:             time,
   uuid:             uuid,
   mail:             mail,
+  mailArf:          mailArf,
   mailBounce:       mailBounce,
+  mailMdn:          mailMdn,
+  publicSuffix:      publicSuffix,
   pubsub:            pubsub,
   websocketChannels: websocketChannels,
   nonceStore:        nonceStore,

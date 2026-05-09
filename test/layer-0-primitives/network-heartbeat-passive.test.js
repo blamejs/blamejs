@@ -42,21 +42,24 @@ async function testTimeoutFiresOnce() {
 async function testRecordPongRearms() {
   var fires = 0;
   var pongs = 0;
+  // 200ms timeout + 60ms inter-pong delay so SMOKE_PARALLEL=64 + CI
+  // runner contention (setTimeout drift can exceed 50ms under load)
+  // doesn't time out before the rearming pongs land.
   var h = b.network.heartbeat.passive({
-    timeoutMs: 50,
+    timeoutMs: 200,
     onPong:    function (e) { pongs += 1; check("onPong gets pongCount", typeof e.pongCount === "number"); },
     onTimeout: function () { fires += 1; },
   });
-  await _delay(20);
+  await _delay(60);
   h.recordPong();
-  await _delay(20);
+  await _delay(60);
   h.recordPong();
-  await _delay(20);
+  await _delay(60);
   check("no timeout while pongs keep arriving",
         fires === 0);
   check("each recordPong fires onPong",
         pongs === 2);
-  await _delay(80);
+  await _delay(300);
   check("timeout fires once recordPong stops",
         fires === 1);
   h.stop();

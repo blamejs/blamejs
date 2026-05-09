@@ -412,17 +412,34 @@ function validate() {
       }
 
       if (modNs) {
-        var primNs = _firstSegment(primTag);
-        if (primNs !== modNs) {
+        // Match by PREFIX so a nested @module (e.g. `b.middleware.clearSiteData`)
+        // accepts @primitive blocks whose bare path equals the namespace
+        // itself (`b.middleware.clearSiteData`) OR descends into it
+        // (`b.middleware.clearSiteData.create`). Plain first-segment
+        // matching rejects every nested-namespace file.
+        var primBare = _bare(primTag);
+        if (primBare !== modNs && primBare.indexOf(modNs + ".") !== 0) {
           findings.push({
             kind: "schema", file: rel, primitive: primTag,
-            msg: "@primitive namespace `" + primNs + "` does not match the file's @module `" + modNs + "`",
+            msg: "@primitive namespace `" + primBare + "` does not match the file's @module `" + modNs + "`",
           });
         }
       }
 
       var ns = _firstSegment(primTag);
       if (declaredNs[ns]) nsHasPrimitive[ns] = true;
+      // Nested-namespace match — declared namespaces like
+      // `middleware.clearSiteData` / `mail.bimi` / `httpClient.cache`
+      // are satisfied by any @primitive whose bare path starts with
+      // that namespace. _firstSegment alone returns "middleware" /
+      // "mail" / "httpClient" which would never match the dotted form.
+      var bare = _bare(primTag);
+      Object.keys(declaredNs).forEach(function (declared) {
+        if (declared.indexOf(".") === -1) return;       // single-segment handled above
+        if (bare === declared || bare.indexOf(declared + ".") === 0) {
+          nsHasPrimitive[declared] = true;
+        }
+      });
 
       // 9b. Opts must be DOCUMENTED — either via a manual @opts block
       //     OR via the runtime probe (the lib function throws on
@@ -518,8 +535,20 @@ function validate() {
     if (modNs && source) {
       var exports = _extractExportKeys(source);
       if (exports) {
+        // When the namespace's @primitive sits directly above
+        // `function create(opts)` (the factory-pattern middleware
+        // shape — `b.middleware.csrfProtect` documented at the
+        // namespace level, exported as `{ create }`), accept the
+        // namespace-level @primitive block as documenting the create
+        // export. Operators call `b.middleware.X(opts)` — the create
+        // function IS the namespace.
+        var hasNsLevelPrimitive = rec.primitives.some(function (p) {
+          var primBare = _bare(p.tags && p.tags.primitive);
+          return primBare === modNs;
+        });
         exports.forEach(function (k) {
           if (documentedPrims[k]) return;
+          if (hasNsLevelPrimitive && k === "create") return;
           // Only require a @primitive block when the export is a
           // FUNCTION (operator-facing primitive). Skip constants /
           // regex / classes.

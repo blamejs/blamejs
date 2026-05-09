@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.49",
-  "createdAt": "2026-05-09T14:31:23.006Z",
+  "frameworkVersion": "0.8.53",
+  "createdAt": "2026-05-09T22:14:07.244Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1471,6 +1471,27 @@
             }
           }
         },
+        "fidoMds3": {
+          "type": "object",
+          "members": {
+            "DEFAULT_URL": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "fetch": {
+              "type": "function",
+              "arity": 1
+            },
+            "lookupAaguid": {
+              "type": "function",
+              "arity": 2
+            },
+            "verifyAuthenticator": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
         "jwt": {
           "type": "object",
           "members": {
@@ -1689,6 +1710,27 @@
         "passkey": {
           "type": "object",
           "members": {
+            "conditionalAuthOptions": {
+              "type": "function",
+              "arity": 1
+            },
+            "extensions": {
+              "type": "object",
+              "members": {
+                "credBlob": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "largeBlob": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "prf": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
             "signalAllAcceptedCredentials": {
               "type": "function",
               "arity": 1
@@ -7235,6 +7277,10 @@
           "type": "function",
           "arity": 4
         },
+        "FidoMds3Error": {
+          "type": "function",
+          "arity": 4
+        },
         "FileUploadError": {
           "type": "function",
           "arity": 4
@@ -7399,7 +7445,23 @@
           "type": "function",
           "arity": 4
         },
+        "MailArfError": {
+          "type": "function",
+          "arity": 4
+        },
         "MailAuthError": {
+          "type": "function",
+          "arity": 4
+        },
+        "MailBimiError": {
+          "type": "function",
+          "arity": 4
+        },
+        "MailMdnError": {
+          "type": "function",
+          "arity": 4
+        },
+        "MailUnsubscribeError": {
           "type": "function",
           "arity": 4
         },
@@ -7416,6 +7478,10 @@
           "arity": 4
         },
         "PermissionsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "PublicSuffixError": {
           "type": "function",
           "arity": 4
         },
@@ -24258,6 +24324,39 @@
           "type": "primitive",
           "valueType": "number"
         },
+        "cache": {
+          "type": "object",
+          "members": {
+            "CACHEABLE_STATUSES": {
+              "type": "instance",
+              "ctorName": "Set"
+            },
+            "DEFAULT_MAX_BYTES": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "DEFAULT_MAX_ENTRIES": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "HEURISTIC_MAX_AGE_MS": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "HOP_BY_HOP": {
+              "type": "instance",
+              "ctorName": "Set"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "memoryStore": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "configurePool": {
           "type": "function",
           "arity": 1
@@ -24866,6 +24965,10 @@
         "bimi": {
           "type": "object",
           "members": {
+            "BIMI_EKU_MARK_VERIFICATION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "BIMI_VERSION": {
               "type": "primitive",
               "valueType": "string"
@@ -24873,6 +24976,26 @@
             "BimiError": {
               "type": "function",
               "arity": 4
+            },
+            "CMC_POLICY_OID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MailBimiError": {
+              "type": "function",
+              "arity": 4
+            },
+            "TINY_PS_MAX_BYTES": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "VMC_POLICY_OID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "fetchAndVerifyMark": {
+              "type": "function",
+              "arity": 1
             },
             "fetchPolicy": {
               "type": "function",
@@ -24883,6 +25006,10 @@
               "arity": 1
             },
             "recordShape": {
+              "type": "function",
+              "arity": 1
+            },
+            "validateTinyPsSvg": {
               "type": "function",
               "arity": 1
             }
@@ -24929,6 +25056,19 @@
               "arity": 1
             }
           }
+        },
+        "iprev": {
+          "type": "object",
+          "members": {
+            "verify": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "reverseDns": {
+          "type": "function",
+          "arity": 1
         },
         "spf": {
           "type": "object",
@@ -24979,6 +25119,14 @@
         "unsubscribe": {
           "type": "object",
           "members": {
+            "MailUnsubscribeError": {
+              "type": "function",
+              "arity": 4
+            },
+            "buildAllListHeaders": {
+              "type": "function",
+              "arity": 1
+            },
             "buildHeaders": {
               "type": "function",
               "arity": 1
@@ -24991,12 +25139,137 @@
         }
       }
     },
+    "mailArf": {
+      "type": "object",
+      "members": {
+        "ARF_MAX_REPORT_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "ARF_REQUIRED_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "MailArfError": {
+          "type": "function",
+          "arity": 4
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "mailBounce": {
       "type": "object",
       "members": {
         "MailBounceError": {
           "type": "function",
           "arity": 4
+        },
+        "dsn": {
+          "type": "object",
+          "members": {
+            "ACTIONS": {
+              "type": "object",
+              "members": {
+                "delayed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "delivered": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "expanded": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "failed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "relayed": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "PER_MESSAGE_FIELDS": {
+              "type": "object",
+              "members": {
+                "arrival-date": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "dsn-gateway": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "original-envelope-id": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "received-from-mta": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reporting-mta": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "PER_RECIPIENT_FIELDS": {
+              "type": "object",
+              "members": {
+                "action": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "diagnostic-code": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "final-log-id": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "final-recipient": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "last-attempt-date": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "original-recipient": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "remote-mta": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "status": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "will-retry-until": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "build": {
+              "type": "function",
+              "arity": 1
+            },
+            "parse": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "handler": {
           "type": "function",
@@ -25022,6 +25295,35 @@
               "arity": 1
             }
           }
+        }
+      }
+    },
+    "mailMdn": {
+      "type": "object",
+      "members": {
+        "ACTION_MODES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DISPOSITION_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "MailMdnError": {
+          "type": "function",
+          "arity": 4
+        },
+        "SENDING_MODES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "build": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -25110,6 +25412,10 @@
           "type": "function",
           "arity": 1
         },
+        "clearSiteData": {
+          "type": "function",
+          "arity": 1
+        },
         "compression": {
           "type": "function",
           "arity": 1
@@ -25174,6 +25480,10 @@
           "type": "function",
           "arity": 1
         },
+        "nel": {
+          "type": "function",
+          "arity": 1
+        },
         "networkAllowlist": {
           "type": "function",
           "arity": 1
@@ -25227,6 +25537,10 @@
           "arity": 1
         },
         "spanHttpServer": {
+          "type": "function",
+          "arity": 1
+        },
+        "speculationRules": {
           "type": "function",
           "arity": 1
         },
@@ -25392,6 +25706,10 @@
               "type": "function",
               "arity": 0
             },
+            "discoverEncrypted": {
+              "type": "function",
+              "arity": 1
+            },
             "getServers": {
               "type": "function",
               "arity": 0
@@ -25404,21 +25722,37 @@
               "type": "function",
               "arity": 3
             },
+            "queryHttps": {
+              "type": "function",
+              "arity": 2
+            },
+            "querySvcb": {
+              "type": "function",
+              "arity": 2
+            },
+            "resolve": {
+              "type": "function",
+              "arity": 3
+            },
             "resolve4": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "resolve6": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "resolveAaaa": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "resolveSecure": {
               "type": "function",
               "arity": 2
+            },
+            "reverse": {
+              "type": "function",
+              "arity": 1
             },
             "setCacheTtlMs": {
               "type": "function",
@@ -25437,6 +25771,10 @@
               "arity": 1
             },
             "setServers": {
+              "type": "function",
+              "arity": 1
+            },
+            "useDesignatedResolvers": {
               "type": "function",
               "arity": 1
             },
@@ -25770,7 +26108,15 @@
               "type": "function",
               "arity": 0
             },
+            "checkServerIdentity9525": {
+              "type": "function",
+              "arity": 2
+            },
             "clearAll": {
+              "type": "function",
+              "arity": 1
+            },
+            "connectWithEch": {
               "type": "function",
               "arity": 1
             },
@@ -25863,6 +26209,10 @@
                   "arity": 1
                 }
               }
+            },
+            "parseEchConfigList": {
+              "type": "function",
+              "arity": 1
             },
             "pinsetDriftMonitor": {
               "type": "function",
@@ -28511,6 +28861,27 @@
         }
       }
     },
+    "publicSuffix": {
+      "type": "object",
+      "members": {
+        "isPublicSuffix": {
+          "type": "function",
+          "arity": 1
+        },
+        "lookupSource": {
+          "type": "function",
+          "arity": 0
+        },
+        "organizationalDomain": {
+          "type": "function",
+          "arity": 1
+        },
+        "publicSuffix": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "pubsub": {
       "type": "object",
       "members": {
@@ -29317,6 +29688,10 @@
           "ctorName": "RegExp"
         },
         "HEX_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "IPV6_HEXTET_RE": {
           "type": "instance",
           "ctorName": "RegExp"
         },

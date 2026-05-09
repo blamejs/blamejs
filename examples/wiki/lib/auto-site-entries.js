@@ -39,7 +39,9 @@
 var parser = require("./source-doc-parser");
 
 function _kebab(ns) {
-  return ns.replace(/[A-Z]/g, function (c) { return "-" + c.toLowerCase(); });
+  return ns
+    .replace(/[A-Z]/g, function (c) { return "-" + c.toLowerCase(); })
+    .replace(/\./g, "-");                                                              // flatten nested namespaces (b.middleware.clearSiteData → middleware-clear-site-data)
 }
 
 function _moduleNs(modTag) {

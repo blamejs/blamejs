@@ -1682,6 +1682,18 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/daemon.js:_readPidFile",
+        "lib/daemon.js:_validateStartOpts",
+        "lib/mail-mdn.js:_generateBoundary",
+        "lib/self-update.js:poll",
+        "lib/self-update.js:_validateVerifyOpts",
+        "lib/watcher.js:_compileIgnore",
+      ],
+      reason: "Functional 50-token shingles surface across daemon / mail-mdn / self-update / watcher because every primitive opens with the same `function name(opts) { validateOpts.X(...) }` scaffold and ends with `try { ... } catch (_e) { return null; }` and per-module crypto.generateToken / Date.now() / fs.readFileSync line shapes. Consolidating the four primitives would lose per-domain error class + permissions semantics — the duplication is structural to the per-module create() entry-point.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/asyncapi-traits.js:_mergeKey",
         "lib/flag-evaluation-context.js:merge",
         "lib/render.js:_mergedHeaders",
@@ -1740,21 +1752,46 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/api-key.js:_validateIssueOpts",
+        "lib/audit-daily-review.js:create",
+        "lib/auth-bot-challenge.js:create",
+        "lib/auth/jwt.js:_requireNumericDate",
+        "lib/cloud-events.js:wrap",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/daemon.js:_validateStartOpts",
+        "lib/daemon.js:_validateStopOpts",
+        "lib/ddl-change-control.js:create",
+        "lib/dsr.js:create",
+        "lib/external-db.js:_requirePosInt",
         "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/fdx.js:bind",
+        "lib/fdx.js:consentReceipt",
+        "lib/file-upload.js:_validateCreateOpts",
+        "lib/http-client.js:_requirePositiveInt",
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/http-client.js:_validateUploadOpts",
+        "lib/http-client-cache.js:create",
+        "lib/http-client-cache.js:memoryStore",
+        "lib/mail-arc-sign.js:sign",
         "lib/middleware/db-role-for.js:create",
-        "lib/middleware/web-app-manifest.js:create",
+        "lib/middleware/dpop.js:create",
         "lib/middleware/security-txt.js:create",
         "lib/middleware/tus-upload.js:_handleDelete",
         "lib/middleware/tus-upload.js:create",
-        "lib/outbox.js:create",
+        "lib/middleware/web-app-manifest.js:create",
         "lib/observability-otlp-exporter.js:<unknown>",
-        "lib/compliance-sanctions-fetcher.js:create",
-        "lib/dsr.js:create",
+        "lib/outbox.js:create",
+        "lib/redact.js:installOutboundDlp",
+        "lib/retention.js:_validateRule",
+        "lib/sec-cyber.js:eightKArtifact",
+        "lib/self-update.js:_validateVerifyOpts",
+        "lib/static.js:_validateCreateOpts",
+        "lib/tcpa-10dlc.js:recordConsent",
         "lib/vault/seal-pem-file.js:sealPemFile",
-        "lib/middleware/dpop.js:create",
-        "lib/fdx.js:bind",
+        "lib/watcher.js:_validateOpts",
       ],
-      reason: "validateOpts factory prelude — every factory primitive runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Eleven different domains with eleven different error classes; consolidating would push validation past the call boundary where the operator's typo gets the wrong error code.",
+      reason: "validateOpts factory prelude — every factory primitive runs the same `validateOpts.requireNonEmptyString(opts.X, label, ErrorClass, code) + validateOpts.optionalY + closure-capture` shape because they share the operator-typo handling convention. Many different domains with distinct error classes (ApiKeyError / AuditError / FdaError / FdxError / HttpClientError / MailArcSignError / OutboxError / RetentionError / Self-Update / Static / TcpaError / VaultError / WatcherError / ...); consolidating would push validation past the call boundary where the operator's typo gets the wrong error code. The cluster grows with every new factory primitive — family-subset mode allows the existing entries to keep matching as new sites join.",
     },
     {
       mode:  "family-subset",
@@ -2001,6 +2038,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-auth.js:_fetchSpfRecord",
         "lib/mail-auth.js:_parseArcTagList",
         "lib/mail-auth.js:_parseDmarcRecord",
+        "lib/mail-auth.js:arcEvaluate",
         "lib/mail-auth.js:arcVerify",
         "lib/mail-dkim.js:_canonHeaderRelaxed",
         "lib/mail-dkim.js:_parseDkimTagList",
@@ -2015,8 +2053,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/network-smtp-policy.js:tlsRptFetchPolicy",
         "lib/auth/step-up.js:parseChallenge",
         "lib/ai-pref.js:parseHeader",
+        "lib/network-tls.js:_parseSanString",
       ],
-      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, BIMI record parsing, MTA-STS policy text parsing, the body-parser content-type-parameter parser, and the RFC 7235 / RFC 9470 WWW-Authenticate Bearer challenge parser. Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction.",
+      reason: "Generic key=value record-parsing idiom — split on delimiter, trim, split first '=' into key/value, lowercase, dispatch by key. Appears in DKIM-Signature tag-list parsing, DMARC record parsing, BIMI record parsing, MTA-STS policy text parsing, the body-parser content-type-parameter parser, the RFC 7235 / RFC 9470 WWW-Authenticate Bearer challenge parser, and Node's textual SAN format (`DNS:foo, IP Address:1.2.3.4`). Each module's value-coercion + policy-key-name set is genuinely different; the 5-line shape doesn't merit extraction.",
     },
     {
       mode:  "family-subset",
@@ -2034,6 +2073,16 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/dpop.js:_signParamsForAlg",
         "lib/auth/dpop.js:verify",
         "lib/auth/status-list.js:_fromB64url",
+        "lib/auth/fido-mds3.js:_b64urlDecode",
+        "lib/auth/fido-mds3.js:_parseJws",
+        "lib/auth/fido-mds3.js:_verifyJws",
+        "lib/auth/fido-mds3.js:_verifyJwsSignature",
+        "lib/auth/fido-mds3.js:_verifyParamsForAlg",
+        "lib/auth/fido-mds3.js:fetch",
+        "lib/auth/fido-mds3.js:verifyAuthenticator",
+        "lib/auth/dpop.js:buildProof",
+        "lib/auth/jwt-external.js:_fetchJwks",
+        "lib/network-smtp-policy.js:tlsRptParseReport",
       ],
       reason: "auth-jwt / JOSE family — all five files implement JWS decode + signature verification against operator-supplied or proof-embedded keys. The shared shingle is the canonical 3-part split + base64url decode + safeJson.parse(header/payload) + algorithm allowlist enforcement that every JWS verifier must perform; the divergence is which keys / algorithms / claim-checks each module accepts (PQC algs in jwt.js; classical algs + JWKS in jwt-external.js; full OAuth-discovery + ID-token shape in oauth.js; embedded-jwk DPoP proof in dpop.js with htm/htu/ath/jti claims). Each module's failure-mode codespace (auth-jwt/* vs auth-jwt-external/* vs auth-oauth/* vs auth-dpop/*) is operator-distinguishable so consolidating to a single helper would either lose the distinct error class or pass the class through every helper site. Future consolidation candidate when the JOSE family doubles in size.",
     },
@@ -2307,11 +2356,45 @@ async function testNoDuplicateCodeBlocks() {
     {
       files: [
         "lib/auth/access-lock.js:create",
+        "lib/auth/fido-mds3.js:_validateChain",
         "lib/config.js:create",
         "lib/mail-dkim.js:create",
         "lib/middleware/require-bound-key.js:create",
       ],
-      reason: "Operator-supplied string-array validation prelude — `Array.isArray(opts.X) ? opts.X.slice() : [] + for-loop with typeof !== string check throwing per-domain error class`. Four different domains (access-lock unlockRoles / config primary-keys / mail-dkim selectors / require-bound-key requiredScopes); each loop throws a domain-specific error code on bad entries. Generic shape, not consolidatable.",
+      reason: "Operator-supplied string-array validation prelude — `Array.isArray(opts.X) ? opts.X.slice() : [] + for-loop with typeof !== string check throwing per-domain error class`. Five different domains (access-lock unlockRoles / fido-mds3 cert-chain x5c / config primary-keys / mail-dkim selectors / require-bound-key requiredScopes); each loop throws a domain-specific error code on bad entries. Generic shape, not consolidatable.",
+    },
+    {
+      files: [
+        "lib/auth/access-lock.js:create",
+        "lib/config.js:create",
+        "lib/mail-dkim.js:create",
+        "lib/middleware/require-bound-key.js:create",
+      ],
+      reason: "Sub-cluster of the above five-file string-array validation prelude — the 50-token shingle catches the four-way intersection when fido-mds3 doesn't happen to share enough contiguous lines. Same structural reason: four different domains, four different error classes, generic JS validation shape.",
+    },
+    {
+      files: [
+        "lib/guard-html.js:_tokenize",
+        "lib/guard-svg.js:_tokenize",
+        "lib/mail-bimi.js:_tokenizeTinyPsSvg",
+      ],
+      reason: "HTML/SVG tokenizer family — each walks the same `<` / `<!` / `<?` / `</` / `<!--` / `<![CDATA[` / `<!DOCTYPE` dispatcher chain. guard-html sanitises arbitrary HTML; guard-svg sanitises SVG to a safe subset; mail-bimi validates BIMI Tiny-PS SVG against a STRICTER subset (no scripts, no foreignObject, no animation, no external refs, viewBox required, ≤32 KiB). Each tokenizer's downstream consumer applies a different allowlist + sanitisation policy; consolidating would force one tokenizer with three sanitisation modes and erase per-domain refusal codes (GuardHtmlError / GuardSvgError / MailBimiError).",
+    },
+    {
+      files: [
+        "lib/auth/fido-mds3.js:_parseJws",
+        "lib/backup/index.js:create",
+        "lib/dsr.js:create",
+      ],
+      reason: "validateOpts + safeJson.parse-with-byte-cap prelude — fido-mds3 parses the JWS BLOB header/payload (capped at 64 KiB header, 32 MiB payload); backup decodes a manifest JSON; dsr decodes the data-subject-request descriptor. Three different domains, three different error classes (FidoMds3Error / BackupError / DsrError); the 50-token shingle is the `safeJson.parse(buf.toString('utf8'), { maxBytes: ... })` entry-point shape.",
+    },
+    {
+      files: [
+        "lib/auth/fido-mds3.js:_validateChain",
+        "lib/middleware/require-methods.js:create",
+        "lib/network-dns.js:useDesignatedResolvers",
+      ],
+      reason: "Array-of-strings normalisation prelude — `Array.isArray(opts.X) || throw + for-loop typeof !== string check`. fido-mds3 walks the JWS x5c cert chain; require-methods walks the allowed HTTP methods list; network-dns walks the operator-supplied DNS-over-Designated-Resolvers list. Three different per-domain error classes (FidoMds3Error / NetworkDnsError / TypeError) and per-domain content vocabularies.",
     },
     {
       files: [
@@ -2849,6 +2932,25 @@ async function testNoDuplicateCodeBlocks() {
       ],
       reason: "daemon._readPidFile + daemon._validateStartOpts + self-update.poll + watcher._compileIgnore share a fs.readFileSync wrapped in try/catch + length-bound + parse skeleton. Four different domains (PID-file read / start opts validate / GitHub Releases poll / gitignore matcher compile); each handles ENOENT differently and the operator-facing error codes differ. Consolidating would couple unrelated primitives.",
     },
+    {
+      // [fp:6d22f9521131]
+      files: [
+        "lib/ai-pref.js:parseHeader",
+        "lib/auth/step-up.js:parseChallenge",
+        "lib/network-tls.js:_parseSanString",
+      ],
+      reason: "Comma-separated typed-entry parser idiom — split on `,`, trim each entry, locate the type/value separator, dispatch on the type token. ai-pref decodes RFC 9309-style AI-Pref header values; step-up parses RFC 9470 step-up auth challenge directives; network-tls parses Node's textual SAN format (`DNS:foo.example.com, IP Address:198.51.100.1`). Three different vocabularies (train/infer/snippet/price-usd vs acr_values/max_age/scope vs DNS/IP Address); each domain's grammar refuses unknown types and routes downstream to a domain-specific consumer. Consolidating would force a generic key-equals-value parser that loses every domain's per-token validation.",
+    },
+    {
+      // [fp:c5e65a19ea64]
+      files: [
+        "lib/auth/step-up.js:parseChallenge",
+        "lib/cookies.js:parse",
+        "lib/cookies.js:parseSafe",
+        "lib/network-tls.js:_normalizeIpForCompare",
+      ],
+      reason: "Quote-stripping + indexOf(separator) + slice(0, idx).trim() / slice(idx+1).trim() pair-splitter scaffold. Cookies parse RFC 6265 name=value pairs with double-quote stripping; step-up parses challenge directives with the same shape; network-tls strips bracket-quoted IPv6 literals (`[::1]` -> `::1`) before family detection. Three unrelated domains, each producing a domain-specific output (cookie name->value map vs challenge param map vs `{family, text, bytes}` IP record); consolidating would couple cookie-grammar / RFC 9470 directive grammar / IPv6-literal canonicalization into a single primitive that none of them want.",
+    },
   ];
   // Each KNOWN_CLUSTERS entry's `files` is a list of `path:fn` strings.
   // Build per-entry matchers and reject malformed entries (bare path
@@ -3309,6 +3411,7 @@ var KNOWN_ANTIPATTERNS = [
       "lib/db-declare-view.js",                  // optional + _validateIdent compound
       "lib/middleware/csp-nonce.js",             // optional-with-default + operator hint
       "lib/middleware/db-role-for.js",           // optional + _validateRoleIdentifier compound
+      "lib/middleware/nel.js",                   // operator-readable "collectorUrl is required" prose tested by /collectorUrl is required/ regex; validateOpts emits "validate-opts/missing-non-empty-string" instead
       "lib/protocol-dispatcher.js",              // optional fallbackProtocol guard
       "lib/pubsub-redis.js",                     // raw Error (no framework class)
       "lib/restore-rollback.js",                 // compound: derives rollbackRoot from opts.dataDir

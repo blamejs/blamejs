@@ -128,9 +128,32 @@ function _esc(s) {
 }
 
 // Pull the namespace ("csv" / "uuid" / etc.) from a primitive signature.
+// Returns the FIRST dotted segment after `b.` for legacy single-segment
+// namespaces. Use _nsOfWithin for nested-namespace pages (where the
+// curation declares e.g. `middleware.clearSiteData` and the primitive
+// lives at `b.middleware.clearSiteData`).
 function _nsOf(sig) {
   var m = String(sig).match(/^\s*b\.([a-zA-Z0-9_]+)/);
   return m ? m[1] : null;
+}
+
+// Resolve a primitive signature's namespace within the curation's
+// declared namespace set — picks the LONGEST matching prefix so a
+// page declaring `middleware.clearSiteData` collects every primitive
+// under that nested namespace AND a page declaring `middleware`
+// (parent) doesn't accidentally swallow them. Returns null when no
+// declared namespace matches.
+function _nsOfWithin(sig, declaredNamespaces) {
+  var bare = String(sig).replace(/\([^)]*\)/g, "").replace(/\s+/g, "")
+    .replace(/^b\./, "");
+  var best = null;
+  for (var i = 0; i < declaredNamespaces.length; i += 1) {
+    var ns = declaredNamespaces[i];
+    if (bare === ns || bare.indexOf(ns + ".") === 0) {
+      if (!best || ns.length > best.length) best = ns;
+    }
+  }
+  return best;
 }
 
 // Turn a parser primitive record into a section() call. The opts block
@@ -249,8 +272,11 @@ function generatePage(pageSpec, docsByPath, resolveRelated) {
       var prim = rec.primitives[i];
       var primSig = (prim.tags && prim.tags.primitive) || "";
       if (hiddenSet[primSig]) continue;
-      var ns = _nsOf(primSig);
-      if (!ns || nsList.indexOf(ns) === -1) continue;
+      // Match against the curation's declared namespace list so a
+      // page declaring `middleware.clearSiteData` collects every
+      // primitive under that nested namespace.
+      var ns = _nsOfWithin(primSig, nsList);
+      if (!ns) continue;
       if (!byNs[ns]) byNs[ns] = [];
       byNs[ns].push(prim);
     }
