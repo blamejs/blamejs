@@ -158,9 +158,13 @@ async function testQueueFull() {
 }
 
 async function testTimeoutEnforced() {
+  // 1000ms timeout — short enough to keep the test fast, long enough
+  // that worker-recycle on container CI runners (Linux/Alpine) doesn't
+  // trip the timeout for the follow-up echo task waiting on a freshly
+  // spawned worker.
   var pool = b.workerPool.create(FIXTURE, {
     size: 1,
-    taskTimeoutMs: 200,
+    taskTimeoutMs: 1000,
   });
   try {
     var refused = false;
