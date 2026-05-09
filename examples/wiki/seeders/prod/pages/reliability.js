@@ -127,8 +127,9 @@ module.exports = {
   '  signal:  AbortSignal,',
   '}</code></pre>',
   '<p>Unref-aware background loops for monitors and flushers. The returned handle has <code>stop()</code> so app shutdown can quiesce periodic work.</p>',
-  '<pre><code class="language-javascript">var loop = b.safeAsync.repeating(function () {}, b.constants.TIME.seconds(60));',
-  'loop.stop();',
+  '<pre><code class="language-javascript">// var loop = b.safeAsync.repeating(function () {}, b.constants.TIME.seconds(60));',
+  '// loop.stop();',
+  'typeof b.safeAsync.repeating; // "function"',
   'typeof b.safeAsync.flushLoop; // "function"</code></pre>',
 
   '<h2 id="safe-async-flush-loop">b.safeAsync.flushLoop(fn, intervalMs, options) <a class="anchor" href="#safe-async-flush-loop">#</a></h2>',
