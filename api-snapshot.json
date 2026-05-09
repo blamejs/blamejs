@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.53",
-  "createdAt": "2026-05-09T22:14:07.244Z",
+  "frameworkVersion": "0.8.58",
+  "createdAt": "2026-05-09T23:46:42.941Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6126,6 +6126,10 @@
           "type": "function",
           "arity": 0
         },
+        "collection": {
+          "type": "function",
+          "arity": 1
+        },
         "declareRequireDualControl": {
           "type": "function",
           "arity": 1
@@ -6213,6 +6217,10 @@
         "runSql": {
           "type": "function",
           "arity": 1
+        },
+        "snapshot": {
+          "type": "function",
+          "arity": 0
         },
         "stream": {
           "type": "function",
