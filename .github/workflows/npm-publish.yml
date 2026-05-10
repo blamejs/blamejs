@@ -197,7 +197,7 @@ jobs:
         # Refuses the publish on HIGH+ findings; LOW/MEDIUM are
         # logged only. CISA-KEV catalog entries get explicit call-
         # out for operator triage.
-        uses: google/osv-scanner-action/osv-scanner-action@e69cc6c86b31f1e7e23935bbe7031b50e51082de # v2.0.2
+        uses: google/osv-scanner-action/osv-scanner-action@c51854704019a247608d928f370c98740469d4b5 # v2.3.5
         with:
           scan-args: |-
             --sbom=sbom.cyclonedx.json
