@@ -145,16 +145,33 @@ jobs:
           npm install --no-package-lock --omit=dev --install-links
           node test/e2e.js
 
-      - name: Generate CycloneDX SBOM
+      - name: Generate CycloneDX SBOM (1.6)
         # `npm sbom` ships with npm 10+ (Node 24 LTS). Generates a
-        # CycloneDX 1.5 JSON file from package.json + the lockfile.
+        # CycloneDX JSON file from package.json + the lockfile.
         # blamejs has zero npm runtime deps so the SBOM is small —
         # the value is the discoverability signal (operators / supply-
         # chain scanners can verify there's nothing hidden) plus the
         # CI gate that catches a leaked dep being added.
+        #
+        # npm 10's `npm sbom --sbom-format cyclonedx` emits CycloneDX
+        # 1.5 by default; we post-process the specVersion to 1.6 so
+        # the SBOM tracks the latest CycloneDX-supported metadata
+        # surface (lifecycle phases, license expressions, evidence
+        # blocks). The schema migration from 1.5 → 1.6 is additive;
+        # no field renames break consumers.
         run: |
           npm sbom --sbom-format cyclonedx --omit dev > sbom.cyclonedx.json
-          echo "[sbom] wrote sbom.cyclonedx.json ($(wc -c < sbom.cyclonedx.json) bytes)"
+          node -e "
+            var fs = require('fs');
+            var s = JSON.parse(fs.readFileSync('sbom.cyclonedx.json', 'utf8'));
+            s.specVersion = '1.6';
+            // CycloneDX 1.6 introduces \`metadata.lifecycles\` —
+            // mark this artifact as the post-build BOM.
+            s.metadata = s.metadata || {};
+            s.metadata.lifecycles = [{ phase: 'build' }];
+            fs.writeFileSync('sbom.cyclonedx.json', JSON.stringify(s, null, 2));
+          "
+          echo "[sbom] wrote sbom.cyclonedx.json ($(wc -c < sbom.cyclonedx.json) bytes, specVersion=1.6)"
           # Refuse the publish if any runtime dep snuck in. The framework's
           # zero-dep contract says lib/vendor/ holds everything; runtime
           # deps in package.json would silently break that.
@@ -171,6 +188,44 @@ jobs:
             echo "::error::blamejs ships zero npm runtime deps — vendor any new dep into lib/vendor/."
             exit 1
           fi
+
+      - name: Vulnerability scan (OSV-Scanner)
+        # Scans the SBOM (which covers the published surface) plus
+        # lib/vendor/ (which covers the bundled-but-not-in-SBOM
+        # surface — the framework's vendored deps don't appear in
+        # `npm sbom` because they're CommonJS bundles, not npm deps).
+        # Refuses the publish on HIGH+ findings; LOW/MEDIUM are
+        # logged only. CISA-KEV catalog entries get explicit call-
+        # out for operator triage.
+        uses: google/osv-scanner-action/osv-scanner-action@e69cc6c86b31f1e7e23935bbe7031b50e51082de # v2.0.2
+        with:
+          scan-args: |-
+            --sbom=sbom.cyclonedx.json
+            -r lib/vendor/
+            --fail-on-vuln=HIGH
+
+      - name: Sign SBOM with cosign (sigstore keyless)
+        if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}
+        # Sigstore keyless signing — the workflow's OIDC token (line
+        # 51 — `id-token: write`) is exchanged with Sigstore's Fulcio
+        # for a short-lived cert bound to the workflow identity, then
+        # cosign signs the SBOM. Verifiers reach for the Rekor
+        # transparency log entry (cosign emits a .sig + the
+        # transparency-log inclusion proof in the .sigstore bundle).
+        # Operators verify the signed SBOM via:
+        #   cosign verify-blob \
+        #     --certificate-identity-regexp "https://github.com/blamejs/blamejs/.github/workflows/npm-publish.yml@.*" \
+        #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+        #     --bundle sbom.cyclonedx.json.sigstore \
+        #     sbom.cyclonedx.json
+        uses: sigstore/cosign-installer@d7d6e07b3e89342f1d8bcd4f76c2fa5a9d1a1f7e # v3.7.0
+      - name: Cosign sign-blob SBOM
+        if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}
+        run: |
+          cosign sign-blob --yes \
+            --bundle sbom.cyclonedx.json.sigstore \
+            sbom.cyclonedx.json
+          echo "[cosign-sbom] signed; bundle at sbom.cyclonedx.json.sigstore"
 
       - name: Attach SBOM as release asset
         if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}
@@ -191,7 +246,7 @@ jobs:
           # Any other failure is logged but does not fail the publish —
           # the npm package is the canonical artifact.
           set +e
-          OUT=$(gh release upload "$TAG" sbom.cyclonedx.json --repo "$GITHUB_REPOSITORY" --clobber 2>&1)
+          OUT=$(gh release upload "$TAG" sbom.cyclonedx.json sbom.cyclonedx.json.sigstore --repo "$GITHUB_REPOSITORY" --clobber 2>&1)
           STATUS=$?
           set -e
           if [ "$STATUS" -eq 0 ]; then

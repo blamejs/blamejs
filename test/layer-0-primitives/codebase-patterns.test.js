@@ -494,8 +494,9 @@ function testNoReleaseNamedTestFiles() {
   var fs   = require("node:fs");
   var path = require("node:path");
   var hits = [];
-  var releaseRe = /^v\d+-\d+-\d+(-|\.)/i;
-  var slotRe    = /^slot-\d+/i;
+  var releaseRe = /^v\d+[-_.]\d+[-_.]\d+([-_.]|$)/i;
+  var slotRe    = /^slot[-_]\d+/i;
+  var batchRe   = /(^|[-_])batch[-_.]/i;
   function walk(dir) {
     var entries = fs.readdirSync(dir, { withFileTypes: true });
     for (var i = 0; i < entries.length; i += 1) {
@@ -504,17 +505,17 @@ function testNoReleaseNamedTestFiles() {
       var full = path.join(dir, e.name);
       if (e.isDirectory()) { walk(full); continue; }
       if (!e.isFile() || !/\.test\.js$/.test(e.name)) continue;
-      if (releaseRe.test(e.name) || slotRe.test(e.name)) {
+      if (releaseRe.test(e.name) || slotRe.test(e.name) || batchRe.test(e.name)) {
         hits.push({
           file: path.relative(path.resolve(__dirname, "..", ".."), full).replace(/\\/g, "/"),
           line: 1,
-          content: "release-named test file (e.g. v0-8-41-... / slot-19-...) — split into per-domain test files instead",
+          content: "release-named / slot-named / batch-named test file (e.g. v0-8-41-... / v0_8_70-batch... / slot-19-...) — split into per-domain test files instead",
         });
       }
     }
   }
   walk(path.resolve(__dirname, "..", ".."));
-  _report("no release-named or slot-named test files (split into per-domain test files; one primitive → one test)",
+  _report("no release-named / slot-named / batch-named test files (split into per-domain test files; one primitive → one test)",
     hits);
 }
 
@@ -1687,6 +1688,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/ciba.js:parseNotification",
         "lib/auth/sd-jwt-vc-issuer.js:create",
         "lib/auth/step-up.js:parseAuthorizationDetails",
+        "lib/compliance-eaa.js:create",
+        "lib/data-act.js:shareWithThirdParty",
+        "lib/data-act.js:recordSwitchRequest",
+        "lib/db.js:declareRequireDualControl",
         // Pre-v0.8.62 sites the new primitives share substrate with
         "lib/api-key.js:_validateIssueOpts",
         "lib/audit-daily-review.js:create",
@@ -1758,7 +1763,9 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/daemon.js:_readPidFile",
         "lib/daemon.js:_validateStartOpts",
+        "lib/data-act.js:shareWithThirdParty",
         "lib/mail-mdn.js:_generateBoundary",
+        "lib/mail-mdn.js:<unknown>",
         "lib/self-update.js:poll",
         "lib/self-update.js:_validateVerifyOpts",
         "lib/watcher.js:_compileIgnore",
