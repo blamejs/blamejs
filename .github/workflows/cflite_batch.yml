@@ -1,0 +1,77 @@
+name: ClusterFuzzLite batch fuzzing
+
+# Deep continuous fuzzing on a daily schedule. Each shard runs against
+# a single sanitizer for 30 minutes — long enough to explore paths the
+# PR-time 5-minute budget can't reach. Findings get reported as
+# annotations + the regression corpus persists across runs.
+#
+# `cflite_pr.yml` is the per-PR coverage-guided gate; this is the
+# always-on background fuzzer.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'   # daily 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: 'Per-target fuzz budget (seconds)'
+        required: false
+        default: '1800'
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: cflite-batch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  BatchFuzzing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [ address ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.0
+
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: javascript
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Run fuzzers (${{ matrix.sanitizer }})
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: ${{ inputs.fuzz_seconds || '1800' }}
+          mode: 'batch'
+          sanitizer: ${{ matrix.sanitizer }}
+          output-sarif: true
+
+  Coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: BatchFuzzing
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.0
+
+      - name: Build fuzzers (coverage)
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: javascript
+          sanitizer: coverage
+
+      - name: Run fuzzers (coverage)
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: 'coverage'
+          sanitizer: 'coverage'

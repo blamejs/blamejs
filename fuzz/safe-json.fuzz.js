@@ -1,32 +1,25 @@
 "use strict";
+/**
+ * Fuzz target: b.safeJson.parse
+ *
+ * libFuzzer / jazzer.js harness. ClusterFuzzLite (local PRs) and
+ * OSS-Fuzz (continuous, Google-hosted) both consume this shape:
+ * `module.exports.fuzz = function (data)` where `data` is a Buffer
+ * the engine mutates via coverage-guided fuzzing. Seeds for the
+ * initial corpus live in `fuzz/safe-json_seed_corpus/`.
+ */
 
-var b      = require("..");
-var runner = require("./_runner");
+var b        = require("..");
+var expected = require("./_expected");
 
-var SEEDS = [
-  '{"a":1}',
-  '[1,2,3,null,true,false]',
-  '"hello"',
-  'null',
-  'true',
-  '0.0',
-  '1e308',
-  '{"__proto__":{"polluted":true}}',
-  '{"constructor":{"prototype":{}}}',
-  '{"a":{"b":{"c":{"d":1}}}}',
-  '[' + new Array(1000).fill('1').join(',') + ']',
-  '{"a":"' + 'x'.repeat(10000) + '"}',
-];
-
-runner.fuzz({
-  name:   "b.safeJson.parse",
-  target: function (input) { b.safeJson.parse(input); },
-  generator: function () {
-    var r = Math.random();
-    if (r < 0.3) return runner.mutateSeed(runner.pick(SEEDS));
-    if (r < 0.5) return runner.randomAscii(2048);
-    if (r < 0.7) return runner.randomUtf8(2048);
-    if (r < 0.85) return runner.randomBidiSalt(runner.pick(SEEDS));
-    return runner.randomBytes(((Math.random() * 4096) | 0) + 1).toString("utf8");
-  },
-});
+module.exports.fuzz = function (data) {
+  var input;
+  try { input = data.toString("utf8"); }
+  catch (_e) { return; }
+  try {
+    b.safeJson.parse(input);
+  } catch (e) {
+    if (expected.isExpected(e)) return;
+    throw e;
+  }
+};

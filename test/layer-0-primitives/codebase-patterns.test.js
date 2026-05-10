@@ -598,11 +598,34 @@ function testParserPrimitivesHaveFuzzHarness() {
     var nestedBase = base.replace(/\//g, "__");                  // parsers__safe-toml
     var flatPath   = path.join(fuzzDir, flatBase + ".fuzz.js");
     var nestedPath = path.join(fuzzDir, nestedBase + ".fuzz.js");
-    if (fs.existsSync(flatPath) || fs.existsSync(nestedPath)) return;
-    hits.push({
-      file: rel, line: 1,
-      content: "missing fuzz harness — expected fuzz/" + nestedBase + ".fuzz.js (or fuzz/" + flatBase + ".fuzz.js for top-level primitives) OR an explicit FUZZ_NOT_REQUIRED entry with reason",
-    });
+    var harnessPath = fs.existsSync(flatPath) ? flatPath
+                    : fs.existsSync(nestedPath) ? nestedPath
+                    : null;
+    if (!harnessPath) {
+      hits.push({
+        file: rel, line: 1,
+        content: "missing fuzz harness — expected fuzz/" + nestedBase + ".fuzz.js (or fuzz/" + flatBase + ".fuzz.js for top-level primitives) OR an explicit FUZZ_NOT_REQUIRED entry with reason",
+      });
+      return;
+    }
+    // ClusterFuzzLite / OSS-Fuzz format check: every harness must
+    // export `fuzz` (jazzer.js libFuzzer entry-point). Catches the
+    // drift where someone adds a `fuzz/<x>.fuzz.js` that doesn't
+    // wire into the coverage-guided engine.
+    var content;
+    try { content = fs.readFileSync(harnessPath, "utf8"); }
+    catch (_e) { content = ""; }
+    if (!/module\.exports\.fuzz\s*=/.test(content)) {
+      hits.push({
+        file: path.relative(repoRoot, harnessPath).replace(/\\/g, "/"), line: 1,
+        content: "fuzz harness missing `module.exports.fuzz = function (data) { ... }` — required by jazzer.js / ClusterFuzzLite / OSS-Fuzz",
+      });
+    }
+    // Seed corpus is recommended (libFuzzer bootstraps from seeds);
+    // missing-corpus is a warning, not a hard fail — primitives with
+    // very wide input vocabulary (e.g. arbitrary HTML) can rely on
+    // mutator-only exploration. We DON'T report on it here; the
+    // build script just skips the zip step when the dir is missing.
   });
   _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED)",
     hits);

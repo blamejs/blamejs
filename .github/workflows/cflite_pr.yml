@@ -1,0 +1,59 @@
+name: ClusterFuzzLite PR fuzzing
+
+# Runs coverage-guided fuzzing (jazzer.js + libFuzzer) against every
+# `fuzz/*.fuzz.js` harness on every PR touching `lib/` or `fuzz/`.
+# Catches new bugs the harness mutator finds within a 5-minute budget;
+# the matching `cflite_batch.yml` workflow does the deep continuous
+# run on a daily schedule.
+#
+# Findings ship to the PR as inline annotations + crash artifacts;
+# regression corpus persists in the workflow-artifact store across
+# runs so an input that broke a previous PR remains in the seed set
+# for future ones.
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'lib/**'
+      - 'fuzz/**'
+      - '.clusterfuzzlite/**'
+      - '.github/workflows/cflite_pr.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: cflite-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  PR:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [ address ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.0
+
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: javascript
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Run fuzzers (${{ matrix.sanitizer }})
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 300
+          mode: 'code-change'
+          sanitizer: ${{ matrix.sanitizer }}
+          output-sarif: true
