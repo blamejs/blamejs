@@ -57,6 +57,72 @@ function _b64uEncode(buf) {
   return buf.toString("base64url");
 }
 
+// Tiny cookie jar — tracks Set-Cookie headers across redirects so the
+// SAML round-trip can carry Keycloak's KC_RESTART / AUTH_SESSION_ID
+// cookies through the login form POST.
+function _newCookieJar() {
+  var byName = Object.create(null);
+  return {
+    absorb: function (setCookieHeader) {
+      if (!setCookieHeader) return;
+      var arr = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+      arr.forEach(function (sc) {
+        var firstSemi = String(sc).indexOf(";");
+        var pair = firstSemi === -1 ? String(sc) : String(sc).slice(0, firstSemi);
+        var eq = pair.indexOf("=");
+        if (eq === -1) return;
+        var name = pair.slice(0, eq).trim();
+        var value = pair.slice(eq + 1).trim();
+        if (value === "" || /max-age=0/i.test(sc)) { delete byName[name]; return; }
+        byName[name] = value;
+      });
+    },
+    header: function () {
+      var keys = Object.keys(byName);
+      if (keys.length === 0) return null;
+      return keys.map(function (k) { return k + "=" + byName[k]; }).join("; ");
+    },
+  };
+}
+
+async function _httpReq(method, url, jar, opts) {
+  opts = opts || {};
+  var headers = Object.assign({}, opts.headers || {});
+  var cookieHeader = jar && jar.header();
+  if (cookieHeader) headers["Cookie"] = cookieHeader;
+  var req = {
+    method:           method,
+    url:              url,
+    headers:          headers,
+    allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    allowInternal:    true,
+    responseMode:     "always-resolve",
+  };
+  if (opts.body !== undefined) {
+    req.body = opts.body;
+    if (typeof opts.body === "string" && !headers["Content-Type"]) {
+      req.headers["Content-Type"] = "application/x-www-form-urlencoded";
+    }
+  }
+  if (opts.redirect === false) req.redirect = { manual: true };
+  var res = await b.httpClient.request(req);
+  if (jar) jar.absorb(res.headers && (res.headers["set-cookie"] || res.headers["Set-Cookie"]));
+  return res;
+}
+
+// Extract the IdP signing certificate PEM from Keycloak's SAML
+// descriptor XML. Keycloak emits a single <ds:X509Certificate> under
+// IDPSSODescriptor/KeyDescriptor[use=signing]; we grab it via regex
+// (the XML is stable Keycloak output, not operator-supplied).
+function _extractIdpSigningCertPem(descriptorXml) {
+  var m = /<ds:X509Certificate>([^<]+)<\/ds:X509Certificate>/.exec(descriptorXml);
+  if (!m) throw new Error("descriptor XML missing X509Certificate");
+  var b64 = m[1].replace(/\s+/g, "");
+  var lines = [];
+  for (var i = 0; i < b64.length; i += 64) lines.push(b64.slice(i, i + 64));
+  return "-----BEGIN CERTIFICATE-----\n" + lines.join("\n") + "\n-----END CERTIFICATE-----\n";
+}
+
 async function _fetchJson(url) {
   var res = await b.httpClient.request({
     method:           "GET",
@@ -285,25 +351,89 @@ async function run() {
   check("saml.metadata: includes SP entityID",                  meta.indexOf(SP_ENTITY_ID) !== -1);
   check("saml.metadata: includes ACS Location",                 meta.indexOf(SP_ACS_URL) !== -1);
 
-  // ---- POST AuthnRequest to Keycloak SAML endpoint, confirm 200 + login form ----
-  // The IdP renders an HTML login form on receiving the AuthnRequest;
-  // we don't drive the form (no headless browser in the test stack)
-  // but confirming the endpoint accepts the request validates the
-  // wire format end-to-end.
-  var samlAcceptResp = await b.httpClient.request({
-    method:           "GET",
-    url:              ar.redirectUrl,
-    allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
-    allowInternal:    true,
-    redirect:         { manual: true },
+  // ---- Full SAML round-trip: drive the IdP login form, capture the
+  //      signed SAMLResponse, hand it to sp.verifyResponse() ----
+  //
+  // We don't have a headless browser in the test stack, but Keycloak's
+  // login form is plain HTML with a stable action-URL pattern that
+  // we can drive with cookies + URL-encoded form POSTs. This closes
+  // the IdP→SP signature-verify path that the unit test
+  // (federation-vc-suite.test.js) exercises with synthetic XML.
+
+  // Fetch the IdP signing cert from Keycloak's SAML descriptor — this
+  // is the trust anchor sp.create needs.
+  var descResp = await _httpReq("GET",
+    ISSUER + "/protocol/saml/descriptor", null);
+  check("SAML descriptor: 200",                                  descResp.statusCode === 200);
+  var idpSigningCertPem = _extractIdpSigningCertPem(descResp.body.toString("utf8"));
+  check("SAML descriptor: signing cert extracted",               /-----BEGIN CERTIFICATE-----/.test(idpSigningCertPem));
+
+  // Re-create the SP with the real IdP cert so verifyResponse can
+  // validate the assertion's XMLDSig signature.
+  var spReal = b.auth.saml.sp.create({
+    entityId:                    SP_ENTITY_ID,
+    assertionConsumerServiceUrl: SP_ACS_URL,
+    idpEntityId:                 ISSUER,
+    idpSsoUrl:                   IDP_SSO_URL,
+    idpCertPem:                  idpSigningCertPem,
   });
-  check("SAML AuthnRequest: IdP returns 200 OR 302",
-    samlAcceptResp.statusCode === 200 || samlAcceptResp.statusCode === 302);
-  if (samlAcceptResp.statusCode === 200) {
-    // Login form; should contain 'login' / 'username' fields.
-    var bodyTxt = samlAcceptResp.body ? samlAcceptResp.body.toString("utf8").toLowerCase() : "";
-    check("SAML AuthnRequest: IdP rendered login form (heuristic)",
-      bodyTxt.indexOf("password") !== -1 || bodyTxt.indexOf("login") !== -1);
+  var arReal = spReal.buildAuthnRequest();
+
+  var jar = _newCookieJar();
+
+  // Step 1 — GET the AuthnRequest redirect; Keycloak responds with
+  // the login HTML form. Parse out the form's action URL.
+  var loginPage = await _httpReq("GET", arReal.redirectUrl, jar);
+  check("SAML login: 200 from IdP",                              loginPage.statusCode === 200);
+  var loginHtml = loginPage.body.toString("utf8");
+  var actionMatch = /action="(http:\/\/[^"]+\/login-actions\/authenticate[^"]+)"/.exec(loginHtml);
+  check("SAML login: action URL extracted",                      !!actionMatch);
+  var actionUrl = actionMatch[1].replace(/&amp;/g, "&");
+
+  // Step 2 — POST credentials to the action URL with the cookie jar.
+  // Keycloak responds with an auto-submit HTML form whose
+  // `name="SAMLResponse" value="..."` carries the signed response.
+  var loginBody = new URLSearchParams();
+  loginBody.set("username",     TEST_USERNAME);
+  loginBody.set("password",     TEST_PASSWORD);
+  loginBody.set("credentialId", "");
+  var loginPost = await _httpReq("POST", actionUrl, jar, {
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body:    loginBody.toString(),
+    redirect: false,
+  });
+  // Keycloak may 302 to a follow-up, then the auto-submit page; or it
+  // may 200 the auto-submit page directly. Handle both.
+  var responseHtml = null;
+  if (loginPost.statusCode === 200) {
+    responseHtml = loginPost.body.toString("utf8");
+  } else if (loginPost.statusCode === 302 || loginPost.statusCode === 303) {
+    var follow = await _httpReq("GET", loginPost.headers.location || loginPost.headers.Location, jar);
+    check("SAML login: follow-up GET 200",                       follow.statusCode === 200);
+    responseHtml = follow.body.toString("utf8");
+  } else {
+    check("SAML login POST: 200 or 30x (got " + loginPost.statusCode + ")", false);
+    responseHtml = "";
+  }
+
+  // Step 3 — extract the SAMLResponse base64 from the auto-submit form.
+  var samlResponseMatch = /name="SAMLResponse"\s+value="([^"]+)"/.exec(responseHtml);
+  check("SAML login: SAMLResponse value extracted",              !!samlResponseMatch);
+  var samlResponseB64 = samlResponseMatch && samlResponseMatch[1];
+
+  // Step 4 — hand the response to sp.verifyResponse(). This is the
+  // path the test set out to cover: real Keycloak-signed assertion,
+  // real XMLDSig signature, real SubjectConfirmation Bearer constraint
+  // checks, real AudienceRestriction check.
+  if (samlResponseB64) {
+    var info = spReal.verifyResponse(samlResponseB64, {
+      expectedInResponseTo: arReal.id,
+    });
+    check("SAML verifyResponse: returns parsed info",            info && typeof info === "object");
+    check("SAML verifyResponse: nameId matches alice",            info && (info.nameId === TEST_USERNAME || info.nameId === "alice@example.com"));
+    check("SAML verifyResponse: issuer matches IdP entityID",     info && info.issuer === ISSUER);
+    check("SAML verifyResponse: inResponseTo matches AuthnRequest", info && info.inResponseTo === arReal.id);
+    check("SAML verifyResponse: audience matches SP entityID",    info && info.audience === SP_ENTITY_ID);
   }
 
   // ---- CIBA — Keycloak's CIBA endpoint is exposed at
