@@ -519,6 +519,95 @@ function testNoReleaseNamedTestFiles() {
     hits);
 }
 
+// ---- Pattern 8b: parser / validator primitives must have a fuzz harness ----
+
+function testParserPrimitivesHaveFuzzHarness() {
+  // feedback_no_mvp_design_for_completion.md — every primitive whose
+  // job is "consume operator-supplied bytes / strings and refuse the
+  // adversarial ones" is a high-value fuzz target. Without a harness,
+  // a regression that crashes the parser instead of refusing it can
+  // ship silently. The discipline: every `lib/safe-*.js` AND every
+  // `lib/guard-*.js` file MUST have a corresponding `fuzz/<name>.fuzz.js`.
+  //
+  // Allowlist for primitives that aren't parsers (e.g. `safe-async`
+  // is a runtime-control wrapper, not an input-parsing surface).
+  // Paths use POSIX separators relative to repo root and are checked
+  // against the recursively-walked lib tree, so nested primitives
+  // (lib/parsers/safe-toml.js, lib/auth/...) are covered.
+  var FUZZ_NOT_REQUIRED = {
+    "lib/safe-async.js":     "runtime-control wrapper (not input-parsing)",
+    "lib/safe-buffer.js":    "byte-level helper consumed only by other primitives, no operator-facing parse path",
+    "lib/safe-redirect.js":  "post-validation redirect builder; the validation lives in safe-url which is fuzzed",
+    "lib/safe-schema.js":    "schema-builder fluent API; takes operator-authored schema, not adversarial input",
+    "lib/safe-sql.js":       "tagged-template helper; takes operator-authored fragments, not adversarial input",
+    "lib/guard-all.js":      "aggregator over per-format guards; each member is fuzzed individually",
+    "lib/guard-archive.js":  "operator-feeds-metadata pattern (no parser ships); validateEntries takes operator-supplied tree, not raw bytes",
+    "lib/guard-cidr.js":     "single-value validator; covered by safe-url IPv6 fuzzing surface",
+    "lib/guard-domain.js":   "single-value validator; covered by safe-url IDN-homograph fuzzing surface",
+    "lib/guard-filename.js": "single-string validator; deterministic codepoint scan, no adversarial-bytes parser",
+    "lib/guard-graphql.js":  "operator-supplied variables-shape validator; no raw-bytes parser",
+    "lib/guard-image.js":    "operator-feeds-metadata pattern; magic-byte detection covered by safe-buffer",
+    "lib/guard-jwt.js":      "JWT parse path covered upstream by b.auth.jwt + safe-json fuzz",
+    "lib/guard-jsonpath.js": "JSONPath validator covered by safe-jsonpath fuzz",
+    "lib/guard-mime.js":     "single-string validator over a finite vocabulary; no adversarial-bytes parser",
+    "lib/guard-oauth.js":    "operator-supplied params validator; flow-shape rather than bytes-parser",
+    "lib/guard-pdf.js":      "operator-feeds-metadata pattern; magic-byte detection covered by safe-buffer",
+    "lib/guard-regex.js":    "regex-source linter; deterministic AST walk, no parser surface",
+    "lib/guard-shell.js":    "argv-shape validator over operator-supplied tokens; not a bytes-parser",
+    "lib/guard-template.js": "template-source linter (operator-authored); not adversarial-input surface",
+    "lib/guard-time.js":     "single-value validator over a finite vocabulary; no adversarial-bytes parser",
+    "lib/guard-uuid.js":     "single-string validator; deterministic regex match, no parser surface",
+    "lib/guard-auth.js":     "auth-bundle composite validator; member fields covered by their own guards",
+    "lib/guard-html-wcag.js":         "internal helper consumed only by guard-html.js (WCAG check); covered transitively by guard-html fuzz",
+    "lib/guard-html-wcag-aria.js":    "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
+    "lib/guard-html-wcag-forms.js":   "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
+    "lib/guard-html-wcag-tables.js":  "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
+    "lib/guard-html-wcag-tagwalk.js": "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
+    "lib/parsers/safe-env.js":        ".env file loader takes a filepath (not adversarial in-process bytes); operator controls the file boundary, schema-validation gates the values",
+  };
+  var fs   = require("node:fs");
+  var path = require("node:path");
+  var repoRoot = path.resolve(__dirname, "..", "..");
+  var libDir   = path.join(repoRoot, "lib");
+  var fuzzDir  = path.join(repoRoot, "fuzz");
+  var libFiles = [];
+  function _walk(dir) {
+    fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === "vendor" || e.name === "node_modules") return;
+        _walk(full);
+        return;
+      }
+      if (!e.isFile() || !/\.js$/.test(e.name)) return;
+      if (!/^(safe|guard)-/.test(e.name)) return;
+      libFiles.push(path.relative(repoRoot, full).replace(/\\/g, "/"));
+    });
+  }
+  _walk(libDir);
+  var hits = [];
+  libFiles.forEach(function (rel) {
+    if (FUZZ_NOT_REQUIRED[rel]) return;
+    // Fuzz harness path mirrors the lib path under fuzz/, flattened
+    // with `__` substituted for nested `/` so each harness file
+    // remains a sibling under fuzz/. Either form (flat
+    // `fuzz/safe-toml.fuzz.js` for top-level OR nested
+    // `fuzz/parsers__safe-toml.fuzz.js`) satisfies the gate.
+    var base = rel.replace(/^lib\//, "").replace(/\.js$/, "");
+    var flatBase   = path.basename(base);                       // safe-toml
+    var nestedBase = base.replace(/\//g, "__");                  // parsers__safe-toml
+    var flatPath   = path.join(fuzzDir, flatBase + ".fuzz.js");
+    var nestedPath = path.join(fuzzDir, nestedBase + ".fuzz.js");
+    if (fs.existsSync(flatPath) || fs.existsSync(nestedPath)) return;
+    hits.push({
+      file: rel, line: 1,
+      content: "missing fuzz harness — expected fuzz/" + nestedBase + ".fuzz.js (or fuzz/" + flatBase + ".fuzz.js for top-level primitives) OR an explicit FUZZ_NOT_REQUIRED entry with reason",
+    });
+  });
+  _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED)",
+    hits);
+}
+
 // ---- Pattern 9: Tier-A/B/C terminology in shipped lib/ ----
 
 function testNoTierTerminologyInLib() {
@@ -3903,6 +3992,7 @@ async function run() {
   testNoUnresolvedMarkers();
   testNoLiteralNulBytesInSource();
   testNoReleaseNamedTestFiles();
+  testParserPrimitivesHaveFuzzHarness();
   testNoTierTerminologyInLib();
   testNoInlineRequires();
   testNoMathRandomForSecurity();
