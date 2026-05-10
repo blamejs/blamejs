@@ -218,7 +218,7 @@ jobs:
         #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
         #     --bundle sbom.cyclonedx.json.sigstore \
         #     sbom.cyclonedx.json
-        uses: sigstore/cosign-installer@d7d6e07b3e89342f1d8bcd4f76c2fa5a9d1a1f7e # v3.7.0
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
       - name: Cosign sign-blob SBOM
         if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}
         run: |
