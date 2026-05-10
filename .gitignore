@@ -13,6 +13,7 @@
 !.hadolint.yaml
 !.nvmrc
 !.npmrc
+!.clusterfuzzlite/
 !.gitleaks.toml
 
 # Build / dependencies
