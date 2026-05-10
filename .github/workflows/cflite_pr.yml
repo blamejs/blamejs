@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sanitizer: [ address ]
+        sanitizer: [ none ]   # jazzer.js is pure-JS — native sanitizers don't apply
     steps:
       - name: Checkout
         # ClusterFuzzLite's external-CI mode looks for the project

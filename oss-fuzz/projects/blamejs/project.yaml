@@ -15,7 +15,7 @@ fuzzing_engines:
   - libfuzzer
 
 sanitizers:
-  - address
+  - none   # jazzer.js is pure-JS; libFuzzer drives mutation without a native sanitizer
 
 # Optional vulnerability disclosure: when ClusterFuzz finds a bug, it
 # files a private issue against this repo (24-hour disclosure delay).

@@ -11,6 +11,6 @@ language: javascript
 fuzzing_engines:
   - libfuzzer
 sanitizers:
-  - address
+  - none   # jazzer.js is pure-JS; libFuzzer drives mutation without a native sanitizer
 homepage: "https://blamejs.com"
 main_repo: "https://github.com/blamejs/blamejs"
