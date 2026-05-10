@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.58",
-  "createdAt": "2026-05-09T23:46:42.941Z",
+  "frameworkVersion": "0.8.61",
+  "createdAt": "2026-05-10T03:48:30.690Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6128,7 +6128,7 @@
         },
         "collection": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         },
         "declareRequireDualControl": {
           "type": "function",
@@ -30465,9 +30465,22 @@
           "type": "function",
           "arity": 2
         },
+        "stores": {
+          "type": "object",
+          "members": {
+            "localDbThin": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "touch": {
           "type": "function",
           "arity": 2
+        },
+        "useStore": {
+          "type": "function",
+          "arity": 1
         },
         "verify": {
           "type": "function",
