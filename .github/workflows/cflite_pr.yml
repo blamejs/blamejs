@@ -1,15 +1,22 @@
 name: ClusterFuzzLite PR fuzzing
 
-# Runs coverage-guided fuzzing (jazzer.js + libFuzzer) against every
+# Coverage-guided fuzzing via jazzer.js + libFuzzer against every
 # `fuzz/*.fuzz.js` harness on every PR touching `lib/` or `fuzz/`.
-# Catches new bugs the harness mutator finds within a 5-minute budget;
-# the matching `cflite_batch.yml` workflow does the deep continuous
-# run on a daily schedule.
 #
-# Findings ship to the PR as inline annotations + crash artifacts;
-# regression corpus persists in the workflow-artifact store across
-# runs so an input that broke a previous PR remains in the seed set
-# for future ones.
+# We invoke jazzer.js directly instead of going through the
+# `google/clusterfuzzlite/actions/build_fuzzers` wrapper — the
+# wrapper's v1 Docker image (gcr.io/oss-fuzz-base/clusterfuzzlite-
+# build-fuzzers:v1) refuses to fuzz JavaScript projects with any
+# sanitizer + refuses to pass empty/`none` sanitizer through, so the
+# wrapper is structurally broken for JS as of 2026. The
+# `.clusterfuzzlite/` directory remains as the canonical integration
+# spec — it's what OSS-Fuzz upstream's `oss-fuzz/projects/blamejs/`
+# build.sh mirrors, and what would re-engage if CFLite ships a JS
+# fix later.
+#
+# Findings: jazzer's `-error_exitcode=1` makes the step fail with
+# the reproducer printed inline; libFuzzer's crash artifact lands at
+# `crash-*` in the workspace.
 
 on:
   pull_request:
@@ -23,43 +30,75 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 concurrency:
   group: cflite-pr-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  PR:
+  fuzz:
+    name: ClusterFuzzLite ${{ matrix.target }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        sanitizer: [ none ]   # jazzer.js is pure-JS — native sanitizers don't apply
+        target:
+          - safe-json
+          - safe-url
+          - safe-jsonpath
+          - guard-csv
+          - guard-html
+          - guard-json
+          - guard-yaml
+          - guard-xml
+          - guard-svg
+          - guard-markdown
+          - guard-email
+          - parsers__safe-toml
+          - parsers__safe-yaml
+          - parsers__safe-xml
+          - parsers__safe-ini
     steps:
       - name: Checkout
-        # ClusterFuzzLite's external-CI mode looks for the project
-        # under $GITHUB_WORKSPACE/storage/<repo-name>/ — not the
-        # default checkout root. The path override puts the source
-        # where build_fuzzers expects to find .clusterfuzzlite/.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.0
-        with:
-          path: storage/blamejs
 
-      - name: Build fuzzers (${{ matrix.sanitizer }})
-        id: build
-        uses: google/clusterfuzzlite/actions/build_fuzzers@52ecc61cb587ee99c26825a112a21abf19c7448c  # main 2026-05-10 (JS fixes post-v1)
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.0.0
         with:
-          language: javascript
-          sanitizer: ${{ matrix.sanitizer }}
+          node-version: '24'
 
-      - name: Run fuzzers (${{ matrix.sanitizer }})
-        id: run
-        uses: google/clusterfuzzlite/actions/run_fuzzers@52ecc61cb587ee99c26825a112a21abf19c7448c  # main 2026-05-10 (JS fixes post-v1)
+      - name: Install jazzer.js
+        run: npm install --no-save @jazzer.js/core@^2
+
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          # 60s on PR (per-target). cflite_batch.yml runs the deeper
+          # 1800s schedule that surfaces paths this budget can't reach.
+          FUZZ_TIME: '60'
+        run: |
+          set -e
+          harness="fuzz/${{ matrix.target }}.fuzz.js"
+          corpus="fuzz/${{ matrix.target }}_seed_corpus"
+          echo "::group::jazzer fuzz $harness ($FUZZ_TIME s)"
+          # Pass seed corpus as first positional arg when present;
+          # libFuzzer treats directory args as corpus inputs.
+          if [ -d "$corpus" ]; then
+            npx --yes jazzer "$harness" "$corpus" -- \
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+          else
+            npx --yes jazzer "$harness" -- \
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+          fi
+          echo "::endgroup::"
+
+      - name: Upload crash artifact
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 300
-          mode: 'code-change'
-          sanitizer: ${{ matrix.sanitizer }}
-          output-sarif: true
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+          if-no-files-found: ignore
