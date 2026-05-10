@@ -531,6 +531,9 @@ function testParserPrimitivesHaveFuzzHarness() {
   //
   // Allowlist for primitives that aren't parsers (e.g. `safe-async`
   // is a runtime-control wrapper, not an input-parsing surface).
+  // Paths use POSIX separators relative to repo root and are checked
+  // against the recursively-walked lib tree, so nested primitives
+  // (lib/parsers/safe-toml.js, lib/auth/...) are covered.
   var FUZZ_NOT_REQUIRED = {
     "lib/safe-async.js":     "runtime-control wrapper (not input-parsing)",
     "lib/safe-buffer.js":    "byte-level helper consumed only by other primitives, no operator-facing parse path",
@@ -560,28 +563,46 @@ function testParserPrimitivesHaveFuzzHarness() {
     "lib/guard-html-wcag-forms.js":   "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
     "lib/guard-html-wcag-tables.js":  "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
     "lib/guard-html-wcag-tagwalk.js": "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
+    "lib/parsers/safe-env.js":        ".env file loader takes a filepath (not adversarial in-process bytes); operator controls the file boundary, schema-validation gates the values",
   };
   var fs   = require("node:fs");
   var path = require("node:path");
-  var libDir  = path.resolve(__dirname, "..", "..", "lib");
-  var fuzzDir = path.resolve(__dirname, "..", "..", "fuzz");
+  var repoRoot = path.resolve(__dirname, "..", "..");
+  var libDir   = path.join(repoRoot, "lib");
+  var fuzzDir  = path.join(repoRoot, "fuzz");
   var libFiles = [];
-  fs.readdirSync(libDir, { withFileTypes: true }).forEach(function (e) {
-    if (!e.isFile() || !/\.js$/.test(e.name)) return;
-    if (!/^(safe|guard)-/.test(e.name)) return;
-    libFiles.push("lib/" + e.name);
-  });
+  function _walk(dir) {
+    fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === "vendor" || e.name === "node_modules") return;
+        _walk(full);
+        return;
+      }
+      if (!e.isFile() || !/\.js$/.test(e.name)) return;
+      if (!/^(safe|guard)-/.test(e.name)) return;
+      libFiles.push(path.relative(repoRoot, full).replace(/\\/g, "/"));
+    });
+  }
+  _walk(libDir);
   var hits = [];
   libFiles.forEach(function (rel) {
     if (FUZZ_NOT_REQUIRED[rel]) return;
+    // Fuzz harness path mirrors the lib path under fuzz/, flattened
+    // with `__` substituted for nested `/` so each harness file
+    // remains a sibling under fuzz/. Either form (flat
+    // `fuzz/safe-toml.fuzz.js` for top-level OR nested
+    // `fuzz/parsers__safe-toml.fuzz.js`) satisfies the gate.
     var base = rel.replace(/^lib\//, "").replace(/\.js$/, "");
-    var fuzzPath = path.join(fuzzDir, base + ".fuzz.js");
-    if (!fs.existsSync(fuzzPath)) {
-      hits.push({
-        file: rel, line: 1,
-        content: "missing fuzz harness — expected fuzz/" + base + ".fuzz.js OR an explicit FUZZ_NOT_REQUIRED entry with reason",
-      });
-    }
+    var flatBase   = path.basename(base);                       // safe-toml
+    var nestedBase = base.replace(/\//g, "__");                  // parsers__safe-toml
+    var flatPath   = path.join(fuzzDir, flatBase + ".fuzz.js");
+    var nestedPath = path.join(fuzzDir, nestedBase + ".fuzz.js");
+    if (fs.existsSync(flatPath) || fs.existsSync(nestedPath)) return;
+    hits.push({
+      file: rel, line: 1,
+      content: "missing fuzz harness — expected fuzz/" + nestedBase + ".fuzz.js (or fuzz/" + flatBase + ".fuzz.js for top-level primitives) OR an explicit FUZZ_NOT_REQUIRED entry with reason",
+    });
   });
   _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED)",
     hits);
