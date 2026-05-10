@@ -1,27 +1,16 @@
 "use strict";
 
-var b      = require("..");
-var runner = require("./_runner");
+var b        = require("..");
+var expected = require("./_expected");
 
-var SEEDS = [
-  "<root><a>1</a></root>",
-  '<?xml version="1.0"?><root/>',
-  '<!DOCTYPE root [<!ENTITY x "y">]><root>&x;</root>',
-  '<!DOCTYPE root SYSTEM "file:///etc/passwd"><root/>',
-  "<root>" + "<a>".repeat(50) + "x" + "</a>".repeat(50) + "</root>",
-  '<root xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="x"/></root>',
-  '<root xsi:schemaLocation="x y"/>',
-  "<![CDATA[" + "x".repeat(1000) + "]]>",
-];
-
-runner.fuzz({
-  name:   "b.guardXml.validate",
-  target: function (input) { b.guardXml.validate(input, { profile: "strict" }); },
-  generator: function () {
-    var r = Math.random();
-    if (r < 0.3) return runner.mutateSeed(runner.pick(SEEDS));
-    if (r < 0.5) return runner.randomBidiSalt(runner.pick(SEEDS));
-    if (r < 0.7) return runner.randomAscii(4096);
-    return runner.randomUtf8(2048);
-  },
-});
+module.exports.fuzz = function (data) {
+  var input;
+  try { input = data.toString("utf8"); }
+  catch (_e) { return; }
+  try {
+    b.guardXml.validate(input, { profile: "strict" });
+  } catch (e) {
+    if (expected.isExpected(e)) return;
+    throw e;
+  }
+};
