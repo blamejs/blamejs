@@ -4,6 +4,14 @@
 # conversion would break the hash on the off-platform checkout.
 lib/vendor/** -text binary
 
+# Shell scripts MUST stay LF — they run inside Linux containers
+# (OSS-Fuzz base-builder, ClusterFuzzLite, the wiki / release
+# container Dockerfiles, npm-publish build steps) where bash chokes
+# on CRLF with "$'\r': command not found". Without this rule, a
+# Windows checkout's CRLF rewrite ships into the Docker copy + the
+# script fails at line 1.
+*.sh text eol=lf
+
 # Native modules — always binary.
 *.node binary
 *.so binary
