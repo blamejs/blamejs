@@ -23,4 +23,4 @@ for fuzzer in fuzz/*.fuzz.js; do
   fi
 done
 
-echo "[blamejs build] done — $(ls "$OUT" | wc -l) artifacts in \$OUT"
+echo "[blamejs build] done — $(find "$OUT" -mindepth 1 -maxdepth 1 | wc -l) artifacts in \$OUT"

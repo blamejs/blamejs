@@ -39,7 +39,13 @@ jobs:
         sanitizer: [ address ]
     steps:
       - name: Checkout
+        # ClusterFuzzLite's external-CI mode looks for the project
+        # under $GITHUB_WORKSPACE/storage/<repo-name>/ — not the
+        # default checkout root. The path override puts the source
+        # where build_fuzzers expects to find .clusterfuzzlite/.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.0
+        with:
+          path: storage/blamejs
 
       - name: Build fuzzers (${{ matrix.sanitizer }})
         id: build
