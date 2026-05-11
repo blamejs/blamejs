@@ -156,11 +156,14 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 ### Compliance regimes
 
 - **Posture coordinator** — `b.compliance` cascades operator-declared regime into retention / audit / db / cryptoField via POSTURE_DEFAULTS:
-  - **US** — `hipaa` / `hipaa-2026` / `pci-dss` / `sox-404` / `soc2` / `soc2-cc1.3` / `sec-cyber` / `sec-17a-4` / `finra-4511` / `fda-21cfr11` / `fda-annex-11` / `modpa` / `nydfs-500` / `staterramp`
-  - **EU / UK** — `gdpr` / `dora` / `nis2` / `cra` / `uk-g-cloud`
-  - **APAC + LATAM** — `dpdp` / `pipl-cn` / `lgpd-br` / `appi-jp` / `pdpa-sg` / `quebec-25` / `irap`
+  - **US** — `hipaa` / `hipaa-2026` / `hitech` / `pci-dss` / `sox-404` / `soc2` / `soc2-cc1.3` / `sec-cyber` / `sec-17a-4` / `finra-4511` / `fda-21cfr11` / `fda-annex-11` / `modpa` / `nydfs-500` / `staterramp` / `ferpa` / `fl-fdbr`
+  - **EU / UK** — `gdpr` / `dora` / `nis2` / `cra` / `eu-data-act` / `eaa` / `uk-g-cloud`
+  - **APAC + LATAM** — `dpdp` / `pipl-cn` / `lgpd-br` / `appi-jp` / `pdpa-sg` / `quebec-25` / `irap` / `kr-ai-basic`
   - **Financial / data-portability** — `fapi2` / `fapi-2.0-message-signing` / `fdx` / `dsr`
+  - **AI governance** — `co-ai` / `il-hb3773` / `tx-traiga` / `ut-aipa` / `nyc-ll144` / `ca-tfaia` / `ca-sb942` / `ca-ab853` / `cn-ai-label` / `iso-42001` / `iso-23894`
+  - **Accessibility** — `wcag-2-2`
   - **Other** — `bsi-c5` / `ens-es` / etc.
+- **AI Act ⇄ ISO cross-walk** — `b.compliance.aiAct.crossWalkIso42001()` + `crossWalkIso23894()` map every AI Act article (Art. 9 risk management → Art. 73 incident reporting) to the matching ISO/IEC 42001:2023 Annex A controls and ISO/IEC 23894:2023 risk-management clauses for ISO-certification audit packs
 - **EU Data Act** — Regulation 2023/2854 connected-product data access workflow with DMA-gatekeeper share refusal (Art 32 §1) and 30-day switch-request notice cap (Art 28 §3) (`b.dataAct`)
 - **Audit + segregation** — 21 CFR Part 11 §11.10(e) audit-content gate + §11.50(b) electronicSignature (`b.fda21cfr11`); PCI DSS 4.0 Req 10.4.1.1 daily-review automation (`b.auditDailyReview`); SOX §404 + SOC 2 CC1.3 segregation-of-duties via Postgres trigger DDL (`b.audit.bindActor`, `b.audit.assertSegregation`)
 - **Change control + WORM** — m-of-n approver DDL change-control with maintenance-window + ML-DSA-87 signed proposals (`b.ddlChangeControl`); row-level WORM triggers boot-asserted under `sec-17a-4` / `finra-4511` / `fda-21cfr11` (`b.db.declareWorm`); dual-control physical delete + crypto-erase + REINDEX in one transaction (`b.db.declareRequireDualControl`, `b.db.eraseHard`)

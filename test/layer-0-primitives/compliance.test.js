@@ -117,6 +117,73 @@ function testV0870NewPostures() {
   check("describe(hipaa-2026): domain health",                       b.compliance.describe("hipaa-2026").domain === "health");
 }
 
+function testV0881NewPostures() {
+  var ps = b.compliance.KNOWN_POSTURES;
+  // ---- AI governance ----
+  check("compliance: co-ai registered",       ps.indexOf("co-ai") !== -1);
+  check("compliance: il-hb3773 registered",   ps.indexOf("il-hb3773") !== -1);
+  check("compliance: tx-traiga registered",   ps.indexOf("tx-traiga") !== -1);
+  check("compliance: ut-aipa registered",     ps.indexOf("ut-aipa") !== -1);
+  check("compliance: nyc-ll144 registered",   ps.indexOf("nyc-ll144") !== -1);
+  check("compliance: ca-tfaia registered",    ps.indexOf("ca-tfaia") !== -1);
+  check("compliance: kr-ai-basic registered", ps.indexOf("kr-ai-basic") !== -1);
+  check("compliance: cn-ai-label registered", ps.indexOf("cn-ai-label") !== -1);
+  check("compliance: iso-42001 registered",   ps.indexOf("iso-42001") !== -1);
+  check("compliance: iso-23894 registered",   ps.indexOf("iso-23894") !== -1);
+  // ---- content-credentials ----
+  check("compliance: ca-sb942 registered",    ps.indexOf("ca-sb942") !== -1);
+  check("compliance: ca-ab853 registered",    ps.indexOf("ca-ab853") !== -1);
+  // ---- substrate cleanup ----
+  check("compliance: eaa registered",         ps.indexOf("eaa") !== -1);
+  check("compliance: wcag-2-2 registered",    ps.indexOf("wcag-2-2") !== -1);
+  check("compliance: eu-data-act registered", ps.indexOf("eu-data-act") !== -1);
+  check("compliance: hitech registered",      ps.indexOf("hitech") !== -1);
+  check("compliance: ferpa registered",       ps.indexOf("ferpa") !== -1);
+  // ---- privacy ----
+  check("compliance: fl-fdbr registered",     ps.indexOf("fl-fdbr") !== -1);
+  // D1 drift fix — dpdp was in POSTURE_DEFAULTS but missing from KNOWN_POSTURES
+  check("compliance: dpdp registered (D1 drift fix)", ps.indexOf("dpdp") !== -1);
+
+  // REGIME_MAP fields
+  check("describe(co-ai): domain ai-governance",        b.compliance.describe("co-ai").domain === "ai-governance");
+  check("describe(nyc-ll144): jurisdiction US-NY-NYC",  b.compliance.describe("nyc-ll144").jurisdiction === "US-NY-NYC");
+  check("describe(iso-42001): jurisdiction international", b.compliance.describe("iso-42001").jurisdiction === "international");
+  check("describe(ca-sb942): domain content-credentials", b.compliance.describe("ca-sb942").domain === "content-credentials");
+  check("describe(eaa): domain accessibility",          b.compliance.describe("eaa").domain === "accessibility");
+  check("describe(ferpa): domain student-records",      b.compliance.describe("ferpa").domain === "student-records");
+  check("describe(eu-data-act): domain data-sharing",   b.compliance.describe("eu-data-act").domain === "data-sharing");
+  check("describe(fl-fdbr): jurisdiction US-FL",        b.compliance.describe("fl-fdbr").jurisdiction === "US-FL");
+  check("describe(hitech): domain health",              b.compliance.describe("hitech").domain === "health");
+
+  // D2 drift — citation dates corrected from 2026 → 2025
+  check("describe(modpa) citation reflects 2025-10-01 effective date",
+        /2025-10-01/.test(b.compliance.describe("modpa").citation));
+  check("describe(nh-nhpa) citation reflects 2025-01-01 effective date",
+        /2025-01-01/.test(b.compliance.describe("nh-nhpa").citation));
+  check("describe(nj-njdpa) citation reflects 2025-01-15 effective date",
+        /2025-01-15/.test(b.compliance.describe("nj-njdpa").citation));
+  check("describe(mn-mncdpa) citation reflects 2025-07-31 effective date",
+        /2025-07-31/.test(b.compliance.describe("mn-mncdpa").citation));
+
+  // posture-default cascade for AI-governance tier
+  check("postureDefault(co-ai, auditChainSignedRequired) === true",
+        b.compliance.postureDefault("co-ai", "auditChainSignedRequired") === true);
+  check("postureDefault(iso-42001, requireVacuumAfterErase) === true",
+        b.compliance.postureDefault("iso-42001", "requireVacuumAfterErase") === true);
+  check("postureDefault(ca-tfaia, backupEncryptionRequired) === true",
+        b.compliance.postureDefault("ca-tfaia", "backupEncryptionRequired") === true);
+
+  // posturesByDomain(ai-governance) returns all the new AI postures
+  var aiGov = b.compliance.posturesByDomain("ai-governance");
+  check("posturesByDomain(ai-governance) includes co-ai",
+        aiGov.indexOf("co-ai") !== -1 && aiGov.indexOf("iso-42001") !== -1);
+
+  // posturesByJurisdiction for new state codes
+  var caP = b.compliance.posturesByJurisdiction("US-CA");
+  check("posturesByJurisdiction(US-CA) includes ca-tfaia + ca-sb942",
+        caP.indexOf("ca-tfaia") !== -1 && caP.indexOf("ca-sb942") !== -1);
+}
+
 async function run() {
   testSurface();
   testSetThenCurrent();
@@ -126,6 +193,7 @@ async function run() {
   testGuardPrimitivePicksUpGlobalPosture();
   testClearResetsState();
   testV0870NewPostures();
+  testV0881NewPostures();
   // Reset at end so other tests don't see leaked posture.
   _resetState();
 }
