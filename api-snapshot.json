@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.8.77",
-  "createdAt": "2026-05-11T01:43:15.385Z",
+  "createdAt": "2026-05-11T02:29:25.404Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6728,7 +6728,15 @@
           "type": "function",
           "arity": 2
         },
+        "sealDoc": {
+          "type": "function",
+          "arity": 2
+        },
         "sealRow": {
+          "type": "function",
+          "arity": 2
+        },
+        "unsealDoc": {
           "type": "function",
           "arity": 2
         },
