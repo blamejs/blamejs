@@ -88,12 +88,29 @@ function testParseTlsRequiredHeader() {
   check("parse: non-string → null",
         b.mail.requireTls.parseTlsRequiredHeader(5) === null);
 
-  // Control-char refusal
-  var threw = null;
-  try { b.mail.requireTls.parseTlsRequiredHeader("no\r\nattacker: yes"); }
-  catch (e) { threw = e; }
-  check("parse: CR/LF in value refused",
-        threw && /bad-header-value/.test(threw.code || ""));
+  // Control-char refusal — must scan the RAW value, not the trimmed
+  // one. A leading/trailing CR/LF must NOT be stripped by trim() before
+  // the control-char gate fires, or "\nno" / "no\r" silently parses as
+  // "no" and the contract (and changelog claim) is broken.
+  function expectControlRefusal(label, fn) {
+    var threw = null;
+    try { fn(); } catch (e) { threw = e; }
+    check(label, threw && /bad-header-value/.test(threw.code || ""));
+  }
+  expectControlRefusal("parse: CR/LF in middle refused",
+                       function () { b.mail.requireTls.parseTlsRequiredHeader("no\r\nattacker: yes"); });
+  expectControlRefusal("parse: leading \\n + 'no' refused (pre-trim scan)",
+                       function () { b.mail.requireTls.parseTlsRequiredHeader("\nno"); });
+  expectControlRefusal("parse: 'no' + trailing \\r refused (pre-trim scan)",
+                       function () { b.mail.requireTls.parseTlsRequiredHeader("no\r"); });
+  expectControlRefusal("parse: leading NUL refused",
+                       function () { b.mail.requireTls.parseTlsRequiredHeader("\x00no"); });
+  expectControlRefusal("parse: trailing DEL refused",
+                       function () { b.mail.requireTls.parseTlsRequiredHeader("no\x7F"); });
+  // HT (\t) is structural folding whitespace per HTTP/email headers;
+  // accept and let trim() absorb it so the value still parses.
+  check("parse: leading/trailing HT absorbed → 'no'",
+        b.mail.requireTls.parseTlsRequiredHeader("\tno\t") === "no");
 }
 
 async function run() {
