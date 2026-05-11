@@ -91,6 +91,39 @@ function testBadShape() {
              function () { srs.reverse("SRS0=abc@forwarder.example"); }, "srs/malformed");
 }
 
+function testForwarderDomainBinding() {
+  // create({ forwarderDomain }) binds the rewriter to a specific
+  // forwarder. reverse() must refuse bounces addressed to a
+  // DIFFERENT domain even when the SRS0 local-part is otherwise
+  // signed by the same secret — otherwise multi-domain handlers
+  // can mis-deliver bounces.
+  var secret = b.crypto.generateToken(32);
+  var srs1 = b.mail.srs.create({ secret: secret, forwarderDomain: "fwd1.example" });
+  var srs2 = b.mail.srs.create({ secret: secret, forwarderDomain: "fwd2.example" });
+
+  var rw1 = srs1.rewrite("alice@bob.com");
+  check("rewrite: ends with bound forwarder domain",
+        rw1.indexOf("@fwd1.example") === rw1.length - "@fwd1.example".length);
+
+  // Use the same secret on srs2 — same HMAC tag verifies.
+  var threw = null;
+  try { srs2.reverse(rw1); } catch (e) { threw = e; }
+  check("reverse: bounce addressed to wrong forwarder refused",
+        threw && /srs\/wrong-forwarder/.test(threw.code || ""));
+
+  // Same forwarder, different case — RFC 5321 §2.3.5 says domains
+  // are case-insensitive, so reverse() must accept the bounce.
+  var srsUpper = b.mail.srs.create({ secret: secret, forwarderDomain: "FWD1.example" });
+  check("reverse: case-insensitive domain match",
+        srsUpper.reverse(rw1) === "alice@bob.com");
+
+  // Empty local-part / no domain refused.
+  var threw2 = null;
+  try { srs1.reverse("SRS0=abc=de=bob.com=alice@"); } catch (e) { threw2 = e; }
+  check("reverse: empty domain refused",
+        threw2 && /srs\/bad-address/.test(threw2.code || ""));
+}
+
 function testLocalPartWithEquals() {
   // Some local-parts can contain "=" in RFC 5321; SRS reverse should
   // recover the full original local-part by re-joining slice(3).
@@ -107,6 +140,7 @@ async function run() {
   testSecretDivergence();
   testExpiry();
   testBadShape();
+  testForwarderDomainBinding();
   testLocalPartWithEquals();
 }
 
