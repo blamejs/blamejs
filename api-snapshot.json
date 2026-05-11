@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.90",
-  "createdAt": "2026-05-11T18:42:57.983Z",
+  "frameworkVersion": "0.9.0",
+  "createdAt": "2026-05-11T20:56:14.074Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4162,6 +4162,39 @@
         }
       }
     },
+    "cdnCacheControl": {
+      "type": "object",
+      "members": {
+        "BOOLEAN_DIRECTIVES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "CdnCacheControlError": {
+          "type": "function",
+          "arity": 4
+        },
+        "NUMERIC_DIRECTIVES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "TARGETED_HEADERS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "build": {
+          "type": "function",
+          "arity": 1
+        },
+        "isTargetedHeader": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "chainWriter": {
       "type": "object",
       "members": {
@@ -4263,6 +4296,31 @@
         "resolvePassphrase": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "clientHints": {
+      "type": "object",
+      "members": {
+        "ClientHintsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KNOWN_HINTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "acceptList": {
+          "type": "function",
+          "arity": 1
+        },
+        "isKnownHint": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -29172,9 +29230,486 @@
         "dns": {
           "type": "object",
           "members": {
+            "DNSKEY_ALGORITHMS": {
+              "type": "object",
+              "members": {
+                "1": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "4": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "5": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "6": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "7": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "8": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "9": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "10": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "11": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "12": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "13": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "14": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "15": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "16": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "252": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "253": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "254": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "255": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "DS_DIGEST_TYPES": {
+              "type": "object",
+              "members": {
+                "0": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "1": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "2": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "3": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "4": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "5": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "6": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                }
+              }
+            },
             "DnsError": {
               "type": "function",
               "arity": 4
+            },
+            "classifyDnskeyAlgorithm": {
+              "type": "function",
+              "arity": 1
+            },
+            "classifyDsDigestType": {
+              "type": "function",
+              "arity": 1
             },
             "clearCache": {
               "type": "function",
@@ -34232,6 +34767,27 @@
         "saveRaw": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "structuredFields": {
+      "type": "object",
+      "members": {
+        "containsControlBytes": {
+          "type": "function",
+          "arity": 2
+        },
+        "refuseControlBytes": {
+          "type": "function",
+          "arity": 2
+        },
+        "splitTopLevel": {
+          "type": "function",
+          "arity": 2
+        },
+        "unquoteSfString": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
