@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.89",
-  "createdAt": "2026-05-11T18:19:43.302Z",
+  "frameworkVersion": "0.8.90",
+  "createdAt": "2026-05-11T18:42:57.983Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -28420,6 +28420,31 @@
           "type": "object",
           "members": {
             "verify": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "requireTls": {
+          "type": "object",
+          "members": {
+            "REQUIRETLS_TOKEN": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "RequireTlsError": {
+              "type": "function",
+              "arity": 4
+            },
+            "mailFromExtension": {
+              "type": "function",
+              "arity": 1
+            },
+            "parseTlsRequiredHeader": {
+              "type": "function",
+              "arity": 1
+            },
+            "peerSupports": {
               "type": "function",
               "arity": 1
             }

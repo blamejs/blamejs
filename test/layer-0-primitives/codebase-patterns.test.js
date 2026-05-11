@@ -1787,6 +1787,14 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/auth/step-up.js:_quote",
+        "lib/mail-require-tls.js:parseTlsRequiredHeader",
+        "lib/middleware/bearer-auth.js:create",
+      ],
+      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Three different domain validators (RFC 9470 step-up sf-string quote, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
+    },
+    {
+      files: [
         "lib/a2a-tasks.js:_emitAudit",
         "lib/mcp-tool-registry.js:_emitAudit",
         "lib/middleware/idempotency-key.js:_emitAudit",
