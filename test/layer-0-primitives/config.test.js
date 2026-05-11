@@ -324,6 +324,54 @@ async function _testLoadDbBackedConcurrentRefreshRace() {
   cfg.stop();
 }
 
+async function _testLoadDbBackedFailedReloadDoesNotSuppressOlderValid() {
+  // refresh(valid)-slow followed by refresh(invalid)-fast. The newer
+  // tick finishes first and fails validation; without the
+  // "advance-only-on-success" invariant, the failed reload would
+  // bump the high-water mark to seq=2 and cause the older valid
+  // tick (seq=1) to drop as stale when it finally lands —
+  // silently keeping stale config active even though a valid update
+  // was in-flight at the time.
+  var s = b.safeSchema;
+  function _sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  var callIndex = 0;
+  var nextValue = "valid-data";   // hydration uses this
+  var cfg = b.config.loadDbBacked({
+    schema:     s.object({ K: s.string().min(4).default("default-ok") }),
+    env:        {},
+    fetchRows:  async function () {
+      callIndex += 1;
+      var mine = callIndex;
+      var captured = nextValue;
+      // Hydration (#1) fast, refresh1 (#2) slow, refresh2 (#3) fast.
+      var lat = (mine === 2) ? 200 : 20;
+      await _sleep(lat);
+      return [{ key: "K", value: captured }];
+    },
+    intervalMs: 60 * 1000,
+  });
+  await cfg.hydrated;
+  helpers.check("failed-reload: initial hydration applied valid value",
+    cfg.value.K === "valid-data");
+
+  // refresh1 — slow valid (200ms).
+  nextValue = "newer-valid-data";
+  var p1 = cfg.refresh();
+  await _sleep(10);
+  // refresh2 — fast invalid (will fail s.string().min(4) at apply).
+  nextValue = "x";
+  var p2 = cfg.refresh();
+
+  await Promise.all([p1, p2]);
+
+  // refresh2 (newer-finishes-first) reload threw, watermark NOT
+  // advanced. refresh1 (older-finishes-later) still passes the
+  // stale-check, applies its valid overlay. cfg has "newer-valid-data".
+  helpers.check("failed-reload: older valid tick applied after newer invalid failed",
+    cfg.value.K === "newer-valid-data");
+  cfg.stop();
+}
+
 async function _testCryptoFieldDocAliases() {
   // sealDoc / unsealDoc are doc-shaped aliases of sealRow / unsealRow.
   helpers.check("b.cryptoField.sealDoc exists",
@@ -358,6 +406,7 @@ module.exports = { run: async function () {
   await _testLoadDbBackedTransformValue();
   await _testLoadDbBackedRefresh();
   await _testLoadDbBackedConcurrentRefreshRace();
+  await _testLoadDbBackedFailedReloadDoesNotSuppressOlderValid();
   await _testCryptoFieldDocAliases();
   await _testHotReload();
 } };
