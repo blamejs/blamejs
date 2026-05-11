@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.88",
-  "createdAt": "2026-05-11T17:43:12.270Z",
+  "frameworkVersion": "0.8.89",
+  "createdAt": "2026-05-11T18:10:52.208Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -28437,6 +28437,19 @@
               "arity": 1
             },
             "verify": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "srs": {
+          "type": "object",
+          "members": {
+            "SrsError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
               "type": "function",
               "arity": 1
             }
