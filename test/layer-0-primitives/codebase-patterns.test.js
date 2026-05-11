@@ -1778,6 +1778,22 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Object.keys(...) iteration + POISONED_KEYS allowlist + per-key copy into output. Each call site preserves its own per-field semantics (CloudEvents pulls extensionContext per spec, pick implements the operator-supplied projection, problem-details applies RFC 9457 §3 reserved-field rules) — extracting would couple unrelated specs. pick.POISONED_KEYS is the shared substrate constant, already imported.",
     },
     {
+      files: [
+        "lib/a2a-tasks.js:_readBody",
+        "lib/keychain.js:_drain",
+        "lib/middleware/tus-upload.js:_readChunk",
+      ],
+      reason: "req.on('data'/'end'/'error') promise wrapper + safeBuffer.boundedChunkCollector cap-bounded streaming-body collector. Each call site bounds at the per-domain cap (A2A 1 MiB, tus-upload per-chunk cap, keychain per-operation cap) and surfaces a domain-specific error class on cap overflow — extracting would couple unrelated wire formats into a single primitive that none of them want.",
+    },
+    {
+      files: [
+        "lib/a2a-tasks.js:_emitAudit",
+        "lib/mcp-tool-registry.js:_emitAudit",
+        "lib/middleware/idempotency-key.js:_emitAudit",
+      ],
+      reason: "Per-primitive `_emitAudit` audit-wrapper closures — three different audit namespaces (a2a / mcp.tool_registry / idempotency) each binding a try/catch around `audit().safeEmit({ action, outcome, metadata })`. Future consolidation candidate (matches validateOpts.makeNamespacedEmitters which several other primitives already use); allowlisted here so the v0.8.85 ship doesn't drift into refactoring three callers in the same patch.",
+    },
+    {
       mode: "family-subset",
       files: [
         // v0.8.62 federation / VC primitives — every member shares the
@@ -1801,6 +1817,17 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/oid4vci.js:_verifyProofJwt",
         "lib/auth/oid4vci.js:createCredentialOffer",
         "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
+        // v0.8.85 — MCP tool registry + A2A tasks share the federation
+        // primitive scaffolding (validateOpts.requireNonEmptyString
+        // cascade + canonical-JSON envelope shape + JSON-RPC dispatch).
+        "lib/mcp-tool-registry.js:create",
+        "lib/mcp-tool-registry.js:verifyCall",
+        "lib/mcp-tool-registry.js:signCall",
+        "lib/a2a-tasks.js:_readBody",
+        "lib/a2a-tasks.js:send",
+        "lib/a2a-tasks.js:middlewareTasks",
+        "lib/a2a-tasks.js:_jsonRpc",
+        "lib/ai-adverse-decision.js:wrap",
         "lib/auth/oid4vp.js:_validateDcql",
         "lib/auth/oid4vp.js:matchDcql",
         "lib/auth/openid-federation.js:parseEntityStatement",
