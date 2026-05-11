@@ -110,6 +110,63 @@ function testParse() {
         r4.public === true && r4.maxAge === 60);
 }
 
+function testParseQualifiedDirectives() {
+  // RFC 9111 §5.2.2.6 — `private="Authorization"` is qualified-form:
+  // the private directive is STILL enabled and applies ONLY to the
+  // listed field-name list. A previous parse() implementation flipped
+  // the flag to false when val was a non-empty string.
+  var r = b.cdnCacheControl.parse('private="Authorization"');
+  check("parse: private with field-name list still flagged true",
+        r.private === true);
+  check("parse: private surfaces field list under .fields.private",
+        r.fields && Array.isArray(r.fields.private) && r.fields.private[0] === "authorization");
+
+  // RFC 9111 §5.2.2.4 — `no-cache="Set-Cookie"` is qualified-form
+  // too; the no-cache directive STAYS enabled, scoped to the listed
+  // header field.
+  var r2 = b.cdnCacheControl.parse('no-cache="Set-Cookie"');
+  check("parse: no-cache with field-name list still flagged true",
+        r2.noCache === true);
+  check("parse: no-cache field list",
+        r2.fields && r2.fields.noCache && r2.fields.noCache[0] === "set-cookie");
+
+  // Quoted-value with INTERNAL comma must NOT split the directive.
+  // `private="Authorization, Cookie", max-age=60` is two top-level
+  // directives, with `private` carrying a 2-element field-name list.
+  var r3 = b.cdnCacheControl.parse('private="Authorization, Cookie", max-age=60');
+  check("parse: quoted comma preserved (top-level split count)",
+        r3.private === true && r3.maxAge === 60);
+  check("parse: quoted comma preserved (field-list count)",
+        r3.fields.private.length === 2 &&
+        r3.fields.private[0] === "authorization" &&
+        r3.fields.private[1] === "cookie");
+
+  // Extension directive carrying a quoted comma value: the comma is
+  // value-internal, the directive remains a single piece.
+  var r4 = b.cdnCacheControl.parse('foo="a,b", public');
+  check("parse: extension quoted comma preserved",
+        r4.public === true && r4.directives.foo === "a,b");
+}
+
+function testParseBareMaxStale() {
+  // RFC 9111 §5.2.1.2 — `max-stale` without an argument means
+  // "accept a stale response of ANY age". A previous parse()
+  // implementation set val=true on the bare form and then ran
+  // Number(true)===1, coercing the directive to "accept stale by up
+  // to 1 second" which would reject otherwise-acceptable cached
+  // responses.
+  var r = b.cdnCacheControl.parse("max-stale");
+  check("parse: bare max-stale → Infinity (RFC 9111 §5.2.1.2 any age)",
+        r.maxStale === Infinity);
+  check("parse: bare max-stale isFinite false",
+        isFinite(r.maxStale) === false);
+
+  // Sanity: max-stale=60 still parses normally.
+  var r2 = b.cdnCacheControl.parse("max-stale=60");
+  check("parse: max-stale=60 surfaces as 60",
+        r2.maxStale === 60);
+}
+
 function testParseControlByteRefusal() {
   function expectCode(label, fn, code) {
     var threw = null;
@@ -155,6 +212,8 @@ async function run() {
   testBuild();
   testBuildRefusals();
   testParse();
+  testParseQualifiedDirectives();
+  testParseBareMaxStale();
   testParseControlByteRefusal();
   testIsTargetedHeader();
 }
