@@ -41,8 +41,41 @@ function testEntryRefusesBadShape() {
              function () { b.cacheStatus.entry({ cache: "x", fwd: "unknown" }); }, "cache-status/bad-fwd");
   expectCode("entry: bad fwd-status (low)",
              function () { b.cacheStatus.entry({ cache: "x", fwdStatus: 99 }); }, "cache-status/bad-fwd-status");
-  expectCode("entry: bad ttl (negative)",
-             function () { b.cacheStatus.entry({ cache: "x", ttl: -1 }); }, "cache-status/bad-ttl");
+  expectCode("entry: bad ttl (non-integer)",
+             function () { b.cacheStatus.entry({ cache: "x", ttl: 1.5 }); }, "cache-status/bad-ttl");
+  expectCode("entry: bad ttl (NaN)",
+             function () { b.cacheStatus.entry({ cache: "x", ttl: NaN }); }, "cache-status/bad-ttl");
+  // RFC 9211 §2 — sf-token cache identifier; sf-delimiters refused.
+  expectCode("entry: cache name with comma refused",
+             function () { b.cacheStatus.entry({ cache: "acme,cdn" }); }, "cache-status/bad-cache-name");
+  expectCode("entry: cache name with semicolon refused",
+             function () { b.cacheStatus.entry({ cache: "acme;cdn" }); }, "cache-status/bad-cache-name");
+  expectCode("entry: cache name with quote refused",
+             function () { b.cacheStatus.entry({ cache: 'acme"cdn' }); }, "cache-status/bad-cache-name");
+  expectCode("entry: cache name with space refused",
+             function () { b.cacheStatus.entry({ cache: "acme cdn" }); }, "cache-status/bad-cache-name");
+  expectCode("entry: cache name starting with digit refused",
+             function () { b.cacheStatus.entry({ cache: "1cdn" }); }, "cache-status/bad-cache-name");
+}
+
+function testStaleHitWithNegativeTtl() {
+  // RFC 9211 §2.2 — negative ttl reports a stale-by-N-seconds hit.
+  // Common shape: hit + fwd=stale + ttl=-30 (served from cache but
+  // freshness expired 30s ago).
+  var s = b.cacheStatus.entry({
+    cache: "blamejs",
+    hit:   true,
+    fwd:   "stale",
+    ttl:   -30,
+  });
+  check("entry: hit+fwd=stale+ttl=-30 serializes",
+        s === "blamejs; hit; fwd=stale; ttl=-30");
+
+  // Round-trip
+  var parsed = b.cacheStatus.parse(s);
+  check("parse: negative ttl round-trips as number",
+        parsed.length === 1 && parsed[0].params.ttl === -30 &&
+        parsed[0].params.hit === true && parsed[0].params.fwd === "stale");
 }
 
 function testAppend() {
@@ -81,6 +114,7 @@ async function run() {
   testSurface();
   testEntryFormats();
   testEntryRefusesBadShape();
+  testStaleHitWithNegativeTtl();
   testAppend();
   testParseRoundTrip();
   testParseQuotedStrings();
