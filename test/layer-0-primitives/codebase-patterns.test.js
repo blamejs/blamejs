@@ -1844,10 +1844,22 @@ async function testNoDuplicateCodeBlocks() {
       mode: "family-subset",
       files: [
         "lib/cdn-cache-control.js:parse",
+        "lib/client-hints.js:_parseBrandMember",
+        "lib/http-client-cache.js:_parseCacheControl",
         "lib/middleware/tus-upload.js:_parseMetadata",
         "lib/request-helpers.js:parseQualityList",
       ],
-      reason: "Comma-separated header value parser walking pieces and splitting on `=` per piece. Each enforces a different grammar (RFC 9213 directive list, RFC 7240/tus.io upload metadata, RFC 9110 quality-list / Accept-* header). Consolidating would couple unrelated header families.",
+      reason: "Comma-separated header value parser walking pieces and splitting on `=` per piece. Each enforces a different grammar (RFC 9213 directive list, RFC 9111 Cache-Control directives, Sec-CH-UA brand-member params, RFC 7240/tus.io upload metadata, RFC 9110 quality-list / Accept-* header). Consolidating would couple unrelated header families.",
+    },
+    {
+      mode: "family-subset",
+      files: [
+        "lib/cdn-cache-control.js:_splitTopLevelCommas",
+        "lib/client-hints.js:_splitTopLevelSemis",
+        "lib/http-client-cache.js:_splitTopLevelCommas",
+        "lib/http-message-signature.js:_splitTopLevelSemis",
+      ],
+      reason: "Quote-aware top-level structured-fields splitter — walks a string respecting RFC 8941 §3.3.3 quoted-string state with backslash-escape so `,` (cdn-cache-control / http-client-cache) or `;` (client-hints brand-member params / http-message-signature Signature-Input params) inside quoted-string values doesn't split mid-value. Same shape replicated across four parsers because they each split on a different delimiter for a different RFC; consolidation candidate via a shared `b.structuredFields.splitTopLevel(s, sep)` helper but the per-file copy is intentional pending the extraction (operator-grep finds the splitter inside the file that uses it).",
     },
     {
       mode: "family-subset",
@@ -4073,6 +4085,220 @@ var KNOWN_ANTIPATTERNS = [
 // docstrings (RFC 5424 wire-format diagrams, header-field markers,
 // "<T>" timestamp tokens, etc.).
 
+// ---- Pattern: trim-then-validate (v0.8.90 fix-up) ----
+//
+// A string value is trimmed and THEN scanned for control bytes /
+// header-injection-shape characters. Because `.trim()` strips C0
+// from the ends of the string, the subsequent scan operates on a
+// value with attacker-controlled leading/trailing control bytes
+// already removed. Contract says "we refuse control bytes";
+// operator can pass a leading newline + token and get the token
+// accepted.
+//
+// Surfaced 2026-05-11 — `b.mail.requireTls.parseTlsRequiredHeader`
+// scanned `trimmed`, not `headerValue`. Fix: scan raw value first
+// (ASCII HT optionally allowed as folding whitespace), THEN trim.
+function testTrimBeforeControlByteScan() {
+  // class: trim-before-validate
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    var bindings = [];
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      var m = line.match(/\b(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\.trim\(\)\s*;?/);
+      if (m && m[1] !== m[2]) bindings.push({ name: m[1], raw: m[2], line: li });
+
+      var ccMatch = line.match(/\b([A-Za-z_][A-Za-z0-9_]*)\.charCodeAt\(/);
+      if (!ccMatch) continue;
+      var window = (lines[li-2] || "") + (lines[li-1] || "") + line +
+                   (lines[li+1] || "") + (lines[li+2] || "") + (lines[li+3] || "");
+      if (!/<\s*32\b|<\s*0x20\b|===\s*127\b|===\s*0x7F\b|===\s*0x7f\b/.test(window)) continue;
+
+      var scanned = ccMatch[1];
+      for (var bi = 0; bi < bindings.length; bi++) {
+        var bnd = bindings[bi];
+        if (bnd.name !== scanned) continue;
+        if (li - bnd.line > 12) continue;
+        var prelude = "";
+        for (var pi = Math.max(0, bnd.line - 5); pi < bnd.line; pi++) prelude += lines[pi] + "\n";
+        var combined = prelude + window;
+        var rawRe = new RegExp("\\b" + bnd.raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\.charCodeAt\\(");
+        if (rawRe.test(combined)) continue;
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "control-byte scan iterates trimmed `" + scanned + "` instead of raw `" + bnd.raw + "` — bytes at the value's edges get stripped before the gate runs",
+        });
+        break;
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "trim-before-validate");
+  _report("control-byte scan must run on RAW value before .trim() — trimming first strips leading/trailing C0/DEL bytes the gate is supposed to refuse (mail-require-tls bug class)",
+    bad);
+}
+
+// ---- Pattern: enum-rank comparison without prior validity check ----
+//
+// A function maps each enum-typed input to a numeric rank / level via
+// an internal lookup, then arithmetic-compares the two ranks. Unknown
+// inputs map to rank 0 (the default-for-unknown) and `0 >= 0`
+// returns true — so `meets("bad", "bad")` falsely passes the gate.
+//
+// Surfaced 2026-05-11 — `b.auth.fal.meets()` returned true for
+// invalid bands.
+function testEnumRankWithoutValidation() {
+  // class: enum-rank-without-validation
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel === "lib/auth/fal.js" || rel === "lib/auth/aal.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      var m = line.match(/\b(_?[a-zA-Z]*(?:Rank|Level)[A-Za-z]*)\s*\([^)]+\)\s*(>=|<=|>|<)\s*\1\s*\(/);
+      if (!m) continue;
+      var preludeStart = Math.max(0, li - 12);
+      var prelude = lines.slice(preludeStart, li).join("\n");
+      var hasValidityCheck =
+        /\bisValid[A-Za-z]*\s*\(/.test(prelude) ||
+        /\bKNOWN_[A-Z_]+\s*\[/.test(prelude) ||
+        /\b_isValid[A-Za-z]*\s*\(/.test(prelude) ||
+        /\.indexOf\s*\([^)]+\)\s*===\s*-1\b[\s\S]{0,80}?return\s+false/.test(prelude) ||
+        /\b[A-Z][A-Z_]*_VOCAB\b/.test(prelude) ||
+        /\b[A-Z][A-Z_]*_BANDS?\b/.test(prelude) ||
+        /\bif\s*\(\s*![\s\S]{0,80}?\)\s*return\s+false\s*;/.test(prelude);
+      if (hasValidityCheck) continue;
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "rank/level compare `" + m[0].trim() + "` without preceding `isValid*` / membership check — unknown inputs map to default rank and falsely pass (fal.meets bug class)",
+      });
+    }
+  }
+  bad = _filterMarkers(bad, "enum-rank-without-validation");
+  _report("enum rank/level comparison must validate both inputs against known vocabulary first (fal.meets bug class — unknown inputs map to default rank and 0 >= 0 falsely passes)",
+    bad);
+}
+
+// ---- Pattern: boolean directive flag flipped to false by qualified arg ----
+//
+// `out[X] = (val === true || val === "" || val === "true")` flips
+// the flag to false when val is a NON-EMPTY string (the RFC 9111
+// §5.2.2.4 / §5.2.2.6 qualified-form `private="Authorization"` /
+// `no-cache="Set-Cookie"`). Presence of the directive SHOULD enable
+// it; the argument narrows scope, not the verdict.
+//
+// Surfaced 2026-05-11 — `b.cdnCacheControl.parse` had this exact
+// shape.
+function testNoBoolStringCoerceShape() {
+  // class: bool-string-coerce-shape
+  var matches = _scan(/===\s*""\s*\|\|\s*[A-Za-z_$][\w$]*\s*===\s*"true"/);
+  matches = _filterMarkers(matches, "bool-string-coerce-shape");
+  _report("boolean directive presence-check must NOT coerce via `val === \"\" || val === \"true\"` — qualified-form arguments (RFC 9111 §5.2.2.4 / §5.2.2.6 `private=\"X\"`) flip the flag to false. Presence == enabled; surface the argument on a separate field map.",
+    matches);
+}
+
+// ---- Pattern: bare .split() on RFC header value that allows quoted-string fields ----
+//
+// A file parses HTTP / email header value via `.split(",")` (or
+// `.split(";")`) and ALSO contains an sf-string unquote regex shape
+// — meaning the parser KNOWS its values can be quoted strings but
+// doesn't respect quoted-comma boundaries during the split.
+// RFC 8941 §3.3.3 + RFC 9110 §5.5 quoted-string values legitimately
+// contain commas inside quotes (e.g. `private="Authorization,
+// Cookie"`); a bare split produces fake list members and corrupts
+// the parse output.
+//
+// Surfaced 2026-05-11 — `b.cdnCacheControl.parse` did this.
+function testNoBareCommaSplitOnQuotedHeader() {
+  // class: bare-split-on-quoted-header
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel === "lib/cdn-cache-control.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    if (!/\\\\"|replace\s*\(\s*\/\\\\"/.test(content)) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      if (!/\.split\(\s*["'][,;]["']\s*\)/.test(line)) continue;
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "bare `.split()` on a header value whose grammar allows quoted-string members — quoted commas/semicolons inside quotes will split the list. Use a quote-aware top-level splitter that tracks inQuote + escape state.",
+      });
+    }
+  }
+  bad = _filterMarkers(bad, "bare-split-on-quoted-header");
+  _report("RFC structured-fields parser must use quote-aware top-level splitter, not bare `.split(\",\") / .split(\";\")` (RFC 8941 §3.3.3 quoted-string values can contain delimiter chars — cdn-cache-control.parse bug class)",
+    bad);
+}
+
+// ---- Pattern: scoped-context binding (e.g. SRS forwarder domain) not verified ----
+//
+// A `create({ forwarderDomain })` / `create({ realm })` /
+// `create({ origin })` factory binds an instance to a specific
+// SCOPED CONTEXT. A later `reverse()` / `verify()` accepts a tagged
+// value and verifies the HMAC / signature but never checks that
+// the value's embedded context matches the rewriter's binding.
+//
+// Surfaced 2026-05-11 — `b.mail.srs.reverse` verified the HMAC but
+// didn't compare the SRS0 address's `@domain` part against the
+// rewriter's `forwarderDomain`.
+function testScopedContextBindingUsed() {
+  // class: scoped-context-binding-unused
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var captureRe = /var\s+(\w+(?:Domain|Realm|Origin|Audience|Issuer|Aud|Iss)\w*)\s*=\s*opts\.\w+(?:Domain|Realm|Origin|Audience|Issuer|Aud|Iss)\w*(?:\.toLowerCase\(\))?\s*;/g;
+    var capm;
+    var captures = [];
+    while ((capm = captureRe.exec(content)) !== null) captures.push(capm[1]);
+    if (captures.length === 0) continue;
+    var hasVerifyFn = /function\s+(reverse|verify|decode|parseToken)\s*\(/.test(content);
+    if (!hasVerifyFn) continue;
+    for (var ci = 0; ci < captures.length; ci++) {
+      var name = captures[ci];
+      var useRe = new RegExp("\\b" + name + "\\b\\s*(?:!==|===|!=|==|\\.localeCompare\\b)|(?:!==|===|!=|==)\\s*" + name + "\\b");
+      if (useRe.test(content)) continue;
+      var lines = content.split(/\r?\n/);
+      var hitLine = 0;
+      for (var li2 = 0; li2 < lines.length; li2++) {
+        if (lines[li2].indexOf("var " + name) !== -1) { hitLine = li2 + 1; break; }
+      }
+      bad.push({
+        file:    rel,
+        line:    hitLine || 1,
+        content: "scope-named opt `" + name + "` captured at factory time but never compared against any inbound value — verify / reverse / decode paths may accept tags scoped to a DIFFERENT context (SRS forwarder-domain bug class)",
+      });
+    }
+  }
+  bad = _filterMarkers(bad, "scoped-context-binding-unused");
+  _report("scope-named factory bindings (domain / realm / origin / audience / issuer) must be compared against the inbound value's embedded scope in the verify / reverse path (SRS forwarder-domain bug class)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -4158,6 +4384,13 @@ async function run() {
   testNoStateStampsInPublicDocs();
   testNoLegacyUrlFormat();
   testNoDeniedVendors();
+  // v0.8.91 bug-class detectors — derived from the
+  // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
+  testTrimBeforeControlByteScan();
+  testEnumRankWithoutValidation();
+  testNoBoolStringCoerceShape();
+  testNoBareCommaSplitOnQuotedHeader();
+  testScopedContextBindingUsed();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
