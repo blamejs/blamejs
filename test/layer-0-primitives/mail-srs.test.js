@@ -23,9 +23,9 @@ function testSurface() {
 function testRoundTrip() {
   var srs = _newSrs();
   var rw = srs.rewrite("alice@bob.com");
-  check("rewrite: starts with SRS0=", rw.indexOf("SRS0=") === 0);
+  check("rewrite: starts with SRS0=", rw.startsWith("SRS0="));
   check("rewrite: ends with @forwarder.example",
-        rw.indexOf("@forwarder.example") === rw.length - "@forwarder.example".length);
+        rw.endsWith("@forwarder.example"));
   check("reverse: round-trip recovers original",
         srs.reverse(rw) === "alice@bob.com");
 }
@@ -103,7 +103,7 @@ function testForwarderDomainBinding() {
 
   var rw1 = srs1.rewrite("alice@bob.com");
   check("rewrite: ends with bound forwarder domain",
-        rw1.indexOf("@fwd1.example") === rw1.length - "@fwd1.example".length);
+        rw1.endsWith("@fwd1.example"));
 
   // Use the same secret on srs2 — same HMAC tag verifies.
   var threw = null;
