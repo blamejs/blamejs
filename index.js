@@ -147,6 +147,7 @@ var problemDetails = require("./lib/problem-details");
 var cacheStatus = require("./lib/cache-status");
 var cdnCacheControl = require("./lib/cdn-cache-control");
 var clientHints = require("./lib/client-hints");
+var structuredFields = require("./lib/structured-fields");
 var serverTiming = require("./lib/server-timing");
 var earlyHints = require("./lib/early-hints");
 var gateContract = require("./lib/gate-contract");
@@ -381,6 +382,7 @@ module.exports = {
   cacheStatus:      cacheStatus,
   cdnCacheControl:  cdnCacheControl,
   clientHints:      clientHints,
+  structuredFields: structuredFields,
   serverTiming:     serverTiming,
   earlyHints:       earlyHints,
   gateContract:     gateContract,

@@ -4115,26 +4115,43 @@ function testTrimBeforeControlByteScan() {
       var m = line.match(/\b(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\.trim\(\)\s*;?/);
       if (m && m[1] !== m[2]) bindings.push({ name: m[1], raw: m[2], line: li });
 
+      // Shape 1: `charCodeAt` loop on the trimmed name checking
+      // a control-byte range. Original v0.8.90 bug shape.
       var ccMatch = line.match(/\b([A-Za-z_][A-Za-z0-9_]*)\.charCodeAt\(/);
-      if (!ccMatch) continue;
-      var window = (lines[li-2] || "") + (lines[li-1] || "") + line +
-                   (lines[li+1] || "") + (lines[li+2] || "") + (lines[li+3] || "");
-      if (!/<\s*32\b|<\s*0x20\b|===\s*127\b|===\s*0x7F\b|===\s*0x7f\b/.test(window)) continue;
+      var grammarReMatch = null;
+      var scanned = null;
+      if (ccMatch) {
+        var window = (lines[li-2] || "") + (lines[li-1] || "") + line +
+                     (lines[li+1] || "") + (lines[li+2] || "") + (lines[li+3] || "");
+        if (!/<\s*32\b|<\s*0x20\b|===\s*127\b|===\s*0x7F\b|===\s*0x7f\b/.test(window)) continue;
+        scanned = ccMatch[1];
+      } else {
+        // Shape 2: a grammar regex `<NAME>_RE.test(<trimmed>)` whose
+        // RFC grammar implicitly excludes C0/DEL. Same v0.8.90 bug
+        // class — the regex defends grammar but trim() already
+        // stripped the leading/trailing control bytes. Matched by
+        // the existing testFormatValidatorLengthCap detector for
+        // length but not for "must scan raw bytes before trim".
+        grammarReMatch = line.match(/\b([A-Z][A-Z_]*_RE)\.test\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/);
+        if (!grammarReMatch) continue;
+        scanned = grammarReMatch[2];
+      }
 
-      var scanned = ccMatch[1];
       for (var bi = 0; bi < bindings.length; bi++) {
         var bnd = bindings[bi];
         if (bnd.name !== scanned) continue;
         if (li - bnd.line > 12) continue;
         var prelude = "";
         for (var pi = Math.max(0, bnd.line - 5); pi < bnd.line; pi++) prelude += lines[pi] + "\n";
-        var combined = prelude + window;
-        var rawRe = new RegExp("\\b" + bnd.raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\.charCodeAt\\(");
-        if (rawRe.test(combined)) continue;
+        var combined = prelude + (grammarReMatch ? line : ((lines[li-2] || "") + (lines[li-1] || "") + line + (lines[li+1] || "") + (lines[li+2] || "") + (lines[li+3] || "")));
+        var rawNameEscaped = bnd.raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        var rawCcRe = new RegExp("\\b" + rawNameEscaped + "\\.charCodeAt\\(");
+        var rawSfRe = new RegExp("structuredFields\\.(?:refuseControlBytes|containsControlBytes)\\s*\\(\\s*" + rawNameEscaped + "\\b");
+        if (rawCcRe.test(combined) || rawSfRe.test(combined)) continue;
         bad.push({
           file:    rel,
           line:    li + 1,
-          content: "control-byte scan iterates trimmed `" + scanned + "` instead of raw `" + bnd.raw + "` — bytes at the value's edges get stripped before the gate runs",
+          content: "control-byte scan / grammar regex iterates trimmed `" + scanned + "` instead of raw `" + bnd.raw + "` — bytes at the value's edges get stripped before the gate runs",
         });
         break;
       }
