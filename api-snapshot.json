@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.81",
-  "createdAt": "2026-05-11T14:09:27.012Z",
+  "frameworkVersion": "0.8.82",
+  "createdAt": "2026-05-11T14:25:19.670Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4295,6 +4295,48 @@
         "POSTURE_DEFAULTS": {
           "type": "object",
           "members": {
+            "ar-pdpa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "au-privacy": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "ca-ab853": {
               "type": "object",
               "members": {
@@ -4358,6 +4400,48 @@
                 }
               }
             },
+            "can-spam": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "cl-pdpa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "cn-ai-label": {
               "type": "object",
               "members": {
@@ -4380,6 +4464,69 @@
               }
             },
             "co-ai": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "coppa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "coppa-2025": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "dga": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -4442,7 +4589,91 @@
                 }
               }
             },
+            "dsa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "eaa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eidas-2": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eu-cer": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eu-cyber-sol": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -4547,6 +4778,69 @@
                 }
               }
             },
+            "gina": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "glba-safeguards": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hhs-repro-24": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "hipaa": {
               "type": "object",
               "members": {
@@ -4590,6 +4884,48 @@
               }
             },
             "hitech": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "id-pdp": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "il-gipa": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -4715,7 +5051,133 @@
                 }
               }
             },
+            "md-kids-code": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "modpa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "mx-lfpdppp": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "my-pdpa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "nist-pf-1.1": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ny-safe-kids": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ny-saffe": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -4799,6 +5261,27 @@
                 }
               }
             },
+            "pipa-kr": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "pipl-cn": {
               "type": "object",
               "members": {
@@ -4862,6 +5345,27 @@
                 }
               }
             },
+            "th-pdpa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "tx-traiga": {
               "type": "object",
               "members": {
@@ -4883,7 +5387,91 @@
                 }
               }
             },
+            "uk-duaa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "ut-aipa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "vn-pdp": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "vppa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "vt-aadc": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -4952,6 +5540,48 @@
               }
             },
             "appi-jp": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ar-pdpa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "au-privacy": {
               "type": "object",
               "members": {
                 "citation": {
@@ -5077,7 +5707,49 @@
                 }
               }
             },
+            "can-spam": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "ccpa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "cl-pdpa": {
               "type": "object",
               "members": {
                 "citation": {
@@ -5141,6 +5813,48 @@
               }
             },
             "co-cpa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "coppa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "coppa-2025": {
               "type": "object",
               "members": {
                 "citation": {
@@ -5245,6 +5959,27 @@
                 }
               }
             },
+            "dga": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "dora": {
               "type": "object",
               "members": {
@@ -5287,7 +6022,91 @@
                 }
               }
             },
+            "dsa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "eaa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eidas-2": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eu-cer": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eu-cyber-sol": {
               "type": "object",
               "members": {
                 "citation": {
@@ -5413,6 +6232,69 @@
                 }
               }
             },
+            "gina": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "glba-safeguards": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hhs-repro-24": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "hipaa": {
               "type": "object",
               "members": {
@@ -5477,6 +6359,48 @@
               }
             },
             "ia-icdpa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "id-pdp": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "il-gipa": {
               "type": "object",
               "members": {
                 "citation": {
@@ -5644,6 +6568,27 @@
                 }
               }
             },
+            "md-kids-code": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "mn-mncdpa": {
               "type": "object",
               "members": {
@@ -5687,6 +6632,48 @@
               }
             },
             "mt-cdpa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "mx-lfpdppp": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "my-pdpa": {
               "type": "object",
               "members": {
                 "citation": {
@@ -5770,6 +6757,27 @@
                 }
               }
             },
+            "nist-pf-1.1": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "nj-njdpa": {
               "type": "object",
               "members": {
@@ -5792,6 +6800,48 @@
               }
             },
             "nv-sb370": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ny-safe-kids": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ny-saffe": {
               "type": "object",
               "members": {
                 "citation": {
@@ -5897,6 +6947,27 @@
               }
             },
             "pdpa-sg": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pipa-kr": {
               "type": "object",
               "members": {
                 "citation": {
@@ -6064,6 +7135,27 @@
                 }
               }
             },
+            "th-pdpa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "tn-tipa": {
               "type": "object",
               "members": {
@@ -6148,6 +7240,27 @@
                 }
               }
             },
+            "uk-duaa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "uk-gdpr": {
               "type": "object",
               "members": {
@@ -6191,6 +7304,69 @@
               }
             },
             "vcdpa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "vn-pdp": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "vppa": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "vt-aadc": {
               "type": "object",
               "members": {
                 "citation": {

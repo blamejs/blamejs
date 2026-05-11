@@ -156,9 +156,10 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 ### Compliance regimes
 
 - **Posture coordinator** — `b.compliance` cascades operator-declared regime into retention / audit / db / cryptoField via POSTURE_DEFAULTS:
-  - **US** — `hipaa` / `hipaa-2026` / `hitech` / `pci-dss` / `sox-404` / `soc2` / `soc2-cc1.3` / `sec-cyber` / `sec-17a-4` / `finra-4511` / `fda-21cfr11` / `fda-annex-11` / `modpa` / `nydfs-500` / `staterramp` / `ferpa` / `fl-fdbr`
-  - **EU / UK** — `gdpr` / `dora` / `nis2` / `cra` / `eu-data-act` / `eaa` / `uk-g-cloud`
-  - **APAC + LATAM** — `dpdp` / `pipl-cn` / `lgpd-br` / `appi-jp` / `pdpa-sg` / `quebec-25` / `irap` / `kr-ai-basic`
+  - **US** — `hipaa` / `hipaa-2026` / `hhs-repro-24` / `hitech` / `pci-dss` / `glba-safeguards` / `sox-404` / `soc2` / `soc2-cc1.3` / `sec-cyber` / `sec-17a-4` / `finra-4511` / `fda-21cfr11` / `fda-annex-11` / `modpa` / `nydfs-500` / `staterramp` / `ferpa` / `fl-fdbr` / `coppa` / `coppa-2025` / `gina` / `vppa` / `can-spam` / `il-gipa` / `nist-pf-1.1`
+  - **EU / UK** — `gdpr` / `dora` / `nis2` / `cra` / `eu-data-act` / `eaa` / `uk-g-cloud` / `uk-duaa` / `dsa` / `dga` / `eu-cer` / `eu-cyber-sol` / `eidas-2`
+  - **APAC + LATAM** — `dpdp` / `pipl-cn` / `lgpd-br` / `appi-jp` / `pdpa-sg` / `quebec-25` / `irap` / `kr-ai-basic` / `pipa-kr` / `au-privacy` / `th-pdpa` / `vn-pdp` / `id-pdp` / `my-pdpa` / `cl-pdpa` / `mx-lfpdppp` / `ar-pdpa`
+  - **Child privacy / age-appropriate design** — `ca-aadc` / `ny-safe-kids` / `ny-saffe` / `md-kids-code` / `vt-aadc`
   - **Financial / data-portability** — `fapi2` / `fapi-2.0-message-signing` / `fdx` / `dsr`
   - **AI governance** — `co-ai` / `il-hb3773` / `tx-traiga` / `ut-aipa` / `nyc-ll144` / `ca-tfaia` / `ca-sb942` / `ca-ab853` / `cn-ai-label` / `iso-42001` / `iso-23894`
   - **Accessibility** — `wcag-2-2`
