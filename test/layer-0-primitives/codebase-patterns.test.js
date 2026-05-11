@@ -4316,6 +4316,211 @@ function testScopedContextBindingUsed() {
     bad);
 }
 
+// ---- Pattern: gitleaks-tripping high-entropy identifier without allowlist ----
+//
+// CI gitleaks scan flags long camelCase identifier names (e.g.
+// `x25519PrivateKey`, `mlkemPrivateKey`) under the generic-api-key
+// rule when their Shannon entropy crosses the 3.5+ threshold. The
+// framework's public KEM surface uses these names deliberately —
+// they're parameter names, not credentials — and we maintain a
+// stopword list in `.gitleaks.toml` to suppress the false positive.
+//
+// This detector runs the same entropy + stopword check LOCALLY so
+// the bug surfaces at codebase-patterns time instead of waiting for
+// the CI gitleaks gate to fire after push. Scans operator-facing
+// files (CHANGELOG, README, SECURITY, MIGRATING, lib/**/*.js JSDoc
+// @example blocks) for 20+ char alphanum tokens with entropy >= 3.5;
+// each token must be either (a) a stopword in .gitleaks.toml's
+// `[[allowlists]]` blocks OR (b) covered by an allowlist regex OR
+// (c) preceded by an inline `allow:gitleaks-entropy` marker.
+//
+// Maintenance: when public surface adds a new high-entropy
+// identifier (typically a new KEM keypair primitive), add it to the
+// stopwords block in .gitleaks.toml in the same patch as the
+// primitive — this detector catches the omission at boot.
+function _loadGitleaksAllowlist() {
+  var tomlPath = path.resolve(__dirname, "..", "..", ".gitleaks.toml");
+  var content;
+  try { content = fs.readFileSync(tomlPath, "utf8"); }
+  catch (_e) { return { stopwords: [], regexes: [] }; }
+  // Line-based parser — a regex-based [\s\S]*? match across the whole
+  // file gets confused by `]` chars inside regex literals (e.g.
+  // `[A-Za-z0-9_-]+` terminates a naive non-greedy outer match
+  // early). Walk lines and track `<key> = [ ... ]` state.
+  var stopwords = [];
+  var regexes = [];
+  var lines = content.split(/\r?\n/);
+  var blockKey = null;   // "stopwords" / "regexes" / null
+  var blockBody = "";
+  for (var i = 0; i < lines.length; i += 1) {
+    var line = lines[i];
+    if (blockKey === null) {
+      var open = line.match(/^\s*(stopwords|regexes)\s*=\s*\[\s*(.*)$/);
+      if (!open) continue;
+      blockKey = open[1];
+      blockBody = open[2] + "\n";
+      // Same-line `]` close: `key = [ "x" ]`.
+      if (open[2].indexOf("]") !== -1) {
+        _flushBlock(blockKey, blockBody.split("]")[0]);
+        blockKey = null; blockBody = "";
+      }
+      continue;
+    }
+    // Inside a block: append line; close when we see `]`.
+    if (/^\s*\]/.test(line)) {
+      _flushBlock(blockKey, blockBody);
+      blockKey = null;
+      blockBody = "";
+      continue;
+    }
+    blockBody += line + "\n";
+  }
+  function _flushBlock(key, body) {
+    // Try triple-quoted FIRST (TOML literal multi-line) before
+    // single-quoted, so a `'''...'''` body isn't mis-parsed as two
+    // empty single-quoted strings. Then double-quoted basic. Then
+    // single-quoted basic. Skip empty captures so a malformed empty
+    // string doesn't generate an `/(?:)/`-equivalent regex that
+    // matches everything.
+    var entryRe = /'''([\s\S]*?)'''|"((?:[^"\\]|\\.)*)"|'([^']*)'/g;
+    var em;
+    while ((em = entryRe.exec(body)) !== null) {
+      var raw = em[1] !== undefined ? em[1] : (em[2] !== undefined ? em[2] : em[3]);
+      if (raw === undefined || raw.length === 0) continue;
+      if (key === "stopwords") {
+        stopwords.push(raw);
+      } else if (key === "regexes") {
+        try { regexes.push(new RegExp(raw)); } catch (_re) { /* malformed */ }
+      }
+    }
+  }
+  return { stopwords: stopwords, regexes: regexes };
+}
+
+function _shannonEntropy(s) {
+  if (!s || s.length === 0) return 0;
+  var counts = Object.create(null);
+  for (var i = 0; i < s.length; i += 1) {
+    var c = s.charAt(i);
+    counts[c] = (counts[c] || 0) + 1;
+  }
+  var entropy = 0;
+  var keys = Object.keys(counts);
+  for (var k = 0; k < keys.length; k += 1) {
+    var p = counts[keys[k]] / s.length;
+    entropy -= p * (Math.log(p) / Math.LN2);
+  }
+  return entropy;
+}
+
+// Curated list of identifier names that have historically tripped CI
+// gitleaks (generic-api-key + related rules) at entropy 3.5+. Each
+// entry is a public framework parameter / property name that operators
+// mention in CHANGELOG / lib JSDoc / examples; gitleaks treats them as
+// candidate secrets because of their high entropy + crypto context.
+//
+// Maintenance: when public surface adds a new high-entropy KEM /
+// crypto identifier (typically a parameter from a new keypair
+// primitive), append it here AND to .gitleaks.toml's stopwords block
+// in the same patch. This detector verifies the two stay in sync:
+// every entry below MUST be a stopword in .gitleaks.toml or be
+// matched by a regex allowlist there.
+//
+// Past incidents that prompted entries:
+//   v0.7.28 / v0.8.0   — `mlkemPrivateKey` / `x25519PrivateKey`
+//                         (ML_KEM_768_X25519 hybrid envelope surface)
+//   v0.8.49 / v0.8.50  — same identifier names in @example blocks
+//   v0.9.0 fix-up      — bare-identifier form not covered by the
+//                         existing bracketed-shape regex
+var KNOWN_GITLEAKS_TRIPPING_IDS = Object.freeze([
+  "x25519PrivateKey",
+  "x25519PublicKey",
+  "mlkemPrivateKey",
+  "mlkemPublicKey",
+]);
+
+function testGitleaksTrippingPatternsAllowlisted() {
+  // class: gitleaks-entropy-unallowed
+  var allowlist = _loadGitleaksAllowlist();
+  var REPO_ROOT = path.resolve(__dirname, "..", "..");
+  var bad = [];
+
+  // Part 1 — every curated identifier MUST be in .gitleaks.toml
+  // stopwords OR match a regex allowlist. Without this gate, a future
+  // refactor that removes the stopword leaves the CI gitleaks scan
+  // exposed and operators don't discover until after push.
+  for (var ki = 0; ki < KNOWN_GITLEAKS_TRIPPING_IDS.length; ki += 1) {
+    var ident = KNOWN_GITLEAKS_TRIPPING_IDS[ki];
+    if (allowlist.stopwords.indexOf(ident) !== -1) continue;
+    var covered = false;
+    for (var ri = 0; ri < allowlist.regexes.length; ri += 1) {
+      if (allowlist.regexes[ri].test(ident)) { covered = true; break; }
+    }
+    if (covered) continue;
+    bad.push({
+      file:    ".gitleaks.toml",
+      line:    1,
+      content: "known-gitleaks-tripping identifier '" + ident + "' is in " +
+               "KNOWN_GITLEAKS_TRIPPING_IDS (codebase-patterns.test.js) but " +
+               "is neither stopworded nor regex-allowlisted in .gitleaks.toml. " +
+               "Add it to the [[allowlists]] stopwords block — CI gitleaks " +
+               "scan will fail without it.",
+    });
+  }
+
+  // Part 2 — scan operator-facing markdown for known-tripping
+  // fundamental secret shapes that gitleaks flags regardless of
+  // surrounding context (JWT compact serialisations, Stripe
+  // `sk_live_...` tokens). These are unambiguous; no crypto-context
+  // gating needed.
+  var docs = ["CHANGELOG.md", "README.md", "SECURITY.md", "MIGRATING.md", "LTS-CALENDAR.md"];
+  var FUNDAMENTAL_SECRET_SHAPES = [
+    /\bsk_live_[A-Za-z0-9]{20,}/g,
+    /\beyJ[A-Za-z0-9_-]{20,}/g,
+  ];
+  for (var di = 0; di < docs.length; di += 1) {
+    var docPath = path.resolve(REPO_ROOT, docs[di]);
+    var content;
+    try { content = fs.readFileSync(docPath, "utf8"); }
+    catch (_e) { continue; }
+    var rel = docs[di];
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li += 1) {
+      var line = lines[li];
+      if (/allow:gitleaks-entropy\b/.test(line)) continue;
+      for (var si = 0; si < FUNDAMENTAL_SECRET_SHAPES.length; si += 1) {
+        var fre = FUNDAMENTAL_SECRET_SHAPES[si];
+        fre.lastIndex = 0;
+        var fm;
+        while ((fm = fre.exec(line)) !== null) {
+          var fmatch = fm[0];
+          var fcov = false;
+          for (var rj = 0; rj < allowlist.regexes.length; rj += 1) {
+            if (allowlist.regexes[rj].test(fmatch)) { fcov = true; break; }
+          }
+          if (fcov) continue;
+          if (allowlist.stopwords.indexOf(fmatch) !== -1) continue;
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: "secret-shape token '" + fmatch.slice(0, 30) +
+                     "...' would trip CI gitleaks (JWT / Stripe shape). " +
+                     "Add allowlist entry in .gitleaks.toml.",
+          });
+        }
+      }
+    }
+  }
+
+  bad = _filterMarkers(bad, "gitleaks-entropy-unallowed");
+  _report("known-gitleaks-tripping identifiers (curated list in " +
+          "codebase-patterns.test.js) must be stopworded or regex-" +
+          "allowlisted in .gitleaks.toml; fundamental secret shapes " +
+          "(JWT / Stripe `sk_live_...`) in operator-facing markdown " +
+          "must also be allowlisted — front-runs CI gitleaks",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -4408,6 +4613,7 @@ async function run() {
   testNoBoolStringCoerceShape();
   testNoBareCommaSplitOnQuotedHeader();
   testScopedContextBindingUsed();
+  testGitleaksTrippingPatternsAllowlisted();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
