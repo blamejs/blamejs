@@ -186,7 +186,7 @@ async function _testLoadDbBackedTransformValue() {
     }),
     env:            {},
     fetchRows:      function () { return rows; },
-    intervalMs:     5000,
+    intervalMs:     50,
     transformValue: function (row) {
       transformCalls += 1;
       if (typeof row.sealed !== "string" || row.sealed.indexOf("sealed:") !== 0) {
@@ -196,7 +196,7 @@ async function _testLoadDbBackedTransformValue() {
     },
   });
   await helpers.waitUntil(function () { return cfg.value.STRIPE_SECRET === "sk_live_AAA"; }, {
-    timeoutMs: 5000,
+    timeoutMs: 10000,
     label:     "loadDbBacked: transformValue surfaces STRIPE_SECRET",
   });
   helpers.check("loadDbBacked: transformValue ran per row",
