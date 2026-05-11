@@ -145,6 +145,8 @@ var compliance = Object.assign({}, require("./lib/compliance"), {
 var dataAct = require("./lib/data-act");
 var problemDetails = require("./lib/problem-details");
 var cacheStatus = require("./lib/cache-status");
+var cdnCacheControl = require("./lib/cdn-cache-control");
+var clientHints = require("./lib/client-hints");
 var serverTiming = require("./lib/server-timing");
 var earlyHints = require("./lib/early-hints");
 var gateContract = require("./lib/gate-contract");
@@ -377,6 +379,8 @@ module.exports = {
   dataAct:          dataAct,
   problemDetails:   problemDetails,
   cacheStatus:      cacheStatus,
+  cdnCacheControl:  cdnCacheControl,
+  clientHints:      clientHints,
   serverTiming:     serverTiming,
   earlyHints:       earlyHints,
   gateContract:     gateContract,

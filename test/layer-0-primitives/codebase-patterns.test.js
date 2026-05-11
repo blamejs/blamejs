@@ -1786,12 +1786,15 @@ async function testNoDuplicateCodeBlocks() {
       reason: "req.on('data'/'end'/'error') promise wrapper + safeBuffer.boundedChunkCollector cap-bounded streaming-body collector. Each call site bounds at the per-domain cap (A2A 1 MiB, tus-upload per-chunk cap, keychain per-operation cap) and surfaces a domain-specific error class on cap overflow — extracting would couple unrelated wire formats into a single primitive that none of them want.",
     },
     {
+      mode: "family-subset",
       files: [
         "lib/auth/step-up.js:_quote",
+        "lib/cdn-cache-control.js:parse",
+        "lib/client-hints.js:_scanControlBytes",
         "lib/mail-require-tls.js:parseTlsRequiredHeader",
         "lib/middleware/bearer-auth.js:create",
       ],
-      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Three different domain validators (RFC 9470 step-up sf-string quote, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
+      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Five different domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
     {
       files: [
@@ -1802,13 +1805,49 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Per-primitive `_emitAudit` audit-wrapper closures — three different audit namespaces (a2a / mcp.tool_registry / idempotency) each binding a try/catch around `audit().safeEmit({ action, outcome, metadata })`. Future consolidation candidate (matches validateOpts.makeNamespacedEmitters which several other primitives already use); allowlisted here so the v0.8.85 ship doesn't drift into refactoring three callers in the same patch.",
     },
     {
+      mode: "family-subset",
       files: [
         "lib/cache-status.js:parse",
+        "lib/cdn-cache-control.js:parse",
+        "lib/client-hints.js:_parseBrandMember",
         "lib/mail-auth.js:_parseArcTagList",
         "lib/mail-auth.js:_parseDmarcRecord",
+        "lib/mail-bimi.js:parseRecord",
         "lib/mail-dkim.js:_parseDkimTagList",
+        "lib/network-smtp-policy.js:_parseStsPolicy",
       ],
-      reason: "RFC structured-field tag-list parser scaffolding — split on top-level separator + handle quoted strings + extract key=value pairs. Each call site enforces a different RFC's tag-name vocabulary (RFC 9211 Cache-Status; RFC 8617 ARC tag-set; RFC 7489 DMARC record; RFC 6376 DKIM-Signature). Future consolidation candidate but each site emits domain-typed output that consolidation would erase.",
+      reason: "RFC structured-field tag-list parser scaffolding — split on top-level separator + handle quoted strings + extract key=value pairs. Each call site enforces a different RFC's tag-name vocabulary (RFC 9211 Cache-Status; RFC 9213 CDN-Cache-Control; RFC 8941 Sec-CH-UA brand-list; RFC 8617 ARC tag-set; RFC 7489 DMARC record; RFC 9091 BIMI record; RFC 6376 DKIM-Signature; RFC 8461 MTA-STS policy). Future consolidation candidate but each site emits domain-typed output (different field vocabulary, different error class, different shape) that consolidation would erase.",
+    },
+    {
+      mode: "family-subset",
+      files: [
+        "lib/auth/step-up.js:parseChallenge",
+        "lib/cdn-cache-control.js:parse",
+        "lib/cookies.js:parse",
+        "lib/cookies.js:parseSafe",
+        "lib/network-tls.js:_normalizeIpForCompare",
+      ],
+      reason: "Token-list scanner scaffolding: walk a comma-or-semicolon separated header, respect quoted-string boundaries via depth/inQuote state machine, emit per-piece key/value. Each call site enforces a different grammar (RFC 9470 step-up sf-Item challenges, RFC 9213 cache-control directive list, RFC 6265 Set-Cookie header, IPv6 normalization). Consolidating would couple unrelated wire formats.",
+    },
+    {
+      mode: "family-subset",
+      files: [
+        "lib/client-hints.js:acceptList",
+        "lib/middleware/require-content-type.js:_normalizeAllowed",
+        "lib/router.js:_matchCompiled",
+        "lib/sandbox.js:_validateAllowed",
+        "lib/watcher.js:_compileIgnore",
+      ],
+      reason: "Iterate operator-supplied string array, lowercase + dedupe + emit canonical form. Each call site enforces domain-specific vocabulary (client-hint header names against KNOWN_HINTS allowlist, MIME types against parse rules, route pattern compilation, sandbox path normalization, watcher glob normalization). Consolidating would erase the per-domain canonicalization rules.",
+    },
+    {
+      mode: "family-subset",
+      files: [
+        "lib/cdn-cache-control.js:parse",
+        "lib/middleware/tus-upload.js:_parseMetadata",
+        "lib/request-helpers.js:parseQualityList",
+      ],
+      reason: "Comma-separated header value parser walking pieces and splitting on `=` per piece. Each enforces a different grammar (RFC 9213 directive list, RFC 7240/tus.io upload metadata, RFC 9110 quality-list / Accept-* header). Consolidating would couple unrelated header families.",
     },
     {
       mode: "family-subset",
