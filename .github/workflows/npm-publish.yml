@@ -291,14 +291,32 @@ jobs:
         # `npm audit signatures` verifies the cryptographic signing chain
         # for every package in the install tree against the npm registry's
         # public keys. blamejs ships zero npm runtime deps so the tree is
-        # trivially empty — the step's purpose here is regression-defense:
-        # if a future patch accidentally adds a runtime dep, this gate
-        # catches an unsigned registry entry before the publish step
+        # trivially empty today — the step's purpose here is regression-
+        # defense: if a future patch accidentally adds a runtime dep, this
+        # gate catches an unsigned registry entry before the publish step
         # proceeds.
+        #
+        # When zero deps exist, `npm audit signatures --omit dev` exits 1
+        # with `found no installed dependencies to audit`. That's NOT a
+        # signing failure — it's the empty-tree case the framework
+        # actually wants. The shell guard below treats that exit code as
+        # success while keeping every other failure mode loud.
         run: |
+          set +e
+          OUT=$(npm audit signatures --omit dev 2>&1)
+          STATUS=$?
           set -e
-          npm audit signatures --omit dev
-          echo "[npm-audit-signatures] registry signing chain verified"
+          echo "$OUT"
+          if [ "$STATUS" -eq 0 ]; then
+            echo "[npm-audit-signatures] registry signing chain verified"
+            exit 0
+          fi
+          if echo "$OUT" | grep -qi "no installed dependencies to audit"; then
+            echo "[npm-audit-signatures] empty-deps tree (zero-runtime-deps posture) — regression gate armed for future deps"
+            exit 0
+          fi
+          echo "::error::npm audit signatures failed with a real signing-chain error"
+          exit "$STATUS"
 
       - name: Publish to npm (with SLSA provenance)
         if: ${{ !inputs.dry_run && steps.version.outputs.is_tag == 'true' }}

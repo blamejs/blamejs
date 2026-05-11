@@ -144,6 +144,8 @@ var compliance = Object.assign({}, require("./lib/compliance"), {
 });
 var dataAct = require("./lib/data-act");
 var problemDetails = require("./lib/problem-details");
+var cacheStatus = require("./lib/cache-status");
+var serverTiming = require("./lib/server-timing");
 var gateContract = require("./lib/gate-contract");
 var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
@@ -372,6 +374,8 @@ module.exports = {
   nistCrosswalk:    nistCrosswalk,
   dataAct:          dataAct,
   problemDetails:   problemDetails,
+  cacheStatus:      cacheStatus,
+  serverTiming:     serverTiming,
   gateContract:     gateContract,
   guardCsv:         guardCsv,
   guardHtml:        guardHtml,

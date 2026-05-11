@@ -1794,6 +1794,15 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Per-primitive `_emitAudit` audit-wrapper closures — three different audit namespaces (a2a / mcp.tool_registry / idempotency) each binding a try/catch around `audit().safeEmit({ action, outcome, metadata })`. Future consolidation candidate (matches validateOpts.makeNamespacedEmitters which several other primitives already use); allowlisted here so the v0.8.85 ship doesn't drift into refactoring three callers in the same patch.",
     },
     {
+      files: [
+        "lib/cache-status.js:parse",
+        "lib/mail-auth.js:_parseArcTagList",
+        "lib/mail-auth.js:_parseDmarcRecord",
+        "lib/mail-dkim.js:_parseDkimTagList",
+      ],
+      reason: "RFC structured-field tag-list parser scaffolding — split on top-level separator + handle quoted strings + extract key=value pairs. Each call site enforces a different RFC's tag-name vocabulary (RFC 9211 Cache-Status; RFC 8617 ARC tag-set; RFC 7489 DMARC record; RFC 6376 DKIM-Signature). Future consolidation candidate but each site emits domain-typed output that consolidation would erase.",
+    },
+    {
       mode: "family-subset",
       files: [
         // v0.8.62 federation / VC primitives — every member shares the
@@ -1828,6 +1837,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/a2a-tasks.js:middlewareTasks",
         "lib/a2a-tasks.js:_jsonRpc",
         "lib/ai-adverse-decision.js:wrap",
+        // v0.8.86 — HTTP-hygiene primitives share scaffolding.
+        "lib/middleware/no-cache.js:create",
+        "lib/cache-status.js:entryString",
+        "lib/server-timing.js:create",
         "lib/auth/oid4vp.js:_validateDcql",
         "lib/auth/oid4vp.js:matchDcql",
         "lib/auth/openid-federation.js:parseEntityStatement",
