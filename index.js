@@ -143,6 +143,7 @@ var compliance = Object.assign({}, require("./lib/compliance"), {
   eaa: require("./lib/compliance-eaa"),
 });
 var dataAct = require("./lib/data-act");
+var problemDetails = require("./lib/problem-details");
 var gateContract = require("./lib/gate-contract");
 var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
@@ -370,6 +371,7 @@ module.exports = {
   compliance:       compliance,
   nistCrosswalk:    nistCrosswalk,
   dataAct:          dataAct,
+  problemDetails:   problemDetails,
   gateContract:     gateContract,
   guardCsv:         guardCsv,
   guardHtml:        guardHtml,

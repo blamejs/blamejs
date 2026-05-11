@@ -1770,6 +1770,14 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
+      files: [
+        "lib/cloud-events.js:parse",
+        "lib/pick.js:_pickInner",
+        "lib/problem-details.js:create",
+      ],
+      reason: "Object.keys(...) iteration + POISONED_KEYS allowlist + per-key copy into output. Each call site preserves its own per-field semantics (CloudEvents pulls extensionContext per spec, pick implements the operator-supplied projection, problem-details applies RFC 9457 §3 reserved-field rules) — extracting would couple unrelated specs. pick.POISONED_KEYS is the shared substrate constant, already imported.",
+    },
+    {
       mode: "family-subset",
       files: [
         // v0.8.62 federation / VC primitives — every member shares the

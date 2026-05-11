@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.83",
-  "createdAt": "2026-05-11T14:38:23.047Z",
+  "frameworkVersion": "0.8.84",
+  "createdAt": "2026-05-11T15:16:12.680Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -10227,6 +10227,10 @@
           "type": "function",
           "arity": 4
         },
+        "IdempotencyError": {
+          "type": "function",
+          "arity": 4
+        },
         "JobsError": {
           "type": "function",
           "arity": 4
@@ -10284,6 +10288,10 @@
           "arity": 4
         },
         "PermissionsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "ProblemDetailsError": {
           "type": "function",
           "arity": 4
         },
@@ -28334,6 +28342,10 @@
           "type": "function",
           "arity": 1
         },
+        "idempotencyKey": {
+          "type": "function",
+          "arity": 1
+        },
         "nel": {
           "type": "function",
           "arity": 1
@@ -31707,6 +31719,43 @@
               "arity": 3
             }
           }
+        }
+      }
+    },
+    "problemDetails": {
+      "type": "object",
+      "members": {
+        "ProblemDetailsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "RESERVED_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        },
+        "fromError": {
+          "type": "function",
+          "arity": 2
+        },
+        "getBase": {
+          "type": "function",
+          "arity": 0
+        },
+        "respond": {
+          "type": "function",
+          "arity": 2
+        },
+        "setBase": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
