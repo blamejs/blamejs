@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.86",
-  "createdAt": "2026-05-11T16:55:04.189Z",
+  "frameworkVersion": "0.8.87",
+  "createdAt": "2026-05-11T17:20:31.738Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1520,6 +1520,43 @@
             "verify": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "fal": {
+          "type": "object",
+          "members": {
+            "BANDS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "FAL1": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "FAL2": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "FAL3": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "fromAssertion": {
+              "type": "function",
+              "arity": 1
+            },
+            "isValidBand": {
+              "type": "function",
+              "arity": 1
+            },
+            "meets": {
+              "type": "function",
+              "arity": 2
+            },
+            "requireFal": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -28358,6 +28395,10 @@
             }
           }
         },
+        "feedbackId": {
+          "type": "function",
+          "arity": 1
+        },
         "iprev": {
           "type": "object",
           "members": {
@@ -29091,6 +29132,10 @@
             "getServers": {
               "type": "function",
               "arity": 0
+            },
+            "isNullMx": {
+              "type": "function",
+              "arity": 1
             },
             "lookup": {
               "type": "function",
