@@ -59,7 +59,19 @@ function testMeets() {
   check("FAL3 meets FAL2",  b.auth.fal.meets("FAL3", "FAL2") === true);
   check("FAL3 meets FAL3",  b.auth.fal.meets("FAL3", "FAL3") === true);
   check("FAL1 does not meet FAL2",  b.auth.fal.meets("FAL1", "FAL2") === false);
-  check("invalid does not meet",    b.auth.fal.meets("FALX", "FAL1") === false);
+
+  // Contract: invalid bands on EITHER side return false. The pre-
+  // v0.8.88 implementation mapped unknown bands to rank 0 and
+  // returned `1 >= 0 === true` / `0 >= 0 === true`, producing
+  // false-positive authorization decisions for operators using
+  // meets() directly.
+  check("invalid actual → false",      b.auth.fal.meets("FALX", "FAL1") === false);
+  check("invalid required → false",    b.auth.fal.meets("FAL1", "FALX") === false);
+  check("both invalid → false",        b.auth.fal.meets("bad", "bad") === false);
+  check("both invalid identical → false", b.auth.fal.meets("FALX", "FALX") === false);
+  check("non-string actual → false",   b.auth.fal.meets(null, "FAL1") === false);
+  check("non-string required → false", b.auth.fal.meets("FAL1", null) === false);
+  check("both null → false",           b.auth.fal.meets(null, null) === false);
 }
 
 function testRequireFal() {
