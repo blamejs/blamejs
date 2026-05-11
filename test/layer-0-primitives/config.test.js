@@ -263,6 +263,67 @@ async function _testLoadDbBackedRefresh() {
   cfg.stop();
 }
 
+async function _testLoadDbBackedConcurrentRefreshRace() {
+  // Two refresh()es back-to-back where the FIRST fetchRows is slower
+  // than the SECOND. Without sequence-guarded apply, the older read
+  // resolves last and overwrites the newer save. Verifies the
+  // drop-stale invariant: the latest-STARTED tick's data wins,
+  // regardless of which tick finishes last.
+  var s = b.safeSchema;
+  var saveOrder = [];
+  var current = "initial";
+  function _sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  var callIndex = 0;
+  var cfg = b.config.loadDbBacked({
+    schema:     s.object({ K: s.string().default("d") }),
+    env:        {},
+    fetchRows:  async function () {
+      callIndex += 1;
+      var mine = callIndex;            // capture per-call so concurrent
+                                       // calls don't read each other's index
+      var captured = current;
+      var lat = (mine === 1) ? 200 : 20;  // first slow, second fast
+      saveOrder.push("fetch-" + mine + "-start@" + captured);
+      await _sleep(lat);
+      saveOrder.push("fetch-" + mine + "-end@" + captured);
+      return [{ key: "K", value: captured }];
+    },
+    intervalMs: 60 * 1000,             // poll out of test window
+  });
+  await cfg.hydrated;
+  helpers.check("concurrent-refresh: initial hydration applied",
+    cfg.value.K === "initial");
+
+  // Reset so the race is between two refresh()es only (hydration
+  // already ran with callIndex=1 above; advance counters so the
+  // race's "first call" is slow, "second" is fast).
+  callIndex = 0;
+
+  // Save 1, refresh — fetch will be slow (200ms).
+  current = "save-1";
+  var p1 = cfg.refresh();
+  // Tiny gap to ensure the second refresh starts AFTER the first
+  // entered its fetch (so its seq is strictly greater).
+  await _sleep(10);
+  // Save 2, refresh — fetch will be fast (20ms).
+  current = "save-2";
+  var p2 = cfg.refresh();
+
+  // p2 should resolve first (faster fetch) and leave cfg at "save-2".
+  // p1 should resolve later but DROP its older overlay.
+  await Promise.all([p1, p2]);
+  helpers.check("concurrent-refresh: latest save wins (save-2)",
+    cfg.value.K === "save-2");
+
+  // Verify the slow tick actually finished AFTER the fast tick — i.e.,
+  // the race scenario the user described actually occurred.
+  var fastEndIx = saveOrder.indexOf("fetch-2-end@save-2");
+  var slowEndIx = saveOrder.indexOf("fetch-1-end@save-1");
+  helpers.check("concurrent-refresh: slow tick finished after fast tick",
+    fastEndIx !== -1 && slowEndIx !== -1 && slowEndIx > fastEndIx);
+  cfg.stop();
+}
+
 async function _testCryptoFieldDocAliases() {
   // sealDoc / unsealDoc are doc-shaped aliases of sealRow / unsealRow.
   helpers.check("b.cryptoField.sealDoc exists",
@@ -296,6 +357,7 @@ module.exports = { run: async function () {
   await _testLoadDbBacked();
   await _testLoadDbBackedTransformValue();
   await _testLoadDbBackedRefresh();
+  await _testLoadDbBackedConcurrentRefreshRace();
   await _testCryptoFieldDocAliases();
   await _testHotReload();
 } };
