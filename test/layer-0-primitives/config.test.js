@@ -195,10 +195,7 @@ async function _testLoadDbBackedTransformValue() {
       return row.sealed.slice("sealed:".length);
     },
   });
-  await helpers.waitUntil(function () { return cfg.value.STRIPE_SECRET === "sk_live_AAA"; }, {
-    timeoutMs: 10000,
-    label:     "loadDbBacked: transformValue surfaces STRIPE_SECRET",
-  });
+  await cfg.hydrated;
   helpers.check("loadDbBacked: transformValue ran per row",
     transformCalls >= 3);
   helpers.check("loadDbBacked: transformValue unseals STRIPE_SECRET",
