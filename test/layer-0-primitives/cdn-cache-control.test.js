@@ -167,6 +167,22 @@ function testParseBareMaxStale() {
         r2.maxStale === 60);
 }
 
+function testParseUnterminatedQuote() {
+  // The quote-aware top-level splitter must drop the trailing piece
+  // when the input ends mid-quoted-string (malformed header). Verifies
+  // the inQuote-state-machine drops the unterminated tail implicitly
+  // (the dead `if (!inQuote)` guard was removed in v0.9.0 — the
+  // unterminated case never reaches the end-of-string branch because
+  // the in-quote `continue` absorbs the sentinel).
+  var r = b.cdnCacheControl.parse('public, foo="abc');
+  check("parse: unterminated quote keeps only the well-formed top-level pieces",
+        r.public === true);
+  // No 'foo' directive should land in `.directives` since the trailing
+  // piece was dropped without ever reaching the equals-split path.
+  check("parse: unterminated quote — trailing piece dropped",
+        r.directives && r.directives.foo === undefined);
+}
+
 function testParseControlByteRefusal() {
   function expectCode(label, fn, code) {
     var threw = null;
@@ -214,6 +230,7 @@ async function run() {
   testParse();
   testParseQualifiedDirectives();
   testParseBareMaxStale();
+  testParseUnterminatedQuote();
   testParseControlByteRefusal();
   testIsTargetedHeader();
 }

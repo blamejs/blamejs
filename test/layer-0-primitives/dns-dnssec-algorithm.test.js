@@ -54,6 +54,54 @@ function testOtherDeprecated() {
   check("algo 12 ECC-GOST deprecated",       a12.deprecated === true);
 }
 
+function testReservedAndPrivateUseAlgorithms() {
+  // Per RFC 4034 §A.1 — the IANA registry assigns Reserved + Private-use
+  // values at 4, 9, 11, 252 (INDIRECT), 253 (PRIVATEDNS), 254
+  // (PRIVATEOID), 255. classifyDnskeyAlgorithm should return known:true
+  // for these so policy decisions gating on "is this an assigned IANA
+  // value" don't incorrectly bucket them with the unassigned space.
+  var dh = b.network.dns.classifyDnskeyAlgorithm(2);
+  check("algo 2 DH known", dh.known === true && dh.name === "DH");
+
+  var r4 = b.network.dns.classifyDnskeyAlgorithm(4);
+  check("algo 4 Reserved known + deprecated",
+        r4.known === true && r4.deprecated === true);
+
+  var r9 = b.network.dns.classifyDnskeyAlgorithm(9);
+  check("algo 9 Reserved known + deprecated",
+        r9.known === true && r9.deprecated === true);
+
+  var ind = b.network.dns.classifyDnskeyAlgorithm(252);
+  check("algo 252 INDIRECT known + deprecated",
+        ind.known === true && ind.deprecated === true && ind.name === "INDIRECT");
+
+  var pdns = b.network.dns.classifyDnskeyAlgorithm(253);
+  check("algo 253 PRIVATEDNS known",
+        pdns.known === true && pdns.deprecated === false && pdns.name === "PRIVATEDNS");
+
+  var poid = b.network.dns.classifyDnskeyAlgorithm(254);
+  check("algo 254 PRIVATEOID known",
+        poid.known === true && poid.deprecated === false && poid.name === "PRIVATEOID");
+
+  var r255 = b.network.dns.classifyDnskeyAlgorithm(255);
+  check("algo 255 Reserved known + deprecated",
+        r255.known === true && r255.deprecated === true);
+
+  // RFC 9558 §3 — DS digest types 5 (GOST 2012) and 6 (SM3) added.
+  var d5 = b.network.dns.classifyDsDigestType(5);
+  check("DS digest 5 GOST-2012 current",
+        d5.known === true && d5.deprecated === false && /GOST R 34\.11-2012/.test(d5.name));
+  var d6 = b.network.dns.classifyDsDigestType(6);
+  check("DS digest 6 SM3 current",
+        d6.known === true && d6.deprecated === false && d6.name === "SM3");
+
+  // The Unassigned range (17-122) still surfaces as known:false —
+  // operators can decide whether unassigned == refuse.
+  var unassigned = b.network.dns.classifyDnskeyAlgorithm(17);
+  check("algo 17 unassigned surfaces known:false",
+        unassigned.known === false);
+}
+
 function testUnknownAndBadInput() {
   var aUnknown = b.network.dns.classifyDnskeyAlgorithm(99);
   check("algo 99 unknown returns shape",
@@ -102,6 +150,7 @@ function run() {
   testRfc9905SHA1Family();
   testCurrentAlgorithms();
   testOtherDeprecated();
+  testReservedAndPrivateUseAlgorithms();
   testUnknownAndBadInput();
   testDsDigestTypeClassifier();
 }
