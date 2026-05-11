@@ -1,11 +1,15 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.84",
-  "createdAt": "2026-05-11T15:16:12.680Z",
+  "frameworkVersion": "0.8.85",
+  "createdAt": "2026-05-11T15:59:24.411Z",
   "exports": {
     "a2a": {
       "type": "object",
       "members": {
+        "A2aTasksError": {
+          "type": "function",
+          "arity": 4
+        },
         "canonicalize": {
           "type": "function",
           "arity": 1
@@ -14,9 +18,43 @@
           "type": "function",
           "arity": 1
         },
+        "middleware": {
+          "type": "object",
+          "members": {
+            "agentCard": {
+              "type": "function",
+              "arity": 1
+            },
+            "tasks": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "signCard": {
           "type": "function",
           "arity": 3
+        },
+        "tasks": {
+          "type": "object",
+          "members": {
+            "ALLOWED_METHODS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "cancel": {
+              "type": "function",
+              "arity": 1
+            },
+            "get": {
+              "type": "function",
+              "arity": 1
+            },
+            "send": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "verifyCard": {
           "type": "function",
@@ -28190,6 +28228,19 @@
         "serverGuard": {
           "type": "function",
           "arity": 1
+        },
+        "toolRegistry": {
+          "type": "object",
+          "members": {
+            "ALLOWED_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "toolResult": {
           "type": "object",
