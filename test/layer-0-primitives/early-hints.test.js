@@ -84,6 +84,41 @@ function testNoWriteEarlyHintsFallback() {
         b.earlyHints.send(noFn, { link: "<x>; rel=preload" }) === false);
 }
 
+function testCaseVariantLinkRefused() {
+  // Pre-v0.8.89 bug: supplying both `link` (lowercase) AND `Link`
+  // (capital) bypassed validation. opts.link got validated; opts.Link
+  // got lowercased in the trailing header loop and overwrote
+  // headers.link with the unvalidated value. Now the case-variant
+  // collision refuses explicitly.
+  var res = _mockRes();
+  var threw = null;
+  try {
+    b.earlyHints.send(res, {
+      link: "</a.css>; rel=preload; as=style",       // would validate
+      Link: "garbage no rel param",                  // would have bypassed validation
+    });
+  } catch (e) { threw = e; }
+  check("send: case-variant Link refused",
+        threw && /duplicate-header/.test(threw.code || ""));
+
+  // Also: a single `Link` (capital-only) variant still gets the
+  // normal validation path applied via canonical-name lookup.
+  var res2 = _mockRes();
+  var ok = b.earlyHints.send(res2, { Link: "</a.css>; rel=preload; as=style" });
+  check("send: capital-Link only validates + sends",
+        ok === true &&
+        Array.isArray(res2._calls()[0].link) &&
+        res2._calls()[0].link[0].indexOf("</a.css>") === 0);
+
+  // And: capital-Link with bad content refuses (validation runs).
+  var res3 = _mockRes();
+  var threw3 = null;
+  try { b.earlyHints.send(res3, { Link: "no-rel-param" }); }
+  catch (e) { threw3 = e; }
+  check("send: capital-Link with bad link refuses",
+        threw3 && /bad-link/.test(threw3.code || ""));
+}
+
 function testKnownRelations() {
   var res = _mockRes();
   var relations = ["preload", "preconnect", "prefetch", "dns-prefetch",
@@ -100,6 +135,7 @@ async function run() {
   testSingleStringLink();
   testRefusesBadShape();
   testNoWriteEarlyHintsFallback();
+  testCaseVariantLinkRefused();
   testKnownRelations();
 }
 
