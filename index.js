@@ -146,6 +146,7 @@ var dataAct = require("./lib/data-act");
 var problemDetails = require("./lib/problem-details");
 var cacheStatus = require("./lib/cache-status");
 var serverTiming = require("./lib/server-timing");
+var earlyHints = require("./lib/early-hints");
 var gateContract = require("./lib/gate-contract");
 var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
@@ -377,6 +378,7 @@ module.exports = {
   problemDetails:   problemDetails,
   cacheStatus:      cacheStatus,
   serverTiming:     serverTiming,
+  earlyHints:       earlyHints,
   gateContract:     gateContract,
   guardCsv:         guardCsv,
   guardHtml:        guardHtml,

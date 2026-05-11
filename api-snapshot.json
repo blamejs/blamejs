@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.8.87",
-  "createdAt": "2026-05-11T17:20:31.738Z",
+  "frameworkVersion": "0.8.88",
+  "createdAt": "2026-05-11T17:43:12.270Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -10004,6 +10004,23 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "earlyHints": {
+      "type": "object",
+      "members": {
+        "EarlyHintsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "REFUSED_HEADERS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "send": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
