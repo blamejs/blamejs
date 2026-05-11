@@ -184,6 +184,75 @@ function testV0881NewPostures() {
         caP.indexOf("ca-tfaia") !== -1 && caP.indexOf("ca-sb942") !== -1);
 }
 
+function testV0882NewPostures() {
+  var ps = b.compliance.KNOWN_POSTURES;
+  // US federal
+  check("compliance: coppa registered",          ps.indexOf("coppa") !== -1);
+  check("compliance: coppa-2025 registered",     ps.indexOf("coppa-2025") !== -1);
+  check("compliance: glba-safeguards registered", ps.indexOf("glba-safeguards") !== -1);
+  check("compliance: gina registered",            ps.indexOf("gina") !== -1);
+  check("compliance: vppa registered",            ps.indexOf("vppa") !== -1);
+  check("compliance: can-spam registered",        ps.indexOf("can-spam") !== -1);
+  check("compliance: il-gipa registered",         ps.indexOf("il-gipa") !== -1);
+  check("compliance: hhs-repro-24 registered",    ps.indexOf("hhs-repro-24") !== -1);
+  check("compliance: nist-pf-1.1 registered",     ps.indexOf("nist-pf-1.1") !== -1);
+  // UK
+  check("compliance: uk-duaa registered",         ps.indexOf("uk-duaa") !== -1);
+  // LATAM
+  check("compliance: cl-pdpa registered",         ps.indexOf("cl-pdpa") !== -1);
+  check("compliance: mx-lfpdppp registered",      ps.indexOf("mx-lfpdppp") !== -1);
+  check("compliance: ar-pdpa registered",         ps.indexOf("ar-pdpa") !== -1);
+  // APAC
+  check("compliance: pipa-kr registered",         ps.indexOf("pipa-kr") !== -1);
+  check("compliance: au-privacy registered",      ps.indexOf("au-privacy") !== -1);
+  check("compliance: th-pdpa registered",         ps.indexOf("th-pdpa") !== -1);
+  check("compliance: vn-pdp registered",          ps.indexOf("vn-pdp") !== -1);
+  check("compliance: id-pdp registered",          ps.indexOf("id-pdp") !== -1);
+  check("compliance: my-pdpa registered",         ps.indexOf("my-pdpa") !== -1);
+  // US state child privacy
+  check("compliance: ny-safe-kids registered",    ps.indexOf("ny-safe-kids") !== -1);
+  check("compliance: ny-saffe registered",        ps.indexOf("ny-saffe") !== -1);
+  check("compliance: md-kids-code registered",    ps.indexOf("md-kids-code") !== -1);
+  check("compliance: vt-aadc registered",         ps.indexOf("vt-aadc") !== -1);
+  // EU adjacent
+  check("compliance: dsa registered",             ps.indexOf("dsa") !== -1);
+  check("compliance: dga registered",             ps.indexOf("dga") !== -1);
+  check("compliance: eu-cer registered",          ps.indexOf("eu-cer") !== -1);
+  check("compliance: eu-cyber-sol registered",    ps.indexOf("eu-cyber-sol") !== -1);
+  check("compliance: eidas-2 registered",         ps.indexOf("eidas-2") !== -1);
+
+  // Spot-check REGIME_MAP entries
+  check("describe(coppa-2025): domain child-privacy", b.compliance.describe("coppa-2025").domain === "child-privacy");
+  check("describe(uk-duaa): jurisdiction UK",         b.compliance.describe("uk-duaa").jurisdiction === "UK");
+  check("describe(cl-pdpa): jurisdiction CL",         b.compliance.describe("cl-pdpa").jurisdiction === "CL");
+  check("describe(pipa-kr): jurisdiction KR",         b.compliance.describe("pipa-kr").jurisdiction === "KR");
+  check("describe(au-privacy): jurisdiction AU",      b.compliance.describe("au-privacy").jurisdiction === "AU");
+  check("describe(dsa): domain platform-governance",  b.compliance.describe("dsa").domain === "platform-governance");
+  check("describe(eu-cer): domain cybersecurity",     b.compliance.describe("eu-cer").domain === "cybersecurity");
+  check("describe(gina): domain genetic-privacy",     b.compliance.describe("gina").domain === "genetic-privacy");
+  check("describe(eidas-2): domain identity",         b.compliance.describe("eidas-2").domain === "identity");
+
+  // POSTURE_DEFAULTS cascade
+  check("postureDefault(uk-duaa, requireVacuumAfterErase) === true",
+        b.compliance.postureDefault("uk-duaa", "requireVacuumAfterErase") === true);
+  check("postureDefault(glba-safeguards, backupEncryptionRequired) === true",
+        b.compliance.postureDefault("glba-safeguards", "backupEncryptionRequired") === true);
+  check("postureDefault(coppa-2025, backupEncryptionRequired) === true",
+        b.compliance.postureDefault("coppa-2025", "backupEncryptionRequired") === true);
+  check("postureDefault(pipa-kr, requireVacuumAfterErase) === true",
+        b.compliance.postureDefault("pipa-kr", "requireVacuumAfterErase") === true);
+
+  // posturesByDomain
+  var childPriv = b.compliance.posturesByDomain("child-privacy");
+  check("posturesByDomain(child-privacy) includes coppa + ny-safe-kids",
+        childPriv.indexOf("coppa") !== -1 && childPriv.indexOf("ny-safe-kids") !== -1);
+
+  // posturesByJurisdiction
+  var euP = b.compliance.posturesByJurisdiction("EU");
+  check("posturesByJurisdiction(EU) includes dsa + dga + eu-cer",
+        euP.indexOf("dsa") !== -1 && euP.indexOf("dga") !== -1 && euP.indexOf("eu-cer") !== -1);
+}
+
 async function run() {
   testSurface();
   testSetThenCurrent();
@@ -194,6 +263,7 @@ async function run() {
   testClearResetsState();
   testV0870NewPostures();
   testV0881NewPostures();
+  testV0882NewPostures();
   // Reset at end so other tests don't see leaked posture.
   _resetState();
 }
