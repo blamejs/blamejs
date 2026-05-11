@@ -187,6 +187,7 @@ var auth = {
   lockout:  require("./lib/auth/lockout"),
   dpop:     require("./lib/auth/dpop"),
   aal:      require("./lib/auth/aal"),
+  fal:      require("./lib/auth/fal"),
   statusList: require("./lib/auth/status-list"),
   sdJwtVc:    require("./lib/auth/sd-jwt-vc"),
   stepUp:     require("./lib/auth/step-up"),
