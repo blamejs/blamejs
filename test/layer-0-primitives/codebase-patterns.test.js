@@ -2062,6 +2062,18 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/auth/passkey.js:_validateExpectedOrigin",
+        "lib/mail-arc-sign.js:sign",
+        "lib/middleware/require-methods.js:create",
+        "lib/network-tls.js:buildOptions",
+        "lib/redact.js:classifyDefaults",
+        "lib/ws-client.js:connect",
+      ],
+      reason: "Array-of-non-empty-strings validation scaffolding — `if (Array.isArray(v)) { if (v.length === 0) throw; for (i...) if (typeof v[i] !== 'string' || v[i].length === 0) throw }`. Each call site enforces a domain-specific list-element grammar (WebAuthn expected-origins, RFC 8617 ARC AuthServId list, RFC 9110 method allowlist, RFC 8446 TLS cipher list, redact field paths, RFC 6455 WS subprotocol list); the array shape is the same but the element-level grammar differs. validateOpts.optionalNonEmptyStringArray covers the simpler optional shape; this strict 'required-non-empty-array' variant could extract but each domain emits domain-typed error codes consolidation would erase.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/api-key.js:_validateIssueOpts",
         "lib/audit-daily-review.js:create",
         "lib/auth-bot-challenge.js:create",
