@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.0",
-  "createdAt": "2026-05-11T20:56:14.074Z",
+  "frameworkVersion": "0.9.1",
+  "createdAt": "2026-05-11T22:44:07.487Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -35687,6 +35687,14 @@
         "canonicalizeElementById": {
           "type": "function",
           "arity": 3
+        },
+        "escapeAttrValue": {
+          "type": "function",
+          "arity": 1
+        },
+        "escapeText": {
+          "type": "function",
+          "arity": 1
         },
         "parse": {
           "type": "function",
