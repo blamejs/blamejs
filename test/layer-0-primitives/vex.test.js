@@ -18,6 +18,15 @@ function testSurface() {
   check("VexError is constructor",  typeof b.vex.VexError === "function");
   var err = new b.vex.VexError("vex/test", "test message");
   check("VexError carries code",    err.code === "vex/test");
+  // TLP 2.0 (FIRST 2022) labels per CSAF 2.1 §3.2.1.12.1.1.
+  check("TLP_LABELS = TLP 2.0",
+        b.vex.TLP_LABELS.indexOf("CLEAR") !== -1 &&
+        b.vex.TLP_LABELS.indexOf("GREEN") !== -1 &&
+        b.vex.TLP_LABELS.indexOf("AMBER") !== -1 &&
+        b.vex.TLP_LABELS.indexOf("AMBER+STRICT") !== -1 &&
+        b.vex.TLP_LABELS.indexOf("RED") !== -1);
+  check("TLP_LABELS excludes WHITE (TLP 1.0 legacy)",
+        b.vex.TLP_LABELS.indexOf("WHITE") === -1);
 }
 
 function testStatementShape() {
@@ -67,10 +76,16 @@ function testStatementRefusals() {
   }
   expectCode("statement: missing opts",
              function () { b.vex.statement(); }, "vex/bad-opts");
-  expectCode("statement: missing cve+cwe",
+  expectCode("statement: missing cve+ids (cweId alone insufficient)",
+             function () { b.vex.statement({ cweId: "CWE-79", status: "fixed", productIds: ["x"] }); }, "vex/missing-vuln-id");
+  expectCode("statement: missing cve+ids (no identity at all)",
              function () { b.vex.statement({ status: "fixed", productIds: ["x"] }); }, "vex/missing-vuln-id");
   expectCode("statement: bad cve id shape",
              function () { b.vex.statement({ cveId: "not-a-cve", status: "fixed", productIds: ["x"] }); }, "vex/bad-cve-id");
+  expectCode("statement: bad cwe id shape",
+             function () { b.vex.statement({ cveId: "CVE-2024-0001", cweId: "not-a-cwe", status: "fixed", productIds: ["x"] }); }, "vex/bad-cwe-id");
+  expectCode("statement: bad ids[] entry shape",
+             function () { b.vex.statement({ ids: [{ systemName: "GHSA" }], status: "fixed", productIds: ["x"] }); }, "vex/bad-ids");
   expectCode("statement: unknown status",
              function () { b.vex.statement({ cveId: "CVE-2024-0001", status: "exploded", productIds: ["x"] }); }, "vex/bad-status");
   expectCode("statement: missing productIds",
@@ -81,6 +96,68 @@ function testStatementRefusals() {
              function () { b.vex.statement({ cveId: "CVE-2024-0001", status: "known_not_affected", productIds: ["x"] }); }, "vex/missing-justification");
   expectCode("statement: bad justification token",
              function () { b.vex.statement({ cveId: "CVE-2024-0001", status: "known_not_affected", productIds: ["x"], justification: "not-real" }); }, "vex/missing-justification");
+}
+
+function testCsafCweAndIdsShape() {
+  // CSAF 2.1 §3.2.3.4 — cwes is a LIST.
+  var s = b.vex.statement({
+    cveId:      "CVE-2025-99999",
+    cweId:      "CWE-79",
+    status:     "fixed",
+    productIds: ["@blamejs/core@0.9.5"],
+  });
+  check("statement: cwes is array (CSAF §3.2.3.4)",
+        Array.isArray(s.cwes) && s.cwes.length === 1 && s.cwes[0].id === "CWE-79");
+  check("statement: no legacy cwe singleton field",
+        s.cwe === undefined);
+
+  // CSAF 2.1 §3.2.3.5 — non-CVE tracking via ids[].
+  var s2 = b.vex.statement({
+    ids: [{ systemName: "GHSA", text: "GHSA-xxxx-yyyy-zzzz" }],
+    cweId:      "CWE-79",
+    status:     "fixed",
+    productIds: ["@blamejs/core@0.9.5"],
+  });
+  check("statement: ids[] emitted with snake_case system_name",
+        Array.isArray(s2.ids) && s2.ids[0].system_name === "GHSA" &&
+        s2.ids[0].text === "GHSA-xxxx-yyyy-zzzz");
+  check("statement: cveId optional when ids[] supplied",
+        s2.cve === undefined);
+}
+
+function testTlpAmberStrict() {
+  var stmt = b.vex.statement({
+    cveId:      "CVE-2024-21505",
+    status:     "fixed",
+    productIds: ["@blamejs/core"],
+  });
+  var doc = b.vex.document({
+    documentId:         "blamejs-vex-amber-strict",
+    title:              "AMBER+STRICT test",
+    publisher:          { name: "blamejs", namespace: "https://blamejs.com/" },
+    trackingId:         "blamejs-vex-amber-strict",
+    trackingVersion:    "1.0.0",
+    currentReleaseDate: "2026-05-12T00:00:00Z",
+    initialReleaseDate: "2026-05-12T00:00:00Z",
+    statements:         [stmt],
+    tlp:                "AMBER+STRICT",
+  });
+  check("document: TLP 2.0 AMBER+STRICT accepted",
+        doc.document.distribution.tlp.label === "AMBER+STRICT");
+
+  // TLP 1.0 WHITE no longer accepted (renamed CLEAR in TLP 2.0).
+  var threw = null;
+  try {
+    b.vex.document({
+      documentId:         "x", title: "x",
+      publisher:          { name: "x", namespace: "x" },
+      trackingId:         "x", trackingVersion: "1.0.0",
+      currentReleaseDate: "2026", initialReleaseDate: "2026",
+      statements:         [stmt], tlp: "WHITE",
+    });
+  } catch (e) { threw = e; }
+  check("document: TLP 1.0 WHITE refused",
+        threw && (threw.code || "").indexOf("vex/bad-tlp") !== -1);
 }
 
 function testDocumentShape() {
@@ -190,6 +267,8 @@ async function run() {
   testStatementShape();
   testStatementWithReferences();
   testStatementRefusals();
+  testCsafCweAndIdsShape();
+  testTlpAmberStrict();
   testDocumentShape();
   testDocumentRefusals();
   testSerialize();
