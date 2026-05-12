@@ -1905,6 +1905,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/openid-federation.js:parseEntityStatement",
         "lib/auth/ciba.js:startAuthentication",
         "lib/auth/ciba.js:parseNotification",
+        "lib/auth/ciba.js:_registerInitialInterval",
+        "lib/auth/ciba.js:pollToken",
         "lib/auth/sd-jwt-vc-issuer.js:create",
         "lib/auth/step-up.js:parseAuthorizationDetails",
         "lib/compliance-eaa.js:create",
