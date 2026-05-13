@@ -19,6 +19,42 @@ Please include:
 
 Encrypt the report with the maintainer PGP key if the report itself is sensitive (key fingerprint published on the project's [Security tab on GitHub](https://github.com/blamejs/blamejs/security)).
 
+### Verifying release authenticity
+
+Every release tag is an annotated, SSH-signed tag. Verify before deploying:
+
+```sh
+git fetch --tags
+git tag -v vX.Y.Z          # must print: Good "git" signature for RobertLeeLW@gmail.com
+```
+
+Maintainer SSH signing key (Ed25519):
+
+| Field | Value |
+|---|---|
+| Email | `RobertLeeLW@gmail.com` |
+| Fingerprint (SHA-256) | `SHA256:5oF/XWhFpMde9TRfEX2GAHiApAq/MXOS4vti5zQbD7g` |
+| Public key file | `https://github.com/dotCooCoo.keys` (filter for `ssh-ed25519`) |
+| Registered as | GitHub SSH signing key (`desktop2-signing`) |
+
+To verify locally without trusting GitHub's UI, fetch the public key, write your own `allowed_signers` file, and run `git tag -v`:
+
+```sh
+curl -sf https://github.com/dotCooCoo.keys                                                       \
+  | grep "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPiE/PETpyiVPd8aMygJ+S9CsSVolp4HQZaAuiYVwbBa"      \
+  | awk '{print "RobertLeeLW@gmail.com namespaces=\"git\" "$1" "$2}'                             \
+  > /tmp/blamejs-allowed-signers
+git -c gpg.ssh.allowedSignersFile=/tmp/blamejs-allowed-signers tag -v vX.Y.Z
+```
+
+Tag signatures are additive to the framework's existing trust roots:
+
+- **npm tarball** — SLSA L3 provenance via OIDC (`npm view @blamejs/core --json | jq .dist`)
+- **SBOM** (`sbom.cdx.json` + `sbom.vendored.cdx.json`) — Sigstore-keyless signed; verify via `cosign verify-blob --certificate-identity-regexp '...' --bundle sbom.cdx.json.sigstore sbom.cdx.json`
+- **Tag** — SSH-signed (this section)
+
+Tampering with any single trust root is detected by the others.
+
 ### Response time
 
 | Severity | First response | Triage / acknowledgment | Fix released |
