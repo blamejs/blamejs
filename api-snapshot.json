@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.9.9",
-  "createdAt": "2026-05-13T13:25:50.651Z",
+  "createdAt": "2026-05-13T13:50:48.495Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -35954,6 +35954,10 @@
                 "description": {
                   "type": "primitive",
                   "valueType": "string"
+                },
+                "module": {
+                  "type": "primitive",
+                  "valueType": "string"
                 }
               }
             },
@@ -35967,6 +35971,10 @@
                 "description": {
                   "type": "primitive",
                   "valueType": "string"
+                },
+                "module": {
+                  "type": "primitive",
+                  "valueType": "string"
                 }
               }
             },
@@ -35978,6 +35986,10 @@
                   "valueType": "string"
                 },
                 "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "module": {
                   "type": "primitive",
                   "valueType": "string"
                 }
