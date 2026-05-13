@@ -194,6 +194,111 @@ function testMemoryStoreTtlExpiry() {
   check("memoryStore TTL: expired returns null", store.get("expiring") === null);
 }
 
+function _mockDb() {
+  var data = new Map();
+  return {
+    _data: data,
+    prepare: function (sql) {
+      if (/^CREATE (TABLE|INDEX)/i.test(sql)) {
+        return { run: function () { return { changes: 0 }; } };
+      }
+      if (/^SELECT v, expires_at FROM /i.test(sql)) {
+        return {
+          get: function (k) {
+            var row = data.get(k);
+            return row ? { v: row.v, expires_at: row.expires_at } : undefined;
+          },
+        };
+      }
+      if (/^INSERT INTO /i.test(sql)) {
+        return {
+          run: function (k, v, expiresAt) {
+            data.set(k, { v: v, expires_at: expiresAt });
+            return { changes: 1 };
+          },
+        };
+      }
+      if (/^DELETE FROM /i.test(sql)) {
+        return {
+          run: function (k) {
+            var had = data.has(k);
+            data.delete(k);
+            return { changes: had ? 1 : 0 };
+          },
+        };
+      }
+      throw new Error("_mockDb: unsupported SQL: " + sql);
+    },
+  };
+}
+
+function testDbStoreSurface() {
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({ db: db });
+  check("dbStore: get fn",    typeof store.get === "function");
+  check("dbStore: set fn",    typeof store.set === "function");
+  check("dbStore: delete fn", typeof store.delete === "function");
+  check("dbStore: default tableName", store._tableName === "blamejs_idempotency_keys");
+}
+
+function testDbStoreBadOpts() {
+  function expectThrow(label, fn, codeMatch) {
+    var threw = null;
+    try { fn(); } catch (e) { threw = e; }
+    check(label, threw && (threw.code || "").indexOf(codeMatch) !== -1);
+  }
+  expectThrow("dbStore: missing db refused",
+    function () { b.middleware.idempotencyKey.dbStore({}); },
+    "idempotency/bad-db");
+  expectThrow("dbStore: db without prepare() refused",
+    function () { b.middleware.idempotencyKey.dbStore({ db: {} }); },
+    "idempotency/bad-db");
+  expectThrow("dbStore: bad tableName refused",
+    function () { b.middleware.idempotencyKey.dbStore({ db: _mockDb(), tableName: "drop;table--" }); },
+    "idempotency/bad-table-name");
+  expectThrow("dbStore: tableName with quotes refused",
+    function () { b.middleware.idempotencyKey.dbStore({ db: _mockDb(), tableName: 'a"b' }); },
+    "idempotency/bad-table-name");
+}
+
+function testDbStoreSetGetDelete() {
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({ db: db });
+  store.set("k1", { fingerprint: "abc", statusCode: 200, headers: {}, body: "" }, 60000);
+  var v = store.get("k1");
+  check("dbStore: set+get roundtrip",  v && v.fingerprint === "abc" && v.statusCode === 200);
+  check("dbStore: get missing → null", store.get("nope") === null);
+  store.delete("k1");
+  check("dbStore: delete clears",      store.get("k1") === null);
+}
+
+function testDbStoreTtlExpiry() {
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({ db: db });
+  store.set("short", { fingerprint: "x", statusCode: 200, headers: {}, body: "" }, 1);
+  var start = Date.now();
+  while (Date.now() - start < 5) { /* spin briefly */ }
+  check("dbStore TTL: expired returns null + row cleaned",
+        store.get("short") === null && db._data.has("short") === false);
+}
+
+function testDbStoreUpsert() {
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({ db: db });
+  store.set("k", { fingerprint: "v1", statusCode: 200, headers: {}, body: "" }, 60000);
+  store.set("k", { fingerprint: "v2", statusCode: 201, headers: {}, body: "" }, 60000);
+  var v = store.get("k");
+  check("dbStore: second set upserts", v && v.fingerprint === "v2" && v.statusCode === 201);
+}
+
+function testDbStoreCorruptRow() {
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({ db: db });
+  db._data.set("corrupt", { v: "not-json-{{{", expires_at: Date.now() + 60000 });
+  check("dbStore: corrupt row treated as miss + cleaned",
+        store.get("corrupt") === null && db._data.has("corrupt") === false);
+}
+
 async function run() {
   testSurface();
   testBadOpts();
@@ -206,6 +311,12 @@ async function run() {
   testSkip5xx();
   testMemoryStoreFIFO();
   testMemoryStoreTtlExpiry();
+  testDbStoreSurface();
+  testDbStoreBadOpts();
+  testDbStoreSetGetDelete();
+  testDbStoreTtlExpiry();
+  testDbStoreUpsert();
+  testDbStoreCorruptRow();
 }
 
 module.exports = { run: run };
