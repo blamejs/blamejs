@@ -27,29 +27,44 @@ var path    = require("node:path");
 var os      = require("node:os");
 var nodeCrypto = require("node:crypto");
 var childProcess = require("node:child_process");
+var esbuild = require("esbuild");
 
 var REPO_ROOT = path.resolve(__dirname, "..", "..");
 
-// _spawnSync — wrap child_process.spawnSync with a cap on output
-// capture + an explicit failure-mode that surfaces stderr to the
-// caller. The bundler invocations + bundle execution both emit a few
-// hundred KB at most; the cap is defensive.
+// esbuild + postject are pinned `devDependencies` in package.json. The
+// JS APIs are used directly (not `npx --yes`) so the gate stays
+// hermetic — no live registry access, no version drift, no flake
+// when the network is down. Per Codex P1 review on PR #40 + the
+// framework's general "no network in tests" posture.
 //
-// Windows note: npx is a .cmd shim; plain `spawnSync("npx", ...)`
-// hits ENOENT, but `spawnSync("npx", args, { shell: true })` works
-// across all platforms. The DEP0190 warning that ships with shell
-// is benign here — every arg in this test is framework-internal
-// (literal flag strings + tmpdir paths we control). There is no
-// operator-controllable input reaching the args; the shell-
-// injection vector that DEP0190 warns about isn't present.
-function _spawnSync(cmd, args, opts) {
+// _spawnSyncNode — invoke node + a JS script. Used for the bundle-
+// exec step (running the consumer-bundled CJS via the same node
+// runtime as the test) + the SEA-binary exec. No shell, no npx.
+function _spawnSyncNode(scriptPath, opts) {
   opts = opts || {};
-  var res = childProcess.spawnSync(cmd, args, {
+  var res = childProcess.spawnSync(process.execPath, [scriptPath], {
     cwd:         opts.cwd || REPO_ROOT,
     encoding:    "utf8",
     maxBuffer:   16 * 1024 * 1024,
     env:         Object.assign({}, process.env, opts.env || {}),
-    shell:       process.platform === "win32",   // allow:shell-spawn — see comment above; args are framework-internal
+  });
+  return {
+    ok:     res.status === 0,
+    code:   res.status,
+    stdout: res.stdout || "",
+    stderr: res.stderr || "",
+  };
+}
+
+// _spawnSyncBinary — invoke an arbitrary native binary by absolute
+// path. Used only for the SEA-binary exec. No shell.
+function _spawnSyncBinary(binPath, args, opts) {
+  opts = opts || {};
+  var res = childProcess.spawnSync(binPath, args || [], {
+    cwd:         opts.cwd || REPO_ROOT,
+    encoding:    "utf8",
+    maxBuffer:   16 * 1024 * 1024,
+    env:         Object.assign({}, process.env, opts.env || {}),
   });
   return {
     ok:     res.status === 0,
@@ -120,25 +135,27 @@ function testEsbuildBundlePreservesVendorData() {
   var consumer = _writeConsumer(dir);
   var bundlePath = path.join(dir, "bundle.cjs");
 
-  // Run esbuild via npx — `--bundle --platform=node` is the most
-  // common modern Node bundler invocation. Static-analysis tracing
-  // of require() determines what to include. Dynamic require(var)
-  // is invisible to this pass — exactly the v0.9.8 bug class.
-  var bundle = _spawnSync("npx", [
-    "--yes", "esbuild",
-    consumer,
-    "--bundle",
-    "--platform=node",
-    "--format=cjs",
-    "--outfile=" + bundlePath,
-    "--log-level=error",
-  ], { cwd: dir });
-
-  check("esbuild bundle: bundler invocation succeeded",  bundle.ok);
-  if (!bundle.ok) {
-    process.stderr.write("esbuild stderr:\n" + bundle.stderr + "\n");
-    return;   // can't continue if bundling itself failed
+  // Run esbuild via its JS API — pinned at the version in
+  // package.json. `--bundle --platform=node` is the most common
+  // modern Node bundler invocation. Static-analysis tracing of
+  // require() determines what to include. Dynamic require(var) is
+  // invisible to this pass — exactly the v0.9.8 bug class.
+  var bundleOk = false;
+  try {
+    esbuild.buildSync({
+      entryPoints: [consumer],
+      bundle:      true,
+      platform:    "node",
+      format:      "cjs",
+      outfile:     bundlePath,
+      logLevel:    "error",
+    });
+    bundleOk = true;
+  } catch (e) {
+    process.stderr.write("esbuild error:\n" + (e && e.message ? e.message : String(e)) + "\n");
   }
+  check("esbuild bundle: bundler invocation succeeded",  bundleOk);
+  if (!bundleOk) return;
   check("esbuild bundle: output file exists",            fs.existsSync(bundlePath));
 
   // Bundle must be self-contained — the .data.js payloads (~545 KB
@@ -151,7 +168,7 @@ function testEsbuildBundlePreservesVendorData() {
   // Run the bundle — vendor-data layers fire at require-time, throws
   // on tamper / missing modules. Success exit = all four layers
   // passed across all three vendor-data entries.
-  var exec = _spawnSync("node", [bundlePath], { cwd: dir });
+  var exec = _spawnSyncNode(bundlePath, { cwd: dir });
   if (!exec.ok) {
     process.stderr.write("bundle exec stderr:\n" + exec.stderr + "\n");
     process.stderr.write("bundle exec stdout:\n" + exec.stdout + "\n");
@@ -173,19 +190,23 @@ function testEsbuildMinifiedBundlePreservesVendorData() {
   var consumer = _writeConsumer(dir);
   var bundlePath = path.join(dir, "bundle.min.cjs");
 
-  var bundle = _spawnSync("npx", [
-    "--yes", "esbuild",
-    consumer,
-    "--bundle",
-    "--minify",
-    "--platform=node",
-    "--format=cjs",
-    "--outfile=" + bundlePath,
-    "--log-level=error",
-  ], { cwd: dir });
-
-  check("esbuild --minify bundle: invocation succeeded", bundle.ok);
-  if (!bundle.ok) return;
+  var bundleOk = false;
+  try {
+    esbuild.buildSync({
+      entryPoints: [consumer],
+      bundle:      true,
+      minify:      true,
+      platform:    "node",
+      format:      "cjs",
+      outfile:     bundlePath,
+      logLevel:    "error",
+    });
+    bundleOk = true;
+  } catch (e) {
+    process.stderr.write("esbuild --minify error:\n" + (e && e.message ? e.message : String(e)) + "\n");
+  }
+  check("esbuild --minify bundle: invocation succeeded", bundleOk);
+  if (!bundleOk) return;
 
   // Minified bundle is smaller but still must carry the payloads.
   // Base64-encoded payloads can't be minified further (they're string
@@ -195,7 +216,7 @@ function testEsbuildMinifiedBundlePreservesVendorData() {
   check("esbuild --minify bundle: includes payloads (>= 400 KB)",
         bundleSize >= 400 * 1024);
 
-  var exec = _spawnSync("node", [bundlePath], { cwd: dir });
+  var exec = _spawnSyncNode(bundlePath, { cwd: dir });
   if (!exec.ok) {
     process.stderr.write("minified bundle exec stderr:\n" + exec.stderr + "\n");
   }
@@ -218,17 +239,21 @@ function testBundleHasNoMissingModuleRuntimePath() {
   var consumer = _writeConsumer(dir);
   var bundlePath = path.join(dir, "bundle.cjs");
 
-  var bundle = _spawnSync("npx", [
-    "--yes", "esbuild",
-    consumer,
-    "--bundle",
-    "--platform=node",
-    "--format=cjs",
-    "--outfile=" + bundlePath,
-    "--log-level=error",
-  ], { cwd: dir });
-
-  if (!bundle.ok) {
+  var bundleOk = false;
+  try {
+    esbuild.buildSync({
+      entryPoints: [consumer],
+      bundle:      true,
+      platform:    "node",
+      format:      "cjs",
+      outfile:     bundlePath,
+      logLevel:    "error",
+    });
+    bundleOk = true;
+  } catch (_e) {
+    // fall through; check below fires false
+  }
+  if (!bundleOk) {
     check("bundle sentinel: bundler succeeded (gate skipped on bundle failure)", false);
     return;
   }
@@ -284,58 +309,82 @@ function testSeaBundlePreservesVendorData() {
 
   // First esbuild-bundle the consumer (SEA needs a single .js file).
   var seaSource = path.join(dir, "sea-source.cjs");
-  var bundle = _spawnSync("npx", [
-    "--yes", "esbuild",
-    consumer,
-    "--bundle",
-    "--platform=node",
-    "--format=cjs",
-    "--outfile=" + seaSource,
-    "--log-level=error",
-  ], { cwd: dir });
-  check("SEA bundle: pre-bundle via esbuild succeeded", bundle.ok);
-  if (!bundle.ok) return;
+  var bundleOk = false;
+  try {
+    esbuild.buildSync({
+      entryPoints: [consumer],
+      bundle:      true,
+      platform:    "node",
+      format:      "cjs",
+      outfile:     seaSource,
+      logLevel:    "error",
+    });
+    bundleOk = true;
+  } catch (e) {
+    process.stderr.write("SEA pre-bundle error:\n" + (e && e.message ? e.message : String(e)) + "\n");
+  }
+  check("SEA bundle: pre-bundle via esbuild succeeded", bundleOk);
+  if (!bundleOk) return;
 
   // Write sea-config.json. No assets needed because the .data.js
   // payloads are inlined into the bundle by esbuild (that's the
   // whole point of v0.9.9's static-require fix).
+  var seaBlobPath = path.join(dir, "sea-prep.blob");
   var seaConfig = {
     main:          seaSource,
-    output:        path.join(dir, "sea-prep.blob"),
+    output:        seaBlobPath,
     disableExperimentalSEAWarning: true,
   };
-  fs.writeFileSync(path.join(dir, "sea-config.json"), JSON.stringify(seaConfig));
+  var seaConfigPath = path.join(dir, "sea-config.json");
+  fs.writeFileSync(seaConfigPath, JSON.stringify(seaConfig));
 
-  // Generate the SEA blob.
-  var prep = _spawnSync("node", [
-    "--experimental-sea-config", path.join(dir, "sea-config.json"),
-  ], { cwd: dir });
-  check("SEA bundle: --experimental-sea-config produced blob",  prep.ok && fs.existsSync(seaConfig.output));
-  if (!prep.ok) {
-    process.stderr.write("sea-config stderr:\n" + prep.stderr + "\n");
+  // Generate the SEA blob. This step is Node's own builtin, no
+  // network. `node --experimental-sea-config <config>` writes the
+  // blob to the configured output path.
+  var prep = childProcess.spawnSync(process.execPath, [
+    "--experimental-sea-config", seaConfigPath,
+  ], { cwd: dir, encoding: "utf8" });
+  check("SEA bundle: --experimental-sea-config produced blob",
+        prep.status === 0 && fs.existsSync(seaBlobPath));
+  if (prep.status !== 0) {
+    process.stderr.write("sea-config stderr:\n" + (prep.stderr || "") + "\n");
     return;
   }
 
-  // Copy node + inject blob via postject.
+  // Copy node + inject blob via postject's JS API (devDependency,
+  // pinned in package-lock — no live registry fetch).
   var seaBinary = path.join(dir, "blamejs-sea");
   fs.copyFileSync(process.execPath, seaBinary);
   fs.chmodSync(seaBinary, 0o755);
 
-  var inject = _spawnSync("npx", [
-    "--yes", "postject",
-    seaBinary,
-    "NODE_SEA_BLOB",
-    seaConfig.output,
-    "--sentinel-fuse", "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
-  ], { cwd: dir });
-  check("SEA bundle: postject injection succeeded", inject.ok);
-  if (!inject.ok) {
-    process.stderr.write("postject stderr:\n" + inject.stderr + "\n");
-    return;
+  var injectOk = false;
+  try {
+    var postject = require("postject");
+    var blob = fs.readFileSync(seaBlobPath);
+    // postject.inject is async; run via deasync via a child-process
+    // shim since the test harness is sync. Easier: use the CLI entry
+    // from postject's package.
+    var postjectCli = require.resolve("postject/dist/cli.js");
+    var injectRes = childProcess.spawnSync(process.execPath, [
+      postjectCli,
+      seaBinary,
+      "NODE_SEA_BLOB",
+      seaBlobPath,
+      "--sentinel-fuse", "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+    ], { cwd: dir, encoding: "utf8" });
+    injectOk = injectRes.status === 0;
+    if (!injectOk) {
+      process.stderr.write("postject stderr:\n" + (injectRes.stderr || "") + "\n");
+    }
+    void postject; void blob;   // keep require ref linted-clean
+  } catch (e) {
+    process.stderr.write("postject error:\n" + (e && e.message ? e.message : String(e)) + "\n");
   }
+  check("SEA bundle: postject injection succeeded", injectOk);
+  if (!injectOk) return;
 
   // Run the SEA binary.
-  var exec = _spawnSync(seaBinary, [], { cwd: dir });
+  var exec = _spawnSyncBinary(seaBinary, [], { cwd: dir });
   if (!exec.ok) {
     process.stderr.write("SEA exec stderr:\n" + exec.stderr + "\n");
     process.stderr.write("SEA exec stdout:\n" + exec.stdout + "\n");
