@@ -21,14 +21,28 @@ Encrypt the report with the maintainer PGP key if the report itself is sensitive
 
 ### Verifying release authenticity
 
-Every release tag is an annotated, SSH-signed tag. Verify before deploying:
+From **v0.9.7 onward**, every release tag is an annotated, SSH-signed tag. The `release-tags` ruleset on the repository refuses any unsigned or lightweight tag push, so the signed-tag invariant is server-side enforced.
+
+Verify before deploying:
 
 ```sh
 git fetch --tags
 git tag -v vX.Y.Z          # must print: Good "git" signature for RobertLeeLW@gmail.com
 ```
 
-Maintainer SSH signing key (Ed25519):
+Earlier releases (`v0.9.6` and earlier) were tagged as lightweight commits before the signing pipeline landed; `git tag -v` will report *"cannot verify a non-tag object of type commit"* on those. They remain verifiable via the **two other trust roots** that have been attached since v0.4.x and v0.6.x respectively:
+
+- **npm tarball** — SLSA L3 provenance via OIDC. `npm view @blamejs/core@vX.Y.Z --json | jq .dist` returns the integrity hash; `gh attestation verify` walks the provenance chain back to the workflow run.
+- **SBOM** (`sbom.cdx.json` + `sbom.vendored.cdx.json`) — Sigstore-keyless signed by the publish workflow's OIDC token. Verify via:
+
+  ```sh
+  cosign verify-blob --bundle sbom.cdx.json.sigstore           \
+    --certificate-identity-regexp 'https://github.com/blamejs/blamejs/.*' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    sbom.cdx.json
+  ```
+
+Maintainer SSH signing key (Ed25519, applies v0.9.7+):
 
 | Field | Value |
 |---|---|
@@ -47,13 +61,7 @@ curl -sf https://github.com/dotCooCoo.keys                                      
 git -c gpg.ssh.allowedSignersFile=/tmp/blamejs-allowed-signers tag -v vX.Y.Z
 ```
 
-Tag signatures are additive to the framework's existing trust roots:
-
-- **npm tarball** — SLSA L3 provenance via OIDC (`npm view @blamejs/core --json | jq .dist`)
-- **SBOM** (`sbom.cdx.json` + `sbom.vendored.cdx.json`) — Sigstore-keyless signed; verify via `cosign verify-blob --certificate-identity-regexp '...' --bundle sbom.cdx.json.sigstore sbom.cdx.json`
-- **Tag** — SSH-signed (this section)
-
-Tampering with any single trust root is detected by the others.
+The three trust roots — SLSA L3 npm provenance, Sigstore-keyless SBOM signing, SSH-signed tags (v0.9.7+) — are independently verifiable. Tampering with any single root is detected by the others.
 
 ### Response time
 
