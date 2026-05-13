@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.7",
-  "createdAt": "2026-05-13T05:08:30.329Z",
+  "frameworkVersion": "0.9.8",
+  "createdAt": "2026-05-13T11:33:31.456Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -35935,6 +35935,87 @@
         "wrap": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "vendorData": {
+      "type": "object",
+      "members": {
+        "KNOWN_VENDOR_DATA": {
+          "type": "object",
+          "members": {
+            "bimi-trust-anchors": {
+              "type": "object",
+              "members": {
+                "canary": {
+                  "type": "primitive",
+                  "valueType": "null"
+                },
+                "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "module": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "common-passwords-top-10000": {
+              "type": "object",
+              "members": {
+                "canary": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "module": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "public-suffix-list": {
+              "type": "object",
+              "members": {
+                "canary": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "module": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "VendorDataError": {
+          "type": "function",
+          "arity": 4
+        },
+        "get": {
+          "type": "function",
+          "arity": 1
+        },
+        "getAsString": {
+          "type": "function",
+          "arity": 1
+        },
+        "inventory": {
+          "type": "function",
+          "arity": 0
+        },
+        "verifyAll": {
+          "type": "function",
+          "arity": 0
         }
       }
     },
