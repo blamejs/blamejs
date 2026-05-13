@@ -1950,6 +1950,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/middleware/protected-resource-metadata.js:create",
         "lib/backup/index.js:scheduleTest",
         "lib/restore-rollback.js:rollback",
+        // v0.9.13 — b.metrics.snapshot writer shares the scheduleTest/rollback
+        // / exchangeToken interval+stop closure scaffold
+        "lib/metrics.js:snapshotStartWriter",
         "lib/auth/sd-jwt-vc-holder.js:store",
         // Pre-v0.8.62 sites the new primitives share substrate with
         "lib/api-key.js:_validateIssueOpts",

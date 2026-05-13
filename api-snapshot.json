@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.12",
-  "createdAt": "2026-05-13T15:40:06.035Z",
+  "frameworkVersion": "0.9.13",
+  "createdAt": "2026-05-13T18:01:19.979Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -29425,6 +29425,23 @@
           "type": "function",
           "arity": 1
         },
+        "snapshot": {
+          "type": "object",
+          "members": {
+            "read": {
+              "type": "function",
+              "arity": 1
+            },
+            "render": {
+              "type": "function",
+              "arity": 2
+            },
+            "startWriter": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "tap": {
           "type": "function",
           "arity": 3
@@ -34197,6 +34214,10 @@
           "type": "function",
           "arity": 1
         },
+        "withBreaker": {
+          "type": "function",
+          "arity": 2
+        },
         "withRetry": {
           "type": "function",
           "arity": 2
@@ -35032,6 +35053,19 @@
         "rollback": {
           "type": "function",
           "arity": 1
+        },
+        "standaloneVerifier": {
+          "type": "object",
+          "members": {
+            "path": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "verify": {
+              "type": "function",
+              "arity": 4
+            }
+          }
         },
         "swap": {
           "type": "function",
