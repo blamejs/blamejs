@@ -306,10 +306,18 @@ jobs:
         # proceeds.
         #
         # When zero deps exist, `npm audit signatures --omit dev` exits 1
-        # with `found no installed dependencies to audit`. That's NOT a
-        # signing failure — it's the empty-tree case the framework
-        # actually wants. The shell guard below treats that exit code as
-        # success while keeping every other failure mode loud.
+        # with an empty-tree message. The exact wording has drifted across
+        # npm versions:
+        #
+        #   - Older npm 10.x: "npm error found no installed dependencies to audit"
+        #   - Newer npm 10.x (post-v0.9.11): "npm error found no dependencies to audit that were installed from a supported registry"
+        #
+        # Both indicate the empty-tree case the framework's zero-runtime-
+        # deps posture intends. The shell guard accepts either phrasing
+        # while keeping every other failure mode loud. The match is
+        # deliberately broad — the union of the two known empty-tree
+        # messages, anchored on the unambiguous "no dependencies to
+        # audit" / "no installed dependencies to audit" tokens.
         run: |
           set +e
           OUT=$(npm audit signatures --omit dev 2>&1)
@@ -320,7 +328,7 @@ jobs:
             echo "[npm-audit-signatures] registry signing chain verified"
             exit 0
           fi
-          if echo "$OUT" | grep -qi "no installed dependencies to audit"; then
+          if echo "$OUT" | grep -qiE "no (installed )?dependencies to audit"; then
             echo "[npm-audit-signatures] empty-deps tree (zero-runtime-deps posture) — regression gate armed for future deps"
             exit 0
           fi
