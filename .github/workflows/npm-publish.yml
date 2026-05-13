@@ -135,6 +135,15 @@ jobs:
           format:   tty
           check_together: 'yes'
 
+      - name: Install devDependencies (esbuild + postject for bundler-output smoke gate)
+        # bundler-output.test.js (v0.9.10+) loads esbuild via its JS API
+        # instead of `npx --yes esbuild`, so devDependencies must be
+        # present before the test runs. The framework still ships ZERO
+        # runtime deps — devDependencies don't reach the npm tarball
+        # per the `files` allowlist in package.json. Mirrors the same
+        # step in .github/workflows/ci.yml.
+        run: npm install --no-audit --no-fund
+
       - name: Framework smoke
         run: node test/smoke.js
 
