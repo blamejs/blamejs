@@ -195,25 +195,31 @@ function testMemoryStoreTtlExpiry() {
 }
 
 function _mockDb() {
-  var data = new Map();
+  var data = new Map();   // k → { fingerprint, status_code, headers, body, expires_at }
   return {
     _data: data,
     prepare: function (sql) {
       if (/^CREATE (TABLE|INDEX)/i.test(sql)) {
         return { run: function () { return { changes: 0 }; } };
       }
-      if (/^SELECT v, expires_at FROM /i.test(sql)) {
+      if (/^SELECT fingerprint, status_code, headers, body, expires_at FROM /i.test(sql)) {
         return {
           get: function (k) {
             var row = data.get(k);
-            return row ? { v: row.v, expires_at: row.expires_at } : undefined;
+            return row ? Object.assign({}, row) : undefined;
           },
         };
       }
-      if (/^INSERT INTO /i.test(sql)) {
+      if (/^INSERT INTO [^ ]+\(k, fingerprint, status_code, headers, body, expires_at\)/i.test(sql)) {
         return {
-          run: function (k, v, expiresAt) {
-            data.set(k, { v: v, expires_at: expiresAt });
+          run: function (k, fingerprint, statusCode, headers, body, expiresAt) {
+            data.set(k, {
+              fingerprint: fingerprint,
+              status_code: statusCode,
+              headers:     headers,
+              body:        body,
+              expires_at:  expiresAt,
+            });
             return { changes: 1 };
           },
         };
@@ -305,9 +311,15 @@ function testDbStoreUpsert() {
 
 function testDbStoreCorruptRow() {
   var db = _mockDb();
-  var store = b.middleware.idempotencyKey.dbStore({ db: db });
-  db._data.set("corrupt", { v: "not-json-{{{", expires_at: Date.now() + 60000 });
-  check("dbStore: corrupt row treated as miss + cleaned",
+  var store = b.middleware.idempotencyKey.dbStore({ db: db, hashKeys: false, seal: false });
+  // Inject a row whose `headers` column is unparseable JSON.
+  db._data.set("corrupt", {
+    fingerprint: "x", status_code: 200,
+    headers:     "not-json-{{{",
+    body:        "",
+    expires_at:  Date.now() + 60000,
+  });
+  check("dbStore: corrupt headers JSON treated as miss + cleaned",
         store.get("corrupt") === null && db._data.has("corrupt") === false);
 }
 
@@ -316,16 +328,19 @@ function testDbStoreExpiredRaceNoFreshClobber() {
   // B upserts a fresh row before process A's cleanup-delete fires.
   // The delete must NOT remove the fresh row.
   var db = _mockDb();
-  b.middleware.idempotencyKey.dbStore({ db: db });   // triggers DDL on db
+  b.middleware.idempotencyKey.dbStore({ db: db, hashKeys: false, seal: false });
   var staleExpires = Date.now() - 1000;
-  db._data.set("k", { v: JSON.stringify({ fingerprint: "old" }), expires_at: staleExpires });
-  // Wrap stmtGet to simulate a concurrent upsert mid-read: when get()
-  // returns, the mock data is replaced with a fresh row whose
-  // expires_at is in the future.
+  db._data.set("k", {
+    fingerprint: "old", status_code: 200,
+    headers:     JSON.stringify({}),
+    body:        "",
+    expires_at:  staleExpires,
+  });
+  // Wrap stmtGet to simulate a concurrent upsert mid-read.
   var origGet = db.prepare;
   db.prepare = function (sql) {
     var stmt = origGet.call(db, sql);
-    if (/^SELECT v, expires_at FROM /i.test(sql)) {
+    if (/^SELECT fingerprint, status_code, headers, body, expires_at FROM /i.test(sql)) {
       var realGet = stmt.get;
       return {
         get: function (k) {
@@ -333,8 +348,10 @@ function testDbStoreExpiredRaceNoFreshClobber() {
           if (row && row.expires_at <= staleExpires) {
             // Concurrent upsert: another process writes a fresh row.
             db._data.set(k, {
-              v:          JSON.stringify({ fingerprint: "fresh" }),
-              expires_at: Date.now() + 60000,
+              fingerprint: "fresh", status_code: 201,
+              headers:     JSON.stringify({}),
+              body:        "",
+              expires_at:  Date.now() + 60000,
             });
           }
           return row;
@@ -343,14 +360,101 @@ function testDbStoreExpiredRaceNoFreshClobber() {
     }
     return stmt;
   };
-  // Re-build the store so the get-statement passes through the wrapper.
-  var racingStore = b.middleware.idempotencyKey.dbStore({ db: db });
+  var racingStore = b.middleware.idempotencyKey.dbStore({ db: db, hashKeys: false, seal: false });
   var result = racingStore.get("k");
   check("dbStore race: stale read returns null (miss)", result === null);
   check("dbStore race: concurrent fresh row preserved", db._data.has("k") === true);
   var freshRow = db._data.get("k");
   check("dbStore race: fresh row is the concurrent upsert",
-        JSON.parse(freshRow.v).fingerprint === "fresh");
+        freshRow.fingerprint === "fresh");
+}
+
+function testDbStoreHashKeysDefault() {
+  // hashKeys defaults ON — raw operator key NEVER lands in db._data.
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({ db: db, seal: false });
+  check("dbStore: hashKeys default true", store._hashKeys === true);
+  var rawKey = "order-12345-alice@example.com";
+  store.set(rawKey, { fingerprint: "fp", statusCode: 200, headers: {}, body: "" }, 60000);
+  // db._data keys are the SHA3-512 namespace-hash; raw key must not appear.
+  var stored = Array.from(db._data.keys());
+  check("dbStore hashKeys: raw key absent from DB",
+        stored.indexOf(rawKey) === -1);
+  check("dbStore hashKeys: hashed key (128-hex) present in DB",
+        stored.length === 1 && /^[0-9a-f]{128}$/.test(stored[0]));
+  // Round-trip with the raw key still works (transparent hashing).
+  var v = store.get(rawKey);
+  check("dbStore hashKeys: round-trip with raw key", v && v.fingerprint === "fp");
+}
+
+function testDbStoreHashKeysOptOut() {
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({ db: db, hashKeys: false, seal: false });
+  check("dbStore: hashKeys: false respected", store._hashKeys === false);
+  store.set("plain-key", { fingerprint: "fp", statusCode: 200, headers: {}, body: "" }, 60000);
+  check("dbStore opt-out: raw key in DB", db._data.has("plain-key"));
+}
+
+function testDbStoreSealedRowAcrossProcessesNotDeleted() {
+  // Codex P1 on PR #45: process A has seal=false (vault not init);
+  // process B (seal=true) writes a sealed row. Process A reading
+  // that row must NOT delete it — leave for B to consume.
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({
+    db: db, tableName: "_t_xproc", hashKeys: false, seal: false,
+  });
+  // Inject a row whose headers look vault-sealed (vault: prefix).
+  db._data.set("k", {
+    fingerprint: "fp",
+    status_code: 200,
+    headers:     "vault:eyJzb21lIjoiZW52ZWxvcGUifQ==",   // not JSON; mimics sealed envelope
+    body:        "vault:eyJib2R5IjoiYmFzZTY0In0=",
+    expires_at:  Date.now() + 60000,
+  });
+  var result = store.get("k");
+  check("dbStore xproc-sealed: read returns null (miss)", result === null);
+  check("dbStore xproc-sealed: sealed row LEFT IN PLACE for sibling process",
+        db._data.has("k") === true);
+}
+
+function testDbStoreCorruptHeadersDeletedWhenNotSealed() {
+  // Companion to the test above: genuinely corrupt headers (NOT
+  // vault-sealed) ARE deleted on read. Distinguishes a real
+  // corruption from a cross-process seal-format mismatch.
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({
+    db: db, tableName: "_t_corrupt", hashKeys: false, seal: false,
+  });
+  db._data.set("k", {
+    fingerprint: "fp",
+    status_code: 200,
+    headers:     "{this is not json{",   // genuine corruption, no vault: prefix
+    body:        "",
+    expires_at:  Date.now() + 60000,
+  });
+  var result = store.get("k");
+  check("dbStore corrupt-headers: read returns null", result === null);
+  check("dbStore corrupt-headers: row DELETED (no cross-process value to preserve)",
+        db._data.has("k") === false);
+}
+
+function testDbStoreSealReqWithoutVault() {
+  // Probe-falls-back path: when vault.init() hasn't run, seal request
+  // silently degrades to plaintext (with an audit warning).
+  var db = _mockDb();
+  // Use a fresh tableName so cryptoField doesn't carry registration
+  // state from prior tests in this run.
+  var store = b.middleware.idempotencyKey.dbStore({
+    db: db, tableName: "_t_no_vault", hashKeys: false,
+  });
+  // sealEnabled false because the test env hasn't initialized vault.
+  check("dbStore: seal disabled when vault not ready", store._sealEnabled === false);
+  store.set("k", { fingerprint: "fp", statusCode: 200, headers: { "X-Hi": "y" }, body: "QUJD" }, 60000);
+  var row = db._data.get("k");
+  // body/headers stored as plaintext (no vault: prefix).
+  check("dbStore seal-skipped: body plaintext", row.body === "QUJD");
+  check("dbStore seal-skipped: headers plaintext",
+        row.headers.indexOf("vault:") === -1);
 }
 
 async function run() {
@@ -372,6 +476,11 @@ async function run() {
   testDbStoreUpsert();
   testDbStoreCorruptRow();
   testDbStoreExpiredRaceNoFreshClobber();
+  testDbStoreHashKeysDefault();
+  testDbStoreHashKeysOptOut();
+  testDbStoreSealReqWithoutVault();
+  testDbStoreSealedRowAcrossProcessesNotDeleted();
+  testDbStoreCorruptHeadersDeletedWhenNotSealed();
 }
 
 module.exports = { run: run };
