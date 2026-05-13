@@ -395,6 +395,49 @@ function testDbStoreHashKeysOptOut() {
   check("dbStore opt-out: raw key in DB", db._data.has("plain-key"));
 }
 
+function testDbStoreSealedRowAcrossProcessesNotDeleted() {
+  // Codex P1 on PR #45: process A has seal=false (vault not init);
+  // process B (seal=true) writes a sealed row. Process A reading
+  // that row must NOT delete it — leave for B to consume.
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({
+    db: db, tableName: "_t_xproc", hashKeys: false, seal: false,
+  });
+  // Inject a row whose headers look vault-sealed (vault: prefix).
+  db._data.set("k", {
+    fingerprint: "fp",
+    status_code: 200,
+    headers:     "vault:eyJzb21lIjoiZW52ZWxvcGUifQ==",   // not JSON; mimics sealed envelope
+    body:        "vault:eyJib2R5IjoiYmFzZTY0In0=",
+    expires_at:  Date.now() + 60000,
+  });
+  var result = store.get("k");
+  check("dbStore xproc-sealed: read returns null (miss)", result === null);
+  check("dbStore xproc-sealed: sealed row LEFT IN PLACE for sibling process",
+        db._data.has("k") === true);
+}
+
+function testDbStoreCorruptHeadersDeletedWhenNotSealed() {
+  // Companion to the test above: genuinely corrupt headers (NOT
+  // vault-sealed) ARE deleted on read. Distinguishes a real
+  // corruption from a cross-process seal-format mismatch.
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({
+    db: db, tableName: "_t_corrupt", hashKeys: false, seal: false,
+  });
+  db._data.set("k", {
+    fingerprint: "fp",
+    status_code: 200,
+    headers:     "{this is not json{",   // genuine corruption, no vault: prefix
+    body:        "",
+    expires_at:  Date.now() + 60000,
+  });
+  var result = store.get("k");
+  check("dbStore corrupt-headers: read returns null", result === null);
+  check("dbStore corrupt-headers: row DELETED (no cross-process value to preserve)",
+        db._data.has("k") === false);
+}
+
 function testDbStoreSealReqWithoutVault() {
   // Probe-falls-back path: when vault.init() hasn't run, seal request
   // silently degrades to plaintext (with an audit warning).
@@ -436,6 +479,8 @@ async function run() {
   testDbStoreHashKeysDefault();
   testDbStoreHashKeysOptOut();
   testDbStoreSealReqWithoutVault();
+  testDbStoreSealedRowAcrossProcessesNotDeleted();
+  testDbStoreCorruptHeadersDeletedWhenNotSealed();
 }
 
 module.exports = { run: run };
