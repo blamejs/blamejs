@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.13",
-  "createdAt": "2026-05-13T18:01:19.979Z",
+  "frameworkVersion": "0.9.14",
+  "createdAt": "2026-05-13T20:05:01.968Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -9638,6 +9638,10 @@
           "arity": 1
         },
         "hashFile": {
+          "type": "function",
+          "arity": 2
+        },
+        "hashFilesParallel": {
           "type": "function",
           "arity": 2
         },
@@ -31841,6 +31845,10 @@
         "enforced": {
           "type": "primitive",
           "valueType": "boolean"
+        },
+        "reload": {
+          "type": "function",
+          "arity": 0
         }
       }
     },
@@ -35063,7 +35071,7 @@
             },
             "verify": {
               "type": "function",
-              "arity": 4
+              "arity": 3
             }
           }
         },

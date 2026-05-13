@@ -4040,6 +4040,34 @@ var KNOWN_ANTIPATTERNS = [
     reason: "SQL identifier validation is now safeSql.DEFAULT_IDENTIFIER_RE. The lib/safe-sql.js definition keeps the literal.",
   },
   {
+    id: "raw-sql-identifier-interpolation",
+    primitive: "safeSql.quoteIdentifier(name, dialect?) — runs validateIdentifier + emits the dialect-correct quoted form",
+    // Match `<KEYWORD> " + <variable> +` shapes where:
+    //   - the keyword is a known SQL DDL/DML position that takes an
+    //     identifier next (FROM / INTO / UPDATE / TABLE / INDEX /
+    //     TRIGGER / VIEW / JOIN — SELECT/INSERT are too column-heavy
+    //     to flag cleanly, but they reach an identifier via FROM/INTO);
+    //   - the next concatenated variable's name does NOT start with
+    //     `q[A-Z_]` (the project's "quoted identifier" prefix
+    //     convention, e.g. `qTable`, `q_Table`).
+    // Hits raw `"CREATE TABLE " + tableName +` shapes where the table
+    // is interpolated unquoted; the safeSql.quoteIdentifier helper
+    // emits the dialect-correct `"tableName"` (sqlite/postgres) or
+    // `` `tableName` `` (mysql) form and runs validateIdentifier
+    // internally, so future SQL-keyword + raw identifier
+    // concatenations are defense-in-depth covered too.
+    //
+    // Skips variables that signal already-quoted identifiers:
+    //   - `q` followed by letter/digit/underscore (qTable, qt, q_Table)
+    //   - `Q` followed by letter/digit/underscore (Q_TABLE, QTable)
+    //   - `quoted...` (quotedTable, quotedColumn)
+    regex: /\b(FROM|INTO|UPDATE|TABLE|INDEX|TRIGGER|VIEW|JOIN)\s+["']\s*\+\s*(?![qQ][A-Za-z0-9_]|quoted)\w+\s*\+/,
+    allowlist: [
+      "lib/safe-sql.js",   // the helper itself emits quote chars
+    ],
+    reason: "Identifier ALWAYS reaches SQL through safeSql.quoteIdentifier(name, dialect). Validates shape + quotes for the dialect; a future shape-regex bypass can't reach raw concatenation. Local variables holding quoted identifiers use a `q`/`Q`/`quoted` prefix so the detector can skip them.",
+  },
+  {
     id: "inline-optional-plain-object-validation",
     primitive: "validateOpts.optionalPlainObject(value, label, ErrorClass, code?, description?)",
     // Match the literal three-line cascade `if (X !== undefined && X !==
