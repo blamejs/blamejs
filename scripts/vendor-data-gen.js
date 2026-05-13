@@ -91,7 +91,7 @@ function main() {
   var pubkeyPem;
   try {
     pubkeyPem = fs.readFileSync(pubkeyPath, "utf8");
-  } catch (e) {
+  } catch (_e) {
     process.stderr.write("vendor-data-gen: matching public key missing at " + pubkeyPath + "\n");
     process.exit(2);
   }
