@@ -655,6 +655,32 @@ function testNoInlineRequires() {
     matches);
 }
 
+// ---- Pattern 10a: require() with a non-literal argument ----
+
+function testNoDynamicRequires() {
+  // Every modern bundler (esbuild / webpack / ncc / rollup / Bun /
+  // Deno) determines what to include in the bundle via STATIC
+  // analysis: `require("./literal")` is traced; `require(variable)`
+  // is not. Dynamic requires silently drop the target from SEA / pkg
+  // / esbuild bundles, breaking packaging-mode invariance at runtime
+  // ("module not loadable at <path>" at the first lookup).
+  //
+  // Caught by hermitstash-sync operator (2026-05-13) against v0.9.8
+  // lib/vendor-data.js where `require(entry.module)` defeated the
+  // SEA-bypass-removal that v0.9.8 was supposed to deliver.
+  //
+  // Match `require(` followed by anything that isn't a string-literal
+  // opener (`"` or `'` or backtick — though backtick template strings
+  // are also dynamic if they contain `${…}`, but pure backtick-no-
+  // interpolation is rare in require()). Skip require.resolve too —
+  // distinct API.
+  var matches = _scan(/\brequire\(\s*[^"'`)]/);
+  matches = _filterMarkers(matches, "dynamic-require");
+  _report("require() argument must be a string literal " +
+          "(or has dynamic-require allow marker)",
+    matches);
+}
+
 // ---- Pattern 11: Math.random() in security-sensitive contexts ----
 
 function testNoMathRandomForSecurity() {
@@ -4595,6 +4621,7 @@ async function run() {
   testParserPrimitivesHaveFuzzHarness();
   testNoTierTerminologyInLib();
   testNoInlineRequires();
+  testNoDynamicRequires();
   testNoMathRandomForSecurity();
   testNoRawHashCompare();
   testRawNewURL();
