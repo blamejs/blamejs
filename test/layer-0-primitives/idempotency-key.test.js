@@ -218,6 +218,18 @@ function _mockDb() {
           },
         };
       }
+      if (/^DELETE FROM [^ ]+ WHERE k = \? AND expires_at <= \?/i.test(sql)) {
+        return {
+          run: function (k, expiresAt) {
+            var row = data.get(k);
+            if (row && row.expires_at <= expiresAt) {
+              data.delete(k);
+              return { changes: 1 };
+            }
+            return { changes: 0 };
+          },
+        };
+      }
       if (/^DELETE FROM /i.test(sql)) {
         return {
           run: function (k) {
@@ -299,6 +311,48 @@ function testDbStoreCorruptRow() {
         store.get("corrupt") === null && db._data.has("corrupt") === false);
 }
 
+function testDbStoreExpiredRaceNoFreshClobber() {
+  // Multi-process race: process A reads the expired row, then process
+  // B upserts a fresh row before process A's cleanup-delete fires.
+  // The delete must NOT remove the fresh row.
+  var db = _mockDb();
+  b.middleware.idempotencyKey.dbStore({ db: db });   // triggers DDL on db
+  var staleExpires = Date.now() - 1000;
+  db._data.set("k", { v: JSON.stringify({ fingerprint: "old" }), expires_at: staleExpires });
+  // Wrap stmtGet to simulate a concurrent upsert mid-read: when get()
+  // returns, the mock data is replaced with a fresh row whose
+  // expires_at is in the future.
+  var origGet = db.prepare;
+  db.prepare = function (sql) {
+    var stmt = origGet.call(db, sql);
+    if (/^SELECT v, expires_at FROM /i.test(sql)) {
+      var realGet = stmt.get;
+      return {
+        get: function (k) {
+          var row = realGet(k);
+          if (row && row.expires_at <= staleExpires) {
+            // Concurrent upsert: another process writes a fresh row.
+            db._data.set(k, {
+              v:          JSON.stringify({ fingerprint: "fresh" }),
+              expires_at: Date.now() + 60000,
+            });
+          }
+          return row;
+        },
+      };
+    }
+    return stmt;
+  };
+  // Re-build the store so the get-statement passes through the wrapper.
+  var racingStore = b.middleware.idempotencyKey.dbStore({ db: db });
+  var result = racingStore.get("k");
+  check("dbStore race: stale read returns null (miss)", result === null);
+  check("dbStore race: concurrent fresh row preserved", db._data.has("k") === true);
+  var freshRow = db._data.get("k");
+  check("dbStore race: fresh row is the concurrent upsert",
+        JSON.parse(freshRow.v).fingerprint === "fresh");
+}
+
 async function run() {
   testSurface();
   testBadOpts();
@@ -317,6 +371,7 @@ async function run() {
   testDbStoreTtlExpiry();
   testDbStoreUpsert();
   testDbStoreCorruptRow();
+  testDbStoreExpiredRaceNoFreshClobber();
 }
 
 module.exports = { run: run };
