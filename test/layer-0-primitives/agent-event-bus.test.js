@@ -155,6 +155,39 @@ async function testTenantScope() {
   check("tenant-scope: cross-tenant subscriber dropped",   receivedB.length === 0);
 }
 
+async function testTenantScopeRefusesSubscriberWithoutTenantId() {
+  var bus = b.agent.eventBus.create({ pubsub: _fakePubsub() });
+  bus.registerTopic("mail.scoped.event", {
+    schema:      { source: "string" },
+    tenantScope: true,
+  });
+  await expectRejection("tenant-scope: subscriber without tenantId refused",
+    bus.subscribe("mail.scoped.event", function () {}, {
+      actor: { id: "u-no-tenant" },
+    }),
+    "agent-event-bus/subscribe-denied");
+  await expectRejection("tenant-scope: subscribe without actor refused",
+    bus.subscribe("mail.scoped.event", function () {}, {}),
+    "agent-event-bus/subscribe-denied");
+}
+
+async function testAsyncHandlerErrors() {
+  var bus = b.agent.eventBus.create({ pubsub: _fakePubsub() });
+  bus.registerTopic("mail.async.event", { schema: { x: "string" } });
+  var crashed = false;
+  var origHandler = process.listeners("unhandledRejection").slice();
+  process.removeAllListeners("unhandledRejection");
+  process.once("unhandledRejection", function () { crashed = true; });
+  await bus.subscribe("mail.async.event", async function () {
+    throw new Error("async-boom");
+  });
+  await bus.publish("mail.async.event", { x: "data" });
+  await new Promise(function (r) { setTimeout(r, 25); });
+  process.removeAllListeners("unhandledRejection");
+  origHandler.forEach(function (h) { process.on("unhandledRejection", h); });
+  check("async handler reject swallowed (no unhandledRejection)", !crashed);
+}
+
 async function testRefusesBadOpts() {
   var threw = null;
   try { b.agent.eventBus.create({}); } catch (e) { threw = e; }
@@ -180,6 +213,8 @@ async function run() {
   await testSchemaValidation();
   await testPermissions();
   await testTenantScope();
+  await testTenantScopeRefusesSubscriberWithoutTenantId();
+  await testAsyncHandlerErrors();
   await testRefusesBadOpts();
   await testListTopics();
 }
