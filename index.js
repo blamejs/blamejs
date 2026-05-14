@@ -167,8 +167,10 @@ var guardMailMove = require("./lib/guard-mail-move");
 var guardMailSieve = require("./lib/guard-mail-sieve");
 var guardAgentRegistry = require("./lib/guard-agent-registry");
 var guardIdempotencyKey = require("./lib/guard-idempotency-key");
+var guardStreamArgs = require("./lib/guard-stream-args");
 var agentOrchestrator = require("./lib/agent-orchestrator");
 var agentIdempotency = require("./lib/agent-idempotency");
+var agentStream = require("./lib/agent-stream");
 var guardArchive = require("./lib/guard-archive");
 var guardJson = require("./lib/guard-json");
 var guardYaml = require("./lib/guard-yaml");
@@ -414,7 +416,8 @@ module.exports = {
   guardMailSieve:   guardMailSieve,
   guardAgentRegistry: guardAgentRegistry,
   guardIdempotencyKey: guardIdempotencyKey,
-  agent:            { orchestrator: agentOrchestrator, idempotency: agentIdempotency },
+  guardStreamArgs:  guardStreamArgs,
+  agent:            { orchestrator: agentOrchestrator, idempotency: agentIdempotency, stream: agentStream },
   guardArchive:     guardArchive,
   guardJson:        guardJson,
   guardYaml:        guardYaml,

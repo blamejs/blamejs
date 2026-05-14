@@ -2112,6 +2112,10 @@ async function testNoDuplicateCodeBlocks() {
         // v0.9.22 — guardIdempotencyKey's validate runs the same scan
         // on operator-supplied idempotency keys.
         "lib/guard-idempotency-key.js:validate",
+        // v0.9.24 — guardStreamArgs._checkCursorOpts walks operator-
+        // supplied cursor opts with the same per-key recursion + scan.
+        "lib/guard-stream-args.js:_checkCursorOpts",
+        "lib/guard-stream-args.js:validate",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2171,6 +2175,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-mail-reply.js:*",
         "lib/guard-mail-sieve.js:*",
         "lib/guard-message-id.js:*",
+        "lib/guard-stream-args.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
