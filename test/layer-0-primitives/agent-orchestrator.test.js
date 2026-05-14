@@ -102,6 +102,63 @@ async function testElectCluster() {
   check("elect cluster: leaderId",       elec.leaderId === "node-1");
 }
 
+async function testNonIntegerShardsRefused() {
+  var fakeQueue = {
+    enqueue: async function () { return { jobId: "j" }; },
+    consume: async function () { return { unsubscribe: async function () {} }; },
+  };
+  var orch = b.agent.orchestrator.create({});
+  var threw = null;
+  try {
+    orch.spawnConsumers({ agent: _fakeAgent("x"), queue: fakeQueue, shards: 1.5 });
+  } catch (e) { threw = e; }
+  check("spawnConsumers refuses fractional shards",
+        threw && (threw.code || "").indexOf("agent-orchestrator/bad-shard-count") !== -1);
+}
+
+async function testLiveAgentSeparateFromBackend() {
+  // The backend row should not carry the agent function ref — a
+  // JSON/DB-backed implementation has to be able to round-trip the row.
+  var captured = null;
+  var fakeBackend = {
+    get:    function (k)    { return Promise.resolve(captured && captured.name === k ? captured : null); },
+    set:    function (k, v) { captured = v; return Promise.resolve(); },
+    delete: function (k)    { captured = null; return Promise.resolve(); },
+    list:   function ()     { return Promise.resolve(captured ? [captured] : []); },
+  };
+  var orch = b.agent.orchestrator.create({ backend: fakeBackend });
+  var agent = _fakeAgent("acme");
+  await orch.register("tenant-acme.mail", agent, { agentKind: "mail" });
+  check("backend row has no live ref",     captured && captured.agentRef === undefined);
+  check("backend row has metadata",        captured && captured.kind === "mail");
+
+  // Round-trip the backend row through JSON — must not throw.
+  var json = JSON.stringify(captured);
+  check("backend row JSON-serializable",   typeof json === "string" && json.indexOf("\"kind\"") !== -1);
+
+  // Live lookup returns the agent ref from in-process map.
+  var looked = await orch.lookup("tenant-acme.mail");
+  check("lookup returns live ref",         looked === agent);
+}
+
+async function testNotHydrated() {
+  // Simulate: backend row exists from another process, but THIS process
+  // never called register(name, agent). lookup() must surface explicitly.
+  var orch = b.agent.orchestrator.create({
+    backend: {
+      get:    function (k) {
+        return Promise.resolve(k === "remote.mail" ? { name: "remote.mail", kind: "mail" } : null);
+      },
+      set:    function () { return Promise.resolve(); },
+      delete: function () { return Promise.resolve(); },
+      list:   function () { return Promise.resolve([]); },
+    },
+  });
+  await expectRejection("lookup refuses not-hydrated",
+    orch.lookup("remote.mail"),
+    "agent-orchestrator/not-hydrated");
+}
+
 async function testSpawnConsumers() {
   var enqueued = [];
   var fakeQueue = {
@@ -199,6 +256,9 @@ async function run() {
   await testGuardRefusals();
   await testElect();
   await testElectCluster();
+  await testNonIntegerShardsRefused();
+  await testLiveAgentSeparateFromBackend();
+  await testNotHydrated();
   await testSpawnConsumers();
   testShardFor();
   await testDrain();
