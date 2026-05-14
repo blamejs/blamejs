@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.9.19",
-  "createdAt": "2026-05-14T16:02:56.779Z",
+  "createdAt": "2026-05-14T16:22:15.532Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -29421,6 +29421,23 @@
           "arity": 1
         },
         "parse": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "mailStore": {
+      "type": "object",
+      "members": {
+        "DEFAULT_FOLDERS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "MailStoreError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
           "type": "function",
           "arity": 1
         }
