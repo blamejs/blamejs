@@ -2095,8 +2095,83 @@ async function testNoDuplicateCodeBlocks() {
         // v0.9.19 — guardMessageId's RFC 5322 §3.6.4 validator runs
         // the same charCodeAt + (c < 0x20 || c === 0x7F) scan.
         "lib/guard-message-id.js:validate",
+        // v0.9.20 — guardMail* family adds folder-name / sieve-name /
+        // header-value / scalar-string scans of the same shape.
+        "lib/guard-mail-compose.js:_checkHeaderValue",
+        "lib/guard-mail-move.js:_checkFolderName",
+        "lib/guard-mail-query.js:_checkScalar",
+        "lib/guard-mail-sieve.js:_checkName",
+        "lib/guard-mail-sieve.js:validate",
+        // v0.9.20 — guardJwt.kidSafe runs the same control-char scan
+        // against operator-supplied JWT `kid` values (defends header-
+        // injection at the JWT-resolver boundary).
+        "lib/guard-jwt.js:kidSafe",
       ],
-      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Six different domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
+      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
+    },
+    {
+      // v0.9.20 — guardMail* family scaffolding cluster. Every member
+      // shares the standard guard-family shape: PROFILES table +
+      // COMPLIANCE_POSTURES table + _resolveProfile dispatcher +
+      // validate() + compliancePosture(). The detector finds the same
+      // skeleton across the 6 guard-mail files because the guard
+      // contract MANDATES it (b.gateContract enforces the shape at
+      // registration). Each member's profile body / posture vocab is
+      // distinct; the scaffolding around it is the contract.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-mail-compose.js:_resolveProfile",
+        "lib/guard-mail-compose.js:_anyRecipient",
+        "lib/guard-mail-compose.js:_checkAddrList",
+        "lib/guard-mail-compose.js:<top>",
+        "lib/guard-mail-move.js:_resolveProfile",
+        "lib/guard-mail-move.js:validate",
+        "lib/guard-mail-query.js:_resolveProfile",
+        "lib/guard-mail-query.js:validateActor",
+        "lib/guard-mail-query.js:<top>",
+        "lib/guard-mail-reply.js:_resolveProfile",
+        "lib/guard-mail-reply.js:validate",
+        "lib/guard-mail-reply.js:compliancePosture",
+        "lib/guard-mail-reply.js:<top>",
+        "lib/guard-mail-sieve.js:_resolveProfile",
+        "lib/guard-mail-sieve.js:<top>",
+        "lib/guard-mail-sieve.js:validate",
+        "lib/guard-message-id.js:_resolveProfile",
+        "lib/guard-message-id.js:compliancePosture",
+        "lib/guard-message-id.js:validate",
+      ],
+      reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
+    },
+    {
+      // v0.9.20 — guardMailQuery.validateActor shares the
+      // missing-field-cascade shape with several compliance/auth
+      // validators. Each domain requires a distinct posture-field
+      // tuple (HIPAA purposeOfUse, PCI pciScope, GDPR lawfulBasis,
+      // DORA report fields, FDA 21 CFR Part 11 signer fields, DPoP
+      // jwk canonicalization). Distinct error classes.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/dpop.js:_canonicalJwk",
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/compliance-sanctions.js:screen",
+        "lib/dora.js:_validateReportInput",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
+        "lib/guard-mail-query.js:validateActor",
+        "lib/guard-mail-reply.js:validate",
+        "lib/incident-report.js:open",
+      ],
+      reason: "Per-domain validation-field cascade against operator-supplied input objects — each member walks a fixed list of required fields, calls `if (typeof obj.field !== \"string\" || obj.field.length === 0) throw <DomainError>(\"<code>\", \"<message>\")`. Distinct domain error classes + distinct required-field sets (DPoP canonical JWK, sd-jwt-vc holder, sanctions screening, DORA, 21 CFR Part 11, posture actor fields, incident-report). Consolidation would couple unrelated specs.",
+    },
+    {
+      // v0.9.20 — guardMailQuery shares the structural-walker shape
+      // with cloud-events + mail-arf parsers.
+      mode:  "family-subset",
+      files: [
+        "lib/cloud-events.js:parse",
+        "lib/guard-mail-query.js:validateActor",
+        "lib/mail-arf.js:parse",
+      ],
+      reason: "Per-domain shape validators with required-field + type-check cascades — CloudEvents 1.0 envelope, RFC 5965 ARF report, mail-query actor posture binding. Each enforces a different field vocabulary and emits a domain-typed error code on a missing/malformed field.",
     },
     {
       files: [
@@ -2396,6 +2471,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/network-tls.js:buildOptions",
         "lib/redact.js:classifyDefaults",
         "lib/ws-client.js:connect",
+        // v0.9.20 — b.guardMailCompose._checkAddrList walks the
+        // operator-supplied address array with the same shape.
+        "lib/guard-mail-compose.js:_checkAddrList",
       ],
       reason: "Array-of-non-empty-strings validation scaffolding — `if (Array.isArray(v)) { if (v.length === 0) throw; for (i...) if (typeof v[i] !== 'string' || v[i].length === 0) throw }`. Each call site enforces a domain-specific list-element grammar (WebAuthn expected-origins, RFC 8617 ARC AuthServId list, RFC 9110 method allowlist, RFC 8446 TLS cipher list, redact field paths, RFC 6455 WS subprotocol list); the array shape is the same but the element-level grammar differs. validateOpts.optionalNonEmptyStringArray covers the simpler optional shape; this strict 'required-non-empty-array' variant could extract but each domain emits domain-typed error codes consolidation would erase.",
     },

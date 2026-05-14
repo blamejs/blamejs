@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.19",
-  "createdAt": "2026-05-14T16:31:31.710Z",
+  "frameworkVersion": "0.9.20",
+  "createdAt": "2026-05-14T17:28:04.383Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -20660,6 +20660,718 @@
         }
       }
     },
+    "guardMailCompose": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardMailComposeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxAttachmentBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRecipients": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSubjectBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxAttachmentBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRecipients": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSubjectBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxAttachmentBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRecipients": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSubjectBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardMailMove": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardMailMoveError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxFolderNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectIds": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxFolderNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectIds": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxFolderNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectIds": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "SYSTEM_FOLDERS": {
+          "type": "object",
+          "members": {
+            "Archive": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "Drafts": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "INBOX": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "Junk": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "Sent": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "Trash": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardMailQuery": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "FILTERABLE_COLUMNS": {
+          "type": "object",
+          "members": {
+            "flag": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "from_addr": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "internal_date": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "legal_hold": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "message_id": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "modseq": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "objectid": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "received_at": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "size_bytes": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "subject": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            },
+            "thread_root_id": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ops": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                }
+              }
+            }
+          }
+        },
+        "GuardMailQueryError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "POSTURE_ACTOR_FIELDS": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "hipaa": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "pci-dss": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "soc2": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxArrayLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxKeys": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxStringBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxArrayLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxKeys": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxStringBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxArrayLen": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxKeys": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxStringBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        },
+        "validateActor": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardMailReply": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardMailReplyError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxChainLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxForwardedAttachments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQuotedBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxChainLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxForwardedAttachments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQuotedBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxChainLength": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxForwardedAttachments": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxQuotedBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardMailSieve": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardMailSieveError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScriptBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScriptBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxLines": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxScriptBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "guardMarkdown": {
       "type": "object",
       "members": {
@@ -28988,6 +29700,1009 @@
         "MailError": {
           "type": "function",
           "arity": 4
+        },
+        "agent": {
+          "type": "object",
+          "members": {
+            "HEAVY_METHODS": {
+              "type": "object",
+              "members": {
+                "export": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "search": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "MailAgentError": {
+              "type": "function",
+              "arity": 4
+            },
+            "SCOPE_FOR_METHOD": {
+              "type": "object",
+              "members": {
+                "compose": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "delete": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "export": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fetch": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "flag": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "folders": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forward": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "identity.set": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "import": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "job": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.allowList": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.parse": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.send": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "move": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "quota": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reply": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "search": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "send": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.activate": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.list": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.put": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "thread": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vacation.set": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "WIRED_AT": {
+              "type": "object",
+              "members": {
+                "compose": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "export": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forward": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "identity.set": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "import": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "job": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.allowList": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.parse": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.send": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reply": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "send": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.activate": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.list": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.put": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vacation.set": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "consumer": {
+              "type": "function",
+              "arity": 1
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "guards": {
+              "type": "object",
+              "members": {
+                "compose": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardMailComposeError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxAttachmentBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxRecipients": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxSubjectBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxAttachmentBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxRecipients": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxSubjectBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxAttachmentBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxRecipients": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxSubjectBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                },
+                "messageId": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardMessageIdError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "requireBrackets": {
+                              "type": "primitive",
+                              "valueType": "boolean"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "requireBrackets": {
+                              "type": "primitive",
+                              "valueType": "boolean"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "requireBrackets": {
+                              "type": "primitive",
+                              "valueType": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    },
+                    "validateList": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                },
+                "move": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardMailMoveError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxFolderNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxObjectIds": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxFolderNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxObjectIds": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxFolderNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxObjectIds": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "SYSTEM_FOLDERS": {
+                      "type": "object",
+                      "members": {
+                        "Archive": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        },
+                        "Drafts": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        },
+                        "INBOX": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        },
+                        "Junk": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        },
+                        "Sent": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        },
+                        "Trash": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                },
+                "query": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "FILTERABLE_COLUMNS": {
+                      "type": "object",
+                      "members": {
+                        "flag": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "from_addr": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "internal_date": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "legal_hold": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "message_id": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "modseq": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "objectid": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "received_at": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "size_bytes": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "subject": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        },
+                        "thread_root_id": {
+                          "type": "object",
+                          "members": {
+                            "kind": {
+                              "type": "primitive",
+                              "valueType": "string"
+                            },
+                            "ops": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "GuardMailQueryError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "POSTURE_ACTOR_FIELDS": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        },
+                        "hipaa": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        },
+                        "pci-dss": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        },
+                        "soc2": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        }
+                      }
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxArrayLen": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxDepth": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxKeys": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxStringBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxArrayLen": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxDepth": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxKeys": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxStringBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxArrayLen": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxDepth": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxKeys": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxStringBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    },
+                    "validateActor": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                },
+                "reply": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardMailReplyError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxChainLength": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxForwardedAttachments": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxQuotedBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxChainLength": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxForwardedAttachments": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxQuotedBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxChainLength": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxForwardedAttachments": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxQuotedBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                },
+                "sieve": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardMailSieveError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxLines": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxScriptBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxLines": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxScriptBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxLines": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxScriptBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
         },
         "arc": {
           "type": "object",
