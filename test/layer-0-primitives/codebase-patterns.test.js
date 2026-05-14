@@ -2125,6 +2125,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-tenant-id.js:validate",
         // v0.9.27 — guardSagaConfig validates saga-creation configs.
         "lib/guard-saga-config.js:validate",
+        // v0.9.28 — guardPostureChain validates posture envelopes.
+        "lib/guard-posture-chain.js:validate",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2189,6 +2191,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-event-bus-payload.js:*",
         "lib/guard-tenant-id.js:*",
         "lib/guard-saga-config.js:*",
+        "lib/guard-posture-chain.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
@@ -2214,6 +2217,20 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Validate-string-args cascade with throw-on-bad-shape. Each member is a distinct primitive (idempotency op args, atomic-file dir traversal, DDL change-control vote, deprecate.alias name shape, RFC 6238 TOTP URI builder). Distinct error classes; consolidating would couple unrelated specs.",
     },
     {
+      // v0.9.28 — agent-posture-chain._appendHop shares the Object.assign
+      // + immutability-respecting return shape with api-snapshot.write,
+      // break-glass.unsealRowAsService, deprecate.alias. Each domain
+      // immutably evolves an input value + returns the new shape.
+      mode:  "family-subset",
+      files: [
+        "lib/agent-posture-chain.js:_appendHop",
+        "lib/api-snapshot.js:write",
+        "lib/break-glass.js:unsealRowAsService",
+        "lib/deprecate.js:alias",
+      ],
+      reason: "Immutable-evolve-and-return pattern. Each domain takes an input object, builds a new derived one via Object.assign + delta, returns the new shape without mutating the input. Posture-chain hop append, api-snapshot snapshot write, break-glass row unseal, deprecate name alias — all distinct domains with distinct error classes.",
+    },
+    {
       // v0.9.27 — multi-create / multi-validate cluster: per-domain
       // initialization shape. sd-jwt-vc-issuer.create + break-glass
       // policy validation + db dual-control declaration + DSR initiator
@@ -2234,6 +2251,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-saga-config.js:validate",
         "lib/guard-mail-compose.js:_checkBody",
         "lib/mail-auth.js:authResultsEmit",
+        "lib/mail-auth.js:arcEvaluate",
+        "lib/guard-mail-move.js:validate",
+        "lib/guard-posture-chain.js:validate",
       ],
       reason: "Validate-then-init-then-emit factory shape. Each domain (RFC 7515 sd-jwt-vc-issuer / RFC 11 oid4vp DCQL / RFC 9470 step-up authz-details / break-glass policy / DDL dual-control / DSR initiator / Digital Asset Links / network heartbeat / saga config / mail compose body) does opts-validation + state-init + sometimes audit-emit at the create boundary. Distinct error classes; consolidation would couple unrelated specs.",
     },

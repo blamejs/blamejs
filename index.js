@@ -172,12 +172,14 @@ var guardEventBusTopic = require("./lib/guard-event-bus-topic");
 var guardEventBusPayload = require("./lib/guard-event-bus-payload");
 var guardTenantId = require("./lib/guard-tenant-id");
 var guardSagaConfig = require("./lib/guard-saga-config");
+var guardPostureChain = require("./lib/guard-posture-chain");
 var agentOrchestrator = require("./lib/agent-orchestrator");
 var agentIdempotency = require("./lib/agent-idempotency");
 var agentStream = require("./lib/agent-stream");
 var agentEventBus = require("./lib/agent-event-bus");
 var agentTenant = require("./lib/agent-tenant");
 var agentSaga = require("./lib/agent-saga");
+var agentPostureChain = require("./lib/agent-posture-chain");
 var guardArchive = require("./lib/guard-archive");
 var guardJson = require("./lib/guard-json");
 var guardYaml = require("./lib/guard-yaml");
@@ -428,7 +430,8 @@ module.exports = {
   guardEventBusPayload: guardEventBusPayload,
   guardTenantId:    guardTenantId,
   guardSagaConfig:  guardSagaConfig,
-  agent:            { orchestrator: agentOrchestrator, idempotency: agentIdempotency, stream: agentStream, eventBus: agentEventBus, tenant: agentTenant, saga: agentSaga },
+  guardPostureChain: guardPostureChain,
+  agent:            { orchestrator: agentOrchestrator, idempotency: agentIdempotency, stream: agentStream, eventBus: agentEventBus, tenant: agentTenant, saga: agentSaga, postureChain: agentPostureChain },
   guardArchive:     guardArchive,
   guardJson:        guardJson,
   guardYaml:        guardYaml,
