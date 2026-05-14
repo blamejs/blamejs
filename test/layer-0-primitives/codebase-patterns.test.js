@@ -718,7 +718,14 @@ function testRequireBindingConsistency() {
     var lines = src.split("\n");
     for (var li = 0; li < lines.length; li++) {
       var line = lines[li];
+      // Plain top-level binding: `var X = require("M");`
       var m = line.match(/^\s*var\s+(\w+)\s*=\s*require\(["']([^"']+)["']\)\s*;?\s*$/);
+      // lazyRequire wrapper: `var X = lazyRequire(function () { return require("M"); });`
+      // — same binding-identity, just deferred-load. Apply the same
+      // canonical-name rule.
+      if (!m) {
+        m = line.match(/^\s*var\s+(\w+)\s*=\s*lazyRequire\(\s*function\s*\(\s*\)\s*\{\s*return\s+require\(["']([^"']+)["']\)\s*;?\s*\}\s*\)\s*;?\s*$/);
+      }
       if (!m) continue;
       var name = m[1];
       var mod  = m[2];
