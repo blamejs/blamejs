@@ -2121,6 +2121,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-event-bus-topic.js:validate",
         "lib/guard-event-bus-payload.js:validate",
         "lib/guard-event-bus-payload.js:_checkType",
+        // v0.9.26 — guardTenantId validates operator-supplied tenant ids.
+        "lib/guard-tenant-id.js:validate",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2183,6 +2185,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-stream-args.js:*",
         "lib/guard-event-bus-topic.js:*",
         "lib/guard-event-bus-payload.js:*",
+        "lib/guard-tenant-id.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
@@ -2208,16 +2211,39 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Validate-string-args cascade with throw-on-bad-shape. Each member is a distinct primitive (idempotency op args, atomic-file dir traversal, DDL change-control vote, deprecate.alias name shape, RFC 6238 TOTP URI builder). Distinct error classes; consolidating would couple unrelated specs.",
     },
     {
+      // v0.9.26 — agent-tenant._checkDestroyPreconditions shares the
+      // four-required-string-fields cascade shape with dpop.verify,
+      // backup.scheduleTest, break-glass._validatePolicySet, DDL
+      // change-control.propose, fda-21cfr11._validateSignatureInput,
+      // incident-report.open, sd-jwt-vc-holder.store. Each domain
+      // requires different fields and emits a distinct typed error.
+      mode:  "family-subset",
+      files: [
+        "lib/agent-tenant.js:_checkDestroyPreconditions",
+        "lib/auth/dpop.js:verify",
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/backup/index.js:scheduleTest",
+        "lib/break-glass.js:_validatePolicySet",
+        "lib/ddl-change-control.js:propose",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
+        "lib/incident-report.js:open",
+      ],
+      reason: "Per-domain validation-field cascade for required-args + throw-typed-error pattern. Each member enforces a different field tuple (destroy preconditions: stepUpToken/dualControlApprover/reason/actor; DPoP verify; backup test schedule; break-glass policy set; DDL change proposal; 21 CFR Part 11 signer fields; sd-jwt-vc holder store). Consolidation would couple unrelated regulatory specs.",
+    },
+    {
       // v0.9.21 — agent-orchestrator.spawnConsumers + mail-agent.consumer
       // + cra-report.conformityAssessment all build operator-supplied
       // input → arg shape with similar opts-validation cascades.
       mode:  "family-subset",
       files: [
         "lib/agent-orchestrator.js:_spawnConsumers",
+        "lib/agent-orchestrator.js:create",
+        "lib/agent-idempotency.js:create",
+        "lib/agent-tenant.js:create",
         "lib/cra-report.js:conformityAssessment",
         "lib/mail-agent.js:consumer",
       ],
-      reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
+      reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / AgentIdempotencyError / AgentTenantError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
     },
     {
       // v0.9.20 — guardMailQuery.validateActor shares the
