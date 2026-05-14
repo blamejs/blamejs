@@ -14,6 +14,9 @@ function testSurface() {
   check("validate fn",         typeof b.guardMailReply.validate === "function");
   check("NAME = mailReply",    b.guardMailReply.NAME === "mailReply");
   check("KIND = mail-reply",   b.guardMailReply.KIND === "mail-reply");
+  check("GuardMailReplyError is fn", typeof b.guardMailReply.GuardMailReplyError === "function");
+  var e = new b.guardMailReply.GuardMailReplyError("mail-reply/test", "test");
+  check("GuardMailReplyError instances carry code", e && e.code === "mail-reply/test");
 }
 
 function testValid() {

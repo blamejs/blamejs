@@ -15,6 +15,9 @@ function testSurface() {
   check("compliancePosture fn", typeof b.guardMailCompose.compliancePosture === "function");
   check("NAME = mailCompose",   b.guardMailCompose.NAME === "mailCompose");
   check("KIND = mail-compose",  b.guardMailCompose.KIND === "mail-compose");
+  check("GuardMailComposeError is fn", typeof b.guardMailCompose.GuardMailComposeError === "function");
+  var e = new b.guardMailCompose.GuardMailComposeError("mail-compose/test", "test");
+  check("GuardMailComposeError instances carry code", e && e.code === "mail-compose/test");
 }
 
 function testValid() {

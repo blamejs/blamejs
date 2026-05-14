@@ -14,6 +14,9 @@ function testSurface() {
   check("validate fn",       typeof b.guardMailSieve.validate === "function");
   check("NAME = mailSieve",  b.guardMailSieve.NAME === "mailSieve");
   check("KIND = mail-sieve", b.guardMailSieve.KIND === "mail-sieve");
+  check("GuardMailSieveError is fn", typeof b.guardMailSieve.GuardMailSieveError === "function");
+  var e = new b.guardMailSieve.GuardMailSieveError("mail-sieve/test", "test");
+  check("GuardMailSieveError instances carry code", e && e.code === "mail-sieve/test");
 }
 
 function testValidPut() {

@@ -15,6 +15,9 @@ function testSurface() {
   check("NAME = mailMove", b.guardMailMove.NAME === "mailMove");
   check("KIND = mail-move", b.guardMailMove.KIND === "mail-move");
   check("SYSTEM_FOLDERS frozen", Object.isFrozen(b.guardMailMove.SYSTEM_FOLDERS));
+  check("GuardMailMoveError is fn", typeof b.guardMailMove.GuardMailMoveError === "function");
+  var e = new b.guardMailMove.GuardMailMoveError("mail-move/test", "test");
+  check("GuardMailMoveError instances carry code", e && e.code === "mail-move/test");
 }
 
 function testValid() {

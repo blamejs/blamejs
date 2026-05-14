@@ -11,6 +11,9 @@ function testSurface() {
   check("PROFILES frozen",      Object.isFrozen(b.guardMailQuery.PROFILES));
   check("NAME = mailQuery",     b.guardMailQuery.NAME === "mailQuery");
   check("KIND = mail-query",    b.guardMailQuery.KIND === "mail-query");
+  check("GuardMailQueryError is fn", typeof b.guardMailQuery.GuardMailQueryError === "function");
+  var e = new b.guardMailQuery.GuardMailQueryError("mail-query/test", "test");
+  check("GuardMailQueryError instances carry code", e && e.code === "mail-query/test");
 }
 
 function expectRefused(label, fn, codeMatch) {
