@@ -17,6 +17,8 @@ function testSurface() {
   check("GuardMailSieveError is fn", typeof b.guardMailSieve.GuardMailSieveError === "function");
   var e = new b.guardMailSieve.GuardMailSieveError("mail-sieve/test", "test");
   check("GuardMailSieveError instances carry code", e && e.code === "mail-sieve/test");
+  check("compliancePosture hipaa", b.guardMailSieve.compliancePosture("hipaa") === "strict");
+  check("compliancePosture unknown", b.guardMailSieve.compliancePosture("nope") === null);
 }
 
 function testValidPut() {

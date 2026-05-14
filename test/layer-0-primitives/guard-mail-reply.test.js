@@ -17,6 +17,8 @@ function testSurface() {
   check("GuardMailReplyError is fn", typeof b.guardMailReply.GuardMailReplyError === "function");
   var e = new b.guardMailReply.GuardMailReplyError("mail-reply/test", "test");
   check("GuardMailReplyError instances carry code", e && e.code === "mail-reply/test");
+  check("compliancePosture hipaa", b.guardMailReply.compliancePosture("hipaa") === "strict");
+  check("compliancePosture unknown", b.guardMailReply.compliancePosture("nope") === null);
 }
 
 function testValid() {
