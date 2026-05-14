@@ -2109,6 +2109,9 @@ async function testNoDuplicateCodeBlocks() {
         // v0.9.21 — guardAgentRegistry's _checkName runs the same
         // shape against operator-supplied agent registry names.
         "lib/guard-agent-registry.js:_checkName",
+        // v0.9.22 — guardIdempotencyKey's validate runs the same scan
+        // on operator-supplied idempotency keys.
+        "lib/guard-idempotency-key.js:validate",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2161,6 +2164,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/guard-agent-registry.js:*",
+        "lib/guard-idempotency-key.js:*",
         "lib/guard-mail-compose.js:*",
         "lib/guard-mail-move.js:*",
         "lib/guard-mail-query.js:*",
@@ -2169,6 +2173,27 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-message-id.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
+    },
+    {
+      // v0.9.22 — agent-idempotency._checkArgs (validate non-empty
+      // string method+actorId pair) shares its tight if-cascade shape
+      // with atomic-file's copyDirRecursive (validate string path),
+      // ddl-change-control's approve/reject (validate operator),
+      // deprecate.alias (validate names), totp.uri (validate label
+      // shape). Each emits a distinct domain error class.
+      mode:  "family-subset",
+      files: [
+        "lib/agent-idempotency.js:_checkArgs",
+        "lib/agent-idempotency.js:_fingerprintArgs",
+        "lib/atomic-file.js:copyDirRecursive",
+        "lib/atomic-file.js:ensureDir",
+        "lib/ddl-change-control.js:approve",
+        "lib/ddl-change-control.js:reject",
+        "lib/deprecate.js:alias",
+        "lib/totp.js:uri",
+        "lib/totp.js:verify",
+      ],
+      reason: "Validate-string-args cascade with throw-on-bad-shape. Each member is a distinct primitive (idempotency op args, atomic-file dir traversal, DDL change-control vote, deprecate.alias name shape, RFC 6238 TOTP URI builder). Distinct error classes; consolidating would couple unrelated specs.",
     },
     {
       // v0.9.21 — agent-orchestrator.spawnConsumers + mail-agent.consumer
