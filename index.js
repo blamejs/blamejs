@@ -158,6 +158,7 @@ var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
 var guardSvg = require("./lib/guard-svg");
 var guardFilename = require("./lib/guard-filename");
+var guardMessageId = require("./lib/guard-message-id");
 var guardArchive = require("./lib/guard-archive");
 var guardJson = require("./lib/guard-json");
 var guardYaml = require("./lib/guard-yaml");
@@ -395,6 +396,7 @@ module.exports = {
   guardHtml:        guardHtml,
   guardSvg:         guardSvg,
   guardFilename:    guardFilename,
+  guardMessageId:   guardMessageId,
   guardArchive:     guardArchive,
   guardJson:        guardJson,
   guardYaml:        guardYaml,

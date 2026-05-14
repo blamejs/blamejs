@@ -2092,8 +2092,11 @@ async function testNoDuplicateCodeBlocks() {
         "lib/client-hints.js:_scanControlBytes",
         "lib/mail-require-tls.js:parseTlsRequiredHeader",
         "lib/middleware/bearer-auth.js:create",
+        // v0.9.19 — guardMessageId's RFC 5322 §3.6.4 validator runs
+        // the same charCodeAt + (c < 0x20 || c === 0x7F) scan.
+        "lib/guard-message-id.js:validate",
       ],
-      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Five different domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
+      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Six different domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
     {
       files: [
