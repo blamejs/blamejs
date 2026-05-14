@@ -244,11 +244,22 @@ function _appendOutOfBand(lines) {
   lines.push("");
   lines.push("Listed newest-first.");
   lines.push("");
-  // Sort newest first — string compare on "vX.Y.Z" tags works for
-  // the current single-digit-major / single-digit-minor numbering.
-  // When a major rolls over, swap to a real semver compare.
+  // Semver-aware sort — `v0.9.10` must sort newer than `v0.9.9` (a naive
+  // lexicographic compare would order the digit `1` before `9` and mis-
+  // place them). Strip the leading `v`, split on `.`, compare each
+  // numeric component. Per Codex P2 on PR #48.
+  function _semverCmp(a, b) {
+    var as = String(a).replace(/^v/, "").split(".").map(Number);
+    var bs = String(b).replace(/^v/, "").split(".").map(Number);
+    for (var i = 0; i < Math.max(as.length, bs.length); i += 1) {
+      var ai = i < as.length ? as[i] : 0;
+      var bi = i < bs.length ? bs[i] : 0;
+      if (ai !== bi) return ai - bi;
+    }
+    return 0;
+  }
   var sorted = OUT_OF_BAND_BREAKS.slice().sort(function (a, b) {
-    return a.release < b.release ? 1 : -1;
+    return _semverCmp(b.release, a.release);   // newest first
   });
   sorted.forEach(function (e) {
     lines.push("### " + e.release + " — `" + e.surface + "`");
