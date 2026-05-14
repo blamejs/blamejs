@@ -17,7 +17,7 @@ function testSurface() {
   check("SYSTEM_FOLDERS frozen", Object.isFrozen(b.guardMailMove.SYSTEM_FOLDERS));
   check("GuardMailMoveError is fn", typeof b.guardMailMove.GuardMailMoveError === "function");
   var e = new b.guardMailMove.GuardMailMoveError("mail-move/test", "test");
-  check("GuardMailMoveError instances carry code", e && e.code === "mail-move/test");
+  check("GuardMailMoveError instances carry code", e.code === "mail-move/test");
   check("compliancePosture hipaa", b.guardMailMove.compliancePosture("hipaa") === "strict");
   check("compliancePosture unknown", b.guardMailMove.compliancePosture("nope") === null);
 }

@@ -226,6 +226,49 @@ async function testDispatchValidation() {
   } finally { _teardown(fx); }
 }
 
+async function testDispatchRouting() {
+  var fx = await _setup("dispatch-route");
+  try {
+    // Mode "local" — facade calls run inline.
+    var agentLocal = b.mail.agent.create({ store: fx.store, dispatch: { mode: "local" } });
+    var folders = await agentLocal.folders({ actor: { id: "u1" } });
+    check("dispatch.local: folders runs inline", Array.isArray(folders.folders));
+
+    // Mode "queue" — sync-result method refused until orchestrator's
+    // result-bus lands at v0.9.21.
+    var enqueued = [];
+    var fakeQueue = {
+      enqueue: async function (topic, payload) {
+        enqueued.push({ topic: topic, payload: payload });
+        return { jobId: "j" + enqueued.length };
+      },
+      consume: function () { /* unused */ },
+    };
+    var agentQueue = b.mail.agent.create({
+      store: fx.store, dispatch: { mode: "queue", queue: fakeQueue },
+    });
+    await expectRejection("dispatch.queue: fetch (sync-result) refused until result-bus",
+      agentQueue.fetch({ actor: { id: "u1" }, folder: "INBOX", objectId: "x" }),
+      "mail-agent/queue-result-bus-deferred");
+
+    // Heavy method (search) under "queue" enqueues + returns jobId.
+    var r = await agentQueue.search({ actor: { id: "u1" } });
+    check("dispatch.queue: search enqueues",       r.enqueued === true && typeof r.jobId === "string");
+    check("dispatch.queue: published to topic",    enqueued.length === 1);
+    check("dispatch.queue: envelope carries method", enqueued[0].payload.method === "search");
+    check("dispatch.queue: envelope carries posture", enqueued[0].payload.posture === null);
+
+    // Mode "auto" — fast-path stays local; heavy method routes to queue.
+    var agentAuto = b.mail.agent.create({
+      store: fx.store, dispatch: { mode: "auto", queue: fakeQueue },
+    });
+    var f2 = await agentAuto.folders({ actor: { id: "u1" } });
+    check("dispatch.auto: folders stays local", Array.isArray(f2.folders));
+    var r2 = await agentAuto.search({ actor: { id: "u1" } });
+    check("dispatch.auto: search routes to queue", r2.enqueued === true);
+  } finally { _teardown(fx); }
+}
+
 async function testConsumerSurface() {
   var threw = null;
   try { b.mail.agent.consumer({}); } catch (e) { threw = e; }
@@ -252,6 +295,7 @@ async function run() {
   await testPermissions();
   await testQuota();
   await testDispatchValidation();
+  await testDispatchRouting();
   await testConsumerSurface();
   await testGuardsExposed();
 }

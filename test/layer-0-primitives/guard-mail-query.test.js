@@ -13,7 +13,7 @@ function testSurface() {
   check("KIND = mail-query",    b.guardMailQuery.KIND === "mail-query");
   check("GuardMailQueryError is fn", typeof b.guardMailQuery.GuardMailQueryError === "function");
   var e = new b.guardMailQuery.GuardMailQueryError("mail-query/test", "test");
-  check("GuardMailQueryError instances carry code", e && e.code === "mail-query/test");
+  check("GuardMailQueryError instances carry code", e.code === "mail-query/test");
 }
 
 function expectRefused(label, fn, codeMatch) {
