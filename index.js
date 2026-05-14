@@ -86,6 +86,8 @@ var session = require("./lib/session");
 var storage = require("./lib/storage");
 var safeJson = require("./lib/safe-json");
 var safeJsonPath = require("./lib/safe-jsonpath");
+var safeMime = require("./lib/safe-mime");
+var mailStore = require("./lib/mail-store");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
@@ -157,6 +159,7 @@ var guardCsv = require("./lib/guard-csv");
 var guardHtml = require("./lib/guard-html");
 var guardSvg = require("./lib/guard-svg");
 var guardFilename = require("./lib/guard-filename");
+var guardMessageId = require("./lib/guard-message-id");
 var guardArchive = require("./lib/guard-archive");
 var guardJson = require("./lib/guard-json");
 var guardYaml = require("./lib/guard-yaml");
@@ -394,6 +397,7 @@ module.exports = {
   guardHtml:        guardHtml,
   guardSvg:         guardSvg,
   guardFilename:    guardFilename,
+  guardMessageId:   guardMessageId,
   guardArchive:     guardArchive,
   guardJson:        guardJson,
   guardYaml:        guardYaml,
@@ -473,6 +477,8 @@ module.exports = {
   flag:             flag,
   safeJson:         safeJson,
   safeJsonPath:     safeJsonPath,
+  safeMime:         safeMime,
+  mailStore:        mailStore,
   safeSchema:       safeSchema,
   pagination:       pagination,
   metrics:          metrics,

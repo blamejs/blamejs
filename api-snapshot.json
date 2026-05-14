@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.18",
-  "createdAt": "2026-05-14T14:49:58.160Z",
+  "frameworkVersion": "0.9.19",
+  "createdAt": "2026-05-14T16:31:31.710Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -21576,6 +21576,100 @@
         }
       }
     },
+    "guardMessageId": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardMessageIdError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "requireBrackets": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "requireBrackets": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "requireBrackets": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        },
+        "validateList": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "guardMime": {
       "type": "object",
       "members": {
@@ -29332,6 +29426,23 @@
         }
       }
     },
+    "mailStore": {
+      "type": "object",
+      "members": {
+        "DEFAULT_FOLDERS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "MailStoreError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "mcp": {
       "type": "object",
       "members": {
@@ -34558,6 +34669,76 @@
           "arity": 2
         },
         "validatePointer": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "safeMime": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "charsetAllowlist": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "maxBodyBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBoundary": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaderBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaderLineBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxMessageBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxNestingDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxParts": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "transferEncodingAllowlist": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
+        "SafeMimeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "extractAttachments": {
+          "type": "function",
+          "arity": 2
+        },
+        "extractText": {
+          "type": "function",
+          "arity": 2
+        },
+        "findFirst": {
+          "type": "function",
+          "arity": 2
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "walk": {
           "type": "function",
           "arity": 2
         }

@@ -2092,8 +2092,11 @@ async function testNoDuplicateCodeBlocks() {
         "lib/client-hints.js:_scanControlBytes",
         "lib/mail-require-tls.js:parseTlsRequiredHeader",
         "lib/middleware/bearer-auth.js:create",
+        // v0.9.19 — guardMessageId's RFC 5322 §3.6.4 validator runs
+        // the same charCodeAt + (c < 0x20 || c === 0x7F) scan.
+        "lib/guard-message-id.js:validate",
       ],
-      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Five different domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
+      reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Six different domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
     {
       files: [
@@ -2114,8 +2117,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-bimi.js:parseRecord",
         "lib/mail-dkim.js:_parseDkimTagList",
         "lib/network-smtp-policy.js:_parseStsPolicy",
+        // v0.9.19 — safeMime's Content-Type / Content-Disposition
+        // parameter parser shares the tag-list-shape skeleton.
+        "lib/safe-mime.js:_parseContentType",
+        "lib/safe-mime.js:_filenameFromHeaders",
       ],
-      reason: "RFC structured-field tag-list parser scaffolding — split on top-level separator + handle quoted strings + extract key=value pairs. Each call site enforces a different RFC's tag-name vocabulary (RFC 9211 Cache-Status; RFC 9213 CDN-Cache-Control; RFC 8941 Sec-CH-UA brand-list; RFC 8617 ARC tag-set; RFC 7489 DMARC record; RFC 9091 BIMI record; RFC 6376 DKIM-Signature; RFC 8461 MTA-STS policy). Future consolidation candidate but each site emits domain-typed output (different field vocabulary, different error class, different shape) that consolidation would erase.",
+      reason: "RFC structured-field tag-list parser scaffolding — split on top-level separator + handle quoted strings + extract key=value pairs. Each call site enforces a different RFC's tag-name vocabulary (RFC 9211 Cache-Status; RFC 9213 CDN-Cache-Control; RFC 8941 Sec-CH-UA brand-list; RFC 8617 ARC tag-set; RFC 7489 DMARC record; RFC 9091 BIMI record; RFC 6376 DKIM-Signature; RFC 8461 MTA-STS policy; RFC 2045/2231 MIME content-type + disposition). Future consolidation candidate but each site emits domain-typed output (different field vocabulary, different error class, different shape) that consolidation would erase.",
     },
     {
       mode: "family-subset",
@@ -2125,8 +2132,19 @@ async function testNoDuplicateCodeBlocks() {
         "lib/cookies.js:parse",
         "lib/cookies.js:parseSafe",
         "lib/network-tls.js:_normalizeIpForCompare",
+        "lib/safe-mime.js:_parseContentType",
+        "lib/safe-mime.js:_filenameFromHeaders",
       ],
-      reason: "Token-list scanner scaffolding: walk a comma-or-semicolon separated header, respect quoted-string boundaries via depth/inQuote state machine, emit per-piece key/value. Each call site enforces a different grammar (RFC 9470 step-up sf-Item challenges, RFC 9213 cache-control directive list, RFC 6265 Set-Cookie header, IPv6 normalization). Consolidating would couple unrelated wire formats.",
+      reason: "Token-list scanner scaffolding: walk a comma-or-semicolon separated header, respect quoted-string boundaries via depth/inQuote state machine, emit per-piece key/value. Each call site enforces a different grammar (RFC 9470 step-up sf-Item challenges, RFC 9213 cache-control directive list, RFC 6265 Set-Cookie header, IPv6 normalization, RFC 2045/2231 MIME parameters). Consolidating would couple unrelated wire formats.",
+    },
+    {
+      mode: "family-subset",
+      files: [
+        "lib/mail-auth.js:_parseHeaderLines",
+        "lib/mime-parse.js:parseHeaderBlock",
+        "lib/safe-mime.js:_splitHeaderLines",
+      ],
+      reason: "RFC 5322 §2.2.3 header continuation-line unfolding — each module needs to walk a header block + join WSP-prefixed continuation lines to the prior header. mail-auth.js drives DKIM signature parsing (RFC 6376 §3.5 — c=relaxed canonicalization needs the unfolded header view); mime-parse.js drives DSN/MDN flows (intentionally narrow scope — RFC 5322 + RFC 2045 minimal reader, no recursion, no decoding); safe-mime.js drives the bounded mail-stack parser (recursive multipart, RFC 2047 decoding, charset + CTE allowlists, every cap). The three sites cannot consolidate because mail-auth.js needs canonicalization-aware whitespace handling, mime-parse.js is the legacy narrow path, and safe-mime.js applies the operator's `maxHeaderLineBytes` cap per parse call — these are three different parser contracts. Future consolidation candidate when mime-parse.js retires (post-v1.0).",
     },
     {
       mode: "family-subset",
