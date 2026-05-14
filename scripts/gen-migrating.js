@@ -161,7 +161,9 @@ function _build() {
   var lines = [];
   lines.push("# Migrating");
   lines.push("");
-  lines.push("Operator-facing migration recipes per breaking change. Each entry below is a `deprecate()`-marked surface in the framework — the running app will warn about it (with `BLAMEJS_DEPRECATIONS=warn` set, or by default outside production) before the noted removal version. Re-run `node scripts/gen-migrating.js` before each release; the file is committed so operators can diff it against the prior tag.");
+  lines.push("Operator-facing migration recipes per breaking change. The bulk of this file is auto-generated from `deprecate()`-marked surface in the framework — the running app warns about each (with `BLAMEJS_DEPRECATIONS=warn` set, or by default outside production) before the noted removal version. Re-run `node scripts/gen-migrating.js` before each release; the file is committed so operators can diff it against the prior tag.");
+  lines.push("");
+  lines.push("**Out-of-band breaking changes** (schema breaks, config-shape changes, on-disk format breaks) cannot be expressed as `deprecate()` calls because there's no in-process runtime to warn from. They're hardcoded in the OUT_OF_BAND_BREAKS table inside `scripts/gen-migrating.js` so the operator sees the full upgrade path here without needing to grep CHANGELOG.");
   lines.push("");
 
   if (entries.length === 0) {
@@ -169,6 +171,7 @@ function _build() {
     lines.push("");
     lines.push("The framework has no `deprecate()`-marked surface awaiting removal.");
     lines.push("");
+    _appendOutOfBand(lines);
     return lines.join("\n");
   }
 
@@ -201,7 +204,60 @@ function _build() {
     });
   });
 
+  _appendOutOfBand(lines);
   return lines.join("\n");
+}
+
+// OUT_OF_BAND_BREAKS — schema / on-disk / config-shape breaks that
+// can't be expressed via `deprecate()` because there's no in-process
+// runtime surface to warn from. Append as releases ship these.
+//
+// Each entry:
+//   release:    git tag of the release that introduced the break
+//   surface:    operator-visible API or on-disk artifact affected
+//   summary:    one-line operator-facing description
+//   migration:  multi-line markdown migration recipe
+var OUT_OF_BAND_BREAKS = [
+  {
+    release:  "v0.9.15",
+    surface:  "b.middleware.idempotencyKey.dbStore — table schema",
+    summary:  "Single `v` JSON-envelope column split into discrete `fingerprint` / `status_code` / `headers` / `body` / `expires_at` columns; `headers` + `body` are sealed via `b.cryptoField.sealRow` when vault is initialized; `k` column carries the sha3-512 namespace-hash of the operator-supplied key.",
+    migration: [
+      "Operators with a v0.9.14 (or earlier) idempotency table on disk:",
+      "",
+      "```sql",
+      "DROP TABLE <tableName>;   -- default: blamejs_idempotency_keys",
+      "```",
+      "",
+      "Or pick a fresh `tableName` in v0.9.15+ `dbStore({ tableName: \"...\" })`. The init step (`init: true`, default) creates the new split-column schema. `CREATE TABLE IF NOT EXISTS` does NOT migrate column layout on an existing table, so the drop-and-recreate is required.",
+      "",
+      "Cached records in the existing table are not recoverable across the schema break — operators who care about replay continuity warm the new table by retrying the in-flight requests under the new dbStore.",
+    ].join("\n"),
+  },
+];
+
+function _appendOutOfBand(lines) {
+  if (!OUT_OF_BAND_BREAKS.length) return;
+  lines.push("---");
+  lines.push("");
+  lines.push("## Out-of-band breaking changes");
+  lines.push("");
+  lines.push("Listed newest-first.");
+  lines.push("");
+  // Sort newest first — string compare on "vX.Y.Z" tags works for
+  // the current single-digit-major / single-digit-minor numbering.
+  // When a major rolls over, swap to a real semver compare.
+  var sorted = OUT_OF_BAND_BREAKS.slice().sort(function (a, b) {
+    return a.release < b.release ? 1 : -1;
+  });
+  sorted.forEach(function (e) {
+    lines.push("### " + e.release + " — `" + e.surface + "`");
+    lines.push("");
+    lines.push(e.summary);
+    lines.push("");
+    lines.push(e.migration);
+    lines.push("");
+  });
 }
 
 fs.writeFileSync(TARGET, _build(), "utf8");

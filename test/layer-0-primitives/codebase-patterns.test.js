@@ -3594,6 +3594,16 @@ async function testNoDuplicateCodeBlocks() {
       ],
       reason: "Quote-stripping + indexOf(separator) + slice(0, idx).trim() / slice(idx+1).trim() pair-splitter scaffold. Cookies parse RFC 6265 name=value pairs with double-quote stripping; step-up parses challenge directives with the same shape; network-tls strips bracket-quoted IPv6 literals (`[::1]` -> `::1`) before family detection. Three unrelated domains, each producing a domain-specific output (cookie name->value map vs challenge param map vs `{family, text, bytes}` IP record); consolidating would couple cookie-grammar / RFC 9470 directive grammar / IPv6-literal canonicalization into a single primitive that none of them want.",
     },
+    {
+      mode: "family-subset",
+      files: [
+        "lib/atomic-file.js:_readSyncCore",
+        "lib/backup/bundle.js:create",
+        "lib/network-tls.js:_readPathFile",
+        "lib/vault/seal-pem-file.js:_resealNow",
+      ],
+      reason: "TOCTOU-safe file read scaffold: openSync(path, 'r') → fstatSync(fd) → bounded readSync loop into Buffer.allocUnsafe(stat.size) → closeSync. Each call site is the canonical fix for a js/file-system-race CodeQL finding — the open-fd-then-fstat sequence closes the swap window that exists between a separate existsSync/statSync and a subsequent readFileSync. Each site enforces its own max-size policy and emits a domain-typed error (AtomicFileError/atomic-file/too-large, BackupBundleError/backup-bundle/not-a-file, TlsTrustError surface, SealPemFileError/seal-pem-file/toctou-detected with extra inode-equality check); consolidating into a single primitive would erase the per-domain error-class + cap-vocabulary while only saving the inner read-loop. Future consolidation candidate as `b.atomicFile.readFd(filepath, opts)` once the inode-equality variant in seal-pem-file is reconciled with the simpler variants in atomic-file/backup/network-tls.",
+    },
   ];
   // Each KNOWN_CLUSTERS entry's `files` is a list of `path:fn` strings.
   // Build per-entry matchers and reject malformed entries (bare path
