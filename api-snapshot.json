@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.18",
-  "createdAt": "2026-05-14T14:49:58.160Z",
+  "frameworkVersion": "0.9.19",
+  "createdAt": "2026-05-14T15:38:10.263Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34558,6 +34558,76 @@
           "arity": 2
         },
         "validatePointer": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "safeMime": {
+      "type": "object",
+      "members": {
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "charsetAllowlist": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "maxBodyBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxBoundary": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaderBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaderLineBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxMessageBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxNestingDepth": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxParts": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "transferEncodingAllowlist": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
+        "SafeMimeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "extractAttachments": {
+          "type": "function",
+          "arity": 2
+        },
+        "extractText": {
+          "type": "function",
+          "arity": 2
+        },
+        "findFirst": {
+          "type": "function",
+          "arity": 2
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "walk": {
           "type": "function",
           "arity": 2
         }

@@ -86,6 +86,7 @@ var session = require("./lib/session");
 var storage = require("./lib/storage");
 var safeJson = require("./lib/safe-json");
 var safeJsonPath = require("./lib/safe-jsonpath");
+var safeMime = require("./lib/safe-mime");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
 var objectStore = require("./lib/object-store");
@@ -473,6 +474,7 @@ module.exports = {
   flag:             flag,
   safeJson:         safeJson,
   safeJsonPath:     safeJsonPath,
+  safeMime:         safeMime,
   safeSchema:       safeSchema,
   pagination:       pagination,
   metrics:          metrics,
