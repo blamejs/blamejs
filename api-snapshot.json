@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.26",
-  "createdAt": "2026-05-14T22:23:57.120Z",
+  "frameworkVersion": "0.9.27",
+  "createdAt": "2026-05-14T22:37:02.577Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -506,6 +506,114 @@
             "shardFor": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "saga": {
+          "type": "object",
+          "members": {
+            "AgentSagaError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "guards": {
+              "type": "object",
+              "members": {
+                "config": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardSagaConfigError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxSteps": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxSteps": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxSteps": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                }
+              }
             }
           }
         },
@@ -25709,6 +25817,96 @@
         "sanitize": {
           "type": "function",
           "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardSagaConfig": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardSagaConfigError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSteps": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSteps": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSteps": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
         },
         "validate": {
           "type": "function",
