@@ -2127,6 +2127,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-saga-config.js:validate",
         // v0.9.28 — guardPostureChain validates posture envelopes.
         "lib/guard-posture-chain.js:validate",
+        // v0.9.29 — guardTraceContext validates W3C traceparent envelopes.
+        "lib/guard-trace-context.js:validate",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2192,6 +2194,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-tenant-id.js:*",
         "lib/guard-saga-config.js:*",
         "lib/guard-posture-chain.js:*",
+        "lib/guard-trace-context.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
@@ -2229,6 +2232,33 @@ async function testNoDuplicateCodeBlocks() {
         "lib/deprecate.js:alias",
       ],
       reason: "Immutable-evolve-and-return pattern. Each domain takes an input object, builds a new derived one via Object.assign + delta, returns the new shape without mutating the input. Posture-chain hop append, api-snapshot snapshot write, break-glass row unseal, deprecate name alias — all distinct domains with distinct error classes.",
+    },
+    {
+      // v0.9.29 — guard-trace-context top-of-file block shares its
+      // shape with guard-uuid + observability module headers (each
+      // ships the same JSDoc + license + module-level constant
+      // declaration shape).
+      mode:  "family-subset",
+      files: [
+        "lib/guard-trace-context.js:<top>",
+        "lib/guard-uuid.js:<top>",
+        "lib/observability.js:_emit",
+      ],
+      reason: "Module top-of-file headers share the same JSDoc + license + require-block shingle across guard families + observability. Each module is a separate primitive with distinct concerns.",
+    },
+    {
+      // v0.9.29 — dpop._b64urlDecode / compliance-sanctions._levenshteinMatch /
+      // dora._classifyImpl share token-shape from internal helper bodies
+      // (loop + transform + return). Distinct domains: RFC 9449 base64url
+      // for DPoP proof, fuzzy match for sanctions, DORA Annex IV impact
+      // classifier.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/dpop.js:_b64urlDecode",
+        "lib/compliance-sanctions.js:_levenshteinMatch",
+        "lib/dora.js:_classifyImpl",
+      ],
+      reason: "Loop + transform + return helper bodies. Distinct domain primitives — DPoP base64url decode (RFC 9449 §4.2), sanctions Levenshtein matcher, DORA Annex IV classifier. No shared substrate would help.",
     },
     {
       // v0.9.27 — multi-create / multi-validate cluster: per-domain
@@ -2302,6 +2332,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/auth/dpop.js:_canonicalJwk",
+        "lib/auth/dpop.js:verify",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/compliance-sanctions.js:screen",
         "lib/dora.js:_validateReportInput",
@@ -2309,6 +2340,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-mail-query.js:validateActor",
         "lib/guard-mail-reply.js:validate",
         "lib/guard-saga-config.js:validate",
+        "lib/guard-trace-context.js:validate",
         "lib/incident-report.js:open",
       ],
       reason: "Per-domain validation-field cascade against operator-supplied input objects — each member walks a fixed list of required fields, calls `if (typeof obj.field !== \"string\" || obj.field.length === 0) throw <DomainError>(\"<code>\", \"<message>\")`. Distinct domain error classes + distinct required-field sets (DPoP canonical JWK, sd-jwt-vc holder, sanctions screening, DORA, 21 CFR Part 11, posture actor fields, incident-report). Consolidation would couple unrelated specs.",
