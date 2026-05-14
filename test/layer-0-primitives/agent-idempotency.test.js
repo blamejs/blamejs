@@ -128,6 +128,41 @@ async function testRefusesBadStore() {
     threw && (threw.code || "").indexOf("agent-idempotency/bad-store") !== -1);
 }
 
+async function testCanonicalFingerprint() {
+  // Args with different key insertion order must produce the SAME
+  // fingerprint. Without canonicalization, a JMAP client retrying with
+  // re-serialized args (different JSON encoder, different runtime)
+  // would trigger key-reuse-different-args false-positive.
+  var idem = b.agent.idempotency.create({});
+  await idem.put("send", "u1", "k", { messageId: "m1" }, {
+    args: { from: "a@x", to: ["b@y"], subject: "hi" },
+  });
+  // Same key + same logical args but different insertion order:
+  await idem.put("send", "u1", "k", { messageId: "m1" }, {
+    args: { subject: "hi", to: ["b@y"], from: "a@x" },
+  });
+  check("canonical fingerprint accepts key-reorder", true);
+
+  // But genuinely different args still refuse:
+  await expectRejection("canonical fingerprint refuses different args",
+    idem.put("send", "u1", "k", { messageId: "m2" }, {
+      args: { from: "a@x", to: ["b@y"], subject: "different" },
+    }),
+    "agent-idempotency/key-reuse-different-args");
+}
+
+async function testParseCapTracksWriteCap() {
+  // Operator raises maxResultBytes above the previously-static
+  // MAX_PARSE_BYTES (4 MiB). Writes succeeded; reads must succeed too.
+  var idem = b.agent.idempotency.create({ maxResultBytes: 2048 });                                    // allow:raw-byte-literal — test cap
+  var bigResult = { rows: [] };
+  for (var i = 0; i < 30; i += 1) bigResult.rows.push({ idx: i, data: "x".repeat(40) });
+  await idem.put("search", "u1", "k", bigResult);
+  var hit = await idem.get("search", "u1", "k");
+  check("parse cap tracks write cap (read succeeds)",
+    hit && Array.isArray(hit.result.rows) && hit.result.rows.length === 30);
+}
+
 async function testGc() {
   var idem = b.agent.idempotency.create({ ttlMs: 100 });
   await idem.put("move", "u1", "k1", { changed: 1 });
@@ -149,6 +184,8 @@ async function run() {
   await testGuardRefusalsAtBoundary();
   await testJsonRoundTripCachedResult();
   await testRefusesBadStore();
+  await testCanonicalFingerprint();
+  await testParseCapTracksWriteCap();
   await testGc();
 }
 
