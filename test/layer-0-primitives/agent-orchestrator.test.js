@@ -116,6 +116,27 @@ async function testNonIntegerShardsRefused() {
         threw && (threw.code || "").indexOf("agent-orchestrator/bad-shard-count") !== -1);
 }
 
+async function testBackendRowJsonRoundTrip() {
+  // v0.9.22 meta-detector applied retroactively: every backend row
+  // must round-trip cleanly through JSON. Codex flagged the original
+  // shape (agentRef function in row) on PR #51; this regression test
+  // pins the post-fix shape so future drift surfaces locally.
+  var { assertJsonRoundTrip } = require("../helpers/json-round-trip");
+  var captured = null;
+  var fakeBackend = {
+    get:    function (k) { return Promise.resolve(captured && captured.name === k ? captured : null); },
+    set:    function (k, v) { captured = v; return Promise.resolve(); },
+    delete: function () { captured = null; return Promise.resolve(); },
+    list:   function () { return Promise.resolve(captured ? [captured] : []); },
+  };
+  var orch = b.agent.orchestrator.create({ backend: fakeBackend });
+  await orch.register("tenant-acme.mail", _fakeAgent("acme"), {
+    agentKind: "mail", tenantId: "acme",
+    metadata: { endpoint: "https://acme.example/jmap" },
+  });
+  assertJsonRoundTrip(captured, "agent-orchestrator backend row");
+}
+
 async function testLiveAgentSeparateFromBackend() {
   // The backend row should not carry the agent function ref — a
   // JSON/DB-backed implementation has to be able to round-trip the row.
@@ -257,6 +278,7 @@ async function run() {
   await testElect();
   await testElectCluster();
   await testNonIntegerShardsRefused();
+  await testBackendRowJsonRoundTrip();
   await testLiveAgentSeparateFromBackend();
   await testNotHydrated();
   await testSpawnConsumers();
