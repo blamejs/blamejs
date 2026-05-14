@@ -160,6 +160,11 @@ var guardHtml = require("./lib/guard-html");
 var guardSvg = require("./lib/guard-svg");
 var guardFilename = require("./lib/guard-filename");
 var guardMessageId = require("./lib/guard-message-id");
+var guardMailQuery = require("./lib/guard-mail-query");
+var guardMailCompose = require("./lib/guard-mail-compose");
+var guardMailReply = require("./lib/guard-mail-reply");
+var guardMailMove = require("./lib/guard-mail-move");
+var guardMailSieve = require("./lib/guard-mail-sieve");
 var guardArchive = require("./lib/guard-archive");
 var guardJson = require("./lib/guard-json");
 var guardYaml = require("./lib/guard-yaml");
@@ -398,6 +403,11 @@ module.exports = {
   guardSvg:         guardSvg,
   guardFilename:    guardFilename,
   guardMessageId:   guardMessageId,
+  guardMailQuery:   guardMailQuery,
+  guardMailCompose: guardMailCompose,
+  guardMailReply:   guardMailReply,
+  guardMailMove:    guardMailMove,
+  guardMailSieve:   guardMailSieve,
   guardArchive:     guardArchive,
   guardJson:        guardJson,
   guardYaml:        guardYaml,

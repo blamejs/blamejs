@@ -256,6 +256,41 @@ async function testCustomFolder() {
   } finally { _teardown(fx); }
 }
 
+async function testMoveMessages() {
+  var fx = await _setupStore("move");
+  try {
+    var store = b.mailStore.create({ backend: fx.db });
+    var msg = _msg(["From: a@x", "To: b@y", "Subject: hi", "Message-Id: <m@x>",
+                    "Date: Wed, 14 May 2026 12:00:00 +0000"], "body");
+    var meta = store.appendMessage("INBOX", msg);
+
+    // Pre-move quota: INBOX has 1 message + its bytes; Archive has 0.
+    var qInbox0 = store.quota("INBOX");
+    var qArch0  = store.quota("Archive");
+    check("move-pre: INBOX count = 1", qInbox0.usedCount === 1);
+    check("move-pre: Archive count = 0", qArch0.usedCount === 0);
+    check("move-pre: INBOX bytes = msg size", qInbox0.usedBytes === meta.sizeBytes);
+
+    // Move INBOX → Archive. Per RFC 7162 each folder owns its own
+    // modseq; moved row joins destination's sequence at dstModseq.
+    var r = store.moveMessages("INBOX", "Archive", [meta.objectid]);
+    check("move: 1 changed", r.changed === 1);
+    check("move: fromModseq bumped", typeof r.fromModseq === "number" && r.fromModseq > 0);
+    check("move: toModseq bumped",   typeof r.toModseq === "number"   && r.toModseq > 0);
+
+    // Post-move quota: INBOX zeroed, Archive carries the bytes.
+    var qInbox1 = store.quota("INBOX");
+    var qArch1  = store.quota("Archive");
+    check("move-post: INBOX count = 0", qInbox1.usedCount === 0);
+    check("move-post: Archive count = 1", qArch1.usedCount === 1);
+    check("move-post: bytes moved", qArch1.usedBytes === meta.sizeBytes && qInbox1.usedBytes === 0);
+
+    // Moved row's modseq should match destination's modseq_max (joined dest sequence).
+    var fetched = store.fetchByObjectId("Archive", meta.objectid);
+    check("move: row modseq matches dst", fetched.modseq === r.toModseq);
+  } finally { _teardown(fx); }
+}
+
 async function testRefusesBadBackend() {
   var threw = null;
   try { b.mailStore.create({ backend: {} }); }
@@ -276,6 +311,7 @@ async function run() {
   await testSealedColumnsActuallySealed();
   await testRefusesBadInput();
   await testCustomFolder();
+  await testMoveMessages();
   await testRefusesBadBackend();
 }
 
