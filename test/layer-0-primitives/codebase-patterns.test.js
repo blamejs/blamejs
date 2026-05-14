@@ -2106,6 +2106,9 @@ async function testNoDuplicateCodeBlocks() {
         // against operator-supplied JWT `kid` values (defends header-
         // injection at the JWT-resolver boundary).
         "lib/guard-jwt.js:kidSafe",
+        // v0.9.21 — guardAgentRegistry's _checkName runs the same
+        // shape against operator-supplied agent registry names.
+        "lib/guard-agent-registry.js:_checkName",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2136,11 +2139,48 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-mail-sieve.js:_resolveProfile",
         "lib/guard-mail-sieve.js:<top>",
         "lib/guard-mail-sieve.js:validate",
+        // v0.9.21 — guardAgentRegistry follows the same family scaffolding.
+        "lib/guard-agent-registry.js:_resolveProfile",
+        "lib/guard-agent-registry.js:validate",
+        "lib/guard-agent-registry.js:compliancePosture",
+        "lib/guard-agent-registry.js:<top>",
         "lib/guard-message-id.js:_resolveProfile",
         "lib/guard-message-id.js:compliancePosture",
         "lib/guard-message-id.js:validate",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
+    },
+    {
+      // v0.9.21 — guard-agent-registry's _checkName / _checkKind /
+      // validate all share token shape with the guard-mail-* family
+      // members at their input-validation lines (PROFILES check + name
+      // shape scan + opts.kind check). Wildcard match because the
+      // duplicate detector reports several different enclosing fns
+      // depending on which line in each file's similar-shape block
+      // happened to be the centroid.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-agent-registry.js:*",
+        "lib/guard-mail-compose.js:*",
+        "lib/guard-mail-move.js:*",
+        "lib/guard-mail-query.js:*",
+        "lib/guard-mail-reply.js:*",
+        "lib/guard-mail-sieve.js:*",
+        "lib/guard-message-id.js:*",
+      ],
+      reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
+    },
+    {
+      // v0.9.21 — agent-orchestrator.spawnConsumers + mail-agent.consumer
+      // + cra-report.conformityAssessment all build operator-supplied
+      // input → arg shape with similar opts-validation cascades.
+      mode:  "family-subset",
+      files: [
+        "lib/agent-orchestrator.js:_spawnConsumers",
+        "lib/cra-report.js:conformityAssessment",
+        "lib/mail-agent.js:consumer",
+      ],
+      reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
     },
     {
       // v0.9.20 — guardMailQuery.validateActor shares the

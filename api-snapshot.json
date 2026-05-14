@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.20",
-  "createdAt": "2026-05-14T17:28:04.383Z",
+  "frameworkVersion": "0.9.21",
+  "createdAt": "2026-05-14T19:21:57.498Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -72,6 +72,144 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "members": {
+        "orchestrator": {
+          "type": "object",
+          "members": {
+            "AgentOrchestratorError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "guards": {
+              "type": "object",
+              "members": {
+                "registry": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardAgentRegistryError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxKindBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxKindBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxKindBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxNameBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "RESERVED_EXACT": {
+                      "type": "object",
+                      "members": {
+                        "*": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        },
+                        "FRAMEWORK": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        },
+                        "ROOT": {
+                          "type": "primitive",
+                          "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "RESERVED_PREFIXES": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                }
+              }
+            },
+            "shardFor": {
+              "type": "function",
+              "arity": 2
+            }
+          }
         }
       }
     },
@@ -11725,6 +11863,117 @@
         "queryProbesSdl": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "guardAgentRegistry": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardAgentRegistryError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxKindBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxKindBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxKindBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "RESERVED_EXACT": {
+          "type": "object",
+          "members": {
+            "*": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "FRAMEWORK": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "ROOT": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "RESERVED_PREFIXES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
