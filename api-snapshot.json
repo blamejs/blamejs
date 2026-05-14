@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.23",
-  "createdAt": "2026-05-14T21:18:01.775Z",
+  "frameworkVersion": "0.9.24",
+  "createdAt": "2026-05-14T21:26:35.120Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -316,6 +316,126 @@
             "shardFor": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "stream": {
+          "type": "object",
+          "members": {
+            "AgentStreamError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "guards": {
+              "type": "object",
+              "members": {
+                "args": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardStreamArgsError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxBatchSize": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxOpenStreams": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "minBatchSize": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxBatchSize": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxOpenStreams": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "minBatchSize": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxBatchSize": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxOpenStreams": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "minBatchSize": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -25662,6 +25782,108 @@
         "sanitize": {
           "type": "function",
           "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardStreamArgs": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardStreamArgsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxOpenStreams": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "minBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxOpenStreams": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "minBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxOpenStreams": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "minBatchSize": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
         },
         "validate": {
           "type": "function",
