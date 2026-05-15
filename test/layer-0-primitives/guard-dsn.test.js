@@ -217,8 +217,8 @@ function testHandlesContinuationLines() {
     "",
   ]);
   var r = b.guardDsn.parse(dsn);
-  check("continuation lines merged", r.perMessage.reportingMta.indexOf("mail.example.com") !== -1);
-  check("multi-line diagnostic",     r.perRecipients[0].diagnosticCode.indexOf("additional context") !== -1);
+  check("continuation lines merged", r.perMessage.reportingMta === "dns; mail.example.com");
+  check("multi-line diagnostic",     r.perRecipients[0].diagnosticCode === "smtp; 550 5.1.1 User unknown (additional context)");
 }
 
 function testRefusesEmptyBody() {
