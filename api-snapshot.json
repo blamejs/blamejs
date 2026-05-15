@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.44",
-  "createdAt": "2026-05-15T17:38:10.496Z",
+  "frameworkVersion": "0.9.45",
+  "createdAt": "2026-05-15T19:00:16.729Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -10750,6 +10750,10 @@
           "type": "function",
           "arity": 3
         },
+        "fromBase64Url": {
+          "type": "function",
+          "arity": 1
+        },
         "generateBytes": {
           "type": "function",
           "arity": 1
@@ -10884,6 +10888,10 @@
         "timingSafeEqual": {
           "type": "function",
           "arity": 2
+        },
+        "toBase64Url": {
+          "type": "function",
+          "arity": 1
         },
         "verify": {
           "type": "function",
