@@ -252,6 +252,7 @@ var csv = require("./lib/csv");
 var time = require("./lib/time");
 var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
+mail.rbl = require("./lib/mail-rbl");
 var mailArf = require("./lib/mail-arf");
 var mailBounce = require("./lib/mail-bounce");
 var mailMdn = require("./lib/mail-mdn");

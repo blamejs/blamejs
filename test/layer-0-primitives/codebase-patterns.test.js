@@ -2134,6 +2134,9 @@ async function testNoDuplicateCodeBlocks() {
         // v0.9.32 — guardSmtpCommand validates SMTP command lines (smuggling
         // defense + per-verb shape per RFC 5321 §4.5.3.1).
         "lib/guard-smtp-command.js:validate",
+        // v0.9.33 — mailRbl._validateZoneNames walks DNSBL/DNSWL zone
+        // strings for the same control-char + non-ASCII refusal.
+        "lib/mail-rbl.js:_validateZoneNames",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2573,6 +2576,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/asyncapi.js:create",
         "lib/asyncapi-bindings.js:kafka",
         "lib/openapi.js:create",
+        // v0.9.33 — mailRbl.create shares the same opts-validation
+        // prelude as the doc-generation create() factories.
+        "lib/mail-rbl.js:create",
         "lib/vex.js:document",
         "lib/mail.js:resendTransport",
         "lib/inbox.js:_validateReceiveOpts",
@@ -3174,6 +3180,19 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-smtp-command.js:validate",
       ],
       reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
+    },
+    {
+      // v0.9.33 — mailRbl.query / queryDomain share the
+      // required-non-empty-string prelude with OAuth callback parser
+      // + DDL hash-input validator. Each emits a distinct error class.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:parseCallback",
+        "lib/ddl-change-control.js:_hashSql",
+        "lib/mail-rbl.js:query",
+        "lib/mail-rbl.js:queryDomain",
+      ],
+      reason: "Two-arg required-non-empty-string validation prelude. OAuth callback parser refuses missing redirect URI / state, DDL change-control hashes the SQL string, mail-rbl rejects empty IP / domain. Each emits a distinct error class (OAuthError / DdlChangeControlError / MailRblError) — consolidation would couple unrelated domain validators.",
     },
     {
       files: [

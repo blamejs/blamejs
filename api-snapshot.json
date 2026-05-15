@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.32",
-  "createdAt": "2026-05-15T06:41:25.960Z",
+  "frameworkVersion": "0.9.33",
+  "createdAt": "2026-05-15T07:01:38.883Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -33156,6 +33156,104 @@
           "type": "object",
           "members": {
             "verify": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "rbl": {
+          "type": "object",
+          "members": {
+            "COMPLIANCE_POSTURES": {
+              "type": "object",
+              "members": {
+                "gdpr": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "hipaa": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pci-dss": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "soc2": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "MailRblError": {
+              "type": "function",
+              "arity": 4
+            },
+            "PROFILES": {
+              "type": "object",
+              "members": {
+                "balanced": {
+                  "type": "object",
+                  "members": {
+                    "maxConcurrent": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "maxListsPerQuery": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "perListTimeoutMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "permissive": {
+                  "type": "object",
+                  "members": {
+                    "maxConcurrent": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "maxListsPerQuery": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "perListTimeoutMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "strict": {
+                  "type": "object",
+                  "members": {
+                    "maxConcurrent": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "maxListsPerQuery": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "perListTimeoutMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                }
+              }
+            },
+            "compliancePosture": {
+              "type": "function",
+              "arity": 1
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "reverseIp": {
               "type": "function",
               "arity": 1
             }
