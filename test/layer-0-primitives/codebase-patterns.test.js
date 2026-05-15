@@ -2078,6 +2078,14 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/auth/jwt.js:_b64urlEncode",
+        "lib/auth/oauth.js:_b64urlEncode",
+        "lib/pagination.js:_b64urlEncode",
+      ],
+      reason: "Three call-site wrappers around b.crypto.toBase64Url/fromBase64Url that each carry a distinct typed error (AuthError for jwt + oauth, PaginationError for pagination) on the type-guard branch. The shared shape is `if (typeof s !== 'string') throw <DomainError>; return bCrypto.fromBase64Url(s);` — extracting further would couple the auth-error namespace with the pagination-error namespace. The framework's b.crypto.toBase64Url/fromBase64Url is the actual extracted primitive these wrappers consume.",
+    },
+    {
+      files: [
         "lib/cloud-events.js:parse",
         "lib/pick.js:_pickInner",
         "lib/problem-details.js:create",
