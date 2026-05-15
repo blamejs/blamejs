@@ -2131,6 +2131,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-trace-context.js:validate",
         // v0.9.30 — guardSnapshotEnvelope validates snapshot envelopes.
         "lib/guard-snapshot-envelope.js:validate",
+        // v0.9.32 — guardSmtpCommand validates SMTP command lines (smuggling
+        // defense + per-verb shape per RFC 5321 §4.5.3.1).
+        "lib/guard-smtp-command.js:validate",
+        // v0.9.33 — mailRbl._validateZoneNames walks DNSBL/DNSWL zone
+        // strings for the same control-char + non-ASCII refusal.
+        "lib/mail-rbl.js:_validateZoneNames",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2151,6 +2157,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-mail-compose.js:<top>",
         "lib/guard-mail-move.js:_resolveProfile",
         "lib/guard-mail-move.js:validate",
+        "lib/guard-mail-move.js:<top>",
         "lib/guard-mail-query.js:_resolveProfile",
         "lib/guard-mail-query.js:validateActor",
         "lib/guard-mail-query.js:<top>",
@@ -2169,6 +2176,18 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-message-id.js:_resolveProfile",
         "lib/guard-message-id.js:compliancePosture",
         "lib/guard-message-id.js:validate",
+        // v0.9.36 — guardEnvelope shares the family scaffolding;
+        // PROFILES + COMPLIANCE_POSTURES + check() body.
+        "lib/guard-envelope.js:<top>",
+        "lib/guard-envelope.js:check",
+        "lib/guard-envelope.js:compliancePosture",
+        // v0.9.37 — guardDsn shares the family scaffolding;
+        // PROFILES + COMPLIANCE_POSTURES + parse() body +
+        // _resolveProfile dispatcher.
+        "lib/guard-dsn.js:<top>",
+        "lib/guard-dsn.js:parse",
+        "lib/guard-dsn.js:_resolveProfile",
+        "lib/guard-dsn.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
     },
@@ -2198,6 +2217,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-posture-chain.js:*",
         "lib/guard-trace-context.js:*",
         "lib/guard-snapshot-envelope.js:*",
+        "lib/guard-smtp-command.js:*",
+        "lib/guard-envelope.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
@@ -2302,14 +2323,30 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-tenant.js:_checkDestroyPreconditions",
         "lib/agent-idempotency.js:_put",
         "lib/auth/dpop.js:verify",
+        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/backup/index.js:scheduleTest",
         "lib/break-glass.js:_validatePolicySet",
+        "lib/compliance-sanctions.js:screen",
         "lib/ddl-change-control.js:propose",
+        "lib/dora.js:_validateReportInput",
         "lib/fda-21cfr11.js:_validateSignatureInput",
         "lib/guard-event-bus-payload.js:validate",
+        "lib/guard-mail-query.js:validateActor",
+        "lib/guard-mail-reply.js:validate",
+        "lib/guard-saga-config.js:validate",
         "lib/guard-snapshot-envelope.js:validate",
+        "lib/guard-trace-context.js:validate",
         "lib/incident-report.js:open",
+        // v0.9.34 — mailGreylist.check validates the ctx triplet
+        // (ip + mailFrom + rcptTo) before fingerprint hashing.
+        "lib/mail-greylist.js:check",
+        // v0.9.35 — mailHelo.evaluate validates the HELO/EHLO claim
+        // (ip + claimedName + resolver) before shape + FCrDNS checks.
+        "lib/mail-helo.js:evaluate",
+        // v0.9.36 — guardEnvelope.check validates the From / SPF /
+        // DKIM alignment per RFC 7489 §3.1.
+        "lib/guard-envelope.js:check",
       ],
       reason: "Per-domain validation-field cascade for required-args + throw-typed-error pattern. Each member enforces a different field tuple (destroy preconditions: stepUpToken/dualControlApprover/reason/actor; DPoP verify; backup test schedule; break-glass policy set; DDL change proposal; 21 CFR Part 11 signer fields; sd-jwt-vc holder store). Consolidation would couple unrelated regulatory specs.",
     },
@@ -2326,6 +2363,32 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-snapshot.js:create",
         "lib/cra-report.js:conformityAssessment",
         "lib/mail-agent.js:consumer",
+        // v0.9.31 — network-dns-resolver.create runs the same opts
+        // validation + closure-capture prelude.
+        "lib/network-dns-resolver.js:create",
+        "lib/network-dns-resolver.js:<top>",
+        "lib/agent-idempotency.js:<top>",
+        "lib/agent-snapshot.js:<top>",
+        // v0.9.34 — mailGreylist.create runs the same opts-validation
+        // prelude + module-header scaffolding.
+        "lib/mail-greylist.js:create",
+        "lib/mail-greylist.js:<top>",
+        // v0.9.33 — mailRbl <top> shares the mail-family PROFILES +
+        // posture-cascade scaffolding with mail-greylist + mail-helo.
+        "lib/mail-rbl.js:<top>",
+        // v0.9.35 — mailHelo evaluate + <top> shares the same family
+        // scaffolding.
+        "lib/mail-helo.js:<top>",
+        "lib/mail-helo.js:evaluate",
+        // v0.9.36 — guardEnvelope.check runs the same opts-validation
+        // prelude.
+        "lib/guard-envelope.js:check",
+        // v0.9.33 — mailRbl.create also matches this prelude shape;
+        // primary allowlist for create is in the openapi/asyncapi
+        // family entry below, listed here too for the 4-file cluster
+        // that joins guard-envelope.check + mail-greylist.create +
+        // mail-helo.evaluate + mail-rbl.create.
+        "lib/mail-rbl.js:create",
       ],
       reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / AgentIdempotencyError / AgentTenantError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
     },
@@ -2563,6 +2626,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/asyncapi.js:create",
         "lib/asyncapi-bindings.js:kafka",
         "lib/openapi.js:create",
+        // v0.9.33 — mailRbl.create shares the same opts-validation
+        // prelude as the doc-generation create() factories.
+        "lib/mail-rbl.js:create",
         "lib/vex.js:document",
         "lib/mail.js:resendTransport",
         "lib/inbox.js:_validateReceiveOpts",
@@ -3159,8 +3225,68 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-auth.js:gate",
         "lib/guard-auth.js:sanitize",
         "lib/guard-auth.js:validate",
+        "lib/guard-smtp-command.js:<top>",
+        "lib/guard-smtp-command.js:gate",
+        "lib/guard-smtp-command.js:validate",
+        "lib/guard-envelope.js:<top>",
+        "lib/guard-envelope.js:check",
       ],
       reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
+    },
+    {
+      // v0.9.37 — guard-dsn / guard-mail-move / guard-smtp-command
+      // share the same module-header scaffolding: lazyRequire +
+      // defineClass + PROFILES + COMPLIANCE_POSTURES freeze blocks
+      // at <top> of file. Family contract.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-dsn.js:<top>",
+        "lib/guard-mail-move.js:<top>",
+        "lib/guard-smtp-command.js:<top>",
+      ],
+      reason: "Module-header scaffolding shared across the guard family — defineClass + lazyRequire + PROFILES freeze + COMPLIANCE_POSTURES freeze blocks. The <top> shape IS the guard-family ABI; consolidating would erase per-guard error-class wrappers + profile vocab.",
+    },
+    {
+      // v0.9.37 — guard-dsn / guard-smtp-command / safe-dns all
+      // declare the same _resolveProfile dispatcher mapping operator
+      // opts → PROFILES[caps] with the COMPLIANCE_POSTURES cascade.
+      // The dispatcher IS the family contract.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-dsn.js:_resolveProfile",
+        "lib/guard-smtp-command.js:_resolveProfile",
+        "lib/safe-dns.js:_resolveProfile",
+      ],
+      reason: "_resolveProfile dispatcher — every safe-* / guard-* primitive walks the same `opts.posture → COMPLIANCE_POSTURES[posture] → PROFILES[caps]` cascade with `opts.profile` fallback. The cascade IS the family ABI; consolidating to a shared helper would erase the per-primitive error-class wrapper (SafeDnsError / GuardDsnError / GuardSmtpCommandError) that operator audit pipelines route on.",
+    },
+    {
+      // v0.9.33 — mailRbl.query / queryDomain share the
+      // required-non-empty-string prelude with OAuth callback parser
+      // + DDL hash-input validator. Each emits a distinct error class.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:parseCallback",
+        "lib/ddl-change-control.js:_hashSql",
+        "lib/mail-rbl.js:query",
+        "lib/mail-rbl.js:queryDomain",
+      ],
+      reason: "Two-arg required-non-empty-string validation prelude. OAuth callback parser refuses missing redirect URI / state, DDL change-control hashes the SQL string, mail-rbl rejects empty IP / domain. Each emits a distinct error class (OAuthError / DdlChangeControlError / MailRblError) — consolidation would couple unrelated domain validators.",
+    },
+    {
+      // v0.9.34 — auth/oauth.exchangeToken + sd-jwt-vc-holder.store +
+      // backup/index.scheduleTest + mailGreylist.check share a
+      // required-args + opts-merge prelude. Each emits a domain-typed
+      // error class (OAuthError / SdJwtVcHolderError / BackupError /
+      // MailGreylistError) with a different field tuple — consolidating
+      // would couple unrelated regulatory specs.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:exchangeToken",
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/backup/index.js:scheduleTest",
+        "lib/mail-greylist.js:check",
+      ],
+      reason: "Required-args + opts-merge prelude shared across an OAuth token-exchange call, an SD-JWT VC holder.store, a backup-test scheduler, and the greylist .check input gate. Each domain emits a distinct error class with a different field tuple; consolidation would couple unrelated specs.",
     },
     {
       files: [

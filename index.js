@@ -87,6 +87,7 @@ var storage = require("./lib/storage");
 var safeJson = require("./lib/safe-json");
 var safeJsonPath = require("./lib/safe-jsonpath");
 var safeMime = require("./lib/safe-mime");
+var safeDns = require("./lib/safe-dns");
 var mailStore = require("./lib/mail-store");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
@@ -160,6 +161,9 @@ var guardHtml = require("./lib/guard-html");
 var guardSvg = require("./lib/guard-svg");
 var guardFilename = require("./lib/guard-filename");
 var guardMessageId = require("./lib/guard-message-id");
+var guardSmtpCommand = require("./lib/guard-smtp-command");
+var guardEnvelope = require("./lib/guard-envelope");
+var guardDsn = require("./lib/guard-dsn");
 var guardMailQuery = require("./lib/guard-mail-query");
 var guardMailCompose = require("./lib/guard-mail-compose");
 var guardMailReply = require("./lib/guard-mail-reply");
@@ -250,6 +254,9 @@ var csv = require("./lib/csv");
 var time = require("./lib/time");
 var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
+mail.rbl = require("./lib/mail-rbl");
+mail.greylist = require("./lib/mail-greylist");
+mail.helo = require("./lib/mail-helo");
 var mailArf = require("./lib/mail-arf");
 var mailBounce = require("./lib/mail-bounce");
 var mailMdn = require("./lib/mail-mdn");
@@ -422,6 +429,9 @@ module.exports = {
   guardSvg:         guardSvg,
   guardFilename:    guardFilename,
   guardMessageId:   guardMessageId,
+  guardSmtpCommand: guardSmtpCommand,
+  guardEnvelope:    guardEnvelope,
+  guardDsn:         guardDsn,
   guardMailQuery:   guardMailQuery,
   guardMailCompose: guardMailCompose,
   guardMailReply:   guardMailReply,
@@ -518,6 +528,7 @@ module.exports = {
   safeJson:         safeJson,
   safeJsonPath:     safeJsonPath,
   safeMime:         safeMime,
+  safeDns:          safeDns,
   mailStore:        mailStore,
   safeSchema:       safeSchema,
   pagination:       pagination,
