@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.33",
-  "createdAt": "2026-05-15T07:01:38.883Z",
+  "frameworkVersion": "0.9.34",
+  "createdAt": "2026-05-15T07:28:53.979Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -33151,6 +33151,112 @@
         "feedbackId": {
           "type": "function",
           "arity": 1
+        },
+        "greylist": {
+          "type": "object",
+          "members": {
+            "COMPLIANCE_POSTURES": {
+              "type": "object",
+              "members": {
+                "gdpr": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "hipaa": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pci-dss": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "soc2": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "MailGreylistError": {
+              "type": "function",
+              "arity": 4
+            },
+            "PROFILES": {
+              "type": "object",
+              "members": {
+                "balanced": {
+                  "type": "object",
+                  "members": {
+                    "ipv4Prefix": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ipv6Prefix": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "minDelayMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "whitelistTtlMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "permissive": {
+                  "type": "object",
+                  "members": {
+                    "ipv4Prefix": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ipv6Prefix": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "minDelayMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "whitelistTtlMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "strict": {
+                  "type": "object",
+                  "members": {
+                    "ipv4Prefix": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ipv6Prefix": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "minDelayMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "whitelistTtlMs": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                }
+              }
+            },
+            "compliancePosture": {
+              "type": "function",
+              "arity": 1
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "iprev": {
           "type": "object",

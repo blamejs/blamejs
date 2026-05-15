@@ -2309,14 +2309,24 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-tenant.js:_checkDestroyPreconditions",
         "lib/agent-idempotency.js:_put",
         "lib/auth/dpop.js:verify",
+        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/backup/index.js:scheduleTest",
         "lib/break-glass.js:_validatePolicySet",
+        "lib/compliance-sanctions.js:screen",
         "lib/ddl-change-control.js:propose",
+        "lib/dora.js:_validateReportInput",
         "lib/fda-21cfr11.js:_validateSignatureInput",
         "lib/guard-event-bus-payload.js:validate",
+        "lib/guard-mail-query.js:validateActor",
+        "lib/guard-mail-reply.js:validate",
+        "lib/guard-saga-config.js:validate",
         "lib/guard-snapshot-envelope.js:validate",
+        "lib/guard-trace-context.js:validate",
         "lib/incident-report.js:open",
+        // v0.9.34 — mailGreylist.check validates the ctx triplet
+        // (ip + mailFrom + rcptTo) before fingerprint hashing.
+        "lib/mail-greylist.js:check",
       ],
       reason: "Per-domain validation-field cascade for required-args + throw-typed-error pattern. Each member enforces a different field tuple (destroy preconditions: stepUpToken/dualControlApprover/reason/actor; DPoP verify; backup test schedule; break-glass policy set; DDL change proposal; 21 CFR Part 11 signer fields; sd-jwt-vc holder store). Consolidation would couple unrelated regulatory specs.",
     },
@@ -2339,6 +2349,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/network-dns-resolver.js:<top>",
         "lib/agent-idempotency.js:<top>",
         "lib/agent-snapshot.js:<top>",
+        // v0.9.34 — mailGreylist.create runs the same opts-validation
+        // prelude + module-header scaffolding.
+        "lib/mail-greylist.js:create",
+        "lib/mail-greylist.js:<top>",
       ],
       reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / AgentIdempotencyError / AgentTenantError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
     },
@@ -3193,6 +3207,22 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-rbl.js:queryDomain",
       ],
       reason: "Two-arg required-non-empty-string validation prelude. OAuth callback parser refuses missing redirect URI / state, DDL change-control hashes the SQL string, mail-rbl rejects empty IP / domain. Each emits a distinct error class (OAuthError / DdlChangeControlError / MailRblError) — consolidation would couple unrelated domain validators.",
+    },
+    {
+      // v0.9.34 — auth/oauth.exchangeToken + sd-jwt-vc-holder.store +
+      // backup/index.scheduleTest + mailGreylist.check share a
+      // required-args + opts-merge prelude. Each emits a domain-typed
+      // error class (OAuthError / SdJwtVcHolderError / BackupError /
+      // MailGreylistError) with a different field tuple — consolidating
+      // would couple unrelated regulatory specs.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:exchangeToken",
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/backup/index.js:scheduleTest",
+        "lib/mail-greylist.js:check",
+      ],
+      reason: "Required-args + opts-merge prelude shared across an OAuth token-exchange call, an SD-JWT VC holder.store, a backup-test scheduler, and the greylist .check input gate. Each domain emits a distinct error class with a different field tuple; consolidation would couple unrelated specs.",
     },
     {
       files: [
