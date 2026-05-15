@@ -189,7 +189,71 @@ function testBadEntriesRefused() {
     "compose-pipeline/bad-position");
 }
 
-function run() {
+async function testAsyncMiddlewareAwaited() {
+  // Async middleware MUST be awaited so the router sees the next-flag
+  // set before composedPipeline's promise resolves. Without awaiting,
+  // composedPipeline returns undefined synchronously and the router
+  // exits the request early before async middleware (e.g. bodyParser
+  // reading the request body) have actually called next().
+  var pipe = b.middleware.composePipeline([
+    { name: "asyncA", mw: async function (req, res, next) {
+      await new Promise(function (r) { setTimeout(r, 10); });
+      req._tags = (req._tags || "") + "A";
+      next();
+    } },
+    { name: "asyncB", mw: async function (req, res, next) {
+      await new Promise(function (r) { setTimeout(r, 10); });
+      req._tags = (req._tags || "") + "B";
+      next();
+    } },
+  ]);
+  var req = {}; var res = {};
+  var finalCalled = false;
+  // composedPipeline must return a promise that resolves AFTER the
+  // entire chain has run.
+  await pipe(req, res, function () { finalCalled = true; });
+  check("async chain ran to completion", req._tags === "AB");
+  check("finalNext called after async chain", finalCalled === true);
+}
+
+async function testErrorMiddlewareReceivesError() {
+  // When next(err) fires, the chain should skip 3-arg middleware and
+  // dispatch to the first 4-arg "error handler" middleware. This is
+  // the Express convention the framework's b.middleware.errorHandler
+  // is built around.
+  var capturedErr = null;
+  var sentinel = new Error("boom");
+  var pipe = b.middleware.composePipeline([
+    { name: "first",        mw: _passMw("a"),       position: 10 },
+    { name: "failing",      mw: _bailMw(sentinel),  position: 20 },
+    { name: "shouldSkip",   mw: _passMw("z"),       position: 30 }, // 3-arg, should be skipped
+    { name: "errorHandler", mw: function (err, req, res, _next) {
+      capturedErr = err;
+    }, position: 40 },
+  ]);
+  var req = {}; var res = {};
+  await pipe(req, res, function () {});
+  check("3-arg middleware skipped on error path",
+    req._tags && req._tags.indexOf("z") === -1);
+  check("4-arg error handler received the error", capturedErr === sentinel);
+}
+
+async function testFinalNextFallbackOnUnhandledError() {
+  // If no error-handler entry exists, the error propagates to
+  // finalNext so the framework router can handle it.
+  var capturedErr = null;
+  var sentinel = new Error("unhandled");
+  var pipe = b.middleware.composePipeline([
+    { name: "first",   mw: _passMw("a") },
+    { name: "failing", mw: _bailMw(sentinel) },
+  ]);
+  var req = {}; var res = {};
+  await pipe(req, res, function (err) { capturedErr = err; });
+  check("error propagates to finalNext when no error-handler in chain",
+    capturedErr === sentinel);
+}
+
+async function run() {
   testSurface();
   testSequentialDispatch();
   testCanonicalPositionsAutoOrder();
@@ -202,11 +266,13 @@ function run() {
   testErrorPropagation();
   testSyncThrowPropagation();
   testBadEntriesRefused();
+  await testAsyncMiddlewareAwaited();
+  await testErrorMiddlewareReceivesError();
+  await testFinalNextFallbackOnUnhandledError();
 }
 
 module.exports = { run: run };
 
 if (require.main === module) {
-  try { run(); }
-  catch (e) { process.stderr.write("FAIL: " + (e && e.stack || e) + "\n"); process.exit(1); }
+  run().catch(function (e) { process.stderr.write("FAIL: " + (e && e.stack || e) + "\n"); process.exit(1); });
 }
