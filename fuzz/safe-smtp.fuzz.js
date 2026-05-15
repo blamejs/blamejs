@@ -25,21 +25,19 @@ module.exports.fuzz = function (data) {
   if (data.length === 0 || data.length > 1 * 1024 * 1024) return;
 
   try {
-    var mx = b.mail.server.mx;
-
-    // 1. _detectSmugglingShape — must return boolean.
-    var smuggling = mx._detectSmugglingShape(data);
+    // 1. guardSmtpCommand.detectBodySmuggling — must return boolean.
+    var smuggling = b.guardSmtpCommand.detectBodySmuggling(data);
     if (typeof smuggling !== "boolean") {
-      throw new Error("_detectSmugglingShape returned non-boolean: " + typeof smuggling);
+      throw new Error("detectBodySmuggling returned non-boolean: " + typeof smuggling);
     }
 
-    // 2. _findDotTerminator — must return -1 OR an index in range.
-    var endIdx = mx._findDotTerminator(data);
+    // 2. safeSmtp.findDotTerminator — must return -1 OR an index in range.
+    var endIdx = b.safeSmtp.findDotTerminator(data);
     if (typeof endIdx !== "number") {
-      throw new Error("_findDotTerminator returned non-number: " + typeof endIdx);
+      throw new Error("findDotTerminator returned non-number: " + typeof endIdx);
     }
     if (endIdx !== -1 && (endIdx < 0 || endIdx > data.length)) {
-      throw new Error("_findDotTerminator returned out-of-range index: " + endIdx);
+      throw new Error("findDotTerminator returned out-of-range index: " + endIdx);
     }
     // If a terminator was found, verify the 5-byte pattern actually
     // exists at the returned index (\r\n.\r\n).
@@ -47,17 +45,17 @@ module.exports.fuzz = function (data) {
       if (data[endIdx]     !== 0x0d || data[endIdx + 1] !== 0x0a ||
           data[endIdx + 2] !== 0x2e ||
           data[endIdx + 3] !== 0x0d || data[endIdx + 4] !== 0x0a) {
-        throw new Error("_findDotTerminator returned index without CRLF.CRLF: " + endIdx);
+        throw new Error("findDotTerminator returned index without CRLF.CRLF: " + endIdx);
       }
     }
 
-    // 3. _dotUnstuff — must return a Buffer; length never exceeds input.
-    var unstuffed = mx._dotUnstuff(data);
+    // 3. safeSmtp.dotUnstuff — must return a Buffer; length never exceeds input.
+    var unstuffed = b.safeSmtp.dotUnstuff(data);
     if (!Buffer.isBuffer(unstuffed)) {
-      throw new Error("_dotUnstuff returned non-Buffer: " + typeof unstuffed);
+      throw new Error("dotUnstuff returned non-Buffer: " + typeof unstuffed);
     }
     if (unstuffed.length > data.length) {
-      throw new Error("_dotUnstuff returned longer buffer: " + unstuffed.length + " > " + data.length);
+      throw new Error("dotUnstuff returned longer buffer: " + unstuffed.length + " > " + data.length);
     }
   } catch (e) {
     if (expected.isExpected(e)) return;

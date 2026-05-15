@@ -2096,6 +2096,21 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/guard-cidr.js:compliancePosture",
+        "lib/guard-domain.js:compliancePosture",
+        "lib/guard-jsonpath.js:compliancePosture",
+        "lib/guard-mime.js:compliancePosture",
+        "lib/guard-regex.js:compliancePosture",
+        "lib/guard-shell.js:compliancePosture",
+        "lib/guard-smtp-command.js:detectBodySmuggling",
+        "lib/guard-template.js:compliancePosture",
+        "lib/guard-time.js:compliancePosture",
+        "lib/guard-uuid.js:compliancePosture",
+      ],
+      reason: "Standalone-guard compliancePosture entry-points + the SMTP smuggling-detector all share a small-body validate-input-then-loop-with-byte-check token pattern. Surfaced after v0.9.46 extracted detectBodySmuggling from the MX listener inline copy into guard-smtp-command per the modular safe/guard discipline. Distinct primitives — each emits its own posture verdict or threat boolean.",
+    },
+    {
+      files: [
         "lib/guard-list-id.js:_refuse",
         "lib/guard-list-unsubscribe.js:_verdict",
         "lib/guard-smtp-command.js:_parseAuthCommandSyntax",

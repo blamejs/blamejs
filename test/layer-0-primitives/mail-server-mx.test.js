@@ -19,9 +19,14 @@ var nodeTls = require("node:tls");
 function testSurface() {
   check("mx.create is fn",            typeof b.mail.server.mx.create === "function");
   check("MailServerMxError is fn",    typeof b.mail.server.mx.MailServerMxError === "function");
-  check("_detectSmugglingShape is fn",typeof b.mail.server.mx._detectSmugglingShape === "function");
-  check("_findDotTerminator is fn",   typeof b.mail.server.mx._findDotTerminator === "function");
-  check("_dotUnstuff is fn",          typeof b.mail.server.mx._dotUnstuff === "function");
+  // Wire-protocol parsing helpers now live in b.safeSmtp; smuggling
+  // detection in b.guardSmtpCommand. The MX listener consumes both.
+  check("safeSmtp.findDotTerminator is fn",
+        typeof b.safeSmtp.findDotTerminator === "function");
+  check("safeSmtp.dotUnstuff is fn",
+        typeof b.safeSmtp.dotUnstuff === "function");
+  check("guardSmtpCommand.detectBodySmuggling is fn",
+        typeof b.guardSmtpCommand.detectBodySmuggling === "function");
 }
 
 function testCreateRequiresTlsContext() {
@@ -48,55 +53,52 @@ function testCreateRejectsBadBounds() {
 }
 
 function testDetectSmugglingShape() {
-  var mx = b.mail.server.mx;
   // Canonical CRLF-only body — no smuggling shape.
   var clean = Buffer.from("hello\r\nworld\r\n.\r\n", "utf8");
   check("clean CRLF body not flagged as smuggling",
-    mx._detectSmugglingShape(clean) === false);
+    b.guardSmtpCommand.detectBodySmuggling(clean) === false);
 
   // Bare-LF dot-line smuggling shape (CVE-2023-51764).
   var smuggled = Buffer.from("hello\nworld\n.\n", "utf8");
   check("bare-LF dot-line flagged as smuggling",
-    mx._detectSmugglingShape(smuggled) === true);
+    b.guardSmtpCommand.detectBodySmuggling(smuggled) === true);
 
   // Mid-body bare-LF without dot — not the smuggling shape.
   var mixed = Buffer.from("hello\nthere\r\n.\r\n", "utf8");
   check("bare-LF without dot terminator not flagged",
-    mx._detectSmugglingShape(mixed) === false);
+    b.guardSmtpCommand.detectBodySmuggling(mixed) === false);
 }
 
 function testFindDotTerminator() {
-  var mx = b.mail.server.mx;
   var withTerm = Buffer.from("body line\r\n.\r\n", "utf8");
-  var idx = mx._findDotTerminator(withTerm);
+  var idx = b.safeSmtp.findDotTerminator(withTerm);
   check("dot-terminator found at body end",
     idx === Buffer.byteLength("body line", "utf8"));
 
   var noTerm = Buffer.from("body line\r\n", "utf8");
   check("no terminator returns -1",
-    mx._findDotTerminator(noTerm) === -1);
+    b.safeSmtp.findDotTerminator(noTerm) === -1);
 
   // CRLF dot CRLF only — RFC 5321 §2.3.8 canonical form. Bare LF
-  // alone shouldn't match (smuggling defense — handled by
-  // _detectSmugglingShape but the terminator scanner is also CRLF-
-  // strict).
+  // alone shouldn't match (smuggling defense — the terminator
+  // scanner is strict-CRLF; the smuggling detector lives in
+  // b.guardSmtpCommand.detectBodySmuggling).
   var bareLf = Buffer.from("body\n.\n", "utf8");
   check("bare-LF terminator does not match canonical CRLF",
-    mx._findDotTerminator(bareLf) === -1);
+    b.safeSmtp.findDotTerminator(bareLf) === -1);
 }
 
 function testDotUnstuff() {
-  var mx = b.mail.server.mx;
   // ".." line at body start → "." (stuffing reversed).
   var stuffed = Buffer.from("hello\r\n..secret line\r\nworld\r\n", "utf8");
-  var unstuffed = mx._dotUnstuff(stuffed);
+  var unstuffed = b.safeSmtp.dotUnstuff(stuffed);
   check("dot-stuffing reversed: '..' → '.'",
     unstuffed.toString("utf8") === "hello\r\n.secret line\r\nworld\r\n");
 
   // Plain body without dot-prefix lines passes through.
   var plain = Buffer.from("hello\r\nworld\r\n", "utf8");
   check("plain body passes through unstuff",
-    mx._dotUnstuff(plain).toString("utf8") === "hello\r\nworld\r\n");
+    b.safeSmtp.dotUnstuff(plain).toString("utf8") === "hello\r\nworld\r\n");
 }
 
 // ---- End-to-end SMTP conversation test ---------------------------------
