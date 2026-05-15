@@ -2070,6 +2070,14 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/auth/dpop.js:verify",
+        "lib/auth/jwt.js:_requireNumericDate",
+        "lib/auth/oauth.js:verifyBackchannelLogoutToken",
+      ],
+      reason: "Distinct RFC primitives (RFC 9449 DPoP / RFC 7519 JWT / OIDC Back-Channel Logout) that share a `replayStore.checkAndInsert(jti, expireAtMs)` + numeric-date-bound shingle. Each uses its own typed error class (auth-dpop / auth-jwt / auth-oauth namespaces) with file-specific code and field tuple. Consolidation would couple three spec-defined verification primitives.",
+    },
+    {
+      files: [
         "lib/cloud-events.js:parse",
         "lib/pick.js:_pickInner",
         "lib/problem-details.js:create",
@@ -4921,6 +4929,13 @@ var KNOWN_ANTIPATTERNS = [
       "lib/dsr.js",
     ],
     reason: "Audit outcomes are the literal strings 'success' / 'failure' / 'denied' at call sites. safeEmit normalizes the common typos as a safety net but the canonical form belongs in code so reviewers reading a primitive see exactly what audit row will land on the chain.",
+  },
+  {
+    id: "inline-base64url-three-replace",
+    primitive: "b.crypto.toBase64Url(buf) — routes through Node's built-in 'base64url' encoding (linear-time, no regex backtracking surface)",
+    regex: /\.replace\(\s*\/=\+\$\/[gG]?\s*,/,
+    allowlist: ["lib/crypto.js", "lib/argon2-builtin.js"],
+    reason: "The `.replace(/=+$/, ...)` trailing-padding strip is polynomial-ReDoS-shaped per CodeQL js/polynomial-redos. The framework's `b.crypto.toBase64Url(buf)` helper routes through Node's built-in base64url encoding which is linear-time. lib/crypto.js carries the helper definition; lib/argon2-builtin.js retains a linear-loop `=`-strip (charCodeAt + slice) because PHC base64 uses standard alphabet `+/` not url-safe `-_` — toBase64Url's output would be the wrong shape for PHC strings.",
   },
   {
     id: "mountinfo-options-bind-check",
