@@ -2195,6 +2195,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-list-unsubscribe.js:validate",
         "lib/guard-list-unsubscribe.js:_resolveProfile",
         "lib/guard-list-unsubscribe.js:compliancePosture",
+        // v0.9.40 — guardListId shares the family scaffolding;
+        // validate() + _resolveProfile + posture cascade.
+        "lib/guard-list-id.js:<top>",
+        "lib/guard-list-id.js:validate",
+        "lib/guard-list-id.js:_resolveProfile",
+        "lib/guard-list-id.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
     },
@@ -2226,6 +2232,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-snapshot-envelope.js:*",
         "lib/guard-smtp-command.js:*",
         "lib/guard-envelope.js:*",
+        "lib/guard-list-unsubscribe.js:*",
+        "lib/guard-list-id.js:*",
+        "lib/guard-dsn.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
@@ -3257,6 +3266,23 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Module-header scaffolding shared across the guard family — defineClass + lazyRequire + PROFILES freeze + COMPLIANCE_POSTURES freeze blocks. The <top> shape IS the guard-family ABI; consolidating would erase per-guard error-class wrappers + profile vocab.",
     },
     {
+      // v0.9.40 — RFC 5322 header-injection control-char scans
+      // (boolean variant: does this string contain CR/LF/NUL/C0/DEL?)
+      // inlined in 4 guards. Each is a 8-line for-loop with a fixed
+      // charCodeAt + range-check structure. The detector matches
+      // because the shape IS the contract; extracting to a shared
+      // helper saves ~25 lines but adds a module-boundary import +
+      // a runtime call per check.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-dsn.js:_checkControlChars",
+        "lib/guard-list-id.js:_hasControlChar",
+        "lib/guard-list-unsubscribe.js:_hasControlChar",
+        "lib/safe-redirect.js:_hasControlChar",
+      ],
+      reason: "RFC 5322 header-injection boolean scan (CR/LF/NUL/C0/DEL char-code check, allow TAB). Each guard inlines an 8-line for-loop; the shape IS the contract. Future consolidation candidate via `lib/codepoint-class.js` if the family grows past 5 sites, but the per-guard scan keeps the error-class wrapper (GuardDsnError / GuardListIdError / GuardListUnsubscribeError / SafeRedirectError) domain-local and the inlined check has zero call overhead.",
+    },
+    {
       // v0.9.39 — three independently-domain'd helper bodies
       // (guardListUnsubscribe._verdict assembling the action+reason
       // payload, guardSmtpCommand._validateAuth walking AUTH mech
@@ -3265,6 +3291,7 @@ async function testNoDuplicateCodeBlocks() {
       // the detector matches. Each has a domain-distinct body.
       mode:  "family-subset",
       files: [
+        "lib/guard-list-id.js:_refuse",
         "lib/guard-list-unsubscribe.js:_verdict",
         "lib/guard-smtp-command.js:_validateAuth",
         "lib/safe-dns.js:_decodeOpt",
@@ -3279,6 +3306,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/guard-dsn.js:_resolveProfile",
+        "lib/guard-list-id.js:_resolveProfile",
         "lib/guard-list-unsubscribe.js:_resolveProfile",
         "lib/guard-smtp-command.js:_resolveProfile",
         "lib/safe-dns.js:_resolveProfile",
