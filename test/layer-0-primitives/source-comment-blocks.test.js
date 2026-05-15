@@ -54,7 +54,7 @@ function _buildLocalOptsResolver() {
       }
     } catch (e) { caught = e; }
     if (!caught) return { ok: false, reason: "no-throw" };
-    var msg = (caught && caught.message) || String(caught);
+    var msg = caught.message || String(caught);
     var match = msg.match(/Allowed(?:\s+keys)?:\s*([^.]*)/i);
     if (!match) return { ok: false, reason: "no-allow-list-in-error" };
     var keys = match[1].split(",")

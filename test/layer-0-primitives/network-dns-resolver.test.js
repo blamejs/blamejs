@@ -141,6 +141,24 @@ async function testValidateOptInRefusesAdZero() {
   check("validate=true with AD=0 refused", threw && threw.code === "resolver/validate-failed");
 }
 
+async function testValidateOptInRefusesCachedAdZero() {
+  // PR #58 Codex P1: a cache warmed by a non-validating call must not
+  // serve to a later validate: true caller. The verdict (AD bit) is
+  // per-response (RFC 4035 §3.2.3), so the cached entry's stored
+  // `validated: false` must trip the validate-failed throw.
+  var transport = _fakeTransport({
+    "example.com|1": _aRecordResponse("example.com", "192.0.2.1", 300, false),
+  });
+  var r = b.network.dns.resolver.create({ transport: transport });
+  await r.queryA("example.com");                   // warm cache (no validate)
+  check("first call: cache size 1", r.cacheSize() === 1);
+  var threw = null;
+  try { await r.queryA("example.com", { validate: true }); }
+  catch (e) { threw = e; }
+  check("validate=true on cached AD=0 refused (cache-bypass defense)",
+    threw && threw.code === "resolver/validate-failed");
+}
+
 async function testValidateOptInAcceptsAdOne() {
   var transport = _fakeTransport({
     "example.com|1": _aRecordResponse("example.com", "192.0.2.1", 300, true),
@@ -329,6 +347,7 @@ async function run() {
   await testResolvesAndCaches();
   await testValidateOptInRefusesAdZero();
   await testValidateOptInAcceptsAdOne();
+  await testValidateOptInRefusesCachedAdZero();
   await testFollowsCnameChain();
   await testCnameChainCap();
   await testServeStaleOnUpstreamFailure();

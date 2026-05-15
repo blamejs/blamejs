@@ -80,6 +80,24 @@ function testRefusesBareLf() {
     "guard-smtp-command/bare-lf");
 }
 
+function testPermissiveAcceptsBareLf() {
+  // PR #58 Codex P2: permissive profile documents allowBareLf=true
+  // but the control-char loop was rejecting 0x0a regardless. Verify
+  // the documented legacy-Sendmail compat path actually accepts LF.
+  // The line still needs valid SMTP shape after the LF.
+  var line = "MAIL FROM:<a@b.com>";
+  var parsed = b.guardSmtpCommand.validate(line, { profile: "permissive" });
+  check("permissive accepts MAIL FROM (sanity)", parsed.verb === "MAIL");
+  // With bare LF embedded — should now NOT throw under permissive.
+  var withLf = b.guardSmtpCommand.validate("MAIL FROM:<a@b.com>\nlegacy", { profile: "permissive" });
+  check("permissive accepts bare LF in line (Codex P2 fix)", withLf.verb === "MAIL");
+  // Strict still rejects.
+  var threw = null;
+  try { b.guardSmtpCommand.validate("MAIL FROM:<a@b.com>\nlegacy"); }
+  catch (e) { threw = e; }
+  check("strict still rejects bare LF", threw && threw.code === "guard-smtp-command/bare-lf");
+}
+
 function testRefusesNul() {
   _throws("NUL refused",
     function () { b.guardSmtpCommand.validate("EHLO mail" + String.fromCharCode(0) + "x"); },
@@ -222,6 +240,7 @@ async function run() {
   testParsesRcptTo();
   testRefusesBareCr();
   testRefusesBareLf();
+  testPermissiveAcceptsBareLf();
   testRefusesNul();
   testRefusesC0Control();
   testRefusesDel();
