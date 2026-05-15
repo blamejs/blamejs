@@ -108,6 +108,26 @@ function testAcceptUnderBalancedWithoutHttps() {
   check("balanced reports oneClickReady=false", v.oneClickReady === false);
 }
 
+function testAcceptCommaInUri() {
+  // PR #63 Codex P1: URI containing a comma in query string is
+  // legitimate per RFC 3986 (`,` is a sub-delim) and was being
+  // rejected by the earlier split(",") implementation.
+  var v = b.guardListUnsubscribe.validate({
+    listUnsubscribe:     "<https://x.com/unsub?tags=a,b,c>",
+    listUnsubscribePost: "List-Unsubscribe=One-Click",
+  });
+  check("comma-in-URI: accept",        v.action === "accept");
+  check("comma-in-URI: parsed intact", v.uris[0].raw === "https://x.com/unsub?tags=a,b,c");
+
+  // Multiple URIs, one with commas
+  var v2 = b.guardListUnsubscribe.validate({
+    listUnsubscribe:     "<mailto:u@x.com>, <https://x.com/unsub?tags=a,b>",
+    listUnsubscribePost: "List-Unsubscribe=One-Click",
+  });
+  check("mixed with comma-URI: count 2", v2.uris.length === 2);
+  check("mixed with comma-URI: 2nd intact", v2.uris[1].raw === "https://x.com/unsub?tags=a,b");
+}
+
 function testRefuseEmptyUris() {
   var v = b.guardListUnsubscribe.validate({
     listUnsubscribe: "no brackets here",
@@ -177,6 +197,7 @@ function run() {
   testRefuseMissingPostHeader();
   testRefuseMalformedPostHeader();
   testAcceptUnderBalancedWithoutHttps();
+  testAcceptCommaInUri();
   testRefuseEmptyUris();
   testRefuseTooManyUris();
   testRefuseBadInput();
