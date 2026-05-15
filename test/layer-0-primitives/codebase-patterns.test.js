@@ -2131,6 +2131,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-trace-context.js:validate",
         // v0.9.30 — guardSnapshotEnvelope validates snapshot envelopes.
         "lib/guard-snapshot-envelope.js:validate",
+        // v0.9.32 — guardSmtpCommand validates SMTP command lines (smuggling
+        // defense + per-verb shape per RFC 5321 §4.5.3.1).
+        "lib/guard-smtp-command.js:validate",
       ],
       reason: "Control-char codepoint scan: `for (i...) { code = s.charCodeAt(i); if (code < 32 || code === 127) throw }` against operator-supplied header values. Many domain validators (RFC 9470 step-up sf-string quote, RFC 9213 CDN-Cache-Control parser, W3C client hints, RFC 8689 TLS-Required parser, RFC 7235 bearer-auth realm, RFC 5322 §3.6.4 Message-Id, RFC 9051 IMAP folder names, RFC 5804 ManageSieve script names, RFC 5322 §3.6 header-value injection refusal in compose drafts, structural-filter scalar refusal). Each domain refuses the control-char shape but emits a domain-typed error code so callers can't conflate the verdict. Future consolidation candidate via a shared `validateOpts.refuseControlChars(s, label, ErrorClass, code)` helper.",
     },
@@ -2198,6 +2201,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-posture-chain.js:*",
         "lib/guard-trace-context.js:*",
         "lib/guard-snapshot-envelope.js:*",
+        "lib/guard-smtp-command.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
@@ -2326,6 +2330,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-snapshot.js:create",
         "lib/cra-report.js:conformityAssessment",
         "lib/mail-agent.js:consumer",
+        // v0.9.31 — network-dns-resolver.create runs the same opts
+        // validation + closure-capture prelude.
+        "lib/network-dns-resolver.js:create",
+        "lib/network-dns-resolver.js:<top>",
+        "lib/agent-idempotency.js:<top>",
+        "lib/agent-snapshot.js:<top>",
       ],
       reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / AgentIdempotencyError / AgentTenantError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
     },
@@ -3159,6 +3169,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-auth.js:gate",
         "lib/guard-auth.js:sanitize",
         "lib/guard-auth.js:validate",
+        "lib/guard-smtp-command.js:<top>",
+        "lib/guard-smtp-command.js:gate",
+        "lib/guard-smtp-command.js:validate",
       ],
       reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
     },
