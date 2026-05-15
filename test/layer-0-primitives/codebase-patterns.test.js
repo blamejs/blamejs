@@ -2173,6 +2173,45 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/api-key.js:_validateIssueOpts",
+        "lib/http-client-cache.js:create",
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/mail-server-tls.js:context",
+        "lib/self-update.js:_validateVerifyOpts",
+        "lib/watcher.js:_validateOpts",
+      ],
+      reason: "Generic opt-validation entry — validateOpts.requireObject + a cascade of requireNonEmptyString / requireFiniteNumber / etc. calls. Every operator-facing primitive's create()/issue()/verify() entry opens this way per the tiered-validation discipline (CLAUDE.md rule §5). Tokens collide because validateOpts is the single source of truth for opt-validation shape; that's the point of having it. Each call site validates structurally different opt-shapes — consolidation would couple unrelated primitives.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/data-act.js:recordSwitchRequest",
+        "lib/mail-server-tls.js:context",
+        "lib/watcher.js:_validateOpts",
+      ],
+      reason: "Three distinct primitives sharing a fs-stat + mtime-mtimeMs change-detection idiom. b.dataAct.recordSwitchRequest reads an event log; b.mail.server.tls.context detects cert rotation; b.watcher polls files. Each surfaces a different signal (DSR audit / TLS reload / fs.watch fallback) on a different operator-supplied path — consolidating into a 'fileChangeDetector' primitive would couple three unrelated lifecycles.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/daemon.js:_readPidFile",
+        "lib/daemon.js:_validateStartOpts",
+        "lib/data-act.js:declareProduct",
+        "lib/data-act.js:shareWithThirdParty",
+        "lib/mail-dkim.js:_merge",
+        "lib/mail-dkim.js:bootstrap",
+        "lib/mail-dkim.js:dualSigner",
+        "lib/mail-mdn.js:_generateBoundary",
+        "lib/mail-mdn.js:_validateOpts",
+        "lib/mail-mdn.js:build",
+        "lib/self-update.js:poll",
+        "lib/watcher.js:_detectAutoMode",
+      ],
+      reason: "Generic JS lambda + object-assign + closure boilerplate. Any subset of these unrelated primitives (daemon PID-file read, data-act DSR third-party share / EU Data Act product declaration, dkim dualSigner merge / bootstrap keypair mint, MDN boundary / opt validation / report build, self-update release polling, watcher fs.watch mode detection) can cluster via the 50-token shingle. Distinct domains: process lifecycle / privacy compliance / mail crypto / mail DSN / framework self-update / fs watching. The shared shape is structural boilerplate, not behavior.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/daemon.js:_safeAuditEmit",
         "lib/mail-server-imap.js:_emit",
         "lib/mail-server-imap.js:create",
