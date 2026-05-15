@@ -426,10 +426,17 @@ jobs:
         # attestation links the tarball bytes to this commit + tag +
         # workflow run. Verifiable via `npm view @blamejs/core@<version>`
         # → "Provenance" tab on the registry UI.
+        #
+        # The leading `./` is load-bearing — without it npm 10+
+        # mis-classifies a relative path containing `/` as a git spec
+        # and tries `git ls-remote ssh://git@github.com/dist/...tgz`
+        # (v0.9.30 + v0.9.37 publish failed on exactly this; SSH
+        # auth refused, exit 128). With `./` the path is unambiguous
+        # as a local tarball.
         run: |
           TARBALL=$(ls dist/*.tgz | head -1)
           echo "Publishing: $TARBALL"
-          npm publish "$TARBALL" --provenance --access public
+          npm publish "./${TARBALL}" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
