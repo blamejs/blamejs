@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.34",
-  "createdAt": "2026-05-15T07:28:53.979Z",
+  "frameworkVersion": "0.9.35",
+  "createdAt": "2026-05-15T07:44:41.069Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -33255,6 +33255,116 @@
             "create": {
               "type": "function",
               "arity": 1
+            }
+          }
+        },
+        "helo": {
+          "type": "object",
+          "members": {
+            "COMPLIANCE_POSTURES": {
+              "type": "object",
+              "members": {
+                "gdpr": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "hipaa": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "pci-dss": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "soc2": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "GENERIC_RDNS_PATTERNS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "MailHeloError": {
+              "type": "function",
+              "arity": 4
+            },
+            "PROFILES": {
+              "type": "object",
+              "members": {
+                "balanced": {
+                  "type": "object",
+                  "members": {
+                    "fcrdnsRequiredFor": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "maxBytes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "refuseBareHost": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "requireFqdn": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "permissive": {
+                  "type": "object",
+                  "members": {
+                    "fcrdnsRequiredFor": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "maxBytes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "refuseBareHost": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "requireFqdn": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "strict": {
+                  "type": "object",
+                  "members": {
+                    "fcrdnsRequiredFor": {
+                      "type": "instance",
+                      "ctorName": "Array"
+                    },
+                    "maxBytes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "refuseBareHost": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "requireFqdn": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                }
+              }
+            },
+            "compliancePosture": {
+              "type": "function",
+              "arity": 1
+            },
+            "evaluate": {
+              "type": "function",
+              "arity": 2
             }
           }
         },

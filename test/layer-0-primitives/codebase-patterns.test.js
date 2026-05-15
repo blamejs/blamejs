@@ -2327,6 +2327,9 @@ async function testNoDuplicateCodeBlocks() {
         // v0.9.34 — mailGreylist.check validates the ctx triplet
         // (ip + mailFrom + rcptTo) before fingerprint hashing.
         "lib/mail-greylist.js:check",
+        // v0.9.35 — mailHelo.evaluate validates the HELO/EHLO claim
+        // (ip + claimedName + resolver) before shape + FCrDNS checks.
+        "lib/mail-helo.js:evaluate",
       ],
       reason: "Per-domain validation-field cascade for required-args + throw-typed-error pattern. Each member enforces a different field tuple (destroy preconditions: stepUpToken/dualControlApprover/reason/actor; DPoP verify; backup test schedule; break-glass policy set; DDL change proposal; 21 CFR Part 11 signer fields; sd-jwt-vc holder store). Consolidation would couple unrelated regulatory specs.",
     },
@@ -2353,6 +2356,13 @@ async function testNoDuplicateCodeBlocks() {
         // prelude + module-header scaffolding.
         "lib/mail-greylist.js:create",
         "lib/mail-greylist.js:<top>",
+        // v0.9.33 — mailRbl <top> shares the mail-family PROFILES +
+        // posture-cascade scaffolding with mail-greylist + mail-helo.
+        "lib/mail-rbl.js:<top>",
+        // v0.9.35 — mailHelo evaluate + <top> shares the same family
+        // scaffolding.
+        "lib/mail-helo.js:<top>",
+        "lib/mail-helo.js:evaluate",
       ],
       reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / AgentIdempotencyError / AgentTenantError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
     },

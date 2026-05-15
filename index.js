@@ -254,6 +254,7 @@ var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
 mail.rbl = require("./lib/mail-rbl");
 mail.greylist = require("./lib/mail-greylist");
+mail.helo = require("./lib/mail-helo");
 var mailArf = require("./lib/mail-arf");
 var mailBounce = require("./lib/mail-bounce");
 var mailMdn = require("./lib/mail-mdn");
