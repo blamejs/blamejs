@@ -2078,6 +2078,24 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/agent-idempotency.js:<top>",
+        "lib/agent-snapshot.js:<top>",
+        "lib/mail-greylist.js:<top>",
+        "lib/mail-server-mx.js:<top>",
+        "lib/network-dns-resolver.js:<top>",
+      ],
+      reason: "Top-of-file JSDoc + module banner block — each module ships an @module / @nav / @title / @intro / @card scaffold per the wiki source-driven convention (rule §10). The shingle similarity is the banner shape, not behaviour. Removing or consolidating the banners would break the wiki auto-derivation.",
+    },
+    {
+      files: [
+        "lib/daemon.js:_safeAuditEmit",
+        "lib/mail-server-mx.js:_emit",
+        "lib/self-update.js:_safeAuditEmit",
+      ],
+      reason: "Per-module `_safeAuditEmit(action, metadata, outcome)` wrapper that calls `audit().safeEmit({ action, outcome, metadata })` inside try/catch — each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / self-update.*) so consolidation would couple unrelated audit lifecycles. Mirrors the same audit-emit-wrapper pattern that `lib/agent-audit.js` extracted for the agent-substrate modules; the broader extraction across non-agent modules is open follow-up but doesn't block this slice.",
+    },
+    {
+      files: [
         "lib/auth/jwt.js:_b64urlEncode",
         "lib/auth/oauth.js:_b64urlEncode",
         "lib/pagination.js:_b64urlEncode",
