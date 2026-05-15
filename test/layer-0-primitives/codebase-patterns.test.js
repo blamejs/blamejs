@@ -2676,6 +2676,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/self-update.js:poll",
         "lib/self-update.js:_validateVerifyOpts",
         "lib/watcher.js:_compileIgnore",
+        "lib/watcher.js:_detectAutoMode",
       ],
       reason: "Functional 50-token shingles surface across daemon / mail-mdn / self-update / watcher because every primitive opens with the same `function name(opts) { validateOpts.X(...) }` scaffold and ends with `try { ... } catch (_e) { return null; }` and per-module crypto.generateToken / Date.now() / fs.readFileSync line shapes. Consolidating the four primitives would lose per-domain error class + permissions semantics — the duplication is structural to the per-module create() entry-point.",
     },
@@ -3264,6 +3265,20 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-smtp-command.js:<top>",
       ],
       reason: "Module-header scaffolding shared across the guard family — defineClass + lazyRequire + PROFILES freeze + COMPLIANCE_POSTURES freeze blocks. The <top> shape IS the guard-family ABI; consolidating would erase per-guard error-class wrappers + profile vocab.",
+    },
+    {
+      // v0.9.44 — three independently-domain'd entry-points share
+      // an array-walk + per-item validation cascade token shape
+      // (sd-jwt-vc-issuer.create walks operator-supplied claims;
+      // guard-saga-config.validate walks the saga step list;
+      // composePipeline walks the middleware-entry array).
+      mode:  "family-subset",
+      files: [
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/guard-saga-config.js:validate",
+        "lib/middleware/compose-pipeline.js:composePipeline",
+      ],
+      reason: "Three independently-domain'd entry points share an array-walk + per-item validation cascade. Each emits a domain-distinct error class (SdJwtVcIssuerError / GuardSagaConfigError / ComposePipelineError) and validates a different field tuple. Consolidating would couple unrelated specs.",
     },
     {
       // v0.9.40 — RFC 5322 header-injection control-char scans
@@ -4905,6 +4920,13 @@ var KNOWN_ANTIPATTERNS = [
       "lib/dsr.js",
     ],
     reason: "Audit outcomes are the literal strings 'success' / 'failure' / 'denied' at call sites. safeEmit normalizes the common typos as a safety net but the canonical form belongs in code so reviewers reading a primitive see exactly what audit row will land on the chain.",
+  },
+  {
+    id: "mountinfo-options-bind-check",
+    primitive: "parse /proc/self/mountinfo field 4 (root within source FS) and check != \"/\" for bind detection",
+    regex: /mountinfo[\s\S]{0,800}?options[\s\S]{0,80}?indexOf\(["']bind["']\)/,
+    allowlist: [],
+    reason: "Per Documentation/filesystems/proc.rst §3.5, /proc/self/mountinfo field 6 (mount options) does NOT carry a 'bind' tag — the kernel exposes bind-mount provenance via field 4 ('root within source filesystem'), which is '/' for a regular mount and the bound source path for a bind mount. Checking the options field for 'bind' never fires for actual bind mounts and silently misses the failure mode it claims to defend. Detector catches the mis-parse shape at n=1.",
   },
 ];
 
