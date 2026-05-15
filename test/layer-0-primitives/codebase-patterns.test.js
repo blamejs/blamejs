@@ -2096,6 +2096,15 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/guard-list-id.js:_refuse",
+        "lib/guard-list-unsubscribe.js:_verdict",
+        "lib/guard-smtp-command.js:_parseAuthCommandSyntax",
+        "lib/safe-dns.js:_decodeOpt",
+      ],
+      reason: "Four distinct domain primitives (RFC 2919 list-id refusal, RFC 2369/8058 list-unsubscribe verdict, RFC 4954 SMTP AUTH command parser, RFC 6891 EDNS0 option decoder) that share a small-result-shape constructor + range-bounded byte access pattern. Each emits its own typed error/result tuple — consolidation would couple a list-validator, an SMTP command parser, and a DNS opt-record decoder. Surfaced after the guard-smtp-command rename in PR #72 brought the AUTH-command parser into the cluster.",
+    },
+    {
+      files: [
         "lib/auth/jwt.js:_b64urlEncode",
         "lib/auth/oauth.js:_b64urlEncode",
         "lib/pagination.js:_b64urlEncode",
