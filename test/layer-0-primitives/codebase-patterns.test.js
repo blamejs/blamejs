@@ -2676,6 +2676,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/self-update.js:poll",
         "lib/self-update.js:_validateVerifyOpts",
         "lib/watcher.js:_compileIgnore",
+        "lib/watcher.js:_detectAutoMode",
       ],
       reason: "Functional 50-token shingles surface across daemon / mail-mdn / self-update / watcher because every primitive opens with the same `function name(opts) { validateOpts.X(...) }` scaffold and ends with `try { ... } catch (_e) { return null; }` and per-module crypto.generateToken / Date.now() / fs.readFileSync line shapes. Consolidating the four primitives would lose per-domain error class + permissions semantics — the duplication is structural to the per-module create() entry-point.",
     },

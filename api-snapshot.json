@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.44",
-  "createdAt": "2026-05-15T15:00:03.243Z",
+  "frameworkVersion": "0.9.45",
+  "createdAt": "2026-05-15T15:23:23.246Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34468,10 +34468,6 @@
           "type": "function",
           "arity": 1
         },
-        "composePipeline": {
-          "type": "function",
-          "arity": 2
-        },
         "compression": {
           "type": "function",
           "arity": 1
@@ -38503,6 +38499,10 @@
           "arity": 0
         },
         "respond": {
+          "type": "function",
+          "arity": 2
+        },
+        "send": {
           "type": "function",
           "arity": 2
         },
