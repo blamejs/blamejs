@@ -1075,6 +1075,28 @@ function testNoProcessExitInLib() {
   _report("no process.exit() in lib/ (CLI surface only)", matches);
 }
 
+// ---- Pattern 17a: listen-port falsy-default footgun ----
+//
+// `var port = listenOpts.port || <default>` short-circuits on
+// `port: 0` — the test path's ephemeral-bind request. macOS / Linux
+// CI runners refuse non-privileged binds to default SMTP / submission
+// / HTTP-server ports with EACCES, so the test fails even though it
+// explicitly passed `port: 0`. Correct shape: explicit `undefined`
+// check, `=== undefined ? <default> : listenOpts.port`. Cost us a
+// CI cycle on v0.9.46 mail-server-mx + v0.9.47 mail-server-submission.
+//
+// Scope: listen-lifecycle identifiers only (`listenOpts.port`,
+// `serverOpts.port`, `bindOpts.port`). Outbound connect contexts
+// (`opts.port`, `u.port`, `endpoint.port`) treat port-0 as nonsense
+// — `||` short-circuit there is fine.
+function testListenPortFalsyDefault() {
+  var matches = _scan(/\b(?:listen|server|bind)[A-Za-z]*Opts\.port\s*\|\|\s*\d+/);
+  matches = _filterMarkers(matches, "listen-port-default");
+  _report("listen() port-default uses explicit `=== undefined ? D : x` " +
+          "(NOT `x.port || D` — short-circuits on test-path port: 0)",
+    matches);
+}
+
 // ---- Pattern 18: catch (_e) {} swallowing without logging ----
 
 function testNoSilentCatchSwallow() {
@@ -2075,6 +2097,48 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/oauth.js:verifyBackchannelLogoutToken",
       ],
       reason: "Distinct RFC primitives (RFC 9449 DPoP / RFC 7519 JWT / OIDC Back-Channel Logout) that share a `replayStore.checkAndInsert(jti, expireAtMs)` + numeric-date-bound shingle. Each uses its own typed error class (auth-dpop / auth-jwt / auth-oauth namespaces) with file-specific code and field tuple. Consolidation would couple three spec-defined verification primitives.",
+    },
+    {
+      files: [
+        "lib/agent-idempotency.js:<top>",
+        "lib/agent-snapshot.js:<top>",
+        "lib/mail-greylist.js:<top>",
+        "lib/mail-server-mx.js:<top>",
+        "lib/network-dns-resolver.js:<top>",
+      ],
+      reason: "Top-of-file JSDoc + module banner block — each module ships an @module / @nav / @title / @intro / @card scaffold per the wiki source-driven convention (rule §10). The shingle similarity is the banner shape, not behaviour. Removing or consolidating the banners would break the wiki auto-derivation.",
+    },
+    {
+      files: [
+        "lib/daemon.js:_safeAuditEmit",
+        "lib/mail-server-mx.js:_emit",
+        "lib/self-update.js:_safeAuditEmit",
+      ],
+      reason: "Per-module `_safeAuditEmit(action, metadata, outcome)` wrapper that calls `audit().safeEmit({ action, outcome, metadata })` inside try/catch — each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / self-update.*) so consolidation would couple unrelated audit lifecycles. Mirrors the same audit-emit-wrapper pattern that `lib/agent-audit.js` extracted for the agent-substrate modules; the broader extraction across non-agent modules is open follow-up but doesn't block this slice.",
+    },
+    {
+      files: [
+        "lib/guard-cidr.js:compliancePosture",
+        "lib/guard-domain.js:compliancePosture",
+        "lib/guard-jsonpath.js:compliancePosture",
+        "lib/guard-mime.js:compliancePosture",
+        "lib/guard-regex.js:compliancePosture",
+        "lib/guard-shell.js:compliancePosture",
+        "lib/guard-smtp-command.js:detectBodySmuggling",
+        "lib/guard-template.js:compliancePosture",
+        "lib/guard-time.js:compliancePosture",
+        "lib/guard-uuid.js:compliancePosture",
+      ],
+      reason: "Standalone-guard compliancePosture entry-points + the SMTP smuggling-detector all share a small-body validate-input-then-loop-with-byte-check token pattern. Surfaced after v0.9.46 extracted detectBodySmuggling from the MX listener inline copy into guard-smtp-command per the modular safe/guard discipline. Distinct primitives — each emits its own posture verdict or threat boolean.",
+    },
+    {
+      files: [
+        "lib/guard-list-id.js:_refuse",
+        "lib/guard-list-unsubscribe.js:_verdict",
+        "lib/guard-smtp-command.js:_parseAuthCommandSyntax",
+        "lib/safe-dns.js:_decodeOpt",
+      ],
+      reason: "Four distinct domain primitives (RFC 2919 list-id refusal, RFC 2369/8058 list-unsubscribe verdict, RFC 4954 SMTP AUTH command parser, RFC 6891 EDNS0 option decoder) that share a small-result-shape constructor + range-bounded byte access pattern. Each emits its own typed error/result tuple — consolidation would couple a list-validator, an SMTP command parser, and a DNS opt-record decoder. Surfaced after the guard-smtp-command rename in PR #72 brought the AUTH-command parser into the cluster.",
     },
     {
       files: [
@@ -5458,6 +5522,7 @@ async function run() {
   testNoBareCanonicalizeWalks();
   testFormatValidatorLengthCap();
   testNoProcessExitInLib();
+  testListenPortFalsyDefault();
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
   testNoRawXffRead();

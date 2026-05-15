@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.45",
-  "createdAt": "2026-05-15T19:00:16.729Z",
+  "frameworkVersion": "0.9.46",
+  "createdAt": "2026-05-15T21:50:25.317Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -27660,6 +27660,10 @@
           "type": "function",
           "arity": 1
         },
+        "detectBodySmuggling": {
+          "type": "function",
+          "arity": 1
+        },
         "gate": {
           "type": "function",
           "arity": 1
@@ -34022,6 +34026,24 @@
           "type": "function",
           "arity": 1
         },
+        "server": {
+          "type": "object",
+          "members": {
+            "mx": {
+              "type": "object",
+              "members": {
+                "MailServerMxError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            }
+          }
+        },
         "spf": {
           "type": "object",
           "members": {
@@ -40086,6 +40108,23 @@
         "unknown": {
           "type": "function",
           "arity": 0
+        }
+      }
+    },
+    "safeSmtp": {
+      "type": "object",
+      "members": {
+        "SafeSmtpError": {
+          "type": "function",
+          "arity": 4
+        },
+        "dotUnstuff": {
+          "type": "function",
+          "arity": 1
+        },
+        "findDotTerminator": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
