@@ -165,6 +165,7 @@ var guardSmtpCommand = require("./lib/guard-smtp-command");
 var guardEnvelope = require("./lib/guard-envelope");
 var guardDsn = require("./lib/guard-dsn");
 var guardListUnsubscribe = require("./lib/guard-list-unsubscribe");
+var guardListId = require("./lib/guard-list-id");
 var guardMailQuery = require("./lib/guard-mail-query");
 var guardMailCompose = require("./lib/guard-mail-compose");
 var guardMailReply = require("./lib/guard-mail-reply");
@@ -434,6 +435,7 @@ module.exports = {
   guardEnvelope:    guardEnvelope,
   guardDsn:         guardDsn,
   guardListUnsubscribe: guardListUnsubscribe,
+  guardListId:      guardListId,
   guardMailQuery:   guardMailQuery,
   guardMailCompose: guardMailCompose,
   guardMailReply:   guardMailReply,

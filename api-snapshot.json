@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.39",
-  "createdAt": "2026-05-15T09:34:16.816Z",
+  "frameworkVersion": "0.9.40",
+  "createdAt": "2026-05-15T10:29:46.192Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -22380,6 +22380,132 @@
         "sanitize": {
           "type": "function",
           "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardListId": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardListIdError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowPhrase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListIdBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "requireFqdn": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireRandomForLocalhost": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowPhrase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListIdBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "requireFqdn": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireRandomForLocalhost": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowPhrase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxListIdBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "requireFqdn": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireRandomForLocalhost": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
         },
         "validate": {
           "type": "function",
