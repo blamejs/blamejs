@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.9.47",
-  "createdAt": "2026-05-15T22:12:14.390Z",
+  "createdAt": "2026-05-15T23:01:40.979Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -40493,6 +40493,10 @@
         "SelfUpdateError": {
           "type": "function",
           "arity": 4
+        },
+        "compareTags": {
+          "type": "function",
+          "arity": 2
         },
         "poll": {
           "type": "function",
