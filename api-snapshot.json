@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.42",
-  "createdAt": "2026-05-15T14:28:03.768Z",
+  "frameworkVersion": "0.9.43",
+  "createdAt": "2026-05-15T14:43:43.038Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -40850,6 +40850,19 @@
           "arity": 1
         },
         "instrumentQuery": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "testHarness": {
+      "type": "object",
+      "members": {
+        "TestHarnessError": {
+          "type": "function",
+          "arity": 4
+        },
+        "start": {
           "type": "function",
           "arity": 1
         }

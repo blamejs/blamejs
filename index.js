@@ -147,6 +147,7 @@ var compliance = Object.assign({}, require("./lib/compliance"), {
 });
 var dataAct = require("./lib/data-act");
 var problemDetails = require("./lib/problem-details");
+var testHarness = require("./lib/test-harness");
 var cacheStatus = require("./lib/cache-status");
 var cdnCacheControl = require("./lib/cdn-cache-control");
 var clientHints = require("./lib/client-hints");
@@ -417,6 +418,7 @@ module.exports = {
   nistCrosswalk:    nistCrosswalk,
   dataAct:          dataAct,
   problemDetails:   problemDetails,
+  testHarness:      testHarness,
   cacheStatus:      cacheStatus,
   cdnCacheControl:  cdnCacheControl,
   clientHints:      clientHints,
