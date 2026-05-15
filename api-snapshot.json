@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.43",
-  "createdAt": "2026-05-15T16:08:32.878Z",
+  "frameworkVersion": "0.9.44",
+  "createdAt": "2026-05-15T17:38:10.496Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -40684,6 +40684,10 @@
     "storage": {
       "type": "object",
       "members": {
+        "chunkScratch": {
+          "type": "function",
+          "arity": 1
+        },
         "deleteFile": {
           "type": "function",
           "arity": 2

@@ -2249,6 +2249,7 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/agent-idempotency.js:_checkArgs",
         "lib/agent-idempotency.js:_fingerprintArgs",
+        "lib/agent-tenant.js:_sealField",
         "lib/atomic-file.js:copyDirRecursive",
         "lib/atomic-file.js:ensureDir",
         "lib/ddl-change-control.js:approve",
@@ -2257,7 +2258,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/totp.js:uri",
         "lib/totp.js:verify",
       ],
-      reason: "Validate-string-args cascade with throw-on-bad-shape. Each member is a distinct primitive (idempotency op args, atomic-file dir traversal, DDL change-control vote, deprecate.alias name shape, RFC 6238 TOTP URI builder). Distinct error classes; consolidating would couple unrelated specs.",
+      reason: "Validate-string-args cascade with throw-on-bad-shape. Each member is a distinct primitive (idempotency op args, agent-tenant per-tenant field seal, atomic-file dir traversal, DDL change-control vote, deprecate.alias name shape, RFC 6238 TOTP URI builder). Distinct error classes; consolidating would couple unrelated specs.",
     },
     {
       // v0.9.28 — agent-posture-chain._appendHop shares the Object.assign
