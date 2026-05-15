@@ -22,9 +22,17 @@ function testAcceptsBracketed() {
   var v = b.guardListId.validate("<newsletter.example.com>");
   check("bracketed: accept",       v.action === "accept");
   check("bracketed: listId",       v.listId === "newsletter.example.com");
-  check("bracketed: namespace",    v.namespace === "example.com");
-  check("bracketed: label",        v.label === "newsletter");
   check("bracketed: no phrase",    v.phrase === "");
+}
+
+function testTwoLabelRefusedUnderStrict() {
+  // PR #64 Codex P1: 2-label list-id `<list.example>` produced
+  // empty label under the old heuristic split. The fix drops the
+  // heuristic split and tightens FQDN enforcement (requires ≥3
+  // labels for non-localhost namespace per RFC 2919 §2 + DNS reality).
+  var v = b.guardListId.validate("<list.example>");
+  check("2-label list-id refused under strict", v.action === "refuse");
+  check("2-label reason FQDN",                  v.reason.indexOf("< 3 labels") !== -1);
 }
 
 function testAcceptsPhrasePrefixed() {
@@ -43,8 +51,7 @@ function testAcceptsBareIdentifier() {
 function testAcceptsMultiLevelLabel() {
   var v = b.guardListId.validate("<announce.team.example.com>");
   check("multi-level: accept",     v.action === "accept");
-  check("multi-level: label",      v.label === "announce.team");
-  check("multi-level: namespace",  v.namespace === "example.com");
+  check("multi-level: listId",     v.listId === "announce.team.example.com");
 }
 
 function testRefusesBareHost() {
@@ -163,6 +170,7 @@ function testCompliancePosture() {
 function run() {
   testSurface();
   testAcceptsBracketed();
+  testTwoLabelRefusedUnderStrict();
   testAcceptsPhrasePrefixed();
   testAcceptsBareIdentifier();
   testAcceptsMultiLevelLabel();
