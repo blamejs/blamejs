@@ -14,7 +14,12 @@ function expectRejection(label, p, codeMatch) {
 function expectThrows(label, fn, codeMatch) {
   var threw = null;
   try { fn(); } catch (e) { threw = e; }
-  check(label, threw && (threw.code || "").indexOf(codeMatch) !== -1);
+  if (codeMatch instanceof RegExp) {
+    check(label, threw && (codeMatch.test(threw.code || "") || codeMatch.test(threw.message || "")));
+  } else {
+    check(label, threw && ((threw.code || "").indexOf(codeMatch) !== -1 ||
+                            (threw.message || "").indexOf(codeMatch) !== -1));
+  }
 }
 
 function testSurface() {
@@ -154,6 +159,71 @@ async function testGuardRefusalAtBoundary() {
     tenant.register("a/b", {}), "tenant-id/bad-char");
 }
 
+async function testSealFieldRoundTrip() {
+  var tenant = b.agent.tenant.create({});
+  b.cryptoField.registerTable("rx-patients-v0", { sealedFields: ["ssn"] });
+  var ct = tenant.sealField("acme", "rx-patients-v0", "ssn", "123-45-6789");
+  check("ciphertext carries tenant prefix", typeof ct === "string" && ct.indexOf("tnt-v1:") === 0);
+  var pt = tenant.unsealField("acme", "rx-patients-v0", "ssn", ct);
+  check("sealField round-trips plaintext", pt === "123-45-6789");
+  // Idempotent — sealing already-sealed pass-through.
+  var ct2 = tenant.sealField("acme", "rx-patients-v0", "ssn", ct);
+  check("sealField idempotent on already-sealed", ct === ct2);
+  // Null / undefined pass through.
+  check("sealField null pass-through",  tenant.sealField("acme", "rx-patients-v0", "ssn", null) === null);
+  check("sealField undef pass-through", tenant.sealField("acme", "rx-patients-v0", "ssn", undefined) === undefined);
+}
+
+async function testSealFieldCrossTenantRefused() {
+  var tenant = b.agent.tenant.create({});
+  b.cryptoField.registerTable("rx-patients-v1", { sealedFields: ["ssn"] });
+  var ct = tenant.sealField("acme", "rx-patients-v1", "ssn", "secret-A");
+  // Wrong tenantId must fail (Poly1305 tag mismatch from AAD difference).
+  expectThrows("cross-tenant unseal refused",
+    function () { tenant.unsealField("globex", "rx-patients-v1", "ssn", ct); }, /tag|invalid/i);
+  // Wrong field also refused.
+  expectThrows("wrong-field unseal refused",
+    function () { tenant.unsealField("acme", "rx-patients-v1", "wrong-field", ct); }, /tag|invalid/i);
+  // Wrong table also refused.
+  expectThrows("wrong-table unseal refused",
+    function () { tenant.unsealField("acme", "rx-other-table", "ssn", ct); }, /tag|invalid/i);
+  // Missing tenant prefix on the ciphertext refused at boundary.
+  expectThrows("bad-prefix ciphertext refused",
+    function () { tenant.unsealField("acme", "rx-patients-v1", "ssn", "not-a-sealed-value"); },
+    "bad-tenant-ciphertext");
+}
+
+async function testSealRowForTenant() {
+  var tenant = b.agent.tenant.create({});
+  b.cryptoField.registerTable("rx-patients-v2", { sealedFields: ["ssn", "dob"] });
+  var row = { id: 1, name: "Alice", ssn: "123-45-6789", dob: "1990-01-01" };
+  var sealed = tenant.sealRowForTenant("acme", "rx-patients-v2", row);
+  check("sealRow id passthrough",       sealed.id === 1);
+  check("sealRow name passthrough",     sealed.name === "Alice");
+  check("sealRow ssn sealed",           typeof sealed.ssn === "string" && sealed.ssn.indexOf("tnt-v1:") === 0);
+  check("sealRow dob sealed",           typeof sealed.dob === "string" && sealed.dob.indexOf("tnt-v1:") === 0);
+  check("sealRow input not mutated",    row.ssn === "123-45-6789");
+  var clear = tenant.unsealRowForTenant("acme", "rx-patients-v2", sealed);
+  check("unsealRow ssn restored",       clear.ssn === "123-45-6789");
+  check("unsealRow dob restored",       clear.dob === "1990-01-01");
+}
+
+async function testSealRowCrossTenantSafeFail() {
+  var tenant = b.agent.tenant.create({});
+  b.cryptoField.registerTable("rx-patients-v3", { sealedFields: ["ssn"] });
+  var sealed = tenant.sealRowForTenant("acme", "rx-patients-v3", { id: 1, ssn: "secret" });
+  var wrongTenant = tenant.unsealRowForTenant("globex", "rx-patients-v3", sealed);
+  check("cross-tenant unsealRow null-fails on sealed field", wrongTenant.ssn === null);
+  check("cross-tenant unsealRow keeps plain fields",         wrongTenant.id === 1);
+}
+
+async function testSealRowForUnknownTable() {
+  var tenant = b.agent.tenant.create({});
+  expectThrows("sealRowForTenant refuses unknown table",
+    function () { tenant.sealRowForTenant("acme", "table-never-registered", { x: 1 }); },
+    "agent-tenant/no-schema");
+}
+
 async function run() {
   testSurface();
   await testRegisterLookupUnregister();
@@ -165,6 +235,11 @@ async function run() {
   await testDestroyRequiresPreconditions();
   await testList();
   await testGuardRefusalAtBoundary();
+  await testSealFieldRoundTrip();
+  await testSealFieldCrossTenantRefused();
+  await testSealRowForTenant();
+  await testSealRowCrossTenantSafeFail();
+  await testSealRowForUnknownTable();
 }
 
 module.exports = { run: run };
