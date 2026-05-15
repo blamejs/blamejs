@@ -4921,6 +4921,13 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "Audit outcomes are the literal strings 'success' / 'failure' / 'denied' at call sites. safeEmit normalizes the common typos as a safety net but the canonical form belongs in code so reviewers reading a primitive see exactly what audit row will land on the chain.",
   },
+  {
+    id: "mountinfo-options-bind-check",
+    primitive: "parse /proc/self/mountinfo field 4 (root within source FS) and check != \"/\" for bind detection",
+    regex: /mountinfo[\s\S]{0,800}?options[\s\S]{0,80}?indexOf\(["']bind["']\)/,
+    allowlist: [],
+    reason: "Codex P1 on v0.9.45 PR #69: bind-mount detection was reading /proc/self/mountinfo field 6 (mount options) and looking for substring 'bind', but the kernel does NOT expose 'bind' in that field (see Documentation/filesystems/proc.rst §3.5). Bind mounts are identified via field 4 (root within source filesystem) being != '/' — that's the path the kernel exposes for the source location. Any future code that reads mountinfo + checks the options field for 'bind' is the same mis-parse; this detector catches it at n=1 so the regression can't drift back in.",
+  },
 ];
 
 // @example placeholder detection lives in
