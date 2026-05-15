@@ -1075,6 +1075,28 @@ function testNoProcessExitInLib() {
   _report("no process.exit() in lib/ (CLI surface only)", matches);
 }
 
+// ---- Pattern 17a: listen-port falsy-default footgun ----
+//
+// `var port = listenOpts.port || <default>` short-circuits on
+// `port: 0` — the test path's ephemeral-bind request. macOS / Linux
+// CI runners refuse non-privileged binds to default SMTP / submission
+// / HTTP-server ports with EACCES, so the test fails even though it
+// explicitly passed `port: 0`. Correct shape: explicit `undefined`
+// check, `=== undefined ? <default> : listenOpts.port`. Cost us a
+// CI cycle on v0.9.46 mail-server-mx + v0.9.47 mail-server-submission.
+//
+// Scope: listen-lifecycle identifiers only (`listenOpts.port`,
+// `serverOpts.port`, `bindOpts.port`). Outbound connect contexts
+// (`opts.port`, `u.port`, `endpoint.port`) treat port-0 as nonsense
+// — `||` short-circuit there is fine.
+function testListenPortFalsyDefault() {
+  var matches = _scan(/\b(?:listen|server|bind)[A-Za-z]*Opts\.port\s*\|\|\s*\d+/);
+  matches = _filterMarkers(matches, "listen-port-default");
+  _report("listen() port-default uses explicit `=== undefined ? D : x` " +
+          "(NOT `x.port || D` — short-circuits on test-path port: 0)",
+    matches);
+}
+
 // ---- Pattern 18: catch (_e) {} swallowing without logging ----
 
 function testNoSilentCatchSwallow() {
@@ -5500,6 +5522,7 @@ async function run() {
   testNoBareCanonicalizeWalks();
   testFormatValidatorLengthCap();
   testNoProcessExitInLib();
+  testListenPortFalsyDefault();
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
   testNoRawXffRead();
