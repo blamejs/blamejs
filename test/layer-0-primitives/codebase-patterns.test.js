@@ -3266,6 +3266,20 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Module-header scaffolding shared across the guard family — defineClass + lazyRequire + PROFILES freeze + COMPLIANCE_POSTURES freeze blocks. The <top> shape IS the guard-family ABI; consolidating would erase per-guard error-class wrappers + profile vocab.",
     },
     {
+      // v0.9.44 — three independently-domain'd entry-points share
+      // an array-walk + per-item validation cascade token shape
+      // (sd-jwt-vc-issuer.create walks operator-supplied claims;
+      // guard-saga-config.validate walks the saga step list;
+      // composePipeline walks the middleware-entry array).
+      mode:  "family-subset",
+      files: [
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/guard-saga-config.js:validate",
+        "lib/middleware/compose-pipeline.js:composePipeline",
+      ],
+      reason: "Three independently-domain'd entry points share an array-walk + per-item validation cascade. Each emits a domain-distinct error class (SdJwtVcIssuerError / GuardSagaConfigError / ComposePipelineError) and validates a different field tuple. Consolidating would couple unrelated specs.",
+    },
+    {
       // v0.9.40 — RFC 5322 header-injection control-char scans
       // (boolean variant: does this string contain CR/LF/NUL/C0/DEL?)
       // inlined in 4 guards. Each is a 8-line for-loop with a fixed

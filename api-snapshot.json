@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.42",
-  "createdAt": "2026-05-15T14:28:03.768Z",
+  "frameworkVersion": "0.9.44",
+  "createdAt": "2026-05-15T15:00:03.243Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34467,6 +34467,10 @@
         "clearSiteData": {
           "type": "function",
           "arity": 1
+        },
+        "composePipeline": {
+          "type": "function",
+          "arity": 2
         },
         "compression": {
           "type": "function",
