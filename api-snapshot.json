@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.38",
-  "createdAt": "2026-05-15T08:55:20.096Z",
+  "frameworkVersion": "0.9.39",
+  "createdAt": "2026-05-15T09:34:16.816Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -22380,6 +22380,173 @@
         "sanitize": {
           "type": "function",
           "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardListUnsubscribe": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "DANGEROUS_SCHEMES": {
+          "type": "object",
+          "members": {
+            "blob:": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "data:": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "file:": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "javascript:": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "vbscript:": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "GuardListUnsubscribeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ONE_CLICK_POST_VALUE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUriBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUris": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "refuseHttp": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireHttpsUri": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requirePostHeader": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUriBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUris": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "refuseHttp": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireHttpsUri": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requirePostHeader": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUriBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUris": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "refuseHttp": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireHttpsUri": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requirePostHeader": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
         },
         "validate": {
           "type": "function",

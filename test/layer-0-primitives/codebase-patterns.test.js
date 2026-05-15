@@ -2188,6 +2188,13 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-dsn.js:parse",
         "lib/guard-dsn.js:_resolveProfile",
         "lib/guard-dsn.js:compliancePosture",
+        // v0.9.39 — guardListUnsubscribe shares the family
+        // scaffolding; validate() + _resolveProfile + posture
+        // cascade.
+        "lib/guard-list-unsubscribe.js:<top>",
+        "lib/guard-list-unsubscribe.js:validate",
+        "lib/guard-list-unsubscribe.js:_resolveProfile",
+        "lib/guard-list-unsubscribe.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
     },
@@ -2347,6 +2354,9 @@ async function testNoDuplicateCodeBlocks() {
         // v0.9.36 — guardEnvelope.check validates the From / SPF /
         // DKIM alignment per RFC 7489 §3.1.
         "lib/guard-envelope.js:check",
+        // v0.9.39 — guardListUnsubscribe.validate validates the
+        // List-Unsubscribe / List-Unsubscribe-Post header pair.
+        "lib/guard-list-unsubscribe.js:validate",
       ],
       reason: "Per-domain validation-field cascade for required-args + throw-typed-error pattern. Each member enforces a different field tuple (destroy preconditions: stepUpToken/dualControlApprover/reason/actor; DPoP verify; backup test schedule; break-glass policy set; DDL change proposal; 21 CFR Part 11 signer fields; sd-jwt-vc holder store). Consolidation would couple unrelated regulatory specs.",
     },
@@ -3247,6 +3257,21 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Module-header scaffolding shared across the guard family — defineClass + lazyRequire + PROFILES freeze + COMPLIANCE_POSTURES freeze blocks. The <top> shape IS the guard-family ABI; consolidating would erase per-guard error-class wrappers + profile vocab.",
     },
     {
+      // v0.9.39 — three independently-domain'd helper bodies
+      // (guardListUnsubscribe._verdict assembling the action+reason
+      // payload, guardSmtpCommand._validateAuth walking AUTH mech
+      // shape, safeDns._decodeOpt walking EDNS0 OPT pseudo-RR)
+      // happen to share the local-var / return-shape token sequence
+      // the detector matches. Each has a domain-distinct body.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-list-unsubscribe.js:_verdict",
+        "lib/guard-smtp-command.js:_validateAuth",
+        "lib/safe-dns.js:_decodeOpt",
+      ],
+      reason: "Three independently-domain'd helpers (List-Unsubscribe verdict assembly / SMTP AUTH mech validation / DNS OPT pseudo-RR decode) share local-var declaration + return-shape token sequence. Bodies are domain-distinct (different field names, different error checks). Consolidation would couple unrelated parsers.",
+    },
+    {
       // v0.9.37 — guard-dsn / guard-smtp-command / safe-dns all
       // declare the same _resolveProfile dispatcher mapping operator
       // opts → PROFILES[caps] with the COMPLIANCE_POSTURES cascade.
@@ -3254,6 +3279,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/guard-dsn.js:_resolveProfile",
+        "lib/guard-list-unsubscribe.js:_resolveProfile",
         "lib/guard-smtp-command.js:_resolveProfile",
         "lib/safe-dns.js:_resolveProfile",
       ],
