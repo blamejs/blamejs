@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.30",
-  "createdAt": "2026-05-14T23:34:37.118Z",
+  "frameworkVersion": "0.9.31",
+  "createdAt": "2026-05-15T06:03:48.629Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34247,6 +34247,80 @@
               "type": "function",
               "arity": 2
             },
+            "resolver": {
+              "type": "object",
+              "members": {
+                "QTYPE_BY_NAME": {
+                  "type": "object",
+                  "members": {
+                    "A": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "AAAA": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CNAME": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "DNSKEY": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "DS": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "HTTPS": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "MX": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "NS": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "PTR": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SOA": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SRV": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SVCB": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "TLSA": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "TXT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "ResolverError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
             "reverse": {
               "type": "function",
               "arity": 1
@@ -38307,6 +38381,265 @@
           "arity": 1
         },
         "toBuffer": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "safeDns": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxAdditionalRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnswerRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAuthorityRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCnameDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEdns0Bytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabels": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPointerDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxResponseBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTxtRdata": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxAdditionalRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnswerRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAuthorityRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCnameDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEdns0Bytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabels": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPointerDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxResponseBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTxtRdata": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxAdditionalRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAnswerRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxAuthorityRrs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCnameDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxEdns0Bytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxLabels": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPointerDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxResponseBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTxtRdata": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "RTYPE_NAMES": {
+          "type": "object",
+          "members": {
+            "1": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "2": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "5": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "6": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "12": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "15": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "16": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "28": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "33": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "41": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "43": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "46": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "47": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "48": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "50": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "52": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "64": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "65": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "SafeDnsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "boundEdns0": {
+          "type": "function",
+          "arity": 2
+        },
+        "checkCnameChainDepth": {
+          "type": "function",
+          "arity": 2
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseResponse": {
           "type": "function",
           "arity": 2
         }
