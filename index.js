@@ -87,6 +87,7 @@ var storage = require("./lib/storage");
 var safeJson = require("./lib/safe-json");
 var safeJsonPath = require("./lib/safe-jsonpath");
 var safeMime = require("./lib/safe-mime");
+var safeDns = require("./lib/safe-dns");
 var mailStore = require("./lib/mail-store");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
@@ -518,6 +519,7 @@ module.exports = {
   safeJson:         safeJson,
   safeJsonPath:     safeJsonPath,
   safeMime:         safeMime,
+  safeDns:          safeDns,
   mailStore:        mailStore,
   safeSchema:       safeSchema,
   pagination:       pagination,
