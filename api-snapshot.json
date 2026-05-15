@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.36",
-  "createdAt": "2026-05-15T08:01:51.554Z",
+  "frameworkVersion": "0.9.37",
+  "createdAt": "2026-05-15T08:21:17.463Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -16055,6 +16055,133 @@
           "arity": 2
         },
         "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardDsn": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardDsnError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "KNOWN_ACTIONS": {
+          "type": "object",
+          "members": {
+            "delayed": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "delivered": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "expanded": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "failed": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "relayed": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLine": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRecipients": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLine": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRecipients": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxHeaderLine": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxRecipients": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
           "type": "function",
           "arity": 2
         }

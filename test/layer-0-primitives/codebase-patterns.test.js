@@ -2157,6 +2157,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-mail-compose.js:<top>",
         "lib/guard-mail-move.js:_resolveProfile",
         "lib/guard-mail-move.js:validate",
+        "lib/guard-mail-move.js:<top>",
         "lib/guard-mail-query.js:_resolveProfile",
         "lib/guard-mail-query.js:validateActor",
         "lib/guard-mail-query.js:<top>",
@@ -2180,6 +2181,13 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-envelope.js:<top>",
         "lib/guard-envelope.js:check",
         "lib/guard-envelope.js:compliancePosture",
+        // v0.9.37 — guardDsn shares the family scaffolding;
+        // PROFILES + COMPLIANCE_POSTURES + parse() body +
+        // _resolveProfile dispatcher.
+        "lib/guard-dsn.js:<top>",
+        "lib/guard-dsn.js:parse",
+        "lib/guard-dsn.js:_resolveProfile",
+        "lib/guard-dsn.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
     },
@@ -3224,6 +3232,32 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-envelope.js:check",
       ],
       reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
+    },
+    {
+      // v0.9.37 — guard-dsn / guard-mail-move / guard-smtp-command
+      // share the same module-header scaffolding: lazyRequire +
+      // defineClass + PROFILES + COMPLIANCE_POSTURES freeze blocks
+      // at <top> of file. Family contract.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-dsn.js:<top>",
+        "lib/guard-mail-move.js:<top>",
+        "lib/guard-smtp-command.js:<top>",
+      ],
+      reason: "Module-header scaffolding shared across the guard family — defineClass + lazyRequire + PROFILES freeze + COMPLIANCE_POSTURES freeze blocks. The <top> shape IS the guard-family ABI; consolidating would erase per-guard error-class wrappers + profile vocab.",
+    },
+    {
+      // v0.9.37 — guard-dsn / guard-smtp-command / safe-dns all
+      // declare the same _resolveProfile dispatcher mapping operator
+      // opts → PROFILES[caps] with the COMPLIANCE_POSTURES cascade.
+      // The dispatcher IS the family contract.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-dsn.js:_resolveProfile",
+        "lib/guard-smtp-command.js:_resolveProfile",
+        "lib/safe-dns.js:_resolveProfile",
+      ],
+      reason: "_resolveProfile dispatcher — every safe-* / guard-* primitive walks the same `opts.posture → COMPLIANCE_POSTURES[posture] → PROFILES[caps]` cascade with `opts.profile` fallback. The cascade IS the family ABI; consolidating to a shared helper would erase the per-primitive error-class wrapper (SafeDnsError / GuardDsnError / GuardSmtpCommandError) that operator audit pipelines route on.",
     },
     {
       // v0.9.33 — mailRbl.query / queryDomain share the
