@@ -76,9 +76,9 @@ jobs:
         run: |
           if [ "$NPM_TOKEN_REACHABLE" != "true" ]; then
             echo "::error::NPM_TOKEN secret is empty in this workflow run."
-            echo "::error::Check at: https://github.com/organizations/blamejs/settings/secrets/actions"
-            echo "::error::  - Confirm a secret named NPM_TOKEN exists at the org level (not personal account)"
-            echo "::error::  - Confirm 'Repository access' includes blamejs/blamejs (or is 'All repositories')"
+            echo "::error::Check at: https://github.com/blamejs/blamejs/settings/secrets/actions"
+            echo "::error::  - Confirm a secret named NPM_TOKEN exists in the repo Actions secrets"
+            echo "::error::    (the prior org-scoped secret was deleted as part of the v0.12.16 audit goal)"
             echo "::error::  - Confirm the secret value is not empty/whitespace"
             exit 1
           fi
