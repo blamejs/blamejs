@@ -71,11 +71,15 @@ function testBadOpts() {
 }
 
 function testBodyFingerprintHook() {
-  // v0.9.42 gap-list fix: when body-parser mounts AFTER idempotency,
-  // the inline `req._rawBody || req.body` lookup runs before the
-  // body is parsed and the fingerprint silently degrades to
-  // method+path-only. Operators wire `opts.bodyFingerprint(req)`
-  // to defer fingerprinting until req.body is populated.
+  // v0.9.42 gap-list fix: operators sometimes need to canonicalize
+  // the parsed-body shape (sorted keys, stripped metadata) before
+  // the fingerprint hash so retry-with-equivalent-payload doesn't
+  // trip the §4.3 same-key-different-body refusal. The
+  // `bodyFingerprint(req)` hook lets the operator return the
+  // canonicalized bytes; the hook runs at the moment idempotency
+  // executes, so idempotency MUST mount AFTER body-parser regardless
+  // of whether the hook is used (the misordered-mount detector
+  // below catches the failure mode).
   var store = b.middleware.idempotencyKey.memoryStore();
   var fpCalls = 0;
   var mw = b.middleware.idempotencyKey({
