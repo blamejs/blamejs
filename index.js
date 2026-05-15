@@ -162,6 +162,7 @@ var guardSvg = require("./lib/guard-svg");
 var guardFilename = require("./lib/guard-filename");
 var guardMessageId = require("./lib/guard-message-id");
 var guardSmtpCommand = require("./lib/guard-smtp-command");
+var guardEnvelope = require("./lib/guard-envelope");
 var guardMailQuery = require("./lib/guard-mail-query");
 var guardMailCompose = require("./lib/guard-mail-compose");
 var guardMailReply = require("./lib/guard-mail-reply");
@@ -428,6 +429,7 @@ module.exports = {
   guardFilename:    guardFilename,
   guardMessageId:   guardMessageId,
   guardSmtpCommand: guardSmtpCommand,
+  guardEnvelope:    guardEnvelope,
   guardMailQuery:   guardMailQuery,
   guardMailCompose: guardMailCompose,
   guardMailReply:   guardMailReply,

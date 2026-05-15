@@ -2175,6 +2175,11 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-message-id.js:_resolveProfile",
         "lib/guard-message-id.js:compliancePosture",
         "lib/guard-message-id.js:validate",
+        // v0.9.36 — guardEnvelope shares the family scaffolding;
+        // PROFILES + COMPLIANCE_POSTURES + check() body.
+        "lib/guard-envelope.js:<top>",
+        "lib/guard-envelope.js:check",
+        "lib/guard-envelope.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
     },
@@ -2205,6 +2210,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-trace-context.js:*",
         "lib/guard-snapshot-envelope.js:*",
         "lib/guard-smtp-command.js:*",
+        "lib/guard-envelope.js:*",
       ],
       reason: "Guard-family input-validation cluster — every guard ships the same overall input-validation shape (call _resolveProfile + scan operator-supplied input + throw domain-typed error). The duplicate detector's centroid picks different lines across the family files; the cluster is one family pattern, not seven independent ones.",
     },
@@ -2330,6 +2336,9 @@ async function testNoDuplicateCodeBlocks() {
         // v0.9.35 — mailHelo.evaluate validates the HELO/EHLO claim
         // (ip + claimedName + resolver) before shape + FCrDNS checks.
         "lib/mail-helo.js:evaluate",
+        // v0.9.36 — guardEnvelope.check validates the From / SPF /
+        // DKIM alignment per RFC 7489 §3.1.
+        "lib/guard-envelope.js:check",
       ],
       reason: "Per-domain validation-field cascade for required-args + throw-typed-error pattern. Each member enforces a different field tuple (destroy preconditions: stepUpToken/dualControlApprover/reason/actor; DPoP verify; backup test schedule; break-glass policy set; DDL change proposal; 21 CFR Part 11 signer fields; sd-jwt-vc holder store). Consolidation would couple unrelated regulatory specs.",
     },
@@ -2363,6 +2372,15 @@ async function testNoDuplicateCodeBlocks() {
         // scaffolding.
         "lib/mail-helo.js:<top>",
         "lib/mail-helo.js:evaluate",
+        // v0.9.36 — guardEnvelope.check runs the same opts-validation
+        // prelude.
+        "lib/guard-envelope.js:check",
+        // v0.9.33 — mailRbl.create also matches this prelude shape;
+        // primary allowlist for create is in the openapi/asyncapi
+        // family entry below, listed here too for the 4-file cluster
+        // that joins guard-envelope.check + mail-greylist.create +
+        // mail-helo.evaluate + mail-rbl.create.
+        "lib/mail-rbl.js:create",
       ],
       reason: "Consumer / report-creation factory prelude — operator opts validated, default values filled, internal state captured into closure. Each domain emits distinct error classes (AgentOrchestratorError / AgentIdempotencyError / AgentTenantError / CraReportError / MailAgentError) and registers a different op shape; consolidation would couple unrelated specs.",
     },
@@ -3202,6 +3220,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-smtp-command.js:<top>",
         "lib/guard-smtp-command.js:gate",
         "lib/guard-smtp-command.js:validate",
+        "lib/guard-envelope.js:<top>",
+        "lib/guard-envelope.js:check",
       ],
       reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
     },
