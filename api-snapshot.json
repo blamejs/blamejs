@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.28",
-  "createdAt": "2026-05-14T23:06:21.954Z",
+  "frameworkVersion": "0.9.30",
+  "createdAt": "2026-05-14T23:34:37.118Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -741,6 +741,118 @@
             }
           }
         },
+        "snapshot": {
+          "type": "object",
+          "members": {
+            "AgentSnapshotError": {
+              "type": "function",
+              "arity": 4
+            },
+            "SCHEMA_VERSION": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "guards": {
+              "type": "object",
+              "members": {
+                "envelope": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardSnapshotEnvelopeError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "maxBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxInFlight": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "maxBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxInFlight": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "maxBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxInFlight": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
         "stream": {
           "type": "object",
           "members": {
@@ -961,6 +1073,126 @@
                         "ROOT": {
                           "type": "primitive",
                           "valueType": "boolean"
+                        }
+                      }
+                    },
+                    "compliancePosture": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "validate": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "trace": {
+          "type": "object",
+          "members": {
+            "AgentTraceError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "guards": {
+              "type": "object",
+              "members": {
+                "context": {
+                  "type": "object",
+                  "members": {
+                    "COMPLIANCE_POSTURES": {
+                      "type": "object",
+                      "members": {
+                        "gdpr": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hipaa": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "pci-dss": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "soc2": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "GuardTraceContextError": {
+                      "type": "function",
+                      "arity": 4
+                    },
+                    "KIND": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "NAME": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "PROFILES": {
+                      "type": "object",
+                      "members": {
+                        "balanced": {
+                          "type": "object",
+                          "members": {
+                            "allowedVersions": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            },
+                            "maxTracestateBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxTracestateEntries": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "permissive": {
+                          "type": "object",
+                          "members": {
+                            "allowedVersions": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            },
+                            "maxTracestateBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxTracestateEntries": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
+                        },
+                        "strict": {
+                          "type": "object",
+                          "members": {
+                            "allowedVersions": {
+                              "type": "instance",
+                              "ctorName": "Array"
+                            },
+                            "maxTracestateBytes": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            },
+                            "maxTracestateEntries": {
+                              "type": "primitive",
+                              "valueType": "number"
+                            }
+                          }
                         }
                       }
                     },
@@ -26692,6 +26924,96 @@
         }
       }
     },
+    "guardSnapshotEnvelope": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardSnapshotEnvelopeError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxInFlight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxInFlight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxInFlight": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "guardStreamArgs": {
       "type": "object",
       "members": {
@@ -28634,6 +28956,108 @@
         "sanitize": {
           "type": "function",
           "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "guardTraceContext": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardTraceContextError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxTracestateBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTracestateEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxTracestateBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTracestateEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowedVersions": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
+                "maxTracestateBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxTracestateEntries": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
         },
         "validate": {
           "type": "function",
