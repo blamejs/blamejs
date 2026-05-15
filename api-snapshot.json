@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.46",
-  "createdAt": "2026-05-15T21:50:25.317Z",
+  "frameworkVersion": "0.9.47",
+  "createdAt": "2026-05-15T22:12:14.390Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34033,6 +34033,19 @@
               "type": "object",
               "members": {
                 "MailServerMxError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "submission": {
+              "type": "object",
+              "members": {
+                "MailServerSubmissionError": {
                   "type": "function",
                   "arity": 4
                 },
