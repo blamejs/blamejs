@@ -2276,6 +2276,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/mail-server-imap.js:_handleConnection",
+        "lib/mail-server-mx.js:_handleConnection",
         "lib/mail-server-pop3.js:_handleConnection",
         "lib/mail-server-submission.js:_handleConnection",
         "lib/mail-server-imap.js:listen",

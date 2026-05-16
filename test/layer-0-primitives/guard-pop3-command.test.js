@@ -53,6 +53,31 @@ function testCleartextAuthRefused() {
     rv.verb === "USER");
 }
 
+function testAuthCleartextRefused() {
+  // AUTH with no mech is a CAPA-style enumeration — must stay allowed
+  // pre-TLS so clients can negotiate (RFC 5034 §4).
+  var rv = b.guardPop3Command.validate("AUTH", { tls: false });
+  check("AUTH (no mech) allowed pre-TLS — enumeration",
+    rv.verb === "AUTH" && rv.args.length === 0);
+
+  // AUTH PLAIN over cleartext under strict — refused identically to
+  // USER/PASS per RFC 2595 §2.1 + RFC 5034 §4.
+  var threw = null;
+  try { b.guardPop3Command.validate("AUTH PLAIN", { tls: false }); } catch (e) { threw = e; }
+  check("AUTH PLAIN refused pre-TLS under strict",
+    threw && threw.code === "guard-pop3-command/cleartext-auth");
+
+  // Permissive allows
+  var rv2 = b.guardPop3Command.validate("AUTH PLAIN", { tls: false, profile: "permissive" });
+  check("AUTH PLAIN allowed pre-TLS under permissive",
+    rv2.verb === "AUTH" && rv2.args[0] === "PLAIN");
+
+  // Strict + TLS up: allowed
+  var rv3 = b.guardPop3Command.validate("AUTH PLAIN", { tls: true });
+  check("AUTH PLAIN allowed under strict when TLS up",
+    rv3.verb === "AUTH" && rv3.args[0] === "PLAIN");
+}
+
 function testApopRefusedUnderStrict() {
   var threw = null;
   try { b.guardPop3Command.validate("APOP alice abcdef1234567890"); } catch (e) { threw = e; }
@@ -122,6 +147,7 @@ function run() {
   testSurface();
   testHappyPath();
   testCleartextAuthRefused();
+  testAuthCleartextRefused();
   testApopRefusedUnderStrict();
   testBadInputRefused();
   testCompliancePosture();
