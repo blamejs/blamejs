@@ -5683,6 +5683,203 @@ function testScopedContextBindingUsed() {
     bad);
 }
 
+// ---- Pattern: DNS lookup falls back to node:dns instead of safeDns ----
+//
+// Surfaced 2026-05-15 audit MAIL-8 — `mail-dkim` / `mail-auth` fell back
+// to `require("node:dns/promises").resolveTxt(...)` (and `.reverse` /
+// `.resolve4` / `.resolve6`) when no operator-supplied `dnsLookup`
+// callback was provided. That path sends plaintext UDP/53 to whatever
+// the system resolver is and parses the response without any of
+// `b.safeDns`'s caps (RR count, name length, pointer-chain depth,
+// CNAME chain). Every downstream DKIM / SPF / DMARC / iprev finding
+// inherited that exposure (Kaminsky-class poisoning + parse-side
+// amplification).
+//
+// The framework's DoH-by-default path lives in
+// `b.network.dns.resolver` (v0.7.23); mail-* modules MUST route TXT /
+// PTR / A / AAAA lookups through a `_safeResolveTxt(qname,
+// operatorLookup)` helper that calls the resolver when no operator
+// lookup is supplied — never `require("node:dns")` directly. Single
+// `require("node:dns")` in any framework module is the smell.
+function testNoDirectNodeDnsInMail() {
+  // class: mail-direct-node-dns
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    // The transport layer (network-dns / network-dns-resolver) IS where
+    // node:dns gets called.
+    if (rel === "lib/network-dns.js" || rel === "lib/network-dns-resolver.js") continue;
+    // Scope this gate to the mail-auth verification family (DKIM /
+    // SPF / DMARC / ARC / iprev). mail-bimi / mail-rbl / mail-helo
+    // have their own resolver-composition paths (see opts.resolver
+    // in mail-rbl) — adding them here is a separate audit slice.
+    if (rel !== "lib/mail-auth.js" && rel !== "lib/mail-dkim.js" &&
+        rel !== "lib/mail-arc-sign.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      // Reach-through patterns: `require("node:dns")` or
+      // `dnsPromises.resolveTxt / .reverse / .resolve4 / .resolve6`.
+      if (/require\(\s*["']node:dns(?:\/promises)?["']\s*\)/.test(line) ||
+          /\bdns(?:Module|Promises)?\.(?:resolveTxt|reverse|resolve4|resolve6)\b/.test(line)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "mail-* module reaches `node:dns` directly — route through " +
+                   "`_safeResolveTxt` / `_safeReverse` / `_safeResolveA` helper " +
+                   "(composes `b.network.dns.resolver`, DoH default-on per " +
+                   "v0.7.23). MAIL-8 / CVE-2008-1447 / CVE-2022-3204.",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "mail-direct-node-dns");
+  _report("mail-* DNS lookup must compose b.network.dns.resolver, not node:dns directly (MAIL-8 — DoH default-on bypass)",
+    bad);
+}
+
+// ---- Pattern: Math.random() for protocol sampling / disposition rolls ----
+//
+// Surfaced 2026-05-15 audit MAIL-10 + MAIL-56 — DMARC pct sampling
+// used Math.random() which (a) is a non-cryptographic PRNG so the
+// roll can be predicted by an adversary aware of the receiver's
+// Node version, and (b) re-rolls per-call so the SAME message gets
+// different verdicts across SMTP retries. The framework requires
+// crypto-safe randomness AND, for retry-stable contracts, a
+// deterministic per-message key derivation (SHAKE256 over a stable
+// key → first 4 bytes → uint32 → modulo). Math.random anywhere
+// in protocol-relevant policy decisions is the smell.
+function testNoMathRandomInPolicyDecisions() {
+  // class: math-random-in-policy
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      if (!/\bMath\.random\s*\(/.test(line)) continue;
+      // Sampling / pct / disposition / quota / quarantine — the
+      // policy-decision lexicon. A Math.random hit on any of these
+      // shapes is the bug class.
+      if (/\b(?:pct|sample|disposition|quarantine|quota|policy|roll)\b/i.test(line)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "Math.random() used in a policy-decision context " +
+                   "(pct/sample/disposition/quarantine/quota/policy/roll) — " +
+                   "use crypto.randomInt for hardening floor; SHAKE256 over a " +
+                   "stable key for retry-determinism (MAIL-10 / MAIL-56).",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "math-random-in-policy");
+  _report("Math.random forbidden in policy-decision contexts — use crypto.randomInt OR SHAKE256(stable-key) per the retry-stability contract (MAIL-10 / MAIL-56)",
+    bad);
+}
+
+// ---- Pattern: DMARC alignment with naive text-suffix instead of PSL ----
+//
+// Surfaced 2026-05-15 audit MAIL-25 — relaxed alignment did a naive
+// `endsWith` comparison between From-domain and DKIM/SPF auth-domain.
+// `evil-bank.com` text-suffix-aligned with `bank.com` despite being
+// separately registered. Use `publicSuffix.organizationalDomain` to
+// compare PSL-tail org-domains. The shape "if (X.slice(-Y.length-1)
+// === '.' + Y) return true" is the inline form to refuse.
+function testNoNaiveSuffixAlignment() {
+  // class: naive-suffix-alignment
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel === "lib/public-suffix.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      // `X.slice(-Y.length - 1) === "." + Y` — the inline text-suffix-
+      // align shape. Common in DMARC / DKIM / SPF alignment helpers.
+      if (/\.slice\(\s*-\s*\w+\.length\s*-\s*1\s*\)\s*===\s*["']\.["']\s*\+\s*\w+/.test(line) ||
+          /\.endsWith\(\s*["']\.["']\s*\+\s*\w+\.toLowerCase\(\)\s*\)/.test(line)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "naive text-suffix alignment — separately-registered " +
+                   "confusables (`evil-bank.com` vs `bank.com`) pass. Use " +
+                   "`publicSuffix.organizationalDomain(d)` and compare org-" +
+                   "domains (MAIL-25 — RFC 7489 §3.1.1).",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "naive-suffix-alignment");
+  _report("relaxed-mode alignment MUST use publicSuffix.organizationalDomain, not naive text-suffix slice (MAIL-25 — RFC 7489 §3.1.1)",
+    bad);
+}
+
+// ---- Pattern: gunzip error not distinguishing bomb from corrupt ----
+//
+// Surfaced 2026-05-15 audit MAIL-39 — a single error code for "gunzip
+// failed" conflates an attacker-supplied decompression bomb (output
+// exceeded maxOutputLength) with operator-side corrupt stream. The
+// catch must inspect `e.code === "ERR_BUFFER_TOO_LARGE"` /
+// `e.code === "ERR_OUT_OF_RANGE"` / message containing "output length
+// exceeded" and emit a distinct error so audit can rate-limit the
+// source on amplification but not on garbled report uploads.
+function testGunzipBombDistinguished() {
+  // class: gunzip-bomb-conflated
+  // Scoped to mail-auth.js this audit; widen to other consumers when
+  // their respective audit slices land. Cheap line-walk instead of
+  // multiline regex over whole-file content (which OOMs on large
+  // files due to backtracking on `[\s\S]{0,N}?`).
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel !== "lib/mail-auth.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    if (!/\bgunzip(?:Sync)?\b/.test(content)) continue;
+    // Distinguished-catch check: BOTH a bomb-named error code AND a
+    // failed-named error code in the file body means the catch
+    // discriminates.
+    var hasBombCode = /-gunzip-bomb\b|gunzip-bomb["']/.test(content);
+    var hasFailedCode = /-gunzip-failed\b|gunzip-failed["']/.test(content);
+    if (hasBombCode && hasFailedCode) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (/\bgunzipSync\b/.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "gunzipSync catch must distinguish decompression-bomb " +
+                   "(output cap exceeded) from corrupt-stream — emit " +
+                   "distinct error codes so audit can rate-limit the " +
+                   "source on amplification (MAIL-39 — CVE-2024 zlib class).",
+        });
+        break;
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "gunzip-bomb-conflated");
+  _report("gunzip catch must distinguish bomb (output cap) from corrupt-stream (MAIL-39 — CVE-2024 zlib amplification class)",
+    bad);
+}
+
 // ---- Pattern: gitleaks-tripping high-entropy identifier without allowlist ----
 //
 // CI gitleaks scan flags long camelCase identifier names (e.g.
@@ -6149,6 +6346,11 @@ async function run() {
   testNoBoolStringCoerceShape();
   testNoBareCommaSplitOnQuotedHeader();
   testScopedContextBindingUsed();
+  // v0.9.57 — audit 2026-05-15 mail-auth bug-class detectors
+  testNoDirectNodeDnsInMail();
+  testNoMathRandomInPolicyDecisions();
+  testNoNaiveSuffixAlignment();
+  testGunzipBombDistinguished();
   testGitleaksTrippingPatternsAllowlisted();
   // v0.9.58 bug-class detectors — derived from the CRYPTO-1 / CRYPTO-15 /
   // CRYPTO-21 / CRYPTO-22 fixes + CVE-2026-21713 HMAC compare class.
