@@ -1097,6 +1097,42 @@ function testListenPortFalsyDefault() {
     matches);
 }
 
+// ---- Pattern 17b: IMAP literalSize zero-rejection footgun ----
+//
+// RFC 9051 §6.3.12 allows zero-byte literals (e.g. APPEND of an empty
+// message body). Filtering with `literalSize > 0` skips the legitimate
+// edge case; the correct check is `>= 0` (or `!== null` with a
+// downstream zero-byte short-circuit). Codex P1 PR #75 caught this on
+// the IMAP listener.
+function testImapLiteralSizeZeroFootgun() {
+  var matches = _scan(/literalSize\s*>\s*0\b/);
+  matches = _filterMarkers(matches, "literal-size-zero");
+  _report("literalSize comparison: use `!== null` or `>= 0` (zero-byte " +
+          "literals are RFC 9051 §6.3.12 legal — `literalSize > 0` skips " +
+          "the empty-APPEND path)",
+    matches);
+}
+
+// ---- Pattern 17c: CAPABILITY hardcoded SASL mechanism without authConfig gate ----
+//
+// IMAP / SMTP listeners that advertise AUTH=<mech> in their CAPABILITY
+// reply must gate the mechanism off the operator's wired authConfig.
+// Hardcoding `AUTH=PLAIN` in a caps array (without checking authConfig)
+// sets clients up for AUTHENTICATE requests the listener then refuses.
+// Codex P2 PR #75 caught this on the IMAP listener.
+function testHardcodedAuthMechanismInCaps() {
+  // Catch the specific shape "AUTH=PLAIN" / "AUTH=LOGIN" / similar in
+  // a string-literal array assignment. Allow markers permit operator
+  // overrides where the mechanism is genuinely always-on (e.g. test
+  // fixtures with a hardcoded authConfig).
+  var matches = _scan(/(?:caps|capabilities|advertised)\s*=\s*\[[^\]]*"AUTH=[A-Z][A-Z0-9-]*"/);
+  matches = _filterMarkers(matches, "hardcoded-auth-mech");
+  _report("CAPABILITY / EHLO advertisement: AUTH=<mech> entries gate off " +
+          "operator's authConfig.mechanisms (don't hardcode in the caps " +
+          "array)",
+    matches);
+}
+
 // ---- Pattern 18: catch (_e) {} swallowing without logging ----
 
 function testNoSilentCatchSwallow() {
@@ -2099,10 +2135,25 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Distinct RFC primitives (RFC 9449 DPoP / RFC 7519 JWT / OIDC Back-Channel Logout) that share a `replayStore.checkAndInsert(jti, expireAtMs)` + numeric-date-bound shingle. Each uses its own typed error class (auth-dpop / auth-jwt / auth-oauth namespaces) with file-specific code and field tuple. Consolidation would couple three spec-defined verification primitives.",
     },
     {
+      mode:  "family-subset",
       files: [
         "lib/agent-idempotency.js:<top>",
         "lib/agent-snapshot.js:<top>",
+        "lib/guard-dsn.js:<top>",
+        "lib/guard-imap-command.js:<top>",
+        "lib/guard-list-id.js:<top>",
+        "lib/guard-list-unsubscribe.js:<top>",
+        "lib/guard-mail-compose.js:<top>",
+        "lib/guard-mail-move.js:<top>",
+        "lib/guard-mail-query.js:<top>",
+        "lib/guard-mail-reply.js:<top>",
+        "lib/guard-mail-sieve.js:<top>",
+        "lib/guard-message-id.js:<top>",
+        "lib/guard-posture-chain.js:<top>",
+        "lib/guard-smtp-command.js:<top>",
+        "lib/guard-stream-args.js:<top>",
         "lib/mail-greylist.js:<top>",
+        "lib/mail-server-imap.js:<top>",
         "lib/mail-server-mx.js:<top>",
         "lib/mail-server-submission.js:<top>",
         "lib/network-dns-resolver.js:<top>",
@@ -2112,13 +2163,28 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/guard-dsn.js:_checkControlChars",
+        "lib/guard-imap-command.js:validate",
+        "lib/guard-list-id.js:_hasControlChar",
+        "lib/guard-list-unsubscribe.js:_hasControlChar",
+      ],
+      reason: "charCodeAt-loop control-byte scan (refuse C0 / DEL / NUL / bare-LF / bare-CR). Each primitive runs the scan on a structurally different payload (DSN report body / IMAP command line / List-ID header / List-Unsubscribe header) and surfaces a primitive-specific typed error; consolidating would couple four unrelated wire formats. Mirrors the same charCodeAt-loop pattern that lib/codepoint-class.js owns for the guard-html / guard-svg / guard-csv family, but the protocols handled here use ASCII-only profiles where the codepointClass machinery would be over-kill.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/daemon.js:_safeAuditEmit",
+        "lib/mail-server-imap.js:_emit",
+        "lib/mail-server-imap.js:create",
+        "lib/mail-server-imap.js:listen",
         "lib/mail-server-mx.js:_emit",
         "lib/mail-server-mx.js:_validateDomainHardened",
         "lib/mail-server-mx.js:create",
+        "lib/mail-server-mx.js:listen",
         "lib/mail-server-submission.js:_emit",
         "lib/mail-server-submission.js:_validateDomainHardened",
         "lib/mail-server-submission.js:create",
+        "lib/mail-server-submission.js:listen",
         "lib/observability-otlp-exporter.js:create",
         "lib/self-update.js:_safeAuditEmit",
         "lib/self-update.js:<top>",
@@ -5548,6 +5614,8 @@ async function run() {
   testFormatValidatorLengthCap();
   testNoProcessExitInLib();
   testListenPortFalsyDefault();
+  testImapLiteralSizeZeroFootgun();
+  testHardcodedAuthMechanismInCaps();
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
   testNoRawXffRead();
