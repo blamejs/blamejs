@@ -95,8 +95,14 @@ function testAutoDiscoverHappy() {
     imap:  { host: "imap.example.com", port: 993, ssl: true },
     smtp:  { host: "smtp.example.com", port: 587, ssl: false },
   });
+  // Match the full xmlns attribute value (anchored both sides) — using
+  // indexOf on the bare host alone trips CodeQL's `js/incomplete-url-
+  // substring-sanitization` query (false positive in a test assertion
+  // context, but the anchored shape is the right test anyway because
+  // we want to verify the canonical xmlns declaration, not just any
+  // mention of the string).
   check("autodiscover declares Microsoft schema",
-    xml.indexOf("schemas.microsoft.com") !== -1);
+    xml.indexOf("xmlns=\"http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006\"") !== -1);
   check("autodiscover carries IMAP proto", xml.indexOf("<Type>IMAP</Type>") !== -1);
   check("autodiscover carries SMTP proto", xml.indexOf("<Type>SMTP</Type>") !== -1);
   check("autodiscover SSL on / off mapping",
