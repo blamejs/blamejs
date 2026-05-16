@@ -216,7 +216,7 @@ jobs:
         # Stricter than v1's `--fail-on-vuln=HIGH` (which v2 dropped),
         # appropriate for a zero-npm-runtime-dep framework where any
         # surfaced vuln means a vendor refresh is overdue.
-        uses: google/osv-scanner-action/osv-scanner-action@c51854704019a247608d928f370c98740469d4b5 # v2.3.5
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
           scan-args: |-
             --sbom=sbom.cdx.json
