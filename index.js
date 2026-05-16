@@ -166,6 +166,7 @@ var guardMessageId = require("./lib/guard-message-id");
 var guardSmtpCommand = require("./lib/guard-smtp-command");
 var guardImapCommand = require("./lib/guard-imap-command");
 var guardPop3Command = require("./lib/guard-pop3-command");
+var guardJmap = require("./lib/guard-jmap");
 var guardEnvelope = require("./lib/guard-envelope");
 var guardDsn = require("./lib/guard-dsn");
 var guardListUnsubscribe = require("./lib/guard-list-unsubscribe");
@@ -267,6 +268,7 @@ mail.server = mail.server || {};
 mail.server.mx = require("./lib/mail-server-mx");
 mail.server.submission = require("./lib/mail-server-submission");
 mail.server.imap = require("./lib/mail-server-imap");
+mail.server.jmap = require("./lib/mail-server-jmap");
 mail.server.pop3 = require("./lib/mail-server-pop3");
 mail.server.tls = require("./lib/mail-server-tls");
 mail.server.rateLimit = require("./lib/mail-server-rate-limit");
@@ -446,6 +448,7 @@ module.exports = {
   guardSmtpCommand: guardSmtpCommand,
   guardImapCommand: guardImapCommand,
   guardPop3Command: guardPop3Command,
+  guardJmap:        guardJmap,
   guardEnvelope:    guardEnvelope,
   guardDsn:         guardDsn,
   guardListUnsubscribe: guardListUnsubscribe,

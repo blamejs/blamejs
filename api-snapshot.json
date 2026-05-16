@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.53",
-  "createdAt": "2026-05-16T04:41:22.327Z",
+  "frameworkVersion": "0.9.54",
+  "createdAt": "2026-05-16T04:59:07.772Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -20555,6 +20555,145 @@
         }
       }
     },
+    "guardJmap": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "CORE_CAPABILITIES": {
+          "type": "object",
+          "members": {
+            "urn:ietf:params:jmap:core": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "GuardJmapError": {
+          "type": "function",
+          "arity": 4
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "maxBackRefDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCallsInRequest": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectsInGet": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectsInSet": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSizeRequest": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUsingCapabilities": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "maxBackRefDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCallsInRequest": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectsInGet": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectsInSet": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSizeRequest": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUsingCapabilities": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "maxBackRefDepth": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxCallsInRequest": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectsInGet": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxObjectsInSet": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxSizeRequest": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUsingCapabilities": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "guardJson": {
       "type": "object",
       "members": {
@@ -34597,6 +34736,19 @@
               "type": "object",
               "members": {
                 "MailServerImapError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "jmap": {
+              "type": "object",
+              "members": {
+                "MailServerJmapError": {
                   "type": "function",
                   "arity": 4
                 },

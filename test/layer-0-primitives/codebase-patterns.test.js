@@ -2160,6 +2160,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-snapshot.js:<top>",
         "lib/guard-dsn.js:<top>",
         "lib/guard-imap-command.js:<top>",
+        "lib/guard-jmap.js:<top>",
         "lib/guard-list-id.js:<top>",
         "lib/guard-list-unsubscribe.js:<top>",
         "lib/guard-mail-compose.js:<top>",
@@ -2174,6 +2175,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-greylist.js:<top>",
         "lib/guard-pop3-command.js:<top>",
         "lib/mail-server-imap.js:<top>",
+        "lib/mail-server-jmap.js:<top>",
         "lib/mail-server-mx.js:<top>",
         "lib/mail-server-pop3.js:<top>",
         "lib/mail-server-submission.js:<top>",
@@ -2238,6 +2240,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-imap.js:_emit",
         "lib/mail-server-imap.js:create",
         "lib/mail-server-imap.js:listen",
+        "lib/mail-server-jmap.js:_emit",
+        "lib/mail-server-jmap.js:create",
         "lib/mail-server-mx.js:_emit",
         "lib/mail-server-mx.js:_validateDomainHardened",
         "lib/mail-server-mx.js:create",
@@ -2292,11 +2296,20 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/guard-imap-command.js:validate",
+        "lib/guard-jmap.js:validate",
         "lib/guard-mail-query.js:_walk",
         "lib/guard-pop3-command.js:validate",
         "lib/guard-smtp-command.js:validate",
       ],
-      reason: "Mail-protocol guard.validate() wire-shape — every wire-protocol guard (RFC 5321 SMTP, RFC 9051 IMAP, RFC 1939 POP3) plus the JMAP/IMAP query AST walker shares an opts-shape resolver + control-byte scan + verb-dispatch / node-dispatch frame. Each emits a primitive-specific typed error tuple against a different wire grammar — extracting would couple four independent RFC grammars under one ambiguous interface. The shared substrate (`b.gateContract.resolveProfileAndPosture` + the `lib/codepoint-class.js` scanners) is already the right abstraction.",
+      reason: "Mail-protocol guard.validate() wire-shape — every wire-protocol guard (RFC 5321 SMTP, RFC 9051 IMAP, RFC 1939 POP3, RFC 8620 JMAP) plus the JMAP/IMAP query AST walker shares an opts-shape resolver + control-byte scan + verb-dispatch / node-dispatch frame. Each emits a primitive-specific typed error tuple against a different wire grammar — extracting would couple four independent RFC grammars under one ambiguous interface. The shared substrate (`b.gateContract.resolveProfileAndPosture` + the `lib/codepoint-class.js` scanners) is already the right abstraction.",
+    },
+    {
+      files: [
+        "lib/acme.js:listProfiles",
+        "lib/mail-server-jmap.js:_resolveBackRefs",
+        "lib/template.js:create",
+      ],
+      reason: "Three structurally-unrelated primitives — ACME ([RFC 8555](https://www.rfc-editor.org/rfc/rfc8555)) profile enumeration, JMAP back-reference resolution ([RFC 8620 §3.7](https://www.rfc-editor.org/rfc/rfc8620#section-3.7)), and template engine create — sharing an `Object.keys(...)` + per-key copy + return-object shingle. Each operates on a different domain (CA profile descriptors / JMAP result store / template helper registry) with primitive-specific validation; consolidating would couple three independent specs.",
     },
     {
       files: [
@@ -2463,6 +2476,13 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-list-id.js:validate",
         "lib/guard-list-id.js:_resolveProfile",
         "lib/guard-list-id.js:compliancePosture",
+        // v0.9.54 — guardJmap shares the family scaffolding;
+        // validate() + _resolveProfile + posture cascade against
+        // the RFC 8620 / RFC 8621 wire-protocol shape.
+        "lib/guard-jmap.js:<top>",
+        "lib/guard-jmap.js:validate",
+        "lib/guard-jmap.js:_resolveProfile",
+        "lib/guard-jmap.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
     },
@@ -2478,6 +2498,7 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/guard-agent-registry.js:*",
         "lib/guard-idempotency-key.js:*",
+        "lib/guard-jmap.js:*",
         "lib/guard-mail-compose.js:*",
         "lib/guard-mail-move.js:*",
         "lib/guard-mail-query.js:*",
