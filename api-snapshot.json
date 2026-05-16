@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.56",
-  "createdAt": "2026-05-16T06:57:53.699Z",
+  "frameworkVersion": "0.9.57",
+  "createdAt": "2026-05-16T13:06:56.160Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34622,6 +34622,52 @@
           "type": "object",
           "members": {
             "verify": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "journal": {
+          "type": "object",
+          "members": {
+            "MailJournalError": {
+              "type": "function",
+              "arity": 4
+            },
+            "REGIME_FLOOR_MS": {
+              "type": "object",
+              "members": {
+                "finra-4511": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "gdpr": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "hipaa": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "mifid-ii": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "sec-17a-4": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "soc2": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "sox": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "create": {
               "type": "function",
               "arity": 1
             }
