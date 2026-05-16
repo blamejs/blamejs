@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.47",
-  "createdAt": "2026-05-16T00:37:08.432Z",
+  "frameworkVersion": "0.9.52",
+  "createdAt": "2026-05-16T02:48:37.850Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -26178,6 +26178,218 @@
         }
       }
     },
+    "guardPop3Command": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "GuardPop3CommandError": {
+          "type": "function",
+          "arity": 4
+        },
+        "KNOWN_VERBS": {
+          "type": "object",
+          "members": {
+            "APOP": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "AUTH": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "CAPA": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "DELE": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "LIST": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "NOOP": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "PASS": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "QUIT": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "RETR": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "RSET": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "STAT": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "STLS": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "TOP": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "UIDL": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "USER": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowApop": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowBareLf": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "maxLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPasswordBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUsernameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowApop": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowBareLf": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "maxLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPasswordBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUsernameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowApop": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowBareLf": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "maxLineBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxPasswordBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxUsernameBytes": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            }
+          }
+        },
+        "ZERO_ARG_VERBS": {
+          "type": "object",
+          "members": {
+            "CAPA": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "NOOP": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "QUIT": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "RSET": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "STAT": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "STLS": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "guardPostureChain": {
       "type": "object",
       "members": {
@@ -34033,6 +34245,19 @@
               "type": "object",
               "members": {
                 "MailServerMxError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "pop3": {
+              "type": "object",
+              "members": {
+                "MailServerPop3Error": {
                   "type": "function",
                   "arity": 4
                 },
