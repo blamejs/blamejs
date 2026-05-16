@@ -2156,6 +2156,15 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Defensive opts-object validation shape (typeof check + length / regex / range guard + RFC-specific typed-error throw) appears across RFC 8628 device authorization, OAuth callback parsing, DDL change-control SQL hashing, and DNSBL query parameter validation. Each error class belongs to its own RFC namespace and the validated fields are domain-specific (device_code vs SQL statement vs DNSBL hostname); consolidation would couple unrelated specs.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/agent-snapshot.js:_runHandler",
+        "lib/dsr.js:submit",
+        "lib/self-update.js:poll",
+      ],
+      reason: "Async-handler invocation shape — try/catch wrapper around a user-supplied callback that emits a typed audit event on failure and surfaces a domain-specific error class. agent-snapshot drains in-flight envelopes, dsr.submit runs operator request handlers under retention posture, self-update.poll runs the operator release-URL fetch. Each owns a distinct audit namespace and error class; consolidation would couple snapshot drain semantics with DSR retention and self-update polling.",
+    },
+    {
       files: [
         "lib/auth/dpop.js:verify",
         "lib/auth/jwt.js:_requireNumericDate",
