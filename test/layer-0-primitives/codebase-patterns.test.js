@@ -2165,6 +2165,15 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Async-handler invocation shape — try/catch wrapper around a user-supplied callback that emits a typed audit event on failure and surfaces a domain-specific error class. agent-snapshot drains in-flight envelopes, dsr.submit runs operator request handlers under retention posture, self-update.poll runs the operator release-URL fetch. Each owns a distinct audit namespace and error class; consolidation would couple snapshot drain semantics with DSR retention and self-update polling.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/guard-email.js:_detectAddressIssues",
+        "lib/middleware/scim-server.js:_parseQuery",
+        "lib/self-update.js:_splitSemver",
+      ],
+      reason: "Three unrelated string-parser primitives that incidentally share a 50-token charCodeAt-driven scan shingle. _detectAddressIssues walks RFC 5322 addr-spec bytes; _parseQuery walks SCIM filter tokens (RFC 7644 §3.4.2.2); _splitSemver walks SemVer 2.0.0 §2 version-core + pre-release + build identifiers. Each owns a domain-specific error class. Consolidation would couple RFC 5322 / RFC 7644 / SemVer parsing into one primitive none of them want.",
+    },
+    {
       files: [
         "lib/auth/dpop.js:verify",
         "lib/auth/jwt.js:_requireNumericDate",

@@ -25,15 +25,77 @@ try {
 
 var rootPkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
 
-var serialUuid = crypto.createHash("sha256")
-  .update("blamejs-vendored-sbom:" + rootPkg.version)
-  .digest("hex");
-var serialNumber = "urn:uuid:" +
-  serialUuid.slice(0,  8) + "-" +
-  serialUuid.slice(8,  12) + "-" +
-  serialUuid.slice(12, 16) + "-" +
-  serialUuid.slice(16, 20) + "-" +
-  serialUuid.slice(20, 32);
+// SUPPLY-12 — CycloneDX 1.6 §4.2 requires serialNumber to be a UUID
+// uniquely identifying the BOM artifact. Deriving the UUID from the
+// rootPkg.version made every rebuild of the SAME version produce the
+// same serialNumber — BOM-diff tools (Dependency-Track, Snyk SBOM
+// Monitor) couldn't distinguish rebuilds that should be independent
+// artifacts (different timestamps, different lifecycles). Switch to
+// crypto.randomUUID() per invocation; downstream consumers rely on
+// serialNumber-per-build identity, not version-stable identity.
+var serialNumber = "urn:uuid:" + crypto.randomUUID();
+
+// SUPPLY-15 — CycloneDX 1.6 §4.4 (metadata.supplier) + SLSA v1.0
+// provenance attestation require a `supplier` block on every BOM the
+// build pipeline emits. `gh attestation verify` walks the chain and
+// fails closed when the SBOM omits metadata.supplier. The supplier
+// for blamejs framework artifacts is the framework maintainer
+// publisher identity.
+var FRAMEWORK_SUPPLIER = {
+  "name": "blamejs",
+  "url":  ["https://blamejs.com/"],
+};
+
+// SUPPLY-22 — CycloneDX 1.6 §4.4.2 — metadata.lifecycles[] entries
+// MAY carry externalReferences pointing at the build pipeline that
+// produced this BOM. Provenance walkers (Sigstore, SLSA verifiers)
+// reach for these when correlating the BOM to its build run.
+// GITHUB_SERVER_URL + GITHUB_REPOSITORY + GITHUB_RUN_ID are populated
+// by Actions; absent locally the externalRef is omitted.
+function _githubActionsRunUrl() {
+  var server = process.env.GITHUB_SERVER_URL;                       // allow:raw-process-env — read by env-driven script
+  var repo   = process.env.GITHUB_REPOSITORY;                       // allow:raw-process-env — read by env-driven script
+  var runId  = process.env.GITHUB_RUN_ID;                           // allow:raw-process-env — read by env-driven script
+  if (typeof server === "string" && server.length > 0 &&
+      typeof repo === "string" && repo.length > 0 &&
+      typeof runId === "string" && runId.length > 0) {
+    return server + "/" + repo + "/actions/runs/" + runId;
+  }
+  return null;
+}
+
+// SUPPLY-14 — CycloneDX 1.6 §4.6 — license.id MUST be a valid SPDX
+// license-list identifier. Non-SPDX prose ("BIMI Group / per-issuer")
+// falls into license.name (the free-text fallback) so consumers
+// parsing SBOM-as-SPDX don't reject the whole BOM on an unknown
+// identifier. Keep the validator narrow — full SPDX list has
+// hundreds of entries; we cover the common SPDX identifiers used by
+// the framework's vendored deps, then anything else routes to
+// license.name with `license_is_spdx: false` honoring the manifest's
+// explicit override.
+var SPDX_LICENSE_IDS = Object.freeze({
+  "0BSD": 1, "Apache-2.0": 1, "BSD-2-Clause": 1, "BSD-3-Clause": 1,
+  "CC0-1.0": 1, "CC-BY-3.0": 1, "CC-BY-4.0": 1, "CC-BY-SA-4.0": 1,
+  "GPL-2.0-only": 1, "GPL-2.0-or-later": 1, "GPL-3.0-only": 1,
+  "GPL-3.0-or-later": 1, "LGPL-2.1-only": 1, "LGPL-2.1-or-later": 1,
+  "LGPL-3.0-only": 1, "LGPL-3.0-or-later": 1, "ISC": 1, "MIT": 1,
+  "MIT-0": 1, "MPL-2.0": 1, "Unlicense": 1, "WTFPL": 1, "Zlib": 1,
+});
+
+function _licenseFor(entry) {
+  if (typeof entry.license !== "string" || entry.license.length === 0) return null;
+  // Operator-explicit non-SPDX flag takes precedence.
+  if (entry.license_is_spdx === false) {
+    return [{ license: { name: entry.license } }];
+  }
+  // SPDX identifier check — license-list match goes to `id`, free text
+  // to `name`. Spec-conformant SBOM consumers reject license.id =
+  // "BIMI Group / per-issuer" since it isn't on the SPDX list.
+  if (SPDX_LICENSE_IDS[entry.license]) {
+    return [{ license: { id: entry.license } }];
+  }
+  return [{ license: { name: entry.license } }];
+}
 
 function _purlFor(entry, key) {
   // Manifest key IS the npm package name for npm-mapped entries.
@@ -111,6 +173,7 @@ var doc = {
   "metadata": {
     "timestamp": new Date().toISOString(),
     "lifecycles": [{ "phase": "build" }],
+    "supplier":  FRAMEWORK_SUPPLIER,
     "tools": [
       {
         "vendor":  "blamejs",
