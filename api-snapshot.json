@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.1",
-  "createdAt": "2026-05-16T17:10:36.756Z",
+  "frameworkVersion": "0.10.2",
+  "createdAt": "2026-05-16T22:15:41.231Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -27291,6 +27291,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "consecutiveStarPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27311,6 +27315,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxConsecutiveStars": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "maxPatternBytes": {
                   "type": "primitive",
                   "valueType": "number"
@@ -27318,6 +27326,10 @@
                 "maxRuntimeMs": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "nestedExtglobPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "nestedQuantPolicy": {
                   "type": "primitive",
@@ -27348,6 +27360,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "consecutiveStarPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27368,6 +27384,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxConsecutiveStars": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "maxPatternBytes": {
                   "type": "primitive",
                   "valueType": "number"
@@ -27375,6 +27395,10 @@
                 "maxRuntimeMs": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "nestedExtglobPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "nestedQuantPolicy": {
                   "type": "primitive",
@@ -27405,6 +27429,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "consecutiveStarPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27425,6 +27453,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxConsecutiveStars": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "maxPatternBytes": {
                   "type": "primitive",
                   "valueType": "number"
@@ -27432,6 +27464,10 @@
                 "maxRuntimeMs": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "nestedExtglobPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "nestedQuantPolicy": {
                   "type": "primitive",
@@ -27462,6 +27498,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "consecutiveStarPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27482,6 +27522,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxConsecutiveStars": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "maxPatternBytes": {
                   "type": "primitive",
                   "valueType": "number"
@@ -27489,6 +27533,10 @@
                 "maxRuntimeMs": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "nestedExtglobPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "nestedQuantPolicy": {
                   "type": "primitive",
@@ -27521,6 +27569,10 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "consecutiveStarPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "controlPolicy": {
               "type": "primitive",
               "valueType": "string"
@@ -27537,6 +27589,10 @@
               "type": "primitive",
               "valueType": "number"
             },
+            "maxConsecutiveStars": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "maxPatternBytes": {
               "type": "primitive",
               "valueType": "number"
@@ -27546,6 +27602,10 @@
               "valueType": "number"
             },
             "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nestedExtglobPolicy": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -27618,6 +27678,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "consecutiveStarPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27634,6 +27698,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxConsecutiveStars": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "maxPatternBytes": {
                   "type": "primitive",
                   "valueType": "number"
@@ -27641,6 +27709,10 @@
                 "maxRuntimeMs": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "nestedExtglobPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "nestedQuantPolicy": {
                   "type": "primitive",
@@ -27671,6 +27743,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "consecutiveStarPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27687,6 +27763,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxConsecutiveStars": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "maxPatternBytes": {
                   "type": "primitive",
                   "valueType": "number"
@@ -27694,6 +27774,10 @@
                 "maxRuntimeMs": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "nestedExtglobPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "nestedQuantPolicy": {
                   "type": "primitive",
@@ -27724,6 +27808,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "consecutiveStarPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27740,6 +27828,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxConsecutiveStars": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "maxPatternBytes": {
                   "type": "primitive",
                   "valueType": "number"
@@ -27747,6 +27839,10 @@
                 "maxRuntimeMs": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "nestedExtglobPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "nestedQuantPolicy": {
                   "type": "primitive",
@@ -31446,6 +31542,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxNumericCharRefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "nullBytePolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -31520,6 +31620,10 @@
                   "valueType": "number"
                 },
                 "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNumericCharRefs": {
                   "type": "primitive",
                   "valueType": "number"
                 },
@@ -31600,6 +31704,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxNumericCharRefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "nullBytePolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -31677,6 +31785,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxNumericCharRefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "nullBytePolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -31749,6 +31861,10 @@
               "valueType": "number"
             },
             "maxElements": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxNumericCharRefs": {
               "type": "primitive",
               "valueType": "number"
             },
@@ -31881,6 +31997,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxNumericCharRefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "nullBytePolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -31954,6 +32074,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "maxNumericCharRefs": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "nullBytePolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -32024,6 +32148,10 @@
                   "valueType": "number"
                 },
                 "maxElements": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "maxNumericCharRefs": {
                   "type": "primitive",
                   "valueType": "number"
                 },
