@@ -2314,6 +2314,14 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/break-glass.js:_validatePolicySet",
+        "lib/external-db.js:assertRoleHardening",
+        "lib/mail-deploy.js:mtaStsPublish",
+      ],
+      reason: "Three structurally-unrelated primitives — break-glass policy validation, external-db role-hardening assertion, mail-deploy MTA-STS policy publish — share a `validateOpts.requireObject` + per-field type-check + `Array.isArray` length-cap cascade. Each validates its own domain-specific opts shape; consolidating would couple privacy / DB / mail-protocol opt vocabularies under one ambiguous validator.",
+    },
+    {
+      files: [
         "lib/guard-cidr.js:compliancePosture",
         "lib/guard-domain.js:compliancePosture",
         "lib/guard-jsonpath.js:compliancePosture",
