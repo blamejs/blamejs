@@ -2146,6 +2146,34 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:deviceAuthorization",
+        "lib/auth/oauth.js:parseCallback",
+        "lib/ddl-change-control.js:_hashSql",
+        "lib/mail-rbl.js:query",
+      ],
+      reason: "Defensive opts-object validation shape (typeof check + length / regex / range guard + RFC-specific typed-error throw) appears across RFC 8628 device authorization, OAuth callback parsing, DDL change-control SQL hashing, and DNSBL query parameter validation. Each error class belongs to its own RFC namespace and the validated fields are domain-specific (device_code vs SQL statement vs DNSBL hostname); consolidation would couple unrelated specs.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/agent-snapshot.js:_runHandler",
+        "lib/dsr.js:submit",
+        "lib/self-update.js:poll",
+      ],
+      reason: "Async-handler invocation shape — try/catch wrapper around a user-supplied callback that emits a typed audit event on failure and surfaces a domain-specific error class. agent-snapshot drains in-flight envelopes, dsr.submit runs operator request handlers under retention posture, self-update.poll runs the operator release-URL fetch. Each owns a distinct audit namespace and error class; consolidation would couple snapshot drain semantics with DSR retention and self-update polling.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/guard-email.js:_detectAddressIssues",
+        "lib/middleware/scim-server.js:_parseQuery",
+        "lib/self-update.js:_splitSemver",
+      ],
+      reason: "Three unrelated string-parser primitives that incidentally share a 50-token charCodeAt-driven scan shingle. _detectAddressIssues walks RFC 5322 addr-spec bytes; _parseQuery walks SCIM filter tokens (RFC 7644 §3.4.2.2); _splitSemver walks SemVer 2.0.0 §2 version-core + pre-release + build identifiers. Each owns a domain-specific error class. Consolidation would couple RFC 5322 / RFC 7644 / SemVer parsing into one primitive none of them want.",
+    },
+    {
       files: [
         "lib/auth/dpop.js:verify",
         "lib/auth/jwt.js:_requireNumericDate",
@@ -3286,6 +3314,106 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: ["lib/db.js:_tick", "lib/network-tls.js:_tick", "lib/ntp-check.js:_tick"],
       reason: "Periodic-monitor scaffolding — db.integrityMonitor / network-tls.expiryMonitor / ntpCheck.monitor each spin a `safeAsync.repeating` worker that performs a poll, emits an audit + observability event on every tick, fires an operator hook on threshold crossing, and returns a `.stop()` handle. Three different domains (SQLite corruption / TLS cert expiry / NTP clock drift); the 50-token shingle is the worker scaffold + emit shape, not the domain logic. Future consolidation candidate when a 4th periodic monitor lands.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/a2a-tasks.js:_readBody",
+        "lib/auth/step-up.js:_quote",
+        "lib/cache-status.js:_parseParamValue",
+        "lib/client-hints.js:acceptList",
+        "lib/daemon.js:_safeAuditEmit",
+        "lib/guard-dsn.js:<top>",
+        "lib/guard-dsn.js:_resolveProfile",
+        "lib/guard-envelope.js:check",
+        "lib/guard-idempotency-key.js:validate",
+        "lib/guard-imap-command.js:<top>",
+        "lib/guard-imap-command.js:validate",
+        "lib/guard-jmap.js:<top>",
+        "lib/guard-jmap.js:validate",
+        "lib/guard-jwt.js:kidSafe",
+        "lib/guard-list-id.js:<top>",
+        "lib/guard-list-id.js:_refuse",
+        "lib/guard-list-id.js:_resolveProfile",
+        "lib/guard-list-unsubscribe.js:_resolveProfile",
+        "lib/guard-list-unsubscribe.js:_verdict",
+        "lib/guard-mail-compose.js:<top>",
+        "lib/guard-mail-compose.js:_checkHeaderValue",
+        "lib/guard-mail-move.js:<top>",
+        "lib/guard-mail-move.js:_checkFolderName",
+        "lib/guard-mail-query.js:<top>",
+        "lib/guard-mail-sieve.js:<top>",
+        "lib/guard-managesieve-command.js:<top>",
+        "lib/guard-managesieve-command.js:validate",
+        "lib/guard-message-id.js:validate",
+        "lib/guard-pop3-command.js:<top>",
+        "lib/guard-pop3-command.js:validate",
+        "lib/guard-posture-chain.js:<top>",
+        "lib/guard-posture-chain.js:validate",
+        "lib/guard-smtp-command.js:<top>",
+        "lib/guard-smtp-command.js:_parseAuthCommandSyntax",
+        "lib/guard-smtp-command.js:_resolveProfile",
+        "lib/guard-smtp-command.js:validate",
+        "lib/guard-stream-args.js:<top>",
+        "lib/keychain.js:_drain",
+        "lib/mail-dav.js:_emit",
+        "lib/mail-dav.js:_readBodyBytes",
+        "lib/mail-greylist.js:create",
+        "lib/mail-helo.js:evaluate",
+        "lib/mail-rbl.js:create",
+        "lib/mail-scan.js:create",
+        "lib/mail-scan.js:scan",
+        "lib/mail-server-imap.js:_emit",
+        "lib/mail-server-imap.js:_handleAuthenticate",
+        "lib/mail-server-imap.js:close",
+        "lib/mail-server-imap.js:create",
+        "lib/mail-server-imap.js:listen",
+        "lib/mail-server-jmap.js:_emit",
+        "lib/mail-server-jmap.js:create",
+        "lib/mail-server-managesieve.js:_dispatch",
+        "lib/mail-server-managesieve.js:_emit",
+        "lib/mail-server-managesieve.js:close",
+        "lib/mail-server-managesieve.js:create",
+        "lib/mail-server-managesieve.js:listen",
+        "lib/mail-server-mx.js:_emit",
+        "lib/mail-server-mx.js:_validateDomainHardened",
+        "lib/mail-server-mx.js:listen",
+        "lib/mail-server-pop3.js:_dispatch",
+        "lib/mail-server-pop3.js:_emit",
+        "lib/mail-server-pop3.js:_handlePass",
+        "lib/mail-server-pop3.js:close",
+        "lib/mail-server-pop3.js:create",
+        "lib/mail-server-pop3.js:listen",
+        "lib/mail-server-submission.js:_emit",
+        "lib/mail-server-submission.js:_handleAuth",
+        "lib/mail-server-submission.js:_handleCommand",
+        "lib/mail-server-submission.js:_validateDomainHardened",
+        "lib/mail-server-submission.js:listen",
+        "lib/mail-spam-score.js:_sanitizeReasons",
+        "lib/mail-spam-score.js:create",
+        "lib/middleware/bearer-auth.js:create",
+        "lib/middleware/require-content-type.js:_normalizeAllowed",
+        "lib/outbox.js:create",
+        "lib/router.js:_matchCompiled",
+        "lib/safe-dns.js:_decodeOpt",
+        "lib/safe-dns.js:_resolveProfile",
+        "lib/safe-ical.js:<top>",
+        "lib/safe-ical.js:_parseContentLine",
+        "lib/safe-ical.js:_stripDoubleQuotes",
+        "lib/safe-icap.js:_detectThreat",
+        "lib/safe-icap.js:_findHeaderEnd",
+        "lib/safe-icap.js:_resolveProfile",
+        "lib/safe-mime.js:_findHeaderBodySep",
+        "lib/safe-smtp.js:findDotTerminator",
+        "lib/safe-vcard.js:<top>",
+        "lib/safe-vcard.js:_parseContentLine",
+        "lib/safe-vcard.js:_stripDoubleQuotes",
+        "lib/sandbox.js:_validateAllowed",
+        "lib/self-update.js:<top>",
+        "lib/self-update.js:_safeAuditEmit",
+        "lib/watcher.js:_compileIgnore",
+      ],
+      reason: "v0.9.58 mail-stack bundle (multi-agent parallel ship: ManageSieve + ICAP + PGP/SMIME + DAV) — every new lib/ file written by the 4 sub-agents joins one or more existing family-subset clusters (guard-* validate / <top> banner shapes; mail-server-* listener scaffolds; safe-* line-folded parsers; emit-audit wrappers; resolveProfile dispatchers). Each underlying domain stays distinct (different RFCs, different wire grammars); the shared shingle is the framework's family-contract scaffolding (`b.gateContract` / listener template / safeBuffer.boundedChunkCollector / lazyRequire-audit / drop-silent emit). Consolidation into a single base module would couple unrelated wire-protocol grammars under one abstraction. Documented as one cluster rather than 49 individual family-subset entries because each cluster fingerprint is a subset of this union.",
     },
     {
       files: [
@@ -4580,6 +4708,67 @@ function testNoLegacyUrlFormat() {
           "(CVE-2026-21712 IDN crash class)", matches);
 }
 
+// ---- Pattern 43b: req.headersDistinct — CVE-2026-21710 prototype-poison ----
+
+function testNoRawHeadersDistinct() {
+  // class: raw-headers-distinct
+  // CVE-2026-21710 — `req.headersDistinct` is implemented as a
+  // getter; reading it on a request whose header bag carries a
+  // `__proto__` key throws synchronously, before any handler-level
+  // try/catch can engage. `b.requestHelpers.safeHeadersDistinct` is
+  // the defensive replacement (skips poison keys, returns a null-
+  // prototype object, never throws). The detector refuses any
+  // direct `.headersDistinct` property access in lib/.
+  var matches = _scan(/\.headersDistinct\b/);
+  // request-helpers.js IS the safe wrapper; its JSDoc references
+  // the symbol but the source-only filter already strips comment
+  // lines. Belt-and-braces: skip the helper itself.
+  matches = matches.filter(function (m) { return m.file !== "lib/request-helpers.js"; });
+  matches = _filterMarkers(matches, "raw-headers-distinct");
+  _report("req.headersDistinct routes through " +
+          "b.requestHelpers.safeHeadersDistinct (CVE-2026-21710 prototype-poison crash class)",
+    matches);
+}
+
+// ---- Pattern 43c: dense wildcard runs — CVE-2026-4923 router / picomatch ----
+
+function testNoDenseWildcardRunsInLib() {
+  // class: dense-wildcard
+  // CVE-2026-4923 — multi-wildcard route / glob patterns compile
+  // to catastrophic-backtracking regex on engines that fold `*`
+  // into a regex alternation. The framework's router refuses at
+  // registerRoute and the framework ships no picomatch / minimatch
+  // dep, but a future change that lands one would be a regression.
+  // Detector refuses any line in lib/ that carries 4+ consecutive
+  // `*` metacharacters outside comments (handled by _scan's
+  // skipComments). The regex is the bare run — no surrounding
+  // string-literal anchors so the matcher can't itself
+  // catastrophic-backtrack on long lines.
+  var matches = _scan(/\*{4,}/);
+  matches = _filterMarkers(matches, "dense-wildcard");
+  _report("no source line carries 4+ consecutive '*' (CVE-2026-4923 " +
+          "/ CVE-2026-33671 / CVE-2026-26996 wildcard-amplification class)",
+    matches);
+}
+
+// ---- Pattern 43d: uncapped Object.fromEntries(URLSearchParams) ----
+
+function testNoUncappedSearchParamsObject() {
+  // class: uncapped-searchparams-object
+  // CVE-2026-21717 — V8 HashDoS via integer-shaped query keys. A
+  // request to `/?0=&1=&2=&...` flushed through
+  // `Object.fromEntries(searchParams)` builds an object whose
+  // hidden-class transitions degrade to O(n^2). Cap key count
+  // before walking. The router's handle() applies the cap inline
+  // (search for MAX_QUERY_KEYS); any other call site that walks
+  // `searchParams` into a plain object without a cap is a smell.
+  var matches = _scan(/Object\.fromEntries\([^)]*searchParams/);
+  matches = _filterMarkers(matches, "uncapped-searchparams-object");
+  _report("Object.fromEntries(searchParams) must enforce a key cap " +
+          "(CVE-2026-21717 V8 HashDoS class)",
+    matches);
+}
+
 // ---- Pattern 44: vendor-deny — axios / xml-crypto / saml class ----
 
 // CVE-2026-25639 / 42033 / 42041 / 40175 — axios prototype-pollution.
@@ -4660,6 +4849,151 @@ function testNoStateStampsInPublicDocs() {
 //   4. The catalog scans whole-file content (multiline regex) so
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
+  {
+    // Codex P2 (v0.10.0) — RFC byte-cap checks measured via JS string
+    // `.length` (UTF-16 code units) for fields the RFC defines as
+    // octet-based. Inputs containing non-ASCII characters silently
+    // bypass the cap; downstream storage / wire-protocol layers can
+    // then receive payloads longer than the advertised byte limit.
+    // ManageSieve §2.1 script-name was the bug class: 256 emoji
+    // characters = 256 UTF-16 code units but 1024 UTF-8 bytes,
+    // sneaking past a 512-byte cap. Use `Buffer.byteLength(s, "utf8")`
+    // for any cap labeled "bytes" or matched to an RFC octet limit.
+    id: "utf16-length-as-byte-cap",
+    primitive: "Buffer.byteLength(name, \"utf8\") > capInBytes",
+    regex: /\b(?:name|input|s|str)\.length\s*>\s*\w*(?:maxBytes|MaxBytes|ByteCap|byteCap|maxScriptNameBytes|maxValueBytes|maxLineBytes|maxHeaderBytes)\b/,
+    allowlist: [
+      // ASCII-only field domains where length === byteLength holds by
+      // construction (verb tokens, IP literals, base64 alphabets,
+      // hex-digit checks, RFC 5321 LDH-domain labels).
+      "lib/safe-buffer.js",
+      "lib/safe-url.js",
+      "lib/parsers/safe-ini.js",
+      "lib/parsers/safe-toml.js",
+      // guard-html / guard-svg: pre-existing — the maxBytes check
+      // intentionally caps the JS-string size (post-coercion at the
+      // primitive's entry boundary). Sanitizer runs UTF-16-aware
+      // tokenization; multibyte excess is a downstream property of
+      // the sanitizer output, not the input cap. Follow-up audit
+      // tracks whether the cap should switch to Buffer.byteLength
+      // for byte-accurate semantics, but the current behavior
+      // matches the operator-supplied profile's intent (string
+      // length, not wire-size).
+      "lib/guard-html.js",
+      "lib/guard-svg.js",
+    ],
+    reason: "Codex flagged guard-managesieve-command using .length (UTF-16 code units) for RFC 5804 §2.1's octet-based script-name cap. Non-ASCII names bypassed the byte limit. New code measuring against a *byte* cap MUST use Buffer.byteLength; .length is correct only for ASCII-only domains explicitly allowlisted above.",
+  },
+  {
+    // CVE-2026-22817 — alg/kty confusion. Importing a JWK via
+    // nodeCrypto.createPublicKey({ key: jwk, format: "jwk" }) WITHOUT
+    // a preceding `_assertAlgKtyMatch(alg, jwk)` call is the
+    // confused-deputy shape: an attacker-controlled `alg: "HS256"`
+    // against an RSA-kty JWK has node:crypto.verify treat the public
+    // key bytes as an HMAC secret. Every JWT verifier in the framework
+    // (oauth.verifyIdToken / jwt-external.verify / oid4vci proof
+    // verify / sd-jwt-vc.verify / openid-federation.verifyEntityStatement)
+    // routes through jwtExternal._assertAlgKtyMatch.
+    id: "jwk-import-without-alg-kty-check",
+    primitive: "jwtExternal._assertAlgKtyMatch(alg, jwk) BEFORE createPublicKey({ key: jwk, format: 'jwk' })",
+    // Trip on a JWK→key import (`createPublicKey({ key: ..., format:
+    // "jwk" })`) that lives in a `_jwkToKey`-style helper WITHOUT a
+    // sibling call to `_assertAlgKtyMatch` (or `jwtExternal._assertAlgKtyMatch`)
+    // anywhere in the helper's enclosing function. The regex looks
+    // for the JWK-import inside a function whose body never names
+    // the helper — within a bounded window.
+    //
+    // Implementation: match the JWK-import shape. Files in the
+    // allowlist below have audited helpers either (a) at the
+    // import site, (b) at every caller upstream of it, or (c) at
+    // a non-attacker-controlled JWK shape (sign-side / pinned-key
+    // paths). New code MUST either add the call adjacent to the
+    // import OR add an allowlist entry with a justification.
+    regex: /createPublicKey\s*\(\s*\{\s*key:\s*\w+(?:\.\w+)?\s*,\s*format:\s*["']jwk["']/,
+    allowlist: [
+      // The helper lives here and exports it; verifyExternal routes
+      // every JWK through _assertAlgKtyMatch BEFORE handing it to
+      // _jwkToKey. The local createPublicKey call inside _jwkToKey
+      // runs after the helper has gated.
+      "lib/auth/jwt-external.js",
+      // oauth.js — verifyIdToken calls jwtExternal._assertAlgKtyMatch
+      // BEFORE _jwkToKey on every code path that resolves a JWK from
+      // an attacker-supplied header.kid.
+      "lib/auth/oauth.js",
+      // sd-jwt-vc.js — verify() calls jwtExternal._assertAlgKtyMatch
+      // before _verifyJwt on every JWK-resolved path.
+      "lib/auth/sd-jwt-vc.js",
+      // openid-federation.js — verifyEntityStatement calls the helper
+      // BEFORE createPublicKey on every code path.
+      "lib/auth/openid-federation.js",
+      // oid4vci.js — _verifyProofJwt calls the helper BEFORE
+      // createPublicKey on the holder JWK.
+      "lib/auth/oid4vci.js",
+      // dpop.js builds proofs (sign-side) using the embedded JWK; the
+      // proof's alg comes from the SAME header the JWK is read from
+      // and is exhaustively validated via _signParamsForAlg /
+      // SUPPORTED_ALGS. The DPoP-specific verify path is special-
+      // cased to the proof's own embedded jwk (not a JWKS lookup),
+      // so alg-confusion can't cross signers.
+      "lib/auth/dpop.js",
+      // jwt.js is the PQC-only framework-signed-JWT verifier; alg is
+      // fixed to ML-DSA-* and the JWK kty=AKP shape is the only
+      // acceptable input.
+      "lib/auth/jwt.js",
+      // sd-jwt-vc-issuer.js / sd-jwt-vc-holder.js — issuer signing
+      // path imports the operator-supplied private key, not an
+      // attacker-controlled JWK. Verify path lives in sd-jwt-vc.js.
+      "lib/auth/sd-jwt-vc-issuer.js",
+      "lib/auth/sd-jwt-vc-holder.js",
+      // saml.js — SAML signatures use X.509 cert paths, not JWKs.
+      "lib/auth/saml.js",
+      // FIDO MDS3 — operator-pinned root CA chain, JWK consumed only
+      // after the chain itself is verified out-of-band.
+      "lib/auth/fido-mds3.js",
+      // status-list.js — minted JWS by the framework itself, JWK
+      // comes from the operator's pinned key set.
+      "lib/auth/status-list.js",
+    ],
+    reason: "CVE-2026-22817 — every JWT verifier that resolves a JWK BY ATTACKER-CONTROLLED HEADER (kid / x5t) must cross-check the declared alg against the JWK's kty (and crv for EC) BEFORE handing the key to node:crypto.verify. Imports that skip the check are exactly the confused-deputy shape (RS256→HS256 family). The shared helper `jwtExternal._assertAlgKtyMatch(alg, jwk)` is the single point of enforcement; new code routes through it. Allowlist entries are sign-side / pinned-cert paths where the JWK is not attacker-supplied.",
+  },
+  {
+    // CVE-2026-23552 — cross-realm JWT acceptance via non-CT iss
+    // compare. `payload.iss !== expectedIssuer` (or claims.iss / token.iss)
+    // leaks prefix-timing bytes that let an attacker narrow which
+    // realm the verifier accepts. Use `jwtExternal._issuerMatches`
+    // (constant-time, handles unequal-length safely).
+    id: "non-ct-iss-compare",
+    primitive: "jwtExternal._issuerMatches(actual, expected) — constant-time iss compare",
+    regex: /(?:payload|claims|token)\.iss\s*!==\s*(?:opts\.issuer|vopts\.issuer|expectedIssuer|configuredIssuer|this\.issuer|preset\.issuer)\b/,
+    allowlist: [
+      // jwt-external + oauth are the helpers' canonical home + main
+      // consumer; both route through _issuerMatches now. Files in
+      // allowlist below are non-JWT iss comparisons (string-equality
+      // on configuration values, not attacker-controlled payloads).
+    ],
+    reason: "CVE-2026-23552 — JWT iss comparisons against attacker-controlled payload values leak prefix-timing via `!==`. Every JWT verifier in the framework (oauth.verifyIdToken / jwt-external.verifyExternal / oauth.parseFrontchannelLogoutRequest / sd-jwt-vc.verify) routes through jwtExternal._issuerMatches for constant-time comparison. Detection is precise: `payload.iss !== ...` / `claims.iss !== ...` / `token.iss !== ...` is the JWT-verify-side shape. Non-JWT iss checks (e.g. discovery-document self-consistency where iss came from the same TLS-fetched body) are not in scope and don't match the regex.",
+  },
+  {
+    // CVE-2026-23993 — accepting unknown JOSE alg values via a
+    // `switch (alg) { default: ... }` permissive default-branch is
+    // the canonical shape. Verifiers MUST throw in the default
+    // branch (no fall-through to a permissive "any signature"
+    // path). The detector catches `switch (...alg)` (case-
+    // insensitive) where the default branch returns/falls through
+    // without throwing.
+    id: "jose-alg-switch-permissive-default",
+    primitive: "Throw in the default branch of any switch on a JOSE alg value (refuse unknown alg outright)",
+    // Match `switch (alg) { ... default: return ... }` /
+    // `default: break` — the specific permissive shape. Throwing
+    // defaults pattern as `default:\s*throw` and are NOT matched.
+    regex: /switch\s*\(\s*\w*[Aa]lg\w*\s*\)\s*\{[\s\S]{0,1500}?default:\s*(?:return|break|\/\/[^\n]*\n\s*\})/,
+    allowlist: [
+      // sd-jwt-vc.js's _resolveSigAlgo DOES throw in the default
+      // branch, so it doesn't match. Other auth files use
+      // explicit if-cascades that throw, also not matched.
+    ],
+    reason: "CVE-2026-23993 — JWT verifiers that accept unknown alg values via a permissive switch-default branch are the canonical bypass class. Every alg-dispatch primitive in the framework throws in the default branch (`throw new AuthError('.../unsupported-alg', ...)`) so an unrecognized alg can never reach a signature-verify call. The detector specifically flags `switch (alg)` (or `switch (header.alg)` / `switch (sigAlgo)`) whose default-branch returns / breaks rather than throwing. New alg-dispatch code throws in the default — no exceptions.",
+  },
   {
     id: "inline-codepoint-class-table",
     primitive: "codepointClass.BIDI_RE / C0_CTRL_RE / ZERO_WIDTH_RE / NULL_RE_G / hex4 / charClass / fromCp",
@@ -5244,6 +5578,44 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "Per Documentation/filesystems/proc.rst §3.5, /proc/self/mountinfo field 6 (mount options) does NOT carry a 'bind' tag — the kernel exposes bind-mount provenance via field 4 ('root within source filesystem'), which is '/' for a regular mount and the bound source path for a bind mount. Checking the options field for 'bind' never fires for actual bind mounts and silently misses the failure mode it claims to defend. Detector catches the mis-parse shape at n=1.",
   },
+  {
+    id: "starttls-tlssocket-construct-direct",
+    primitive: "b.mail.server.tls.upgradeSocket({ plainSocket, secureContext, onSecure, onData, onError })",
+    // CVE-2021-33515 / CVE-2021-38371 class: direct `new nodeTls.TLSSocket(<socket>` construction in a
+    // mail-server listener bypasses the shared upgrade helper. The helper strips the plain-socket "data"
+    // listener (smuggling defense), pauses, and wires the new TLSSocket. New mail-server-* listeners that
+    // construct TLSSocket directly trip this detector at n=1.
+    regex: /new\s+nodeTls\.TLSSocket\s*\(\s*socket\b/,
+    allowlist: [
+      // upgradeSocket helper itself constructs the TLSSocket; listener removal happens INSIDE it.
+      "lib/mail-server-tls.js",
+    ],
+    reason: "STARTTLS / STLS upgrade across MX / submission / IMAP / POP3 listeners. CVE-2021-33515 (Dovecot) + CVE-2021-38371 (Exim) — plaintext bytes pipelined ahead of the handshake reach the post-TLS dispatcher when the plain socket's 'data' listener is not stripped before TLSSocket wraps. Centralized in mail-server-tls.upgradeSocket which removes the listener + pauses the socket + wraps + re-arms idle timeout + wires onSecure / onData / onError. New listeners route through the helper.",
+  },
+  {
+    id: "dot-stuff-jsregex-bare-lf",
+    primitive: "b.safeSmtp.dotStuff(buf) — CRLF-aware byte-level dot-stuffing",
+    // MAIL-15 — `.replace(/^\./gm, "..")` on a JS string treats bare LF as a line boundary, so bodies
+    // containing bare-LF lines that start with '.' gain spurious stuffing the receiver's strict-CRLF
+    // parser won't undo. Route through safeSmtp.dotStuff which only treats canonical \r\n as a boundary.
+    regex: /\.replace\(\s*\/\^\\\.\/gm\s*,\s*["']\.\.["']\s*\)/,
+    allowlist: [],
+    reason: "POP3 RETR + SMTP DATA dot-stuffing. The JS regex `/^\\./gm` matches bare-LF line starts as well as CRLF starts, so the stuffing differs from RFC 1939 §3 / RFC 5321 §4.5.2 (canonical CRLF only). Use b.safeSmtp.dotStuff(buf) on the raw Buffer — it walks bytes and recognizes ONLY \\r\\n as a line boundary.",
+  },
+  {
+    id: "starttls-listener-remove-missing",
+    primitive: "Use b.mail.server.tls.upgradeSocket which calls removeAllListeners(\"data\") on the plain socket",
+    // CVE-2021-33515 / CVE-2021-38371. New listener files that import nodeTls AND construct a TLSSocket
+    // anywhere AND do not call mailServerTls (the helper composition) trip this at n=1. Simple regex —
+    // matches `new nodeTls.TLSSocket(` without requiring lookbehind.
+    regex: /new\s+nodeTls\.TLSSocket\s*\(\s*rawSocket\b/,
+    allowlist: [
+      // Submission listener's implicit-TLS path (port 465) wraps the FIRST byte on the wire — no
+      // plaintext predecessor, so listener removal is moot.
+      "lib/mail-server-submission.js",
+    ],
+    reason: "STARTTLS / STLS upgrade — only the upgradeSocket helper is allowed to wrap a TLSSocket around a previously-attached plain socket. The implicit-TLS variant on port 465 wraps the rawSocket BEFORE any plain bytes are read (no listener to remove), so it stays allowlisted.",
+  },
 ];
 
 // @example placeholder detection lives in
@@ -5484,6 +5856,203 @@ function testScopedContextBindingUsed() {
     bad);
 }
 
+// ---- Pattern: DNS lookup falls back to node:dns instead of safeDns ----
+//
+// Surfaced 2026-05-15 audit MAIL-8 — `mail-dkim` / `mail-auth` fell back
+// to `require("node:dns/promises").resolveTxt(...)` (and `.reverse` /
+// `.resolve4` / `.resolve6`) when no operator-supplied `dnsLookup`
+// callback was provided. That path sends plaintext UDP/53 to whatever
+// the system resolver is and parses the response without any of
+// `b.safeDns`'s caps (RR count, name length, pointer-chain depth,
+// CNAME chain). Every downstream DKIM / SPF / DMARC / iprev finding
+// inherited that exposure (Kaminsky-class poisoning + parse-side
+// amplification).
+//
+// The framework's DoH-by-default path lives in
+// `b.network.dns.resolver` (v0.7.23); mail-* modules MUST route TXT /
+// PTR / A / AAAA lookups through a `_safeResolveTxt(qname,
+// operatorLookup)` helper that calls the resolver when no operator
+// lookup is supplied — never `require("node:dns")` directly. Single
+// `require("node:dns")` in any framework module is the smell.
+function testNoDirectNodeDnsInMail() {
+  // class: mail-direct-node-dns
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    // The transport layer (network-dns / network-dns-resolver) IS where
+    // node:dns gets called.
+    if (rel === "lib/network-dns.js" || rel === "lib/network-dns-resolver.js") continue;
+    // Scope this gate to the mail-auth verification family (DKIM /
+    // SPF / DMARC / ARC / iprev). mail-bimi / mail-rbl / mail-helo
+    // have their own resolver-composition paths (see opts.resolver
+    // in mail-rbl) — adding them here is a separate audit slice.
+    if (rel !== "lib/mail-auth.js" && rel !== "lib/mail-dkim.js" &&
+        rel !== "lib/mail-arc-sign.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      // Reach-through patterns: `require("node:dns")` or
+      // `dnsPromises.resolveTxt / .reverse / .resolve4 / .resolve6`.
+      if (/require\(\s*["']node:dns(?:\/promises)?["']\s*\)/.test(line) ||
+          /\bdns(?:Module|Promises)?\.(?:resolveTxt|reverse|resolve4|resolve6)\b/.test(line)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "mail-* module reaches `node:dns` directly — route through " +
+                   "`_safeResolveTxt` / `_safeReverse` / `_safeResolveA` helper " +
+                   "(composes `b.network.dns.resolver`, DoH default-on per " +
+                   "v0.7.23). MAIL-8 / CVE-2008-1447 / CVE-2022-3204.",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "mail-direct-node-dns");
+  _report("mail-* DNS lookup must compose b.network.dns.resolver, not node:dns directly (MAIL-8 — DoH default-on bypass)",
+    bad);
+}
+
+// ---- Pattern: Math.random() for protocol sampling / disposition rolls ----
+//
+// Surfaced 2026-05-15 audit MAIL-10 + MAIL-56 — DMARC pct sampling
+// used Math.random() which (a) is a non-cryptographic PRNG so the
+// roll can be predicted by an adversary aware of the receiver's
+// Node version, and (b) re-rolls per-call so the SAME message gets
+// different verdicts across SMTP retries. The framework requires
+// crypto-safe randomness AND, for retry-stable contracts, a
+// deterministic per-message key derivation (SHAKE256 over a stable
+// key → first 4 bytes → uint32 → modulo). Math.random anywhere
+// in protocol-relevant policy decisions is the smell.
+function testNoMathRandomInPolicyDecisions() {
+  // class: math-random-in-policy
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      if (!/\bMath\.random\s*\(/.test(line)) continue;
+      // Sampling / pct / disposition / quota / quarantine — the
+      // policy-decision lexicon. A Math.random hit on any of these
+      // shapes is the bug class.
+      if (/\b(?:pct|sample|disposition|quarantine|quota|policy|roll)\b/i.test(line)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "Math.random() used in a policy-decision context " +
+                   "(pct/sample/disposition/quarantine/quota/policy/roll) — " +
+                   "use crypto.randomInt for hardening floor; SHAKE256 over a " +
+                   "stable key for retry-determinism (MAIL-10 / MAIL-56).",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "math-random-in-policy");
+  _report("Math.random forbidden in policy-decision contexts — use crypto.randomInt OR SHAKE256(stable-key) per the retry-stability contract (MAIL-10 / MAIL-56)",
+    bad);
+}
+
+// ---- Pattern: DMARC alignment with naive text-suffix instead of PSL ----
+//
+// Surfaced 2026-05-15 audit MAIL-25 — relaxed alignment did a naive
+// `endsWith` comparison between From-domain and DKIM/SPF auth-domain.
+// `evil-bank.com` text-suffix-aligned with `bank.com` despite being
+// separately registered. Use `publicSuffix.organizationalDomain` to
+// compare PSL-tail org-domains. The shape "if (X.slice(-Y.length-1)
+// === '.' + Y) return true" is the inline form to refuse.
+function testNoNaiveSuffixAlignment() {
+  // class: naive-suffix-alignment
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel === "lib/public-suffix.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      // `X.slice(-Y.length - 1) === "." + Y` — the inline text-suffix-
+      // align shape. Common in DMARC / DKIM / SPF alignment helpers.
+      if (/\.slice\(\s*-\s*\w+\.length\s*-\s*1\s*\)\s*===\s*["']\.["']\s*\+\s*\w+/.test(line) ||
+          /\.endsWith\(\s*["']\.["']\s*\+\s*\w+\.toLowerCase\(\)\s*\)/.test(line)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "naive text-suffix alignment — separately-registered " +
+                   "confusables (`evil-bank.com` vs `bank.com`) pass. Use " +
+                   "`publicSuffix.organizationalDomain(d)` and compare org-" +
+                   "domains (MAIL-25 — RFC 7489 §3.1.1).",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "naive-suffix-alignment");
+  _report("relaxed-mode alignment MUST use publicSuffix.organizationalDomain, not naive text-suffix slice (MAIL-25 — RFC 7489 §3.1.1)",
+    bad);
+}
+
+// ---- Pattern: gunzip error not distinguishing bomb from corrupt ----
+//
+// Surfaced 2026-05-15 audit MAIL-39 — a single error code for "gunzip
+// failed" conflates an attacker-supplied decompression bomb (output
+// exceeded maxOutputLength) with operator-side corrupt stream. The
+// catch must inspect `e.code === "ERR_BUFFER_TOO_LARGE"` /
+// `e.code === "ERR_OUT_OF_RANGE"` / message containing "output length
+// exceeded" and emit a distinct error so audit can rate-limit the
+// source on amplification but not on garbled report uploads.
+function testGunzipBombDistinguished() {
+  // class: gunzip-bomb-conflated
+  // Scoped to mail-auth.js this audit; widen to other consumers when
+  // their respective audit slices land. Cheap line-walk instead of
+  // multiline regex over whole-file content (which OOMs on large
+  // files due to backtracking on `[\s\S]{0,N}?`).
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel !== "lib/mail-auth.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    if (!/\bgunzip(?:Sync)?\b/.test(content)) continue;
+    // Distinguished-catch check: BOTH a bomb-named error code AND a
+    // failed-named error code in the file body means the catch
+    // discriminates.
+    var hasBombCode = /-gunzip-bomb\b|gunzip-bomb["']/.test(content);
+    var hasFailedCode = /-gunzip-failed\b|gunzip-failed["']/.test(content);
+    if (hasBombCode && hasFailedCode) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (/\bgunzipSync\b/.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "gunzipSync catch must distinguish decompression-bomb " +
+                   "(output cap exceeded) from corrupt-stream — emit " +
+                   "distinct error codes so audit can rate-limit the " +
+                   "source on amplification (MAIL-39 — CVE-2024 zlib class).",
+        });
+        break;
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "gunzip-bomb-conflated");
+  _report("gunzip catch must distinguish bomb (output cap) from corrupt-stream (MAIL-39 — CVE-2024 zlib amplification class)",
+    bad);
+}
+
 // ---- Pattern: gitleaks-tripping high-entropy identifier without allowlist ----
 //
 // CI gitleaks scan flags long camelCase identifier names (e.g.
@@ -5689,6 +6258,164 @@ function testGitleaksTrippingPatternsAllowlisted() {
     bad);
 }
 
+// ---- Pattern: inline require() inside setImmediate / process.nextTick ----
+//
+// class: inline-require-in-deferred
+//
+// `setImmediate(() => require("./x").foo(...))` defers the require() to
+// the event loop tick instead of resolving it at module load. Same
+// drift class as testNoInlineRequires but inside scheduler callbacks,
+// where the inline shape used to be considered "intentional" for
+// circular-dep defense. The framework's lazy-require helper handles
+// the cycle cleanly; deferring the require inside setImmediate adds
+// a per-call cache lookup for no benefit.
+//
+// Caught in CRYPTO-15 (v0.9.58) — `lib/crypto.js` deferred the audit
+// module require to setImmediate inside the legacy-envelope decrypt
+// path. The fix routed through the lazyRequire('./audit') top-of-file
+// binding.
+function testNoInlineRequireInDeferred() {
+  var files = _libFiles();
+  var bad = [];
+  var re = /(?:setImmediate|process\.nextTick|setTimeout|queueMicrotask)\s*\([^)]*?\brequire\(["']\.\.?\//;
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    // Walk pairs of consecutive lines so the regex also catches the
+    // multi-line shape (`setImmediate(function () { ... require(...) })`).
+    for (var j = 0; j < lines.length; j++) {
+      var window = (lines[j] || "") + " " + (lines[j + 1] || "") + " " + (lines[j + 2] || "");
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[j])) continue;
+      if (re.test(window) && /\brequire\(["']\.\.?\//.test(window)) {
+        bad.push({
+          file:    _relPath(files[i]),
+          line:    j + 1,
+          content: lines[j].trim(),
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "inline-require-in-deferred");
+  _report("require() inside setImmediate / process.nextTick / queueMicrotask " +
+          "lifts to a top-of-file lazyRequire (CRYPTO-15)",
+    bad);
+}
+
+// ---- Pattern: vault.seal direct in dbStore-shaped sealed-row paths ----
+//
+// class: seal-without-aad
+//
+// `vault.seal(plaintext)` produces a ciphertext that decrypts in ANY
+// row of the same vault. A DB-write attacker can copy a sealed value
+// from a benign row into a sensitive row and the value decrypts
+// cleanly. CRYPTO-1 (v0.9.58) added `b.vault.aad.seal({ table, k,
+// column })` which AAD-binds the AEAD tag to the row identity tuple.
+//
+// New code in dbStore / sealed-column primitives MUST route through
+// `vault.aad.seal` (typically via `cryptoField.registerTable({ aad:
+// true })` + `cryptoField.sealRow`). Direct `vault.seal()` use is
+// only correct for whole-value envelopes the operator never copies
+// between rows (audit chain entries, single-tenant secrets, etc.) —
+// document with `// allow:seal-without-aad — <reason>` per call site.
+function testSealWithoutAad() {
+  // Grep for `vault.seal(` direct calls in files that call
+  // `cryptoField.registerTable` — those files are constructing
+  // per-row sealed-column primitives where cross-row swap is the
+  // relevant threat model. Other files (audit-sign, session,
+  // mail-store, db.js's whole-file key seal) use vault.seal for
+  // whole-value envelopes with no row-identity to bind to, and
+  // crypto-field.js itself owns the legacy plain-mode fallback.
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    // crypto-field.js / vault-aad.js are the primitives that DEFINE
+    // the sealing surface; the detector targets CALLERS that should
+    // route through them.
+    if (rel === "lib/crypto-field.js" || rel === "lib/vault-aad.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    // Narrow heuristic — files that register a sealed table via
+    // cryptoField.registerTable. db.js, session.js, audit.js seal
+    // whole-value envelopes (DB encryption key, session token, audit
+    // chain head) which have no row identity to bind.
+    if (!/cryptoField\.registerTable\s*\(/.test(content)) continue;
+    if (content.indexOf("vault.seal(") === -1) continue;
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[j])) continue;
+      // Match `vault.seal(` but NOT `vault.aad.seal(` or `vaultAad.seal(`.
+      if (/\bvault\.seal\(/.test(lines[j]) && !/vault\.aad\.seal\(/.test(lines[j])) {
+        bad.push({
+          file:    rel,
+          line:    j + 1,
+          content: lines[j].trim(),
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "seal-without-aad");
+  _report("dbStore-shaped sealed-row code routes through vault.aad.seal " +
+          "(or has allow marker) — CRYPTO-1",
+    bad);
+}
+
+// ---- Pattern: raw byte literal 4*1024*1024 etc. (redundant with raw-byte-literal but explicit class) ----
+//
+// class: raw-mib-literal
+//
+// Catches the SPECIFIC `N * 1024 * 1024` shape that drifts into
+// safeJson maxBytes / response caps / file-size limits. The generic
+// raw-byte-literal detector also catches these (every product of 1024
+// is byte-shaped), but the explicit class id makes the operator-side
+// message specific: "use C.BYTES.mib(N)".
+//
+// Caught in CRYPTO-21 / CRYPTO-22 (v0.9.58) — metrics.snapshot.read
+// and middleware/idempotency-key.js both used `4 * 1024 * 1024` as
+// the safeJson cap. Routed through `C.BYTES.mib(4)`.
+function testNoRawMibLiteral() {
+  var matches = _scan(/\b\d+\s*\*\s*1024\s*\*\s*1024\b/);
+  // lib/constants.js IS the definition of C.BYTES.mib / .gib — the
+  // raw multiplication lives there by construction.
+  matches = matches.filter(function (m) { return m.file !== "lib/constants.js"; });
+  matches = _filterMarkers(matches, "raw-mib-literal");
+  // Defer to the generic raw-byte-literal allow markers too; the new
+  // class is additive rather than replacing.
+  matches = _filterMarkers(matches, "raw-byte-literal");
+  _report("`N * 1024 * 1024` byte-shape literal routes through C.BYTES.mib(N) — CRYPTO-21 / CRYPTO-22",
+    matches);
+}
+
+// ---- Pattern: hex-string SHA compares with === / !== ----
+//
+// class: hex-sha-compare-equals
+//
+// Operators sometimes compare two hex digest strings via plain `===` /
+// `!==`. The shape works at length-equal but leaks per-byte timing.
+// CVE-2026-21713 underscored the pattern: HMAC verification MUST route
+// through `nodeCrypto.timingSafeEqual` / `b.crypto.timingSafeEqual`
+// even when both sides are hex strings.
+function testNoHexShaCompareEquals() {
+  // CVE-2026-21713 — HMAC / signature / MAC verify paths MUST route
+  // through timingSafeEqual. Match identifier-name pairs where at
+  // least one side carries an auth-verification semantic
+  // (`hmac*Hex` / `mac*Hex` / `tagHex` / `signature*Hex`). Bare
+  // `digestHex === otherDigest` (config-drift / snapshot integrity)
+  // is NOT an attacker-influenced compare and stays out of scope.
+  var matches = _scan(
+    /\b(hmac\w*|mac\w*|signature\w*|sigVerify\w*)Hex\s*(===|!==)\s*\w+/i);
+  matches = matches.concat(_scan(
+    /\b\w+Hex\s*(===|!==)\s*(hmac\w*Hex|mac\w*Hex|signature\w*Hex|sigVerify\w*Hex)/i));
+  matches = _filterMarkers(matches, "hex-sha-compare-equals");
+  matches = _filterMarkers(matches, "raw-hash-compare");
+  _report("hex HMAC / MAC / signature compared with timingSafeEqual " +
+          "(CVE-2026-21713 — memcmp leaks per-byte timing)",
+    matches);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -5781,6 +6508,9 @@ async function run() {
   await testNoDuplicateCodeBlocks();
   testNoStateStampsInPublicDocs();
   testNoLegacyUrlFormat();
+  testNoRawHeadersDistinct();
+  testNoDenseWildcardRunsInLib();
+  testNoUncappedSearchParamsObject();
   testNoDeniedVendors();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
@@ -5789,7 +6519,18 @@ async function run() {
   testNoBoolStringCoerceShape();
   testNoBareCommaSplitOnQuotedHeader();
   testScopedContextBindingUsed();
+  // v0.9.57 — audit 2026-05-15 mail-auth bug-class detectors
+  testNoDirectNodeDnsInMail();
+  testNoMathRandomInPolicyDecisions();
+  testNoNaiveSuffixAlignment();
+  testGunzipBombDistinguished();
   testGitleaksTrippingPatternsAllowlisted();
+  // v0.9.58 bug-class detectors — derived from the CRYPTO-1 / CRYPTO-15 /
+  // CRYPTO-21 / CRYPTO-22 fixes + CVE-2026-21713 HMAC compare class.
+  testNoInlineRequireInDeferred();
+  testSealWithoutAad();
+  testNoRawMibLiteral();
+  testNoHexShaCompareEquals();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.

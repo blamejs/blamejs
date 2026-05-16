@@ -90,6 +90,9 @@ var safeMime = require("./lib/safe-mime");
 var safeDns = require("./lib/safe-dns");
 var safeSmtp = require("./lib/safe-smtp");
 var safeSieve = require("./lib/safe-sieve");
+var safeIcap = require("./lib/safe-icap");
+var safeIcal = require("./lib/safe-ical");
+var safeVcard = require("./lib/safe-vcard");
 var mailStore = require("./lib/mail-store");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
@@ -167,6 +170,7 @@ var guardMessageId = require("./lib/guard-message-id");
 var guardSmtpCommand = require("./lib/guard-smtp-command");
 var guardImapCommand = require("./lib/guard-imap-command");
 var guardPop3Command = require("./lib/guard-pop3-command");
+var guardManageSieveCommand = require("./lib/guard-managesieve-command");
 var guardJmap = require("./lib/guard-jmap");
 var guardEnvelope = require("./lib/guard-envelope");
 var guardDsn = require("./lib/guard-dsn");
@@ -268,12 +272,17 @@ mail.helo = require("./lib/mail-helo");
 mail.deploy = require("./lib/mail-deploy");
 mail.sieve = require("./lib/mail-sieve");
 mail.journal = require("./lib/mail-journal");
+mail.scan = require("./lib/mail-scan");
+mail.spamScore = require("./lib/mail-spam-score");
+mail.crypto = require("./lib/mail-crypto");
+mail.dav = require("./lib/mail-dav");
 mail.server = mail.server || {};
 mail.server.mx = require("./lib/mail-server-mx");
 mail.server.submission = require("./lib/mail-server-submission");
 mail.server.imap = require("./lib/mail-server-imap");
 mail.server.jmap = require("./lib/mail-server-jmap");
 mail.server.pop3 = require("./lib/mail-server-pop3");
+mail.server.managesieve = require("./lib/mail-server-managesieve");
 mail.server.tls = require("./lib/mail-server-tls");
 mail.server.rateLimit = require("./lib/mail-server-rate-limit");
 var mailArf = require("./lib/mail-arf");
@@ -452,6 +461,7 @@ module.exports = {
   guardSmtpCommand: guardSmtpCommand,
   guardImapCommand: guardImapCommand,
   guardPop3Command: guardPop3Command,
+  guardManageSieveCommand: guardManageSieveCommand,
   guardJmap:        guardJmap,
   guardEnvelope:    guardEnvelope,
   guardDsn:         guardDsn,
@@ -556,6 +566,9 @@ module.exports = {
   safeDns:          safeDns,
   safeSmtp:         safeSmtp,
   safeSieve:        safeSieve,
+  safeIcap:         safeIcap,
+  safeIcal:         safeIcal,
+  safeVcard:        safeVcard,
   mailStore:        mailStore,
   safeSchema:       safeSchema,
   pagination:       pagination,
