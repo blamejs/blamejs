@@ -250,7 +250,15 @@ function testHipaaPosture() {
     "safe-ical/oversize-bytes");
 }
 
+function testBSurface() {
+  var b = require("../../");
+  check("b.safeIcal.parse wired",              typeof b.safeIcal.parse === "function");
+  check("b.safeIcal.compliancePosture wired",  typeof b.safeIcal.compliancePosture === "function");
+  check("b.safeIcal.SafeIcalError wired",      typeof b.safeIcal.SafeIcalError === "function");
+}
+
 async function run() {
+  testBSurface();
   testSurface();
   testProfilesPresent();
   testSimpleParse();

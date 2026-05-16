@@ -171,7 +171,15 @@ function testProfilePostureRouting() {
     function () { safeIcap.parse(buf, { posture: "hipaa" }); }, "safe-icap/oversize-header");
 }
 
+function testBSurface() {
+  var b = require("../../");
+  check("b.safeIcap.parse wired",              typeof b.safeIcap.parse === "function");
+  check("b.safeIcap.compliancePosture wired",  typeof b.safeIcap.compliancePosture === "function");
+  check("b.safeIcap.SafeIcapError wired",      typeof b.safeIcap.SafeIcapError === "function");
+}
+
 function run() {
+  testBSurface();
   testSurface();
   testParseHappyPath204();
   testParseEncapsulated();

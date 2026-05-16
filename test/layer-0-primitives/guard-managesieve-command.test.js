@@ -270,7 +270,16 @@ function testCompliancePosture() {
     threw && threw.code === "guard-managesieve-command/cleartext-auth");
 }
 
+function testBSurface() {
+  var b = require("../../");
+  check("b.guardManageSieveCommand.validate wired",            typeof b.guardManageSieveCommand.validate === "function");
+  check("b.guardManageSieveCommand.compliancePosture wired",   typeof b.guardManageSieveCommand.compliancePosture === "function");
+  check("b.guardManageSieveCommand.GuardManageSieveCommandError wired",
+                                                               typeof b.guardManageSieveCommand.GuardManageSieveCommandError === "function");
+}
+
 function run() {
+  testBSurface();
   testSurface();
   testHappyPath();
   testCleartextAuthRefused();

@@ -219,7 +219,15 @@ function testExtraPropertiesAllowlist() {
     ast.vcards[0].properties["CUSTOM-FIELD"][0].value === "value");
 }
 
+function testBSurface() {
+  var b = require("../../");
+  check("b.safeVcard.parse wired",              typeof b.safeVcard.parse === "function");
+  check("b.safeVcard.compliancePosture wired",  typeof b.safeVcard.compliancePosture === "function");
+  check("b.safeVcard.SafeVcardError wired",     typeof b.safeVcard.SafeVcardError === "function");
+}
+
 async function run() {
+  testBSurface();
   testSurface();
   testProfilesPresent();
   testSimpleParse();

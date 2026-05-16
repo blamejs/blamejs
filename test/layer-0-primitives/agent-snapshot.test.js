@@ -1,8 +1,5 @@
 "use strict";
 
-var fs      = require("fs");
-var os      = require("os");
-var path    = require("path");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;

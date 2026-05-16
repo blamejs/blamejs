@@ -28,7 +28,7 @@ module.exports.fuzz = function (data) {
     if (typeof rv.statusCode !== "number") {
       throw new Error("parse returned non-number statusCode");
     }
-    if (!safeIcap.ALLOWED_STATUS.hasOwnProperty(rv.statusCode)) {
+    if (!Object.prototype.hasOwnProperty.call(safeIcap.ALLOWED_STATUS, rv.statusCode)) {
       throw new Error("parse returned status outside allowlist: " + rv.statusCode);
     }
     if (typeof rv.threatFound !== "boolean") {

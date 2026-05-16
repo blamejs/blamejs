@@ -632,7 +632,7 @@ async function testDmarcAlignmentUsesPsl() {
   // MAIL-25 — relaxed alignment uses the public-suffix list. A
   // From-header at `evil-bank.com` must NOT align with a DKIM signer
   // at `bank.com` despite the text suffix overlap.
-  var dnsLookup = async function (host) {
+  var _dnsLookup = async function (host) {
     if (host === "_dmarc.bank.com") return [["v=DMARC1; p=reject; aspf=r; adkim=r"]];
     var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
   };
