@@ -5879,6 +5879,164 @@ function testGitleaksTrippingPatternsAllowlisted() {
     bad);
 }
 
+// ---- Pattern: inline require() inside setImmediate / process.nextTick ----
+//
+// class: inline-require-in-deferred
+//
+// `setImmediate(() => require("./x").foo(...))` defers the require() to
+// the event loop tick instead of resolving it at module load. Same
+// drift class as testNoInlineRequires but inside scheduler callbacks,
+// where the inline shape used to be considered "intentional" for
+// circular-dep defense. The framework's lazy-require helper handles
+// the cycle cleanly; deferring the require inside setImmediate adds
+// a per-call cache lookup for no benefit.
+//
+// Caught in CRYPTO-15 (v0.9.58) — `lib/crypto.js` deferred the audit
+// module require to setImmediate inside the legacy-envelope decrypt
+// path. The fix routed through the lazyRequire('./audit') top-of-file
+// binding.
+function testNoInlineRequireInDeferred() {
+  var files = _libFiles();
+  var bad = [];
+  var re = /(?:setImmediate|process\.nextTick|setTimeout|queueMicrotask)\s*\([^)]*?\brequire\(["']\.\.?\//;
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    // Walk pairs of consecutive lines so the regex also catches the
+    // multi-line shape (`setImmediate(function () { ... require(...) })`).
+    for (var j = 0; j < lines.length; j++) {
+      var window = (lines[j] || "") + " " + (lines[j + 1] || "") + " " + (lines[j + 2] || "");
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[j])) continue;
+      if (re.test(window) && /\brequire\(["']\.\.?\//.test(window)) {
+        bad.push({
+          file:    _relPath(files[i]),
+          line:    j + 1,
+          content: lines[j].trim(),
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "inline-require-in-deferred");
+  _report("require() inside setImmediate / process.nextTick / queueMicrotask " +
+          "lifts to a top-of-file lazyRequire (CRYPTO-15)",
+    bad);
+}
+
+// ---- Pattern: vault.seal direct in dbStore-shaped sealed-row paths ----
+//
+// class: seal-without-aad
+//
+// `vault.seal(plaintext)` produces a ciphertext that decrypts in ANY
+// row of the same vault. A DB-write attacker can copy a sealed value
+// from a benign row into a sensitive row and the value decrypts
+// cleanly. CRYPTO-1 (v0.9.58) added `b.vault.aad.seal({ table, k,
+// column })` which AAD-binds the AEAD tag to the row identity tuple.
+//
+// New code in dbStore / sealed-column primitives MUST route through
+// `vault.aad.seal` (typically via `cryptoField.registerTable({ aad:
+// true })` + `cryptoField.sealRow`). Direct `vault.seal()` use is
+// only correct for whole-value envelopes the operator never copies
+// between rows (audit chain entries, single-tenant secrets, etc.) —
+// document with `// allow:seal-without-aad — <reason>` per call site.
+function testSealWithoutAad() {
+  // Grep for `vault.seal(` direct calls in files that call
+  // `cryptoField.registerTable` — those files are constructing
+  // per-row sealed-column primitives where cross-row swap is the
+  // relevant threat model. Other files (audit-sign, session,
+  // mail-store, db.js's whole-file key seal) use vault.seal for
+  // whole-value envelopes with no row-identity to bind to, and
+  // crypto-field.js itself owns the legacy plain-mode fallback.
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    // crypto-field.js / vault-aad.js are the primitives that DEFINE
+    // the sealing surface; the detector targets CALLERS that should
+    // route through them.
+    if (rel === "lib/crypto-field.js" || rel === "lib/vault-aad.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    // Narrow heuristic — files that register a sealed table via
+    // cryptoField.registerTable. db.js, session.js, audit.js seal
+    // whole-value envelopes (DB encryption key, session token, audit
+    // chain head) which have no row identity to bind.
+    if (!/cryptoField\.registerTable\s*\(/.test(content)) continue;
+    if (content.indexOf("vault.seal(") === -1) continue;
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[j])) continue;
+      // Match `vault.seal(` but NOT `vault.aad.seal(` or `vaultAad.seal(`.
+      if (/\bvault\.seal\(/.test(lines[j]) && !/vault\.aad\.seal\(/.test(lines[j])) {
+        bad.push({
+          file:    rel,
+          line:    j + 1,
+          content: lines[j].trim(),
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "seal-without-aad");
+  _report("dbStore-shaped sealed-row code routes through vault.aad.seal " +
+          "(or has allow marker) — CRYPTO-1",
+    bad);
+}
+
+// ---- Pattern: raw byte literal 4*1024*1024 etc. (redundant with raw-byte-literal but explicit class) ----
+//
+// class: raw-mib-literal
+//
+// Catches the SPECIFIC `N * 1024 * 1024` shape that drifts into
+// safeJson maxBytes / response caps / file-size limits. The generic
+// raw-byte-literal detector also catches these (every product of 1024
+// is byte-shaped), but the explicit class id makes the operator-side
+// message specific: "use C.BYTES.mib(N)".
+//
+// Caught in CRYPTO-21 / CRYPTO-22 (v0.9.58) — metrics.snapshot.read
+// and middleware/idempotency-key.js both used `4 * 1024 * 1024` as
+// the safeJson cap. Routed through `C.BYTES.mib(4)`.
+function testNoRawMibLiteral() {
+  var matches = _scan(/\b\d+\s*\*\s*1024\s*\*\s*1024\b/);
+  // lib/constants.js IS the definition of C.BYTES.mib / .gib — the
+  // raw multiplication lives there by construction.
+  matches = matches.filter(function (m) { return m.file !== "lib/constants.js"; });
+  matches = _filterMarkers(matches, "raw-mib-literal");
+  // Defer to the generic raw-byte-literal allow markers too; the new
+  // class is additive rather than replacing.
+  matches = _filterMarkers(matches, "raw-byte-literal");
+  _report("`N * 1024 * 1024` byte-shape literal routes through C.BYTES.mib(N) — CRYPTO-21 / CRYPTO-22",
+    matches);
+}
+
+// ---- Pattern: hex-string SHA compares with === / !== ----
+//
+// class: hex-sha-compare-equals
+//
+// Operators sometimes compare two hex digest strings via plain `===` /
+// `!==`. The shape works at length-equal but leaks per-byte timing.
+// CVE-2026-21713 underscored the pattern: HMAC verification MUST route
+// through `nodeCrypto.timingSafeEqual` / `b.crypto.timingSafeEqual`
+// even when both sides are hex strings.
+function testNoHexShaCompareEquals() {
+  // CVE-2026-21713 — HMAC / signature / MAC verify paths MUST route
+  // through timingSafeEqual. Match identifier-name pairs where at
+  // least one side carries an auth-verification semantic
+  // (`hmac*Hex` / `mac*Hex` / `tagHex` / `signature*Hex`). Bare
+  // `digestHex === otherDigest` (config-drift / snapshot integrity)
+  // is NOT an attacker-influenced compare and stays out of scope.
+  var matches = _scan(
+    /\b(hmac\w*|mac\w*|signature\w*|sigVerify\w*)Hex\s*(===|!==)\s*\w+/i);
+  matches = matches.concat(_scan(
+    /\b\w+Hex\s*(===|!==)\s*(hmac\w*Hex|mac\w*Hex|signature\w*Hex|sigVerify\w*Hex)/i));
+  matches = _filterMarkers(matches, "hex-sha-compare-equals");
+  matches = _filterMarkers(matches, "raw-hash-compare");
+  _report("hex HMAC / MAC / signature compared with timingSafeEqual " +
+          "(CVE-2026-21713 — memcmp leaks per-byte timing)",
+    matches);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -5983,6 +6141,12 @@ async function run() {
   testNoBareCommaSplitOnQuotedHeader();
   testScopedContextBindingUsed();
   testGitleaksTrippingPatternsAllowlisted();
+  // v0.9.58 bug-class detectors — derived from the CRYPTO-1 / CRYPTO-15 /
+  // CRYPTO-21 / CRYPTO-22 fixes + CVE-2026-21713 HMAC compare class.
+  testNoInlineRequireInDeferred();
+  testSealWithoutAad();
+  testNoRawMibLiteral();
+  testNoHexShaCompareEquals();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
