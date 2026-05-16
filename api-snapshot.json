@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.58",
-  "createdAt": "2026-05-16T14:12:48.923Z",
+  "frameworkVersion": "0.10.0",
+  "createdAt": "2026-05-16T16:20:15.083Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -519,6 +519,10 @@
             "BUILTIN_REGIMES": {
               "type": "instance",
               "ctorName": "Array"
+            },
+            "MAX_HOP_COUNT": {
+              "type": "primitive",
+              "valueType": "number"
             },
             "create": {
               "type": "function",
@@ -2986,13 +2990,34 @@
             },
             "verifyEntityStatement": {
               "type": "function",
-              "arity": 2
+              "arity": 3
             }
           }
         },
         "passkey": {
           "type": "object",
           "members": {
+            "ALLOWED_EXTENSION_KEYS": {
+              "type": "object",
+              "members": {
+                "credBlob": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "largeBlob": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "prf": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "compareBackupState": {
+              "type": "function",
+              "arity": 2
+            },
             "conditionalAuthOptions": {
               "type": "function",
               "arity": 1
@@ -5583,6 +5608,10 @@
     "compliance": {
       "type": "object",
       "members": {
+        "ARTIFACT_STANDARDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "ComplianceError": {
           "type": "function",
           "arity": 4
@@ -5825,6 +5854,27 @@
                 }
               }
             },
+            "cmmc-2.0-level-1": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "cmmc-2.0-level-2": {
               "type": "object",
               "members": {
@@ -5833,6 +5883,31 @@
                   "valueType": "boolean"
                 },
                 "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "cmmc-2.0-level-3": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "fipsMode": {
                   "type": "primitive",
                   "valueType": "boolean"
                 },
@@ -6190,6 +6265,10 @@
                   "valueType": "boolean"
                 },
                 "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "fipsMode": {
                   "type": "primitive",
                   "valueType": "boolean"
                 },
@@ -10101,6 +10180,10 @@
             }
           }
         },
+        "artifactStandards": {
+          "type": "function",
+          "arity": 0
+        },
         "assert": {
           "type": "function",
           "arity": 1
@@ -10133,6 +10216,10 @@
               "arity": 1
             }
           }
+        },
+        "fipsMode": {
+          "type": "function",
+          "arity": 1
         },
         "list": {
           "type": "function",
@@ -10752,7 +10839,7 @@
         },
         "fromBase64Url": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         },
         "generateBytes": {
           "type": "function",
@@ -34668,9 +34755,25 @@
         "dkim": {
           "type": "object",
           "members": {
+            "DKIM_CLOCK_SKEW_MS_MAX": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "DKIM_MAX_SIGNATURES_PER_MESSAGE": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "DkimError": {
               "type": "function",
               "arity": 2
+            },
+            "RSA_LEGACY_MIN_BITS": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "RSA_MIN_BITS": {
+              "type": "primitive",
+              "valueType": "number"
             },
             "bootstrap": {
               "type": "function",
@@ -35160,6 +35263,10 @@
                       "type": "primitive",
                       "valueType": "number"
                     },
+                    "maxResponseBytes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
                     "timeoutMs": {
                       "type": "primitive",
                       "valueType": "number"
@@ -35173,6 +35280,10 @@
                       "type": "primitive",
                       "valueType": "number"
                     },
+                    "maxResponseBytes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
                     "timeoutMs": {
                       "type": "primitive",
                       "valueType": "number"
@@ -35183,6 +35294,10 @@
                   "type": "object",
                   "members": {
                     "maxMessageBytes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "maxResponseBytes": {
                       "type": "primitive",
                       "valueType": "number"
                     },
@@ -35331,6 +35446,10 @@
                   "arity": 4
                 },
                 "context": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "upgradeSocket": {
                   "type": "function",
                   "arity": 1
                 }
@@ -37347,6 +37466,10 @@
               "arity": 2
             },
             "useSystemTrust": {
+              "type": "function",
+              "arity": 1
+            },
+            "wrapSNICallback": {
               "type": "function",
               "arity": 1
             }
@@ -42373,6 +42496,10 @@
           "type": "function",
           "arity": 4
         },
+        "dotStuff": {
+          "type": "function",
+          "arity": 1
+        },
         "dotUnstuff": {
           "type": "function",
           "arity": 1
@@ -42442,6 +42569,10 @@
         "SafeUrlError": {
           "type": "function",
           "arity": 2
+        },
+        "format": {
+          "type": "function",
+          "arity": 1
         },
         "parse": {
           "type": "function",
@@ -44135,11 +44266,48 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "NOTE_CATEGORY_VALUES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "REFERENCE_CATEGORY_VALUES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "STATUS_VALUES": {
           "type": "instance",
           "ctorName": "Array"
         },
+        "TLP_DEFAULT_TEXTS": {
+          "type": "object",
+          "members": {
+            "AMBER": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "AMBER+STRICT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "CLEAR": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "GREEN": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "RED": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
         "TLP_LABELS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "TRACKING_STATUS_VALUES": {
           "type": "instance",
           "ctorName": "Array"
         },
