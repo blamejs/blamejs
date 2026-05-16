@@ -75,6 +75,42 @@ function testAutoConfigEscape() {
     xml.indexOf("<displayName>&lt;bad&gt;&amp;&quot;&apos;&lt;/bad&gt;</displayName>") !== -1);
 }
 
+function testAutoConfigProtocolTypeAttr() {
+  // Per Mozilla config-v1.1 spec, `type` is the protocol (imap/pop3/smtp),
+  // not the direction. Regression for Codex P1.
+  var xml = b.mail.deploy.autoConfigXml({
+    domain: "example.com",
+    imap:   { host: "imap.example.com", port: 993 },
+    pop3:   { host: "pop3.example.com", port: 995 },
+    smtp:   { host: "smtp.example.com", port: 587, socketType: "STARTTLS" },
+  });
+  check("autoconfig incomingServer type=imap",
+    xml.indexOf("<incomingServer type=\"imap\">") !== -1);
+  check("autoconfig incomingServer type=pop3",
+    xml.indexOf("<incomingServer type=\"pop3\">") !== -1);
+  check("autoconfig outgoingServer type=smtp",
+    xml.indexOf("<outgoingServer type=\"smtp\">") !== -1);
+}
+
+function testAutoConfigJmap() {
+  // Regression for Codex P2: JMAP-only configuration must be accepted.
+  var xml = b.mail.deploy.autoConfigXml({
+    domain: "example.com",
+    jmap:   { url: "https://jmap.example.com/.well-known/jmap" },
+  });
+  check("autoconfig JMAP-only succeeds + emits incomingServer type=jmap",
+    xml.indexOf("<incomingServer type=\"jmap\">") !== -1);
+  check("autoconfig JMAP URL embedded",
+    xml.indexOf("<url>https://jmap.example.com/.well-known/jmap</url>") !== -1);
+  // Refuse bad URL
+  var threw = null;
+  try {
+    b.mail.deploy.autoConfigXml({ domain: "x.com", jmap: { url: "bad\r\nurl" } });
+  } catch (e) { threw = e; }
+  check("autoconfig refuses CR/LF in jmap URL",
+    threw && threw.code === "mail-deploy/bad-jmap-url");
+}
+
 function testAutoConfigBadInput() {
   function expectThrow(label, fn) {
     var threw = null;
@@ -147,6 +183,8 @@ function run() {
   testMtaStsBadInput();
   testAutoConfigHappy();
   testAutoConfigEscape();
+  testAutoConfigProtocolTypeAttr();
+  testAutoConfigJmap();
   testAutoConfigBadInput();
   testAutoDiscoverHappy();
   testAutoDiscoverXmlInjection();
