@@ -4599,6 +4599,67 @@ function testNoLegacyUrlFormat() {
           "(CVE-2026-21712 IDN crash class)", matches);
 }
 
+// ---- Pattern 43b: req.headersDistinct — CVE-2026-21710 prototype-poison ----
+
+function testNoRawHeadersDistinct() {
+  // class: raw-headers-distinct
+  // CVE-2026-21710 — `req.headersDistinct` is implemented as a
+  // getter; reading it on a request whose header bag carries a
+  // `__proto__` key throws synchronously, before any handler-level
+  // try/catch can engage. `b.requestHelpers.safeHeadersDistinct` is
+  // the defensive replacement (skips poison keys, returns a null-
+  // prototype object, never throws). The detector refuses any
+  // direct `.headersDistinct` property access in lib/.
+  var matches = _scan(/\.headersDistinct\b/);
+  // request-helpers.js IS the safe wrapper; its JSDoc references
+  // the symbol but the source-only filter already strips comment
+  // lines. Belt-and-braces: skip the helper itself.
+  matches = matches.filter(function (m) { return m.file !== "lib/request-helpers.js"; });
+  matches = _filterMarkers(matches, "raw-headers-distinct");
+  _report("req.headersDistinct routes through " +
+          "b.requestHelpers.safeHeadersDistinct (CVE-2026-21710 prototype-poison crash class)",
+    matches);
+}
+
+// ---- Pattern 43c: dense wildcard runs — CVE-2026-4923 router / picomatch ----
+
+function testNoDenseWildcardRunsInLib() {
+  // class: dense-wildcard
+  // CVE-2026-4923 — multi-wildcard route / glob patterns compile
+  // to catastrophic-backtracking regex on engines that fold `*`
+  // into a regex alternation. The framework's router refuses at
+  // registerRoute and the framework ships no picomatch / minimatch
+  // dep, but a future change that lands one would be a regression.
+  // Detector refuses any line in lib/ that carries 4+ consecutive
+  // `*` metacharacters outside comments (handled by _scan's
+  // skipComments). The regex is the bare run — no surrounding
+  // string-literal anchors so the matcher can't itself
+  // catastrophic-backtrack on long lines.
+  var matches = _scan(/\*{4,}/);
+  matches = _filterMarkers(matches, "dense-wildcard");
+  _report("no source line carries 4+ consecutive '*' (CVE-2026-4923 " +
+          "/ CVE-2026-33671 / CVE-2026-26996 wildcard-amplification class)",
+    matches);
+}
+
+// ---- Pattern 43d: uncapped Object.fromEntries(URLSearchParams) ----
+
+function testNoUncappedSearchParamsObject() {
+  // class: uncapped-searchparams-object
+  // CVE-2026-21717 — V8 HashDoS via integer-shaped query keys. A
+  // request to `/?0=&1=&2=&...` flushed through
+  // `Object.fromEntries(searchParams)` builds an object whose
+  // hidden-class transitions degrade to O(n^2). Cap key count
+  // before walking. The router's handle() applies the cap inline
+  // (search for MAX_QUERY_KEYS); any other call site that walks
+  // `searchParams` into a plain object without a cap is a smell.
+  var matches = _scan(/Object\.fromEntries\([^)]*searchParams/);
+  matches = _filterMarkers(matches, "uncapped-searchparams-object");
+  _report("Object.fromEntries(searchParams) must enforce a key cap " +
+          "(CVE-2026-21717 V8 HashDoS class)",
+    matches);
+}
+
 // ---- Pattern 44: vendor-deny — axios / xml-crypto / saml class ----
 
 // CVE-2026-25639 / 42033 / 42041 / 40175 — axios prototype-pollution.
@@ -5910,6 +5971,9 @@ async function run() {
   await testNoDuplicateCodeBlocks();
   testNoStateStampsInPublicDocs();
   testNoLegacyUrlFormat();
+  testNoRawHeadersDistinct();
+  testNoDenseWildcardRunsInLib();
+  testNoUncappedSearchParamsObject();
   testNoDeniedVendors();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
