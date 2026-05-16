@@ -2322,6 +2322,22 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
+        "lib/backup/manifest.js:_canonical",
+        "lib/legal-hold.js:list",
+        "lib/mail-journal.js:list",
+      ],
+      reason: "Three structurally-unrelated primitives — backup manifest canonicalization, legal-hold record list, mail-journal record list — share an `Array.map` + per-row destructure + return-object shape. Each operates on a different domain (backup manifest entries / legal-hold rows / journaled mail entries) with primitive-specific column schemas; consolidating would couple three unrelated DB-row → API-object mappers.",
+    },
+    {
+      files: [
+        "lib/cra-report.js:conformityAssessment",
+        "lib/mail-agent.js:consumer",
+        "lib/mail-journal.js:create",
+      ],
+      reason: "Three structurally-unrelated primitives — CRA Article 13 conformity-assessment scaffolding, mail-agent queue consumer factory, mail-journal create() — share a `validateOpts.requireObject` + per-field type-check cascade with shared opt-name vocabulary (`audit` / `vault` / `db`). Each validates its own domain-specific opts shape (CRA = product/conformity metadata; mail-agent = consumer wiring; mail-journal = WORM storage handle); consolidating would couple compliance / agent-substrate / journal opt vocabularies under one ambiguous validator.",
+    },
+    {
+      files: [
         "lib/guard-cidr.js:compliancePosture",
         "lib/guard-domain.js:compliancePosture",
         "lib/guard-jsonpath.js:compliancePosture",
