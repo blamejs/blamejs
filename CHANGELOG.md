@@ -8,6 +8,7 @@ upgrading across more than a few patches at a time.
 
 ## v0.10.x
 
+- v0.10.1 (2026-05-16) — **First npm-published v0.10.x artifact.** v0.10.0 was tagged + released on GitHub but its npm-publish workflow OOM'd at the lint+smoke gate (default Node ~4GB heap couldn't load the expanded mail-stack + audit-fix test surface). v0.10.1 adds `NODE_OPTIONS=--max-old-space-size=8192` to the workflow's smoke step so the parent process gets the same headroom the forked test workers already get. No runtime / API changes from v0.10.0 — every primitive, posture, and security default ships exactly as documented in the v0.10.0 release notes below. Operators who fetched the v0.10.0 git tag can re-tag from v0.10.1 (`git fetch origin v0.10.1`) to land on the npm-published commit; the framework code itself is byte-identical apart from the workflow file + version bump.
 - v0.10.0 (2026-05-16) — **Mail-stack feature-complete + cross-surface hardening.** Bundled minor closing the blamepost mail-stack roadmap (five new operator-facing namespaces) plus a multi-domain hardening sweep across auth / crypto / vendor data / mail-protocol / mail-auth / agent substrate / Node.js CVE backstops.
 
   **Mail-stack final namespaces:**

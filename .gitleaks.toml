@@ -135,6 +135,10 @@ commits = [
   # the private-key rule; the body is a literal "..." with no
   # entropy. Documentation, not a key.
   "37fdff6c56337a6b7e88027025fbf590f7b10b31",
+  # Same `@example` placeholder, now landed on main via the squash-
+  # merge of PR #83 (commit d126fa4). gitleaks scans every commit
+  # SHA the placeholder ever appeared in.
+  "d126fa416043ee7f47d89011951378a06c91a617",
 ]
 fingerprints = [
   "74e627ea0fea39f06e01fe424a19724bea37aee8:test/smoke.js:jwt:2415",
