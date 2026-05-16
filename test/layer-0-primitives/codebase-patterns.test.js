@@ -1097,6 +1097,42 @@ function testListenPortFalsyDefault() {
     matches);
 }
 
+// ---- Pattern 17b: IMAP literalSize zero-rejection footgun ----
+//
+// RFC 9051 §6.3.12 allows zero-byte literals (e.g. APPEND of an empty
+// message body). Filtering with `literalSize > 0` skips the legitimate
+// edge case; the correct check is `>= 0` (or `!== null` with a
+// downstream zero-byte short-circuit). Codex P1 PR #75 caught this on
+// the IMAP listener.
+function testImapLiteralSizeZeroFootgun() {
+  var matches = _scan(/literalSize\s*>\s*0\b/);
+  matches = _filterMarkers(matches, "literal-size-zero");
+  _report("literalSize comparison: use `!== null` or `>= 0` (zero-byte " +
+          "literals are RFC 9051 §6.3.12 legal — `literalSize > 0` skips " +
+          "the empty-APPEND path)",
+    matches);
+}
+
+// ---- Pattern 17c: CAPABILITY hardcoded SASL mechanism without authConfig gate ----
+//
+// IMAP / SMTP listeners that advertise AUTH=<mech> in their CAPABILITY
+// reply must gate the mechanism off the operator's wired authConfig.
+// Hardcoding `AUTH=PLAIN` in a caps array (without checking authConfig)
+// sets clients up for AUTHENTICATE requests the listener then refuses.
+// Codex P2 PR #75 caught this on the IMAP listener.
+function testHardcodedAuthMechanismInCaps() {
+  // Catch the specific shape "AUTH=PLAIN" / "AUTH=LOGIN" / similar in
+  // a string-literal array assignment. Allow markers permit operator
+  // overrides where the mechanism is genuinely always-on (e.g. test
+  // fixtures with a hardcoded authConfig).
+  var matches = _scan(/(?:caps|capabilities|advertised)\s*=\s*\[[^\]]*"AUTH=[A-Z][A-Z0-9-]*"/);
+  matches = _filterMarkers(matches, "hardcoded-auth-mech");
+  _report("CAPABILITY / EHLO advertisement: AUTH=<mech> entries gate off " +
+          "operator's authConfig.mechanisms (don't hardcode in the caps " +
+          "array)",
+    matches);
+}
+
 // ---- Pattern 18: catch (_e) {} swallowing without logging ----
 
 function testNoSilentCatchSwallow() {
@@ -5578,6 +5614,8 @@ async function run() {
   testFormatValidatorLengthCap();
   testNoProcessExitInLib();
   testListenPortFalsyDefault();
+  testImapLiteralSizeZeroFootgun();
+  testHardcodedAuthMechanismInCaps();
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
   testNoRawXffRead();
