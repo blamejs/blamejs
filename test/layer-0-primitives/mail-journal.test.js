@@ -145,7 +145,6 @@ function testSealUnsealRoundTrip() {
     unseal: function (s) { return s.slice("vault:".length); },
   };
   var putCalls = [];
-  var dbRows = [];
   var insertedRow = null;
   var storage = {
     putObject: async function (key, body, meta) {
