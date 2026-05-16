@@ -105,16 +105,114 @@ function testCreatesIndexTable() {
     /_archived_at_idx/.test(ddlSeen[0]) && /_message_id_idx/.test(ddlSeen[0]));
 }
 
-function run() {
+function testIndexNamesValidSql() {
+  // Regression for Codex P1: index names must be built from the
+  // unquoted base then quoted independently — appending suffixes to
+  // an already-quoted token produces invalid SQL like
+  // `"_mail_journal_x"_archived_at_idx`.
+  var ddlSeen = [];
+  var db = {
+    runSql: function (sql) {
+      ddlSeen.push(sql);
+      return [];
+    },
+  };
+  b.mail.journal.create({
+    storage:   { putObject: async function () {} },
+    vault:     { seal: function () {} },
+    legalHold: { isOnHold: function () { return false; } },
+    db:        db,
+    regimes:   ["hipaa"],
+    namespace: "compliance",
+  });
+  var sql = ddlSeen[0];
+  // Index lines must look like: CREATE INDEX IF NOT EXISTS "<idx_name>" ON "<table_name>" (...)
+  // — quoted IDX name followed by quoted TABLE name. The bug shape is
+  // `"<table>"_idx_suffix` (suffix appended after the closing quote).
+  check("index names not appended to quoted table name",
+    !/"_mail_journal_compliance"_/.test(sql));
+  check("archived_at index has quoted IDX name", /"_mail_journal_compliance_archived_at_idx"/.test(sql));
+  check("message_id  index has quoted IDX name", /"_mail_journal_compliance_message_id_idx"/.test(sql));
+}
+
+function testSealUnsealRoundTrip() {
+  // Regression for two Codex P1s: vault.seal / vault.unseal are the
+  // correct primitives (not cryptoField.sealRow which expects a
+  // schema-registered table). Round-trip the payload through a fake
+  // vault that returns a deterministic JSON of its input.
+  var fakeVault = {
+    seal:   function (s) { return "vault:" + s; },
+    unseal: function (s) { return s.slice("vault:".length); },
+  };
+  var putCalls = [];
+  var dbRows = [];
+  var insertedRow = null;
+  var storage = {
+    putObject: async function (key, body, meta) {
+      putCalls.push({ key: key, body: body, meta: meta });
+    },
+  };
+  var db = {
+    runSql: function (sql, args) {
+      if (/INSERT INTO/.test(sql)) {
+        insertedRow = {
+          journal_id: args[0], direction: args[1], actor_id: args[2],
+          message_id: args[3], archived_at: args[4], size_bytes: args[5],
+          regimes: args[6], floor_until: args[7], legal_hold: 0,
+          storage_key: args[8], sealed_payload: args[9],
+        };
+        return [];
+      }
+      if (/SELECT.*FROM.*WHERE journal_id = \?/.test(sql)) {
+        return insertedRow ? [insertedRow] : [];
+      }
+      return [];
+    },
+  };
+  var j = b.mail.journal.create({
+    storage: storage, vault: fakeVault,
+    legalHold: { isOnHold: function () { return false; } },
+    db: db, regimes: ["hipaa"], namespace: "rt",
+  });
+  return j.record({
+    direction: "inbound", actorId: "ops", messageId: "<x@y.com>",
+    headers: { from: "a@b.com", subject: "hi" },
+    envelope: { mailFrom: "a@b.com", rcptTo: ["c@d.com"] },
+    bodyBytes: Buffer.from("hello world", "utf8"),
+  }).then(function (rv) {
+    check("record() returned a journalId", typeof rv.journalId === "string" && rv.journalId.length > 0);
+    check("storage.putObject called with vault-sealed string",
+      putCalls.length === 1 && typeof putCalls[0].body === "string" &&
+      putCalls[0].body.indexOf("vault:") === 0);
+    check("DB insert carries sealed_payload",
+      insertedRow && typeof insertedRow.sealed_payload === "string");
+    return j.getById(rv.journalId);
+  }).then(function (read) {
+    check("getById returns the journal entry",
+      read && read.journalId.length > 0);
+    check("getById round-trips headers through vault.unseal",
+      read.headers && read.headers.from === "a@b.com");
+    check("getById round-trips body through vault.unseal + base64",
+      read.bodyBytes.toString("utf8") === "hello world");
+    check("getById round-trips envelope",
+      read.envelope && read.envelope.mailFrom === "a@b.com");
+  });
+}
+
+async function run() {
   testSurface();
   testBadInput();
   testRegimeFloorMath();
   testCreatesIndexTable();
+  testIndexNamesValidSql();
+  await testSealUnsealRoundTrip();
 }
 
 module.exports = { run: run };
 
 if (require.main === module) {
-  try { run(); console.log("[mail-journal] OK"); }
-  catch (e) { process.stderr.write("FAIL: " + (e && e.stack || e) + "\n"); process.exit(1); }
+  Promise.resolve(run()).then(
+    function () { console.log("[mail-journal] OK"); },
+    function (e) { process.stderr.write("FAIL: " + (e && e.stack || e) + "\n"); process.exit(1); }
+  );
 }
