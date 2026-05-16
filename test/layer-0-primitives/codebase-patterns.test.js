@@ -2113,6 +2113,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/daemon.js:_safeAuditEmit",
+        "lib/mail.js:create",
         "lib/mail-server-mx.js:_emit",
         "lib/mail-server-mx.js:_validateDomainHardened",
         "lib/mail-server-mx.js:create",
@@ -2123,7 +2124,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/self-update.js:_safeAuditEmit",
         "lib/self-update.js:<top>",
       ],
-      reason: "Per-module audit-emit wrapper + the matching `_validateDomainHardened(d, label)` wrapper around `b.guardDomain.validate(...)` + the listener `create(opts)` opt-normalization shell. Each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / mail.server.submission.* / self-update.*); the domain validators wrap the SAME b.guardDomain.validate but emit to different audit events; the listener create() entries normalize structurally-different opt shapes. Mirrors the audit-emit-wrapper pattern that lib/agent-audit.js extracted for the agent-substrate modules.",
+      reason: "Per-module audit-emit wrapper + the matching `_validateDomainHardened(d, label)` wrapper around `b.guardDomain.validate(...)` + the listener `create(opts)` opt-normalization shell. Each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / mail.server.submission.* / self-update.*); the domain validators wrap the SAME b.guardDomain.validate but emit to different audit events; the listener create() entries normalize structurally-different opt shapes. b.mail.create joins the cluster in v0.9.51 — its create() opens with the same shape (require object opts, defaults, audit-flag, guardDomain wiring). Mirrors the audit-emit-wrapper pattern that lib/agent-audit.js extracted for the agent-substrate modules.",
     },
     {
       files: [
