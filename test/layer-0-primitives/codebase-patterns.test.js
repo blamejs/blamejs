@@ -2224,6 +2224,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-submission.js:_validateDomainHardened",
         "lib/mail-server-submission.js:create",
         "lib/mail-server-submission.js:listen",
+        "lib/mail.js:create",
         "lib/observability-otlp-exporter.js:create",
         "lib/self-update.js:_safeAuditEmit",
         "lib/self-update.js:<top>",
