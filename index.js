@@ -265,6 +265,7 @@ var mail = require("./lib/mail");
 mail.rbl = require("./lib/mail-rbl");
 mail.greylist = require("./lib/mail-greylist");
 mail.helo = require("./lib/mail-helo");
+mail.deploy = require("./lib/mail-deploy");
 mail.sieve = require("./lib/mail-sieve");
 mail.server = mail.server || {};
 mail.server.mx = require("./lib/mail-server-mx");

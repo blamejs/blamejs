@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.55",
-  "createdAt": "2026-05-16T05:50:16.698Z",
+  "frameworkVersion": "0.9.56",
+  "createdAt": "2026-05-16T06:57:53.699Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34330,6 +34330,31 @@
         "create": {
           "type": "function",
           "arity": 1
+        },
+        "deploy": {
+          "type": "object",
+          "members": {
+            "MailDeployError": {
+              "type": "function",
+              "arity": 4
+            },
+            "autoConfigXml": {
+              "type": "function",
+              "arity": 1
+            },
+            "autoDiscoverXml": {
+              "type": "function",
+              "arity": 1
+            },
+            "danePublish": {
+              "type": "function",
+              "arity": 1
+            },
+            "mtaStsPublish": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         },
         "dkim": {
           "type": "object",
