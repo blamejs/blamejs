@@ -378,6 +378,21 @@ async function testGuardDomainSkipsAddressLiteral() {
     rv && rv.transport === "memory");
 }
 
+async function testGuardDomainPermissiveProfileAllowsBareIp() {
+  // Regression: pre-fix, opts.guardDomain.profile was passed to
+  // buildProfile() under the wrong key (`profile` vs `baseProfile`)
+  // so the resulting profile was {} and validate() always fell back
+  // to strict. Bare-IP recipient under permissive must succeed.
+  var m = b.mail.create({
+    transport:    b.mail.transports.memory(),
+    guardDomain:  { profile: "permissive" },
+  });
+  var rv = await m.send({ to: "alice@192.168.1.1", from: "sender@example.org",
+    subject: "t", text: "hi" });
+  check("guardDomain:{profile:'permissive'} allows bare-IP recipient",
+    rv && rv.transport === "memory");
+}
+
 async function testGuardDomainHappyPath() {
   var m = b.mail.create({ transport: b.mail.transports.memory() });
   var rv = await m.send({ to: "alice@example.com", from: "sender@example.org",
@@ -411,6 +426,7 @@ async function run() {
   await testGuardDomainDefaultRefusesSpecialUseDomain();
   await testGuardDomainOptOutAllows();
   await testGuardDomainSkipsAddressLiteral();
+  await testGuardDomainPermissiveProfileAllowsBareIp();
   await testGuardDomainHappyPath();
   await testGuardDomainValidatesFromAddress();
 }
