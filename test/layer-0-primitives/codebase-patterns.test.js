@@ -5443,6 +5443,44 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "Per Documentation/filesystems/proc.rst §3.5, /proc/self/mountinfo field 6 (mount options) does NOT carry a 'bind' tag — the kernel exposes bind-mount provenance via field 4 ('root within source filesystem'), which is '/' for a regular mount and the bound source path for a bind mount. Checking the options field for 'bind' never fires for actual bind mounts and silently misses the failure mode it claims to defend. Detector catches the mis-parse shape at n=1.",
   },
+  {
+    id: "starttls-tlssocket-construct-direct",
+    primitive: "b.mail.server.tls.upgradeSocket({ plainSocket, secureContext, onSecure, onData, onError })",
+    // CVE-2021-33515 / CVE-2021-38371 class: direct `new nodeTls.TLSSocket(<socket>` construction in a
+    // mail-server listener bypasses the shared upgrade helper. The helper strips the plain-socket "data"
+    // listener (smuggling defense), pauses, and wires the new TLSSocket. New mail-server-* listeners that
+    // construct TLSSocket directly trip this detector at n=1.
+    regex: /new\s+nodeTls\.TLSSocket\s*\(\s*socket\b/,
+    allowlist: [
+      // upgradeSocket helper itself constructs the TLSSocket; listener removal happens INSIDE it.
+      "lib/mail-server-tls.js",
+    ],
+    reason: "STARTTLS / STLS upgrade across MX / submission / IMAP / POP3 listeners. CVE-2021-33515 (Dovecot) + CVE-2021-38371 (Exim) — plaintext bytes pipelined ahead of the handshake reach the post-TLS dispatcher when the plain socket's 'data' listener is not stripped before TLSSocket wraps. Centralized in mail-server-tls.upgradeSocket which removes the listener + pauses the socket + wraps + re-arms idle timeout + wires onSecure / onData / onError. New listeners route through the helper.",
+  },
+  {
+    id: "dot-stuff-jsregex-bare-lf",
+    primitive: "b.safeSmtp.dotStuff(buf) — CRLF-aware byte-level dot-stuffing",
+    // MAIL-15 — `.replace(/^\./gm, "..")` on a JS string treats bare LF as a line boundary, so bodies
+    // containing bare-LF lines that start with '.' gain spurious stuffing the receiver's strict-CRLF
+    // parser won't undo. Route through safeSmtp.dotStuff which only treats canonical \r\n as a boundary.
+    regex: /\.replace\(\s*\/\^\\\.\/gm\s*,\s*["']\.\.["']\s*\)/,
+    allowlist: [],
+    reason: "POP3 RETR + SMTP DATA dot-stuffing. The JS regex `/^\\./gm` matches bare-LF line starts as well as CRLF starts, so the stuffing differs from RFC 1939 §3 / RFC 5321 §4.5.2 (canonical CRLF only). Use b.safeSmtp.dotStuff(buf) on the raw Buffer — it walks bytes and recognizes ONLY \\r\\n as a line boundary.",
+  },
+  {
+    id: "starttls-listener-remove-missing",
+    primitive: "Use b.mail.server.tls.upgradeSocket which calls removeAllListeners(\"data\") on the plain socket",
+    // CVE-2021-33515 / CVE-2021-38371. New listener files that import nodeTls AND construct a TLSSocket
+    // anywhere AND do not call mailServerTls (the helper composition) trip this at n=1. Simple regex —
+    // matches `new nodeTls.TLSSocket(` without requiring lookbehind.
+    regex: /new\s+nodeTls\.TLSSocket\s*\(\s*rawSocket\b/,
+    allowlist: [
+      // Submission listener's implicit-TLS path (port 465) wraps the FIRST byte on the wire — no
+      // plaintext predecessor, so listener removal is moot.
+      "lib/mail-server-submission.js",
+    ],
+    reason: "STARTTLS / STLS upgrade — only the upgradeSocket helper is allowed to wrap a TLSSocket around a previously-attached plain socket. The implicit-TLS variant on port 465 wraps the rawSocket BEFORE any plain bytes are read (no listener to remove), so it stays allowlisted.",
+  },
 ];
 
 // @example placeholder detection lives in
