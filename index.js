@@ -89,6 +89,7 @@ var safeJsonPath = require("./lib/safe-jsonpath");
 var safeMime = require("./lib/safe-mime");
 var safeDns = require("./lib/safe-dns");
 var safeSmtp = require("./lib/safe-smtp");
+var safeSieve = require("./lib/safe-sieve");
 var mailStore = require("./lib/mail-store");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
@@ -264,6 +265,7 @@ var mail = require("./lib/mail");
 mail.rbl = require("./lib/mail-rbl");
 mail.greylist = require("./lib/mail-greylist");
 mail.helo = require("./lib/mail-helo");
+mail.sieve = require("./lib/mail-sieve");
 mail.server = mail.server || {};
 mail.server.mx = require("./lib/mail-server-mx");
 mail.server.submission = require("./lib/mail-server-submission");
@@ -551,6 +553,7 @@ module.exports = {
   safeMime:         safeMime,
   safeDns:          safeDns,
   safeSmtp:         safeSmtp,
+  safeSieve:        safeSieve,
   mailStore:        mailStore,
   safeSchema:       safeSchema,
   pagination:       pagination,
