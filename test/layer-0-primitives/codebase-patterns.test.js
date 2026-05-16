@@ -2247,6 +2247,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-mx.js:create",
         "lib/mail-server-mx.js:listen",
         "lib/mail-server-pop3.js:_emit",
+        "lib/mail-sieve.js:_emit",
         "lib/mail-server-pop3.js:create",
         "lib/mail-server-pop3.js:listen",
         "lib/mail-server-submission.js:_emit",
