@@ -146,6 +146,13 @@ jobs:
         run: npm install --no-audit --no-fund --no-save esbuild@0.28.0 postject@1.0.0-alpha.6
 
       - name: Framework smoke
+        # The smoke runner forks per-test workers (each gets 8GB via
+        # execArgv); the parent process itself loads every test module
+        # too and needs the same headroom now that v0.10.0 added the
+        # mail-stack + audit-fix test surface. Default ~4GB heap OOMs
+        # on the GitHub runner. NODE_OPTIONS applies to the parent.
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: node test/smoke.js
 
       - name: Wiki e2e
