@@ -2146,6 +2146,16 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:deviceAuthorization",
+        "lib/auth/oauth.js:parseCallback",
+        "lib/ddl-change-control.js:_hashSql",
+        "lib/mail-rbl.js:query",
+      ],
+      reason: "Defensive opts-object validation shape (typeof check + length / regex / range guard + RFC-specific typed-error throw) appears across RFC 8628 device authorization, OAuth callback parsing, DDL change-control SQL hashing, and DNSBL query parameter validation. Each error class belongs to its own RFC namespace and the validated fields are domain-specific (device_code vs SQL statement vs DNSBL hostname); consolidation would couple unrelated specs.",
+    },
+    {
       files: [
         "lib/auth/dpop.js:verify",
         "lib/auth/jwt.js:_requireNumericDate",
@@ -4660,6 +4670,116 @@ function testNoStateStampsInPublicDocs() {
 //   4. The catalog scans whole-file content (multiline regex) so
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
+  {
+    // CVE-2026-22817 — alg/kty confusion. Importing a JWK via
+    // nodeCrypto.createPublicKey({ key: jwk, format: "jwk" }) WITHOUT
+    // a preceding `_assertAlgKtyMatch(alg, jwk)` call is the
+    // confused-deputy shape: an attacker-controlled `alg: "HS256"`
+    // against an RSA-kty JWK has node:crypto.verify treat the public
+    // key bytes as an HMAC secret. Every JWT verifier in the framework
+    // (oauth.verifyIdToken / jwt-external.verify / oid4vci proof
+    // verify / sd-jwt-vc.verify / openid-federation.verifyEntityStatement)
+    // routes through jwtExternal._assertAlgKtyMatch.
+    id: "jwk-import-without-alg-kty-check",
+    primitive: "jwtExternal._assertAlgKtyMatch(alg, jwk) BEFORE createPublicKey({ key: jwk, format: 'jwk' })",
+    // Trip on a JWK→key import (`createPublicKey({ key: ..., format:
+    // "jwk" })`) that lives in a `_jwkToKey`-style helper WITHOUT a
+    // sibling call to `_assertAlgKtyMatch` (or `jwtExternal._assertAlgKtyMatch`)
+    // anywhere in the helper's enclosing function. The regex looks
+    // for the JWK-import inside a function whose body never names
+    // the helper — within a bounded window.
+    //
+    // Implementation: match the JWK-import shape. Files in the
+    // allowlist below have audited helpers either (a) at the
+    // import site, (b) at every caller upstream of it, or (c) at
+    // a non-attacker-controlled JWK shape (sign-side / pinned-key
+    // paths). New code MUST either add the call adjacent to the
+    // import OR add an allowlist entry with a justification.
+    regex: /createPublicKey\s*\(\s*\{\s*key:\s*\w+(?:\.\w+)?\s*,\s*format:\s*["']jwk["']/,
+    allowlist: [
+      // The helper lives here and exports it; verifyExternal routes
+      // every JWK through _assertAlgKtyMatch BEFORE handing it to
+      // _jwkToKey. The local createPublicKey call inside _jwkToKey
+      // runs after the helper has gated.
+      "lib/auth/jwt-external.js",
+      // oauth.js — verifyIdToken calls jwtExternal._assertAlgKtyMatch
+      // BEFORE _jwkToKey on every code path that resolves a JWK from
+      // an attacker-supplied header.kid.
+      "lib/auth/oauth.js",
+      // sd-jwt-vc.js — verify() calls jwtExternal._assertAlgKtyMatch
+      // before _verifyJwt on every JWK-resolved path.
+      "lib/auth/sd-jwt-vc.js",
+      // openid-federation.js — verifyEntityStatement calls the helper
+      // BEFORE createPublicKey on every code path.
+      "lib/auth/openid-federation.js",
+      // oid4vci.js — _verifyProofJwt calls the helper BEFORE
+      // createPublicKey on the holder JWK.
+      "lib/auth/oid4vci.js",
+      // dpop.js builds proofs (sign-side) using the embedded JWK; the
+      // proof's alg comes from the SAME header the JWK is read from
+      // and is exhaustively validated via _signParamsForAlg /
+      // SUPPORTED_ALGS. The DPoP-specific verify path is special-
+      // cased to the proof's own embedded jwk (not a JWKS lookup),
+      // so alg-confusion can't cross signers.
+      "lib/auth/dpop.js",
+      // jwt.js is the PQC-only framework-signed-JWT verifier; alg is
+      // fixed to ML-DSA-* and the JWK kty=AKP shape is the only
+      // acceptable input.
+      "lib/auth/jwt.js",
+      // sd-jwt-vc-issuer.js / sd-jwt-vc-holder.js — issuer signing
+      // path imports the operator-supplied private key, not an
+      // attacker-controlled JWK. Verify path lives in sd-jwt-vc.js.
+      "lib/auth/sd-jwt-vc-issuer.js",
+      "lib/auth/sd-jwt-vc-holder.js",
+      // saml.js — SAML signatures use X.509 cert paths, not JWKs.
+      "lib/auth/saml.js",
+      // FIDO MDS3 — operator-pinned root CA chain, JWK consumed only
+      // after the chain itself is verified out-of-band.
+      "lib/auth/fido-mds3.js",
+      // status-list.js — minted JWS by the framework itself, JWK
+      // comes from the operator's pinned key set.
+      "lib/auth/status-list.js",
+    ],
+    reason: "CVE-2026-22817 — every JWT verifier that resolves a JWK BY ATTACKER-CONTROLLED HEADER (kid / x5t) must cross-check the declared alg against the JWK's kty (and crv for EC) BEFORE handing the key to node:crypto.verify. Imports that skip the check are exactly the confused-deputy shape (RS256→HS256 family). The shared helper `jwtExternal._assertAlgKtyMatch(alg, jwk)` is the single point of enforcement; new code routes through it. Allowlist entries are sign-side / pinned-cert paths where the JWK is not attacker-supplied.",
+  },
+  {
+    // CVE-2026-23552 — cross-realm JWT acceptance via non-CT iss
+    // compare. `payload.iss !== expectedIssuer` (or claims.iss / token.iss)
+    // leaks prefix-timing bytes that let an attacker narrow which
+    // realm the verifier accepts. Use `jwtExternal._issuerMatches`
+    // (constant-time, handles unequal-length safely).
+    id: "non-ct-iss-compare",
+    primitive: "jwtExternal._issuerMatches(actual, expected) — constant-time iss compare",
+    regex: /(?:payload|claims|token)\.iss\s*!==\s*(?:opts\.issuer|vopts\.issuer|expectedIssuer|configuredIssuer|this\.issuer|preset\.issuer)\b/,
+    allowlist: [
+      // jwt-external + oauth are the helpers' canonical home + main
+      // consumer; both route through _issuerMatches now. Files in
+      // allowlist below are non-JWT iss comparisons (string-equality
+      // on configuration values, not attacker-controlled payloads).
+    ],
+    reason: "CVE-2026-23552 — JWT iss comparisons against attacker-controlled payload values leak prefix-timing via `!==`. Every JWT verifier in the framework (oauth.verifyIdToken / jwt-external.verifyExternal / oauth.parseFrontchannelLogoutRequest / sd-jwt-vc.verify) routes through jwtExternal._issuerMatches for constant-time comparison. Detection is precise: `payload.iss !== ...` / `claims.iss !== ...` / `token.iss !== ...` is the JWT-verify-side shape. Non-JWT iss checks (e.g. discovery-document self-consistency where iss came from the same TLS-fetched body) are not in scope and don't match the regex.",
+  },
+  {
+    // CVE-2026-23993 — accepting unknown JOSE alg values via a
+    // `switch (alg) { default: ... }` permissive default-branch is
+    // the canonical shape. Verifiers MUST throw in the default
+    // branch (no fall-through to a permissive "any signature"
+    // path). The detector catches `switch (...alg)` (case-
+    // insensitive) where the default branch returns/falls through
+    // without throwing.
+    id: "jose-alg-switch-permissive-default",
+    primitive: "Throw in the default branch of any switch on a JOSE alg value (refuse unknown alg outright)",
+    // Match `switch (alg) { ... default: return ... }` /
+    // `default: break` — the specific permissive shape. Throwing
+    // defaults pattern as `default:\s*throw` and are NOT matched.
+    regex: /switch\s*\(\s*\w*[Aa]lg\w*\s*\)\s*\{[\s\S]{0,1500}?default:\s*(?:return|break|\/\/[^\n]*\n\s*\})/,
+    allowlist: [
+      // sd-jwt-vc.js's _resolveSigAlgo DOES throw in the default
+      // branch, so it doesn't match. Other auth files use
+      // explicit if-cascades that throw, also not matched.
+    ],
+    reason: "CVE-2026-23993 — JWT verifiers that accept unknown alg values via a permissive switch-default branch are the canonical bypass class. Every alg-dispatch primitive in the framework throws in the default branch (`throw new AuthError('.../unsupported-alg', ...)`) so an unrecognized alg can never reach a signature-verify call. The detector specifically flags `switch (alg)` (or `switch (header.alg)` / `switch (sigAlgo)`) whose default-branch returns / breaks rather than throwing. New alg-dispatch code throws in the default — no exceptions.",
+  },
   {
     id: "inline-codepoint-class-table",
     primitive: "codepointClass.BIDI_RE / C0_CTRL_RE / ZERO_WIDTH_RE / NULL_RE_G / hex4 / charClass / fromCp",
