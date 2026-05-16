@@ -90,6 +90,15 @@ function testCompliancePosture() {
   check("posture pci-dss → strict", b.safeSieve.compliancePosture("pci-dss") === "strict");
 }
 
+function testErrorClassExported() {
+  check("b.safeSieve.SafeSieveError is a constructor",
+    typeof b.safeSieve.SafeSieveError === "function");
+  var threw = null;
+  try { b.safeSieve.parse(123); } catch (e) { threw = e; }
+  check("parse on non-string throws SafeSieveError",
+    threw instanceof b.safeSieve.SafeSieveError);
+}
+
 function run() {
   testSurface();
   testHappyPath();
@@ -103,6 +112,7 @@ function run() {
   testNestingCap();
   testMultilineString();
   testCompliancePosture();
+  testErrorClassExported();
 }
 
 module.exports = { run: run };
