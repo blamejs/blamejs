@@ -1133,6 +1133,25 @@ function testHardcodedAuthMechanismInCaps() {
     matches);
 }
 
+// ---- Pattern 17d: buildProfile({ profile: ... }) wrong key ----
+//
+// `gateContract.makeProfileBuilder`-derived `buildProfile()` consumes
+// `{ baseProfile, extends, overrides, removes }` — NOT `{ profile }`.
+// Passing `profile:` silently produces `{}` and the eventual
+// `validate(..., profile)` call falls back to the default strict
+// profile, so operator-supplied `profile: "permissive"` is dropped on
+// the floor. Codex P1 PR #77 caught this on `b.mail.send`'s
+// guardDomain wiring (v0.9.52). The right call shape is either
+// `buildProfile({ baseProfile: name })` or pass the profile name
+// straight to `validate(input, { profile: name })`.
+function testBuildProfileWrongKey() {
+  var matches = _scan(/\.buildProfile\s*\(\s*\{\s*profile:/);
+  matches = _filterMarkers(matches, "build-profile-base");
+  _report(".buildProfile({ profile: ... }) — key should be " +
+          "`baseProfile:` (or pass profile name directly to validate())",
+    matches);
+}
+
 // ---- Pattern 18: catch (_e) {} swallowing without logging ----
 
 function testNoSilentCatchSwallow() {
@@ -2224,6 +2243,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-submission.js:_validateDomainHardened",
         "lib/mail-server-submission.js:create",
         "lib/mail-server-submission.js:listen",
+        "lib/mail.js:create",
         "lib/observability-otlp-exporter.js:create",
         "lib/self-update.js:_safeAuditEmit",
         "lib/self-update.js:<top>",
@@ -5655,6 +5675,7 @@ async function run() {
   testListenPortFalsyDefault();
   testImapLiteralSizeZeroFootgun();
   testHardcodedAuthMechanismInCaps();
+  testBuildProfileWrongKey();
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
   testNoRawXffRead();
