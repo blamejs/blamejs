@@ -2104,17 +2104,42 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-snapshot.js:<top>",
         "lib/mail-greylist.js:<top>",
         "lib/mail-server-mx.js:<top>",
+        "lib/mail-server-submission.js:<top>",
         "lib/network-dns-resolver.js:<top>",
       ],
       reason: "Top-of-file JSDoc + module banner block — each module ships an @module / @nav / @title / @intro / @card scaffold per the wiki source-driven convention (rule §10). The shingle similarity is the banner shape, not behaviour. Removing or consolidating the banners would break the wiki auto-derivation.",
     },
     {
+      mode:  "family-subset",
       files: [
         "lib/daemon.js:_safeAuditEmit",
         "lib/mail-server-mx.js:_emit",
+        "lib/mail-server-mx.js:_validateDomainHardened",
+        "lib/mail-server-mx.js:create",
+        "lib/mail-server-submission.js:_emit",
+        "lib/mail-server-submission.js:_validateDomainHardened",
+        "lib/mail-server-submission.js:create",
+        "lib/observability-otlp-exporter.js:create",
         "lib/self-update.js:_safeAuditEmit",
+        "lib/self-update.js:<top>",
       ],
-      reason: "Per-module `_safeAuditEmit(action, metadata, outcome)` wrapper that calls `audit().safeEmit({ action, outcome, metadata })` inside try/catch — each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / self-update.*) so consolidation would couple unrelated audit lifecycles. Mirrors the same audit-emit-wrapper pattern that `lib/agent-audit.js` extracted for the agent-substrate modules; the broader extraction across non-agent modules is open follow-up but doesn't block this slice.",
+      reason: "Per-module audit-emit wrapper + the matching `_validateDomainHardened(d, label)` wrapper around `b.guardDomain.validate(...)` + the listener `create(opts)` opt-normalization shell. Each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / mail.server.submission.* / self-update.*); the domain validators wrap the SAME b.guardDomain.validate but emit to different audit events; the listener create() entries normalize structurally-different opt shapes. Mirrors the audit-emit-wrapper pattern that lib/agent-audit.js extracted for the agent-substrate modules.",
+    },
+    {
+      files: [
+        "lib/mail-server-mx.js:create",
+        "lib/mail-server-submission.js:create",
+        "lib/self-update.js:<top>",
+      ],
+      reason: "MX listener + submission listener share the SMTP connection-lifecycle scaffold (bind / accept / per-connection state init / idle-timer / wire-protocol read loop) because they implement the same RFC 5321 wire protocol with different verb-set + AUTH semantics. The shared scaffold is a known refactoring target — see `b-mail-server-submission-spec.md` §'Composition contract' for the planned `lib/_mail-server-base.js` extraction. Allowlisted with documented intent because (1) the listener-specific verb dispatch + state transitions diverge enough that a v1 base module would carry too many overrideable hooks to be cleaner than the current shape, and (2) further mail-stack listeners (IMAP / JMAP) will inform what the right base abstraction looks like before factoring. self-update's <top> banner shape happens to match the SMTP-listener create() shingle by coincidence — its module is unrelated.",
+    },
+    {
+      files: [
+        "lib/mail-server-mx.js:create",
+        "lib/mail-server-submission.js:create",
+        "lib/observability-otlp-exporter.js:create",
+      ],
+      reason: "Same shared SMTP listener create() shingle as the entry above; observability-otlp-exporter create() coincidentally shares the bind + listen + connection-tracker pattern (it accepts inbound OTLP spans on a TCP socket). All three carry distinct domain-specific opts validation + protocol logic.",
     },
     {
       files: [
