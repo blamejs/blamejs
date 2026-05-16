@@ -4850,6 +4850,41 @@ function testNoStateStampsInPublicDocs() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    // Codex P2 (v0.10.0) — RFC byte-cap checks measured via JS string
+    // `.length` (UTF-16 code units) for fields the RFC defines as
+    // octet-based. Inputs containing non-ASCII characters silently
+    // bypass the cap; downstream storage / wire-protocol layers can
+    // then receive payloads longer than the advertised byte limit.
+    // ManageSieve §2.1 script-name was the bug class: 256 emoji
+    // characters = 256 UTF-16 code units but 1024 UTF-8 bytes,
+    // sneaking past a 512-byte cap. Use `Buffer.byteLength(s, "utf8")`
+    // for any cap labeled "bytes" or matched to an RFC octet limit.
+    id: "utf16-length-as-byte-cap",
+    primitive: "Buffer.byteLength(name, \"utf8\") > capInBytes",
+    regex: /\b(?:name|input|s|str)\.length\s*>\s*\w*(?:maxBytes|MaxBytes|ByteCap|byteCap|maxScriptNameBytes|maxValueBytes|maxLineBytes|maxHeaderBytes)\b/,
+    allowlist: [
+      // ASCII-only field domains where length === byteLength holds by
+      // construction (verb tokens, IP literals, base64 alphabets,
+      // hex-digit checks, RFC 5321 LDH-domain labels).
+      "lib/safe-buffer.js",
+      "lib/safe-url.js",
+      "lib/parsers/safe-ini.js",
+      "lib/parsers/safe-toml.js",
+      // guard-html / guard-svg: pre-existing — the maxBytes check
+      // intentionally caps the JS-string size (post-coercion at the
+      // primitive's entry boundary). Sanitizer runs UTF-16-aware
+      // tokenization; multibyte excess is a downstream property of
+      // the sanitizer output, not the input cap. Follow-up audit
+      // tracks whether the cap should switch to Buffer.byteLength
+      // for byte-accurate semantics, but the current behavior
+      // matches the operator-supplied profile's intent (string
+      // length, not wire-size).
+      "lib/guard-html.js",
+      "lib/guard-svg.js",
+    ],
+    reason: "Codex flagged guard-managesieve-command using .length (UTF-16 code units) for RFC 5804 §2.1's octet-based script-name cap. Non-ASCII names bypassed the byte limit. New code measuring against a *byte* cap MUST use Buffer.byteLength; .length is correct only for ASCII-only domains explicitly allowlisted above.",
+  },
+  {
     // CVE-2026-22817 — alg/kty confusion. Importing a JWK via
     // nodeCrypto.createPublicKey({ key: jwk, format: "jwk" }) WITHOUT
     // a preceding `_assertAlgKtyMatch(alg, jwk)` call is the
