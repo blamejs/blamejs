@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.9.49",
-  "createdAt": "2026-05-16T01:53:22.985Z",
+  "frameworkVersion": "0.9.50",
+  "createdAt": "2026-05-16T03:31:02.169Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -10720,7 +10720,7 @@
         },
         "decrypt": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         },
         "decryptEnvelopeAsCertPeer": {
           "type": "function",
@@ -33987,6 +33987,10 @@
               "type": "function",
               "arity": 2
             },
+            "bootstrap": {
+              "type": "function",
+              "arity": 1
+            },
             "create": {
               "type": "function",
               "arity": 1
@@ -34449,6 +34453,19 @@
                   "arity": 4
                 },
                 "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "tls": {
+              "type": "object",
+              "members": {
+                "MailServerTlsError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "context": {
                   "type": "function",
                   "arity": 1
                 }

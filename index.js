@@ -266,6 +266,7 @@ mail.server = mail.server || {};
 mail.server.mx = require("./lib/mail-server-mx");
 mail.server.submission = require("./lib/mail-server-submission");
 mail.server.imap = require("./lib/mail-server-imap");
+mail.server.tls = require("./lib/mail-server-tls");
 mail.server.rateLimit = require("./lib/mail-server-rate-limit");
 var mailArf = require("./lib/mail-arf");
 var mailBounce = require("./lib/mail-bounce");
