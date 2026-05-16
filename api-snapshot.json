@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.9.47",
-  "createdAt": "2026-05-15T23:01:40.979Z",
+  "createdAt": "2026-05-16T00:37:08.432Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34033,6 +34033,44 @@
               "type": "object",
               "members": {
                 "MailServerMxError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "create": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "rateLimit": {
+              "type": "object",
+              "members": {
+                "DEFAULTS": {
+                  "type": "object",
+                  "members": {
+                    "authFailuresPerIpPer15Min": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "connectionsPerIpPerMinute": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "disabled": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "maxConcurrentConnectionsPerIp": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "minBytesPerSecond": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "MailServerRateLimitError": {
                   "type": "function",
                   "arity": 4
                 },

@@ -264,6 +264,7 @@ mail.helo = require("./lib/mail-helo");
 mail.server = mail.server || {};
 mail.server.mx = require("./lib/mail-server-mx");
 mail.server.submission = require("./lib/mail-server-submission");
+mail.server.rateLimit = require("./lib/mail-server-rate-limit");
 var mailArf = require("./lib/mail-arf");
 var mailBounce = require("./lib/mail-bounce");
 var mailMdn = require("./lib/mail-mdn");

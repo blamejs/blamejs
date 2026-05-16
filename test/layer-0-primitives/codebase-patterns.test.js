@@ -2114,10 +2114,16 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/daemon.js:_safeAuditEmit",
         "lib/mail-server-mx.js:_emit",
+        "lib/mail-server-mx.js:_validateDomainHardened",
+        "lib/mail-server-mx.js:create",
         "lib/mail-server-submission.js:_emit",
+        "lib/mail-server-submission.js:_validateDomainHardened",
+        "lib/mail-server-submission.js:create",
+        "lib/observability-otlp-exporter.js:create",
         "lib/self-update.js:_safeAuditEmit",
+        "lib/self-update.js:<top>",
       ],
-      reason: "Per-module `_safeAuditEmit(action, metadata, outcome)` wrapper that calls `audit().safeEmit({ action, outcome, metadata })` inside try/catch — each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / mail.server.submission.* / self-update.*) so consolidation would couple unrelated audit lifecycles. Mirrors the same audit-emit-wrapper pattern that `lib/agent-audit.js` extracted for the agent-substrate modules; the broader extraction across non-agent modules is open follow-up but doesn't block this slice.",
+      reason: "Per-module audit-emit wrapper + the matching `_validateDomainHardened(d, label)` wrapper around `b.guardDomain.validate(...)` + the listener `create(opts)` opt-normalization shell. Each module's audit calls land on a distinct action-namespace (daemon.* / mail.server.mx.* / mail.server.submission.* / self-update.*); the domain validators wrap the SAME b.guardDomain.validate but emit to different audit events; the listener create() entries normalize structurally-different opt shapes. Mirrors the audit-emit-wrapper pattern that lib/agent-audit.js extracted for the agent-substrate modules.",
     },
     {
       files: [
