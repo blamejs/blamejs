@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.3",
-  "createdAt": "2026-05-17T01:22:04.369Z",
+  "frameworkVersion": "0.10.4",
+  "createdAt": "2026-05-17T05:20:20.562Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -35560,6 +35560,10 @@
                     "minBytesPerSecond": {
                       "type": "primitive",
                       "valueType": "number"
+                    },
+                    "rcptFailuresPerIpPerMinute": {
+                      "type": "primitive",
+                      "valueType": "number"
                     }
                   }
                 },
@@ -42181,6 +42185,10 @@
               "valueType": "number"
             },
             "maxHeaderBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxHeaderCount": {
               "type": "primitive",
               "valueType": "number"
             },

@@ -2324,6 +2324,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/mail-server-imap.js:_handleAuthenticate",
+        "lib/mail-server-mx.js:_handleRcptTo",
+        "lib/mail-server-submission.js:_handleAuth",
+      ],
+      reason: "Per-IP rate-limit admit-check + transient-refusal + close shape — `rateLimit.checkAuthAdmit` / `checkRcptAdmit` returning ok=false leads to the same audit-emit + 421/[ALERT] reply + close-connection trio across mail-server-{imap,mx,submission}. IMAP's _handleAuthenticate gates AUTHENTICATE against AUTH-failure budget; MX's _handleRcptTo gates RCPT TO against RCPT-failure budget (RFC 5321 §3.5 enumeration); submission's _handleAuth gates AUTH against the AUTH-failure budget. Three different verb-dispatch contexts emitting three distinct audit actions on three different listeners — consolidating would couple unrelated RFC verb-set policies into one wrapper.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/guard-imap-command.js:validate",
         "lib/guard-jmap.js:validate",
         "lib/guard-mail-query.js:_walk",
@@ -5595,7 +5604,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "dot-stuff-jsregex-bare-lf",
     primitive: "b.safeSmtp.dotStuff(buf) — CRLF-aware byte-level dot-stuffing",
-    // MAIL-15 — `.replace(/^\./gm, "..")` on a JS string treats bare LF as a line boundary, so bodies
+    // `.replace(/^\./gm, "..")` on a JS string treats bare LF as a line boundary, so bodies
     // containing bare-LF lines that start with '.' gain spurious stuffing the receiver's strict-CRLF
     // parser won't undo. Route through safeSmtp.dotStuff which only treats canonical \r\n as a boundary.
     regex: /\.replace\(\s*\/\^\\\.\/gm\s*,\s*["']\.\.["']\s*\)/,
@@ -5858,7 +5867,7 @@ function testScopedContextBindingUsed() {
 
 // ---- Pattern: DNS lookup falls back to node:dns instead of safeDns ----
 //
-// Surfaced 2026-05-15 audit MAIL-8 — `mail-dkim` / `mail-auth` fell back
+// Surfaced 2026-05-15 audit `mail-dkim` / `mail-auth` fell back
 // to `require("node:dns/promises").resolveTxt(...)` (and `.reverse` /
 // `.resolve4` / `.resolve6`) when no operator-supplied `dnsLookup`
 // callback was provided. That path sends plaintext UDP/53 to whatever
@@ -5906,19 +5915,19 @@ function testNoDirectNodeDnsInMail() {
           content: "mail-* module reaches `node:dns` directly — route through " +
                    "`_safeResolveTxt` / `_safeReverse` / `_safeResolveA` helper " +
                    "(composes `b.network.dns.resolver`, DoH default-on per " +
-                   "v0.7.23). MAIL-8 / CVE-2008-1447 / CVE-2022-3204.",
+                   "v0.7.23). CVE-2008-1447 / CVE-2022-3204.",
         });
       }
     }
   }
   bad = _filterMarkers(bad, "mail-direct-node-dns");
-  _report("mail-* DNS lookup must compose b.network.dns.resolver, not node:dns directly (MAIL-8 — DoH default-on bypass)",
+  _report("mail-* DNS lookup must compose b.network.dns.resolver, not node:dns directly (DoH default-on bypass)",
     bad);
 }
 
 // ---- Pattern: Math.random() for protocol sampling / disposition rolls ----
 //
-// Surfaced 2026-05-15 audit MAIL-10 + MAIL-56 — DMARC pct sampling
+// Surfaced 2026-05-15 audit DMARC pct sampling
 // used Math.random() which (a) is a non-cryptographic PRNG so the
 // roll can be predicted by an adversary aware of the receiver's
 // Node version, and (b) re-rolls per-call so the SAME message gets
@@ -5951,19 +5960,19 @@ function testNoMathRandomInPolicyDecisions() {
           content: "Math.random() used in a policy-decision context " +
                    "(pct/sample/disposition/quarantine/quota/policy/roll) — " +
                    "use crypto.randomInt for hardening floor; SHAKE256 over a " +
-                   "stable key for retry-determinism (MAIL-10 / MAIL-56).",
+                   "stable key for retry-determinism .",
         });
       }
     }
   }
   bad = _filterMarkers(bad, "math-random-in-policy");
-  _report("Math.random forbidden in policy-decision contexts — use crypto.randomInt OR SHAKE256(stable-key) per the retry-stability contract (MAIL-10 / MAIL-56)",
+  _report("Math.random forbidden in policy-decision contexts — use crypto.randomInt OR SHAKE256(stable-key) per the retry-stability contract ",
     bad);
 }
 
 // ---- Pattern: DMARC alignment with naive text-suffix instead of PSL ----
 //
-// Surfaced 2026-05-15 audit MAIL-25 — relaxed alignment did a naive
+// Surfaced 2026-05-15 audit relaxed alignment did a naive
 // `endsWith` comparison between From-domain and DKIM/SPF auth-domain.
 // `evil-bank.com` text-suffix-aligned with `bank.com` despite being
 // separately registered. Use `publicSuffix.organizationalDomain` to
@@ -5993,19 +6002,19 @@ function testNoNaiveSuffixAlignment() {
           content: "naive text-suffix alignment — separately-registered " +
                    "confusables (`evil-bank.com` vs `bank.com`) pass. Use " +
                    "`publicSuffix.organizationalDomain(d)` and compare org-" +
-                   "domains (MAIL-25 — RFC 7489 §3.1.1).",
+                   "domains (RFC 7489 §3.1.1).",
         });
       }
     }
   }
   bad = _filterMarkers(bad, "naive-suffix-alignment");
-  _report("relaxed-mode alignment MUST use publicSuffix.organizationalDomain, not naive text-suffix slice (MAIL-25 — RFC 7489 §3.1.1)",
+  _report("relaxed-mode alignment MUST use publicSuffix.organizationalDomain, not naive text-suffix slice (RFC 7489 §3.1.1)",
     bad);
 }
 
 // ---- Pattern: gunzip error not distinguishing bomb from corrupt ----
 //
-// Surfaced 2026-05-15 audit MAIL-39 — a single error code for "gunzip
+// Surfaced 2026-05-15 audit a single error code for "gunzip
 // failed" conflates an attacker-supplied decompression bomb (output
 // exceeded maxOutputLength) with operator-side corrupt stream. The
 // catch must inspect `e.code === "ERR_BUFFER_TOO_LARGE"` /
@@ -6042,14 +6051,14 @@ function testGunzipBombDistinguished() {
           content: "gunzipSync catch must distinguish decompression-bomb " +
                    "(output cap exceeded) from corrupt-stream — emit " +
                    "distinct error codes so audit can rate-limit the " +
-                   "source on amplification (MAIL-39 — CVE-2024 zlib class).",
+                   "source on amplification (CVE-2024 zlib class).",
         });
         break;
       }
     }
   }
   bad = _filterMarkers(bad, "gunzip-bomb-conflated");
-  _report("gunzip catch must distinguish bomb (output cap) from corrupt-stream (MAIL-39 — CVE-2024 zlib amplification class)",
+  _report("gunzip catch must distinguish bomb (output cap) from corrupt-stream (CVE-2024 zlib amplification class)",
     bad);
 }
 
@@ -6519,7 +6528,7 @@ async function run() {
   testNoBoolStringCoerceShape();
   testNoBareCommaSplitOnQuotedHeader();
   testScopedContextBindingUsed();
-  // v0.9.57 — audit 2026-05-15 mail-auth bug-class detectors
+  // v0.9.57 — mail-auth bug-class detectors
   testNoDirectNodeDnsInMail();
   testNoMathRandomInPolicyDecisions();
   testNoNaiveSuffixAlignment();
