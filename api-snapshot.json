@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.2",
-  "createdAt": "2026-05-16T22:15:41.231Z",
+  "frameworkVersion": "0.10.3",
+  "createdAt": "2026-05-17T01:22:04.369Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -27372,6 +27372,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "inputKind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "lookaroundQuantPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27440,6 +27444,10 @@
                 "forensicSnippetBytes": {
                   "type": "primitive",
                   "valueType": "number"
+                },
+                "inputKind": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "lookaroundQuantPolicy": {
                   "type": "primitive",
@@ -27510,6 +27518,10 @@
                   "type": "primitive",
                   "valueType": "number"
                 },
+                "inputKind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "lookaroundQuantPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -27574,6 +27586,10 @@
               "valueType": "string"
             },
             "controlPolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "inputKind": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -27813,6 +27829,10 @@
                   "valueType": "string"
                 },
                 "controlPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "inputKind": {
                   "type": "primitive",
                   "valueType": "string"
                 },
