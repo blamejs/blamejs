@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.7",
-  "createdAt": "2026-05-17T20:01:06.874Z",
+  "frameworkVersion": "0.10.8",
+  "createdAt": "2026-05-17T23:18:34.500Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1388,6 +1388,116 @@
             }
           }
         },
+        "aiContentDetect": {
+          "type": "object",
+          "members": {
+            "AiContentDetectError": {
+              "type": "function",
+              "arity": 4
+            },
+            "COMPLIANCE_POSTURES": {
+              "type": "object",
+              "members": {
+                "ca-ab-853": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "ca-sb-942": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "cac-genai-label": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "eu-ai-act-art-50": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "iso-23894": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "iso-42001": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nist-ai-600-1": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nist-ai-rmf": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "PROFILES": {
+              "type": "object",
+              "members": {
+                "balanced": {
+                  "type": "object",
+                  "members": {
+                    "auditOnly": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "refuseUnpinned": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "refuseUnsigned": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "permissive": {
+                  "type": "object",
+                  "members": {
+                    "auditOnly": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "refuseUnpinned": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "refuseUnsigned": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                },
+                "strict": {
+                  "type": "object",
+                  "members": {
+                    "auditOnly": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "refuseUnpinned": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "refuseUnsigned": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    }
+                  }
+                }
+              }
+            },
+            "compliancePosture": {
+              "type": "function",
+              "arity": 1
+            },
+            "report": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
         "input": {
           "type": "object",
           "members": {
@@ -1402,6 +1512,35 @@
             "refuseIfMalicious": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "modelManifest": {
+          "type": "object",
+          "members": {
+            "AiModelManifestError": {
+              "type": "function",
+              "arity": 4
+            },
+            "BOM_FORMAT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SPEC_VERSION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "build": {
+              "type": "function",
+              "arity": 1
+            },
+            "sign": {
+              "type": "function",
+              "arity": 2
+            },
+            "verify": {
+              "type": "function",
+              "arity": 3
             }
           }
         }
@@ -1759,6 +1898,10 @@
           }
         },
         "cleanOrphans": {
+          "type": "function",
+          "arity": 2
+        },
+        "conflictPath": {
           "type": "function",
           "arity": 2
         },
@@ -10679,6 +10822,14 @@
           "ctorName": "Array"
         },
         "build": {
+          "type": "function",
+          "arity": 1
+        },
+        "cacImplicitLabel": {
+          "type": "function",
+          "arity": 1
+        },
+        "cacImplicitLabelRead": {
           "type": "function",
           "arity": 1
         },
@@ -40267,6 +40418,19 @@
         }
       }
     },
+    "promisePool": {
+      "type": "object",
+      "members": {
+        "PromisePoolError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "protocolDispatcher": {
       "type": "object",
       "members": {
@@ -43274,6 +43438,39 @@
           "arity": 3
         },
         "parseCron": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "sdNotify": {
+      "type": "object",
+      "members": {
+        "SdNotifyError": {
+          "type": "function",
+          "arity": 4
+        },
+        "isAvailable": {
+          "type": "function",
+          "arity": 0
+        },
+        "ready": {
+          "type": "function",
+          "arity": 1
+        },
+        "reloading": {
+          "type": "function",
+          "arity": 1
+        },
+        "send": {
+          "type": "function",
+          "arity": 1
+        },
+        "stopping": {
+          "type": "function",
+          "arity": 1
+        },
+        "watchdog": {
           "type": "function",
           "arity": 1
         }
