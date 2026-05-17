@@ -51,6 +51,24 @@ function testVerifyRejectsTamper() {
   check("tampered BOM rejected",   verdict.valid === false);
 }
 
+function testVerifyHandlesMalformedKey() {
+  var pair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+  var bom = b.ai.modelManifest.build({ model: { name: "m", version: "1" }});
+  var env = b.ai.modelManifest.sign(bom, { privateKeyPem: pair.privateKey, audit: false });
+  // Malformed but non-empty PEM. Per the documented `{ valid, reason }`
+  // contract, this MUST NOT throw — caller must see a structured
+  // invalid verdict.
+  var threw = false;
+  var verdict;
+  try {
+    verdict = b.ai.modelManifest.verify(env, "-----BEGIN PUBLIC KEY-----\nnot-a-real-key\n-----END PUBLIC KEY-----",
+      { audit: false });
+  } catch (_e) { threw = true; }
+  check("malformed PEM does not throw",  threw === false);
+  check("malformed PEM returns invalid", verdict && verdict.valid === false);
+  check("reason names the failure",      verdict && verdict.reason === "public-key-malformed");
+}
+
 function testBuildValidation() {
   var threw;
   threw = false;
@@ -70,6 +88,7 @@ function run() {
   testBuild();
   testSignVerifyRoundTrip();
   testVerifyRejectsTamper();
+  testVerifyHandlesMalformedKey();
   testBuildValidation();
 }
 

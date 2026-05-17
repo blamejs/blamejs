@@ -108,6 +108,34 @@ function testAiContentDetectC2PA() {
   check("verified true",              rep.verified === true);
   check("trust-list-empty alert",
     rep.alerts.indexOf("trust-list-empty") !== -1);
+
+  // Strict mode + tampered envelope — verify fails, MUST throw rather
+  // than return an alert object. The advertised fail-closed contract
+  // for AB-853 / EU AI Act Art. 50 posture would be silently broken
+  // otherwise.
+  var tampered = {
+    manifest:  Object.assign({}, envelope.manifest, { provider: "Attacker" }),
+    signature: envelope.signature,
+  };
+  var threw = false;
+  try {
+    b.ai.aiContentDetect.report({
+      c2paEnvelope:     tampered,
+      c2paPublicKeyPem: pair.publicKey,
+      profile:          "strict",
+      trustList:        ["CN=Acme AI Inc."],
+    });
+  } catch (_e) { threw = true; }
+  check("strict refuses tampered C2PA", threw);
+
+  // Strict mode + missing pubkey — must also throw, not warn.
+  threw = false;
+  try {
+    b.ai.aiContentDetect.report({
+      c2paEnvelope: envelope, profile: "strict",
+    });
+  } catch (_e) { threw = true; }
+  check("strict refuses missing c2paPublicKeyPem", threw);
 }
 
 function run() {
