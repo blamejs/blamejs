@@ -5602,6 +5602,25 @@ var KNOWN_ANTIPATTERNS = [
     reason: "STARTTLS / STLS upgrade across MX / submission / IMAP / POP3 listeners. CVE-2021-33515 (Dovecot) + CVE-2021-38371 (Exim) — plaintext bytes pipelined ahead of the handshake reach the post-TLS dispatcher when the plain socket's 'data' listener is not stripped before TLSSocket wraps. Centralized in mail-server-tls.upgradeSocket which removes the listener + pauses the socket + wraps + re-arms idle timeout + wires onSecure / onData / onError. New listeners route through the helper.",
   },
   {
+    id: "mailstore-quota-wrong-signature",
+    primitive: "b.mailStore.quota(folderName) — single-string-arg + reads capBytes/usedBytes",
+    // mailStore.quota(folderName) returns
+    // { usedBytes, usedCount, capBytes, capCount }. Two-arg call shapes
+    // (e.g. mailStore.quota(actor, folderName)) pass the actor as the
+    // folder key and throw mail-store/no-folder. Reading q.limitBytes is
+    // wrong (the field is capBytes); the over-quota check never trips.
+    regex: /mailStore\.quota\s*\([^)]*,/,
+    allowlist: [],
+    reason: "mailStore.quota takes a single folderName argument; the return shape is { usedBytes, usedCount, capBytes, capCount }. A two-arg call (actor, folder) passes the actor object as the folder key and throws mail-store/no-folder, breaking IMAP APPEND for valid writes. Read q.capBytes (not q.limitBytes — undefined, so the over-quota gate would never fire).",
+  },
+  {
+    id: "mailstore-quota-wrong-field",
+    primitive: "b.mailStore.quota returns capBytes (not limitBytes)",
+    regex: /\bq\.limitBytes\b|\bquota\.limitBytes\b/,
+    allowlist: [],
+    reason: "mailStore.quota returns { usedBytes, usedCount, capBytes, capCount }. Reading q.limitBytes / quota.limitBytes is undefined and silently bypasses the over-quota check. Use q.capBytes.",
+  },
+  {
     id: "dot-stuff-jsregex-bare-lf",
     primitive: "b.safeSmtp.dotStuff(buf) — CRLF-aware byte-level dot-stuffing",
     // `.replace(/^\./gm, "..")` on a JS string treats bare LF as a line boundary, so bodies
