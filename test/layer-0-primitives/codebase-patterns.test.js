@@ -5602,6 +5602,36 @@ var KNOWN_ANTIPATTERNS = [
     reason: "STARTTLS / STLS upgrade across MX / submission / IMAP / POP3 listeners. CVE-2021-33515 (Dovecot) + CVE-2021-38371 (Exim) — plaintext bytes pipelined ahead of the handshake reach the post-TLS dispatcher when the plain socket's 'data' listener is not stripped before TLSSocket wraps. Centralized in mail-server-tls.upgradeSocket which removes the listener + pauses the socket + wraps + re-arms idle timeout + wires onSecure / onData / onError. New listeners route through the helper.",
   },
   {
+    id: "sbom-toplevel-ref-by-slash-heuristic",
+    primitive: "Derive top-level SBOM refs by exclusion from _childRefs, not by substring on '/' in the bom-ref",
+    // Scoped npm package names like `@peculiar/x509` contain a `/`
+    // in their bom-ref, so a heuristic that filters bom-refs on
+    // indexOf("/") === -1 (with or without an `^@` escape hatch)
+    // misclassifies the next scoped sub-component naming scheme to
+    // arrive. The correct derivation is exclusion from _childRefs
+    // (anything that doesn't appear as a child in _subDeps is a
+    // top-level ref).
+    regex: /\.filter\s*\(\s*function\s*\([^)]*\)\s*\{\s*return\s+c\["bom-ref"\]\.indexOf\("\/"\)/,
+    allowlist: [],
+    reason: "Top-level SBOM bom-refs should be derived by exclusion from _childRefs (any ref not appearing as a child in _subDeps is top-level). The substring heuristic on '/' breaks for scoped npm packages and any future namespacing scheme.",
+  },
+  {
+    id: "sbom-subcomponent-version-inherits-parent",
+    primitive: "Sub-component SBOM entries must use their own upstream version, not entry.version",
+    // For a meta-bundle whose parent version is a composite tag like
+    // `2.0.0+pkijs-3.4.0`, forcing every child component to inherit
+    // entry.version makes CVE matchers key off the meta tag instead
+    // of the real upstream version, producing false negatives on
+    // children. The accepted form is `entry.components[subName]` as
+    // either a `{ url, version }` object OR a bare string (legacy
+    // form; falls back to parent version). Direct assignment of
+    // `version: entry.version` inside the sub-component build
+    // without a sub-version lookup is the bug shape.
+    regex: /\bversion:\s*entry\.version,?\s*\n\s+license:\s*entry\.license/,
+    allowlist: [],
+    reason: "sub-component SBOM expansion must respect operator-supplied per-sub-component versions when present. The schema accepts `entry.components[subName]` as `{ url, version }` (preferred) or bare string (legacy; falls back to parent). A direct `version: entry.version` inside the sub-component build path skips the lookup and emits a parent-version-shadowed child that CVE matchers can't key off.",
+  },
+  {
     id: "timing-safe-equal-utf8-without-shape-guard",
     primitive: "Validate byte shape before nodeCrypto.timingSafeEqual on UTF-8 encoded strings",
     // `nodeCrypto.timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"))`

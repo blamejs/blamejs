@@ -140,8 +140,8 @@
       "source": "https://github.com/PeculiarVentures",
       "_about": "Meta-bundle of @peculiar/x509 + pkijs + reflect-metadata + every transitive ASN.1 schema package. Used by lib/mtls-engine-default.js as the pure-JS CA + PKCS#12 engine wired into b.mtlsCa.",
       "components": {
-        "@peculiar/x509": "https://github.com/PeculiarVentures/x509",
-        "pkijs": "https://github.com/PeculiarVentures/PKI.js"
+        "@peculiar/x509": { "url": "https://github.com/PeculiarVentures/x509", "version": "1.13.0" },
+        "pkijs": { "url": "https://github.com/PeculiarVentures/PKI.js", "version": "3.4.0" }
       },
       "exports": [
         "x509",

@@ -193,22 +193,47 @@ Object.keys(manifest).filter(function (key) {
   var parent = _buildComponent(key, entry);
   components.push(parent);
 
-  // sub-component expansion. `entry.components` is a map
-  // of { "<subName>": "<vcs-url>" }; each becomes a child component
-  // sharing the parent's version + license + bundledAt context, with
-  // its own purl + externalReferences + bom-ref so downstream CVE
-  // walkers see the inner structure.
+  // sub-component expansion. `entry.components` is a map keyed by
+  // sub-component name. Each value is EITHER:
+  //   - a bare string `"<vcs-url>"` (legacy form; sub inherits the
+  //     parent's version), OR
+  //   - an object `{ url, version }` where `version` is the actual
+  //     upstream version of the sub-component (preferred form for
+  //     meta-bundles whose parent version is a composite tag like
+  //     `2.0.0+pkijs-3.4.0` — the parent version doesn't match
+  //     ANY sub-component's real upstream version, so a CVE matcher
+  //     keying off component version produces false negatives on
+  //     the children unless we report each sub-component's real
+  //     version here).
+  // Each becomes a child component sharing the parent's license +
+  // bundledAt context, with its own purl + externalReferences +
+  // bom-ref so downstream CVE walkers see the inner structure.
   if (entry.components && typeof entry.components === "object" && !Array.isArray(entry.components)) {
     var subKeys = Object.keys(entry.components);
     for (var si = 0; si < subKeys.length; si++) {
-      var subName = subKeys[si];
-      var subUrl  = entry.components[subName];
-      if (typeof subUrl !== "string" || subUrl.length === 0) continue;
-      // Sub-component inherits parent version + license + bundledAt;
+      var subName  = subKeys[si];
+      var subValue = entry.components[subName];
+      var subUrl;
+      var subVersion;
+      if (typeof subValue === "string") {
+        subUrl     = subValue;
+        subVersion = entry.version;   // legacy form — inherit parent
+      } else if (subValue && typeof subValue === "object" &&
+                 typeof subValue.url === "string") {
+        subUrl     = subValue.url;
+        subVersion = typeof subValue.version === "string" && subValue.version.length > 0
+                     ? subValue.version
+                     : entry.version;
+      } else {
+        continue;
+      }
+      if (subUrl.length === 0) continue;
+      // Sub-component inherits parent license + bundledAt; uses its
+      // own version (when supplied) or falls back to parent.
       // bom-ref namespaced under the parent so two parents that bundle
       // the same sub-name don't collide.
       var subEntry = {
-        version:    entry.version,
+        version:    subVersion,
         license:    entry.license,
         license_is_spdx: entry.license_is_spdx,
         author:     entry.author,
@@ -237,14 +262,14 @@ if (_runUrl) {
 // on the framework's vendored-bundle; sub-components depend on their
 // parent component. Result is a directed graph downstream tools walk
 // to reach every inner sub-bundle CVE.
-var _topLevelRefs = components
-  .filter(function (c) { return c["bom-ref"].indexOf("/") === -1 || /^@/.test(c["bom-ref"]); })
-  .map(function (c) { return c["bom-ref"]; });
-// Recover top-level bom-refs robustly: anything whose bom-ref was
-// registered before _subDeps fired (i.e. not a child in _subDeps).
+//
+// Top-level refs are derived by exclusion: a component is top-level
+// iff its bom-ref never appears as a child in _subDeps. The earlier
+// substring-heuristic on "/" misclassified scoped packages like
+// `@peculiar/x509` and any future sub-component naming scheme.
 var _childRefs = Object.create(null);
 for (var di = 0; di < _subDeps.length; di++) _childRefs[_subDeps[di].childRef] = true;
-_topLevelRefs = components
+var _topLevelRefs = components
   .map(function (c) { return c["bom-ref"]; })
   .filter(function (ref) { return !_childRefs[ref]; });
 
