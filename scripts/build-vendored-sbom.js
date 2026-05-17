@@ -25,7 +25,7 @@ try {
 
 var rootPkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
 
-// SUPPLY-12 — CycloneDX 1.6 §4.2 requires serialNumber to be a UUID
+// CycloneDX 1.6 §4.2 requires serialNumber to be a UUID
 // uniquely identifying the BOM artifact. Deriving the UUID from the
 // rootPkg.version made every rebuild of the SAME version produce the
 // same serialNumber — BOM-diff tools (Dependency-Track, Snyk SBOM
@@ -35,7 +35,7 @@ var rootPkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.
 // serialNumber-per-build identity, not version-stable identity.
 var serialNumber = "urn:uuid:" + crypto.randomUUID();
 
-// SUPPLY-15 — CycloneDX 1.6 §4.4 (metadata.supplier) + SLSA v1.0
+// CycloneDX 1.6 §4.4 (metadata.supplier) + SLSA v1.0
 // provenance attestation require a `supplier` block on every BOM the
 // build pipeline emits. `gh attestation verify` walks the chain and
 // fails closed when the SBOM omits metadata.supplier. The supplier
@@ -46,7 +46,7 @@ var FRAMEWORK_SUPPLIER = {
   "url":  ["https://blamejs.com/"],
 };
 
-// SUPPLY-22 — CycloneDX 1.6 §4.4.2 — metadata.lifecycles[] entries
+// CycloneDX 1.6 §4.4.2 — metadata.lifecycles[] entries
 // MAY carry externalReferences pointing at the build pipeline that
 // produced this BOM. Provenance walkers (Sigstore, SLSA verifiers)
 // reach for these when correlating the BOM to its build run.
@@ -64,7 +64,7 @@ function _githubActionsRunUrl() {
   return null;
 }
 
-// SUPPLY-14 — CycloneDX 1.6 §4.6 — license.id MUST be a valid SPDX
+// CycloneDX 1.6 §4.6 — license.id MUST be a valid SPDX
 // license-list identifier. Non-SPDX prose ("BIMI Group / per-issuer")
 // falls into license.name (the free-text fallback) so consumers
 // parsing SBOM-as-SPDX don't reject the whole BOM on an unknown
@@ -133,13 +133,16 @@ function _hashesFor(entry) {
   return rv;
 }
 
-var components = Object.keys(manifest).filter(function (key) {
-  // Skip MANIFEST.json's _comment and any other underscore-prefixed metadata
-  if (key.charAt(0) === "_") return false;
-  var entry = manifest[key];
-  return entry && typeof entry === "object" && typeof entry.version === "string";
-}).map(function (key) {
-  var entry = manifest[key];
+// CycloneDX 1.6 §4.7 — sub-component dependsOn graph.
+// Entries shaped like `peculiar-pki` carry a `components` map of
+// inner sub-bundles ({ "@peculiar/x509": <vcs-url>, "pkijs": <vcs-url> }).
+// Emit each as its own SBOM component + register the parent's
+// dependsOn so Dependency-Track / Snyk SBOM Monitor see the inner
+// bundle structure (otherwise the peculiar-pki bundle appears as a
+// monolithic component and its sub-vulnerabilities can't be CVE-mapped).
+var _subDeps = [];   // [{ parentRef, childRef }, ...]
+
+function _buildComponent(key, entry) {
   var c = {
     "type":      "library",
     "bom-ref":   key + "@" + entry.version,
@@ -148,10 +151,25 @@ var components = Object.keys(manifest).filter(function (key) {
     "purl":      _purlFor(entry, key),
     "scope":     "required",
   };
-  if (entry.author)      c.author = entry.author;
+  if (entry.author) {
+    c.author = entry.author;
+    // CycloneDX 1.6 §4.5.2 — per-component supplier
+    // mirrors metadata.supplier. `gh attestation verify` walks each
+    // component's supplier when reconciling provenance; an absent
+    // per-component supplier falls back to metadata.supplier but
+    // SLSA v1.0 prefers explicit attribution at the component level.
+    c.supplier = { "name": entry.author };
+  }
   if (entry.description) c.description = entry.description;
-  if (entry.license) {
-    c.licenses = [{ license: { id: entry.license } }];
+  var licenses = _licenseFor(entry);
+  if (licenses) c.licenses = licenses;
+  // CycloneDX 1.6 §4.5 — cpe field. CISA/NVD CVE-matching
+  // pipelines rely on the CPE 2.3 identifier; absent it, ~30% of NVD
+  // entries (CPE-only feed; no purl mirror) miss the match. MANIFEST
+  // entries supply `cpe: "cpe:2.3:a:vendor:product:version:..."` per
+  // CPE 2.3 Naming Specification (NIST IR 7695).
+  if (typeof entry.cpe === "string" && entry.cpe.length > 0) {
+    c.cpe = entry.cpe;
   }
   if (entry.source) {
     c.externalReferences = [{ type: "vcs", url: entry.source }];
@@ -162,7 +180,92 @@ var components = Object.keys(manifest).filter(function (key) {
     c.properties = [{ name: "blamejs:bundledAt", value: entry.bundledAt }];
   }
   return c;
+}
+
+var components = [];
+Object.keys(manifest).filter(function (key) {
+  // Skip MANIFEST.json's _comment and any other underscore-prefixed metadata
+  if (key.charAt(0) === "_") return false;
+  var entry = manifest[key];
+  return entry && typeof entry === "object" && typeof entry.version === "string";
+}).forEach(function (key) {
+  var entry = manifest[key];
+  var parent = _buildComponent(key, entry);
+  components.push(parent);
+
+  // sub-component expansion. `entry.components` is a map
+  // of { "<subName>": "<vcs-url>" }; each becomes a child component
+  // sharing the parent's version + license + bundledAt context, with
+  // its own purl + externalReferences + bom-ref so downstream CVE
+  // walkers see the inner structure.
+  if (entry.components && typeof entry.components === "object" && !Array.isArray(entry.components)) {
+    var subKeys = Object.keys(entry.components);
+    for (var si = 0; si < subKeys.length; si++) {
+      var subName = subKeys[si];
+      var subUrl  = entry.components[subName];
+      if (typeof subUrl !== "string" || subUrl.length === 0) continue;
+      // Sub-component inherits parent version + license + bundledAt;
+      // bom-ref namespaced under the parent so two parents that bundle
+      // the same sub-name don't collide.
+      var subEntry = {
+        version:    entry.version,
+        license:    entry.license,
+        license_is_spdx: entry.license_is_spdx,
+        author:     entry.author,
+        source:     subUrl,
+        bundledAt:  entry.bundledAt,
+      };
+      var subKey = key + "/" + subName;
+      var sub = _buildComponent(subKey, subEntry);
+      components.push(sub);
+      _subDeps.push({ parentRef: parent["bom-ref"], childRef: sub["bom-ref"] });
+    }
+  }
 });
+
+// CycloneDX 1.6 §4.4.2 — metadata.lifecycles[].externalReferences[]
+// points at the GH Actions run URL when the build ran in CI. Provenance
+// walkers (Sigstore, SLSA verifiers) reach for this when correlating
+// the BOM to its build run. Locally-generated SBOMs omit (no run id).
+var _buildLifecycle = { "phase": "build" };
+var _runUrl = _githubActionsRunUrl();
+if (_runUrl) {
+  _buildLifecycle.externalReferences = [{ type: "build-meta", url: _runUrl }];
+}
+
+// assemble the dependency graph. Top-level entries depend
+// on the framework's vendored-bundle; sub-components depend on their
+// parent component. Result is a directed graph downstream tools walk
+// to reach every inner sub-bundle CVE.
+var _topLevelRefs = components
+  .filter(function (c) { return c["bom-ref"].indexOf("/") === -1 || /^@/.test(c["bom-ref"]); })
+  .map(function (c) { return c["bom-ref"]; });
+// Recover top-level bom-refs robustly: anything whose bom-ref was
+// registered before _subDeps fired (i.e. not a child in _subDeps).
+var _childRefs = Object.create(null);
+for (var di = 0; di < _subDeps.length; di++) _childRefs[_subDeps[di].childRef] = true;
+_topLevelRefs = components
+  .map(function (c) { return c["bom-ref"]; })
+  .filter(function (ref) { return !_childRefs[ref]; });
+
+var _dependencies = [
+  {
+    "ref":       "@blamejs/core@" + rootPkg.version + "/vendored-bundle",
+    "dependsOn": _topLevelRefs,
+  },
+];
+// Aggregate sub-deps per parent so each parent emits a single
+// dependencies[] entry with its full child list.
+var _byParent = Object.create(null);
+for (var pi = 0; pi < _subDeps.length; pi++) {
+  var pd = _subDeps[pi];
+  if (!_byParent[pd.parentRef]) _byParent[pd.parentRef] = [];
+  _byParent[pd.parentRef].push(pd.childRef);
+}
+var _parents = Object.keys(_byParent);
+for (var pj = 0; pj < _parents.length; pj++) {
+  _dependencies.push({ ref: _parents[pj], dependsOn: _byParent[_parents[pj]] });
+}
 
 var doc = {
   "$schema":      "http://cyclonedx.org/schema/bom-1.6.schema.json",
@@ -172,7 +275,7 @@ var doc = {
   "version":      1,
   "metadata": {
     "timestamp": new Date().toISOString(),
-    "lifecycles": [{ "phase": "build" }],
+    "lifecycles": [_buildLifecycle],
     "supplier":  FRAMEWORK_SUPPLIER,
     "tools": [
       {
@@ -187,15 +290,11 @@ var doc = {
       "name":        "blamejs-vendored-bundle",
       "version":     rootPkg.version,
       "description": "Vendored runtime deps bundled inside @blamejs/core (CommonJS rollups under lib/vendor/).",
+      "supplier":    FRAMEWORK_SUPPLIER,
     },
   },
   "components":   components,
-  "dependencies": [
-    {
-      "ref":       "@blamejs/core@" + rootPkg.version + "/vendored-bundle",
-      "dependsOn": components.map(function (c) { return c["bom-ref"]; }),
-    },
-  ],
+  "dependencies": _dependencies,
 };
 
 process.stdout.write(JSON.stringify(doc, null, 2) + "\n");
