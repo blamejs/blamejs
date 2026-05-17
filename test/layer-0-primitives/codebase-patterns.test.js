@@ -5602,6 +5602,24 @@ var KNOWN_ANTIPATTERNS = [
     reason: "STARTTLS / STLS upgrade across MX / submission / IMAP / POP3 listeners. CVE-2021-33515 (Dovecot) + CVE-2021-38371 (Exim) — plaintext bytes pipelined ahead of the handshake reach the post-TLS dispatcher when the plain socket's 'data' listener is not stripped before TLSSocket wraps. Centralized in mail-server-tls.upgradeSocket which removes the listener + pauses the socket + wraps + re-arms idle timeout + wires onSecure / onData / onError. New listeners route through the helper.",
   },
   {
+    id: "timing-safe-equal-utf8-without-shape-guard",
+    primitive: "Validate byte shape before nodeCrypto.timingSafeEqual on UTF-8 encoded strings",
+    // `nodeCrypto.timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"))`
+    // throws ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH when the strings differ in
+    // UTF-8 byte length even when string-length matches (non-ASCII content).
+    // Either ensure both inputs are ASCII before encoding, or compare byte
+    // lengths after encoding, or use a shape guard (hex / base64url regex).
+    // This detector fires on the bare two-Buffer.from-then-compare pattern.
+    regex: /nodeCrypto\.timingSafeEqual\s*\(\s*Buffer\.from\([^,]+,\s*["']utf8["']\s*\)\s*,\s*Buffer\.from\([^,]+,\s*["']utf8["']\s*\)\s*\)/,
+    allowlist: [
+      // vendor-data.js validates both inputs are hex (ASCII-only) before
+      // the timingSafeEqual call, so the UTF-8 byte length always equals
+      // the string length.
+      "lib/vendor-data.js",
+    ],
+    reason: "nodeCrypto.timingSafeEqual throws ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH on different byte lengths. JavaScript string length is UTF-16 code units; Buffer.from(s, 'utf8') byte length differs for non-ASCII inputs. A bare two-Buffer compare on UTF-8 encoded strings can throw instead of returning false. Either constrain inputs to ASCII (hex / base64url shape guard) OR compare Buffer lengths after encoding, OR use the b.crypto.timingSafeEqual wrapper (handles the throw → return false translation).",
+  },
+  {
     id: "mailstore-quota-wrong-signature",
     primitive: "b.mailStore.quota(folderName) — single-string-arg + reads capBytes/usedBytes",
     // mailStore.quota(folderName) returns
