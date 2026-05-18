@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.9",
-  "createdAt": "2026-05-18T00:27:35.157Z",
+  "frameworkVersion": "0.10.10",
+  "createdAt": "2026-05-18T02:10:28.402Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -11073,6 +11073,23 @@
                 }
               }
             },
+            "connolly": {
+              "type": "object",
+              "members": {
+                "label": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "open": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "seal": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
+            },
             "generateKeyPair": {
               "type": "function",
               "arity": 0
@@ -11084,6 +11101,23 @@
             "seal": {
               "type": "function",
               "arity": 1
+            },
+            "wg": {
+              "type": "object",
+              "members": {
+                "label": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "open": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "seal": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
             }
           }
         },
@@ -33668,6 +33702,41 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "jose": {
+      "type": "object",
+      "members": {
+        "jwe": {
+          "type": "object",
+          "members": {
+            "experimental": {
+              "type": "object",
+              "members": {
+                "EXPERIMENTAL_ALG": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "EXPERIMENTAL_ENC": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "JoseJweExperimentalError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "decrypt": {
+                  "type": "function",
+                  "arity": 3
+                },
+                "encrypt": {
+                  "type": "function",
+                  "arity": 3
+                }
+              }
+            }
+          }
         }
       }
     },

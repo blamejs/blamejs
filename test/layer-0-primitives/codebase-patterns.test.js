@@ -2265,6 +2265,30 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/auth/fido-mds3.js:_parseJws",
+        "lib/auth/jwt.js:decode",
+        "lib/auth/oauth.js:verifyBackchannelLogoutToken",
+        "lib/jose-jwe-experimental.js:decrypt",
+      ],
+      reason: "JOSE compact-serialization decode shape — base64url decode of header + structured parse + alg/type assertions. Each primitive owns its own compact-form contract (FIDO MDS3 attestation, JWT verify, OIDC back-channel logout-token verify, experimental JWE decrypt); merging would couple four spec-defined verification routines with distinct field sets.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/agent-idempotency.js:_checkArgs",
+        "lib/agent-tenant.js:_sealField",
+        "lib/atomic-file.js:copyDirRecursive",
+        "lib/ddl-change-control.js:approve",
+        "lib/ddl-change-control.js:reject",
+        "lib/deprecate.js:alias",
+        "lib/jose-jwe-experimental.js:decrypt",
+        "lib/totp.js:uri",
+      ],
+      reason: "Generic JS object-construction + buffer-coercion + typed-error throw shape. Eight unrelated primitives (agent idempotency arg check, per-tenant cryptoField seal, atomic-file recursive copy, DDL approve/reject, deprecate alias plumbing, experimental JWE compact-form header decode, TOTP URI builder) share the 50-token inline-validation shingle — each owns a distinct error class and validates a structurally different object. Extracting would couple eight domains.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/metrics.js:_shadowSetOf",
         "lib/middleware/require-methods.js:create",
         "lib/middleware/security-txt.js:_arrayOfStrings",
