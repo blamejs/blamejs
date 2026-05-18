@@ -8,6 +8,7 @@
 var nodeStream = require("node:stream");
 var helpers = require("../helpers");
 var check   = helpers.check;
+var withTestTimeout = helpers.withTestTimeout;
 var b       = require("../../index");
 
 function _pipeBuf(transform, totalBytes, chunkBytes) {
@@ -31,23 +32,13 @@ function _pipeBuf(transform, totalBytes, chunkBytes) {
   });
 }
 
-// Per-test wall-clock guard — caps each stream-throttle test to 10
-// seconds. If a future Node release / OS runner has a setTimeout /
-// stream-pipeline interaction that hangs (the symptom is opaque on a
-// remote CI runner; the test runner's hard cap surfaces it as a clean
-// failure with a label rather than a 6-hour stuck job).
-function _withGuard(label, fn) {
-  return new Promise(function (resolve, reject) {
-    var timer = setTimeout(function () {
-      reject(new Error("stream-throttle test timed out: " + label));
-    }, 10000);                                                                                         // allow:raw-byte-literal // allow:raw-time-literal — 10s test wall-clock cap
-    Promise.resolve().then(fn).then(function (v) {
-      clearTimeout(timer); resolve(v);
-    }, function (e) {
-      clearTimeout(timer); reject(e);
-    });
-  });
-}
+// Per-test wall-clock guard via the shared `helpers.withTestTimeout`
+// — fences each stream-throttle test at the helper's default ceiling
+// so a future Node release / OS runner with a setTimeout / stream-
+// pipeline interaction that hangs surfaces as `test timed out: <label>`
+// in seconds instead of stalling the smoke job for the GitHub Actions
+// 6-hour ceiling.
+
 
 async function testRefusesBadRate() {
   var threw = false;
@@ -82,7 +73,7 @@ async function testAllowsOversizeWhenOptedIn() {
   // the bytes still get through. Budget is 20 KiB/s with a 30 KiB
   // single-chunk payload — the chunk exceeds burst so the wait kicks
   // in, but the wait is bounded at ~500 ms so the test runs cheap.
-  await _withGuard("allowOversize", async function () {
+  await withTestTimeout("allowOversize", async function () {
     var t = b.streamThrottle.create({ bytesPerSec: 20 * 1024, burstBytes: 20 * 1024 });
     var tx = t.transform({ allowOversize: true });
     var got = await _pipeBuf(tx, 30 * 1024, 30 * 1024);
@@ -96,7 +87,7 @@ async function testRateEnforcement() {
   // (10 KiB / 20 KiB-per-s). Total elapsed should be at least
   // ~700 ms after accounting for the initial burst headroom; ceiling
   // at 5 s catches a hang.
-  await _withGuard("rateEnforcement", async function () {
+  await withTestTimeout("rateEnforcement", async function () {
     var rate    = 20 * 1024;
     var t       = b.streamThrottle.create({ bytesPerSec: rate, burstBytes: rate });
     var started = Date.now();
@@ -113,7 +104,7 @@ async function testSharedBucketAcrossTransforms() {
   // Two transforms drawing from the same 20 KiB/s bucket should
   // together total ~2 s for 40 KiB. The point is that two parallel
   // transforms SHARE the budget rather than each getting their own.
-  await _withGuard("sharedBucket", async function () {
+  await withTestTimeout("sharedBucket", async function () {
     var rate    = 20 * 1024;
     var t       = b.streamThrottle.create({ bytesPerSec: rate, burstBytes: rate });
     var started = Date.now();
@@ -125,6 +116,28 @@ async function testSharedBucketAcrossTransforms() {
     check("shared bucket: 2 transforms × 20 KiB at 20 KiB/s elapsed >= 500ms (got " + elapsed + ")",
       elapsed >= 500);
   });
+}
+
+async function testMaxWaitMsRefusesOversizeWait() {
+  // 10 bytes/sec rate, single 100-byte chunk → bucket goes -90 →
+  // waitMs = 9000ms. With maxWaitMs=2000 the chunk refuses before
+  // pinning the pipeline for 9 seconds.
+  await withTestTimeout("maxWaitMs refusal", async function () {
+    var t = b.streamThrottle.create({ bytesPerSec: 10, burstBytes: 10 });
+    var tx = t.transform({ allowOversize: true, maxWaitMs: 2000 });
+    var threw = null;
+    await _pipeBuf(tx, 100, 100).catch(function (e) { threw = e; });
+    check("maxWaitMs refusal: typed error",
+      threw && threw.code === "stream-throttle/wait-exceeds-max");
+  });
+}
+
+async function testMaxWaitMsValidation() {
+  var t = b.streamThrottle.create({ bytesPerSec: 1000, burstBytes: 1000 });
+  var threw = false;
+  try { t.transform({ maxWaitMs: -1 }); }
+  catch (e) { threw = e.code === "stream-throttle/bad-max-wait"; }
+  check("maxWaitMs <= 0 refused at transform construct", threw);
 }
 
 async function testStreamThrottleErrorClassExported() {
@@ -148,6 +161,8 @@ async function run() {
   await testAllowsOversizeWhenOptedIn();
   await testRateEnforcement();
   await testSharedBucketAcrossTransforms();
+  await testMaxWaitMsRefusesOversizeWait();
+  await testMaxWaitMsValidation();
   await testStreamThrottleErrorClassExported();
   await testStateReturnsBucketShape();
 }
