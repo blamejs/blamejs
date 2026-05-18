@@ -115,6 +115,72 @@ function testListAndHas() {
   check("list entry has source", reg.list()[0].source === "builtin");
 }
 
+function testTenantScopeGate() {
+  // v0.10.12 — b.agent.tenant adoption. When the registry is created
+  // with a tenantScope + agentTenantId, every dispatch routes through
+  // tenantScope.check(state.actor, agentTenantId) before the handler
+  // runs. Cross-tenant dispatch refuses with AgentTenantError.
+  var fakeScope = {
+    check: function (actor, agentTenantId) {
+      if (!actor) throw new Error("agent-tenant/no-actor: actor required");
+      if (actor.tenantId !== agentTenantId) {
+        var e = new Error("agent-tenant/cross-tenant-access-refused: " +
+                          "actor.tenantId='" + actor.tenantId + "' agent='" + agentTenantId + "'");
+        e.code = "agent-tenant/cross-tenant-access-refused";
+        throw e;
+      }
+    },
+  };
+  var ran = 0;
+  var reg = b.mail.serverRegistry.create({
+    protocol:      "imap",
+    defaults:      { NOOP: _baseEntry(function () { ran += 1; return "ok"; }) },
+    tenantScope:   fakeScope,
+    agentTenantId: "tenant-A",
+  });
+  // Matching tenant — dispatch reaches the handler.
+  reg.dispatch("NOOP", { actor: { tenantId: "tenant-A" } });
+  check("matching tenant dispatches", ran === 1);
+  // Cross-tenant — dispatch throws BEFORE the handler runs.
+  var threw = false;
+  try { reg.dispatch("NOOP", { actor: { tenantId: "tenant-B" } }); }
+  catch (e) { threw = e.code === "agent-tenant/cross-tenant-access-refused"; }
+  check("cross-tenant dispatch refused", threw);
+  check("handler did NOT run on refusal", ran === 1);
+
+  // No-scope registries dispatch normally regardless of actor.tenantId.
+  var noScope = b.mail.serverRegistry.create({
+    protocol: "imap",
+    defaults: { NOOP: _baseEntry(function () { return "open"; }) },
+  });
+  check("no-scope dispatch unaffected", noScope.dispatch("NOOP",
+    { actor: { tenantId: "anything" } }) === "open");
+}
+
+function testTenantScopeValidation() {
+  var threw;
+  threw = false;
+  try {
+    b.mail.serverRegistry.create({
+      protocol:    "imap",
+      defaults:    {},
+      tenantScope: { /* missing .check */ },
+    });
+  } catch (_e) { threw = true; }
+  check("bad tenantScope shape refused", threw);
+
+  threw = false;
+  try {
+    b.mail.serverRegistry.create({
+      protocol:    "imap",
+      defaults:    {},
+      tenantScope: { check: function () {} },
+      // missing agentTenantId
+    });
+  } catch (_e) { threw = true; }
+  check("tenantScope without agentTenantId refused", threw);
+}
+
 async function run() {
   testCreateValidatesProtocol();
   testBuiltinAndOverride();
@@ -123,6 +189,8 @@ async function run() {
   testCatalogueGate();
   await testTimeoutWraps();
   testListAndHas();
+  testTenantScopeGate();
+  testTenantScopeValidation();
 }
 
 if (require.main === module) run().catch(function (e) { console.error(e); process.exit(1); });
