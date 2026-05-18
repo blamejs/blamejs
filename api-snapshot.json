@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.8",
-  "createdAt": "2026-05-17T23:18:34.500Z",
+  "frameworkVersion": "0.10.9",
+  "createdAt": "2026-05-18T00:27:35.157Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4413,6 +4413,19 @@
           "arity": 1
         },
         "verifySignature": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "bootGates": {
+      "type": "object",
+      "members": {
+        "BootGatesError": {
+          "type": "function",
+          "arity": 4
+        },
+        "run": {
           "type": "function",
           "arity": 2
         }
@@ -36282,6 +36295,10 @@
               "type": "function",
               "arity": 2
             },
+            "shadowRegistry": {
+              "type": "function",
+              "arity": 1
+            },
             "startWriter": {
               "type": "function",
               "arity": 1
@@ -42405,6 +42422,27 @@
         "walk": {
           "type": "function",
           "arity": 2
+        }
+      }
+    },
+    "safePath": {
+      "type": "object",
+      "members": {
+        "SafePathError": {
+          "type": "function",
+          "arity": 4
+        },
+        "resolve": {
+          "type": "function",
+          "arity": 3
+        },
+        "resolveOrNull": {
+          "type": "function",
+          "arity": 3
+        },
+        "validate": {
+          "type": "function",
+          "arity": 3
         }
       }
     },
