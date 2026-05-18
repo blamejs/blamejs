@@ -405,6 +405,8 @@ module.exports = {
   },
   promisePool:      require("./lib/promise-pool"),
   sdNotify:         require("./lib/sd-notify"),
+  safePath:         require("./lib/safe-path"),
+  bootGates:        require("./lib/boot-gates"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,

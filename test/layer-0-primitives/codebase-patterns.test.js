@@ -564,6 +564,7 @@ function testParserPrimitivesHaveFuzzHarness() {
     "lib/guard-html-wcag-tables.js":  "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
     "lib/guard-html-wcag-tagwalk.js": "internal helper consumed only by guard-html.js; covered transitively by guard-html fuzz",
     "lib/parsers/safe-env.js":        ".env file loader takes a filepath (not adversarial in-process bytes); operator controls the file boundary, schema-validation gates the values",
+    "lib/safe-path.js":               "operator-supplied path-segment validator over the existing guardFilename codepoint tables (reserved-name + bidi + overlong-UTF-8 inherited transitively); the per-segment regex set is deterministic + anchored + length-bounded by the caller-supplied rel, no adversarial-bytes parser surface",
   };
   var fs   = require("node:fs");
   var path = require("node:path");
@@ -2260,6 +2261,16 @@ async function testNoDuplicateCodeBlocks() {
         "lib/watcher.js:_detectAutoMode",
       ],
       reason: "Generic JS lambda + object-assign + closure boilerplate. Any subset of these unrelated primitives (daemon PID-file read, data-act DSR third-party share / EU Data Act product declaration, dkim dualSigner merge / bootstrap keypair mint, MDN boundary / opt validation / report build, self-update release polling, watcher fs.watch mode detection) can cluster via the 50-token shingle. Distinct domains: process lifecycle / privacy compliance / mail crypto / mail DSN / framework self-update / fs watching. The shared shape is structural boilerplate, not behavior.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/metrics.js:_shadowSetOf",
+        "lib/middleware/require-methods.js:create",
+        "lib/middleware/security-txt.js:_arrayOfStrings",
+        "lib/ws-client.js:connect",
+      ],
+      reason: "Generic array-of-non-empty-strings validator shape — typeof+length+typeof+length per-item walk. Each domain validates a structurally different array (metrics counter / gauge / info name lists; HTTP method allowlist; security.txt Contact lines; WebSocket protocol list). Extracting would force these four call sites onto one error class + one option key per validate signature; the inline shape stays per-domain typed.",
     },
     {
       mode:  "family-subset",
