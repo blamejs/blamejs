@@ -57,6 +57,11 @@ var crypto = require("./lib/crypto");
 // remembering separate top-level namespaces. Implementations live in
 // the dedicated lib files; these are thin aliases.
 crypto.hpke = require("./lib/crypto-hpke");
+// Both PQ-HPKE drafts behind one opt-in sub-namespace — see
+// lib/crypto-hpke-pq.js. Operators that need a draft-codepoint
+// shape reach for b.crypto.hpke.pq.connolly / .wg explicitly; the
+// stable b.crypto.hpke.seal stays IANA-codepoint-neutral.
+crypto.hpke.pq = require("./lib/crypto-hpke-pq");
 crypto.httpSig = require("./lib/http-message-signature");
 var tlsExporter = require("./lib/tls-exporter");
 var router = require("./lib/router");
@@ -407,6 +412,9 @@ module.exports = {
   sdNotify:         require("./lib/sd-notify"),
   safePath:         require("./lib/safe-path"),
   bootGates:        require("./lib/boot-gates"),
+  // b.jose.jwe.experimental — see lib/jose-jwe-experimental.js for
+  // the codepoint-stability contract.
+  jose:             { jwe: { experimental: require("./lib/jose-jwe-experimental") } },
   queue:            queue,
   logStream:        logStream,
   redact:           redact,

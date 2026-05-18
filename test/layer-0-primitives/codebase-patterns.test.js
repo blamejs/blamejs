@@ -2265,6 +2265,30 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/auth/fido-mds3.js:_parseJws",
+        "lib/auth/jwt.js:decode",
+        "lib/auth/oauth.js:verifyBackchannelLogoutToken",
+        "lib/jose-jwe-experimental.js:decrypt",
+      ],
+      reason: "JOSE compact-serialization decode shape — base64url decode of header + structured parse + alg/type assertions. Each primitive owns its own compact-form contract (FIDO MDS3 attestation, JWT verify, OIDC back-channel logout-token verify, experimental JWE decrypt); merging would couple four spec-defined verification routines with distinct field sets.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/agent-idempotency.js:_checkArgs",
+        "lib/agent-tenant.js:_sealField",
+        "lib/atomic-file.js:copyDirRecursive",
+        "lib/ddl-change-control.js:approve",
+        "lib/ddl-change-control.js:reject",
+        "lib/deprecate.js:alias",
+        "lib/jose-jwe-experimental.js:decrypt",
+        "lib/totp.js:uri",
+      ],
+      reason: "Generic JS object-construction + buffer-coercion + typed-error throw shape. Eight unrelated primitives (agent idempotency arg check, per-tenant cryptoField seal, atomic-file recursive copy, DDL approve/reject, deprecate alias plumbing, experimental JWE compact-form header decode, TOTP URI builder) share the 50-token inline-validation shingle — each owns a distinct error class and validates a structurally different object. Extracting would couple eight domains.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/metrics.js:_shadowSetOf",
         "lib/middleware/require-methods.js:create",
         "lib/middleware/security-txt.js:_arrayOfStrings",
@@ -5895,6 +5919,124 @@ function testNoBareCommaSplitOnQuotedHeader() {
     bad);
 }
 
+// ---- Pattern: hostname string-equality compare with no trailing-dot normalize ----
+//
+// A file compares a parsed hostname against a reserved-name set
+// (`localhost`, `ip6-localhost`, ...) via `===` WITHOUT first
+// stripping the trailing root-zone dot. RFC 1034 §3.1 — `foo.` is the
+// absolute form of `foo`. An attacker who appends a dot bypasses the
+// gate. Surfaced by Codex on v0.10.7 PR #90 for
+// `b.guardListUnsubscribe._isRefusedAutoFetchHost`.
+function testHostnameCompareTrailingDotNormalize() {
+  // class: hostname-compare-trailing-dot
+  var files = _libFiles();
+  var bad = [];
+  var reservedHostLiteralRe = /===\s*"(localhost|localhost\.localdomain|ip6-localhost|ip6-loopback)"/;
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    if (!reservedHostLiteralRe.test(content)) continue;
+    var hasStrip = /\.charAt\([^)]*length\s*-\s*1\)\s*===\s*"\."/.test(content) ||
+                   /while[\s\S]{0,80}length\s*>\s*0[\s\S]{0,80}charAt[\s\S]{0,80}===\s*"\."/.test(content);
+    if (hasStrip) continue;
+    var m = content.match(reservedHostLiteralRe);
+    var lineNum = content.slice(0, m.index).split("\n").length;
+    bad.push({
+      file:    rel,
+      line:    lineNum,
+      content: "hostname compared against reserved-name set without trailing-dot normalize — `localhost.` resolves to the same target as `localhost` (RFC 1034 §3.1); strip trailing dots BEFORE the equality check or attackers bypass the gate by appending a dot",
+    });
+  }
+  bad = _filterMarkers(bad, "hostname-compare-trailing-dot");
+  _report("reserved-hostname string-equality compare must strip trailing root-zone dot first (RFC 1034 §3.1; SSRF gate bypass class — guard-list-unsubscribe v0.10.7 finding)",
+    bad);
+}
+
+// ---- Pattern: Date.UTC() result trusted without calendar round-trip ----
+//
+// `Date.UTC(year, month, day, ...)` silently normalises impossible
+// calendar dates (`Feb 31 2026` → `Mar 3 2026`); using the returned
+// timestamp without round-tripping through `new Date(ms)` and verifying
+// each field matches lets malformed inputs masquerade as valid.
+// Surfaced by Codex on v0.10.7 PR #90 for
+// `b.mail.server.imap._parseImapDateTime`.
+function testDateUtcRoundTripVerify() {
+  // class: date-utc-round-trip
+  //
+  // Only flag the risky shape: `Date.UTC(...)` called with arguments
+  // that include a `parseInt(...)` or `Number(...)` parse — those
+  // unfailingly come from operator-untrusted string input that
+  // Date.UTC will silently normalize. Trusted-input Date.UTC (e.g.
+  // composing from already-validated integer fields or from a
+  // `new Date().getUTC*` reflection) doesn't fire.
+  var files = _libFiles();
+  var bad = [];
+  var dateUtcPattern = /\bDate\.UTC\s*\(([^)]*)\)/g;
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var fileHasRoundTrip = /new\s+Date\s*\([^)]+\)\s*\.getUTC/.test(content) ||
+                           /\.getUTC(?:FullYear|Month|Date|Hours|Minutes|Seconds)\s*\(\)/.test(content);
+    if (fileHasRoundTrip) continue;
+    dateUtcPattern.lastIndex = 0;
+    var dm;
+    while ((dm = dateUtcPattern[Symbol.for ? "exec" : "exec"](content)) !== null) {
+      var args = dm[1];
+      // Only the parsed-untrusted-input shape gets flagged.
+      if (!/parseInt\s*\(/.test(args) && !/Number\s*\(/.test(args)) continue;
+      var lineNum = content.slice(0, dm.index).split("\n").length;
+      bad.push({
+        file:    rel,
+        line:    lineNum,
+        content: "Date.UTC(...) called with parseInt / Number arguments AND file has no calendar round-trip — Date.UTC silently normalises impossible dates (Feb 31 → Mar 3); construct `var probe = new Date(utcMs); if (probe.getUTCMonth() !== month || probe.getUTCDate() !== day) return null;` before trusting the timestamp (mail-server-imap._parseImapDateTime v0.10.7 finding)",
+      });
+    }
+  }
+  bad = _filterMarkers(bad, "date-utc-round-trip");
+  _report("`Date.UTC(parseInt(...))` outputs must round-trip via `new Date(ms).getUTC*()` field-match before trust — silent calendar normalization makes impossible dates indistinguishable from valid ones",
+    bad);
+}
+
+// ---- Pattern: info/context-label wrapper branching on undefined/null only ----
+//
+// A wrapper that prepends a label to an HPKE / KDF / signature `info`
+// parameter branches on `info === undefined || info === null` to
+// decide whether to skip the prepend. An empty string / empty buffer
+// takes the prepend branch, which means `seal({})` (no info) and
+// `open({ info: "" })` (explicit empty) produce different derived
+// keys — equivalent caller inputs that can't round-trip. Surfaced by
+// Codex on v0.10.10 PR #97 for `b.crypto.hpke.pq._prependLabel`.
+function testInfoLabelEmptyVsOmitted() {
+  // class: info-label-empty-omit-mismatch
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var m = content.match(/info\s*===\s*(undefined|null)\s*\|\|\s*info\s*===\s*(undefined|null)/);
+    if (!m) continue;
+    var hasEmptyCheck = /info[A-Za-z]*\.length\s*===\s*0/.test(content) ||
+                        /info[A-Za-z]*\.length\s*<\s*1/.test(content) ||
+                        /infoBytes\.length\s*===\s*0/.test(content);
+    if (hasEmptyCheck) continue;
+    var lineNum = content.slice(0, m.index).split("\n").length;
+    bad.push({
+      file:    rel,
+      line:    lineNum,
+      content: "info/context wrapper branches on `info === undefined || info === null` without ALSO handling empty-string/empty-buffer — RFC 9180 §5.1 treats omitted and empty info as equivalent; `seal({})` and `open({ info: \"\" })` must produce the same derived key (crypto-hpke-pq v0.10.10 finding)",
+    });
+  }
+  bad = _filterMarkers(bad, "info-label-empty-omit-mismatch");
+  _report("HPKE / KDF context-label wrappers must treat empty info equivalent to omitted info — `===` undef/null branch without empty-check breaks RFC 9180 §5.1 input-equivalence",
+    bad);
+}
+
 // ---- Pattern: scoped-context binding (e.g. SRS forwarder domain) not verified ----
 //
 // A `create({ forwarderDomain })` / `create({ realm })` /
@@ -6605,6 +6747,9 @@ async function run() {
   testEnumRankWithoutValidation();
   testNoBoolStringCoerceShape();
   testNoBareCommaSplitOnQuotedHeader();
+  testHostnameCompareTrailingDotNormalize();
+  testDateUtcRoundTripVerify();
+  testInfoLabelEmptyVsOmitted();
   testScopedContextBindingUsed();
   // v0.9.57 — mail-auth bug-class detectors
   testNoDirectNodeDnsInMail();
