@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.12",
-  "createdAt": "2026-05-18T04:37:42.789Z",
+  "frameworkVersion": "0.10.13",
+  "createdAt": "2026-05-18T13:34:17.449Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5756,6 +5756,112 @@
           "arity": 1
         },
         "tableName": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "cms": {
+      "type": "object",
+      "members": {
+        "CmsCodecError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DEFAULT_MAX_LEN": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAX_DEPTH": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OID": {
+          "type": "object",
+          "members": {
+            "authEnvelopedData": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "chacha20Poly1305": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "contentType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "data": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "envelopedData": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kemri": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "messageDigest": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mldsa44": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mldsa65": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mldsa87": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mlkem1024": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "mlkem768": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "sha3_256": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "sha3_512": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "shake256": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "signedData": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "signingTime": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "slhDsaShake256f": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "decode": {
+          "type": "function",
+          "arity": 2
+        },
+        "encodeEnvelopedData": {
+          "type": "function",
+          "arity": 1
+        },
+        "encodeSignedData": {
           "type": "function",
           "arity": 1
         }
@@ -44326,6 +44432,19 @@
         "saveRaw": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "streamThrottle": {
+      "type": "object",
+      "members": {
+        "StreamThrottleError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
