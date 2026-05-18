@@ -157,6 +157,37 @@ function testTenantScopeGate() {
     { actor: { tenantId: "anything" } }) === "open");
 }
 
+function testTenantScopeJmapShape() {
+  // JMAP dispatches as `registry.dispatch(methodName, actor, args, ctx)`
+  // — the first dispatch arg is the actor object itself, not a state
+  // wrapper. The registry MUST detect this shape and gate accordingly.
+  var fakeScope = {
+    check: function (actor, agentTenantId) {
+      if (actor.tenantId !== agentTenantId) {
+        var e = new Error("agent-tenant/cross-tenant-access-refused");
+        e.code = "agent-tenant/cross-tenant-access-refused";
+        throw e;
+      }
+    },
+  };
+  var ran = 0;
+  var reg = b.mail.serverRegistry.create({
+    protocol:      "jmap",
+    defaults:      { "Core/echo": Object.assign(_baseEntry(function () { ran += 1; return {}; }),
+      { allowExperimental: true }) },
+    tenantScope:   fakeScope,
+    agentTenantId: "tenant-A",
+  });
+  // JMAP shape — first arg is the actor.
+  reg.dispatch("Core/echo", { tenantId: "tenant-A", id: "alice" });
+  check("JMAP-shape matching tenant dispatches", ran === 1);
+  var threw = false;
+  try { reg.dispatch("Core/echo", { tenantId: "tenant-B", id: "mallory" }); }
+  catch (e) { threw = e.code === "agent-tenant/cross-tenant-access-refused"; }
+  check("JMAP-shape cross-tenant refused", threw);
+  check("JMAP handler did NOT run on refusal", ran === 1);
+}
+
 function testTenantScopeValidation() {
   var threw;
   threw = false;
@@ -190,6 +221,7 @@ async function run() {
   await testTimeoutWraps();
   testListAndHas();
   testTenantScopeGate();
+  testTenantScopeJmapShape();
   testTenantScopeValidation();
 }
 
