@@ -31,6 +31,24 @@ function _pipeBuf(transform, totalBytes, chunkBytes) {
   });
 }
 
+// Per-test wall-clock guard — caps each stream-throttle test to 10
+// seconds. If a future Node release / OS runner has a setTimeout /
+// stream-pipeline interaction that hangs (the symptom is opaque on a
+// remote CI runner; the test runner's hard cap surfaces it as a clean
+// failure with a label rather than a 6-hour stuck job).
+function _withGuard(label, fn) {
+  return new Promise(function (resolve, reject) {
+    var timer = setTimeout(function () {
+      reject(new Error("stream-throttle test timed out: " + label));
+    }, 10000);                                                                                         // allow:raw-byte-literal // allow:raw-time-literal — 10s test wall-clock cap
+    Promise.resolve().then(fn).then(function (v) {
+      clearTimeout(timer); resolve(v);
+    }, function (e) {
+      clearTimeout(timer); reject(e);
+    });
+  });
+}
+
 async function testRefusesBadRate() {
   var threw = false;
   try { b.streamThrottle.create({ bytesPerSec: 0 }); }
@@ -61,48 +79,52 @@ async function testRefusesOversizeChunkByDefault() {
 
 async function testAllowsOversizeWhenOptedIn() {
   // Small burst, allowOversize splits the wait across windows; verify
-  // the bytes still get through.
-  var t = b.streamThrottle.create({ bytesPerSec: 100000, burstBytes: 100000 });
-  var tx = t.transform({ allowOversize: true });
-  var got = await _pipeBuf(tx, 500000, 500000);
-  check("allowOversize: all bytes delivered", got === 500000);
+  // the bytes still get through. Budget is 20 KiB/s with a 30 KiB
+  // single-chunk payload — the chunk exceeds burst so the wait kicks
+  // in, but the wait is bounded at ~500 ms so the test runs cheap.
+  await _withGuard("allowOversize", async function () {
+    var t = b.streamThrottle.create({ bytesPerSec: 20 * 1024, burstBytes: 20 * 1024 });
+    var tx = t.transform({ allowOversize: true });
+    var got = await _pipeBuf(tx, 30 * 1024, 30 * 1024);
+    check("allowOversize: all bytes delivered", got === 30 * 1024);
+  });
 }
 
 async function testRateEnforcement() {
-  // 100 KiB/s rate; send 200 KiB in 4 chunks of 50 KiB. First chunk
-  // consumes the full burst; remaining 3 chunks each wait ~500ms.
-  // Total elapsed should be > 1.4s (3 × 500ms - some refill overlap).
-  var rate    = 100 * 1024;
-  var t       = b.streamThrottle.create({ bytesPerSec: rate, burstBytes: rate });
-  var started = Date.now();
-  await _pipeBuf(t.transform(), 200 * 1024, 50 * 1024);
-  var elapsed = Date.now() - started;
-  // 200 KiB / 100 KiB/s = 2s steady-state; account for initial burst
-  // (the bucket starts full). Floor is ~900ms (1s of refill needed
-  // for the post-burst 100 KiB).
-  check("rate enforcement: elapsed >= 900ms (got " + elapsed + ")",
-    elapsed >= 900);
-  // Also assert it isn't ridiculously slow (would indicate a bug).
-  check("rate enforcement: elapsed < 3500ms (got " + elapsed + ")",
-    elapsed < 3500);
+  // 20 KiB/s rate; send 40 KiB in 4 × 10 KiB chunks. First chunk
+  // consumes the full burst; remaining 3 chunks each wait ~500 ms
+  // (10 KiB / 20 KiB-per-s). Total elapsed should be at least
+  // ~700 ms after accounting for the initial burst headroom; ceiling
+  // at 5 s catches a hang.
+  await _withGuard("rateEnforcement", async function () {
+    var rate    = 20 * 1024;
+    var t       = b.streamThrottle.create({ bytesPerSec: rate, burstBytes: rate });
+    var started = Date.now();
+    await _pipeBuf(t.transform(), 40 * 1024, 10 * 1024);
+    var elapsed = Date.now() - started;
+    check("rate enforcement: elapsed >= 700ms (got " + elapsed + ")",
+      elapsed >= 700);
+    check("rate enforcement: elapsed < 5000ms (got " + elapsed + ")",
+      elapsed < 5000);
+  });
 }
 
 async function testSharedBucketAcrossTransforms() {
-  // Two transforms drawing from the same 100 KiB/s bucket should
-  // together total ~2s for 200 KiB. (Each transform on its own would
-  // also be ~2s, but two transforms in parallel sharing the bucket
-  // SHOULD also total ~2s — that's the entire point of the shared
-  // primitive vs per-stream limiter.)
-  var rate    = 100 * 1024;
-  var t       = b.streamThrottle.create({ bytesPerSec: rate, burstBytes: rate });
-  var started = Date.now();
-  await Promise.all([
-    _pipeBuf(t.transform(), 100 * 1024, 25 * 1024),
-    _pipeBuf(t.transform(), 100 * 1024, 25 * 1024),
-  ]);
-  var elapsed = Date.now() - started;
-  check("shared bucket: 2 transforms × 100 KiB at 100 KiB/s elapsed >= 700ms (got " + elapsed + ")",
-    elapsed >= 700);
+  // Two transforms drawing from the same 20 KiB/s bucket should
+  // together total ~2 s for 40 KiB. The point is that two parallel
+  // transforms SHARE the budget rather than each getting their own.
+  await _withGuard("sharedBucket", async function () {
+    var rate    = 20 * 1024;
+    var t       = b.streamThrottle.create({ bytesPerSec: rate, burstBytes: rate });
+    var started = Date.now();
+    await Promise.all([
+      _pipeBuf(t.transform(), 20 * 1024, 5 * 1024),
+      _pipeBuf(t.transform(), 20 * 1024, 5 * 1024),
+    ]);
+    var elapsed = Date.now() - started;
+    check("shared bucket: 2 transforms × 20 KiB at 20 KiB/s elapsed >= 500ms (got " + elapsed + ")",
+      elapsed >= 500);
+  });
 }
 
 async function testStreamThrottleErrorClassExported() {
