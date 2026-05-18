@@ -82,6 +82,35 @@ function testCrossDraftRefused() {
   check("wg → connolly cross-open refused", threw);
 }
 
+function testEmptyInfoEquivalentToOmitted() {
+  var pair = b.crypto.hpke.generateKeyPair();
+  // Seal without info, open with info: "" — MUST round-trip.
+  var sealed = b.crypto.hpke.pq.connolly.seal({
+    recipientPubKey: pair.publicKey,
+    plaintext:       "neutral",
+  });
+  var pt = b.crypto.hpke.pq.connolly.open({
+    privateKey: pair.privateKey,
+    enc:        sealed.enc,
+    ciphertext: sealed.ciphertext,
+    info:       "",
+  });
+  check("empty info round-trips with omitted info", pt.toString("utf8") === "neutral");
+
+  // Reverse: seal with info: "", open without info.
+  var sealed2 = b.crypto.hpke.pq.wg.seal({
+    recipientPubKey: pair.publicKey,
+    plaintext:       "back",
+    info:            "",
+  });
+  var pt2 = b.crypto.hpke.pq.wg.open({
+    privateKey: pair.privateKey,
+    enc:        sealed2.enc,
+    ciphertext: sealed2.ciphertext,
+  });
+  check("omitted info round-trips with empty info on seal", pt2.toString("utf8") === "back");
+}
+
 function testLabelsExported() {
   check("connolly label exported",
     typeof b.crypto.hpke.pq.connolly.label === "string" &&
@@ -95,6 +124,7 @@ function run() {
   testConnollyRoundTrip();
   testWgRoundTrip();
   testCrossDraftRefused();
+  testEmptyInfoEquivalentToOmitted();
   testLabelsExported();
 }
 
