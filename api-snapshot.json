@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.10",
-  "createdAt": "2026-05-18T02:10:28.402Z",
+  "frameworkVersion": "0.10.11",
+  "createdAt": "2026-05-18T03:59:42.520Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -11073,23 +11073,6 @@
                 }
               }
             },
-            "connolly": {
-              "type": "object",
-              "members": {
-                "label": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "open": {
-                  "type": "function",
-                  "arity": 1
-                },
-                "seal": {
-                  "type": "function",
-                  "arity": 1
-                }
-              }
-            },
             "generateKeyPair": {
               "type": "function",
               "arity": 0
@@ -11098,26 +11081,48 @@
               "type": "function",
               "arity": 1
             },
+            "pq": {
+              "type": "object",
+              "members": {
+                "connolly": {
+                  "type": "object",
+                  "members": {
+                    "label": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "open": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "seal": {
+                      "type": "function",
+                      "arity": 1
+                    }
+                  }
+                },
+                "wg": {
+                  "type": "object",
+                  "members": {
+                    "label": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "open": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "seal": {
+                      "type": "function",
+                      "arity": 1
+                    }
+                  }
+                }
+              }
+            },
             "seal": {
               "type": "function",
               "arity": 1
-            },
-            "wg": {
-              "type": "object",
-              "members": {
-                "label": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "open": {
-                  "type": "function",
-                  "arity": 1
-                },
-                "seal": {
-                  "type": "function",
-                  "arity": 1
-                }
-              }
             }
           }
         },
@@ -35843,6 +35848,331 @@
                   "arity": 1
                 }
               }
+            }
+          }
+        },
+        "serverRegistry": {
+          "type": "object",
+          "members": {
+            "CATALOGUE": {
+              "type": "object",
+              "members": {
+                "imap": {
+                  "type": "object",
+                  "members": {
+                    "APPEND": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "AUTHENTICATE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CAPABILITY": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CHECK": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CLOSE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "COPY": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CREATE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "DELETE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "DONE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ENABLE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "EXAMINE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "EXPUNGE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "FETCH": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ID": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "IDLE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "LIST": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "LOGIN": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "LOGOUT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "MOVE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "NAMESPACE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "NOOP": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "RENAME": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SEARCH": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SELECT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "STARTTLS": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "STATUS": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "STORE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SUBSCRIBE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "UID": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "UNSELECT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "UNSUBSCRIBE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "jmap": {
+                  "type": "object",
+                  "members": {
+                    "Core/echo": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/copy": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/import": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/parse": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/query": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/queryChanges": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Email/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "EmailSubmission/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "EmailSubmission/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "EmailSubmission/query": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "EmailSubmission/queryChanges": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "EmailSubmission/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Identity/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Identity/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Identity/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Mailbox/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Mailbox/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Mailbox/query": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Mailbox/queryChanges": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Mailbox/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SearchSnippet/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Thread/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Thread/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "VacationResponse/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "VacationResponse/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "managesieve": {
+                  "type": "object",
+                  "members": {
+                    "AUTHENTICATE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CAPABILITY": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "DELETESCRIPT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "GETSCRIPT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "HAVESPACE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "LISTSCRIPTS": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "LOGOUT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "NOOP": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "PUTSCRIPT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "RENAMESCRIPT": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "SETACTIVE": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "STARTTLS": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                }
+              }
+            },
+            "IMAP_VERBS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "JMAP_METHODS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "MANAGESIEVE_VERBS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "MailServerRegistryError": {
+              "type": "function",
+              "arity": 4
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
