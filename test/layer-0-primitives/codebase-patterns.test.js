@@ -2310,9 +2310,14 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-mx.js:create",
         "lib/mail-server-mx.js:listen",
         "lib/mail-server-pop3.js:_emit",
+        "lib/mail-server-pop3.js:_assertTenantOrRefuse",
         "lib/mail-sieve.js:_emit",
         "lib/mail-server-pop3.js:create",
         "lib/mail-server-pop3.js:listen",
+        "lib/mail-dav.js:_emit",
+        "lib/mail-server-managesieve.js:_emit",
+        "lib/mail-server-managesieve.js:create",
+        "lib/mail-server-managesieve.js:listen",
         "lib/mail-server-submission.js:_emit",
         "lib/mail-server-submission.js:_validateDomainHardened",
         "lib/mail-server-submission.js:create",
@@ -5919,6 +5924,55 @@ function testNoBareCommaSplitOnQuotedHeader() {
     bad);
 }
 
+// ---- Pattern: opts.tenantScope without create-time `.check` validation ----
+//
+// A primitive accepts an `opts.tenantScope` parameter (a
+// `b.agent.tenant.create()` instance) but doesn't validate its shape
+// at create() time. If an operator passes a malformed scope, the
+// later `tenantScope.check(...)` throw lands in the cross-tenant
+// catch branch and refuses every auth — a configuration error
+// surfaces as a hard-to-diagnose auth outage. Surfaced by Codex on
+// v0.10.12 PR #99 for `b.mail.server.pop3`. The fix shape:
+//
+//   if (opts.tenantScope && typeof opts.tenantScope.check !== "function") {
+//     throw new ErrorClass("module/bad-tenant-scope",
+//       "create: opts.tenantScope must be a b.agent.tenant.create() instance");
+//   }
+//
+// Detector: any module that reads `opts.tenantScope` AND wraps a
+// call to `tenantScope.check(...)` in try/catch SHOULD have a shape
+// validation earlier (typeof opts.tenantScope.check check) so a bad
+// scope surfaces at create() time, not at first auth.
+function testTenantScopeShapeValidated() {
+  // class: tenant-scope-shape-not-validated
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    // Only fires when the file BOTH reads `opts.tenantScope` AND
+    // wraps `tenantScope.check` in try/catch (the dangerous pattern).
+    if (!/opts\.tenantScope/.test(content)) continue;
+    if (!/try\s*\{[\s\S]{0,200}tenantScope\.check\s*\(/.test(content)) continue;
+    // Acceptable: the file validates `typeof opts.tenantScope.check`
+    // at create() time.
+    if (/typeof\s+opts\.tenantScope\.check\s*!==\s*["']function["']/.test(content)) continue;
+    if (/typeof\s+tenantScope\.check\s*!==\s*["']function["']/.test(content)) continue;
+    var m = content.match(/opts\.tenantScope/);
+    var lineNum = content.slice(0, m.index).split("\n").length;
+    bad.push({
+      file:    rel,
+      line:    lineNum,
+      content: "opts.tenantScope accepted + tenantScope.check wrapped in try/catch, but `typeof opts.tenantScope.check !== \"function\"` shape validation missing at create() time — a malformed scope would refuse every auth as cross-tenant instead of surfacing as a configuration error (b.mail.server.pop3 v0.10.12 finding)",
+    });
+  }
+  bad = _filterMarkers(bad, "tenant-scope-shape-not-validated");
+  _report("opts.tenantScope acceptors that catch tenantScope.check() throws MUST validate the scope's .check shape at create() time so a malformed scope doesn't masquerade as cross-tenant refusal across every auth",
+    bad);
+}
+
 // ---- Pattern: bCrypto.fromBase64Url on adversarial input outside try/catch ----
 //
 // A primitive accepts operator-supplied compact-form bytes (JWE, JWT,
@@ -6807,6 +6861,7 @@ async function run() {
   testEnumRankWithoutValidation();
   testNoBoolStringCoerceShape();
   testNoBareCommaSplitOnQuotedHeader();
+  testTenantScopeShapeValidated();
   testFromBase64UrlUntrappedOnAdversarialInput();
   testHostnameCompareTrailingDotNormalize();
   testDateUtcRoundTripVerify();
