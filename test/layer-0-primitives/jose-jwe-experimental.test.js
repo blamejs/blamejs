@@ -73,6 +73,36 @@ function testRefusalsOnTamper() {
   check("4-segment compact refused", threw);
 }
 
+function testBinaryRoundTrip() {
+  // Codex P1 v0.10.10 — decrypt MUST be lossless for binary plaintext.
+  // Pre-fix b.crypto.decrypt utf8-decoded the result, corrupting 0xFF
+  // into the Unicode replacement character.
+  var pair = b.crypto.generateEncryptionKeyPair();
+  var binary = Buffer.from([0x00, 0xff, 0x80, 0x7f, 0x01, 0xfe, 0xc0, 0x3f]);
+  var jwe = b.jose.jwe.experimental.encrypt(binary, pair.publicKey, { audit: false });
+  var pt = b.jose.jwe.experimental.decrypt(jwe, pair.privateKey, { audit: false });
+  check("binary plaintext round-trips losslessly",
+    Buffer.isBuffer(pt) && pt.equals(binary));
+}
+
+function testMalformedHeaderTyped() {
+  // Codex P2 v0.10.10 — malformed base64url header MUST surface as a
+  // typed JoseJweExperimentalError, not a raw TypeError from
+  // b.crypto.fromBase64Url.
+  var pair = b.crypto.generateEncryptionKeyPair();
+  var pt = b.jose.jwe.experimental.encrypt("x", pair.publicKey, { audit: false });
+  // Replace header segment with non-base64url bytes.
+  var parts = pt.split(".");
+  parts[0] = "!@#$%^&*";
+  var tampered = parts.join(".");
+  var caught = null;
+  try { b.jose.jwe.experimental.decrypt(tampered, pair.privateKey, { audit: false }); }
+  catch (e) { caught = e; }
+  check("malformed header is typed JoseJweExperimentalError",
+    caught !== null && caught.name === "JoseJweExperimentalError" &&
+    /header/.test(caught.message));
+}
+
 function testErrorClassExported() {
   check("error class exported",
     typeof b.jose.jwe.experimental.JoseJweExperimentalError === "function");
@@ -82,6 +112,8 @@ function run() {
   testRoundTrip();
   testHeaderShape();
   testRefusalsOnTamper();
+  testBinaryRoundTrip();
+  testMalformedHeaderTyped();
   testErrorClassExported();
 }
 
