@@ -61,6 +61,28 @@ function testCardinalityCap() {
   check("cap refuses overflow", threw);
 }
 
+function testPrometheusPreservesLabels() {
+  var shadow = b.metrics.snapshot.shadowRegistry({
+    namespace: "tenant_b",
+    counters:  ["hits_total"],
+    gauges:    ["queue_depth"],
+  });
+  shadow.inc("hits_total", { route: "/api" });
+  shadow.inc("hits_total", { route: "/api" });
+  shadow.inc("hits_total", { route: "/health" });
+  shadow.set("queue_depth", 7, { tenant: "a" });
+
+  var out = shadow.render({ format: "prometheus" });
+  check("emits hits_total{route=\"/api\"} 2",
+    out.indexOf('tenant_b_hits_total{route="/api"} 2') !== -1);
+  check("emits hits_total{route=\"/health\"} 1",
+    out.indexOf('tenant_b_hits_total{route="/health"} 1') !== -1);
+  check("emits queue_depth{tenant=\"a\"} 7",
+    out.indexOf('tenant_b_queue_depth{tenant="a"} 7') !== -1);
+  check("emits TYPE counter for hits_total",
+    out.indexOf("# TYPE tenant_b_hits_total counter") !== -1);
+}
+
 function testRefusalsAtConfigTime() {
   var threw;
   threw = false; try { b.metrics.snapshot.shadowRegistry({}); } catch (_e) { threw = true; }
@@ -82,6 +104,7 @@ function run() {
   testInc();
   testSet();
   testCardinalityCap();
+  testPrometheusPreservesLabels();
   testRefusalsAtConfigTime();
 }
 
