@@ -5919,6 +5919,66 @@ function testNoBareCommaSplitOnQuotedHeader() {
     bad);
 }
 
+// ---- Pattern: bCrypto.fromBase64Url on adversarial input outside try/catch ----
+//
+// A primitive accepts operator-supplied compact-form bytes (JWE, JWT,
+// signed blob) and decodes via `bCrypto.fromBase64Url(parts[N])`
+// WITHOUT wrapping the call in a typed try/catch. Malformed bytes
+// throw raw TypeError from the underlying buffer parser instead of
+// the module's coded refusal class. Surfaced by Codex on v0.10.10
+// PR #97 for `b.jose.jwe.experimental.decrypt` (line 162).
+//
+// The detector fires on direct `bCrypto.fromBase64Url(parts[N])` /
+// `.fromBase64Url(arr[i])` / `.fromBase64Url(input)` calls in modules
+// that decode operator-supplied compact-form input AND don't have a
+// `try {` line within 5 lines above the call. Files known to operate
+// only on framework-internal already-validated inputs are allowlisted.
+function testFromBase64UrlUntrappedOnAdversarialInput() {
+  // class: from-base64url-untrapped
+  var files = _libFiles();
+  var bad = [];
+  var ALLOWLISTED_INTERNAL = {
+    "lib/crypto.js":              "vendor-data signed-bundle verify path; bytes already gated by ML-DSA verify upstream",
+    "lib/audit-sign.js":          "internal-state signature; framework-internal bytes",
+    "lib/audit.js":               "internal audit-checkpoint signature verify",
+    "lib/vendor-data.js":         "framework-internal manifest signature verify",
+    "lib/safe-buffer.js":         "the safe-buffer module itself wraps the primitives",
+  };
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (ALLOWLISTED_INTERNAL[rel]) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li += 1) {
+      if (!/\.fromBase64Url\s*\(/.test(lines[li])) continue;
+      // Allow inline marker.
+      if (/allow:from-base64url-untrapped/.test(lines[li])) continue;
+      if (li > 0 && /allow:from-base64url-untrapped/.test(lines[li - 1])) continue;
+      // `try {` on the same line wraps this call inline.
+      if (/\btry\s*\{/.test(lines[li])) continue;
+      // Look back 5 lines for `try {`. If found, this call is wrapped.
+      var hasTryAbove = false;
+      for (var lb = Math.max(0, li - 5); lb < li; lb += 1) {
+        if (/\btry\s*\{/.test(lines[lb])) { hasTryAbove = true; break; }
+      }
+      if (hasTryAbove) continue;
+      // Acceptable when the surrounding function-line carries an
+      // explicit allow-via-comment marker or when the call is part of
+      // a non-adversarial pipeline (the file is allowlisted above).
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "bCrypto.fromBase64Url(operator-supplied bytes) without surrounding try/catch — malformed input throws raw TypeError instead of the module's coded refusal class. Wrap in try/catch and surface a typed framework error per the module's err namespace (jose-jwe-experimental.decrypt v0.10.10 finding)",
+      });
+    }
+  }
+  bad = _filterMarkers(bad, "from-base64url-untrapped");
+  _report("`bCrypto.fromBase64Url(operator-input)` must run inside try/catch — malformed compact-form bytes shouldn't surface as raw TypeError outside the module's typed error class",
+    bad);
+}
+
 // ---- Pattern: hostname string-equality compare with no trailing-dot normalize ----
 //
 // A file compares a parsed hostname against a reserved-name set
@@ -6747,6 +6807,7 @@ async function run() {
   testEnumRankWithoutValidation();
   testNoBoolStringCoerceShape();
   testNoBareCommaSplitOnQuotedHeader();
+  testFromBase64UrlUntrappedOnAdversarialInput();
   testHostnameCompareTrailingDotNormalize();
   testDateUtcRoundTripVerify();
   testInfoLabelEmptyVsOmitted();

@@ -272,6 +272,7 @@ var time = require("./lib/time");
 var uuid = require("./lib/uuid");
 var mail = require("./lib/mail");
 mail.rbl = require("./lib/mail-rbl");
+mail.serverRegistry = require("./lib/mail-server-registry");
 mail.greylist = require("./lib/mail-greylist");
 mail.helo = require("./lib/mail-helo");
 mail.deploy = require("./lib/mail-deploy");
