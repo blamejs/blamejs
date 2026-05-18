@@ -42,6 +42,12 @@ var helpers = require("../helpers");
 var check = helpers.check;
 
 var TEST_ROOT = path.resolve(__dirname, "..");
+// Codex P2 (v0.10.14) — keep release-name scan coverage parity with
+// the prior lib-side function, which walked the whole repository.
+// The test-side walker now includes every sibling `test/` directory
+// under examples/ as well so non-framework test suites can't sneak
+// in a release-named file under examples/wiki/test/ or similar.
+var EXAMPLES_TEST_ROOT = path.resolve(__dirname, "..", "..", "examples");
 
 function _walk(dir, files) {
   files = files || [];
@@ -109,7 +115,18 @@ var KNOWN_TEST_ANTIPATTERNS = [
     // an even-easier writer.
     id: "test-handrolled-promise-settimeout-sleep",
     primitive: "await helpers.waitUntil(function () { return <condition>; }, { label, timeoutMs })",
-    regex: /new Promise\s*\(\s*(?:function\s*\([^)]*\)\s*\{[^}]*?setTimeout|\(?\s*\w+\s*\)?\s*=>\s*setTimeout)/,
+    // Codex P2 (v0.10.14) broadened — the original regex caught only
+    // expression-bodied arrows (`r => setTimeout(...)`) and simple
+    // function bodies. Block-bodied arrows (`(r) => { setTimeout(r, N); }`),
+    // multi-arg arrows (`(resolve, reject) => setTimeout(resolve, N)`),
+    // and function bodies with leading statements all evaded the
+    // gate. The broadened shape matches `new Promise(...)` followed
+    // by any callable form (function or arrow, paren-list or
+    // single-ident), then anywhere within ~200 chars a `setTimeout(`
+    // call. The 200-char window keeps the regex bounded; longer
+    // bodies that genuinely do real work between Promise-open and
+    // setTimeout don't fit the direct-sleep antipattern anyway.
+    regex: /new Promise\s*\(\s*(?:function\s*[\w$]*\s*\([^)]*\)\s*\{|\([^)]*\)\s*=>\s*\{?|[\w$]+\s*=>\s*\{?)[\s\S]{0,200}?setTimeout\s*\(/,
     allowlist: [
       // The wait helper itself implements the waitUntil primitive
       // and uses Promise+setTimeout internally as its core loop.
@@ -174,6 +191,17 @@ var KNOWN_TEST_ANTIPATTERNS = [
       "test/layer-0-primitives/websocket-channels.test.js",
       "test/layer-0-primitives/ws-client.test.js",
       "test/layer-1-state/api-key.test.js",
+      // Surfaced by the v0.10.14 broadened-regex sweep (Codex P2):
+      // block-bodied arrow forms (`(r) => { setTimeout(...) }`) that
+      // the narrower v0.10.13 regex missed.
+      "test/layer-0-primitives/agent-orchestrator.test.js",
+      "test/layer-0-primitives/daily-byte-quota.test.js",
+      "test/layer-0-primitives/require-auth-cache-control.test.js",
+      "test/layer-0-primitives/webhook.test.js",
+      // Surfaced by the v0.10.14 examples-tree expansion (Codex P2):
+      // wiki integration test under examples/wiki/test/ that the
+      // original test/ - only walker missed entirely.
+      "examples/wiki/test/integration.js",
     ],
     reason: "v0.8.60 macOS watcher flake + log-stream-otlp / safe-async-loops / rate-limit-cluster — every fixed-budget Promise+setTimeout sleep in a test eventually races on a contended runner. CLAUDE.md rule §11b documents waitUntil as the replacement; this gate forces the discipline on new tests. The 49 pre-existing files allowlisted above are the v0.10.14 backlog: each carries a documented setTimeout sleep that's working today but doesn't follow the discipline. Cleanup is a per-file migration to helpers.waitUntil in follow-up patches.",
   },
@@ -196,11 +224,15 @@ var KNOWN_TEST_ANTIPATTERNS = [
 ];
 
 function _testFiles() {
-  var all = _walk(TEST_ROOT);
+  var all = _walk(TEST_ROOT).concat(_walk(EXAMPLES_TEST_ROOT));
   return all.filter(function (f) {
     var rel = _relPath(f);
     if (rel.indexOf("test/.test-output") === 0) return false;
-    return /\.test\.js$|^test\/helpers\/|^test\/smoke\.js$/.test(rel);
+    // Skip examples/*/node_modules so we don't scan vendored deps.
+    if (/^examples\/[^/]+\/node_modules\//.test(rel)) return false;
+    // Skip examples test-output dirs.
+    if (/^examples\/.*\/\.test-output\//.test(rel)) return false;
+    return /\.test\.js$|^test\/helpers\/|^test\/smoke\.js$|^examples\/[^/]+\/test\//.test(rel);
   });
 }
 
