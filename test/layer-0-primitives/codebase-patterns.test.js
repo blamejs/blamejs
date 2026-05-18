@@ -4899,6 +4899,46 @@ function testNoStateStampsInPublicDocs() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    // Codex P1 (v0.10.13 PR #102) — PQC AlgorithmIdentifier with NULL
+    // parameters. ML-DSA (RFC 9909 §3), SLH-DSA (RFC 9881 §3), and
+    // ML-KEM (RFC 9936 §3) all specify that the AlgorithmIdentifier's
+    // parameters field is ABSENT. Appending `NULL` makes the CMS
+    // (or X.509) structure non-conformant — strict CMS / X.509
+    // validators reject the signature/recipient. The fix is to
+    // emit `SEQUENCE { OID }` with no second element, never
+    // `SEQUENCE { OID, NULL }`, for these OIDs. cms-codec.js's
+    // `_algorithmIdentifier` dispatches off the ABSENT_PARAM_OIDS
+    // set so the right shape ships for every PQC OID.
+    id: "pqc-algid-with-null-params",
+    primitive: "ABSENT_PARAM_OIDS.has(oid) ? writeNode(SEQUENCE, writeOid(oid)) : writeNode(SEQUENCE, [writeOid(oid), writeNull()])",
+    regex: /writeOid\(\s*["']2\.16\.840\.1\.101\.3\.4\.(?:3\.(?:17|18|19|31)|4\.[23])["']\s*\)[\s\S]{0,160}?writeNull\s*\(\s*\)/,
+    allowlist: [],
+    reason: "Codex flagged cms-codec.js emitting `_algorithmIdentifier(OID.mldsaXX)` with an unconditional NULL parameter. RFC 9909 / 9881 / 9936 specify absent parameters for these OIDs. Any new emitter for PQC OIDs MUST split on the absent-params set — see cms-codec.js's ABSENT_PARAM_OIDS.",
+  },
+  {
+    // Codex P1 (v0.10.13 PR #102) — ASN.1 context-specific implicit
+    // tag bytes (0x80 | N for primitive, 0xa0 | N for constructed)
+    // hand-rolled at call sites instead of routed through the
+    // dedicated helpers. The bug class: an SKI wrap that should be
+    // [0] IMPLICIT OCTET STRING (primitive, 0x80) emitted as
+    // constructed (0xa0) because the developer wrote `0xa0 | 0`
+    // by hand and didn't think about the CHOICE alternative's
+    // primitive-vs-constructed distinction. cms-codec.js provides
+    // `_writeImplicitPrimitive` + `_writeImplicitConstructed`;
+    // callers pick by intent and the tag byte is built inside the
+    // helper, not at the call site.
+    id: "hand-rolled-context-specific-implicit-tag",
+    primitive: "_writeImplicitPrimitive(N, value)  OR  _writeImplicitConstructed(N, payload)",
+    regex: /\b(?:tagByte|tag)\s*=\s*0x(?:80|a0)\s*\|\s*\(?\s*\w+\s*&\s*0x1f\s*\)?/,
+    allowlist: [
+      // Helpers + asn1-der live here; their internal use of the bit
+      // pattern is the source-of-truth implementation.
+      "lib/cms-codec.js",
+      "lib/asn1-der.js",
+    ],
+    reason: "Codex flagged cms-codec.js _writeImplicit wrapping a SubjectKeyIdentifier in [0] CONSTRUCTED instead of [0] PRIMITIVE — strict CMS parsers reject the structure. New ASN.1 encoders MUST use the named helpers (_writeImplicitPrimitive / _writeImplicitConstructed) rather than hand-rolling the tag byte, so the primitive-vs-constructed distinction is forced by call-site naming.",
+  },
+  {
     // Codex P2 (v0.10.0) — RFC byte-cap checks measured via JS string
     // `.length` (UTF-16 code units) for fields the RFC defines as
     // octet-based. Inputs containing non-ASCII characters silently
