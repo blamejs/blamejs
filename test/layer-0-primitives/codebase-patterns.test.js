@@ -483,41 +483,9 @@ function testNoLiteralNulBytesInSource() {
     hits);
 }
 
-// ---- Release-named test files refused ----
-// Tests must live in per-domain files (e.g. honeytoken.test.js,
-// resource-access-lock.test.js) not release-bucket files like
-// `v0-8-41-additions.test.js` or `slot-19-enhancements.test.js`.
-// Buckets accumulate cross-domain assertions, drift in scope, and
-// hide which primitive a test actually exercises. The discipline:
-// one primitive → one test file; share helpers under test/helpers/.
-function testNoReleaseNamedTestFiles() {
-  var fs   = require("node:fs");
-  var path = require("node:path");
-  var hits = [];
-  var releaseRe = /^v\d+[-_.]\d+[-_.]\d+([-_.]|$)/i;
-  var slotRe    = /^slot[-_]\d+/i;
-  var batchRe   = /(^|[-_])batch[-_.]/i;
-  function walk(dir) {
-    var entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (var i = 0; i < entries.length; i += 1) {
-      var e = entries[i];
-      if (e.name === "node_modules" || e.name === "helpers") continue;
-      var full = path.join(dir, e.name);
-      if (e.isDirectory()) { walk(full); continue; }
-      if (!e.isFile() || !/\.test\.js$/.test(e.name)) continue;
-      if (releaseRe.test(e.name) || slotRe.test(e.name) || batchRe.test(e.name)) {
-        hits.push({
-          file: path.relative(path.resolve(__dirname, "..", ".."), full).replace(/\\/g, "/"),
-          line: 1,
-          content: "release-named / slot-named / batch-named test file (e.g. v0-8-41-... / v0_8_70-batch... / slot-19-...) — split into per-domain test files instead",
-        });
-      }
-    }
-  }
-  walk(path.resolve(__dirname, "..", ".."));
-  _report("no release-named / slot-named / batch-named test files (split into per-domain test files; one primitive → one test)",
-    hits);
-}
+// (testNoReleaseNamedTestFiles moved to test-codebase-patterns.test.js
+// in v0.10.14 — the rule scans test-file basenames, not lib-source
+// content; belongs with the rest of the test-discipline catalog.)
 
 // ---- Pattern 8b: parser / validator primitives must have a fuzz harness ----
 
@@ -4899,6 +4867,57 @@ function testNoStateStampsInPublicDocs() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    // v0.10.14 — raw `audit.emit(...)` outside a try/catch swallow is
+    // a CLAUDE.md rule §5 violation (drop-silent on hot-path audit
+    // sinks). When the operator-supplied audit sink throws — bad
+    // schema, full disk, broken downstream — the throw bubbles
+    // through the request that triggered it and crashes a path that
+    // has nothing to do with auditing. The framework convention is
+    // EITHER `audit.safeEmit(...)` (which wraps drop-silent for you)
+    // OR a hand-written `try { audit.emit(...) } catch (_e) { /* drop */ }`.
+    // v0.10.14 surfaced subject.js:_writeAudit, whose comment
+    // promised swallowing but actually let the throw escape.
+    id: "raw-audit-emit-without-drop-silent-wrap",
+    primitive: "audit.safeEmit(...) OR try { audit.emit(...) } catch (_e) { /* drop-silent */ }",
+    // Match `audit.emit(` outside docstring / single-line-comment
+    // context. `skipCommentLines` opts the runner into stripping
+    // jsdoc/single-line comment lines before regex test so that
+    // ` *     await audit.emit({...});` shown as an @example doesn't
+    // trip the detector. False negatives (real audit.emit hidden in
+    // a comment-then-uncommented code path) are extremely rare; the
+    // allowlist catches genuinely-safe call sites with a
+    // documented try/catch wrap.
+    regex: /\baudit\.emit\s*\(/,
+    skipCommentLines: true,
+    allowlist: [
+      // The audit primitive itself defines `emit` + `safeEmit`.
+      "lib/audit.js",
+      // guard-all.js wraps audit.emit in a try/catch immediately
+      // (verified at v0.10.14 audit time). The detector's regex can't
+      // express "wrapped in try{}"; the allowlist enforces the
+      // commitment with a documented reason.
+      "lib/guard-all.js",
+      // session.js wraps audit.emit in try/catch for the session-
+      // rotate hot path (verified at v0.10.14 audit time).
+      "lib/session.js",
+      // subject.js: _writeAudit wraps audit.emit in try/catch as of
+      // v0.10.14 (the earlier unwrapped form was a real rule §5
+      // violation found by this detector during its first scan).
+      "lib/subject.js",
+    ],
+    reason: "Drop-silent audit emission per CLAUDE.md rule §5. v0.10.14 audit found subject.js:_writeAudit emitting raw without a try/catch, violating the rule despite the comment promising otherwise. New audit-emit call sites MUST use audit.safeEmit (preferred) or wrap audit.emit in try/catch with a drop-silent comment.",
+  },
+  // N5 — `Date.now() - <var>` elapsed-time math vs `process.hrtime()`
+  // is deferred from v0.10.14 to a follow-up patch. v0.10.14's initial
+  // scan found 49 hits, of which ~70% are legitimate wall-clock
+  // semantics (row age, session age, retention cutoffs, audit
+  // timestamps, JWT exp / nbf, retry circuit-breaker cooldown, rate-
+  // limit windows) that are correct as-written. A useful detector
+  // needs to distinguish elapsed-time-math from wall-clock-age
+  // semantically — regex alone is too noisy. v0.10.13's stream-
+  // throttle elapsed-clamp shipped the highest-value fix already;
+  // remaining call sites get per-file review in a later patch.
+  {
     // Codex P1 (v0.10.13 PR #102) — PQC AlgorithmIdentifier with NULL
     // parameters. ML-DSA (RFC 9909 §3), SLH-DSA (RFC 9881 §3), and
     // ML-KEM (RFC 9936 §3) all specify that the AlgorithmIdentifier's
@@ -6817,10 +6836,27 @@ function testKnownAntipatterns() {
       var content;
       try { content = fs.readFileSync(files[fi], "utf8"); }
       catch (_e) { continue; }
-      var m = ap.regex.exec(content);
+      // skipCommentLines: blank out lines that look like jsdoc body /
+      // single-line `//` comments before regex test. Multi-line
+      // antipatterns (regexes that span lines) MUST NOT set this opt
+      // — those need raw content. Per-entry opt-in.
+      var subject = content;
+      if (ap.skipCommentLines === true) {
+        subject = content.split(/\r?\n/).map(function (ln) {
+          // Keep `*` lines that are clearly NOT jsdoc bodies (e.g.
+          // a leading-`*` in a star-pattern wildcard outside a
+          // comment block) by only blanking lines where `*` is the
+          // first non-whitespace and the trimmed line starts with
+          // `*` (i.e. ` * ...` or `/* ...` or `*/`).
+          if (/^\s*(\*|\/\/|\/\*)/.test(ln)) return "";
+          return ln;
+        }).join("\n");
+      }
+      var m = ap.regex.exec(subject);
       if (!m) continue;
-      // Compute line number from match index.
-      var lineNum = content.slice(0, m.index).split(/\r?\n/).length;
+      // Compute line number from match index against subject — but
+      // subject preserves newlines so line numbers stay accurate.
+      var lineNum = subject.slice(0, m.index).split(/\r?\n/).length;
       bad.push({
         file: rel,
         line: lineNum,
@@ -6845,7 +6881,7 @@ async function run() {
   testNoStrayConsoleCalls();
   testNoUnresolvedMarkers();
   testNoLiteralNulBytesInSource();
-  testNoReleaseNamedTestFiles();
+  // testNoReleaseNamedTestFiles — moved to test-codebase-patterns.test.js
   testParserPrimitivesHaveFuzzHarness();
   testNoTierTerminologyInLib();
   testNoInlineRequires();
