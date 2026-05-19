@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.2",
-  "createdAt": "2026-05-19T13:38:25.862Z",
+  "frameworkVersion": "0.11.4",
+  "createdAt": "2026-05-19T17:30:51.310Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2031,6 +2031,10 @@
           "arity": 1
         },
         "safeEmit": {
+          "type": "function",
+          "arity": 1
+        },
+        "useStore": {
           "type": "function",
           "arity": 1
         },

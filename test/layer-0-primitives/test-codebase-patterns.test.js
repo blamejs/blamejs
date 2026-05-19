@@ -197,6 +197,12 @@ var KNOWN_TEST_ANTIPATTERNS = [
       "test/layer-0-primitives/agent-orchestrator.test.js",
       "test/layer-0-primitives/daily-byte-quota.test.js",
       "test/layer-0-primitives/require-auth-cache-control.test.js",
+      // audit-use-store.test.js uses `new Promise(resolve =>
+      // setTimeout(resolve, 250))` as the canonical "slow operator
+      // callback" simulator to verify b.audit.useStore's
+      // shadow-timeout posture (v0.11.4). Not a condition-wait use;
+      // the setTimeout IS the simulated latency itself.
+      "test/layer-0-primitives/audit-use-store.test.js",
       "test/layer-0-primitives/webhook.test.js",
       // Surfaced by the v0.10.14 examples-tree expansion (Codex P2):
       // wiki integration test under examples/wiki/test/ that the
