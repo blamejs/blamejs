@@ -378,12 +378,16 @@ var selfUpdate = require("./lib/self-update");
 var cmsCodec = require("./lib/cms-codec");
 var streamThrottle = require("./lib/stream-throttle");
 var webPush = require("./lib/web-push-vapid");
+var fedcm = require("./lib/fedcm");
+var dbsc = require("./lib/dbsc");
 
 module.exports = {
   crypto:           crypto,
   cms:              cmsCodec,
   streamThrottle:   streamThrottle,
   webPush:          webPush,
+  fedcm:            fedcm,
+  dbsc:             dbsc,
   router:           router,
   constants:        constants,
   vault:            vault,
