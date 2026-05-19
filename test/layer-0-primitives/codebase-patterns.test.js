@@ -2256,6 +2256,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/incident-report.js:open",
         "lib/jose-jwe-experimental.js:decrypt",
         "lib/mail-crypto-smime.js:verify",
+        "lib/mail-crypto-smime.js:_verifySignerInfo",
         "lib/mail-greylist.js:check",
         "lib/mail-helo.js:evaluate",
         "lib/network-heartbeat.js:_validateTarget",
@@ -6079,6 +6080,108 @@ var KNOWN_ANTIPATTERNS = [
       "lib/mail-server-submission.js",
     ],
     reason: "STARTTLS / STLS upgrade — only the upgradeSocket helper is allowed to wrap a TLSSocket around a previously-attached plain socket. The implicit-TLS variant on port 465 wraps the rawSocket BEFORE any plain bytes are read (no listener to remove), so it stays allowlisted.",
+  },
+  {
+    // P1 Codex 2026-05-19 on PR #105 — DBSC binding assertion lacking
+    // both `iat` and `challenge` replays indefinitely. The detector
+    // flags JWT-payload age-checks shaped as `typeof X.iat === "number"
+    // && Date.now() - X.iat ... > maxAge` because that pattern short-
+    // circuits to "no-check" on missing `iat` — there must be a sibling
+    // gate that refuses missing-freshness BEFORE the age check.
+    id: "optional-iat-age-check-no-required-freshness",
+    primitive: "Token / assertion verifier must REFUSE missing freshness (iat OR server-nonce) before age-checking — `if (typeof X.iat === \"number\" && now - X.iat > maxAge)` short-circuits to no-check on missing iat; use `if (typeof X.iat !== \"number\") throw` first, or gate `(typeof iat === \"number\" || X.challenge)` before the age check",
+    // Catches any optional-iat age check: `iat-is-number && time-diff`
+    // or `iat-truthy && time-diff`. Matches across every JWT / token /
+    // assertion verifier in lib/. If a verifier has this shape it must
+    // be in the allowlist with the sibling refuses-missing-iat gate
+    // documented, OR rewritten to fail closed.
+    regex: /if\s*\(\s*(?:typeof\s+\w+\.iat\s*===\s*"number"|\w+\.iat)\s*&&[^)]{0,200}(?:Date\.now\(\)|nowSec|nowMs|now\s*[-<>])/,
+    allowlist: [
+      // dbsc.js — v0.11.0 added a `if (typeof iat !== "number" &&
+      // !challenge) throw "no-freshness"` gate immediately ABOVE the
+      // age check, so this matched line runs only when freshness is
+      // guaranteed.
+      "lib/dbsc.js",
+      // auth/jwt-external.js — RFC 7519 §4.1.6 makes `iat`
+      // OPTIONAL for general-purpose JWTs (external IdPs frequently
+      // omit it). The match at line 459 is a "iat in the future"
+      // sanity check that runs WHEN iat is present, not a freshness
+      // floor. External JWT verifiers can't require iat across the
+      // board because the spec says it's optional; freshness is the
+      // operator's responsibility via the `exp` claim + a separately-
+      // validated audience/issuer pair.
+      "lib/auth/jwt-external.js",
+    ],
+    reason: "CLASS DETECTOR. The bug shape is: a verifier age-checks `iat` only when `iat` is present, so an attacker can omit `iat` entirely and bypass freshness. Codex flagged this on dbsc v0.11.0 (P1). The corrected shape is to refuse missing `iat` (or refuse missing iat-AND-missing-nonce) BEFORE the age check. The detector matches the buggy shape `if (typeof X.iat === \"number\" && ...time...)` and `if (X.iat && ...time...)` across every verifier in lib/. Allowlisted files MUST demonstrate the sibling required-freshness gate; new sites either rewrite to the fail-closed pattern (`if (typeof iat !== \"number\") throw`) or add to allowlist with the guard line referenced. Regex catches the SHAPE; the semantic property (a sibling refuses-missing-iat guard) is enforced by allowlist review.",
+  },
+  {
+    // P2 Codex 2026-05-19 on PR #105 — AIP-151 LRO operation
+    // transitions are MONOTONIC: once `done: true` is set with a
+    // terminal state (response OR error), subsequent resolve/reject
+    // handlers MUST NOT overwrite. Otherwise a cancelled operation
+    // can flip back to success if the work function ignores the
+    // AbortSignal. Detector looks for `stored.done = true` followed
+    // immediately by `stored.response = ...` (post-cancel-stomp).
+    id: "monotonic-terminal-state-overwrite-without-guard",
+    primitive: "Any state machine with a `done` (or terminal) flag whose async handler writes `state.done = true; state.X = ...` MUST check `if (state.done) return;` first; otherwise a late-arriving handler clobbers an earlier terminal state (cancellation, error, timeout)",
+    // Broad — matches `.done = true` assignment followed within the
+    // same async handler by a value-writing assignment (`.response`,
+    // `.value`, `.error`, etc.). Matches LRO + any other state machine
+    // shaped this way (queue jobs, agent-snapshot operations, saga
+    // steps). Allowlist documents the sibling `if (X.done) return`
+    // guard.
+    regex: /\.done\s*=\s*true;\s*\n\s*\w+\.(?:response|value|result|error|completedAt)\s*=/,
+    allowlist: [
+      // lro.js — `if (stored.done) return;` guards both resolve and
+      // reject handlers immediately above each assignment block
+      // (v0.11.0).
+      "lib/lro.js",
+    ],
+    reason: "CLASS DETECTOR. Monotonic state machines (AIP-151 LRO, queue jobs, saga steps, agent-snapshot operations) have a `done` flag that once set MUST stay set with the first terminal state recorded. Async handlers that write terminal state without checking the prior state cause late-resolves to overwrite earlier cancels / errors / timeouts. Codex flagged this on lro v0.11.0 (P2). The detector matches the assignment pair `done = true; <value-field> = X` across lib/. Allowlisted files MUST guard with `if (X.done) return;` immediately above each mutation site. The regex catches the SHAPE; allowlist review confirms the guard exists.",
+  },
+  {
+    // P2 Codex 2026-05-19 on PR #105 — verifyAll() in mail-crypto-smime
+    // looped a single-signer verify() helper per signer, but verify()
+    // always parsed sd.signerInfos[0]; the second signer's key got
+    // tested against the first signer's signature. The detector flags
+    // a `for (... signerInfos ...)` loop body that calls a sibling
+    // `verify({` (with object opts arg) — the helper that takes the
+    // SignerInfo as an explicit positional argument is allowed.
+    id: "verifyall-loop-calls-single-signer-verify-helper",
+    primitive: "A per-collection-item verify/process loop must call a helper that takes the item as a POSITIONAL argument (`_verifyOne(item, ...)`) — calling the top-level single-item entry point with an opts object inside the loop body re-parses the parent envelope and silently always processes index 0",
+    // Catches any `for (... of <collection>) { ... <name>({` shape
+    // where the call inside the loop body looks like a top-level
+    // entry point (function called with `({` opts-object first arg).
+    // The fix in mail-crypto-smime extracted `_verifySignerInfo(si, ...)`
+    // which takes the item positionally — that doesn't match the regex.
+    regex: /for\s*\(\s*var\s+\w+\s*=\s*0[^)]*\.(?:signerInfos|signers|recipients|items|entries)\.length[^)]*\)\s*\{[\s\S]{0,600}?\bverify\s*\(\s*\{/,
+    allowlist: [
+      // mail-crypto-smime.js verifyAll was fixed v0.11.0 to call
+      // _verifySignerInfo(si, ...) (positional `si`), not
+      // verify({ signature: ..., signerPublicKey: ... }) which
+      // re-parses the same SignedData and only checks signerInfos[0].
+    ],
+    reason: "CLASS DETECTOR. The bug shape is: a loop iterating a parent's child collection (signerInfos / signers / recipients / items / entries) where the loop body calls a top-level entry point with an opts-object argument, instead of a per-item helper that takes the loop variable. The top-level entry point typically re-parses the parent envelope from raw bytes and always processes index 0 — masking the second-and-onward items. Codex flagged this on smime.verifyAll v0.11.0 (P2). Per-item helpers must accept the loop variable as a positional argument.",
+  },
+  {
+    // P2 Codex 2026-05-19 on PR #105 — OpenMetrics counter sample lines
+    // suffix with `_total`, but the `# HELP / # TYPE / # UNIT`
+    // metadata lines MUST name the same family identifier as the
+    // samples. Emitting metadata for `requests` then samples for
+    // `requests_total` makes strict parsers reject the family.
+    // Detector flags HELP/TYPE/UNIT lines that use `m.name + ' '`
+    // directly (instead of an `exposedName` derived once that already
+    // carries the `_total` suffix when needed).
+    id: "openmetrics-counter-family-name-mismatch",
+    primitive: "OpenMetrics counter metadata (`# HELP / # TYPE / # UNIT`) and sample lines MUST agree on the family identifier — derive the exposition name once at the top of the loop so the `_total` suffix on counters appears on BOTH the metadata and the samples",
+    regex: /["']# (?:HELP|TYPE|UNIT) ["']\s*\+\s*m\.name\s*\+\s*["'] ["']/,
+    allowlist: [
+      // metrics.js was fixed v0.11.0 to derive `exposedName` once at
+      // the top of the per-metric loop and use it for HELP/TYPE/UNIT +
+      // the sample lines. This file no longer uses `m.name + ' '` in
+      // any of the metadata lines.
+    ],
+    reason: "OpenMetrics §5.1.2 requires counters expose with the `_total` suffix. The wire-format SAMPLE lines (e.g. `requests_total 1`) MUST match the metadata family name (e.g. `# TYPE requests_total counter`), otherwise strict parsers reject the family or bind the wrong type. Derive `exposedName` once per metric — `m.name + (m.type === 'counter' && openMetrics && !/_total$/.test(m.name) ? '_total' : '')` — and use it for both `# HELP/TYPE/UNIT` and the sample line.",
   },
 ];
 
