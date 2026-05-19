@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.15",
-  "createdAt": "2026-05-19T01:18:55.442Z",
+  "frameworkVersion": "0.10.16",
+  "createdAt": "2026-05-19T03:26:14.479Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5864,6 +5864,10 @@
         "encodeSignedData": {
           "type": "function",
           "arity": 1
+        },
+        "parseSignedData": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
@@ -35136,6 +35140,28 @@
                   "type": "function",
                   "arity": 4
                 },
+                "experimental": {
+                  "type": "object",
+                  "members": {
+                    "decrypt": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "encrypt": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "wkd": {
+                      "type": "object",
+                      "members": {
+                        "computeUrl": {
+                          "type": "function",
+                          "arity": 2
+                        }
+                      }
+                    }
+                  }
+                },
                 "sign": {
                   "type": "function",
                   "arity": 1
@@ -35173,10 +35199,6 @@
                       "valueType": "string"
                     }
                   }
-                },
-                "DEFERRAL_MESSAGE": {
-                  "type": "primitive",
-                  "valueType": "string"
                 },
                 "MailCryptoError": {
                   "type": "function",

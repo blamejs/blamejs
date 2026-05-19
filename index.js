@@ -377,11 +377,13 @@ var daemon = require("./lib/daemon");
 var selfUpdate = require("./lib/self-update");
 var cmsCodec = require("./lib/cms-codec");
 var streamThrottle = require("./lib/stream-throttle");
+var webPush = require("./lib/web-push-vapid");
 
 module.exports = {
   crypto:           crypto,
   cms:              cmsCodec,
   streamThrottle:   streamThrottle,
+  webPush:          webPush,
   router:           router,
   constants:        constants,
   vault:            vault,
