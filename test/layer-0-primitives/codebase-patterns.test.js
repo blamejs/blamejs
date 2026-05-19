@@ -2137,6 +2137,7 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/http-client.js:_reject",
         "lib/mail-deploy.js:tlsRptIngestHttp",
+        "lib/mail-deploy.js:_collectAndProcess",
         "lib/middleware/body-parser.js:_bufferBody",
       ],
       reason: "v0.10.15 — request-body collection / rejection shape (req.on('data', ...) + safeBuffer.boundedChunkCollector + cap-overflow handling). Each call site implements RFC-specific 4xx semantics (httpClient: outbound timeout / size; mail-deploy: RFC 8460 §5.4 TLS-RPT ingest; body-parser: framework-wide inbound body cap). The duplicated shingle is the bounded-collect pattern from safeBuffer; consolidating into a single helper would force every collector into a single error-code namespace and lose the RFC-specific status-code mapping (413 vs 415 vs custom).",
@@ -2156,6 +2157,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-crypto-pgp.js:_padTo32",
         "lib/mail-crypto-smime.js:checkCert",
         "lib/mail-deploy.js:tlsRptIngestHttp",
+        "lib/mail-deploy.js:_collectAndProcess",
       ],
       reason: "v0.10.15 — defensive typeof / instanceof / Buffer.isBuffer + typed-error throw boilerplate spanning three different mail-side primitives. _padTo32 enforces a 32-byte buffer invariant for OpenPGP packet padding; checkCert validates X.509 PEM cert shape per RFC 5280; tlsRptIngestHttp validates RFC 8460 §5.4 HTTP request shape. Each owns a distinct error class and validates a primitive-specific input format. Consolidation would couple OpenPGP packet semantics with S/MIME cert handling with HTTP handler dispatch.",
     },

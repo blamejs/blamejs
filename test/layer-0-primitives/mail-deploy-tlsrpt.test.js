@@ -272,12 +272,71 @@ function testHttpRefusesOnSizeOverflow() {
     refused === "mail-tlsrpt/oversize-compressed");
 }
 
+function testRefusesNonFiniteSummary() {
+  // Codex P2 (v0.10.15) — Infinity / NaN / negative / string in
+  // summary counts must refuse, not coerce silently.
+  var r = _goldenReport();
+  r.policies[0].summary["total-successful-session-count"] = "Infinity";
+  var threw = false;
+  try { b.mail.deploy.parseTlsRptReport(_jsonBytes(r)); }
+  catch (e) { threw = e.code === "mail-tlsrpt/bad-summary"; }
+  check("string 'Infinity' as summary count refused", threw);
+
+  var r2 = _goldenReport();
+  r2.policies[0].summary["total-failure-session-count"] = -5;
+  var threw2 = false;
+  try { b.mail.deploy.parseTlsRptReport(_jsonBytes(r2)); }
+  catch (e) { threw2 = e.code === "mail-tlsrpt/bad-summary"; }
+  check("negative summary count refused", threw2);
+
+  var r3 = _goldenReport();
+  r3.policies[0].summary["total-successful-session-count"] = 1.5;
+  var threw3 = false;
+  try { b.mail.deploy.parseTlsRptReport(_jsonBytes(r3)); }
+  catch (e) { threw3 = e.code === "mail-tlsrpt/bad-summary"; }
+  check("non-integer summary count refused", threw3);
+}
+
+function testHttpAuthenticateHookSyncFalsy() {
+  // Codex P2 (v0.10.15) — authenticate(req) returns falsy → 401
+  // before body parse.
+  var refused = null;
+  var handler = b.mail.deploy.tlsRptIngestHttp({
+    authenticate: function (_req) { return false; },
+    onRefuse:     function (code) { refused = code; },
+  });
+  var listeners = {};
+  var req = {
+    method:  "POST",
+    headers: { "content-type": "application/tlsrpt+json" },
+    on:      function (event, fn) { listeners[event] = fn; },
+    destroy: function () {},
+  };
+  var status = 0;
+  var res = { writeHead: function (s) { status = s; }, end: function () {}, headersSent: false };
+  handler(req, res);
+  // authenticate runs async via Promise.resolve — let it settle.
+  return new Promise(function (resolve) { setImmediate(function () {
+    check("authenticate falsy → 401", status === 401);
+    check("authenticate falsy → onRefuse 'mail-tlsrpt/unauthenticated'",
+      refused === "mail-tlsrpt/unauthenticated");
+    resolve();
+  }); });
+}
+
+function testHttpAuthenticateHookValidatesType() {
+  var threw = false;
+  try { b.mail.deploy.tlsRptIngestHttp({ authenticate: "not-a-function" }); }
+  catch (e) { threw = e.code === "mail-tlsrpt/bad-opts"; }
+  check("authenticate non-function refused at construct", threw);
+}
+
 function testTlsRptParseErrorClassExported() {
   check("b.mail.deploy.TlsRptParseError is a constructor",
     typeof b.mail.deploy.TlsRptParseError === "function");
 }
 
-function run() {
+async function run() {
   testGoldenReportParses();
   testGzipPath();
   testGzipContentTypeRouting();
@@ -297,6 +356,9 @@ function run() {
   testHttpHappyPath();
   testHttpRefusesUntrustedReporter();
   testHttpRefusesOnSizeOverflow();
+  testRefusesNonFiniteSummary();
+  await testHttpAuthenticateHookSyncFalsy();
+  testHttpAuthenticateHookValidatesType();
   testTlsRptParseErrorClassExported();
 }
 
