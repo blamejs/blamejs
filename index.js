@@ -382,6 +382,7 @@ var fedcm = require("./lib/fedcm");
 var dbsc = require("./lib/dbsc");
 var importmapIntegrity = require("./lib/importmap-integrity");
 var standardWebhooks = require("./lib/standard-webhooks");
+var lro = require("./lib/lro");
 
 module.exports = {
   crypto:           crypto,
@@ -392,6 +393,7 @@ module.exports = {
   dbsc:             dbsc,
   importmapIntegrity: importmapIntegrity,
   standardWebhooks: standardWebhooks,
+  lro:              lro,
   router:           router,
   constants:        constants,
   vault:            vault,
