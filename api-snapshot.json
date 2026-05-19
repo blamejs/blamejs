@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.10.14",
-  "createdAt": "2026-05-18T20:05:23.102Z",
+  "frameworkVersion": "0.10.15",
+  "createdAt": "2026-05-19T01:18:55.442Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -35230,6 +35230,10 @@
               "type": "function",
               "arity": 4
             },
+            "TlsRptParseError": {
+              "type": "function",
+              "arity": 4
+            },
             "autoConfigXml": {
               "type": "function",
               "arity": 1
@@ -35245,6 +35249,18 @@
             "mtaStsPublish": {
               "type": "function",
               "arity": 1
+            },
+            "parseTlsRptReport": {
+              "type": "function",
+              "arity": 2
+            },
+            "tlsRptIngestHttp": {
+              "type": "function",
+              "arity": 1
+            },
+            "tlsRptReportSchema": {
+              "type": "function",
+              "arity": 0
             }
           }
         },
