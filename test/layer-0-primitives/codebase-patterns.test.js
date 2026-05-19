@@ -5114,6 +5114,100 @@ function testNoStateStampsInPublicDocs() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
+    // (TC39 stage-4, lands in V8 13.x). It replaces the two-step
+    // `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` (and
+    // the `if (!m.has(k)) m.set(k, factory());` variant) with a single
+    // call that does ONE lookup instead of two and closes a small race
+    // window in cluster-shared agent registries (no observer can see
+    // the half-built state between `.has(k) === false` and `.set(k)`).
+    //
+    // The framework floor today is `engines.node: ">=24"`. The sweep is
+    // deferred to the Node 26 floor-bump (eligible Oct 2026 per LTS
+    // calendar). This detector lands NOW so:
+    //   1. New code can't introduce fresh occurrences without tripping
+    //      the gate — the floor-bump sweep's surface stays bounded.
+    //   2. Operators reading the catalog see the migration target.
+    //   3. When the floor moves, the bump commit walks the allowlist,
+    //      converts each call site, drops the allowlist entries, and
+    //      flips the detector from "documentation" to "enforce".
+    //
+    // The allowlist below is the survey ground truth from
+    // memory/specs/node-26-map-getorinsert-migration.md. Adding a new
+    // file here pre-floor-bump requires updating that spec in the same
+    // patch so the sweep stays mechanical.
+    //
+    // The catalog catches both variants via a pair of sibling entries:
+    //   A. `var X = M.get(k); if (!X) { ... .set(k, ...) ... }` — this
+    //      entry. The body must reach a `.set(` call within ~300 chars
+    //      of the `if`-block opener to qualify; the `.set(` requirement
+    //      excludes guard-throw shapes like `if (!entry) throw new ...`
+    //      where the function returns / errors instead of inserting.
+    //   B. `if (!M.has(k)) { ... .set(k, ...) ... }` — caught by the
+    //      sibling `map-has-then-set-pre-node-26` entry below.
+    // The regexes intentionally drop the same-identifier backref. The
+    // first attempt used `\1`-pinned backrefs to require the same map
+    // name on both sides; V8's regex engine ran the working set OOM on
+    // large lib/ files (deferred backtracking with `[\s\S]{0,N}?` +
+    // backref + alternation). Two simpler regexes get the same
+    // coverage at a fraction of the engine cost; the rare false positive
+    // where the `.get(...)` and `.set(...)` name DIFFERENT maps is
+    // covered by the allowlist + reason.
+    id: "map-get-or-insert-pre-node-26",
+    primitive: "Map.prototype.getOrInsertComputed(key, factory) (Node 26+); pre-floor-bump call sites are allowlisted with a documented migration target in memory/specs/node-26-map-getorinsert-migration.md",
+    // Variant A only — `var X = M.get(k); if (!X) { ... M.set(k, ...) ... }`.
+    // Variant B (`if (!M.has(k)) { ... M.set(k, ...) ... }`) is caught
+    // by the sibling `map-has-then-set-pre-node-26` entry below; one
+    // regex per shape keeps V8's backtracking engine happy on large
+    // files (an alternation `(?:A)|(?:B)` with backrefs + `[\s\S]{0,N}?`
+    // triggered an OOM on the first attempt).
+    regex: /var\s+\w+\s*=\s*\w+\.get\s*\([^;]+\)\s*;\s*\n\s*if\s*\(\s*!\s*\w+\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
+    allowlist: [
+      "lib/cache.js",                          // tagIndex (Map<tag, Set<key>>) — Set factory
+      "lib/deprecate.js",                      // _seen (Map<name:since, entry>) — object-literal factory
+      "lib/i18n-messageformat.js",             // _pluralRulesCache (Map<key, Intl.PluralRules>) — Intl factory
+      "lib/i18n.js",                           // formatter cache (Map<key, formatter>) — closure factory
+      "lib/mail-server-rate-limit.js",         // connectionTimes / authFailureTimes / rcptFailureTimes (3 sites) — array factory
+      "lib/metrics.js",                        // counter / gauge `_ensure` / histogram observe (3 sites) — object-literal factory w/ cardinality cap
+      "lib/middleware/rate-limit.js",          // token buckets (Map<key, bucket>) — object-literal factory
+      "lib/network-byte-quota.js",             // store (Map<key, entry>) — `_newEntry()` factory
+      "lib/observability-otlp-exporter.js",    // byResource grouping (Map<resKey, bucket>) — object-literal factory
+      "lib/otel-export.js",                    // counters / observations (2 sites) — object-literal factory
+      "lib/pubsub.js",                         // exactSubs (Map<channel, Set<sub>>) — Set factory
+    ],
+    reason: "Node 26 ships Map.prototype.getOrInsertComputed(key, factory) — a single-lookup get-or-insert that replaces the two-step `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` pattern. The sweep is deferred to the Node 26 floor-bump (eligible Oct 2026); engines.node is `>=24` today. Allowlist above is the survey ground truth from memory/specs/node-26-map-getorinsert-migration.md. New code post-this-patch trips the detector — either wait for the floor bump, or add the call site to BOTH the allowlist AND the migration spec in the same patch. When the floor moves, the bump commit walks the allowlist, rewrites each call site, drops the allowlist + flips the detector to enforce.",
+  },
+  {
+    // Companion to `map-get-or-insert-pre-node-26` — same Node-26
+    // migration target, different syntactic variant. Catches the
+    // `if (!M.has(k)) { ... M.set(k, factory); ... }` shape (no
+    // intermediate `var X = M.get(k)` binding). See the sibling entry
+    // and memory/specs/node-26-map-getorinsert-migration.md.
+    id: "map-has-then-set-pre-node-26",
+    primitive: "Map.prototype.getOrInsertComputed(key, factory) (Node 26+); pre-floor-bump call sites are allowlisted with a documented migration target in memory/specs/node-26-map-getorinsert-migration.md",
+    regex: /if\s*\(\s*!\s*\w+\.has\s*\([^)]+\)\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
+    allowlist: [
+      "lib/websocket-channels.js",             // channelToConns (Map<channel, Set<conn>>) — Set factory; cluster-shared race window
+      // Edge cases — flagged structurally but do NOT migrate cleanly
+      // to getOrInsertComputed:
+      //
+      //   - mail-greylist.js memoryStore.put runs `data.set(key, ...)`
+      //     unconditionally (always overwrites the value); the if-block
+      //     manages an evict-oldest sidecar `insertionOrder`. The
+      //     migration spec marks it "manual review — does NOT replace
+      //     cleanly" (sidecar logic stays).
+      //   - dsr.js memoryTicketStore.update is a presence assertion:
+      //     `if (!byId.has(id)) throw new DsrError(...)` followed by
+      //     `byId.set(id, ...)` outside the if-block (it's an UPDATE,
+      //     not an insert). The bounded `[\s\S]{0,300}?` crosses the
+      //     closing `}` and matches the trailing `.set(`. False
+      //     positive; migration is a no-op for this site.
+      "lib/mail-greylist.js",
+      "lib/dsr.js",
+    ],
+    reason: "Companion to map-get-or-insert-pre-node-26 — same Node 26 getOrInsertComputed migration target, captures the `if (!M.has(k)) { ... M.set(k, ...) ... }` syntactic variant. See sibling entry's reason and the migration spec.",
+  },
+  {
     // v0.10.16 (Codex P2 on v0.10.15 PR #104) — `Number(x) || 0`
     // coercion of an operator-untrusted JSON-source numeric field.
     // Silently accepts Infinity / NaN / negative / arbitrary
