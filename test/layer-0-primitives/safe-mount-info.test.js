@@ -101,6 +101,29 @@ function testLineCap() {
         threw && /too-many-lines/.test(threw.code || ""));
 }
 
+function testLineCapBoundaryWithTrailingNewline() {
+  // Codex P2 regression check (PR #111): exactly `maxLines` valid
+  // records followed by a trailing newline. `text.split("\n")`
+  // produces N+1 segments (the last is "") — pre-fix the cap
+  // misfired here and refused legitimate full-cap inputs.
+  var lines = [];
+  for (var i = 0; i < 16; i += 1) {                                                   // allow:raw-byte-literal — small synthetic budget
+    lines.push("23 28 0:21 / /sys" + i + " rw shared:7 - sysfs sysfs rw");
+  }
+  var text = lines.join("\n") + "\n";                                                  // trailing newline mimics /proc/self/mountinfo
+  var entries = b.safeMountInfo.parse(text, { maxLines: 16 });                        // allow:raw-byte-literal — matches synthetic record count
+  check("parse({maxLines: N}) accepts exactly N records + trailing newline",
+        entries.length === 16);
+
+  // One more record + trailing newline → over cap.
+  lines.push("99 28 0:21 / /sys99 rw shared:7 - sysfs sysfs rw");
+  var bigger = lines.join("\n") + "\n";
+  var threw = null;
+  try { b.safeMountInfo.parse(bigger, { maxLines: 16 }); } catch (e) { threw = e; }   // allow:raw-byte-literal — matches synthetic record count
+  check("parse({maxLines: 16}) refuses 17 records",
+        threw && /too-many-lines/.test(threw.code || ""));
+}
+
 function testBadInputRefused() {
   var threw = null;
   try { b.safeMountInfo.parse(null); } catch (e) { threw = e; }
@@ -143,6 +166,7 @@ async function run() {
   testMalformedLineSkipDefault();
   testStrictThrowsOnMalformed();
   testLineCap();
+  testLineCapBoundaryWithTrailingNewline();
   testBadInputRefused();
   testReadNonExistentPath();
   testAuditEmittedOnReadFailed();
