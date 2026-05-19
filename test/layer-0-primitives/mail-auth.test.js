@@ -811,6 +811,34 @@ async function testSpfMechanismExistsRemainsDeferred() {
         rv.result === "permerror" && /5\.7/.test(rv.explanation || ""));
 }
 
+async function testSpfMechanismEmptyDualCidrRefused() {
+  // RFC 7208 §5.3 / §5.4 — ip4-cidr-length and ip6-cidr-length are
+  // each `"/" 1*DIGIT`. Empty digit segments are malformed grammar
+  // and MUST permerror. Pre-v0.11.3.1 the parser silently kept the
+  // default /32 or /128, which over-authorized senders publishing
+  // `v=spf1 a/ -all` (would match every IP in the /32 of every A
+  // record of the sender's domain).
+  var shapes = ["a/", "a//", "a/24//", "a//64-extra-after", "mx/", "mx//"];
+  for (var i = 0; i < shapes.length; i += 1) {
+    var policy = "v=spf1 " + shapes[i] + " -all";
+    var dnsLookup = (function (pol) {
+      return async function (host, type) {
+        if (host === "example.com" && type === "TXT") return [[pol]];
+        if (host === "example.com" && type === "A")   return ["192.0.2.10"];
+        if (host === "example.com" && type === "MX")  return [{ exchange: "mx1.example.com", preference: 10 }];
+        if (host === "mx1.example.com" && type === "A") return ["192.0.2.20"];
+        var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+      };
+    }(policy));
+    var rv = await b.mail.spf.verify({
+      ip: "192.0.2.10", mailFrom: "alice@example.com", dnsLookup: dnsLookup,
+    });
+    check("spf.verify(" + JSON.stringify(shapes[i]) + ") → permerror (empty cidr-length)",
+          rv.result === "permerror" &&
+          /(cidr-length is empty|cidr-length invalid|dual-cidr malformed)/.test(rv.explanation || ""));
+  }
+}
+
 async function testSpfMechanismPtrRemainsDeferred() {
   var dnsLookup = async function (host, type) {
     if (host === "example.com" && type === "TXT") return [["v=spf1 ptr -all"]];
@@ -833,6 +861,7 @@ async function run() {
   await testSpfMechanismMx();
   await testSpfMechanismMxOverLimit();
   await testSpfMechanismExistsRemainsDeferred();
+  await testSpfMechanismEmptyDualCidrRefused();
   await testSpfMechanismPtrRemainsDeferred();
   testDmarcParse();
   testDmarcParseBisTags();
