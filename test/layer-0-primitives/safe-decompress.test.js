@@ -167,6 +167,28 @@ function testMissingMaxOutputBytes() {
   check("missing maxOutputBytes → refused", threw && /bad-arg/.test(threw.code || ""));
 }
 
+// ---- maxCompressedBytes alignment for caller-configurable caps ----
+
+function testMaxCompressedBytesAlignsWithMaxOutputBytes() {
+  // Codex P1 regression check (PR #110): if a caller's
+  // `maxOutputBytes` exceeds the safeDecompress default
+  // `maxCompressedBytes` of 4 MiB AND the caller forgets to pass
+  // `maxCompressedBytes`, the silent 4 MiB cap refuses legitimate
+  // large inputs. Verify the explicit-pass shape used by WS works.
+  //
+  // 5 MiB of zeros → ~5 KB compressed (~1000:1 ratio). Fits under
+  // a 6 MiB maxOutputBytes; compressed bytes well under any cap.
+  var plain = Buffer.alloc(C.BYTES.mib(5), 0);
+  var gz = zlib.gzipSync(plain);
+  var out = b.safeDecompress(gz, {
+    algorithm:          "gzip",
+    maxOutputBytes:     C.BYTES.mib(6),
+    maxCompressedBytes: C.BYTES.mib(6),                              // explicit alignment
+    maxRatio:           0,                                            // unlimited (legitimate high compression)
+  });
+  check("5 MiB compressed roundtrip with aligned caller bound", out.length === plain.length);
+}
+
 // ---- Audit emission on refusal ----
 
 function testAuditEmittedOnRatioRefusal() {
@@ -214,6 +236,7 @@ async function run() {
   testBadInputShape();
   testBadMaxOutputBytes();
   testMissingMaxOutputBytes();
+  testMaxCompressedBytesAlignsWithMaxOutputBytes();
   testAuditEmittedOnRatioRefusal();
 }
 

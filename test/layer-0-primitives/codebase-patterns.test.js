@@ -6551,6 +6551,68 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // v0.11.5 — direct `zlib.*` decompress calls in lib/ MUST route
+    // through `b.safeDecompress` instead. The framework's existing
+    // `gunzip-without-output-size-cap` + `inflate-unzip-without-
+    // output-size-cap` detectors enforce per-call-site `maxOutputLength`
+    // discipline, but without a "MUST compose the primitive" detector
+    // there's no force pulling callers toward the unified surface.
+    // `b.safeDecompress` adds (a) algorithm allowlist, (b) ratio cap,
+    // (c) audit on bomb-class refusal, (d) input-cap alignment — none
+    // of which the per-call-site `maxOutputLength` shape gets.
+    //
+    // The 6 lib/ sites that still call zlib.* directly (saml /
+    // status-list / mail-auth / mail-deploy / network-smtp-policy /
+    // ws-client) are pre-existing and pre-allowlisted; each gets
+    // migrated in a follow-up PR alongside its own test coverage.
+    // New lib/ code MUST route through safeDecompress.
+    id: "zlib-decompress-not-via-safedecompress",
+    primitive: "b.safeDecompress(buf, { algorithm, maxOutputBytes, maxCompressedBytes, ... }) — composes the algorithm allowlist + ratio cap + audit emission; raw zlib.gunzip*/inflate*/unzip*/brotli* in lib/ is migration-target",
+    regex: /\bzlib\.(?:gunzipSync|gunzip|inflateSync|inflateRawSync|inflate|inflateRaw|unzipSync|unzip|brotliDecompressSync|brotliDecompress|createGunzip|createInflate|createInflateRaw|createUnzip|createBrotliDecompress)\b/,
+    skipCommentLines: true,
+    allowlist: [
+      // The primitive itself — canonical zlib.* call sites; the
+      // discipline is the primitive's job.
+      "lib/safe-decompress.js",
+      // ===== Migration backlog (PR 4 target) =====
+      // Each site already enforces `maxOutputLength` at the call
+      // site (the per-site detector caught them) and uses try/catch
+      // around the inflate. Migrating to safeDecompress adds the
+      // ratio cap + audit-on-refusal posture; not urgent given the
+      // per-site caps are sound. Tracked as PR 4 work.
+      "lib/auth/saml.js",                  // SAMLRequest / SAMLResponse inflate (1 MiB cap)
+      "lib/auth/status-list.js",           // OAuth status-list inflate (8x ratio cap)
+      "lib/mail-auth.js",                  // DMARC RUA gzip ingest
+      "lib/mail-deploy.js",                // TLS-RPT report gzip ingest
+      "lib/network-smtp-policy.js",        // TLS-RPT receiver gzip ingest
+      "lib/ws-client.js",                  // WS client mirror of server-side inflate
+      // websocket.js was migrated to b.safeDecompress in v0.11.5 — no
+      // longer in this allowlist.
+    ],
+    reason: "v0.11.5 — `b.safeDecompress` is the framework's bomb-resistant decompression primitive. Direct `zlib.*` decompress in new lib/ code bypasses the algorithm allowlist + ratio cap + audit-on-bomb-refusal. The 6 pre-existing lib/ sites are migration targets for PR 4; new code MUST compose the primitive.",
+  },
+
+  {
+    // v0.11.5 (Codex P1 on PR #110) — `safeDecompress` defaults
+    // `maxCompressedBytes` to 4 MiB. When a caller's `maxOutputBytes`
+    // is operator-configurable (and may exceed 4 MiB — large WS
+    // messages, bulk JSON payloads), failing to pass an aligned
+    // `maxCompressedBytes` silently caps the input below the caller's
+    // intent, refusing legitimate large payloads. The discipline:
+    // every `safeDecompress({ maxOutputBytes })` call MUST also pass
+    // `maxCompressedBytes` (typically the same operator-configurable
+    // bound). Files that intentionally accept the 4 MiB default
+    // allowlist with a documented reason.
+    id: "safedecompress-omits-max-compressed-bytes",
+    primitive: "safeDecompress({ maxOutputBytes, maxCompressedBytes: <operator bound>, ... }) — align both caps with the caller's intent; never rely on the 4 MiB default when maxOutputBytes is operator-configurable",
+    regex: /safeDecompress\s*\([\s\S]{0,300}?maxOutputBytes\s*:/,
+    requires: /\bmaxCompressedBytes\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.11.5 PR #110 — lib/websocket.js _inflateMessage routed through safeDecompress without maxCompressedBytes; operators with maxMessageBytes > 4 MiB saw legitimate large permessage-deflate traffic refused at the input cap before decompression. Detector requires every safeDecompress call to ALSO name maxCompressedBytes (companion-check) so future call sites inherit the alignment discipline. Files accepting the 4 MiB default allowlist with a reason.",
+  },
+
+  {
     // v0.11.4 (Codex P1 on PR #109) — operator-supplied async callback
     // awaited inline on the audit critical path can hang indefinitely.
     // `b.audit.useStore({ record })` registered the operator's
