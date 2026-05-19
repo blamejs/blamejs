@@ -6183,6 +6183,28 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "OpenMetrics §5.1.2 requires counters expose with the `_total` suffix. The wire-format SAMPLE lines (e.g. `requests_total 1`) MUST match the metadata family name (e.g. `# TYPE requests_total counter`), otherwise strict parsers reject the family or bind the wrong type. Derive `exposedName` once per metric — `m.name + (m.type === 'counter' && openMetrics && !/_total$/.test(m.name) ? '_total' : '')` — and use it for both `# HELP/TYPE/UNIT` and the sample line.",
   },
+  {
+    // P1 Codex 2026-05-19 on PR #106 — the v0.11.1 proxy-aware SSRF
+    // short-circuit (`if (proxyAgent && allowInternal === true) skip
+    // checkUrl`) removed the UNCONDITIONAL cloud-metadata block too.
+    // Metadata IPs like 169.254.169.254 are NEVER overridable; the
+    // proxy can't be trusted to refuse them downstream. Detector
+    // flags code paths that bind `Promise.resolve({ ips: null })` to
+    // an ssrf-skip variable — every such site MUST also call
+    // `ssrfGuard.checkUrlTextual(...)` first to apply the textual
+    // metadata-IP refusal.
+    id: "ssrf-skip-without-textual-metadata-check",
+    primitive: "Any SSRF-skip path (proxy short-circuit, operator-pinned IP, custom dnsLookup) MUST call `b.ssrfGuard.checkUrlTextual(url)` first; metadata IPs (169.254.169.254 / 169.254.170.2 / fd00:ec2::254) are NEVER overridable",
+    regex: /=\s*Promise\.resolve\s*\(\s*\{\s*ips:\s*null/,
+    allowlist: [
+      // http-client.js's proxy short-circuit was fixed v0.11.1 to call
+      // ssrfGuard.checkUrlTextual immediately above this assignment,
+      // applying the metadata-IP block before the proxy ever sees
+      // the request.
+      "lib/http-client.js",
+    ],
+    reason: "CLASS DETECTOR. The bug shape is: a code path that wants to skip SSRF's DNS-resolution (because a downstream resolver handles it — proxy, pinned-IP, custom dnsLookup) does so by binding `Promise.resolve({ ips: null })` to the SSRF result, bypassing the entire guard including the unconditional cloud-metadata block. Codex flagged this on http-client v0.11.1 (P1). The corrected shape is to invoke `ssrfGuard.checkUrlTextual(url)` immediately above the short-circuit so the textual metadata-IP refusal still applies. Allowlisted files must demonstrate the sibling textual-check call.",
+  },
 ];
 
 // @example placeholder detection lives in
