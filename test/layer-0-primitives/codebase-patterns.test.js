@@ -6551,6 +6551,68 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // v0.11.5 — direct `zlib.*` decompress calls in lib/ MUST route
+    // through `b.safeDecompress` instead. The framework's existing
+    // `gunzip-without-output-size-cap` + `inflate-unzip-without-
+    // output-size-cap` detectors enforce per-call-site `maxOutputLength`
+    // discipline, but without a "MUST compose the primitive" detector
+    // there's no force pulling callers toward the unified surface.
+    // `b.safeDecompress` adds (a) algorithm allowlist, (b) ratio cap,
+    // (c) audit on bomb-class refusal, (d) input-cap alignment — none
+    // of which the per-call-site `maxOutputLength` shape gets.
+    //
+    // The 6 lib/ sites that still call zlib.* directly (saml /
+    // status-list / mail-auth / mail-deploy / network-smtp-policy /
+    // ws-client) are pre-existing and pre-allowlisted; each gets
+    // migrated in a follow-up PR alongside its own test coverage.
+    // New lib/ code MUST route through safeDecompress.
+    id: "zlib-decompress-not-via-safedecompress",
+    primitive: "b.safeDecompress(buf, { algorithm, maxOutputBytes, maxCompressedBytes, ... }) — composes the algorithm allowlist + ratio cap + audit emission; raw zlib.gunzip*/inflate*/unzip*/brotli* in lib/ is migration-target",
+    regex: /\bzlib\.(?:gunzipSync|gunzip|inflateSync|inflateRawSync|inflate|inflateRaw|unzipSync|unzip|brotliDecompressSync|brotliDecompress|createGunzip|createInflate|createInflateRaw|createUnzip|createBrotliDecompress)\b/,
+    skipCommentLines: true,
+    allowlist: [
+      // The primitive itself — canonical zlib.* call sites; the
+      // discipline is the primitive's job.
+      "lib/safe-decompress.js",
+      // ===== Migration backlog (PR 4 target) =====
+      // Each site already enforces `maxOutputLength` at the call
+      // site (the per-site detector caught them) and uses try/catch
+      // around the inflate. Migrating to safeDecompress adds the
+      // ratio cap + audit-on-refusal posture; not urgent given the
+      // per-site caps are sound. Tracked as PR 4 work.
+      "lib/auth/saml.js",                  // SAMLRequest / SAMLResponse inflate (1 MiB cap)
+      "lib/auth/status-list.js",           // OAuth status-list inflate (8x ratio cap)
+      "lib/mail-auth.js",                  // DMARC RUA gzip ingest
+      "lib/mail-deploy.js",                // TLS-RPT report gzip ingest
+      "lib/network-smtp-policy.js",        // TLS-RPT receiver gzip ingest
+      "lib/ws-client.js",                  // WS client mirror of server-side inflate
+      // websocket.js was migrated to b.safeDecompress in v0.11.5 — no
+      // longer in this allowlist.
+    ],
+    reason: "v0.11.5 — `b.safeDecompress` is the framework's bomb-resistant decompression primitive. Direct `zlib.*` decompress in new lib/ code bypasses the algorithm allowlist + ratio cap + audit-on-bomb-refusal. The 6 pre-existing lib/ sites are migration targets for PR 4; new code MUST compose the primitive.",
+  },
+
+  {
+    // v0.11.5 (Codex P1 on PR #110) — `safeDecompress` defaults
+    // `maxCompressedBytes` to 4 MiB. When a caller's `maxOutputBytes`
+    // is operator-configurable (and may exceed 4 MiB — large WS
+    // messages, bulk JSON payloads), failing to pass an aligned
+    // `maxCompressedBytes` silently caps the input below the caller's
+    // intent, refusing legitimate large payloads. The discipline:
+    // every `safeDecompress({ maxOutputBytes })` call MUST also pass
+    // `maxCompressedBytes` (typically the same operator-configurable
+    // bound). Files that intentionally accept the 4 MiB default
+    // allowlist with a documented reason.
+    id: "safedecompress-omits-max-compressed-bytes",
+    primitive: "safeDecompress({ maxOutputBytes, maxCompressedBytes: <operator bound>, ... }) — align both caps with the caller's intent; never rely on the 4 MiB default when maxOutputBytes is operator-configurable",
+    regex: /safeDecompress\s*\([\s\S]{0,300}?maxOutputBytes\s*:/,
+    requires: /\bmaxCompressedBytes\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.11.5 PR #110 — lib/websocket.js _inflateMessage routed through safeDecompress without maxCompressedBytes; operators with maxMessageBytes > 4 MiB saw legitimate large permessage-deflate traffic refused at the input cap before decompression. Detector requires every safeDecompress call to ALSO name maxCompressedBytes (companion-check) so future call sites inherit the alignment discipline. Files accepting the 4 MiB default allowlist with a reason.",
+  },
+
+  {
     // v0.11.4 (Codex P1 on PR #109) — operator-supplied async callback
     // awaited inline on the audit critical path can hang indefinitely.
     // `b.audit.useStore({ record })` registered the operator's
@@ -7680,6 +7742,207 @@ function testKnownAntipatterns() {
   }
 }
 
+// ---- Pattern: every top-level lib/safe-*.js / lib/guard-*.js MUST
+//                be wired into the public surface via index.js ----
+//
+// class: safe-guard-not-wired-in-index
+//
+// Discipline: when a new `b.safe*` / `b.guard*` primitive lands in
+// lib/, the same PR MUST wire it into the public surface so operators
+// can actually compose it. Without this check a primitive can be
+// added but forgotten in index.js — orphaned, invisible to operator
+// code, and silently unused. The codebase-patterns detectors that
+// require "must route through b.safeX" are pointless if `b.safeX`
+// isn't even reachable.
+//
+// The detector:
+//   - walks lib/safe-*.js + lib/guard-*.js at the TOP LEVEL ONLY
+//     (nested helpers like lib/guard-html-wcag-aria.js are
+//     composed by their parent guard and not exposed directly).
+//   - reads index.js once and asserts each top-level file:
+//       (a) is `require()`'d by path, AND
+//       (b) the camelCase name (file `safe-decompress.js` →
+//           identifier `safeDecompress`) appears in the
+//           module.exports object.
+//   - allowlists internal-only primitives that legitimately stay
+//     unexposed (composed by another primitive). Each entry
+//     carries a reason; mirrors the FUZZ_NOT_REQUIRED shape.
+function testSafeGuardWiredInIndex() {
+  // class: safe-guard-not-wired-in-index
+  var INDEX_WIRING_NOT_REQUIRED = {
+    // The aggregator over all guards — every member is wired
+    // individually; the aggregator itself IS wired via `guardAll`,
+    // but this entry covers the file-vs-name shape.
+    "lib/guard-all.js":               "aggregator wired via guardAll; per-member wiring is each member's responsibility",
+    // The guard-* family's WCAG sub-helpers are consumed only by
+    // lib/guard-html.js (the parent). They're not operator-facing
+    // primitives in their own right.
+    "lib/guard-html-wcag.js":         "internal helper consumed by lib/guard-html.js (WCAG check); not exposed directly",
+    "lib/guard-html-wcag-aria.js":    "internal helper consumed by lib/guard-html.js (ARIA pass); not exposed directly",
+    "lib/guard-html-wcag-forms.js":   "internal helper consumed by lib/guard-html.js (forms pass); not exposed directly",
+    "lib/guard-html-wcag-tables.js":  "internal helper consumed by lib/guard-html.js (tables pass); not exposed directly",
+    "lib/guard-html-wcag-tagwalk.js": "internal helper consumed by lib/guard-html.js (DOM walk); not exposed directly",
+    // safe-async is wired as `safeAsync` at the framework root and
+    // referenced internally; it's exposed via `b.safeAsync`. Verified
+    // — keep tracking, no allowlist needed. (No entry here.)
+  };
+
+  var libFiles = _libFiles().filter(function (full) {
+    var rel = _relPath(full);
+    // Top-level lib/ only (no nested subdirs); the safe-*/guard-*
+    // primitives are top-level by convention.
+    return /^lib\/(safe-|guard-)[^/]+\.js$/.test(rel);
+  });
+
+  // Read index.js once. The framework's index.js is the single
+  // operator-facing public-surface entry point.
+  var indexPath = path.resolve(__dirname, "..", "..", "index.js");
+  var indexContent;
+  try { indexContent = fs.readFileSync(indexPath, "utf8"); }
+  catch (_e) {
+    check("safe/guard-wired-in-index — index.js read", false);
+    return;
+  }
+
+  var unwired = [];
+  for (var i = 0; i < libFiles.length; i++) {
+    var rel = _relPath(libFiles[i]);
+    if (INDEX_WIRING_NOT_REQUIRED[rel]) continue;
+    var base = path.basename(rel, ".js");                                              // safe-decompress
+    // Naive kebab→camel produces a candidate, but framework
+    // conventions don't always follow it (`safe-jsonpath` →
+    // `safeJsonPath` not `safeJsonpath`; `guard-managesieve-command`
+    // → `guardManageSieveCommand`). Instead of guessing, EXTRACT
+    // the actual identifier from the file's require()-line in
+    // index.js and check that THAT identifier appears as an
+    // export key.
+    //
+    //   var <id> = require("./lib/<base>");
+    //   ... module.exports = { ..., <id>: <id>, ... }
+    var escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Two wiring shapes are accepted:
+    //   1. Top-level binding form:
+    //        var <id> = require("./lib/<base>");
+    //        module.exports = { ..., <id>: <id>, ... }
+    //   2. Inline-in-export form:
+    //        module.exports = { ..., <id>: require("./lib/<base>"), ... }
+    var topLevelRe = new RegExp(
+      "var\\s+(\\w+)\\s*=\\s*require\\(\\s*[\"']\\./lib/" + escapedBase +
+      "(?:\\.js)?[\"']\\s*\\)(?:\\s*\\.\\s*\\w+)?");
+    var inlineRe = new RegExp(
+      "(\\w+)\\s*:\\s*require\\(\\s*[\"']\\./lib/" + escapedBase +
+      "(?:\\.js)?[\"']\\s*\\)(?:\\s*\\.\\s*\\w+)?");
+
+    var matched   = indexContent.match(topLevelRe);
+    var inlineMatched = indexContent.match(inlineRe);
+    var requireOk = !!matched || !!inlineMatched;
+    var ident     = matched ? matched[1] : (inlineMatched ? inlineMatched[1] : null);
+    var exportOk  = false;
+    if (inlineMatched) {
+      // Inline form means the require IS the export — both legs satisfied.
+      exportOk = true;
+    } else if (ident) {
+      var exportPattern = new RegExp("\\b" + ident + "\\s*:");
+      exportOk = exportPattern.test(indexContent);
+    }
+    if (!requireOk || !exportOk) {
+      unwired.push({
+        file:    rel,
+        line:    1,
+        content: "missing index.js wiring — expected `var <id> = require(\"./lib/" + base +
+                 "\")` + `<id>:` export, OR inline `<id>: require(\"./lib/" + base +
+                 "\")` form (require=" +
+                 (requireOk ? "ok (id=" + ident + ")" : "MISSING") + ", export=" +
+                 (exportOk ? "ok" : "MISSING") + ")",
+      });
+    }
+  }
+
+  _report("every top-level lib/safe-*.js / lib/guard-*.js is wired into index.js " +
+          "(require + export name) — operators can compose every shipped primitive",
+    unwired);
+}
+
+// ---- Pattern: every "must-compose" safe-*/guard-* primitive has a
+//                paired KNOWN_ANTIPATTERN that flags raw uses of the
+//                unsafe API to force the discipline ----
+//
+// class: safe-guard-not-paired-with-must-compose-detector
+//
+// Some safe-*/guard-* primitives REPLACE an unsafe-by-default API
+// (e.g. `b.safeDecompress` replaces `zlib.gunzip*` / `inflate*`;
+// `b.safeUrl` replaces `new URL()`; `b.safeJson.parse` replaces
+// `JSON.parse`). For those, the framework's discipline is:
+//
+//   - the primitive exists in lib/
+//   - the primitive is wired into index.js (previous test enforces)
+//   - a KNOWN_ANTIPATTERN catches new lib/ code that uses the unsafe
+//     API directly, with the safe primitive in the `primitive` field
+//     as the recommended replacement
+//
+// Without the third leg, the primitive is reachable but the
+// discipline is unenforced — new lib/ code can keep bypassing.
+//
+// Other safe-*/guard-* primitives are ADDITIVE utilities (no clear
+// unsafe-equivalent — `safeSchema`, `safeAsync.sleep`, `guardAll`
+// aggregator). Those carry an explicit MUST_COMPOSE_NOT_REQUIRED
+// entry with the reason.
+function testSafeGuardHasMustComposeDetector() {
+  // class: safe-guard-not-paired-with-must-compose-detector
+  //
+  // INVERTED ALLOWLIST: most safe-*/guard-* primitives are operator-
+  // boundary validators (content guards / parsers operators wire at
+  // the request boundary). For THOSE, the "must compose in lib/"
+  // pattern doesn't apply — operators wire them at the request
+  // handler level, not lib/.
+  //
+  // The check applies ONLY to primitives in MUST_COMPOSE_REQUIRED —
+  // primitives that explicitly REPLACE an unsafe-by-default lib/-side
+  // API and whose discipline the framework wants to enforce on
+  // future lib/ contributions.
+  //
+  // When adding a NEW must-compose primitive, two-step:
+  //   1. Add the primitive to MUST_COMPOSE_REQUIRED here.
+  //   2. Add the paired KNOWN_ANTIPATTERN whose `primitive` field
+  //      names the new camelCase identifier as the recommended
+  //      replacement for the unsafe API it covers.
+  // The detector enforces both legs in the same PR — landing the
+  // primitive without the detector fails the gate.
+  //
+  // [[feedback_new_safe_primitive_ships_with_must_compose_detector]]
+  var MUST_COMPOSE_REQUIRED = {
+    // v0.11.5 — replaces direct `zlib.gunzip*` / `inflate*` /
+    // `unzip*` / `brotli*` in lib/ via the
+    // `zlib-decompress-not-via-safedecompress` antipattern.
+    "lib/safe-decompress.js": "safeDecompress",
+  };
+
+  var antipatternCorpus = KNOWN_ANTIPATTERNS.map(function (ap) {
+    return (ap.id || "") + " :: " + (ap.primitive || "");
+  }).join("\n");
+
+  var unpaired = [];
+  for (var rel in MUST_COMPOSE_REQUIRED) {
+    if (!Object.prototype.hasOwnProperty.call(MUST_COMPOSE_REQUIRED, rel)) continue;
+    var camel = MUST_COMPOSE_REQUIRED[rel];
+    var pattern = new RegExp("\\b" + camel + "\\b");
+    if (!pattern.test(antipatternCorpus)) {
+      unpaired.push({
+        file:    rel,
+        line:    1,
+        content: "MUST_COMPOSE_REQUIRED registered the primitive `" + camel +
+                 "` but no KNOWN_ANTIPATTERN entry names it as the recommended replacement. " +
+                 "Add a detector that catches the unsafe API this primitive replaces, with `" +
+                 camel + "` in the `primitive` field.",
+      });
+    }
+  }
+
+  _report("every must-compose safe-*/guard-* primitive is paired with a KNOWN_ANTIPATTERN " +
+          "that forces lib/ code to use it instead of the raw unsafe API",
+    unpaired);
+}
+
 async function run() {
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
@@ -7690,6 +7953,8 @@ async function run() {
   testNoLiteralNulBytesInSource();
   // testNoReleaseNamedTestFiles — moved to test-codebase-patterns.test.js
   testParserPrimitivesHaveFuzzHarness();
+  testSafeGuardWiredInIndex();
+  testSafeGuardHasMustComposeDetector();
   testNoTierTerminologyInLib();
   testNoInlineRequires();
   testRequireBindingConsistency();

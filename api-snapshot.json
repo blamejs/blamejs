@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.4",
-  "createdAt": "2026-05-19T17:30:51.310Z",
+  "frameworkVersion": "0.11.5",
+  "createdAt": "2026-05-19T19:52:05.185Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -42432,6 +42432,10 @@
           "arity": 2
         }
       }
+    },
+    "safeDecompress": {
+      "type": "function",
+      "arity": 2
     },
     "safeDns": {
       "type": "object",
