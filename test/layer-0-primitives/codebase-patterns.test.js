@@ -75,7 +75,8 @@ function _clusterFingerprint(site) {
   }
 }
 
-var LIB_ROOT = path.resolve(__dirname, "..", "..", "lib");
+var LIB_ROOT  = path.resolve(__dirname, "..", "..", "lib");
+var TEST_ROOT = path.resolve(__dirname, "..", "..", "test");
 
 function _walk(dir, files) {
   files = files || [];
@@ -93,6 +94,24 @@ function _walk(dir, files) {
 }
 
 function _libFiles() { return _walk(LIB_ROOT); }
+
+// Test-tree walker. Excludes infra: test/helpers/_*.js (shape-matcher,
+// shingle-worker, etc. — substrate consumed by other tests, not part of
+// the test surface itself). Excludes test/.test-output/ generated logs.
+// Detectors that need to scan tests (CLAUDE.md §11b — the
+// setTimeout-as-condition-wait rule lives in the test tree) declare
+// `scanScope: "test"` in their KNOWN_ANTIPATTERNS entry to route here.
+function _testFiles() {
+  var all = _walk(TEST_ROOT);
+  return all.filter(function (full) {
+    var rel = _relPath(full);
+    // Exclude infra substrate (lives under test/helpers/_*.js by convention).
+    if (/^test\/helpers\/_/.test(rel)) return false;
+    // Exclude shingle-worker output and similar generated artifacts.
+    if (/^test\/\.test-output\//.test(rel)) return false;
+    return /\.test\.js$/.test(rel) || /\/helpers\/[^_].*\.js$/.test(rel);
+  });
+}
 
 function _relPath(absPath) {
   return path.relative(path.resolve(__dirname, "..", ".."), absPath).replace(/\\/g, "/");
@@ -6321,6 +6340,210 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "CLASS DETECTOR. The bug shape is: a code path that wants to skip SSRF's DNS-resolution (because a downstream resolver handles it — proxy, pinned-IP, custom dnsLookup) does so by binding `Promise.resolve({ ips: null })` to the SSRF result, bypassing the entire guard including the unconditional cloud-metadata block. Codex flagged this on http-client v0.11.1 (P1). The corrected shape is to invoke `ssrfGuard.checkUrlTextual(url)` immediately above the short-circuit so the textual metadata-IP refusal still applies. Allowlisted files must demonstrate the sibling textual-check call.",
   },
+
+  // ==== v0.11.4 — 5 missing detectors from the PR-108 audit ====
+  //
+  // The audit identified 13 missing detectors for bug classes that
+  // shipped patches between v0.9.0 and v0.11.3 but never had a
+  // detector encoded. These 5 are the highest-priority subset (P1 +
+  // P2 by audit ranking). The remaining 8 are scoped for follow-up.
+
+  {
+    // CLAUDE.md §11b — `Promise + setTimeout` direct sleep in tests
+    // is forbidden; tests waiting on an asynchronous condition MUST
+    // use `helpers.waitUntil`. v0.10.14 added a detector with
+    // `matchOn: "basename"` and a 49-file allowlist, but it lived in
+    // a separate test/helpers test-side runner. This brings the gate
+    // into the unified KNOWN_ANTIPATTERNS catalog so the same scope
+    // rule applies and the operator audit visibility is uniform.
+    id: "test-promise-settimeout-sleep",
+    primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) — polls the condition; never `await new Promise(r => setTimeout(r, N))` to wait on an observable condition (CLAUDE.md §11b)",
+    scanScope: "test",
+    // Catches both arrow-fn and function-expression shapes:
+    //   await new Promise(r => setTimeout(r, 100));
+    //   await new Promise(function (r) { setTimeout(r, 100); });
+    //   await new Promise((resolve) => { setTimeout(resolve, 100); });
+    regex: /new\s+Promise\s*\(\s*(?:\(?\s*\w+\s*\)?\s*=>|function\s*\(\s*\w+\s*\)\s*\{)[\s\S]{0,80}?setTimeout\s*\(/,
+    skipCommentLines: true,
+    allowlist: [
+      // ===== Structural FPs (stay allowlisted) =====
+      // helpers.waitUntil IS the polling primitive — it has to use
+      // setTimeout internally. The detector forbids USING setTimeout
+      // as a condition-wait; the primitive itself is exempt.
+      "test/helpers/wait.js",
+      // The catalog itself carries fragments of the bug pattern as
+      // regex literals inside KNOWN_ANTIPATTERNS entries.
+      "test/layer-0-primitives/codebase-patterns.test.js",
+
+      // ===== Migration backlog (drains as test owners touch) =====
+      // Removed from this list alongside the helpers.waitUntil
+      // conversion commit for each file. Every entry is a release-gate
+      // countdown, not a perpetual exception.
+      "test/integration/cache.test.js",
+      "test/integration/cluster-provider-mysql.test.js",
+      "test/integration/network-heartbeat.test.js",
+      "test/integration/pubsub.test.js",
+      "test/integration/websocket-permessage-deflate.test.js",
+      "test/integration/ws-client-roundtrip.test.js",
+      "test/layer-0-primitives/a2a.test.js",
+      "test/layer-0-primitives/agent-event-bus.test.js",
+      "test/layer-0-primitives/agent-idempotency.test.js",
+      "test/layer-0-primitives/agent-snapshot.test.js",
+      "test/layer-0-primitives/api-encrypt.test.js",
+      "test/layer-0-primitives/app-shutdown.test.js",
+      "test/layer-0-primitives/audit-segregation.test.js",
+      "test/layer-0-primitives/break-glass.test.js",
+      "test/layer-0-primitives/config.test.js",
+      "test/layer-0-primitives/daily-byte-quota.test.js",
+      "test/layer-0-primitives/dsr.test.js",
+      "test/layer-0-primitives/external-db-routing.test.js",
+      "test/layer-0-primitives/guard-csv.test.js",
+      "test/layer-0-primitives/http-client-cache.test.js",
+      "test/layer-0-primitives/log-stream-cloudwatch.test.js",
+      "test/layer-0-primitives/log-stream-otlp-grpc.test.js",
+      "test/layer-0-primitives/middleware-compose-pipeline.test.js",
+      "test/layer-0-primitives/network-dns-resolver.test.js",
+      "test/layer-0-primitives/network-heartbeat-passive.test.js",
+      "test/layer-0-primitives/network.test.js",
+      "test/layer-0-primitives/notify.test.js",
+      "test/layer-0-primitives/observability-tracing.test.js",
+      "test/layer-0-primitives/promise-pool.test.js",
+      "test/layer-0-primitives/pubsub.test.js",
+      "test/layer-0-primitives/queue-flow-repeat.test.js",
+      "test/layer-0-primitives/require-auth-cache-control.test.js",
+      "test/layer-0-primitives/retry.test.js",
+      "test/layer-0-primitives/safe-async-parallel.test.js",
+      "test/layer-0-primitives/scim-server.test.js",
+      "test/layer-0-primitives/sse.test.js",
+      "test/layer-0-primitives/vault-seal-pem-file.test.js",
+      "test/layer-0-primitives/webhook.test.js",
+      "test/integration/log-stream.test.js",
+      "test/integration/object-store-sigv4.test.js",
+      "test/integration/queue-redis.test.js",
+      "test/layer-0-primitives/log-stream-otlp.test.js",
+      "test/layer-0-primitives/mail-greylist.test.js",
+      "test/layer-0-primitives/safe-async-loops.test.js",
+      "test/layer-0-primitives/watcher.test.js",
+      "test/layer-0-primitives/websocket-channels.test.js",
+      "test/layer-0-primitives/ws-client.test.js",
+      "test/layer-1-state/api-key.test.js",
+    ],
+    reason: "CLAUDE.md §11b — every 'test passes alone, fails under SMOKE_PARALLEL=64' flake (macOS watcher, log-stream-otlp, safe-async-loops, rate-limit-cluster, sandbox flake) is the same root cause: a fixed-budget setTimeout sleep that's too short for runner-contention reality. `helpers.waitUntil(predicate, opts?)` polls the actual condition every 25ms up to a 5000ms cap, exiting early when the predicate returns truthy. Fast platforms finish in milliseconds; contended platforms get the full budget. Allowlist is the v0.10.14 migration backlog — every entry is a release-gate countdown, drained as test owners touch the file.",
+  },
+
+  {
+    // v0.10.15 — gunzip-without-output-size-cap detector caught the
+    // gzip / brotli families but missed `zlib.inflate*` and
+    // `zlib.unzip*`. The bomb class is identical: a kilobyte of
+    // compressed input that explodes to gigabytes of output. Detector
+    // extends the same shape — match the call form, require the
+    // bounding opt to appear somewhere in the same file.
+    id: "inflate-unzip-without-output-size-cap",
+    primitive: "zlib.inflateSync(buf, { maxOutputLength }) — same defense as gunzip; the inflate / inflateRaw / unzip family is the same RFC 1951 (deflate) bomb class",
+    regex: /\bzlib\.(?:inflateSync|inflateRawSync|unzipSync|createInflate|createInflateRaw|createUnzip)\s*\(/,
+    requires: /\bmaxOutputLength\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Completes the v0.10.15 gunzip-cap detector. RFC 1951 deflate (the algorithm under gzip + zlib + raw inflate + unzip) has the same amplification class as gzip — inflate/inflateRaw/unzip without a cap is equally exploitable. Operators using `zlib.inflateSync` for HTTP `Content-Encoding: deflate` bodies or RFC 1950 zlib streams MUST pass `maxOutputLength`.",
+  },
+
+  {
+    // v0.11.3 audit found: the existing `map-has-then-set-pre-node-26`
+    // detector catches the literal `if (!M.has(k))` shape but misses
+    // the semantically-identical `if (!M.get(k))` and `if (M.get(k)
+    // === undefined)` variants — same race window, same bug class,
+    // same Node-26 getOrInsertComputed migration target. This entry
+    // closes those variants.
+    id: "map-get-falsy-then-set-pre-node-26",
+    primitive: "Node 26 `Map.prototype.getOrInsertComputed(key, factory)` collapses falsy-check + insert into one atomic call",
+    regex: /if\s*\(\s*(?:!\s*\w+\.get\s*\([^)]+\)|\w+\.get\s*\([^)]+\)\s*===\s*(?:undefined|null))\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Companion to map-has-then-set-pre-node-26 — same Node 26 getOrInsertComputed migration target, captures the `!M.get(k)` / `M.get(k) === undefined|null` syntactic variants. v0.11.3 audit identified the original map-has-then-set detector as bypassable by switching `.has(k)` to `.get(k)` falsy-check; this entry closes that gap.",
+  },
+
+  {
+    // CodeQL js/file-system-race — every TOCTOU shape that v0.9.18 +
+    // v0.9.23 had to sweep across rename passes. The CodeQL action
+    // catches it post-merge; this detector catches it pre-push. Shape:
+    //   if (fs.existsSync(p) || fs.statSync(p)) { fs.readFile*(p, ...) }
+    // Between the existence/stat check and the read, an attacker can
+    // swap the file for a symlink (TOCTOU). The framework's
+    // `lib/atomic-file.js` opens-by-fd as the canonical safe-read.
+    id: "fs-existssync-then-read-toctou",
+    primitive: "open-by-fd first, then operate on the fd; never check-then-read against the same path (CodeQL js/file-system-race)",
+    regex: /\bfs\.(?:existsSync|statSync|lstatSync)\s*\(\s*(\w+)\s*\)[\s\S]{0,400}?\bfs\.(?:readFile|readFileSync|open|openSync|createReadStream|writeFile|writeFileSync)\s*\(\s*\1\b/,
+    skipCommentLines: true,
+    allowlist: [
+      // The canonical safe-read primitive — its job IS the existsSync-
+      // then-read pattern, performed correctly via fd-first internally.
+      // The detector matches the surface shape; the file's discipline
+      // is verified at code-review time.
+      "lib/atomic-file.js",
+    ],
+    reason: "CodeQL js/file-system-race class. v0.9.18 swept 6 sites; v0.9.23 swept 14 more after v0.9.15's rename pass reintroduced the shape across renamed files. The defense is open-by-fd first (then operate on the fd), never `existsSync + readFile` against the same path — between the check and the read, an attacker can swap the file for a symlink and read arbitrary content. `lib/atomic-file.js` is the canonical implementation.",
+  },
+
+  {
+    // Auth-bearing byte coercion — v0.10.3 fixed `Buffer.from(String(x),
+    // 'utf8')` at b.crypto.timingSafeEqual but the same shape exists
+    // at ~31 other sites, ~10 auth-bearing (audit-sign / break-glass /
+    // keychain / argon2 / vault / agent-tenant). The bug: `String(x)`
+    // accepts arbitrary objects via `toString()`, which a prototype-
+    // pollution-influenced caller can redirect through attacker-chosen
+    // bytes. Detector flags `Buffer.from(String(x))` in files whose
+    // path names an auth-bearing module — the operator-side discipline
+    // is to refuse non-Buffer/non-string explicitly on auth paths.
+    id: "buffer-from-string-on-auth-path",
+    primitive: "Buffer.from(x, 'utf8') when x is a string; refuse non-Buffer/non-string explicitly on auth paths — never `Buffer.from(String(x))`",
+    regex: /\bBuffer\.from\s*\(\s*String\s*\(/,
+    // Restrict to lib/ files where auth posture matters. The detector
+    // declares "any file matching the regex anywhere in lib/" — the
+    // allowlist below pins the non-auth file paths that legitimately
+    // coerce display-strings (logging, render, prose-bound) so the
+    // bare-string-bytes shape is fine.
+    skipCommentLines: true,
+    allowlist: [
+      // ===== PR-3 migration backlog (auth-bearing — `b.safeBytes` target) =====
+      // These sites coerce auth-influencing material via String(x).
+      // PR 3 introduces `b.safeBytes(x, { ctx, auth: true })` which
+      // refuses non-Buffer/non-string on auth paths; each entry below
+      // is migrated in that PR's commit, removed from the allowlist
+      // in the same diff, and the detector enforces post-migration.
+      "lib/agent-tenant.js",            // tenant cryptoField plaintext
+      "lib/argon2-builtin.js",          // password-hash message bytes
+      "lib/audit-sign.js",              // audit-chain signature payload
+      "lib/break-glass.js",             // break-glass plaintext bytes
+      "lib/dbsc.js",                    // DBSC binding-assertion nonce input
+      "lib/keychain.js",                // OS-keychain passphrase / stdin
+      "lib/vault-aad.js",               // vault AAD bytes
+      "lib/vault/wrap.js",              // vault wrap passphrase
+      "lib/cms-codec.js",               // CMS SignedData signed-attrs encoding
+      "lib/auth-header.js",             // Authorization header parse path
+
+      // ===== Non-auth coercion (structural, stays in the allowlist) =====
+      // These sites bind display-strings / wire-format material / log
+      // bytes / serialization where String() coercion is the intended
+      // identity transform (not attacker-influenced auth material).
+      "lib/bundler.js",                  // SEA bundler — source-text bytes
+      "lib/crypto-hpke-pq.js",           // HPKE `info` bytes (operator-side)
+      "lib/crypto-hpke.js",              // HPKE `info` bytes (operator-side)
+      "lib/daemon.js",                   // daemon log-path bytes
+      "lib/gate-contract.js",            // guard-contract canonical-form
+      "lib/http-client.js",              // request-body string encoding
+      "lib/mail.js",                     // RFC 822 message bytes encoding
+      "lib/middleware/compression.js",   // response body encoding
+      "lib/middleware/idempotency-key.js",// canonical-form encoding (not auth bytes)
+      "lib/protobuf-encoder.js",         // protobuf field serialization
+      "lib/redis-client.js",             // RESP wire-format encoding
+      "lib/self-update.js",              // update-manifest hash material (post-verify)
+      "lib/websocket.js",                // WS frame payload bytes (non-auth)
+      "lib/crypto.js",                   // remaining call sites are log-fingerprint format
+      "lib/log.js",                      // log-formatting level/component bytes
+    ],
+    reason: "v0.10.3 fixed `b.crypto.timingSafeEqual` to refuse non-Buffer/non-string (the prototype-pollution-influenced caller can redirect through attacker-chosen bytes via `String(x)` coercion). The same shape exists at ~23 sibling sites; ~10 are auth-bearing and become `b.safeBytes` migration targets in PR 3. Detector forces the discipline: any new `Buffer.from(String(...))` in lib/ MUST be explicitly allowlisted with a non-auth justification OR routed through `b.safeBytes` when PR 3 lands. The allowlist's two sections separate the migration backlog (auth-bearing) from structurally-fine sites (display/serialization).",
+  },
+
 ];
 
 // @example placeholder detection lives in
@@ -7353,12 +7576,26 @@ function testKnownAntipatterns() {
   // Fires at n=1 — any file matching a registered antipattern (and not
   // in its allowlist) fails the gate with a pointer to the primitive
   // that should replace it.
-  var files = _libFiles();
+  //
+  // Per-entry `scanScope` selects the file set:
+  //   - "lib"  (default) — every .js under lib/ except lib/vendor/
+  //   - "test" — every .test.js under test/ (and non-_-prefixed helpers/).
+  //              The CLAUDE.md §11b waitUntil-vs-setTimeout rule runs
+  //              here; lib-side detectors should NOT scan tests.
+  var libFiles  = _libFiles();
+  var testFiles = null;                                                              // lazy: most detectors are lib-scoped
   var allBad = [];
   for (var ai = 0; ai < KNOWN_ANTIPATTERNS.length; ai++) {
     var ap = KNOWN_ANTIPATTERNS[ai];
     var allowSet = Object.create(null);
     for (var k = 0; k < ap.allowlist.length; k++) allowSet[ap.allowlist[k]] = true;
+    var files;
+    if (ap.scanScope === "test") {
+      if (testFiles === null) testFiles = _testFiles();
+      files = testFiles;
+    } else {
+      files = libFiles;
+    }
     var bad = [];
     for (var fi = 0; fi < files.length; fi++) {
       var rel = _relPath(files[fi]);
