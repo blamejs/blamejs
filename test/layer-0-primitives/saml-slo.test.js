@@ -9,6 +9,7 @@ var helpers = require("../helpers");
 var check = helpers.check;
 var b = helpers.b;
 var pq = require("../../lib/pqc-software");
+var nodeCrypto = require("node:crypto");
 
 function _newSp() {
   return b.auth.saml.sp.create({
@@ -158,9 +159,71 @@ function testBuildLogoutRequestBadAlg() {
   var threw = null;
   try {
     sp.buildLogoutRequest({ nameId: "x", sessionIndex: "_s",
+      signingKey: kp.secretKey, signingAlg: "not-a-real-alg" });
+  } catch (e) { threw = e.code; }
+  check("unknown signingAlg refused", threw === "auth-saml/bad-signing-alg");
+}
+
+function testRoundtripSignedRsaSha256() {
+  // Classical RSA-SHA-256 — interop with deployed IdPs (ADFS / Azure AD /
+  // Okta / Keycloak / OneLogin) that haven't moved to PQC. The SP
+  // signs the SAMLRequest and parses it back through the matching
+  // public-key path; signature verification must round-trip.
+  var sp = _newSp();
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                    // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var skPem = kp.privateKey.export({ type: "pkcs8", format: "pem" });
+  var pkPem = kp.publicKey.export({ type: "spki", format: "pem" });
+  var lr = sp.buildLogoutRequest({
+    nameId: "alice", sessionIndex: "_s",
+    signingKey: skPem, signingAlg: "rsa-sha256",
+  });
+  check("classical rsa-sha256 SAML req signed",
+    lr.redirectUrl.indexOf("Signature=") !== -1);
+  check("classical rsa-sha256 SAML SigAlg is W3C XMLDSig URI",
+    lr.redirectUrl.indexOf("SigAlg=" + encodeURIComponent("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256")) !== -1);
+  var query = _stripQuery(lr.redirectUrl);
+  var b64 = _samlReq(query);
+  var parsed = sp.parseLogoutRequest(b64, {
+    idpVerifyKey: pkPem, idpVerifyAlg: "rsa-sha256", queryString: query,
+  });
+  check("classical rsa-sha256 SAML req round-trips",
+    parsed.id === lr.id && parsed.nameId === "alice");
+}
+
+function testRoundtripSignedEcdsaSha256() {
+  // Classical ECDSA-P256 + SHA-256 — used by some Azure AD deployments
+  // and the Okta "Sign SAML with EC key" feature.
+  var sp = _newSp();
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var skPem = kp.privateKey.export({ type: "pkcs8", format: "pem" });
+  var pkPem = kp.publicKey.export({ type: "spki", format: "pem" });
+  var lr = sp.buildLogoutRequest({
+    nameId: "alice", sessionIndex: "_s",
+    signingKey: skPem, signingAlg: "ecdsa-sha256",
+  });
+  check("classical ecdsa-sha256 SAML req signed",
+    lr.redirectUrl.indexOf("Signature=") !== -1);
+  var query = _stripQuery(lr.redirectUrl);
+  var b64 = _samlReq(query);
+  var parsed = sp.parseLogoutRequest(b64, {
+    idpVerifyKey: pkPem, idpVerifyAlg: "ecdsa-sha256", queryString: query,
+  });
+  check("classical ecdsa-sha256 SAML req round-trips",
+    parsed.id === lr.id && parsed.nameId === "alice");
+}
+
+function testBuildLogoutRequestSha1Refused() {
+  // SHA-1 stays refused under both `rsa-sha1` and the equivalent
+  // XMLDSig URI — CVE-2017-7525-class. Operators upgrade the IdP
+  // digest algorithm to SHA-256+ rather than relax framework defense.
+  var sp = _newSp();
+  var kp = pq.ml_dsa_65.keygen();
+  var threw = null;
+  try {
+    sp.buildLogoutRequest({ nameId: "x", sessionIndex: "_s",
       signingKey: kp.secretKey, signingAlg: "rsa-sha1" });
   } catch (e) { threw = e.code; }
-  check("non-PQC signingAlg refused", threw === "auth-saml/bad-signing-alg");
+  check("rsa-sha1 signingAlg refused", threw === "auth-saml/bad-signing-alg");
 }
 
 function run() {
@@ -168,12 +231,15 @@ function run() {
   testBuildLogoutRequestSignedMlDsa65();
   testRoundtripSignedMlDsa65();
   testRoundtripSignedMlDsa87();
+  testRoundtripSignedRsaSha256();
+  testRoundtripSignedEcdsaSha256();
   testWrongKeyRefused();
   testFlippedSignatureRefused();
   testMissingSignatureRefused();
-  testBuildLogoutResponse();
   testBuildLogoutRequestBadSigningKey();
   testBuildLogoutRequestBadAlg();
+  testBuildLogoutRequestSha1Refused();
+  testBuildLogoutResponse();
 }
 
 if (require.main === module) {

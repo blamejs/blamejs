@@ -60,6 +60,46 @@ function testFedcmIdAssertion() {
   check("missing token refused", threw === "fedcm/missing-token");
 }
 
+function testFedcmClientMetadata() {
+  var resp = b.fedcm.clientMetadataResponse({
+    privacy_policy_url:   "https://rp.example/privacy",
+    terms_of_service_url: "https://rp.example/tos",
+  });
+  check("clientMetadataResponse echoes URLs",
+    resp.privacy_policy_url === "https://rp.example/privacy" &&
+    resp.terms_of_service_url === "https://rp.example/tos");
+  var threw = null;
+  try {
+    b.fedcm.clientMetadataResponse({
+      privacy_policy_url:   "http://insecure",
+      terms_of_service_url: "https://rp.example/tos",
+    });
+  } catch (e) { threw = e.code; }
+  check("non-https privacy_policy_url refused", threw === "fedcm/bad-privacy-url");
+}
+
+function testFedcmDisconnect() {
+  var resp = b.fedcm.disconnectResponse({ account_id: "1234" });
+  check("disconnectResponse echoes account_id", resp.account_id === "1234");
+  var threw = null;
+  try { b.fedcm.disconnectResponse({}); }
+  catch (e) { threw = e.code; }
+  check("missing account_id refused", threw === "fedcm/missing-account-id");
+}
+
+function testFedcmErrorClass() {
+  // Surface the error class for catch-binding patterns.
+  check("FedcmError is a class", typeof b.fedcm.FedcmError === "function");
+  var e = new b.fedcm.FedcmError("fedcm/test", "synthetic");
+  check("FedcmError instances carry code", e.code === "fedcm/test");
+}
+
+function testDbscErrorClass() {
+  check("DbscError is a class", typeof b.dbsc.DbscError === "function");
+  var e = new b.dbsc.DbscError("dbsc/test", "synthetic");
+  check("DbscError instances carry code", e.code === "dbsc/test");
+}
+
 // ---- DBSC ----
 
 function _newSecret() { return nodeCrypto.randomBytes(32); }
@@ -157,6 +197,10 @@ function run() {
   testFedcmConfig();
   testFedcmAccounts();
   testFedcmIdAssertion();
+  testFedcmClientMetadata();
+  testFedcmDisconnect();
+  testFedcmErrorClass();
+  testDbscErrorClass();
   testDbscChallengeRoundtrip();
   testDbscChallengeWrongSecret();
   testDbscChallengeExpired();

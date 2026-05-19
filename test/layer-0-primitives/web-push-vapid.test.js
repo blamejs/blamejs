@@ -99,6 +99,33 @@ function testRefusesNonEcdsaKey() {
   check("RSA key refused (VAPID requires ECDSA-P256)", threw === "web-push/bad-key");
 }
 
+function testEncryptShape() {
+  // Generate a real recipient ECDH-P256 keypair to seed a subscription.
+  var nodeCrypto = require("node:crypto");
+  var ecdh = nodeCrypto.createECDH("prime256v1");
+  ecdh.generateKeys();
+  var p256dh = ecdh.getPublicKey().toString("base64url");                                          // 65-byte uncompressed
+  var auth   = nodeCrypto.randomBytes(16).toString("base64url");                                   // allow:raw-byte-literal — RFC 8291 §3.2 16-byte auth_secret
+  var e = b.webPush.encrypt({
+    subscription: { endpoint: "https://push.example/x", keys: { p256dh: p256dh, auth: auth } },
+    payload: "hello",
+  });
+  check("encrypt returns body bytes",
+    Buffer.isBuffer(e.body) && e.body.length > 0);
+  check("encrypt body starts with 16-byte salt + 4-byte rs + 1-byte idlen + 65-byte ephPub",
+    e.body.length > 86);                                                                            // allow:raw-byte-literal — RFC 8188 header floor
+  check("encrypt sets Content-Encoding: aes128gcm",
+    e.headers && e.headers["Content-Encoding"] === "aes128gcm");
+  check("encrypt sets TTL header",
+    typeof e.headers.TTL === "string" && /^\d+$/.test(e.headers.TTL));
+}
+
+function testWebPushErrorClass() {
+  check("WebPushError exported", typeof b.webPush.WebPushError === "function");
+  var e = new b.webPush.WebPushError("web-push/test", "synthetic");
+  check("WebPushError carries code", e.code === "web-push/test");
+}
+
 function run() {
   testGenerateKeypairShape();
   testBuildAuthHeaderShape();
@@ -106,6 +133,8 @@ function run() {
   testRefusesBadContact();
   testRefusesBadEndpoint();
   testRefusesNonEcdsaKey();
+  testEncryptShape();
+  testWebPushErrorClass();
 }
 
 if (require.main === module) {
