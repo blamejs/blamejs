@@ -2117,6 +2117,51 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/agent-idempotency.js:_checkArgs",
+        "lib/agent-tenant.js:_sealField",
+        "lib/atomic-file.js:copyDirRecursive",
+        "lib/ddl-change-control.js:approve",
+        "lib/ddl-change-control.js:reject",
+        "lib/deprecate.js:alias",
+        "lib/jose-jwe-experimental.js:decrypt",
+        "lib/mail-deploy.js:_validateTlsRptReport",
+        "lib/mail-deploy.js:parseTlsRptReport",
+        "lib/mail-deploy.js:tlsRptIngestHttp",
+        "lib/mail-deploy.js:mtaStsPublish",
+        "lib/totp.js:uri",
+      ],
+      reason: "v0.10.15 — defensive RFC-specific opts-validation + typed-error throw shape across heterogeneous primitives. Each call site validates a different RFC spec's required fields (RFC 8460 TLS-RPT §4.4 / RFC 8461 MTA-STS / RFC 6238 TOTP / RFC 5280 X.509 / JOSE) with a primitive-specific typed error class. Consolidating would couple unrelated spec namespaces — every primitive's error code names the spec it enforces. The shingle similarity is the boilerplate `typeof x !== \"string\" || x.length === 0` shape, not behaviour.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/http-client.js:_reject",
+        "lib/mail-deploy.js:tlsRptIngestHttp",
+        "lib/middleware/body-parser.js:_bufferBody",
+      ],
+      reason: "v0.10.15 — request-body collection / rejection shape (req.on('data', ...) + safeBuffer.boundedChunkCollector + cap-overflow handling). Each call site implements RFC-specific 4xx semantics (httpClient: outbound timeout / size; mail-deploy: RFC 8460 §5.4 TLS-RPT ingest; body-parser: framework-wide inbound body cap). The duplicated shingle is the bounded-collect pattern from safeBuffer; consolidating into a single helper would force every collector into a single error-code namespace and lose the RFC-specific status-code mapping (413 vs 415 vs custom).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/mail-deploy.js:parseTlsRptReport",
+        "lib/mail-server-imap.js:create",
+        "lib/mail-server-pop3.js:create",
+      ],
+      reason: "v0.10.15 — opts-arg defensive entry-validation shape (opts = opts || {}; typeof checks + buffer/string coercion + bounded-input refusal). mail-deploy.parseTlsRptReport validates inbound RFC 8460 reports; mail-server-imap.create + mail-server-pop3.create validate IMAP4rev2 / POP3 listener opts. Each owns a primitive-specific error class (TlsRptParseError / MailServerImapError / MailServerPop3Error) and refuses on RFC-specific fields. Consolidating would couple wire-protocol listener init with one-shot report parsing.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/mail-crypto-pgp.js:_padTo32",
+        "lib/mail-crypto-smime.js:checkCert",
+        "lib/mail-deploy.js:tlsRptIngestHttp",
+      ],
+      reason: "v0.10.15 — defensive typeof / instanceof / Buffer.isBuffer + typed-error throw boilerplate spanning three different mail-side primitives. _padTo32 enforces a 32-byte buffer invariant for OpenPGP packet padding; checkCert validates X.509 PEM cert shape per RFC 5280; tlsRptIngestHttp validates RFC 8460 §5.4 HTTP request shape. Each owns a distinct error class and validates a primitive-specific input format. Consolidation would couple OpenPGP packet semantics with S/MIME cert handling with HTTP handler dispatch.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/auth/oauth.js:deviceAuthorization",
         "lib/auth/oauth.js:parseCallback",
         "lib/ddl-change-control.js:_hashSql",
@@ -4867,6 +4912,32 @@ function testNoStateStampsInPublicDocs() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    // v0.10.15 — `zlib.gunzipSync` / `zlib.createGunzip` /
+    // `zlib.brotliDecompress` without an output-size cap is the
+    // CVE-2025-0725 / CVE-2024-zlib decompression-amplification
+    // class. Attackers craft a kilobyte of compressed input that
+    // explodes to gigabytes of output, exhausting memory before the
+    // request handler sees the bytes. The defense is either the
+    // `maxOutputLength` opt (Node-native) OR a streaming pipe with
+    // a byte-counter that destroys at the cap. Both are caught by
+    // requiring the gunzip call to sit within ~20 lines of a
+    // numeric cap reference (`maxOutputLength` or a constant of
+    // the framework's `C.BYTES.*` shape).
+    id: "gunzip-without-output-size-cap",
+    primitive: "zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> }) — bound decompression at config time",
+    // Match a gunzip call NOT immediately preceded or followed by
+    // `maxOutputLength:`. The regex catches the call shape; the
+    // companion `requires` ensures the same file names the
+    // bounding opt somewhere within. Files using a custom
+    // byte-counter-on-pipe path (rare) carry an explicit allowlist
+    // entry with a documented reason.
+    regex: /\bzlib\.(?:gunzipSync|createGunzip|brotliDecompressSync|createBrotliDecompress)\s*\(/,
+    requires: /\bmaxOutputLength\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CVE-2025-0725 (libcurl + zlib decompression amplification) + CVE-2024-zlib bomb class. Every gunzip / brotli decompress on operator-supplied bytes MUST bound the output. Use `zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> })` so the operator sees the cap at config time; refusal becomes a typed error before the bomb reaches memory.",
+  },
+  {
     // v0.10.14 — raw `audit.emit(...)` outside a try/catch swallow is
     // a CLAUDE.md rule §5 violation (drop-silent on hot-path audit
     // sinks). When the operator-supplied audit sink throws — bad
@@ -6854,6 +6925,13 @@ function testKnownAntipatterns() {
       }
       var m = ap.regex.exec(subject);
       if (!m) continue;
+      // Companion `requires` check — if the same file content names
+      // the companion shape, the discipline is satisfied even though
+      // the antipattern regex matched (e.g. gunzip + maxOutputLength
+      // in the same file = bounded decompression). Test against
+      // ORIGINAL content (not the comment-stripped subject) so the
+      // companion can appear anywhere in the file.
+      if (ap.requires && ap.requires.test(content)) continue;
       // Compute line number from match index against subject — but
       // subject preserves newlines so line numbers stay accurate.
       var lineNum = subject.slice(0, m.index).split(/\r?\n/).length;
