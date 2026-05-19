@@ -6374,6 +6374,12 @@ var KNOWN_ANTIPATTERNS = [
       // The catalog itself carries fragments of the bug pattern as
       // regex literals inside KNOWN_ANTIPATTERNS entries.
       "test/layer-0-primitives/codebase-patterns.test.js",
+      // audit-use-store.test.js uses `new Promise(resolve =>
+      // setTimeout(resolve, 250))` as the canonical "slow operator
+      // callback" simulator to verify b.audit.useStore's
+      // shadow-timeout posture. Not a condition-wait use; the
+      // setTimeout IS the simulated latency itself.
+      "test/layer-0-primitives/audit-use-store.test.js",
 
       // ===== Migration backlog (drains as test owners touch) =====
       // Removed from this list alongside the helpers.waitUntil
@@ -6542,6 +6548,33 @@ var KNOWN_ANTIPATTERNS = [
       "lib/log.js",                      // log-formatting level/component bytes
     ],
     reason: "v0.10.3 fixed `b.crypto.timingSafeEqual` to refuse non-Buffer/non-string (the prototype-pollution-influenced caller can redirect through attacker-chosen bytes via `String(x)` coercion). The same shape exists at ~23 sibling sites; ~10 are auth-bearing and become `b.safeBytes` migration targets in PR 3. Detector forces the discipline: any new `Buffer.from(String(...))` in lib/ MUST be explicitly allowlisted with a non-auth justification OR routed through `b.safeBytes` when PR 3 lands. The allowlist's two sections separate the migration backlog (auth-bearing) from structurally-fine sites (display/serialization).",
+  },
+
+  {
+    // v0.11.4 (Codex P1 on PR #109) — operator-supplied async callback
+    // awaited inline on the audit critical path can hang indefinitely.
+    // `b.audit.useStore({ record })` registered the operator's
+    // `record(row)` to be called after every chain.append; the
+    // original implementation `await _externalStore.record(appended)`
+    // would never return if the operator's callback never resolved
+    // AND never rejected (stalled network calls are the typical
+    // shape). The fix wraps the await in `safeAsync.withTimeout` so
+    // a hang converts to an `audit.shadow_timeout` observability
+    // event and the framework chain row commits normally.
+    //
+    // Detector class: any operator-supplied async callback awaited on
+    // the audit / session / observability / hot-path layers MUST be
+    // bounded by `safeAsync.withTimeout`. Scoped narrowly to known
+    // operator-callback variable shapes (`_externalStore`, `_userStore`,
+    // future operator-supplied callback indirections) so legitimate
+    // framework-internal awaits aren't flagged.
+    id: "external-callback-await-without-timeout",
+    primitive: "safeAsync.withTimeout(externalCb(...), TIMEOUT_MS, { name: '...' }) — operator-supplied callbacks MUST be bounded; hot-path audit/session/observability paths can hang indefinitely otherwise (CLAUDE.md rule §5)",
+    regex: /await\s+_external(?:Store|Sink|Cb|Callback|Hook)\b/,
+    requires: /safeAsync\.withTimeout|withTimeout\s*\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.11.4 PR #109 — b.audit.useStore({ record }) inlined await on operator-supplied callback. A stalled network call neither resolves nor rejects ⇒ b.audit.record() never returns, emit/safeEmit drains stall behind it, contradicting the rule §5 drop-silent posture. Defense: wrap every external-callback await in safeAsync.withTimeout. Detector catches future operator-supplied async hooks on the same shape (_externalStore / _userStore / _externalSink / _externalCb / _externalCallback / _externalHook).",
   },
 
 ];
