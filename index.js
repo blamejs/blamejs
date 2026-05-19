@@ -384,6 +384,7 @@ var importmapIntegrity = require("./lib/importmap-integrity");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
+var hal = require("./lib/hal");
 
 module.exports = {
   crypto:           crypto,
@@ -396,6 +397,7 @@ module.exports = {
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,
+  hal:              hal,
   router:           router,
   constants:        constants,
   vault:            vault,
