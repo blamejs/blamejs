@@ -380,6 +380,7 @@ var streamThrottle = require("./lib/stream-throttle");
 var webPush = require("./lib/web-push-vapid");
 var fedcm = require("./lib/fedcm");
 var dbsc = require("./lib/dbsc");
+var importmapIntegrity = require("./lib/importmap-integrity");
 
 module.exports = {
   crypto:           crypto,
@@ -388,6 +389,7 @@ module.exports = {
   webPush:          webPush,
   fedcm:            fedcm,
   dbsc:             dbsc,
+  importmapIntegrity: importmapIntegrity,
   router:           router,
   constants:        constants,
   vault:            vault,
