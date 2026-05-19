@@ -381,6 +381,7 @@ var webPush = require("./lib/web-push-vapid");
 var fedcm = require("./lib/fedcm");
 var dbsc = require("./lib/dbsc");
 var importmapIntegrity = require("./lib/importmap-integrity");
+var standardWebhooks = require("./lib/standard-webhooks");
 
 module.exports = {
   crypto:           crypto,
@@ -390,6 +391,7 @@ module.exports = {
   fedcm:            fedcm,
   dbsc:             dbsc,
   importmapIntegrity: importmapIntegrity,
+  standardWebhooks: standardWebhooks,
   router:           router,
   constants:        constants,
   vault:            vault,
