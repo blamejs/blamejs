@@ -4914,6 +4914,19 @@ function testNoStateStampsInPublicDocs() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    // v0.10.16 (Codex P2 on v0.10.15 PR #104) — `Number(x) || 0`
+    // coercion of an operator-untrusted JSON-source numeric field.
+    // Silently accepts Infinity / NaN / negative / arbitrary
+    // strings. Detector scoped to: `Number(` + kebab-cased bracket-
+    // access (JSON-spec key convention per RFC 8460 / 7489) + `|| 0`.
+    id: "number-coerce-or-zero-on-json-source",
+    primitive: "validate finite non-negative integer explicitly; never silently coerce JSON-source untrusted numerics with `Number(x) || 0`",
+    regex: /Number\s*\(\s*\w+\s*\[\s*["'][^"']*-[^"']*["']\s*\]\s*\)\s*\|\|\s*0\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P2 on v0.10.15 PR #104 flagged Number(summary['total-successful-session-count']) || 0 — silently accepted Infinity / NaN / negative on an audit-emitted summed path. Detector forces explicit validation discipline on new code.",
+  },
+  {
     // v0.10.15 — `zlib.gunzipSync` / `zlib.createGunzip` /
     // `zlib.brotliDecompress` without an output-size cap is the
     // CVE-2025-0725 / CVE-2024-zlib decompression-amplification
