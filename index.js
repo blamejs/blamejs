@@ -383,6 +383,7 @@ var dbsc = require("./lib/dbsc");
 var importmapIntegrity = require("./lib/importmap-integrity");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
+var jsonApi = require("./lib/jsonapi");
 
 module.exports = {
   crypto:           crypto,
@@ -394,6 +395,7 @@ module.exports = {
   importmapIntegrity: importmapIntegrity,
   standardWebhooks: standardWebhooks,
   lro:              lro,
+  jsonApi:          jsonApi,
   router:           router,
   constants:        constants,
   vault:            vault,
