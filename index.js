@@ -385,10 +385,12 @@ var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
 var hal = require("./lib/hal");
+var csp = require("./lib/csp");
 
 module.exports = {
   crypto:           crypto,
   cms:              cmsCodec,
+  csp:              csp,
   streamThrottle:   streamThrottle,
   webPush:          webPush,
   fedcm:            fedcm,
