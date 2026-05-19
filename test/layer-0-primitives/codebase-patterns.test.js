@@ -6593,6 +6593,24 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // v0.11.6 — direct `/proc/self/mountinfo` reads in lib/ MUST route
+    // through `b.safeMountInfo` instead. The primitive centralizes the
+    // field-4 ("root within source FS") parse discipline that the
+    // existing `mountinfo-options-bind-check` detector exists to
+    // protect — without "must compose" enforcement a new caller can
+    // re-derive the parse inline and re-introduce the wrong-field bug.
+    id: "mountinfo-not-via-safemountinfo",
+    primitive: "b.safeMountInfo.read() / .bestMatch() / .isBindMount() — composes the canonical field-4 parser + bind-mount predicate; raw `nodeFs.readFileSync(\"/proc/self/mountinfo\", ...)` in lib/ bypasses the discipline",
+    regex: /\b(?:fs|nodeFs)\.readFile(?:Sync)?\s*\(\s*["']\/proc\/self\/mountinfo["']/,
+    skipCommentLines: true,
+    allowlist: [
+      // The primitive itself — canonical reader.
+      "lib/safe-mount-info.js",
+    ],
+    reason: "v0.11.6 — `b.safeMountInfo` centralizes the field-4 parse discipline. Bind-mount detection MUST consult field 4 ('root within source FS'); ad-hoc parsers that scan options for the word 'bind' miss the truth (kernel doesn't emit 'bind' as an option). Direct `/proc/self/mountinfo` reads in new lib/ code bypass the primitive and risk re-deriving the wrong-field parse.",
+  },
+
+  {
     // v0.11.5 (Codex P1 on PR #110) — `safeDecompress` defaults
     // `maxCompressedBytes` to 4 MiB. When a caller's `maxOutputBytes`
     // is operator-configurable (and may exceed 4 MiB — large WS
@@ -7915,6 +7933,9 @@ function testSafeGuardHasMustComposeDetector() {
     // `unzip*` / `brotli*` in lib/ via the
     // `zlib-decompress-not-via-safedecompress` antipattern.
     "lib/safe-decompress.js": "safeDecompress",
+    // v0.11.6 — replaces direct `/proc/self/mountinfo` reads in lib/
+    // via the `mountinfo-not-via-safemountinfo` antipattern.
+    "lib/safe-mount-info.js": "safeMountInfo",
   };
 
   var antipatternCorpus = KNOWN_ANTIPATTERNS.map(function (ap) {

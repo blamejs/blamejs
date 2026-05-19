@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.5",
-  "createdAt": "2026-05-19T19:52:05.185Z",
+  "frameworkVersion": "0.11.6",
+  "createdAt": "2026-05-19T23:15:10.189Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -43506,6 +43506,35 @@
         "walk": {
           "type": "function",
           "arity": 2
+        }
+      }
+    },
+    "safeMountInfo": {
+      "type": "object",
+      "members": {
+        "DEFAULT_PATH": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "SafeMountInfoError": {
+          "type": "function",
+          "arity": 4
+        },
+        "bestMatch": {
+          "type": "function",
+          "arity": 2
+        },
+        "isBindMount": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 2
+        },
+        "read": {
+          "type": "function",
+          "arity": 1
         }
       }
     },

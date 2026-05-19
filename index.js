@@ -119,6 +119,7 @@ var safeSql = require("./lib/safe-sql");
 var chainWriter = require("./lib/chain-writer");
 var safeBuffer = require("./lib/safe-buffer");
 var safeDecompress = require("./lib/safe-decompress").safeDecompress;
+var safeMountInfo = require("./lib/safe-mount-info");
 var lazyRequire = require("./lib/lazy-require");
 var frameworkError = require("./lib/framework-error");
 var nistCrosswalk = require("./lib/nist-crosswalk");
@@ -456,6 +457,7 @@ module.exports = {
   chainWriter:      chainWriter,
   safeBuffer:       safeBuffer,
   safeDecompress:   safeDecompress,
+  safeMountInfo:    safeMountInfo,
   lazyRequire:      lazyRequire,
   frameworkError:   frameworkError,
   httpClient:       httpClient,
