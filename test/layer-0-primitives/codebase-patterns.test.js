@@ -5232,6 +5232,28 @@ var KNOWN_ANTIPATTERNS = [
     // requiring the gunzip call to sit within ~20 lines of a
     // numeric cap reference (`maxOutputLength` or a constant of
     // the framework's `C.BYTES.*` shape).
+    // v0.11.3 (Codex P1 on PR #108) — `_parseADualCidr` silently
+    // accepted empty digit segments (`a/`, `a//`, `mx/`, `mx//`) by
+    // letting the `if (X.length > 0)` guard skip the parseInt branch
+    // and keep the default /32 or /128. RFC 7208 §5.3/§5.4 grammar
+    // requires `1*DIGIT` after the slash; empty MUST permerror. The
+    // silent-default bug over-authorized senders publishing
+    // `v=spf1 a/ -all` (would match every IP in the /32 of every A
+    // record). Detector scoped to the bug class: any `.slice(1)`
+    // followed within ~80 chars by an `if (<name>.length > 0)` guard
+    // followed within ~160 chars by `parseInt(...)` MUST be paired
+    // (somewhere in the same file) with an explicit empty-segment
+    // refusal phrasing. New cidr-length / prefix-length / port-range
+    // parsers added to lib/ inherit the discipline automatically.
+    id: "slice1-optional-parseint-silent-default",
+    primitive: "after `var X = Y.slice(1)`, refuse empty-digit segment with an explicit throw BEFORE parseInt; never silently default to the no-suffix mask",
+    regex: /\.slice\s*\(\s*1\s*\)\s*;[\s\S]{0,80}?if\s*\(\s*\w+\.length\s*>\s*0\s*\)\s*\{[\s\S]{0,160}?\bparseInt\s*\(/,
+    requires: /(?:cidr-length is empty|prefix-length is empty|grammar requires 1\*DIGIT)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.11.3 PR #108 — _parseADualCidr (lib/mail-auth.js) accepted empty digit segments (a/, a//, mx/, mx//) as valid by treating missing CIDR digits as defaults, can over-authorize senders publishing `v=spf1 a/ -all`. RFC 7208 §5.3/§5.4 grammar requires 1*DIGIT after the slash. Detector forces the discipline: any slice(1) + optional-parse parseInt MUST be paired with an explicit empty-segment refusal in the same file.",
+  },
+  {
     id: "gunzip-without-output-size-cap",
     primitive: "zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> }) — bound decompression at config time",
     // Match a gunzip call NOT immediately preceded or followed by
