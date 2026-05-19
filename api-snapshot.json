@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.11.2",
-  "createdAt": "2026-05-19T12:22:22.118Z",
+  "createdAt": "2026-05-19T13:38:25.862Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44883,6 +44883,10 @@
           "arity": 3
         },
         "checkUrl": {
+          "type": "function",
+          "arity": 2
+        },
+        "checkUrlTextual": {
           "type": "function",
           "arity": 2
         },
