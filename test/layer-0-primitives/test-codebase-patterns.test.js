@@ -104,8 +104,9 @@ var KNOWN_TEST_ANTIPATTERNS = [
   {
     // N1 (v0.10.14) — direct sleep-then-assert anti-pattern. The
     // existing `helpers.waitUntil` / `helpers.waitUntilEqual`
-    // primitives exist specifically to replace this shape per
-    // CLAUDE.md rule §11b. Hand-tuned fixed-budget sleeps are the
+    // primitives exist specifically to replace this shape: tests
+    // that wait on an observable async condition poll the
+    // predicate, not sleep a fixed budget. Hand-tuned fixed-budget sleeps are the
     // root cause of every "passes alone, fails under
     // SMOKE_PARALLEL=64" flake the framework has seen (macOS
     // watcher v0.8.60, log-stream-otlp, safe-async-loops,
@@ -209,7 +210,7 @@ var KNOWN_TEST_ANTIPATTERNS = [
       // original test/ - only walker missed entirely.
       "examples/wiki/test/integration.js",
     ],
-    reason: "v0.8.60 macOS watcher flake + log-stream-otlp / safe-async-loops / rate-limit-cluster — every fixed-budget Promise+setTimeout sleep in a test eventually races on a contended runner. CLAUDE.md rule §11b documents waitUntil as the replacement; this gate forces the discipline on new tests. The 49 pre-existing files allowlisted above are the v0.10.14 backlog: each carries a documented setTimeout sleep that's working today but doesn't follow the discipline. Cleanup is a per-file migration to helpers.waitUntil in follow-up patches.",
+    reason: "v0.8.60 macOS watcher flake + log-stream-otlp / safe-async-loops / rate-limit-cluster — every fixed-budget Promise+setTimeout sleep in a test eventually races on a contended runner. The replacement is `helpers.waitUntil(predicate, opts)` which polls the actual condition every 25ms up to a 5000ms cap, exiting early when truthy; fast platforms finish in milliseconds, contended platforms get the full budget. This gate forces the discipline on new tests. The 49 pre-existing files allowlisted above are the v0.10.14 backlog: each carries a documented setTimeout sleep that's working today but doesn't follow the discipline. Cleanup is a per-file migration to helpers.waitUntil in follow-up patches.",
   },
   {
     // N2 (v0.10.14) — hardcoded non-zero server ports in tests. Two
