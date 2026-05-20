@@ -203,7 +203,9 @@ async function run() {
           Buffer.compare(decompressed, msgBuf) === 0);
 
     hs.sock.end();
-    await new Promise(function (r) { setTimeout(r, 50); });
+    await helpers.waitUntil(function () {
+      return hs.sock.destroyed;
+    }, { label: "ws handshake: first socket fully closed" });
 
     // ---- second handshake WITHOUT permessage-deflate offered:
     //      server should NOT advertise the extension in the response ----

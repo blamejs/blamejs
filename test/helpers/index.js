@@ -82,6 +82,10 @@ module.exports = {
   waitUntil:          _wait.waitUntil,
   waitUntilEqual:     _wait.waitUntilEqual,
 
+  // Real-time passive observation budget — for verifying ABSENCE of
+  // an event over a window. Distinct from waitUntil's poll-until-true.
+  passiveObserve:     _wait.passiveObserve,
+
   // fs.watch / fs.watchFile test primitives
   backdateFile:       _fsWatch.backdateFile,
   waitForWatcher:     _fsWatch.waitForWatcher,

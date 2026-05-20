@@ -15,10 +15,6 @@ var check = helpers.check;
 var services = require("../helpers/services");
 var b = require("../../");
 
-function _waitMs(ms) {
-  return new Promise(function (r) { setTimeout(r, ms); });
-}
-
 async function run() {
   var redisSvc = await services.requireService("redis");
   if (!redisSvc.ok) throw new Error("redis unreachable: " + redisSvc.reason);
@@ -36,15 +32,17 @@ async function run() {
   ps.subscribePattern("integration:order:*", function (payload, ev) {
     patHits.push({ channel: ev.channel, payload: payload });
   });
-  // SUBSCRIBE acks land asynchronously; wait briefly so the
-  // subscriber socket is in subscribe mode before we PUBLISH.
-  await _waitMs(150);
-
-  var rv = await ps.publish("integration:user:42", { tag: "delete", id: 42 });
-  // Redis PUBLISH returns the number of subscribers that got the
-  // message — at minimum our own SUBSCRIBE socket is one.
+  // SUBSCRIBE acks land asynchronously. Retry the publish until Redis
+  // confirms delivery to >= 1 subscriber, then wait for the local
+  // callback to fire.
+  var rv = await helpers.waitUntil(async function () {
+    var v = await ps.publish("integration:user:42", { tag: "delete", id: 42 });
+    return v.remote >= 1 ? v : false;
+  }, { label: "pubsub: SUBSCRIBE active + publish delivered to >= 1" });
   check("publish remote count >= 1",   rv.remote >= 1);
-  await _waitMs(200);
+  await helpers.waitUntil(function () {
+    return seen.length >= 1 && seen[0].payload.id === 42;
+  }, { label: "pubsub: subscriber received local dispatch" });
   // Same-instance publishes dispatch locally synchronously
   // (source='local'); the redis backend stamps a per-instance nonce
   // and skips the SUBSCRIBE-loopback to prevent double dispatch.
@@ -58,7 +56,9 @@ async function run() {
   // Pattern subscribe round-trip — also dispatches locally on
   // same-instance publish per the same dedup rule.
   await ps.publish("integration:order:99", { ok: true });
-  await _waitMs(200);
+  await helpers.waitUntil(function () {
+    return patHits.length >= 1 && patHits[0].channel === "integration:order:99";
+  }, { label: "pubsub: PSUBSCRIBE pattern matched" });
   check("PSUBSCRIBE matched integration:order:99",
         patHits.length === 1 && patHits[0].channel === "integration:order:99");
 
@@ -69,11 +69,17 @@ async function run() {
   var psB = b.pubsub.create({ backend: "redis", redisUrl: "redis://127.0.0.1:6379/0" });
   var bSeen = [];
   psB.subscribe("crossnode", function (p) { bSeen.push(p); });
-  await _waitMs(150);
-  await psA.publish("crossnode", { from: "A" });
-  await _waitMs(200);
+  // Retry publish until SUBSCRIBE on psB is active in Redis, then
+  // wait for cross-instance delivery to bSeen.
+  await helpers.waitUntil(async function () {
+    var v = await psA.publish("crossnode", { from: "A" });
+    return v.remote >= 1;
+  }, { label: "pubsub crossnode: psB SUBSCRIBE active + psA publish delivered" });
+  await helpers.waitUntil(function () {
+    return bSeen.length >= 1 && bSeen[0].from === "A";
+  }, { label: "pubsub crossnode: psB received psA's publish" });
   check("instance B received instance A's publish",
-        bSeen.length === 1 && bSeen[0].from === "A");
+        bSeen.length >= 1 && bSeen[0].from === "A");
   await psA.close();
   await psB.close();
 
@@ -93,8 +99,6 @@ async function run() {
     backend:   "memory",
     invalidationPubsub: ips2,
   });
-  // Wait for both subscribe acks.
-  await _waitMs(200);
 
   await cA.set("u:1", "alice", { tags: ["t-user"] });
   await cB.set("u:1", "alice", { tags: ["t-user"] });
@@ -103,8 +107,10 @@ async function run() {
 
   await cA.invalidateTag("t-user");
   // The publish goes through redis; ips2 subscribes to the channel,
-  // forwards to cB. Allow a short window for the round-trip.
-  await _waitMs(200);
+  // forwards to cB. Poll until cB has observed the eviction.
+  await helpers.waitUntil(async function () {
+    return !(await cB.has("u:1"));
+  }, { label: "cache fan-out: cB evicted u:1 via redis pubsub" });
   check("cA evicted u:1 locally",          !(await cA.has("u:1")));
   check("cB evicted u:1 via redis fan-out", !(await cB.has("u:1")));
 

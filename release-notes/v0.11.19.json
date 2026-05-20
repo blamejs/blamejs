@@ -1,0 +1,28 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.19",
+  "date": "2026-05-20",
+  "headline": "Test discipline — fixed-budget `setTimeout` sleeps replaced with `helpers.waitUntil` polling across 24 test files",
+  "summary": "Every 'test passes alone, fails under SMOKE_PARALLEL=64 / macOS GH-Actions contention' flake the framework has hit traces to the same root cause: an `await new Promise(r => setTimeout(r, N))` sleep with a hand-tuned `N` that's too short for runner-contention reality. `helpers.waitUntil(predicate, opts)` polls the actual observable condition every 25ms (default) up to a 5000ms cap (default) — fast platforms exit in milliseconds, contended platforms get the full budget without slowing down the non-contended path. v0.11.19 ships the first major drain of the `test-promise-settimeout-sleep` detector's migration backlog (49 → 25 files) and adds a new sibling primitive `helpers.passiveObserve(ms, label)` for the legitimate cases where a test wants real time to pass so it can verify the ABSENCE of an event over a window (work simulators, ping/pong cycle observation, TTL-based wall-clock advance).",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`helpers.passiveObserve(ms, label)` — real-time observation budget",
+          "body": "Distinct from `helpers.waitUntil`: the goal is NOT to poll until a condition is truthy, but to let real time elapse so the test can verify ABSENCE of an event over a window. Required `label` (string) surfaces in audit logs / future flake diagnostics so the grep through a CI log immediately identifies which observation budget was consumed. Throws TypeError on non-positive `ms` or missing label. Use sparingly — if there IS an observable predicate, `waitUntil` is the right primitive (faster on fast platforms; passive observation always burns the full budget)."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Test-discipline migration — backlog files converted from `setTimeout(r, N)` to `waitUntil` / `passiveObserve`",
+          "body": "Converted: `a2a`, `agent-event-bus`, `agent-idempotency`, `agent-snapshot`, `api-encrypt`, `app-shutdown`, `audit-segregation`, `break-glass`, `config`, `daily-byte-quota`, `dsr`, `external-db-routing`, `guard-csv`, `http-client-cache`, `log-stream-cloudwatch`, `log-stream-otlp` (dead `_sleep` helper removed), `vault-seal-pem-file` (already migrated via earlier `helpers.waitForWatcher` extraction), `watcher` (3 fs.watchFile poll-event waits), plus integration tests `cache`, `cluster-provider-mysql`, `network-heartbeat`, `pubsub`, `websocket-permessage-deflate`, `ws-client-roundtrip`. Each condition-wait now has a grep'able label and an automatic 5000ms ceiling. Remaining migration backlog (25 files) drains in subsequent patches."
+        }
+      ]
+    }
+  ],
+  "references": []
+}
