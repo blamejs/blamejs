@@ -32,13 +32,18 @@ async function run() {
   ps.subscribePattern("integration:order:*", function (payload, ev) {
     patHits.push({ channel: ev.channel, payload: payload });
   });
-  // SUBSCRIBE acks land asynchronously. Retry the publish until Redis
-  // confirms delivery to >= 1 subscriber, then wait for the local
-  // callback to fire.
-  var rv = await helpers.waitUntil(async function () {
-    var v = await ps.publish("integration:user:42", { tag: "delete", id: 42 });
-    return v.remote >= 1 ? v : false;
-  }, { label: "pubsub: SUBSCRIBE active + publish delivered to >= 1" });
+  // SUBSCRIBE acks land asynchronously. Probe a DIFFERENT channel
+  // (one with no subscribers in this test) until Redis returns a
+  // PUBLISH response — that response means the dispatcher has finished
+  // processing the prior SUBSCRIBE commands queued on the same
+  // connection (Redis serializes per-connection). After the probe
+  // resolves, the real `integration:user:42` SUBSCRIBE is active and
+  // a SINGLE publish populates `seen` exactly once.
+  await helpers.waitUntil(async function () {
+    var probe = await ps.publish("integration:probe:warmup:" + Date.now(), {});
+    return probe && typeof probe.remote === "number";
+  }, { label: "pubsub: redis backend ready (SUBSCRIBE queue drained)" });
+  var rv = await ps.publish("integration:user:42", { tag: "delete", id: 42 });
   check("publish remote count >= 1",   rv.remote >= 1);
   await helpers.waitUntil(function () {
     return seen.length >= 1 && seen[0].payload.id === 42;
@@ -69,17 +74,19 @@ async function run() {
   var psB = b.pubsub.create({ backend: "redis", redisUrl: "redis://127.0.0.1:6379/0" });
   var bSeen = [];
   psB.subscribe("crossnode", function (p) { bSeen.push(p); });
-  // Retry publish until SUBSCRIBE on psB is active in Redis, then
-  // wait for cross-instance delivery to bSeen.
+  // Wait for psB's SUBSCRIBE to be active by probing a no-subscriber
+  // channel on the SAME connection (psB.publish to a different channel
+  // resolves once psB's pending SUBSCRIBE has drained).
   await helpers.waitUntil(async function () {
-    var v = await psA.publish("crossnode", { from: "A" });
-    return v.remote >= 1;
-  }, { label: "pubsub crossnode: psB SUBSCRIBE active + psA publish delivered" });
+    var probe = await psB.publish("crossnode:probe:" + Date.now(), {});
+    return probe && typeof probe.remote === "number";
+  }, { label: "pubsub crossnode: psB SUBSCRIBE drained" });
+  await psA.publish("crossnode", { from: "A" });
   await helpers.waitUntil(function () {
     return bSeen.length >= 1 && bSeen[0].from === "A";
   }, { label: "pubsub crossnode: psB received psA's publish" });
   check("instance B received instance A's publish",
-        bSeen.length >= 1 && bSeen[0].from === "A");
+        bSeen.length === 1 && bSeen[0].from === "A");
   await psA.close();
   await psB.close();
 

@@ -6420,7 +6420,7 @@ var KNOWN_ANTIPATTERNS = [
     // 200-char window keeps the regex bounded; longer Promise bodies
     // that do real work between Promise-open and setTimeout don't
     // fit the direct-sleep antipattern anyway.
-    regex: /new Promise\s*\(\s*(?:function\s*[\w$]*\s*\([^)]*\)\s*\{|\([^)]*\)\s*=>\s*\{?|[\w$]+\s*=>\s*\{?)[\s\S]{0,200}?setTimeout\s*\(/,
+    regex: /new\s+Promise\s*\(\s*(?:function\s*[\w$]*\s*\([^)]*\)\s*\{|\([^)]*\)\s*=>\s*\{?|[\w$]+\s*=>\s*\{?)[\s\S]{0,200}?setTimeout\s*\(/,
     skipCommentLines: true,
     allowlist: [
       // ===== Structural FPs (stay allowlisted) =====
