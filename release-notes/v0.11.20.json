@@ -1,0 +1,21 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.20",
+  "date": "2026-05-20",
+  "headline": "`b.backup.localStorage` legacy alias removed — use `b.backup.diskStorage`",
+  "summary": "v0.11.2 renamed the local-filesystem backup backend from `b.backup.localStorage(opts)` to `b.backup.diskStorage(opts)` to keep the operator-facing surface unambiguous against Node 26's new `localStorage` global. v0.11.2 shipped the rename with a one-time deprecation warning routed through `b.deprecate.alias` and a tentative `removeIn: 0.12.0` to give operators a clean upgrade window. v0.11.20 removes the alias entirely — pre-v1 the project's stated policy is no backwards-compat shims (operators upgrade across breaking changes), and removing the alias now avoids tying the cleanup to the Node 26 floor-bump bundle later this year. Update any call site that still imports the legacy name; the underlying primitive's behavior and options are unchanged.",
+  "sections": [
+    {
+      "heading": "Removed",
+      "items": [
+        {
+          "title": "`b.backup.localStorage` — the legacy alias is gone",
+          "body": "The property no longer resolves on `b.backup` and the one-time deprecation warning is no longer emitted. Migration is a literal-name find-and-replace: `b.backup.localStorage({ root: ... })` becomes `b.backup.diskStorage({ root: ... })`. The returned storage backend object, its options shape, and its wire contract with `b.backupBundle.create` are unchanged. See SECURITY.md's Node 26 compatibility section for the original rename rationale."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "Node.js 26 release notes (localStorage global)", "url": "https://nodejs.org/en/blog/release/v26.0.0" }
+  ]
+}

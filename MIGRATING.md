@@ -4,16 +4,9 @@ Operator-facing migration recipes per breaking change. The bulk of this file is 
 
 **Out-of-band breaking changes** (schema breaks, config-shape changes, on-disk format breaks) cannot be expressed as `deprecate()` calls because there's no in-process runtime to warn from. They're hardcoded in the OUT_OF_BAND_BREAKS table inside `scripts/gen-migrating.js` so the operator sees the full upgrade path here without needing to grep CHANGELOG.
 
-## Removed in v0.x
+## No active deprecations
 
-### `localStorage`
-
-- **Since:** 0.11.2
-- **Removed in:** 0.12.0
-- **Defined at:** [`lib/backup/index.js`](lib/backup/index.js)
-- **Renamed to:** `diskStorage`
-
-b.backup.localStorage was renamed to b.backup.diskStorage — the Node 26 `localStorage` global doesn't clash today, but the rename keeps the operator-facing surface unambiguous. Update the call site; removal lands in the next major.
+The framework has no `deprecate()`-marked surface awaiting removal.
 
 ---
 
