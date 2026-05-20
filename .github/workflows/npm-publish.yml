@@ -168,13 +168,16 @@ jobs:
       - name: Generate CycloneDX SBOM (1.6) — npm-tree + vendored
         # npm-tree SBOM (sbom.cdx.json) is the CycloneDX 1.6 view of
         # the (empty-for-now) npm runtime dep tree; generated via
-        # `npm sbom` which is built in to npm 10+. Vendored SBOM
-        # (sbom.vendored.cdx.json) is the higher-value artifact for
-        # downstream scanners — it describes what's actually shipping
-        # under lib/vendor/* with per-file sha256 + purl, generated
-        # via `scripts/build-vendored-sbom.js`.
+        # `npm sbom` which is built in to npm 10+. We pass
+        # `--omit=dev` so the devDependencies installed for the
+        # smoke gate (esbuild + postject) don't show up as runtime
+        # components — that's what the runtime-deps check enforces.
+        # Vendored SBOM (sbom.vendored.cdx.json) is the higher-value
+        # artifact for downstream scanners — it describes what's
+        # actually shipping under lib/vendor/* with per-file sha256
+        # + purl, generated via `scripts/build-vendored-sbom.js`.
         run: |
-          npm sbom --sbom-format=cyclonedx --sbom-type=application > sbom.cdx.json
+          npm sbom --sbom-format=cyclonedx --sbom-type=application --omit=dev > sbom.cdx.json
           node scripts/build-vendored-sbom.js > sbom.vendored.cdx.json
           # Refuse the publish if any runtime dep snuck in. The
           # framework's zero-dep contract says lib/vendor/ holds
