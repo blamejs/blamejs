@@ -168,15 +168,12 @@ async function run() {
     var msgBuf = Buffer.from(msg, "utf8");
     var collected = Buffer.alloc(0);
     var msgFrames = null;
-    var done = new Promise(function (resolve) {
-      hs.sock.on("data", function (chunk) {
-        collected = Buffer.concat([collected, chunk]);
-        var rv = _readFrames(collected);
-        if (rv.frames.length > 0 && rv.frames[rv.frames.length - 1].fin) {
-          msgFrames = rv.frames;
-          resolve();
-        }
-      });
+    hs.sock.on("data", function (chunk) {
+      collected = Buffer.concat([collected, chunk]);
+      var rv = _readFrames(collected);
+      if (rv.frames.length > 0 && rv.frames[rv.frames.length - 1].fin) {
+        msgFrames = rv.frames;
+      }
     });
     hs.sock.write(_frameRequest(0x01 /* TEXT */, msgBuf, true));
     // Wait until the server's deflate-encoded echo lands as a final
@@ -222,15 +219,12 @@ async function run() {
     var plainBuf = Buffer.from(plain, "utf8");
     var collected2 = Buffer.alloc(0);
     var plainFrame = null;
-    var done2 = new Promise(function (resolve) {
-      hs2.sock.on("data", function (chunk) {
-        collected2 = Buffer.concat([collected2, chunk]);
-        var rv = _readFrames(collected2);
-        if (rv.frames.length > 0 && rv.frames[0].fin) {
-          plainFrame = rv.frames[0];
-          resolve();
-        }
-      });
+    hs2.sock.on("data", function (chunk) {
+      collected2 = Buffer.concat([collected2, chunk]);
+      var rv = _readFrames(collected2);
+      if (rv.frames.length > 0 && rv.frames[0].fin) {
+        plainFrame = rv.frames[0];
+      }
     });
     hs2.sock.write(_frameRequest(0x01, plainBuf, true));
     // Wait until the server's plain echo lands as a final frame.
