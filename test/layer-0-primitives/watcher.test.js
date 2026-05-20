@@ -207,25 +207,28 @@ async function run() {
     fs.writeFileSync(path.join(pollDir, "p1.txt"), "hello");
     fs.mkdirSync(path.join(pollDir, "sub"));
     fs.writeFileSync(path.join(pollDir, "sub", "p2.txt"), "world");
-    pw._flushForTest();
-    await new Promise(function (r) { setTimeout(r, 30); });
-    pw._flushForTest();
+    await helpers.waitUntil(function () {
+      pw._flushForTest();
+      return pollHits.indexOf("p1.txt") !== -1 && pollHits.indexOf("sub/p2.txt") !== -1;
+    }, { label: "watcher poll: create events delivered" });
     check("watcher poll: detects file create",          pollHits.indexOf("p1.txt") !== -1);
     check("watcher poll: detects nested file create",   pollHits.indexOf("sub/p2.txt") !== -1);
 
     // Modify the file — size changes, mtime changes, polling detects.
     pollHits.length = 0;
     fs.writeFileSync(path.join(pollDir, "p1.txt"), "hello world (modified)");
-    pw._flushForTest();
-    await new Promise(function (r) { setTimeout(r, 30); });
-    pw._flushForTest();
+    await helpers.waitUntil(function () {
+      pw._flushForTest();
+      return pollHits.indexOf("p1.txt") !== -1;
+    }, { label: "watcher poll: modify event delivered" });
     check("watcher poll: detects file modify",          pollHits.indexOf("p1.txt") !== -1);
 
     // Delete a file — diff produces missing-from-snapshot, fires onDelete.
     fs.unlinkSync(path.join(pollDir, "p1.txt"));
-    pw._flushForTest();
-    await new Promise(function (r) { setTimeout(r, 30); });
-    pw._flushForTest();
+    await helpers.waitUntil(function () {
+      pw._flushForTest();
+      return pollDeletes.indexOf("p1.txt") !== -1;
+    }, { label: "watcher poll: delete event delivered" });
     check("watcher poll: detects file delete",          pollDeletes.indexOf("p1.txt") !== -1);
 
     pw.stop();
