@@ -38,7 +38,7 @@ var nodeFs = require("node:fs");
 var wait   = require("./wait");
 
 var DEFAULT_BACKDATE_MS = 3_600_000;                                            // allow:raw-byte-literal — 1 hour, wall-clock ms
-var DEFAULT_FS_WATCH_TIMEOUT_MS = 15_000;                                       // allow:raw-byte-literal — fs-watch wait budget, ms
+var DEFAULT_FS_WATCH_TIMEOUT_MS = 30_000;                                       // allow:raw-byte-literal — fs-watch wait budget, ms (3× helpers.waitUntil's default; ubuntu-latest at peak contention has shown 15s + 30s timing-race classes; pick the larger to absorb both)
 var DEFAULT_FS_WATCH_INTERVAL_MS = 50;                                          // allow:raw-byte-literal — poll interval, ms
 
 /**
