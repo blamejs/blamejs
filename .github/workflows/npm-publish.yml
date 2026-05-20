@@ -414,15 +414,20 @@ jobs:
           RELEASE_PQC_SIGNING_KEY: ${{ secrets.RELEASE_PQC_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          # Single-quoted printf strings so bash doesn't try to
+          # command-substitute the backticked code snippets in the
+          # operator-recipe text (Codex P2 — backticks inside double-
+          # quoted strings would attempt to execute the script names
+          # they reference and leak the output into the warning).
           if [ -z "${RELEASE_PQC_SIGNING_KEY:-}" ]; then
-            echo "::warning::RELEASE_PQC_SIGNING_KEY is empty — skipping the PQC sidecar."
-            echo "::warning::Operator: run `node scripts/generate-release-signing-key.js` once, commit keys/release-pqc-pub.json, set the secret, then future releases pick up the sig automatically."
+            printf '%s\n' '::warning::RELEASE_PQC_SIGNING_KEY is empty — skipping the PQC sidecar.'
+            printf '%s\n' '::warning::Operator: run "node scripts/generate-release-signing-key.js" once, commit keys/release-pqc-pub.json, set the secret, then future releases pick up the sig automatically.'
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ ! -f src/keys/release-pqc-pub.json ]; then
-            echo "::warning::src/keys/release-pqc-pub.json is missing in the checked-out source — skipping the PQC sidecar."
-            echo "::warning::The secret is set but the matching public key isn't committed — the signer's self-verify cross-check would refuse the sig anyway."
+            printf '%s\n' '::warning::src/keys/release-pqc-pub.json is missing in the checked-out source — skipping the PQC sidecar.'
+            printf '%s\n' '::warning::The secret is set but the matching public key is not committed — the signer self-verify cross-check would refuse the sig anyway.'
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

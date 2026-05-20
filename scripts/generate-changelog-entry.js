@@ -529,7 +529,11 @@ function main() {
 
   // --check: in-memory rebuild + diff against on-disk. Non-mutating.
   // Smoke wires this gate so any release-notes JSON change without a
-  // matching `--rebuild` fails pre-push.
+  // matching `--rebuild` fails pre-push. Line endings are normalized
+  // to LF before comparison so the gate doesn't false-trip on
+  // Windows runners where `git checkout` rewrites LF → CRLF (the
+  // rebuilder always emits LF; both sides reduce to the same
+  // canonical form for the equality check).
   if (checkMode) {
     var expected = rebuildChangelog();
     var actual;
@@ -538,7 +542,7 @@ function main() {
       if (e && e.code === "ENOENT") _exit("CHANGELOG.md does not exist");
       _exit("cannot read CHANGELOG.md: " + (e && e.message || e));
     }
-    if (expected === actual) {
+    if (expected.replace(/\r\n/g, "\n") === actual.replace(/\r\n/g, "\n")) {
       process.stderr.write("[generate-changelog-entry] OK — CHANGELOG.md matches the rebuild from release-notes/\n");
       return;
     }
