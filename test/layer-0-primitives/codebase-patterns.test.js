@@ -6443,16 +6443,24 @@ var KNOWN_ANTIPATTERNS = [
       // shadow-timeout posture. Not a condition-wait use; the
       // setTimeout IS the simulated latency itself.
       "test/layer-0-primitives/audit-use-store.test.js",
-
-      // ===== Migration backlog (drains as test owners touch) =====
-      // Removed from this list alongside the conversion commit for
-      // each file. Every entry is a release-gate countdown, not a
-      // perpetual exception.
+      // services.js implements the TCP/TLS/UDP probe primitives the
+      // integration-test harness uses to detect whether a Docker
+      // service is reachable. The setTimeout calls are the timeout
+      // half of a race-with-socket-event pattern (timer vs.
+      // connect / secureConnect / error event), not a condition-wait
+      // — the operator-facing analog is `helpers.withTestTimeout`,
+      // but services.js IS the lower-level primitive that builds
+      // that contract for non-test code.
       "test/helpers/services.js",
-      "test/layer-0-primitives/a2a-tasks.test.js",
-      "test/layer-0-primitives/agent-orchestrator.test.js",
-      "test/layer-0-primitives/queue-dlq-extend-lease.test.js",
-      "test/layer-0-primitives/queue-priority-rate-progress.test.js",
+      // examples/wiki/test/integration.js is the wiki example's own
+      // integration suite — it consumes @blamejs/core via npm symlink
+      // (not the framework's internal test/helpers). The single
+      // Promise+setTimeout site is a brief post-shutdown flush window
+      // for log-stream buffers; it's not a condition-wait against
+      // observable state in the wiki app. Moving it into a polled
+      // primitive would require duplicating helpers.passiveObserve
+      // into the wiki package's own test infra — not worth the
+      // surface for one 100ms wait.
       "examples/wiki/test/integration.js",
     ],
     reason: "Every 'test passes alone, fails under SMOKE_PARALLEL=64' flake (macOS watcher, log-stream-otlp, safe-async-loops, rate-limit-cluster, sandbox flake) is the same root cause: a fixed-budget setTimeout sleep that's too short for runner-contention reality. `helpers.waitUntil(predicate, opts?)` polls the actual condition every 25ms up to a 5000ms cap, exiting early when the predicate returns truthy. Fast platforms finish in milliseconds; contended platforms get the full budget. `helpers.passiveObserve(ms, label)` is the sibling primitive for the rare case of verifying ABSENCE of an event over a window (work simulators, TTL-elapse before assertion). The allowlist's structural FPs are permanent; the migration-backlog files drain to zero in subsequent patches.",
