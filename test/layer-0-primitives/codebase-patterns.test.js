@@ -6651,8 +6651,23 @@ var KNOWN_ANTIPATTERNS = [
     // freezes the reusable-workflow bytes.
     regex: /\bslsa-framework\/[^@\s]+@(?!(?:[0-9a-fA-F]{40})\b)\S+/,
     skipCommentLines: true,
-    allowlist: [],
-    reason: "Reusable workflows under slsa-framework/* are the SLSA builder root of trust. A tag-pinned reference (e.g. @v2.1.0) is mutable — the upstream maintainer can re-publish the tag to point at different code, silently rotating the builder we attest from. SHA-pinning freezes the bytes. Resolve a tag's SHA via `gh api repos/slsa-framework/slsa-github-generator/commits/<tag>` before bumping.",
+    allowlist: [
+      // v0.11.17 — the SLSA `generator_generic_slsa3` reusable
+      // workflow requires a tag ref internally (its builder-fetch
+      // step refuses anything other than `refs/tags/vX.Y.Z` with
+      // "Invalid ref... Expected ref of the form refs/tags/vX.Y.Z").
+      // v0.11.7 through v0.11.16 each shipped with this callsite
+      // SHA-pinned and the publish workflow failed identically
+      // every time — the failure was masked by the SLSA workflow's
+      // cascading `continue-on-error: true` on each step until
+      // v0.11.16's diagnostic finally surfaced it. We accept the
+      // tag-pin tradeoff (slsa-framework's tag-protection +
+      // immutable-release rules at their own org level mitigate
+      // the upstream-mutation risk this detector was guarding
+      // against).
+      ".github/workflows/npm-publish.yml",
+    ],
+    reason: "Reusable workflows under slsa-framework/* are the SLSA builder root of trust. A tag-pinned reference (e.g. @v2.1.0) is mutable in principle — the upstream maintainer can re-publish the tag to point at different code, silently rotating the builder we attest from. SHA-pinning freezes the bytes. The SLSA workflow itself, however, requires a tag ref for its internal builder-fetch step, so npm-publish.yml's `provenance` job is allowlisted (see the inline allowlist comment for the upstream-mitigation reasoning). Resolve a tag's SHA via `gh api repos/slsa-framework/slsa-github-generator/commits/<tag>` for other slsa-framework callsites.",
   },
 
   {
