@@ -330,62 +330,93 @@ function renderReleasePage(notes) {
   return lines.join("\n");
 }
 
-// Legacy alias preserved for the splice path below.
-function render(notes) { return renderChangelogLine(notes); }
-
 function _readPackageVersion() {
   var pkg = _readJson(PACKAGE_JSON, "package.json");
   return pkg.version;
+}
+
+// Strict semver gate at the trust boundary. Every downstream use of
+// `version` builds a regex (`^- v<version> (`), a path segment, or a
+// CHANGELOG splice — feeding raw operator-controlled input into any
+// of those is unsafe. We refuse anything that doesn't match
+// `^\d+\.\d+\.\d+$` here, so by the time it reaches the regex
+// constructors the only metacharacter is `.` (which the existing
+// `.replace(/\./g, "\\.")` escapes completely).
+function _requireSemver(version, label) {
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+    _exit(label + " is not strict semver `\\d+.\\d+.\\d+`: " + JSON.stringify(version));
+  }
+  return version;
+}
+
+// Read-without-pre-check. Replaces the existsSync→readFileSync
+// pattern (TOCTOU race) with a single readFileSync that distinguishes
+// ENOENT (file genuinely absent — caller decides) from other errors
+// (permission denied / I/O — fail loud).
+function _tryReadJson(filePath, label) {
+  var raw;
+  try { raw = fs.readFileSync(filePath, "utf8"); }
+  catch (e) {
+    if (e && e.code === "ENOENT") return null;
+    _exit("cannot read " + label + " (" + filePath + "): " + (e && e.message || e));
+  }
+  try { return JSON.parse(raw); }
+  catch (e) { _exit("malformed JSON in " + label + " (" + filePath + "): " + (e && e.message || e)); }
 }
 
 // Lookup tries the per-patch file first, then the consolidated
 // minor-line rollup. This lets non-current minor lines collapse to
 // a single `v<minor>.x.json` (via `scripts/consolidate-release-notes.js`)
 // without breaking the generator's `node scripts/generate-changelog-entry.js
-// 0.5.3`-style invocations.
+// 0.5.3`-style invocations. `version` is pre-validated as strict
+// semver by `_requireSemver` at the entry point so path concatenation
+// is safe.
 function _loadReleaseNotes(version) {
   var perPatchPath = path.join(NOTES_DIR, "v" + version + ".json");
-  if (fs.existsSync(perPatchPath)) {
-    return {
-      notes:  _readJson(perPatchPath, "release-notes/v" + version + ".json"),
-      source: "v" + version + ".json",
-    };
+  var perPatch = _tryReadJson(perPatchPath, "release-notes/v" + version + ".json");
+  if (perPatch !== null) {
+    return { notes: perPatch, source: "v" + version + ".json" };
   }
-  var m = version.match(/^(\d+\.\d+)\.\d+$/);
-  if (!m) _exit("malformed version: " + JSON.stringify(version));
-  var consolidatedPath = path.join(NOTES_DIR, "v" + m[1] + ".x.json");
-  if (fs.existsSync(consolidatedPath)) {
-    var con = _readJson(consolidatedPath, "release-notes/v" + m[1] + ".x.json");
+  var minor = version.replace(/\.\d+$/, "");                                           // already-validated semver, no metachars
+  var consolidatedPath = path.join(NOTES_DIR, "v" + minor + ".x.json");
+  var con = _tryReadJson(consolidatedPath, "release-notes/v" + minor + ".x.json");
+  if (con !== null) {
     if (!Array.isArray(con.releases)) {
-      _exit("consolidated file release-notes/v" + m[1] + ".x.json missing `releases` array");
+      _exit("consolidated file release-notes/v" + minor + ".x.json missing `releases` array");
     }
     for (var i = 0; i < con.releases.length; i += 1) {
       if (con.releases[i] && con.releases[i].version === version) {
         return {
           notes:  con.releases[i],
-          source: "v" + m[1] + ".x.json (releases[" + i + "])",
+          source: "v" + minor + ".x.json (releases[" + i + "])",
         };
       }
     }
     _exit("v" + version + " not found inside consolidated file " +
-      "release-notes/v" + m[1] + ".x.json — " +
+      "release-notes/v" + minor + ".x.json — " +
       "the rollup may be stale or the version may not exist");
   }
   _exit("cannot find release notes for v" + version + " — " +
     "looked at release-notes/v" + version + ".json AND " +
-    "release-notes/v" + m[1] + ".x.json (neither present)");
+    "release-notes/v" + minor + ".x.json (neither present)");
   return null;                                                                          // unreachable
 }
 
 function _spliceIntoChangelog(rendered, version) {
-  if (!fs.existsSync(CHANGELOG)) _exit("CHANGELOG.md does not exist");
-  var text = fs.readFileSync(CHANGELOG, "utf8");
+  // `version` is pre-validated as strict semver — the regex source
+  // is now `^- v<digits.digits.digits> \(` with no operator-supplied
+  // metachars beyond the `.` separator (escaped below).
+  var text;
+  try { text = fs.readFileSync(CHANGELOG, "utf8"); }
+  catch (e) {
+    if (e && e.code === "ENOENT") _exit("CHANGELOG.md does not exist");
+    _exit("cannot read CHANGELOG.md: " + (e && e.message || e));
+  }
   var lines = text.split(/\r?\n/);
   // Find an existing entry line for this version, OR the top of the
   // version's `## v0.<minor>.x` section.
   var entryRe = new RegExp("^- v" + version.replace(/\./g, "\\.") + " \\(");
-  var minorMatch = version.match(/^(\d+\.\d+)\.\d+$/);
-  var minorPrefix = minorMatch ? minorMatch[1] : "";
+  var minorPrefix = version.replace(/\.\d+$/, "");                                     // semver-validated, no metachars
   var sectionHeaderRe = new RegExp("^## v" + minorPrefix.replace(/\./g, "\\.") + "\\.x\\b");
 
   // Try to find an existing entry to replace.
@@ -430,7 +461,10 @@ function main() {
   if (writeMode && releasePageMode) {
     _exit("--write and --release-page are mutually exclusive (write is CHANGELOG-only)");
   }
-  var version = explicitVersion || _readPackageVersion();
+  var version = _requireSemver(
+    explicitVersion || _readPackageVersion(),
+    explicitVersion ? "argv[1] (explicit version)" : "package.json#version"
+  );
   var loaded = _loadReleaseNotes(version);
   var notes = loaded.notes;
   validate(notes, version);

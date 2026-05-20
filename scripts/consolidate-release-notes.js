@@ -127,7 +127,12 @@ function main() {
   var checkOnly = process.argv.indexOf("--check") !== -1;
   if (prune && checkOnly) _exit("--prune and --check are mutually exclusive");
 
-  if (!fs.existsSync(NOTES_DIR)) _exit("release-notes/ does not exist");
+  // Probe NOTES_DIR via readdirSync directly — no existsSync race.
+  try { fs.readdirSync(NOTES_DIR); }
+  catch (e) {
+    if (e && e.code === "ENOENT") _exit("release-notes/ does not exist");
+    _exit("cannot read release-notes/: " + (e && e.message || e));
+  }
 
   var current = _currentMinor();
   var scan    = _scan();

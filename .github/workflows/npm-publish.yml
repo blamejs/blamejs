@@ -151,11 +151,18 @@ jobs:
         run: node test/smoke.js
 
       - name: Wiki e2e
+        # examples/wiki is a separate package with its own dependency
+        # tree (the @blamejs/core symlink is recreated by `npm install`,
+        # so the install step is mandatory on a clean runner). Without
+        # this step the e2e fails at startup with
+        # `Cannot find module '@blamejs/core'` from build-app.js.
         env:
           SMOKE_PARALLEL: 8
         run: |
+          set -euo pipefail
           cd examples/wiki
           rm -rf data data-e2e
+          npm install --silent
           node test/e2e.js
 
       - name: Generate CycloneDX SBOM (1.6) — npm-tree + vendored
@@ -351,6 +358,21 @@ jobs:
             sbom.vendored.cdx.json
           echo "[cosign-sbom] signed sbom.vendored.cdx.json; bundle at sbom.vendored.cdx.json.sigstore"
 
+      - name: Checkout source (for release-notes generator + key files + signer scripts)
+        # The validate job's publish-bundle artifact carries the
+        # tarball + SBOMs + package.json + CHANGELOG. We additionally
+        # need `scripts/*` (the digest + sign + generate scripts),
+        # `release-notes/v$VERSION.json` (the structured source the
+        # generator reads), and `keys/release-pqc-pub.json` (the
+        # release-signing public key the sign-release-artifact script
+        # cross-verifies against). Checkout MUST run before any
+        # `node src/scripts/*` step — earlier ordering meant the
+        # signer step ran against a non-existent `src/` directory
+        # and failed immediately on the first PQC release run.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.0
+        with:
+          path: src
+
       - name: Release-digest sidecars (SHA-256 + SHA3-512)
         # Two byte-level digest sidecars for the tarball:
         #   <tarball>.sha256     — conventional checksum operators
@@ -389,18 +411,6 @@ jobs:
           # the script's relative-path resolution finds it.
           ln -sfn src/keys keys
           node src/scripts/sign-release-artifact.js "$TARBALL"
-
-      - name: Checkout source (for release-notes generator + key files)
-        # The validate job's publish-bundle artifact carries the
-        # tarball + SBOMs + package.json + CHANGELOG. We additionally
-        # need `release-notes/v$VERSION.json` (the structured source
-        # the generator reads) + `keys/release-pqc-pub.json` (the
-        # release-signing public key the sign-release-artifact script
-        # cross-verifies against). A fresh checkout at the tag ref
-        # gives us both with one less artifact-upload hop.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.0
-        with:
-          path: src
 
       - name: Generate release-page markdown from structured source
         # Single source of truth: `release-notes/v$VERSION.json`. The
