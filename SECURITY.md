@@ -72,19 +72,27 @@ PQC release-signing key (ML-DSA-65, applies v0.11.18+):
 | Public key file | `keys/release-pqc-pub.json` (committed in-tree at the release SHA) |
 | Fingerprint (SHA3-512) | `ad6bee961782cd01a0751286c23ddc04a6a0ce5d2672cfb6f4ade0cc7cdc62c351c857599e9d22996e91ee56462ddf3939951808286132335d56d3bfe99d2ede` |
 
-Every tarball ships with a `<tarball>.mldsa.sig` sidecar — an ML-DSA-65 signature over the tarball bytes computed with the framework's vendored `noble-post-quantum` primitive. Verifiers run the verification with the framework's own `b.pqcSoftware.ml_dsa_65.verify` — no dependency on Sigstore's classical-crypto chain or any external verifier binary:
+Every tarball ships with a `<tarball>.mldsa.sig` sidecar — an ML-DSA-65 signature over the tarball bytes computed with the framework's vendored `noble-post-quantum` primitive. The matching public key is committed in-tree at `keys/release-pqc-pub.json` and is covered by the SSH-signed tag (the first trust root) — operators fetch it from `raw.githubusercontent.com` at the tag, NOT from the GH Release page (release assets carry the tarball + digests + sigs only).
 
 ```sh
-gh release download vX.Y.Z --repo blamejs/blamejs                     \
-  --pattern '@blamejs-core-*.tgz'                                     \
-  --pattern '@blamejs-core-*.tgz.mldsa.sig'                           \
-  --pattern 'keys/release-pqc-pub.json'                               \
-  || true
+TAG=vX.Y.Z
 
+# Tarball + PQC sidecar from the GH Release.
+gh release download "$TAG" --repo blamejs/blamejs   \
+  --pattern '@blamejs-core-*.tgz'                   \
+  --pattern '@blamejs-core-*.tgz.mldsa.sig'
+
+# Public key from the git source at the same tag (SSH-tag-signed,
+# verifiable via `git tag -v` above).
+curl -fsSL -o release-pqc-pub.json   \
+  "https://raw.githubusercontent.com/blamejs/blamejs/${TAG}/keys/release-pqc-pub.json"
+
+# Verify the sig with the framework's own ML-DSA-65 primitive —
+# no Sigstore dependency, no external verifier binary.
 node -e '
   var b   = require("@blamejs/core");
   var fs  = require("node:fs");
-  var pub = JSON.parse(fs.readFileSync("keys/release-pqc-pub.json", "utf8"));
+  var pub = JSON.parse(fs.readFileSync("release-pqc-pub.json", "utf8"));
   var sig = fs.readFileSync(process.argv[1]);
   var msg = fs.readFileSync(process.argv[2]);
   var ok  = b.pqcSoftware.ml_dsa_65.verify(
@@ -95,7 +103,7 @@ node -e '
 ' @blamejs-core-vX.Y.Z.tgz.mldsa.sig @blamejs-core-vX.Y.Z.tgz
 ```
 
-Compare the printed fingerprint against the SHA3-512 above — they must match. The in-tree `keys/release-pqc-pub.json` is committed alongside every release; an attacker swapping the public key would have to also forge the SSH-signed tag covering that commit (the first trust root).
+Compare the printed fingerprint against the SHA3-512 above — they must match. The in-tree `keys/release-pqc-pub.json` is committed alongside every release commit; an attacker swapping the public key would have to also forge the SSH-signed tag covering that commit (the first trust root). The four trust roots chain: a verified tag signs the public key file, the public key verifies the sig sidecar, the sig sidecar covers the tarball bytes.
 
 Re-running `scripts/generate-release-signing-key.js` rotates the key. Rotation updates `keys/release-pqc-pub.json`, requires an operator-side `gh secret set RELEASE_PQC_SIGNING_KEY --env npm-publish` to match, and ships the new fingerprint in this SECURITY.md table in the same commit. The previous fingerprint stays archivable via `git log -- keys/release-pqc-pub.json`.
 
