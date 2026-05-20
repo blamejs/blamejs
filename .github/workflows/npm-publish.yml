@@ -292,9 +292,23 @@ jobs:
     # SHA-pinning on every `slsa-framework/*` reusable workflow.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a  # v2.1.0
     with:
-      base64-subjects:  "${{ needs.validate.outputs.hashes }}"
-      upload-assets:    false
-      provenance-name:  "blamejs-${{ needs.validate.outputs.version }}.intoto.jsonl"
+      base64-subjects:   "${{ needs.validate.outputs.hashes }}"
+      upload-assets:     false
+      provenance-name:   "blamejs-${{ needs.validate.outputs.version }}.intoto.jsonl"
+      # The SLSA workflow's `final` job ANDs every nested job's
+      # outcome — including the `upload-assets` job, which we
+      # intentionally skip via `upload-assets: false`. An empty
+      # `upload-assets.outputs.outcome` evaluates false in the AND
+      # chain and the workflow exits 27 even though the `generator`
+      # job created the provenance artifact successfully (v0.11.14
+      # publish hit this — generator + detect-env both succeeded;
+      # final failed). `continue-on-error: true` tells the SLSA
+      # workflow to report success regardless of the final-step
+      # outcome computation; a real missing-artifact failure still
+      # surfaces at the publish-and-release job's "Download SLSA
+      # provenance" step (artifact downloads error if the named
+      # artifact doesn't exist).
+      continue-on-error: true
 
   publish-and-release:
     name: Cosign sign + create release + publish to npm
