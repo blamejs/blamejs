@@ -262,30 +262,33 @@ jobs:
   provenance:
     needs: validate
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.validate.outputs.is_tag == 'true' && !inputs.dry_run }}
-    # GitHub Actions evaluates the entire reusable-workflow permission
-    # surface at startup. Even though we pass `upload-assets: false`
-    # (the `upload-assets` job's `if:` short-circuits to skip), its
-    # declared `permissions: contents: write` is still part of the
-    # parse-time check. v0.11.7 and v0.11.8 startup_failed when the
-    # caller only granted `contents: read`; raising to `write` makes
-    # the caller's permission set a superset of every job in the
-    # reusable workflow, regardless of which jobs end up running.
+    # Permissions match the SLSA generic generator's documented
+    # caller example (see https://github.com/slsa-framework/slsa-github-generator/tree/v2.1.0/internal/builders/generic).
+    # `contents: write` is harmless here (we pass `upload-assets: false`
+    # so the upload job's `if:` skips it), and future-proofs an
+    # `upload-assets: true` flip without a permissions-only follow-up
+    # patch. v0.11.7-v0.11.9 startup_failed for an unrelated reason —
+    # the GH organization's actions allowlist didn't include
+    # `slsa-framework/slsa-github-generator/*` (or `aquasecurity/setup-trivy/*`
+    # for the trivy-action transitive call); once both patterns are
+    # added at the org level, the workflow parses cleanly.
     permissions:
       id-token: write    # OIDC token for Sigstore-keyless signing
-      contents: write    # superset of `upload-assets` job's declaration (parse-time check)
+      contents: write    # SLSA caller example default; future-proofs upload-assets:true
       actions: read      # introspect this workflow run for the attestation
-    # IMPORTANT: pinned to commit SHA per the framework's GH-Actions
-    # pinning rule. When bumping, look up the SHA at
+    # IMPORTANT: SHA-pinned per the GH organization's actions
+    # allowlist policy (every action MUST be pinned to a full-length
+    # commit SHA). When bumping, look up the SHA at
     # https://github.com/slsa-framework/slsa-github-generator/releases
     # then resolve via `gh api repos/slsa-framework/slsa-github-generator/commits/<tag>`
     # and update the trailing comment to the matching version tag.
     # The `slsa-action-not-pinned` codebase-patterns detector enforces
-    # SHA-pinning on any `slsa-framework/*` reusable workflow.
+    # SHA-pinning on every `slsa-framework/*` reusable workflow.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a  # v2.1.0
     with:
       base64-subjects:  "${{ needs.validate.outputs.hashes }}"
       upload-assets:    false
-      provenance-name:  blamejs-${{ needs.validate.outputs.version }}.intoto.jsonl
+      provenance-name:  "blamejs-${{ needs.validate.outputs.version }}.intoto.jsonl"
 
   publish-and-release:
     name: Cosign sign + create release + publish to npm
