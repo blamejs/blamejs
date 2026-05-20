@@ -413,15 +413,18 @@ function _spliceIntoChangelog(rendered, version) {
     _exit("cannot read CHANGELOG.md: " + (e && e.message || e));
   }
   var lines = text.split(/\r?\n/);
-  // Find an existing entry line for this version, OR the top of the
-  // version's `## v0.<minor>.x` section.
-  var entryRe = new RegExp("^- v" + version.replace(/\./g, "\\.") + " \\(");
-  var minorPrefix = version.replace(/\.\d+$/, "");                                     // semver-validated, no metachars
-  var sectionHeaderRe = new RegExp("^## v" + minorPrefix.replace(/\./g, "\\.") + "\\.x\\b");
+  // Locate via plain-string prefix match — `version` is pre-validated
+  // strict semver, but routing it through `new RegExp(version)` makes
+  // CodeQL flag a regex-injection sink it can't taint-track through
+  // the `_requireSemver` gate. `startsWith` has no regex semantics so
+  // there's no injection surface to begin with.
+  var entryPrefix = "- v" + version + " (";
+  var minorPrefix = version.replace(/\.\d+$/, "");                                     // semver-validated, digits + dots only
+  var sectionPrefix = "## v" + minorPrefix + ".x";
 
   // Try to find an existing entry to replace.
   for (var i = 0; i < lines.length; i += 1) {
-    if (entryRe.test(lines[i])) {
+    if (lines[i].indexOf(entryPrefix) === 0) {
       // Find the end of this entry (next `- v` line or `## v` section).
       var j = i + 1;
       while (j < lines.length && !/^- v\d/.test(lines[j]) && !/^## v\d/.test(lines[j])) {
@@ -435,18 +438,20 @@ function _spliceIntoChangelog(rendered, version) {
     }
   }
   // No existing entry — insert at top of the matching `## v0.X.x` section.
+  // Match against the prefix + the character right after (must be a
+  // word boundary — space, end-of-line, etc.) so `## v0.1.x` doesn't
+  // accidentally match `## v0.11.x`.
   for (var k = 0; k < lines.length; k += 1) {
-    if (sectionHeaderRe.test(lines[k])) {
-      // Find first blank or non-blank line after the section header
-      // and insert the new entry above any existing first entry.
-      var insertAt = k + 1;
-      while (insertAt < lines.length && lines[insertAt].trim() === "") insertAt += 1;
-      var before2 = lines.slice(0, insertAt);
-      var after2  = lines.slice(insertAt);
-      var combined2 = before2.concat([rendered, ""], after2);
-      fs.writeFileSync(CHANGELOG, combined2.join("\n"));
-      return { mode: "inserted", line: insertAt + 1 };
-    }
+    if (lines[k].indexOf(sectionPrefix) !== 0) continue;
+    var tail = lines[k].charAt(sectionPrefix.length);
+    if (tail !== "" && /[\w.]/.test(tail)) continue;                                   // not a real boundary; keep looking
+    var insertAt = k + 1;
+    while (insertAt < lines.length && lines[insertAt].trim() === "") insertAt += 1;
+    var before2 = lines.slice(0, insertAt);
+    var after2  = lines.slice(insertAt);
+    var combined2 = before2.concat([rendered, ""], after2);
+    fs.writeFileSync(CHANGELOG, combined2.join("\n"));
+    return { mode: "inserted", line: insertAt + 1 };
   }
   _exit("could not locate section `## v" + minorPrefix + ".x` in CHANGELOG.md to insert v" + version);
   return null;                                                                          // unreachable
