@@ -262,12 +262,19 @@ jobs:
   provenance:
     needs: validate
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.validate.outputs.is_tag == 'true' && !inputs.dry_run }}
-    # Per slsa-framework v2.1.0 docs, when upload-assets: false the
-    # required permissions are minimal — id-token:write for Sigstore-
-    # keyless signing + actions:read for workflow-run introspection.
-    # contents:write is only needed when upload-assets: true.
+    # The reusable SLSA workflow's `generator` job declares
+    # `permissions: id-token: write, contents: read, actions: read`.
+    # Per GitHub docs, the caller's job-level permissions block must
+    # be a SUPERSET of the called workflow's job permissions, otherwise
+    # the workflow refuses to start (it surfaces as `startup_failure`
+    # before any job runs — there is no log file to diagnose from).
+    # `contents: write` is only needed when `upload-assets: true`,
+    # which we set to false here (publish-and-release attaches assets
+    # atomically at release-create time so the immutable-release
+    # setting stays on).
     permissions:
       id-token: write    # OIDC token for Sigstore-keyless signing
+      contents: read     # SLSA generator's contents: read requirement
       actions: read      # introspect this workflow run for the attestation
     # IMPORTANT: pinned to commit SHA per the framework's GH-Actions
     # pinning rule. When bumping, look up the SHA at
@@ -394,16 +401,36 @@ jobs:
         # write in the script catches a stale env-secret-vs-in-tree-
         # pubkey mismatch — refuses to write a non-verifiable .sig.
         #
-        # If the RELEASE_PQC_SIGNING_KEY secret is not set (e.g. an
-        # operator hasn't completed the one-time setup), the sign
-        # script fails loud; the operator runs
-        # `node scripts/generate-release-signing-key.js` once,
-        # commits keys/release-pqc-pub.json, sets the secret, then
-        # re-pushes the tag.
+        # Conditional on the operator having completed the one-time
+        # release-key setup (run `node scripts/generate-release-signing-key.js`,
+        # commit `keys/release-pqc-pub.json`, set
+        # `RELEASE_PQC_SIGNING_KEY` in the `npm-publish` environment).
+        # When either piece is missing this step skips with a warning;
+        # the release still ships with SLSA L3 + Sigstore SBOM sigs +
+        # SHA-256 + SHA3-512 digests, and the PQC sig sidecar lights
+        # up on the FIRST release after setup completes.
+        id: pqc-sig
         env:
           RELEASE_PQC_SIGNING_KEY: ${{ secrets.RELEASE_PQC_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          # Single-quoted printf strings so bash doesn't try to
+          # command-substitute the backticked code snippets in the
+          # operator-recipe text (Codex P2 — backticks inside double-
+          # quoted strings would attempt to execute the script names
+          # they reference and leak the output into the warning).
+          if [ -z "${RELEASE_PQC_SIGNING_KEY:-}" ]; then
+            printf '%s\n' '::warning::RELEASE_PQC_SIGNING_KEY is empty — skipping the PQC sidecar.'
+            printf '%s\n' '::warning::Operator: run "node scripts/generate-release-signing-key.js" once, commit keys/release-pqc-pub.json, set the secret, then future releases pick up the sig automatically.'
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -f src/keys/release-pqc-pub.json ]; then
+            printf '%s\n' '::warning::src/keys/release-pqc-pub.json is missing in the checked-out source — skipping the PQC sidecar.'
+            printf '%s\n' '::warning::The secret is set but the matching public key is not committed — the signer self-verify cross-check would refuse the sig anyway.'
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           TARBALL=$(ls dist/*.tgz | head -1)
           # The signer expects keys/release-pqc-pub.json at the
           # framework root for the self-verify cross-check. Symlink
@@ -411,6 +438,7 @@ jobs:
           # the script's relative-path resolution finds it.
           ln -sfn src/keys keys
           node src/scripts/sign-release-artifact.js "$TARBALL"
+          echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Generate release-page markdown from structured source
         # Single source of truth: `release-notes/v$VERSION.json`. The
@@ -468,16 +496,25 @@ jobs:
           else
             TITLE="$TAG"
           fi
+          # Build the asset list — PQC sig is conditional on whether
+          # the prior step ran (release-key + secret both present).
+          ASSETS=(
+            "$TARBALL"
+            "${TARBALL}.sha256"
+            "${TARBALL}.sha3-512"
+            sbom.cdx.json sbom.cdx.json.sigstore
+            sbom.vendored.cdx.json sbom.vendored.cdx.json.sigstore
+            "blamejs-${VERSION}.intoto.jsonl"
+          )
+          if [ "${{ steps.pqc-sig.outputs.available }}" = "true" ]; then
+            ASSETS+=("${TARBALL}.mldsa.sig")
+            echo "[release-create] assets: $TARBALL + 2 SBOMs + 2 cosign bundles + intoto.jsonl + sha256 + sha3-512 + mldsa.sig"
+          else
+            echo "[release-create] assets: $TARBALL + 2 SBOMs + 2 cosign bundles + intoto.jsonl + sha256 + sha3-512 (PQC sig skipped — see prior step warning)"
+          fi
           echo "[release-create] title: $TITLE"
-          echo "[release-create] assets: $TARBALL + 2 SBOMs + 2 cosign bundles + intoto.jsonl + sha256 + sha3-512 + mldsa.sig"
           gh release create "$TAG" \
-            "$TARBALL" \
-            "${TARBALL}.sha256" \
-            "${TARBALL}.sha3-512" \
-            "${TARBALL}.mldsa.sig" \
-            sbom.cdx.json sbom.cdx.json.sigstore \
-            sbom.vendored.cdx.json sbom.vendored.cdx.json.sigstore \
-            "blamejs-${VERSION}.intoto.jsonl" \
+            "${ASSETS[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TITLE" \
             --notes-file release-notes.md

@@ -12,6 +12,14 @@ lib/vendor/** -text binary
 # script fails at line 1.
 *.sh text eol=lf
 
+# Derived artifacts the release-notes generator owns end-to-end —
+# rebuild emits LF, so the on-disk file is pinned to LF on every
+# platform. Without this, Windows checkouts would get CRLF and the
+# generator's `--check` drift-gate in smoke would need to keep
+# eating the cost of normalizing both sides before comparing.
+CHANGELOG.md text eol=lf
+release-notes/*.json text eol=lf
+
 # Native modules — always binary.
 *.node binary
 *.so binary
