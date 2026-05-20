@@ -1,4 +1,28 @@
 "use strict";
+
+// Re-exec under a 6 GiB old-space ceiling when the parent process did
+// not already raise the heap cap. The test's cartesian fingerprint /
+// cluster index across ~300 lib/ files lands close to the v8 default
+// 4 GiB ceiling on cold runs (and over it on cold-start CI runners).
+// One self-spawn keeps `node test/layer-0-primitives/codebase-patterns.test.js`
+// working as a first-class invocation without an external shim.
+(function _ensureHeapCeiling() {
+  var argv = process.execArgv || [];
+  for (var i = 0; i < argv.length; i++) {
+    if (/^--max-old-space-size=/.test(argv[i])) return;
+  }
+  // Only re-exec when invoked as the entry point — don't disturb the
+  // smoke orchestrator (smoke.js sets its own heap policy if needed).
+  if (require.main !== module) return;
+  var cp = require("node:child_process");
+  var r  = cp.spawnSync(
+    process.execPath,
+    ["--max-old-space-size=6144"].concat(process.argv.slice(1)),
+    { stdio: "inherit" }
+  );
+  process.exit(r.status === null ? 1 : r.status);
+})();
+
 /**
  * codebase-patterns — automated grep gates for code-shape bug classes
  * that have surfaced repeatedly across releases.
@@ -76,7 +100,8 @@ function _clusterFingerprint(site) {
 }
 
 var LIB_ROOT  = path.resolve(__dirname, "..", "..", "lib");
-var TEST_ROOT = path.resolve(__dirname, "..", "..", "test");
+var TEST_ROOT      = path.resolve(__dirname, "..", "..", "test");
+var WORKFLOWS_ROOT = path.resolve(__dirname, "..", "..", ".github", "workflows");
 
 function _walk(dir, files) {
   files = files || [];
@@ -98,8 +123,8 @@ function _libFiles() { return _walk(LIB_ROOT); }
 // Test-tree walker. Excludes infra: test/helpers/_*.js (shape-matcher,
 // shingle-worker, etc. — substrate consumed by other tests, not part of
 // the test surface itself). Excludes test/.test-output/ generated logs.
-// Detectors that need to scan tests (CLAUDE.md §11b — the
-// setTimeout-as-condition-wait rule lives in the test tree) declare
+// Detectors that need to scan tests (e.g. the setTimeout-as-
+// condition-wait rule that lives in the test tree) declare
 // `scanScope: "test"` in their KNOWN_ANTIPATTERNS entry to route here.
 function _testFiles() {
   var all = _walk(TEST_ROOT);
@@ -110,6 +135,19 @@ function _testFiles() {
     // Exclude shingle-worker output and similar generated artifacts.
     if (/^test\/\.test-output\//.test(rel)) return false;
     return /\.test\.js$/.test(rel) || /\/helpers\/[^_].*\.js$/.test(rel);
+  });
+}
+
+// GitHub Actions workflows walker. Detectors that police the
+// supply-chain trust-root pins (e.g. SHA-pinning of reusable
+// workflows) declare `scanScope: "workflows"` to route here.
+function _workflowFiles() {
+  var all;
+  try { all = _walk(WORKFLOWS_ROOT); }
+  catch (_e) { return []; }
+  return all.filter(function (full) {
+    var rel = _relPath(full);
+    return /\.ya?ml$/.test(rel);
   });
 }
 
@@ -2444,7 +2482,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-submission.js:<top>",
         "lib/network-dns-resolver.js:<top>",
       ],
-      reason: "Top-of-file JSDoc + module banner block — each module ships an @module / @nav / @title / @intro / @card scaffold per the wiki source-driven convention (rule §10). The shingle similarity is the banner shape, not behaviour. Removing or consolidating the banners would break the wiki auto-derivation.",
+      reason: "Top-of-file JSDoc + module banner block — each module ships an @module / @nav / @title / @intro / @card scaffold per the wiki source-driven convention (the wiki pages are auto-derived from these blocks at boot). The shingle similarity is the banner shape, not behaviour. Removing or consolidating the banners would break the wiki auto-derivation.",
     },
     {
       mode:  "family-subset",
@@ -2467,7 +2505,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/self-update.js:_validateVerifyOpts",
         "lib/watcher.js:_validateOpts",
       ],
-      reason: "Generic opt-validation entry — validateOpts.requireObject + a cascade of requireNonEmptyString / requireFiniteNumber / etc. calls. Every operator-facing primitive's create()/issue()/verify() entry opens this way per the tiered-validation discipline (CLAUDE.md rule §5). Tokens collide because validateOpts is the single source of truth for opt-validation shape; that's the point of having it. Each call site validates structurally different opt-shapes — consolidation would couple unrelated primitives.",
+      reason: "Generic opt-validation entry — validateOpts.requireObject + a cascade of requireNonEmptyString / requireFiniteNumber / etc. calls. Every operator-facing primitive's create()/issue()/verify() entry opens this way: entry-point opts THROW on bad input (operator catches typo at boot), distinct from drop-silent observability sinks and default-on-missing request-shape readers. Tokens collide because validateOpts is the single source of truth for opt-validation shape; that's the point of having it. Each call site validates structurally different opt-shapes — consolidation would couple unrelated primitives.",
     },
     {
       mode:  "family-subset",
@@ -5288,9 +5326,9 @@ var KNOWN_ANTIPATTERNS = [
     reason: "CVE-2025-0725 (libcurl + zlib decompression amplification) + CVE-2024-zlib bomb class. Every gunzip / brotli decompress on operator-supplied bytes MUST bound the output. Use `zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> })` so the operator sees the cap at config time; refusal becomes a typed error before the bomb reaches memory.",
   },
   {
-    // v0.10.14 — raw `audit.emit(...)` outside a try/catch swallow is
-    // a CLAUDE.md rule §5 violation (drop-silent on hot-path audit
-    // sinks). When the operator-supplied audit sink throws — bad
+    // v0.10.14 — raw `audit.emit(...)` outside a try/catch swallow
+    // crashes hot paths when the audit sink throws. Hot-path audit
+    // emission must be drop-silent. When the operator-supplied audit sink throws — bad
     // schema, full disk, broken downstream — the throw bubbles
     // through the request that triggered it and crashes a path that
     // has nothing to do with auditing. The framework convention is
@@ -5322,11 +5360,11 @@ var KNOWN_ANTIPATTERNS = [
       // rotate hot path (verified at v0.10.14 audit time).
       "lib/session.js",
       // subject.js: _writeAudit wraps audit.emit in try/catch as of
-      // v0.10.14 (the earlier unwrapped form was a real rule §5
+      // v0.10.14 (the earlier unwrapped form was a real drop-silent
       // violation found by this detector during its first scan).
       "lib/subject.js",
     ],
-    reason: "Drop-silent audit emission per CLAUDE.md rule §5. v0.10.14 audit found subject.js:_writeAudit emitting raw without a try/catch, violating the rule despite the comment promising otherwise. New audit-emit call sites MUST use audit.safeEmit (preferred) or wrap audit.emit in try/catch with a drop-silent comment.",
+    reason: "Drop-silent audit emission on hot paths. v0.10.14 audit found subject.js:_writeAudit emitting raw without a try/catch, letting a misconfigured audit sink crash subject mutations the database already committed. New audit-emit call sites MUST use audit.safeEmit (preferred) or wrap audit.emit in try/catch with a drop-silent comment.",
   },
   // N5 — `Date.now() - <var>` elapsed-time math vs `process.hrtime()`
   // is deferred from v0.10.14 to a follow-up patch. v0.10.14's initial
@@ -6349,15 +6387,15 @@ var KNOWN_ANTIPATTERNS = [
   // P2 by audit ranking). The remaining 8 are scoped for follow-up.
 
   {
-    // CLAUDE.md §11b — `Promise + setTimeout` direct sleep in tests
-    // is forbidden; tests waiting on an asynchronous condition MUST
-    // use `helpers.waitUntil`. v0.10.14 added a detector with
+    // `Promise + setTimeout` direct sleep in tests is forbidden;
+    // tests waiting on an asynchronous condition MUST use
+    // `helpers.waitUntil`. v0.10.14 added a detector with
     // `matchOn: "basename"` and a 49-file allowlist, but it lived in
     // a separate test/helpers test-side runner. This brings the gate
     // into the unified KNOWN_ANTIPATTERNS catalog so the same scope
     // rule applies and the operator audit visibility is uniform.
     id: "test-promise-settimeout-sleep",
-    primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) — polls the condition; never `await new Promise(r => setTimeout(r, N))` to wait on an observable condition (CLAUDE.md §11b)",
+    primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) — polls the observable condition; never `await new Promise(r => setTimeout(r, N))` to wait on one (fixed-budget sleeps race under SMOKE_PARALLEL=64 and macOS GH-Actions contention)",
     scanScope: "test",
     // Catches both arrow-fn and function-expression shapes:
     //   await new Promise(r => setTimeout(r, 100));
@@ -6434,7 +6472,7 @@ var KNOWN_ANTIPATTERNS = [
       "test/layer-0-primitives/ws-client.test.js",
       "test/layer-1-state/api-key.test.js",
     ],
-    reason: "CLAUDE.md §11b — every 'test passes alone, fails under SMOKE_PARALLEL=64' flake (macOS watcher, log-stream-otlp, safe-async-loops, rate-limit-cluster, sandbox flake) is the same root cause: a fixed-budget setTimeout sleep that's too short for runner-contention reality. `helpers.waitUntil(predicate, opts?)` polls the actual condition every 25ms up to a 5000ms cap, exiting early when the predicate returns truthy. Fast platforms finish in milliseconds; contended platforms get the full budget. Allowlist is the v0.10.14 migration backlog — every entry is a release-gate countdown, drained as test owners touch the file.",
+    reason: "Every 'test passes alone, fails under SMOKE_PARALLEL=64' flake (macOS watcher, log-stream-otlp, safe-async-loops, rate-limit-cluster, sandbox flake) is the same root cause: a fixed-budget setTimeout sleep that's too short for runner-contention reality. `helpers.waitUntil(predicate, opts?)` polls the actual condition every 25ms up to a 5000ms cap, exiting early when the predicate returns truthy. Fast platforms finish in milliseconds; contended platforms get the full budget. Allowlist is the v0.10.14 migration backlog — every entry is a release-gate countdown, drained as test owners touch the file.",
   },
 
   {
@@ -6593,6 +6631,61 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // v0.11.7 — `slsa-framework/*` reusable-workflow callouts MUST
+    // pin to a commit SHA, not a tag/branch. A tag-pinned reusable
+    // workflow is mutable (the tag's owner can re-publish), which
+    // breaks the SLSA chain — the attestation we produce binds to
+    // OUR workflow_ref + commit SHA, but the BUILDER (the slsa-
+    // framework workflow) is the trust root for the attestation
+    // logic itself. Tag-pinning lets the upstream rotate that root
+    // out from under us silently.
+    //
+    // The trailing tag-comment for human readability stays (`@<sha>
+    // # v2.1.0`); the regex matches the @<ref> portion only.
+    id: "slsa-framework-action-not-sha-pinned",
+    primitive: "slsa-framework/<workflow>@<40-char-commit-sha>  # vX.Y.Z — pin to commit SHA so the upstream tag can't be re-published under us",
+    scanScope: "workflows",
+    // Match `slsa-framework/.../<file>@<ref>` where `<ref>` is NOT
+    // exactly 40 hex chars. A 40-char hex SHA is what GitHub
+    // resolves a tag to under the hood — pinning to that SHA
+    // freezes the reusable-workflow bytes.
+    regex: /\bslsa-framework\/[^@\s]+@(?!(?:[0-9a-fA-F]{40})\b)\S+/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Reusable workflows under slsa-framework/* are the SLSA builder root of trust. A tag-pinned reference (e.g. @v2.1.0) is mutable — the upstream maintainer can re-publish the tag to point at different code, silently rotating the builder we attest from. SHA-pinning freezes the bytes. Resolve a tag's SHA via `gh api repos/slsa-framework/slsa-github-generator/commits/<tag>` before bumping.",
+  },
+
+  {
+    // v0.11.7 — operator-facing source files must not point at the
+    // framework's own internal-rulebook artifact. Comments carry the
+    // discipline INLINE so a stranger reading lib/ source sees what
+    // the rule says, not a pointer at a file they don't have. The
+    // regex below is the only place the leaked strings appear; the
+    // descriptive prose around it is intentionally token-free.
+    id: "internal-rulebook-vocabulary-in-source",
+    primitive: "describe the rule inline in plain language; the comment carries the discipline itself, not a pointer at an internal rulebook file",
+    // Built from char-class fragments so the literal token strings
+    // don't appear in the rendered detector description that error
+    // messages echo back at violators.
+    regex: new RegExp(
+      "\\b(?:" +
+      [67, 76, 65, 85, 68, 69].map(function (c) { return String.fromCharCode(c); }).join("") + "\\.md" +
+      "|per\\s+" + [67, 76, 65, 85, 68, 69].map(function (c) { return String.fromCharCode(c); }).join("") + "\\b" +
+      "|per\\s+project\\s+rule\\s+\\u00a7" +
+      "|per\\s+rule\\s+\\u00a7\\d" +
+      ")"
+    ),
+    skipCommentLines: false,
+    allowlist: [
+      // The detector catalog inevitably contains the regex pattern
+      // construction itself. Without this allowlist the catalog
+      // would match its own pattern-build at every gate run.
+      "test/layer-0-primitives/codebase-patterns.test.js",
+    ],
+    reason: "Operator-facing source files must not reference the framework's internal rulebook by name. Comments carry the rule inline so a stranger reading the file sees the discipline, not a pointer at a file they don't have.",
+  },
+
+  {
     // v0.11.6 — direct `/proc/self/mountinfo` reads in lib/ MUST route
     // through `b.safeMountInfo` instead. The primitive centralizes the
     // field-4 ("root within source FS") parse discipline that the
@@ -6649,12 +6742,12 @@ var KNOWN_ANTIPATTERNS = [
     // future operator-supplied callback indirections) so legitimate
     // framework-internal awaits aren't flagged.
     id: "external-callback-await-without-timeout",
-    primitive: "safeAsync.withTimeout(externalCb(...), TIMEOUT_MS, { name: '...' }) — operator-supplied callbacks MUST be bounded; hot-path audit/session/observability paths can hang indefinitely otherwise (CLAUDE.md rule §5)",
+    primitive: "safeAsync.withTimeout(externalCb(...), TIMEOUT_MS, { name: '...' }) — operator-supplied callbacks MUST be bounded; hot-path audit / session / observability paths can hang indefinitely otherwise, and a stalled callback that never resolves nor rejects blocks the request that emitted the audit attempt",
     regex: /await\s+_external(?:Store|Sink|Cb|Callback|Hook)\b/,
     requires: /safeAsync\.withTimeout|withTimeout\s*\(/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "Codex P1 on v0.11.4 PR #109 — b.audit.useStore({ record }) inlined await on operator-supplied callback. A stalled network call neither resolves nor rejects ⇒ b.audit.record() never returns, emit/safeEmit drains stall behind it, contradicting the rule §5 drop-silent posture. Defense: wrap every external-callback await in safeAsync.withTimeout. Detector catches future operator-supplied async hooks on the same shape (_externalStore / _userStore / _externalSink / _externalCb / _externalCallback / _externalHook).",
+    reason: "Codex P1 on v0.11.4 PR #109 — b.audit.useStore({ record }) inlined await on operator-supplied callback. A stalled network call neither resolves nor rejects ⇒ b.audit.record() never returns, emit/safeEmit drains stall behind it; hot-path observability emission is supposed to be drop-silent on hangs. Defense: wrap every external-callback await in safeAsync.withTimeout. Detector catches future operator-supplied async hooks on the same shape (_externalStore / _userStore / _externalSink / _externalCb / _externalCallback / _externalHook).",
   },
 
 ];
@@ -7691,12 +7784,17 @@ function testKnownAntipatterns() {
   // that should replace it.
   //
   // Per-entry `scanScope` selects the file set:
-  //   - "lib"  (default) — every .js under lib/ except lib/vendor/
-  //   - "test" — every .test.js under test/ (and non-_-prefixed helpers/).
-  //              The CLAUDE.md §11b waitUntil-vs-setTimeout rule runs
-  //              here; lib-side detectors should NOT scan tests.
-  var libFiles  = _libFiles();
-  var testFiles = null;                                                              // lazy: most detectors are lib-scoped
+  //   - "lib"        (default) — every .js under lib/ except lib/vendor/
+  //   - "test"       — every .test.js under test/ (and non-_-prefixed
+  //                    helpers/). The waitUntil-vs-setTimeout rule
+  //                    runs here; lib-side detectors should NOT scan
+  //                    tests.
+  //   - "workflows"  — every .yml/.yaml under .github/workflows/.
+  //                    Detectors that police supply-chain trust-root
+  //                    pins (SHA-pinned reusable workflows) run here.
+  var libFiles      = _libFiles();
+  var testFiles     = null;                                                            // lazy: most detectors are lib-scoped
+  var workflowFiles = null;
   var allBad = [];
   for (var ai = 0; ai < KNOWN_ANTIPATTERNS.length; ai++) {
     var ap = KNOWN_ANTIPATTERNS[ai];
@@ -7706,6 +7804,9 @@ function testKnownAntipatterns() {
     if (ap.scanScope === "test") {
       if (testFiles === null) testFiles = _testFiles();
       files = testFiles;
+    } else if (ap.scanScope === "workflows") {
+      if (workflowFiles === null) workflowFiles = _workflowFiles();
+      files = workflowFiles;
     } else {
       files = libFiles;
     }

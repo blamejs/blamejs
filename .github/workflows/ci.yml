@@ -69,9 +69,10 @@ jobs:
         # same pins package.json carries) so CodeQL's PinnedDependencies
         # query sees a version-pinned install rather than a bare
         # `npm install` that resolves dynamically. blamejs deliberately
-        # does not commit a lockfile (CLAUDE.md hard rule §1 — zero npm
-        # runtime deps; transpilation hops are supply-chain hops); the
-        # explicit name@version specifiers are the source-of-truth pin.
+        # does not commit a lockfile — the framework ships zero npm
+        # runtime deps (everything vendored under lib/vendor/) and each
+        # transpilation step is a supply-chain hop. The explicit
+        # name@version specifiers are the source-of-truth pin.
         run: npm install --no-audit --no-fund --no-save esbuild@0.28.0 postject@1.0.0-alpha.6
 
       - name: Run framework smoke
