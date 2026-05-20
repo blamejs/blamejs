@@ -109,6 +109,58 @@ Re-running `scripts/generate-release-signing-key.js` rotates the key. Rotation u
 
 The four trust roots — SLSA L3 npm provenance, Sigstore-keyless SBOM signing, SSH-signed tags (v0.9.7+), ML-DSA-65 release-signing sidecar (v0.11.18+) — are independently verifiable. Tampering with any single root is detected by the others.
 
+### Verifying SLSA L3 provenance with `slsa-verifier`
+
+`gh attestation verify` walks the provenance chain via the GitHub API. For an offline / API-independent verification path, pin `slsa-verifier` v2.7.1 ([slsa-framework/slsa-verifier releases](https://github.com/slsa-framework/slsa-verifier/releases/tag/v2.7.1)):
+
+```sh
+TAG=vX.Y.Z
+VERSION="${TAG#v}"
+
+# Download the npm tarball + SLSA L3 attestation.
+gh release download "$TAG" --repo blamejs/blamejs   \
+  --pattern '@blamejs-core-*.tgz'                   \
+  --pattern "blamejs-${VERSION}.intoto.jsonl"
+
+slsa-verifier verify-artifact "@blamejs-core-${VERSION}.tgz"  \
+  --provenance-path "blamejs-${VERSION}.intoto.jsonl"          \
+  --source-uri      github.com/blamejs/blamejs                 \
+  --source-tag      "$TAG"
+```
+
+For air-gapped / offline use, point `slsa-verifier` at a locally-snapshotted Sigstore TUF root (`--trusted-root /path/to/trusted_root.json`, captured once from a trusted channel + verified against the published Sigstore root operators).
+
+**What this proves vs. what it doesn't.** SLSA L3 provenance binds the tarball bytes to *this exact workflow run on this exact commit on this exact tag*. It does NOT prove the source itself is clean — the [TanStack 2025-05-11 incident](https://blog.tanstack.com/the-tanstack-may-2025-supply-chain-attack/) shipped 84 malicious `@tanstack/*` versions with valid SLSA L3 provenance because the source side was compromised. Operators verifying release integrity should pair `slsa-verifier` with the [sha-to-tag verification](#verifying-release-commit-integrity) recipe below.
+
+### Verifying release-commit integrity
+
+Given a published tag, this confirms the tag's commit SHA is on `main`'s first-parent history and is the result of a merged PR (not a force-push, not a tag-mutation, not a sneaky direct push):
+
+```sh
+TAG=vX.Y.Z
+git fetch --tags origin
+
+# 1. Verify the tag signature (also captures the SSH-signing chain).
+git tag -v "$TAG"
+
+# 2. Resolve the commit the tag points at.
+SHA=$(git rev-list -n 1 "$TAG")
+
+# 3. Confirm the SHA is on main's first-parent history (refuses if the
+#    tag points at a sidetracked commit).
+git merge-base --is-ancestor "$SHA" origin/main && echo "on-main: OK"
+
+# 4. Confirm the commit was merged via a PR (squash-merge SHA appears
+#    once on first-parent; refuses on direct push to main).
+PR=$(gh api "repos/blamejs/blamejs/commits/${SHA}/pulls" --jq '.[0].number')
+test -n "$PR" && echo "merged via PR #${PR}: OK"
+```
+
+The same chain is enforced server-side on every tag push by the
+`sha-to-tag-verify` workflow — the publish workflow refuses to proceed if any link fails. The recipe above lets operators re-run the check independently.
+
+This is the defense against the tag-mutation class (CVE-2025-30066: `tj-actions/changed-files` retroactive tag rewrite, affected 23,000+ repos in March 2025) and the source-side-malicious-publish class (TanStack 2025-05-11). Paired with `slsa-verifier` above, they cover the source side AND the build side.
+
 ### Response time
 
 | Severity | First response | Triage / acknowledgment | Fix released |
