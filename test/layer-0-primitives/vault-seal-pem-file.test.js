@@ -68,6 +68,15 @@ async function testAutoResealOnSourceChange() {
   var src = path.join(ctx.dataDir, "privkey.pem");
   var dest = path.join(ctx.dataDir, "privkey.sealed");
   fs.writeFileSync(src, "PEM-V1\n");
+  // Backdate V1's mtime so the V2 mtime change below is unambiguously
+  // newer regardless of when fs.watchFile records its initial-poll
+  // baseline. Without this, a contended CI runner's watchFile can
+  // schedule its first poll AFTER the test's V2 + utimesSync calls
+  // land — recording the post-change mtime as `prev` and never seeing
+  // the transition. Backdating V1 by an hour makes any subsequent
+  // mtime change detectable from any baseline the watcher might capture.
+  var past = new Date(Date.now() - 3600_000);                                  // allow:raw-byte-literal — wall-clock ms
+  fs.utimesSync(src, past, past);
   var watcher;
   try {
     watcher = b.vault.sealPemFile({
@@ -78,15 +87,20 @@ async function testAutoResealOnSourceChange() {
     });
     check("sealPemFile auto: initial seal at gen 1", watcher.generation === 1);
 
-    // Simulate ACME renewal — write a different PEM. Bump mtime to
-    // ensure fs.watchFile sees the change even on coarse-resolution
-    // filesystems where two writes within the same poll window can
-    // collide on mtime.
+    // Simulate ACME renewal — write a different PEM. Bump mtime
+    // explicitly to a value well past V1's backdated mtime so the
+    // change is unambiguous on coarse-resolution filesystems.
     fs.writeFileSync(src, "PEM-V2-renewed\n");
-    var future = new Date(Date.now() + 5000);
+    var future = new Date(Date.now() + 5000);                                  // allow:raw-byte-literal — wall-clock ms
     fs.utimesSync(src, future, future);
 
-    var sawV2 = await _waitForGen(watcher, 2, 5000);
+    // Wider budget for contended CI runners — fs.watchFile's poll
+    // cadence can drift under load, and on the ubuntu-latest runner
+    // a 5s budget was too tight intermittently. helpers.waitUntil
+    // would be the canonical wait helper here, but this file
+    // pre-dates the helper; bumping the budget on the existing
+    // _waitForGen poll achieves the same drift-tolerance.
+    var sawV2 = await _waitForGen(watcher, 2, 15000);                          // allow:raw-byte-literal — wait budget ms
     check("sealPemFile auto: gen incremented after source change", sawV2);
 
     var unsealed2 = b.vault.unseal(fs.readFileSync(dest, "utf8")).toString("utf8");
