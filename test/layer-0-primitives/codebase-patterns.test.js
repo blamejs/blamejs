@@ -6652,7 +6652,7 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\bslsa-framework\/[^@\s]+@(?!(?:[0-9a-fA-F]{40})\b)\S+/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "Reusable workflows under slsa-framework/* are the SLSA builder root of trust. A tag-pinned reference (e.g. @v2.1.0) is mutable — the upstream maintainer can re-publish the tag to point at different code, silently rotating the builder we attest from. SHA-pinning freezes the bytes. Resolve a tag's SHA via `gh api repos/slsa-framework/slsa-github-generator/commits/<tag>` before bumping.",
+    reason: "Reusable workflows under slsa-framework/* are the SLSA builder root of trust. A tag-pinned reference (e.g. @v2.1.0) is mutable in principle — the upstream maintainer can re-publish the tag to point at different code, silently rotating the builder we attest from. SHA-pinning freezes the bytes. The SLSA workflow itself, however, requires a tag ref for its internal builder-fetch step; specific callsites that need the tag form use the per-line `# allow:slsa-framework-action-not-sha-pinned — <reason>` marker on the `uses:` line (the same allowlist-by-line shape every other detector in this catalog supports). New callsites without a per-line marker continue to fail the gate. Resolve a tag's SHA via `gh api repos/slsa-framework/slsa-github-generator/commits/<tag>` for slsa-framework callsites that DON'T need the tag-ref shape.",
   },
 
   {
