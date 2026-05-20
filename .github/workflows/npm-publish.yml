@@ -292,9 +292,18 @@ jobs:
     # SHA-pinning on every `slsa-framework/*` reusable workflow.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a  # v2.1.0
     with:
-      base64-subjects:   "${{ needs.validate.outputs.hashes }}"
-      upload-assets:     false
-      provenance-name:   "blamejs-${{ needs.validate.outputs.version }}.intoto.jsonl"
+      base64-subjects:    "${{ needs.validate.outputs.hashes }}"
+      upload-assets:      false
+      provenance-name:    "blamejs-${{ needs.validate.outputs.version }}.intoto.jsonl"
+      # SLSA's privacy detection reports our public repo as
+      # "private" in this context (likely because the detection
+      # walks workflow permissions rather than the repo's actual
+      # visibility) and halts to avoid leaking the repo name in
+      # Sigstore's public transparency log. github.com/blamejs/blamejs
+      # is public; the transparency-log entry is the desired
+      # behavior. Setting `private-repository: true` overrides the
+      # detection.
+      private-repository: true
       # The SLSA workflow's `final` job ANDs every nested job's
       # outcome — including the `upload-assets` job, which we
       # intentionally skip via `upload-assets: false`. An empty
