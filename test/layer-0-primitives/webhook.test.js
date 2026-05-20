@@ -273,7 +273,7 @@ async function testMiddlewareSuccess() {
   var nextCalled = false;
   await new Promise(function (resolve) {
     mw(req, res, function () { nextCalled = true; resolve(); });
-    setTimeout(resolve, 100);
+    helpers.passiveObserve(100, "webhook valid-sig: middleware short-circuit window").then(resolve);
   });
   check("middleware: next() called on valid sig", nextCalled === true);
   check("middleware: req.webhook populated",
@@ -306,7 +306,7 @@ async function testMiddlewareBadSignature() {
   var nextCalled = false;
   await new Promise(function (resolve) {
     mw(req, res, function () { nextCalled = true; resolve(); });
-    setTimeout(resolve, 100);
+    helpers.passiveObserve(100, "webhook bad-sig: middleware short-circuit window").then(resolve);
   });
   check("middleware: 401 on bad sig",        res._endedStatus === 401);
   check("middleware: next() not called",     nextCalled === false);

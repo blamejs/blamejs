@@ -126,14 +126,29 @@ function _libFiles() { return _walk(LIB_ROOT); }
 // Detectors that need to scan tests (e.g. the setTimeout-as-
 // condition-wait rule that lives in the test tree) declare
 // `scanScope: "test"` in their KNOWN_ANTIPATTERNS entry to route here.
+//
+// Scope: every `*.test.js` under `test/` + non-underscore-prefixed
+// `test/helpers/*.js` + `test/smoke.js` itself + every test file
+// under `examples/*/test/` (the wiki integration suite ships its own
+// `test/`). examples/*/node_modules/ is excluded so vendored deps
+// don't leak into the test-discipline scope.
 function _testFiles() {
   var all = _walk(TEST_ROOT);
+  try {
+    var examplesRoot = path.resolve(__dirname, "..", "..", "examples");
+    all = all.concat(_walk(examplesRoot));
+  } catch (_e) { /* examples/ may not exist in some packaging */ }
   return all.filter(function (full) {
     var rel = _relPath(full);
     // Exclude infra substrate (lives under test/helpers/_*.js by convention).
     if (/^test\/helpers\/_/.test(rel)) return false;
     // Exclude shingle-worker output and similar generated artifacts.
     if (/^test\/\.test-output\//.test(rel)) return false;
+    // Exclude examples/*/node_modules/ and per-example .test-output.
+    if (/^examples\/[^/]+\/node_modules\//.test(rel)) return false;
+    if (/^examples\/.*\/\.test-output\//.test(rel)) return false;
+    if (/^test\/smoke\.js$/.test(rel)) return true;
+    if (/^examples\/[^/]+\/test\/.*\.js$/.test(rel)) return true;
     return /\.test\.js$/.test(rel) || /\/helpers\/[^_].*\.js$/.test(rel);
   });
 }
@@ -540,9 +555,8 @@ function testNoLiteralNulBytesInSource() {
     hits);
 }
 
-// (testNoReleaseNamedTestFiles moved to test-codebase-patterns.test.js
-// in v0.10.14 — the rule scans test-file basenames, not lib-source
-// content; belongs with the rest of the test-discipline catalog.)
+// release-named-test-file is now an inline KNOWN_ANTIPATTERNS entry
+// with scanScope: "test" + matchOn: "basename".
 
 // ---- Pattern 8b: parser / validator primitives must have a fuzz harness ----
 
@@ -6389,29 +6403,40 @@ var KNOWN_ANTIPATTERNS = [
   {
     // `Promise + setTimeout` direct sleep in tests is forbidden;
     // tests waiting on an asynchronous condition MUST use
-    // `helpers.waitUntil`. v0.10.14 added a detector with
-    // `matchOn: "basename"` and a 49-file allowlist, but it lived in
-    // a separate test/helpers test-side runner. This brings the gate
-    // into the unified KNOWN_ANTIPATTERNS catalog so the same scope
-    // rule applies and the operator audit visibility is uniform.
+    // `helpers.waitUntil`. v0.10.14 introduced the detector with a
+    // narrower regex + a 49-file backlog under a separate test-side
+    // runner; v0.11.19 consolidated the test-discipline catalog into
+    // this file with the broadened regex (Codex P2 from v0.10.14 —
+    // catches block-bodied arrows, multi-arg arrows, function bodies
+    // with leading statements).
     id: "test-promise-settimeout-sleep",
-    primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) — polls the observable condition; never `await new Promise(r => setTimeout(r, N))` to wait on one (fixed-budget sleeps race under SMOKE_PARALLEL=64 and macOS GH-Actions contention)",
+    primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) for condition-waits OR helpers.passiveObserve(ms, label) for the rare case of verifying ABSENCE of an event over a window",
     scanScope: "test",
-    // Catches both arrow-fn and function-expression shapes:
+    // Broadened regex covers every callable form:
     //   await new Promise(r => setTimeout(r, 100));
-    //   await new Promise(function (r) { setTimeout(r, 100); });
     //   await new Promise((resolve) => { setTimeout(resolve, 100); });
-    regex: /new\s+Promise\s*\(\s*(?:\(?\s*\w+\s*\)?\s*=>|function\s*\(\s*\w+\s*\)\s*\{)[\s\S]{0,80}?setTimeout\s*\(/,
+    //   await new Promise(function (r) { setTimeout(r, 100); });
+    //   await new Promise(function () { setTimeout(...) });
+    // 200-char window keeps the regex bounded; longer Promise bodies
+    // that do real work between Promise-open and setTimeout don't
+    // fit the direct-sleep antipattern anyway.
+    regex: /new Promise\s*\(\s*(?:function\s*[\w$]*\s*\([^)]*\)\s*\{|\([^)]*\)\s*=>\s*\{?|[\w$]+\s*=>\s*\{?)[\s\S]{0,200}?setTimeout\s*\(/,
     skipCommentLines: true,
     allowlist: [
       // ===== Structural FPs (stay allowlisted) =====
       // helpers.waitUntil IS the polling primitive — it has to use
-      // setTimeout internally. The detector forbids USING setTimeout
-      // as a condition-wait; the primitive itself is exempt.
+      // setTimeout internally. helpers.passiveObserve is the
+      // legitimate-real-time-elapse sibling. The wait module exports
+      // both; the detector forbids USING setTimeout as a condition-
+      // wait, not implementing the primitives.
       "test/helpers/wait.js",
       // The catalog itself carries fragments of the bug pattern as
       // regex literals inside KNOWN_ANTIPATTERNS entries.
       "test/layer-0-primitives/codebase-patterns.test.js",
+      // Smoke runner orchestration uses Promise+setTimeout for
+      // process-spawn budgets and worker-pool drain — not for
+      // test-body synchronization.
+      "test/smoke.js",
       // audit-use-store.test.js uses `new Promise(resolve =>
       // setTimeout(resolve, 250))` as the canonical "slow operator
       // callback" simulator to verify b.audit.useStore's
@@ -6420,35 +6445,123 @@ var KNOWN_ANTIPATTERNS = [
       "test/layer-0-primitives/audit-use-store.test.js",
 
       // ===== Migration backlog (drains as test owners touch) =====
-      // Removed from this list alongside the helpers.waitUntil
-      // conversion commit for each file. Every entry is a release-gate
-      // countdown, not a perpetual exception.
-      "test/layer-0-primitives/log-stream-otlp-grpc.test.js",
-      "test/layer-0-primitives/middleware-compose-pipeline.test.js",
-      "test/layer-0-primitives/network-dns-resolver.test.js",
-      "test/layer-0-primitives/network-heartbeat-passive.test.js",
-      "test/layer-0-primitives/network.test.js",
-      "test/layer-0-primitives/notify.test.js",
-      "test/layer-0-primitives/observability-tracing.test.js",
-      "test/layer-0-primitives/promise-pool.test.js",
-      "test/layer-0-primitives/pubsub.test.js",
-      "test/layer-0-primitives/queue-flow-repeat.test.js",
-      "test/layer-0-primitives/require-auth-cache-control.test.js",
-      "test/layer-0-primitives/retry.test.js",
-      "test/layer-0-primitives/safe-async-parallel.test.js",
-      "test/layer-0-primitives/scim-server.test.js",
-      "test/layer-0-primitives/sse.test.js",
-      "test/layer-0-primitives/webhook.test.js",
-      "test/integration/log-stream.test.js",
-      "test/integration/object-store-sigv4.test.js",
-      "test/integration/queue-redis.test.js",
-      "test/layer-0-primitives/mail-greylist.test.js",
-      "test/layer-0-primitives/safe-async-loops.test.js",
-      "test/layer-0-primitives/websocket-channels.test.js",
-      "test/layer-0-primitives/ws-client.test.js",
-      "test/layer-1-state/api-key.test.js",
+      // Removed from this list alongside the conversion commit for
+      // each file. Every entry is a release-gate countdown, not a
+      // perpetual exception.
+      "test/helpers/services.js",
+      "test/layer-0-primitives/a2a-tasks.test.js",
+      "test/layer-0-primitives/agent-orchestrator.test.js",
+      "test/layer-0-primitives/queue-dlq-extend-lease.test.js",
+      "test/layer-0-primitives/queue-priority-rate-progress.test.js",
+      "examples/wiki/test/integration.js",
     ],
-    reason: "Every 'test passes alone, fails under SMOKE_PARALLEL=64' flake (macOS watcher, log-stream-otlp, safe-async-loops, rate-limit-cluster, sandbox flake) is the same root cause: a fixed-budget setTimeout sleep that's too short for runner-contention reality. `helpers.waitUntil(predicate, opts?)` polls the actual condition every 25ms up to a 5000ms cap, exiting early when the predicate returns truthy. Fast platforms finish in milliseconds; contended platforms get the full budget. Allowlist is the v0.10.14 migration backlog — every entry is a release-gate countdown, drained as test owners touch the file.",
+    reason: "Every 'test passes alone, fails under SMOKE_PARALLEL=64' flake (macOS watcher, log-stream-otlp, safe-async-loops, rate-limit-cluster, sandbox flake) is the same root cause: a fixed-budget setTimeout sleep that's too short for runner-contention reality. `helpers.waitUntil(predicate, opts?)` polls the actual condition every 25ms up to a 5000ms cap, exiting early when the predicate returns truthy. Fast platforms finish in milliseconds; contended platforms get the full budget. `helpers.passiveObserve(ms, label)` is the sibling primitive for the rare case of verifying ABSENCE of an event over a window (work simulators, TTL-elapse before assertion). The allowlist's structural FPs are permanent; the migration-backlog files drain to zero in subsequent patches.",
+  },
+
+  {
+    // v0.10.13 PR #102 macOS hang — stream-throttle.test.js used
+    // `setTimeout`-based rate enforcement plus `node:stream.pipeline`
+    // and hung the macOS GitHub Actions runner for >2h on two
+    // separate commit SHAs of the same branch. Identical runs on the
+    // same SHA succeeded in 15 min. The hang's symptom is opaque on
+    // a remote runner (no partial logs surface until completion), so
+    // the only diagnostic is a per-test wall-clock ceiling.
+    id: "test-uses-stream-pipeline-without-withtesttimeout",
+    primitive: "wrap stream.pipeline-using test bodies with helpers.withTestTimeout(label, async function () { ... })",
+    scanScope: "test",
+    regex: /\b(?:stream\.pipeline|nodeStream\.pipeline|streamPipeline)\s*\(/,
+    requires: /\bwithTestTimeout\b/,
+    allowlist: [
+      "test/helpers/wait.js",
+    ],
+    reason: "Real-time-dependent tests using node:stream.pipeline without a per-test wall-clock ceiling can hang the smoke runner for the full GH Actions 6h timeout — see the v0.10.13 PR #102 macOS hang on stream-throttle's setTimeout-based rate test. New tests using stream.pipeline MUST import `withTestTimeout` from `test/helpers` and wrap each test body so a hang surfaces as `test timed out: <label>` in seconds instead of an opaque stuck job.",
+  },
+
+  {
+    // Tests must live in per-domain files (e.g. honeytoken.test.js,
+    // resource-access-lock.test.js) not release-bucket files like
+    // `v0-8-41-additions.test.js` or `slot-19-enhancements.test.js`.
+    // Release-named test files conflate scope across primitives,
+    // break the smoke runner's per-file isolation, and rot the
+    // moment the release ships.
+    id: "release-named-test-file",
+    primitive: "split into per-domain test files (one primitive → one test file; share helpers under test/helpers/)",
+    scanScope: "test",
+    matchOn: "basename",
+    regex: /^(?:v\d+[-_.]\d+[-_.]\d+(?:[-_.]|$)|slot[-_]\d+|(?:[^/]*[-_])?batch[-_.])/i,
+    allowlist: [],
+    reason: "v0.10.14 — release-named test files (v0-8-41-additions.test.js / slot-19-enhancements.test.js / batch-N.test.js) conflate scope across unrelated primitives, break per-file isolation under SMOKE_PARALLEL=64, and rot the moment the release ships. Tests must live in per-domain files. Smoke runner refuses these at entry too (test/smoke.js) as a second defense.",
+  },
+
+  {
+    // N2 (v0.10.14) — hardcoded non-zero server bind ports race under
+    // SMOKE_PARALLEL=64 when two parallel tests pick the same value.
+    // Convention: `.listen(0)` then `server.address().port` to read
+    // the OS-assigned ephemeral port. Read-only protocol-constant
+    // references (autoconfig XML port: 993 / 587, mock-server config
+    // port: 1025) don't trip this detector — only `.listen()` with a
+    // literal non-zero port does.
+    id: "test-hardcoded-server-bind-port",
+    primitive: ".listen(0) + server.address().port  (let the OS assign an ephemeral port; read it after bind)",
+    scanScope: "test",
+    regex: /\.listen\s*\(\s*(?:\{[^}]*port\s*:\s*)?(?!0\b)\d{2,5}\b/,
+    allowlist: [],
+    reason: "Hardcoded bind ports race under SMOKE_PARALLEL=64 when two parallel tests pick the same value. Convention: .listen(0) + server.address().port. Read-only protocol-constant references (autoconfig XML port: 993 / 587, mock-server config port: 1025) don't trip this detector — only .listen() with a literal non-zero port does.",
+  },
+
+  {
+    // v0.11.13 — `fs.watchFile` / `fs.watch` MUST NOT be called
+    // directly from tests. The framework exposes `b.watcher`
+    // (kernel-event based) and `b.vault.sealPemFile` (poll-based) as
+    // the operator-facing watchers; tests of those primitives compose
+    // `helpers.backdateFile` + `helpers.waitForWatcher` to absorb the
+    // first-poll race + the macOS FSEvents prime latency. Direct
+    // `fs.watch*` in tests re-discovers the same race class.
+    id: "test-fs-watch-direct-call",
+    primitive: "helpers.backdateFile(path) + helpers.waitForWatcher(predicate) — compose the framework's watcher primitives in tests instead of calling fs.watch / fs.watchFile directly",
+    scanScope: "test",
+    regex: /\bfs\s*\.\s*watch(?:File)?\s*\(/,
+    allowlist: [
+      "test/helpers/fs-watch.js",
+    ],
+    reason: "v0.11.13 — `helpers.backdateFile` + `helpers.waitForWatcher` centralize the discipline for fs.watch / fs.watchFile-driven tests (backdate the source pre-watcher so the first poll's baseline is older than any subsequent mutation; widen the wait budget to 15s for CI-runner cadence drift). Direct `fs.watch*` calls in tests re-discover the race class — multiple historical flakes (vault-seal-pem-file + watcher) were the same bug shape.",
+  },
+
+  {
+    // v0.11.13 — tests that set a future mtime via fs.utimesSync MUST
+    // also call helpers.backdateFile on the source. The future-mtime
+    // idiom assumes the watcher has already recorded an OLDER
+    // baseline mtime to compare against. Without backdating, the
+    // watcher's first poll can record the future-mtime as `prev` and
+    // miss the transition entirely.
+    id: "test-future-utimes-without-backdated-baseline",
+    primitive: "helpers.backdateFile(source) before writing future-mtime via fs.utimesSync(...) so the watcher's baseline is unambiguously older than the post-mutation mtime",
+    scanScope: "test",
+    regex: /\bfs\s*\.\s*utimesSync\s*\([^,]+,\s*new\s+Date\s*\(\s*Date\s*\.\s*now\s*\(\s*\)\s*\+/,
+    requires: /\bbackdateFile\s*\(/,
+    allowlist: [
+      "test/helpers/fs-watch.js",
+    ],
+    reason: "v0.11.13 — every recurring flake in the fs.watch test class (vault-seal-pem-file + watcher) shared the same root cause: the test wrote a file with a future mtime expecting the watcher's first poll to detect the change, but the first poll could land AFTER the mutation under runner contention. helpers.backdateFile establishes an unambiguously-older baseline; pairing it with future-mtime writes makes the watcher's transition detection deterministic.",
+  },
+
+  {
+    // N3 (v0.10.14) — tests creating a real DB handle without an
+    // isolation primitive. Any test file calling `b.db.create(` MUST
+    // also name one of: `setupTestDb` / `setupVaultOnly` (framework
+    // helpers) or `mkdtempSync` (ad-hoc per-test temp dataDir).
+    // Leaked per-test SQLite state corrupts subsequent tests under
+    // SMOKE_PARALLEL=64.
+    id: "test-creates-db-handle-without-isolation",
+    primitive: "helpers.setupTestDb / helpers.setupVaultOnly / mkdtempSync — every test that spins up a real DB handle MUST wire one of these isolation primitives so SQLite state stays per-test",
+    scanScope: "test",
+    regex: /\bb\.db\.create\s*\(/,
+    requires: /\b(?:setupTestDb|setupVaultOnly|mkdtempSync)\b/,
+    allowlist: [
+      "test/helpers/db.js",
+      "test/helpers/index.js",
+    ],
+    reason: "Tests spinning a real DB handle without a per-test isolation primitive leak SQLite state to a shared directory; subsequent tests see prior rows under SMOKE_PARALLEL=64. Static-API tests that reference b.db.applyPosture() / b.db.declareView() without spinning a real handle don't trip the detector. Use helpers.setupTestDb / helpers.setupVaultOnly, or mkdtempSync the dataDir.",
   },
 
   {
@@ -8049,7 +8162,6 @@ async function run() {
   testNoStrayConsoleCalls();
   testNoUnresolvedMarkers();
   testNoLiteralNulBytesInSource();
-  // testNoReleaseNamedTestFiles — moved to test-codebase-patterns.test.js
   testParserPrimitivesHaveFuzzHarness();
   testSafeGuardWiredInIndex();
   testSafeGuardHasMustComposeDetector();

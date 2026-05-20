@@ -179,10 +179,12 @@ async function run() {
       });
     });
     hs.sock.write(_frameRequest(0x01 /* TEXT */, msgBuf, true));
-    await Promise.race([
-      done,
-      new Promise(function (_r, rej) { setTimeout(function () { rej(new Error("timeout")); }, 5000); }),
-    ]);
+    // Wait until the server's deflate-encoded echo lands as a final
+    // frame on the read stream. waitUntil's 5s default budget covers
+    // the original race-with-timeout window.
+    await helpers.waitUntil(function () {
+      return msgFrames && msgFrames.length >= 1;
+    }, { label: "ws permessage-deflate: server echoed deflate-encoded frame" });
 
     check("echo: server replied with at least one frame",
           msgFrames && msgFrames.length >= 1);
@@ -231,10 +233,10 @@ async function run() {
       });
     });
     hs2.sock.write(_frameRequest(0x01, plainBuf, true));
-    await Promise.race([
-      done2,
-      new Promise(function (_r, rej) { setTimeout(function () { rej(new Error("plain timeout")); }, 5000); }),
-    ]);
+    // Wait until the server's plain echo lands as a final frame.
+    await helpers.waitUntil(function () {
+      return plainFrame !== null && plainFrame !== undefined;
+    }, { label: "ws permessage-deflate: server echoed plain (uncompressed) frame" });
 
     check("plain echo: RSV1 NOT set (no compression negotiated)",
           plainFrame && plainFrame.rsv1 === false);
