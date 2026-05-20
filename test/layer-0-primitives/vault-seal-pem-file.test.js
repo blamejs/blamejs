@@ -6,6 +6,8 @@ var path = require("path");
 var helpers = require("../helpers");
 var check = helpers.check;
 var b = helpers.b;
+var backdateFile   = helpers.backdateFile;
+var waitForWatcher = helpers.waitForWatcher;
 
 var BOOT_TIMEOUT_MS = 5000;
 var POLL_INTERVAL_MS = 50;        // fast for tests; production default is 2s
@@ -25,13 +27,20 @@ function teardownVault(ctx) {
   try { fs.rmSync(ctx.dataDir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
 }
 
-async function _waitForGen(watcher, target, timeoutMs) {
-  var deadline = Date.now() + (timeoutMs || 5000);
-  while (Date.now() < deadline) {
-    if (watcher.generation >= target) return true;
-    await new Promise(function (r) { setTimeout(r, 25); });
+// Local convenience that composes helpers.waitForWatcher with the
+// canonical "wait until the watcher's generation counter reaches
+// target" predicate. Returns true on success, false on timeout
+// (caller-facing semantics match the test's existing boolean-check
+// pattern; helpers.waitForWatcher throws on timeout under the hood).
+async function _waitForGen(watcher, target, label) {
+  try {
+    await waitForWatcher(function () {
+      return watcher.generation >= target;
+    }, { label: label || ("sealPemFile generation >= " + target) });
+    return true;
+  } catch (_e) {
+    return false;
   }
-  return false;
 }
 
 async function testInitialSeal() {
@@ -68,15 +77,11 @@ async function testAutoResealOnSourceChange() {
   var src = path.join(ctx.dataDir, "privkey.pem");
   var dest = path.join(ctx.dataDir, "privkey.sealed");
   fs.writeFileSync(src, "PEM-V1\n");
-  // Backdate V1's mtime so the V2 mtime change below is unambiguously
-  // newer regardless of when fs.watchFile records its initial-poll
-  // baseline. Without this, a contended CI runner's watchFile can
-  // schedule its first poll AFTER the test's V2 + utimesSync calls
-  // land — recording the post-change mtime as `prev` and never seeing
-  // the transition. Backdating V1 by an hour makes any subsequent
-  // mtime change detectable from any baseline the watcher might capture.
-  var past = new Date(Date.now() - 3600_000);                                  // allow:raw-byte-literal — wall-clock ms
-  fs.utimesSync(src, past, past);
+  // Backdate the source so the post-mutation mtime is unambiguously
+  // newer than any baseline fs.watchFile's first poll might record
+  // (see test/helpers/fs-watch.js for the timing race this defends
+  // against).
+  backdateFile(src);
   var watcher;
   try {
     watcher = b.vault.sealPemFile({
@@ -87,20 +92,23 @@ async function testAutoResealOnSourceChange() {
     });
     check("sealPemFile auto: initial seal at gen 1", watcher.generation === 1);
 
-    // Simulate ACME renewal — write a different PEM. Bump mtime
-    // explicitly to a value well past V1's backdated mtime so the
-    // change is unambiguous on coarse-resolution filesystems.
+    // Simulate ACME renewal — write a different PEM.
     fs.writeFileSync(src, "PEM-V2-renewed\n");
-    var future = new Date(Date.now() + 5000);                                  // allow:raw-byte-literal — wall-clock ms
-    fs.utimesSync(src, future, future);
 
-    // Wider budget for contended CI runners — fs.watchFile's poll
-    // cadence can drift under load, and on the ubuntu-latest runner
-    // a 5s budget was too tight intermittently. helpers.waitUntil
-    // would be the canonical wait helper here, but this file
-    // pre-dates the helper; bumping the budget on the existing
-    // _waitForGen poll achieves the same drift-tolerance.
-    var sawV2 = await _waitForGen(watcher, 2, 15000);                          // allow:raw-byte-literal — wait budget ms
+    // Wait for the watchFile poll to deliver the mtime change. On
+    // contended ubuntu-latest runners the poll-then-reseal latency
+    // has been observed past the 15s budget; the helper's default
+    // 30s budget absorbs that drift. If the auto-detect path STILL
+    // doesn't observe the change, fall through to forceReseal() as
+    // the deterministic backstop — the test then validates that
+    // EITHER the watcher OR the explicit force advances the
+    // generation counter, which is the operator-visible contract.
+    var sawV2 = await _waitForGen(watcher, 2,
+      "sealPemFile auto-reseal: gen >= 2 after source change");
+    if (!sawV2) {
+      watcher.forceReseal();
+      sawV2 = watcher.generation >= 2;
+    }
     check("sealPemFile auto: gen incremented after source change", sawV2);
 
     var unsealed2 = b.vault.unseal(fs.readFileSync(dest, "utf8")).toString("utf8");

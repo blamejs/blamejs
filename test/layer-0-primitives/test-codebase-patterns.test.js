@@ -228,6 +228,46 @@ var KNOWN_TEST_ANTIPATTERNS = [
     allowlist: [],
     reason: "Hardcoded bind ports race under SMOKE_PARALLEL=64 when two parallel tests pick the same value. Convention: .listen(0) + server.address().port. Read-only protocol-constant references (autoconfig XML port: 993 / 587, mock-server config port: 1025) don't trip this detector — only .listen() with a literal non-zero port does.",
   },
+  {
+    // v0.11.13 — `fs.watchFile` / `fs.watch` MUST NOT be called
+    // directly from tests. The framework exposes `b.watcher` (kernel
+    // event-based) and `b.vault.sealPemFile` (poll-based) as the
+    // operator-facing watchers; tests of those primitives compose
+    // `helpers.backdateFile` + `helpers.waitForWatcher` to absorb
+    // the first-poll race + the macOS FSEvents prime latency.
+    // Direct `fs.watch*` in tests re-discovers the same race class.
+    id: "test-fs-watch-direct-call",
+    primitive: "helpers.backdateFile(path) + helpers.waitForWatcher(predicate) — compose the framework's watcher primitives in tests instead of calling fs.watch / fs.watchFile directly",
+    regex: /\bfs\s*\.\s*watch(?:File)?\s*\(/,
+    allowlist: [
+      // The helper documents the shape; its implementation comments
+      // describe the underlying APIs.
+      "test/helpers/fs-watch.js",
+    ],
+    reason: "v0.11.13 — `helpers.backdateFile` + `helpers.waitForWatcher` centralize the discipline for fs.watch / fs.watchFile-driven tests (backdate the source pre-watcher so the first poll's baseline is older than any subsequent mutation; widen the wait budget to 15s for CI-runner cadence drift). Direct `fs.watch*` calls in tests re-discover the race class — multiple historical flakes (vault-seal-pem-file + watcher) were the same bug shape.",
+  },
+  {
+    // v0.11.13 — tests that set a future mtime via fs.utimesSync
+    // MUST also call helpers.backdateFile on the source. The
+    // future-mtime idiom assumes the watcher has already recorded
+    // an OLDER baseline mtime to compare against. Without
+    // backdating, the watcher's first poll can record the
+    // future-mtime as `prev` and miss the transition entirely.
+    //
+    // The `requires` companion-check passes the file when it ALSO
+    // contains a `backdateFile(` call — the pairing makes the
+    // watcher's transition detection deterministic.
+    id: "test-future-utimes-without-backdated-baseline",
+    primitive: "helpers.backdateFile(source) before writing future-mtime via fs.utimesSync(...) so the watcher's baseline is unambiguously older than the post-mutation mtime",
+    regex: /\bfs\s*\.\s*utimesSync\s*\([^,]+,\s*new\s+Date\s*\(\s*Date\s*\.\s*now\s*\(\s*\)\s*\+/,
+    requires: /\bbackdateFile\s*\(/,
+    allowlist: [
+      // The helper itself uses utimesSync to backdate; that's its
+      // canonical job, not a violation.
+      "test/helpers/fs-watch.js",
+    ],
+    reason: "v0.11.13 — every recurring flake in the fs.watch test class (vault-seal-pem-file + watcher) shared the same root cause: the test wrote a file with a future mtime expecting the watcher's first poll to detect the change, but the first poll could land AFTER the mutation under runner contention. helpers.backdateFile establishes an unambiguously-older baseline; pairing it with future-mtime writes makes the watcher's transition detection deterministic.",
+  },
 ];
 
 function _testFiles() {

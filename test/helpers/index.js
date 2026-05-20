@@ -29,6 +29,7 @@ var _cluster  = require("./cluster");
 var _http     = require("./http");
 var _otel     = require("./otel");
 var _wait     = require("./wait");
+var _fsWatch  = require("./fs-watch");
 
 module.exports = {
   // Framework binding + Node stdlib re-exports for ergonomics.
@@ -80,5 +81,9 @@ module.exports = {
   // sleeps that flake under SMOKE_PARALLEL=64 + macOS contention.
   waitUntil:          _wait.waitUntil,
   waitUntilEqual:     _wait.waitUntilEqual,
+
+  // fs.watch / fs.watchFile test primitives
+  backdateFile:       _fsWatch.backdateFile,
+  waitForWatcher:     _fsWatch.waitForWatcher,
   withTestTimeout:    _wait.withTestTimeout,
 };
