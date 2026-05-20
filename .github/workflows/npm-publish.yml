@@ -262,19 +262,17 @@ jobs:
   provenance:
     needs: validate
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.validate.outputs.is_tag == 'true' && !inputs.dry_run }}
-    # The reusable SLSA workflow's `generator` job declares
-    # `permissions: id-token: write, contents: read, actions: read`.
-    # Per GitHub docs, the caller's job-level permissions block must
-    # be a SUPERSET of the called workflow's job permissions, otherwise
-    # the workflow refuses to start (it surfaces as `startup_failure`
-    # before any job runs — there is no log file to diagnose from).
-    # `contents: write` is only needed when `upload-assets: true`,
-    # which we set to false here (publish-and-release attaches assets
-    # atomically at release-create time so the immutable-release
-    # setting stays on).
+    # GitHub Actions evaluates the entire reusable-workflow permission
+    # surface at startup. Even though we pass `upload-assets: false`
+    # (the `upload-assets` job's `if:` short-circuits to skip), its
+    # declared `permissions: contents: write` is still part of the
+    # parse-time check. v0.11.7 and v0.11.8 startup_failed when the
+    # caller only granted `contents: read`; raising to `write` makes
+    # the caller's permission set a superset of every job in the
+    # reusable workflow, regardless of which jobs end up running.
     permissions:
       id-token: write    # OIDC token for Sigstore-keyless signing
-      contents: read     # SLSA generator's contents: read requirement
+      contents: write    # superset of `upload-assets` job's declaration (parse-time check)
       actions: read      # introspect this workflow run for the attestation
     # IMPORTANT: pinned to commit SHA per the framework's GH-Actions
     # pinning rule. When bumping, look up the SHA at
