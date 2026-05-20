@@ -62,14 +62,20 @@ jobs:
           echo "sha: $SHA"
           echo "::endgroup::"
 
-          # 2. Confirm the SHA is on main's first-parent history.
-          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+          # 2. Confirm the SHA is on main's FIRST-PARENT history.
+          #    `git merge-base --is-ancestor` only proves reachability
+          #    via ANY parent chain — a commit on a merged PR branch
+          #    that isn't on main's first-parent path would still
+          #    pass that test. The strict first-parent invariant is
+          #    what the project's squash-merge policy actually
+          #    produces; check it directly.
+          if ! git rev-list --first-parent origin/main | grep -qx "$SHA"; then
             echo "::error::tag $TAG points at $SHA which is NOT on main's first-parent history"
-            echo "::error::this means the tag was created from a side-branch commit that never merged via PR"
+            echo "::error::this means the tag was created from a side-branch commit that never merged via the project's squash-merge flow"
             echo "::error::the publish workflow refuses to proceed; investigate before re-tagging"
             exit 1
           fi
-          echo "::notice::on-main: OK"
+          echo "::notice::on first-parent main: OK"
 
           # 3. Confirm the commit was merged via a PR (squash-merge SHA
           #    appears once on first-parent; refuses on direct push to
@@ -83,14 +89,35 @@ jobs:
           fi
           echo "::notice::merged via PR #${PR}: OK"
 
-          # 4. Confirm the tag itself is annotated + signed (not lightweight).
+          # 4. Confirm the tag itself is annotated AND SSH-signed.
+          #    `git cat-file -t` only distinguishes lightweight vs
+          #    annotated; `git tag -v` is the one that walks the
+          #    SSH-signature chain against the maintainer's
+          #    allowed_signers entry. The repo's `release-tags`
+          #    ruleset has `required_signatures` enabled, so the
+          #    server-side gate already refuses unsigned tags on
+          #    push — this check is the belt-and-suspenders
+          #    workflow-side gate that runs the same chain locally.
           OBJECT_TYPE=$(git cat-file -t "$TAG")
           if [ "$OBJECT_TYPE" != "tag" ]; then
             echo "::error::tag $TAG is a lightweight tag ($OBJECT_TYPE), not annotated"
             echo "::error::v0.9.7+ release tags must be annotated + SSH-signed"
             exit 1
           fi
-          echo "::notice::annotated tag: OK"
+          # Capture the maintainer's allowed_signers entry inline
+          # (matches the SECURITY.md "Verifying release authenticity"
+          # recipe). The pubkey + fingerprint are operator-published;
+          # the workflow re-derives both for self-contained verify.
+          curl -fsSL https://github.com/dotCooCoo.keys                                                       \
+            | grep "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPiE/PETpyiVPd8aMygJ+S9CsSVolp4HQZaAuiYVwbBa"      \
+            | awk '{print "RobertLeeLW@gmail.com namespaces=\"git\" "$1" "$2}'                             \
+            > /tmp/blamejs-allowed-signers
+          if ! git -c gpg.ssh.allowedSignersFile=/tmp/blamejs-allowed-signers tag -v "$TAG"; then
+            echo "::error::tag $TAG failed SSH-signature verification against the maintainer's pinned key"
+            echo "::error::SECURITY.md publishes the expected fingerprint (SHA256:5oF/XWhFpMde9TRfEX2GAHiApAq/MXOS4vti5zQbD7g)"
+            exit 1
+          fi
+          echo "::notice::annotated + SSH-signed tag: OK"
 
           # 5. Emit the verified chain to the step summary for operator
           #    visibility (release-page footer cross-reference).
@@ -102,6 +129,6 @@ jobs:
             echo "| Tag | \`${TAG}\` |"
             echo "| Tag commit SHA | \`${SHA}\` |"
             echo "| Merged via | PR #${PR} |"
-            echo "| Tag object type | annotated |"
-            echo "| Verdict | PASS — tag SHA is on main's first-parent + result of a PR merge |"
+            echo "| Tag object type | annotated + SSH-signed |"
+            echo "| Verdict | PASS — tag SHA is on main's first-parent + result of a PR merge + signature verified against maintainer key |"
           } >> "$GITHUB_STEP_SUMMARY"
