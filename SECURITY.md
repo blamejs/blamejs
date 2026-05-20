@@ -156,6 +156,23 @@ The framework's **classical** hashing (SHA-3 family, HMAC-SHA3-512), **classical
 
 ---
 
+## Supply-chain transparency posture
+
+Every tagged release writes a public-transparency-log entry through [Sigstore Rekor](https://docs.sigstore.dev/logging/overview/) as part of two independent trust chains:
+
+1. **SLSA L3 provenance** (`<tarball>.intoto.jsonl`) — the SLSA reusable workflow signs the attestation with an OIDC-bound short-lived cert from Fulcio and records the issuance in Rekor. Downstream verifiers use `slsa-verifier` to confirm the tarball binds to the GitHub workflow + commit + tag that produced it.
+2. **Sigstore-keyless SBOM signatures** (`sbom.cdx.json.sigstore`, `sbom.vendored.cdx.json.sigstore`) — cosign sign-blob via the same OIDC trust root. Verifiers use `cosign verify-blob ... --bundle <.sigstore>`.
+
+Both flows publish the repository's identity (`blamejs/blamejs`), the workflow path, and the release commit SHA into the public Rekor instance. `github.com/blamejs/blamejs` is intentionally public — see the [repository's settings](https://github.com/blamejs/blamejs/settings) — so the transparency-log entry doesn't disclose anything an attacker couldn't already observe from the public repo, and the auditability gain is the operator-desired property.
+
+The release workflow passes `private-repository: true` to the SLSA reusable workflow as an explicit acknowledgement that the transparency-log write is intentional. Without the override, SLSA's internal privacy detection (which inspects workflow permissions rather than repository visibility and so reports false positives for permissive-permission workflows even on public repos) would halt the attest step to avoid leaking the repository name.
+
+**Downstream forks operating from a private mirror should flip the input.** If you fork blamejs into a private GitHub organization or a non-public namespace and want releases NOT to write Rekor entries, set `private-repository: false` in `.github/workflows/npm-publish.yml`'s `provenance` job. The SLSA workflow will then halt the attest step and the release pipeline will fail; you'll either accept the loss of SLSA provenance or migrate to a private-Sigstore deployment (the SLSA framework supports this via `sigstore-go` configuration outside the scope of this document).
+
+The framework collects no telemetry from operators. Every primitive that touches an external service (DNS lookups via DoH, ACME enrollment, OCSP checks, NTP queries, OSV-Scanner SBOM scans during release, etc.) is documented at its call site and runs through an operator-supplied endpoint — there is no framework-owned ingest channel.
+
+---
+
 ## Operator security checklist
 
 This is the minimum-viable security posture for a production deployment. The framework's defaults handle most of it; this checklist is what the operator MUST do that the framework cannot.
