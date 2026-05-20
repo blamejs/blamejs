@@ -402,76 +402,157 @@ function _loadReleaseNotes(version) {
   return null;                                                                          // unreachable
 }
 
-function _spliceIntoChangelog(rendered, version) {
-  // `version` is pre-validated as strict semver — the regex source
-  // is now `^- v<digits.digits.digits> \(` with no operator-supplied
-  // metachars beyond the `.` separator (escaped below).
-  var text;
-  try { text = fs.readFileSync(CHANGELOG, "utf8"); }
-  catch (e) {
-    if (e && e.code === "ENOENT") _exit("CHANGELOG.md does not exist");
-    _exit("cannot read CHANGELOG.md: " + (e && e.message || e));
-  }
-  var lines = text.split(/\r?\n/);
-  // Locate via plain-string prefix match — `version` is pre-validated
-  // strict semver, but routing it through `new RegExp(version)` makes
-  // CodeQL flag a regex-injection sink it can't taint-track through
-  // the `_requireSemver` gate. `startsWith` has no regex semantics so
-  // there's no injection surface to begin with.
-  var entryPrefix = "- v" + version + " (";
-  var minorPrefix = version.replace(/\.\d+$/, "");                                     // semver-validated, digits + dots only
-  var sectionPrefix = "## v" + minorPrefix + ".x";
-
-  // Try to find an existing entry to replace.
-  for (var i = 0; i < lines.length; i += 1) {
-    if (lines[i].indexOf(entryPrefix) === 0) {
-      // Find the end of this entry (next `- v` line or `## v` section).
-      var j = i + 1;
-      while (j < lines.length && !/^- v\d/.test(lines[j]) && !/^## v\d/.test(lines[j])) {
-        j += 1;
+// Walk `release-notes/`, load every release (both per-patch and
+// consolidated minor-line files), and return a flat array sorted
+// newest-first.
+function _loadAllReleases() {
+  var entries = fs.readdirSync(NOTES_DIR);
+  var all = [];
+  for (var i = 0; i < entries.length; i += 1) {
+    var name = entries[i];
+    if (!/\.json$/.test(name)) continue;
+    var conMatch = name.match(/^v(\d+\.\d+)\.x\.json$/);
+    if (conMatch) {
+      var con = _readJson(path.join(NOTES_DIR, name), "release-notes/" + name);
+      if (!Array.isArray(con.releases)) {
+        _exit("consolidated file release-notes/" + name + " missing `releases` array");
       }
-      var before = lines.slice(0, i);
-      var after  = lines.slice(j);
-      var combined = before.concat([rendered], after);
-      fs.writeFileSync(CHANGELOG, combined.join("\n"));
-      return { mode: "replaced", line: i + 1 };
+      for (var r = 0; r < con.releases.length; r += 1) all.push(con.releases[r]);
+      continue;
+    }
+    var verMatch = name.match(/^v(\d+\.\d+\.\d+)\.json$/);
+    if (!verMatch) continue;
+    all.push(_readJson(path.join(NOTES_DIR, name), "release-notes/" + name));
+  }
+  all.sort(function (a, b) {
+    var ap = String(a.version).split(".").map(Number);
+    var bp = String(b.version).split(".").map(Number);
+    for (var k = 0; k < 3; k += 1) {
+      if (ap[k] !== bp[k]) return bp[k] - ap[k];
+    }
+    return 0;
+  });
+  return all;
+}
+
+// Build the full `CHANGELOG.md` content from `release-notes/`. Every
+// entry is validated through the schema + leak-vocabulary sweep
+// before render, so a malformed JSON anywhere in the tree fails the
+// rebuild loud (rather than producing a silently-broken markdown
+// section).
+//
+// Output shape — preserved across releases so the workflow's awk
+// extract stays stable:
+//
+//   # Changelog
+//
+//   <preamble paragraph>
+//
+//   ## v0.<minor>.x
+//
+//   - vX.Y.Z (YYYY-MM-DD) — **Headline.** ...   (newest first)
+//
+//   ## v0.<minor-1>.x
+//   ...
+function rebuildChangelog() {
+  var releases = _loadAllReleases();
+  if (releases.length === 0) _exit("no releases found in release-notes/");
+  // Validate everything before render — refuses to emit a partially-
+  // valid CHANGELOG when one JSON has drifted.
+  for (var i = 0; i < releases.length; i += 1) {
+    validate(releases[i], releases[i].version);
+  }
+  // Group by minor for the section headers.
+  var byMinor = {};
+  var minorOrder = [];
+  for (var j = 0; j < releases.length; j += 1) {
+    var v = releases[j].version;
+    var minor = v.replace(/\.\d+$/, "");
+    if (!byMinor[minor]) {
+      byMinor[minor] = [];
+      minorOrder.push(minor);
+    }
+    byMinor[minor].push(releases[j]);
+  }
+  // `releases` is already sorted newest-first → `minorOrder` follows
+  // the same order (highest minor first because its first patch is
+  // the newest seen). Each minor's items[] is also already sorted.
+  var parts = [];
+  parts.push("# Changelog");
+  parts.push("");
+  parts.push("One entry per released tag, grouped by minor. Latest first.");
+  parts.push("");
+  parts.push("Pre-1.0 the surface is intentionally evolving — every release may");
+  parts.push("change something operators depend on. Read each entry before");
+  parts.push("upgrading across more than a few patches at a time.");
+  parts.push("");
+  for (var m = 0; m < minorOrder.length; m += 1) {
+    parts.push("## v" + minorOrder[m] + ".x");
+    parts.push("");
+    var bucket = byMinor[minorOrder[m]];
+    for (var b = 0; b < bucket.length; b += 1) {
+      parts.push(renderChangelogLine(bucket[b]));
+      parts.push("");
     }
   }
-  // No existing entry — insert at top of the matching `## v0.X.x` section.
-  // Match against the prefix + the character right after (must be a
-  // word boundary — space, end-of-line, etc.) so `## v0.1.x` doesn't
-  // accidentally match `## v0.11.x`.
-  for (var k = 0; k < lines.length; k += 1) {
-    if (lines[k].indexOf(sectionPrefix) !== 0) continue;
-    var tail = lines[k].charAt(sectionPrefix.length);
-    if (tail !== "" && /[\w.]/.test(tail)) continue;                                   // not a real boundary; keep looking
-    var insertAt = k + 1;
-    while (insertAt < lines.length && lines[insertAt].trim() === "") insertAt += 1;
-    var before2 = lines.slice(0, insertAt);
-    var after2  = lines.slice(insertAt);
-    var combined2 = before2.concat([rendered, ""], after2);
-    fs.writeFileSync(CHANGELOG, combined2.join("\n"));
-    return { mode: "inserted", line: insertAt + 1 };
-  }
-  _exit("could not locate section `## v" + minorPrefix + ".x` in CHANGELOG.md to insert v" + version);
-  return null;                                                                          // unreachable
+  // Strip the trailing blank so the file ends with exactly one newline.
+  while (parts.length > 0 && parts[parts.length - 1] === "") parts.pop();
+  return parts.join("\n") + "\n";
 }
 
 function main() {
-  var explicitVersion = process.argv[2] && !process.argv[2].startsWith("--")
-    ? process.argv[2]
-    : null;
-  var writeMode       = process.argv.indexOf("--write") !== -1;
-  var releasePageMode = process.argv.indexOf("--release-page") !== -1;
-  if (writeMode && releasePageMode) {
-    _exit("--write and --release-page are mutually exclusive (write is CHANGELOG-only)");
+  var argv = process.argv.slice(2);
+  var rebuildMode     = argv.indexOf("--rebuild")      !== -1;
+  var checkMode       = argv.indexOf("--check")        !== -1;
+  var releasePageMode = argv.indexOf("--release-page") !== -1;
+  var explicitVersion = null;
+  for (var a = 0; a < argv.length; a += 1) {
+    if (!argv[a].startsWith("--")) { explicitVersion = argv[a]; break; }
   }
+  // Mode arbitration — every pair must be exclusive.
+  var modeFlags = [rebuildMode, checkMode, releasePageMode].filter(Boolean).length;
+  if (modeFlags > 1) {
+    _exit("--rebuild, --check, and --release-page are mutually exclusive");
+  }
+
+  // --rebuild: regenerate the entire CHANGELOG.md from release-notes/.
+  // The single source of truth is the JSON tree; the markdown is a
+  // derived artifact. Operators run this whenever a release-notes
+  // JSON lands (or changes), then commit both.
+  if (rebuildMode) {
+    var rebuilt = rebuildChangelog();
+    fs.writeFileSync(CHANGELOG, rebuilt);
+    process.stderr.write("[generate-changelog-entry] OK — rebuilt CHANGELOG.md (" +
+      rebuilt.length + " bytes) from release-notes/\n");
+    return;
+  }
+
+  // --check: in-memory rebuild + diff against on-disk. Non-mutating.
+  // Smoke wires this gate so any release-notes JSON change without a
+  // matching `--rebuild` fails pre-push.
+  if (checkMode) {
+    var expected = rebuildChangelog();
+    var actual;
+    try { actual = fs.readFileSync(CHANGELOG, "utf8"); }
+    catch (e) {
+      if (e && e.code === "ENOENT") _exit("CHANGELOG.md does not exist");
+      _exit("cannot read CHANGELOG.md: " + (e && e.message || e));
+    }
+    if (expected === actual) {
+      process.stderr.write("[generate-changelog-entry] OK — CHANGELOG.md matches the rebuild from release-notes/\n");
+      return;
+    }
+    _exit("CHANGELOG.md drifts from release-notes/ — run `node scripts/generate-changelog-entry.js --rebuild` to regenerate (then commit both)");
+  }
+
+  // Per-version modes (default render-to-stdout, or --release-page
+  // for the multi-section GitHub-release markdown).
   var version = _requireSemver(
     explicitVersion || _readPackageVersion(),
     explicitVersion ? "argv[1] (explicit version)" : "package.json#version"
   );
   var loaded = _loadReleaseNotes(version);
-  var notes = loaded.notes;
+  var notes  = loaded.notes;
   validate(notes, version);
 
   if (releasePageMode) {
@@ -483,16 +564,10 @@ function main() {
   }
 
   var rendered = renderChangelogLine(notes);
-  if (writeMode) {
-    var info = _spliceIntoChangelog(rendered, version);
-    process.stderr.write("[generate-changelog-entry] OK — " + info.mode + " v" + version +
-      " entry into CHANGELOG.md at line " + info.line + "\n");
-  } else {
-    process.stdout.write(rendered + "\n");
-    process.stderr.write("[generate-changelog-entry] OK — rendered v" + version +
-      " entry (" + rendered.length + " chars); re-run with --write to splice into CHANGELOG.md, " +
-      "or --release-page to emit GH-release-page markdown\n");
-  }
+  process.stdout.write(rendered + "\n");
+  process.stderr.write("[generate-changelog-entry] OK — rendered v" + version +
+    " entry (" + rendered.length + " chars). Use --rebuild to write CHANGELOG.md, " +
+    "--check to gate drift, --release-page to emit GH-release-page markdown.\n");
 }
 
 main();

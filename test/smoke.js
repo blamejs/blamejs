@@ -382,11 +382,34 @@ function _checkReleaseNotesRollup() {
   }
 }
 
+// CHANGELOG.md is a derived artifact rebuilt from `release-notes/`.
+// This gate runs the generator's `--check` mode — in-memory rebuild
+// + diff against on-disk — and fails fast when an operator added /
+// edited a release-notes JSON without running `--rebuild`. Same
+// non-mutating discipline as the rollup gate: smoke never writes to
+// the working tree.
+function _checkChangelogInSync() {
+  var cp = require("node:child_process");
+  var r = cp.spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "scripts", "generate-changelog-entry.js"), "--check"],
+    { cwd: REPO_ROOT, stdio: ["ignore", "inherit", "inherit"] }
+  );
+  if (r.status !== 0) {
+    throw new Error(
+      "CHANGELOG.md drift — run `node scripts/generate-changelog-entry.js --rebuild` " +
+      "to regenerate from release-notes/, then commit both files"
+    );
+  }
+}
+
 (async function () {
   var smokeStart = Date.now();
   console.log("Static gates");
   _checkReleaseNotesRollup();
   console.log("  " + _padRight("release-notes-rollup", 40) + " (ok)");
+  _checkChangelogInSync();
+  console.log("  " + _padRight("changelog-in-sync", 40) + " (ok)");
   console.log("Layer 0");
   await _runLayer(0, path.join(__dirname, "00-primitives.js"), "Layer 0");
   console.log("Layer 1");

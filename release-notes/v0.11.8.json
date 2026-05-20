@@ -2,8 +2,8 @@
   "$schema": "../scripts/release-notes-schema.json",
   "version": "0.11.8",
   "date": "2026-05-19",
-  "headline": "Release-workflow startup-failure fix + graceful PQC sidecar skip",
-  "summary": "The v0.11.7 npm-publish workflow rejected with `startup_failure` before any job ran because the `provenance` job's permissions block was a subset of what the called SLSA reusable workflow requires. The ML-DSA-65 sidecar step ALSO blocked when the operator hadn't yet generated the release-signing keypair. v0.11.8 fixes both — the workflow now passes parse-time validation, and the PQC sig step gracefully skips with a clear operator warning when the key/secret aren't set up yet.",
+  "headline": "Release-workflow startup-failure fix + graceful PQC sidecar skip + CHANGELOG.md becomes a derived artifact",
+  "summary": "The v0.11.7 npm-publish workflow rejected with `startup_failure` before any job ran because the `provenance` job's permissions block was a subset of what the called SLSA reusable workflow requires. The ML-DSA-65 sidecar step ALSO blocked when the operator hadn't yet generated the release-signing keypair. v0.11.8 fixes both — the workflow now passes parse-time validation, and the PQC sig step gracefully skips with a clear operator warning when the key/secret aren't set up yet. CHANGELOG.md is now generated end-to-end from `release-notes/*.json` (the single source of truth); the old hand-edit splice path is removed.",
   "sections": [
     {
       "heading": "Fixed",
@@ -24,6 +24,10 @@
         {
           "title": "Release-asset list built dynamically from per-step outputs",
           "body": "The `gh release create` step builds its asset bundle from a bash array driven by the prior PQC-sig step's `outputs.available` flag. When PQC is skipped, the `.mldsa.sig` asset isn't referenced (otherwise `gh release create` would fail trying to attach a non-existent file)."
+        },
+        {
+          "title": "`CHANGELOG.md` is now a derived artifact rebuilt from `release-notes/*.json`",
+          "body": "`scripts/generate-changelog-entry.js` gains `--rebuild` (regenerate the whole `CHANGELOG.md` from the JSON tree) and `--check` (in-memory rebuild + diff against on-disk; non-mutating). The hand-edit `--write` / splice path is removed entirely — operators edit the JSON, run `--rebuild`, commit both. Smoke wires the `--check` gate so any release-notes change without a matching rebuild fails pre-push. The `version → new RegExp` data flow that CodeQL kept flagging is gone (the splice that needed it no longer exists), and so is the `existsSync → readFileSync` window the lookup used to traverse — the single rebuild path reads every JSON via `readFileSync` directly and lets `ENOENT` distinguish missing from malformed."
         }
       ]
     }
