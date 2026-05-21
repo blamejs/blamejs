@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.11.35",
-  "createdAt": "2026-05-21T19:33:45.487Z",
+  "createdAt": "2026-05-21T20:20:19.516Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5635,10 +5635,6 @@
               "valueType": "number"
             },
             "completed": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "failed": {
               "type": "primitive",
               "valueType": "number"
             },
