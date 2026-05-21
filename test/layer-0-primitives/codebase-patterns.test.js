@@ -2252,6 +2252,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/a2a.js:_validateCardShape",
+        "lib/acme.js:buildCsr",
+        "lib/guard-mail-move.js:validate",
+      ],
+      reason: "v0.11.22 — per-spec input-shape validation prelude: each primitive accepts an operator-supplied opts blob and walks a documented per-field shape check (A2A signed agent-card vs PKCS#10 CSR opts vs IMAP MOVE intent). The shingle similarity is the shared `if (typeof X !== 'string' || X.length === 0)` / `if (!Array.isArray(Y))` / per-field range checks; the bodies enforce entirely different spec contracts (W3C A2A card schema / RFC 2986 CSR opts / RFC 9051 IMAP MOVE).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/audit-daily-review.js:create",
         "lib/auth/saml.js:create",
         "lib/auth/oid4vci.js:create",
@@ -5338,6 +5347,60 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "CVE-2025-0725 (libcurl + zlib decompression amplification) + CVE-2024-zlib bomb class. Every gunzip / brotli decompress on operator-supplied bytes MUST bound the output. Use `zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> })` so the operator sees the cap at config time; refusal becomes a typed error before the bomb reaches memory.",
+  },
+
+  {
+    // Codex P2 on v0.11.22 PR #126 — `b.cert.create`'s SNI dispatch
+    // wildcard-matched `*.example.com` against `foo.bar.example.com`
+    // (multi-label) because the suffix check was `endsWith(pattern.
+    // slice(1))` alone. RFC 6125 §6.4.3 restricts the wildcard to ONE
+    // label in the left-most position. This detector forces the
+    // single-label discipline: any code that suffix-matches a wildcard
+    // pattern via `pattern.slice(1)` MUST also check that the leading
+    // label contains no `.`.
+    id: "wildcard-suffix-match-without-single-label-check",
+    primitive: "after `endsWith(pattern.slice(1))`, also assert the consumed leading label has no `.` — `var leading = servername.slice(0, servername.length - tail.length); if (leading.indexOf('.') !== -1) continue;`",
+    regex: /\.endsWith\s*\(\s*\w+\s*\.\s*slice\s*\(\s*1\s*\)/,
+    // Requires either the documented RFC 6125 single-label check
+    // (`indexOf(".") !== -1`) or an `allow:wildcard-suffix-match-without-single-label-check` marker.
+    requires: /indexOf\s*\(\s*["']\.["']\s*\)|allow:wildcard-suffix-match-without-single-label-check/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P2 on v0.11.22 PR #126 — `b.cert.create`'s SNI dispatcher matched `*.wild.example` against `foo.bar.wild.example` because the suffix-only check accepted multi-label leading prefixes. RFC 6125 §6.4.3: wildcard SAN matches exactly ONE label in the left-most position. Detector forces the discipline: any `endsWith(pattern.slice(1))` style wildcard match in lib/ MUST also enforce the single-label invariant via an `indexOf('.')` check on the consumed leading label.",
+  },
+
+  {
+    // Codex P1 on v0.11.22 PR #126 — `b.cert.create` accepted manifest
+    // entries with names like `../escape` because the cert name is used
+    // as a filesystem path segment under storage.rootDir but only the
+    // non-empty check ran at factory time. The fix added a strict
+    // character class + explicit `..` refusal. The general bug class
+    // is: any operator-supplied identifier that lands as a path
+    // segment must be sanitized at the surface boundary, not relying
+    // on `path.join` semantics to constrain it.
+    //
+    // Detector shape (narrow + low FP): flag any source file that
+    // uses `path.join(...args, X.name)` or `path.join(...args, X.id)`
+    // shape (member access on an operator-supplied opts object) AND
+    // does NOT also call `b.safePath.resolve` OR enforce a regex
+    // refusing path-traversal payloads on the same identifier.
+    //
+    // This is best-effort: precise dataflow detection requires
+    // semantic analysis. The regex catches the most common shape;
+    // wider variants (path.join with computed strings, fs.writeFile
+    // with concatenated paths) need per-file vigilance + behavioral
+    // tests in the consuming primitive's own test file.
+    id: "fs-path-from-operator-identifier-without-traversal-refusal",
+    primitive: "compose `b.safePath.resolve(rootDir, X.name)` (refuses traversal at the boundary) OR validate the name against a strict character class + explicit `..` refusal before passing to `path.join` / `fs.*` calls",
+    regex: /\bpath\.join\s*\([^)]*\b\w+\.(?:name|id)\b[^)]*\)/,
+    // Requires either a composed b.safePath call, an explicit `..`
+    // refusal regex literal, or a per-file allow marker documenting
+    // why the identifier is structurally safe (e.g. comes from an
+    // internally-generated bundleId with a regex-guarded shape).
+    requires: /safePath\.resolve|\/\\\.\\\.|"\.\."|'\.\.'|allow:fs-path-from-operator-identifier-without-traversal-refusal/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.11.22 PR #126 — `b.cert.create` accepted manifest cert names like `../escape` and `subdir/file` because only non-empty validation ran at the factory; the name then landed as a filesystem path segment under storage.rootDir. The fix added a strict `[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}` character class + explicit `..` refusal. The bug class — operator-supplied identifier used as a path segment without sanitization — is broader than this one primitive. Detector flags any `path.join(..., X.name|id)` shape in lib/ that doesn't also compose `b.safePath.resolve` OR refuse `..` via a regex on the same identifier. Imperfect; behavioral path-traversal tests in the consuming primitive's own test file (e.g. cert.test.js's 8 bad-name shapes) are the per-primitive regression guard.",
   },
   {
     // v0.10.14 — raw `audit.emit(...)` outside a try/catch swallow
