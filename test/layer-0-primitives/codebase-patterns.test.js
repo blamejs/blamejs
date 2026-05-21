@@ -7971,6 +7971,195 @@ function testNoHexShaCompareEquals() {
     matches);
 }
 
+// ---- Pattern: per-recipient outcome loop fall-through to failure path ----
+//
+// class: outcome-branch-fallthrough-to-failed
+//
+// v0.11.24 mail-send-deliver bring-up: the per-recipient delivery loop
+// branched `if (res.outcome === "delivered") { delivered.push({...}); }`
+// but had no `continue;` after the push — execution fell through into
+// the unconditional `failed.push({...})` + DSN-emit path further down
+// the loop body. Every recipient that delivered successfully also
+// landed in `failed[]`. The fix added an explicit `continue;` (and
+// re-shaped the conditional so only converted-permanent / direct-
+// permanent reaches the failure handler).
+//
+// The shape is generic: an outcome-classifying loop where the SUCCESS
+// branch pushes into a success array but doesn't exit the iteration
+// before the FAILURE-side push runs. This detector flags occurrences
+// of `<name>.push(` for a success-shaped array immediately followed
+// (within 12 lines, no intervening `continue;` / `return` / `break`)
+// by `failed.push(` in the same function body.
+function testNoOutcomeBranchFallthroughToFailed() {
+  var files = _libFiles();
+  var bad = [];
+  var successNames = ["delivered", "succeeded", "sent", "completed"];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      var hit = false;
+      var successName = null;
+      for (var k = 0; k < successNames.length; k++) {
+        var name = successNames[k];
+        // Match `<name>.push(`  (object-property push, not a bare var).
+        if (new RegExp("\\b" + name + "\\.push\\s*\\(").test(line)) {
+          hit = true;
+          successName = name;
+          break;
+        }
+      }
+      if (!hit) continue;
+      // Skip if THIS very line also exits the iteration.
+      if (/\b(continue|return|break)\b/.test(line)) continue;
+      // Look ahead up to 12 lines for `failed.push(` without an
+      // intervening exit. The push is open-paren-only so multi-line
+      // arg lists still count as exit-free if no continue lands.
+      var exitedEarly = false;
+      var foundFailedPush = false;
+      var failedLine = -1;
+      for (var step = 1; step <= 12 && j + step < lines.length; step++) {
+        var probe = lines[j + step];
+        if (/^\s*(\/\/|\*)/.test(probe)) continue;
+        if (/\b(continue|return|break|throw)\b/.test(probe)) {
+          exitedEarly = true;
+          break;
+        }
+        // Closing `}` at column 0-4 ends the immediate enclosing block;
+        // if we reach the loop's `}` without a continue, that's the fall-
+        // through shape we want to catch — but reaching a SIBLING `}`
+        // means we left the if-block already. Conservative: stop scan on
+        // a line that starts with `}` followed by `else` (clearly a
+        // sibling branch in the same if-else chain — not an exit).
+        if (/\bfailed\.push\s*\(/.test(probe)) {
+          foundFailedPush = true;
+          failedLine = j + step;
+          break;
+        }
+      }
+      if (foundFailedPush && !exitedEarly) {
+        bad.push({
+          file:    _relPath(files[i]),
+          line:    j + 1,
+          content: successName + ".push(...) → failed.push(...) " +
+                   "fall-through (line " + (failedLine + 1) + ")",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "outcome-branch-fallthrough-to-failed");
+  _report("per-recipient outcome loop: `delivered`/`succeeded`/`sent`/`completed` " +
+          ".push branch exits the iteration before reaching `failed.push` " +
+          "(v0.11.24 mail-send-deliver bring-up)",
+    bad);
+}
+
+// ---- Pattern: smtpTransport opts pass `hostnameLocal` instead of `ehloName` ----
+//
+// class: smtp-transport-hostname-local-typo
+//
+// v0.11.24 Codex P2-a: `b.mail.smtpTransport` reads `opts.ehloName` for
+// the EHLO/HELO identity. Passing `hostnameLocal` is a no-op — the
+// transport silently falls back to the default identity (`blamejs`),
+// which breaks deliverability + policy enforcement on receivers that
+// expect a specific configured hostname. The shape is easy to type
+// (HostnameLocal-style variable name in the caller) but invisible
+// without integration testing because the transport doesn't refuse
+// unknown opts.
+function testNoSmtpTransportHostnameLocalOpt() {
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    var insideTransportCall = false;
+    var transportCallStart = -1;
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      // Open: smtpTransport( OR .smtpTransport.create( OR transportFactory(
+      if (/\b(smtpTransport|transportFactory)\s*(\.\s*create\s*)?\(/.test(line)) {
+        insideTransportCall = true;
+        transportCallStart = j;
+      }
+      if (insideTransportCall) {
+        if (/\bhostnameLocal\s*:/.test(line)) {
+          bad.push({
+            file:    _relPath(files[i]),
+            line:    j + 1,
+            content: "smtpTransport call passes `hostnameLocal:` (transport reads `ehloName:`)",
+          });
+        }
+        if (/\)\s*;?\s*$/.test(line) && j > transportCallStart) {
+          insideTransportCall = false;
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "smtp-transport-hostname-local-typo");
+  _report("smtpTransport opts use `ehloName:` (not `hostnameLocal:`) for EHLO identity " +
+          "(v0.11.24 Codex P2-a — silent fall-back to default hostname)",
+    bad);
+}
+
+// ---- Pattern: resolver.queryMx result treated as array without normalising ----
+//
+// class: resolver-querymx-shape-assumed
+//
+// v0.11.24 Codex P1: when the operator injects a
+// `b.network.dns.resolver.create()` instance as `resolver`, its
+// `queryMx(domain)` returns `{ rrs: [...], ttl, ... }` — not a raw
+// array. Code that calls `resolver.queryMx(...)` and then immediately
+// runs `Array.isArray(result)` / `result.length` / `result[0]` against
+// the return value silently converts every successful lookup into a
+// no-MX permanent failure when the framework resolver is in use.
+// The fix normalises across both shapes (`{rrs}` → `rrs`; bare array
+// → passthrough) before the array checks run.
+function testResolverQueryMxShapeNormalised() {
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      // Match `\w+\.queryMx(` patterns (the resolver-method call).
+      if (!/\bqueryMx\s*\(/.test(line)) continue;
+      // Look at the next ~10 lines for `.rrs` normalisation. If
+      // none found AND we see an Array.isArray / .length / [0]
+      // probe of the same return value within that window, flag.
+      var normalised = false;
+      var assumedArray = false;
+      for (var step = 0; step <= 10 && j + step < lines.length; step++) {
+        var probe = lines[j + step];
+        if (/\.rrs\b/.test(probe)) { normalised = true; break; }
+        if (step > 0 && /\b(Array\.isArray|\.length|\[0\])\b/.test(probe)) {
+          assumedArray = true;
+        }
+      }
+      if (!normalised && assumedArray) {
+        bad.push({
+          file:    _relPath(files[i]),
+          line:    j + 1,
+          content: "resolver.queryMx return treated as Array without `.rrs` normalisation",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "resolver-querymx-shape-assumed");
+  _report("resolver.queryMx return normalised across `{rrs}` and bare-Array shapes " +
+          "before Array probes (v0.11.24 Codex P1 — silent no-MX on framework resolver)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -8342,6 +8531,10 @@ async function run() {
   testSealWithoutAad();
   testNoRawMibLiteral();
   testNoHexShaCompareEquals();
+  // v0.11.24 — mail-send-deliver bring-up + Codex P1/P2-a bug classes.
+  testNoOutcomeBranchFallthroughToFailed();
+  testNoSmtpTransportHostnameLocalOpt();
+  testResolverQueryMxShapeNormalised();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
