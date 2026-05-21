@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.22",
-  "createdAt": "2026-05-21T00:22:48.497Z",
+  "frameworkVersion": "0.11.23",
+  "createdAt": "2026-05-21T01:19:13.136Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -34606,6 +34606,10 @@
                   "valueType": "string"
                 },
                 "export": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "expunge": {
                   "type": "primitive",
                   "valueType": "string"
                 },
