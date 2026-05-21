@@ -214,6 +214,14 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data        # ACME state — DO NOT delete in prod
       - caddy-config:/config
+    # Pass WIKI_PORT through so the Caddyfile's `wiki:{$WIKI_PORT:3008}`
+    # upstream tracks whatever the wiki service is actually listening
+    # on. An operator carrying WIKI_PORT=8080 from a pre-v0.11.40
+    # deploy gets a matching upstream — without this, the wiki would
+    # listen on 8080 but Caddy would forward to 3008, surfacing as
+    # 502s on the public site.
+    environment:
+      WIKI_PORT: ${WIKI_PORT:-3008}
     depends_on:
       wiki:
         condition: service_healthy
