@@ -204,6 +204,8 @@ var agentStream = require("./lib/agent-stream");
 var agentEventBus = require("./lib/agent-event-bus");
 var agentTenant = require("./lib/agent-tenant");
 var agentSaga = require("./lib/agent-saga");
+var fsm = require("./lib/fsm");
+var money = require("./lib/money");
 var agentPostureChain = require("./lib/agent-posture-chain");
 var agentTrace = require("./lib/agent-trace");
 var agentSnapshot = require("./lib/agent-snapshot");
@@ -256,6 +258,7 @@ var auth = {
   oid4vp:           require("./lib/auth/oid4vp"),
   saml:             require("./lib/auth/saml"),
   openidFederation: require("./lib/auth/openid-federation"),
+  botChallenge:     require("./lib/auth/bot-challenge"),
 };
 var template = require("./lib/template");
 var render = require("./lib/render");
@@ -531,6 +534,8 @@ module.exports = {
   guardTraceContext: guardTraceContext,
   guardSnapshotEnvelope: guardSnapshotEnvelope,
   agent:            { orchestrator: agentOrchestrator, idempotency: agentIdempotency, stream: agentStream, eventBus: agentEventBus, tenant: agentTenant, saga: agentSaga, postureChain: agentPostureChain, trace: agentTrace, snapshot: agentSnapshot },
+  fsm:              fsm,
+  money:            money,
   guardArchive:     guardArchive,
   guardJson:        guardJson,
   guardYaml:        guardYaml,
