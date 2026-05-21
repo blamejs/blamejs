@@ -2245,9 +2245,11 @@ async function testNoDuplicateCodeBlocks() {
         "lib/ddl-change-control.js:reject",
         "lib/lro.js:cancel",
         "lib/lro.js:status",
+        "lib/money.js:_parseDecimalString",
+        "lib/money.js:_rationalFromDecimalString",
         "lib/time.js:parseISO",
       ],
-      reason: "v0.10.16 — state-machine transition pattern: each primitive reads an operator-supplied operation/transition ID, asserts the current state in a small enum, persists the next state via the store handle, and emits a typed audit/error. DDL change-control approve/reject vs LRO cancel/status vs ISO-8601 parsing share the assert-state-then-transition shape; the per-primitive state vocabulary is spec-specific (DDL approval workflow / google.rpc LRO lifecycle / ISO-8601 grammar productions).",
+      reason: "v0.10.16 — state-machine transition / regex-prelude parse-then-build pattern: each primitive reads an operator-supplied string token (operation ID, transition state, decimal amount, ISO-8601 timestamp), asserts the shape via a small regex or enum, classifies a typed refusal code on miss, and emits / returns a structured value. DDL change-control approve/reject vs LRO cancel/status vs ISO-8601 parse vs money decimal-string parse share the `validate-shape-then-emit-typed-error` shape; the per-primitive vocabulary is spec-specific (DDL approval workflow / google.rpc LRO lifecycle / ISO-8601 grammar productions / ISO 4217 minor-unit decoding).",
     },
     {
       mode:  "family-subset",
@@ -2261,11 +2263,31 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/ddl-change-control.js:create",
+        "lib/network.js:_setSocketKeepAlive",
+        "lib/webhook.js:sign",
+      ],
+      reason: "v0.11.25 — typed-arg validation prelude across unrelated domains: DDL change-control opts validation, TCP socket keep-alive number-coercion, Stripe webhook sign opts validation. The shared shingle is the `if (typeof x !== \"number\" || !isFinite(x) || x < 0) throw new Error(...)` chain that every framework primitive runs at its boundary; each body then does something completely different (open a DDL ticket / set TCP_KEEPALIVE / HMAC-SHA-256 a Stripe signature).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/agent-posture-chain.js:_union",
         "lib/compliance-ai-act.js:classify",
         "lib/mail-store.js:create",
+        "lib/mail-store.js:search",
+        "lib/mail-store.js:addMatch",
       ],
-      reason: "v0.11.23 — id-array dedup primitive: each function consumes an operator-supplied identifier array and collapses duplicates via `Object.create(null)` + `uniqueIds.push` BEFORE the per-id loop that mutates shared state (posture-set union, classification accumulator, quota decrement). The shingle similarity is the shared dedup idiom; the bodies do entirely different work (W3C agent posture set merge / EU AI Act Annex IV classification / mail-store hardExpunge quota decrement). Consolidating would couple unrelated dataflow domains.",
+      reason: "v0.11.23 + v0.11.25 — accumulator-with-guards pattern: each function takes an operator-supplied scalar (id / category / filter-key) and selectively pushes a derived value into a shared collector after running a typed guard sequence. Posture-set union, EU AI Act classification, mail-store hardExpunge dedup, mail-store FTS search match-clause assembly — each enforces its own guard set + push-destination semantics. Consolidating would couple a posture domain, a regulatory classifier, a quota subtraction, and an FTS5 query builder.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/fsm.js:define",
+        "lib/mail.js:_validateMessage",
+      ],
+      reason: "v0.11.25 — per-spec required-field validation prelude: each primitive consumes an operator-supplied definition/opts/message object and walks a sequence of `if (!x || typeof x !== '<type>') throw new <Primitive>Error(...)` shape-assertions naming the spec-specific code on each refusal. The shingle similarity is the shared validation-cascade idiom; the bodies enforce entirely different spec contracts (IETF SD-JWT-VC issuer opts vs flat-statechart `b.fsm` definition vs RFC 5322 mail message). Consolidating would couple the SD-JWT issuer's audience/key-binding lifecycle, the FSM's state/transition-shape contract, and the mail submitter's address/CRLF/MIME rules — each error namespace is the spec's own.",
     },
     {
       mode:  "family-subset",
@@ -2512,6 +2534,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-mx.js:<top>",
         "lib/mail-server-pop3.js:<top>",
         "lib/mail-server-submission.js:<top>",
+        "lib/mail-server-registry.js:<top>",
+        "lib/money.js:<top>",
+        "lib/asn1-der.js:<top>",
+        "lib/safe-sieve.js:<top>",
         "lib/network-dns-resolver.js:<top>",
       ],
       reason: "Top-of-file JSDoc + module banner block — each module ships an @module / @nav / @title / @intro / @card scaffold per the wiki source-driven convention (the wiki pages are auto-derived from these blocks at boot). The shingle similarity is the banner shape, not behaviour. Removing or consolidating the banners would break the wiki auto-derivation.",
@@ -4874,6 +4900,44 @@ async function testNoDuplicateCodeBlocks() {
         "lib/vault/seal-pem-file.js:_resealNow",
       ],
       reason: "TOCTOU-safe file read scaffold: openSync(path, 'r') → fstatSync(fd) → bounded readSync loop into Buffer.allocUnsafe(stat.size) → closeSync. Each call site is the canonical fix for a js/file-system-race CodeQL finding — the open-fd-then-fstat sequence closes the swap window that exists between a separate existsSync/statSync and a subsequent readFileSync. Each site enforces its own max-size policy and emits a domain-typed error (AtomicFileError/atomic-file/too-large, BackupBundleError/backup-bundle/not-a-file, TlsTrustError surface, SealPemFileError/seal-pem-file/toctou-detected with extra inode-equality check); consolidating into a single primitive would erase the per-domain error-class + cap-vocabulary while only saving the inner read-loop. Future consolidation candidate as `b.atomicFile.readFd(filepath, opts)` once the inode-equality variant in seal-pem-file is reconciled with the simpler variants in atomic-file/backup/network-tls.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/agent-snapshot.js:_runHandler",
+        "lib/auth/bot-challenge.js:verify",
+        "lib/dsr.js:submit",
+        "lib/mail-crypto-smime.js:_verifySignerInfo",
+        "lib/self-update.js:poll",
+      ],
+      reason: "v0.11.25 — try / await / catch + typed-error rethrow + drop-silent audit emission scaffold. Each primitive wraps a single outbound effect (agent.snapshot.run / Cloudflare-Turnstile siteverify HTTPS POST / DSR-rights store write / CMS S/MIME SignerInfo verification / self-update poll) in the same `try { await x } catch (e) { _safeAudit(..., 'failure', {...}); throw new XxxError(code, msg) }` shape. The bodies enforce entirely different specs (agent-saga compensation / RFC 6960 / RFC 7522 / RFC 5652 / b.selfUpdate). Consolidating would couple unrelated effect domains and erase the per-primitive typed-error vocabulary.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/bot-challenge.js:verify",
+        "lib/backup/index.js:create",
+        "lib/db.js:declareRequireDualControl",
+      ],
+      reason: "v0.11.25 — opts-shape validation prelude pattern: each primitive walks an operator-supplied opts blob and refuses non-string / out-of-range / missing-field shapes with a typed error per its spec. Bot-challenge verify normalises Turnstile/hCaptcha/reCAPTCHA opts (token shape, action, hostname); backup.create asserts manifest / encryption / retention opts; db.declareRequireDualControl asserts column/table/policy opts. Each emits a distinct typed-error class with namespaced codes (bot-challenge/*, b-backup/*, db/*); consolidating would couple unrelated spec namespaces.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/bot-challenge.js:_normaliseAllowlist",
+        "lib/middleware/cors.js:create",
+        "lib/network-dns.js:setServers",
+      ],
+      reason: "v0.11.25 — allowlist-array normalisation prelude: each primitive walks an operator-supplied string-array (allowedHostnames + allowedActions for the bot-challenge verifier / CORS origin allowlist / DNS resolver server list), refuses non-strings + empty entries + zero-length lists, and emits a primitive-specific typed error. Bot-challenge bodies test exact-match against the embedded widget claim; CORS bodies test Origin-header membership; network-dns bodies test IPv4/IPv6 literal parsing. The shared shape is the validation prelude — consolidating would couple unrelated wire-format vocabularies (Turnstile/hCaptcha embedded claims vs Fetch Origin grammar vs RFC 1035 nameserver IP literals).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/agent-orchestrator.js:create",
+        "lib/auth/bot-challenge.js:_parseCloudflareLike",
+        "lib/ws-client.js:connect",
+      ],
+      reason: "v0.11.25 — defensive object-shape read pattern: each primitive accepts a raw object (siteverify JSON response / agent-orchestrator opts / WebSocket close-frame payload) and normalises it into a typed internal shape via per-field `typeof === 'string' ? raw.X : null` guards. Bot-challenge bodies normalise Cloudflare/hCaptcha success+hostname+action+challenge_ts+error-codes; agent-orchestrator bodies normalise opts.topology+opts.leader+opts.health; ws-client bodies normalise the close-frame {code, reason}. The shared shape is the per-field typeof-then-null defensive read; the bodies enforce entirely different spec contracts (Cloudflare siteverify JSON vs b.agent.orchestrator topology vs RFC 6455 close-frame).",
     },
   ];
   // Each KNOWN_CLUSTERS entry's `files` is a list of `path:fn` strings.
@@ -8160,6 +8224,302 @@ function testResolverQueryMxShapeNormalised() {
     bad);
 }
 
+// ---- Pattern: b.money.create(<Number>) / Money + Number arithmetic ----
+//
+// class: no-number-money-arithmetic
+//
+// `b.money` is the framework's defense against IEEE 754 binary-fraction
+// drift on monetary values. The boundary discipline is: every amount
+// crosses into a `Money` instance as BigInt minor units OR a decimal-
+// shaped string; Numbers are refused at construction. The detector
+// extends the discipline to call sites in lib/:
+//
+//   1. `b.money.create(<NumericLiteral>, ...)` or
+//      `b.money.of(<NumericLiteral>, ...)` -- caller passes a literal
+//      Number (e.g. `b.money.of(12.50, "USD")`) where a string or BigInt
+//      is required. The framework's own code shouldn't trip this — but
+//      a future consumer-side primitive grafted onto lib/ could.
+//   2. A bare `Number(<money-shaped-var>)` or arithmetic operator
+//      (`+` / `-` / `*` / `/`) that mixes a Money instance with a
+//      Number literal: `m + 1.5`, `m * 0.07`. The IEEE drift bug.
+//
+// The detector flags both shapes when they appear in lib/ outside
+// lib/money.js itself.
+function testNoNumberMoneyArithmetic() {
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    // The primitive itself owns the construction surface and gets a
+    // pass — the boundary refusal happens INSIDE `of(...)` here.
+    if (rel === "lib/money.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      // Shape 1: `b.money.create(<numeric-literal>, ...)` or `.of(...)`.
+      // Numeric literal = bare digits OR digits with a decimal point,
+      // not a BigInt (no trailing `n`) and not a string (no quotes).
+      if (/\bb\.money\.(?:of|create)\s*\(\s*-?\d+(?:\.\d+)?\s*,/.test(line)) {
+        bad.push({
+          file:    rel,
+          line:    j + 1,
+          content: "b.money.{of|create}(<Number>, ...) -- pass BigInt minor units (e.g. 250n) or decimal-shaped string (\"2.50\") instead",
+        });
+      }
+      // Shape 2: arithmetic operator between a likely-Money-named
+      // identifier (`price`, `total`, `subtotal`, `amount`, `fee`, etc.)
+      // and a numeric literal. False-positive resistant: the lhs must
+      // be a Money-shaped identifier AND the operator must be `+` / `-`
+      // / `*` / `/` with a numeric literal on the rhs.
+      if (/\b(price|total|subtotal|amount|fee|charge|tax|discount|tip|balance|due|paid|refund|cost)\s*[+\-*/]\s*-?\d+(?:\.\d+)?\b(?!n)/.test(line)) {
+        // Skip when the result is clearly NOT money math: index access,
+        // length comparison, etc. The pattern is broad on purpose;
+        // operators use the `allow:no-number-money-arithmetic` marker
+        // when the identifier is a count/index rather than a Money.
+        bad.push({
+          file:    rel,
+          line:    j + 1,
+          content: "Money-shaped identifier arithmetic with Number literal -- route through Money.multiply / add / subtract on a Money instance",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "no-number-money-arithmetic");
+  _report("b.money.of / .create refuses Number amounts; Money instances " +
+          "compose via .add / .subtract / .multiply (no Number arithmetic " +
+          "leaks through the API boundary)",
+    bad);
+}
+
+// ---- Pattern: bot-challenge verifier mustn't leak its `secret` opt ----
+//
+// class: bot-challenge-secret-in-audit
+//
+// b.auth.botChallenge (lib/auth/bot-challenge.js) holds the operator-
+// issued provider secret in closure and POSTs it in the siteverify
+// body. The verifier's audit emissions are designed to NEVER include
+// the secret — only the token prefix (8 chars), provider key, and
+// verdict surface in metadata. Any future edit that drops the
+// `secret` bytes into an audit emit payload would silently leak the
+// secret to whatever sink the operator wired (log stream / disk /
+// SIEM). The detector scans `lib/auth/bot-challenge.js` exclusively —
+// other modules' `secret` opts have their own audit-leak policies
+// and a universal ban would generate noise.
+//
+// Shape: an emit-open line (`audit*.emit(` / `audit*.safeEmit(` /
+// `audit*.event(` / `_safeAudit(`) followed within 15 lines by a
+// value-position reference to the `secret` identifier (`secret:`,
+// `,secret,`, `: secret`, `secret)`).
+function testBotChallengeSecretNotInAudit() {
+  var bad = [];
+  var TARGET = "lib/auth/bot-challenge.js";
+  var files = _libFiles();
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    if (rel !== TARGET) continue;
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    // Two-pass approach: pass 1 collects every line that references
+    // `secret` in a value/key position; pass 2 walks the file and
+    // confirms each flagged line is INSIDE an audit-payload scope.
+    //
+    // Scope shapes (any one triggers):
+    //   A. Within 15 lines AFTER an emit-open line
+    //      (`audit*.emit(` / `audit*.safeEmit(` / `audit*.event(`
+    //      / `_safeAudit(`).
+    //   B. Within an object-literal variable assignment whose
+    //      name contains "audit" / "meta" / "metadata" / "successMeta"
+    //      / "Meta" — the metadata-construction-then-emit shape
+    //      where the secret would leak via the staged variable.
+    //
+    // The two-pass design catches both the inline-payload leak
+    // (Shape A) and the assemble-then-emit leak (Shape B) that a
+    // single forward window misses.
+    //
+    // Skip the spec-prose comment block at the top of the file by
+    // restricting matches to lines that look like executable code
+    // (not `*` continuation, not `//`).
+    var secretRefs = [];
+    for (var j0 = 0; j0 < lines.length; j0++) {
+      var l = lines[j0];
+      if (/^\s*(\/\/|\*|\/\*)/.test(l)) continue;
+      if (/\bsecret\s*:/.test(l) ||
+          /[:,]\s*secret\b/.test(l) ||
+          /\bsecret\s*\)/.test(l)) {
+        secretRefs.push(j0);
+      }
+    }
+    if (secretRefs.length === 0) {
+      // Fast path — nothing references secret in a value position,
+      // detector exits clean.
+      continue;
+    }
+
+    // Build the scope index — every line gets an "in audit payload"
+    // marker. We track an `inMetaVar` flag that opens on a
+    // `var <Meta>name = {` line and closes on `};`. Parallel: an
+    // `emitWindowUntil` index ticks down from 15 each line after an
+    // emit-open. Either being non-zero/true makes secretRefs at that
+    // line a violation.
+    var emitWindow = 0;
+    var inMetaVar = false;
+    var inScope = new Array(lines.length);
+    for (var k0 = 0; k0 < lines.length; k0++) {
+      var ln = lines[k0];
+      if (/^\s*(\/\/|\*|\/\*)/.test(ln)) {
+        inScope[k0] = false;
+        if (emitWindow > 0) emitWindow -= 1;
+        continue;
+      }
+      if (/\baudit\w*\.(?:emit|safeEmit|event)\s*\(/.test(ln) ||
+          /\b_safeAudit\s*\(/.test(ln)) {
+        emitWindow = 16;
+      }
+      if (/\bvar\s+(?:\w*Meta\w*|\w*[Mm]etadata\w*|\w*audit\w*)\s*=\s*\{/.test(ln)) {
+        inMetaVar = true;
+      }
+      inScope[k0] = (emitWindow > 0) || inMetaVar;
+      if (inMetaVar && /^\s*\};/.test(ln)) {
+        inMetaVar = false;
+      }
+      if (emitWindow > 0) emitWindow -= 1;
+    }
+
+    for (var r = 0; r < secretRefs.length; r++) {
+      var idx = secretRefs[r];
+      if (inScope[idx]) {
+        bad.push({
+          file:    rel,
+          line:    idx + 1,
+          content: lines[idx].trim(),
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "bot-challenge-secret-in-audit");
+  _report("b.auth.botChallenge must NEVER include the `secret` opt in " +
+          "any audit emit payload (token prefix is the only operator-" +
+          "visible debug surface)",
+    bad);
+}
+
+// ---- Pattern: nonceStore.has/.set treated as sync ----
+//
+// class: noncestore-sync-treatment
+//
+// v0.11.25 Codex P1: `b.webhook.verify`'s replay-defense path
+// originally called `ns.has(key)` synchronously — but operators wire
+// Redis / KV / DynamoDB adapters whose `has` returns Promise<boolean>.
+// `if (Promise)` is always truthy → every first-time webhook gets
+// refused as a replay. The fix awaits `has` + `set`; this detector
+// flags any code that calls `<x>.has(...)` or `<x>.set(...)` against
+// an identifier shape-hinted as a nonce/replay/replays store WITHOUT
+// `await` / `.then(` in the same line.
+function testNonceStoreAwaited() {
+  var files = _libFiles();
+  var bad = [];
+  var re = /\b(\w*(?:nonce|replay|nonceStore|replayStore)\w*)\.(has|set)\s*\(/;
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      if (!re.test(line)) continue;
+      // Skip when the line already awaits OR `.then(`s the call.
+      if (/\bawait\b/.test(line)) continue;
+      if (/\.then\s*\(/.test(line)) continue;
+      bad.push({ file: _relPath(files[i]), line: j + 1, content: line.trim() });
+    }
+  }
+  bad = _filterMarkers(bad, "noncestore-sync-treatment");
+  _report("nonceStore-shaped `.has(...)` / `.set(...)` calls await the result " +
+          "(v0.11.25 Codex P1 — async backends return Promises)",
+    bad);
+}
+
+// ---- Pattern: mail-store FTS insert outside transaction ----
+//
+// class: mail-store-fts-untransacted
+//
+// v0.11.25 Codex P1: appendMessage runs `stmtInsertMsg` →
+// `stmtBumpFolderModseq` → `stmtBumpQuota` → `stmtInsertFts`. Without
+// a `db.transaction(...)` wrap, a crash between the 3rd and 4th
+// statement persists the message but leaves the FTS index out of
+// step (the row exists but is unsearchable). Detector flags any
+// `stmtInsertFts.run(...)` call site in `lib/mail-store.js` whose
+// surrounding function does NOT include a `db.transaction(` call.
+function testMailStoreFtsInTransaction() {
+  var bad = [];
+  var path = "lib/mail-store.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  // If the file references stmtInsertFts.run(...) at all, the closest-
+  // enclosing function MUST also reference `db.transaction(` somewhere
+  // — either the caller in `appendMessage` (the public surface) or
+  // the inner `_appendMessage` body itself. The cheapest correct check
+  // is file-level: if there's an stmtInsertFts.run( there MUST be at
+  // least one `db.transaction(` reference too.
+  if (/\bstmtInsertFts\.run\s*\(/.test(content) && !/\bdb\.transaction\s*\(/.test(content)) {
+    var idx = content.search(/\bstmtInsertFts\.run\s*\(/);
+    var lineNo = content.slice(0, idx).split(/\r?\n/).length;
+    bad.push({
+      file: path, line: lineNo,
+      content: "stmtInsertFts.run referenced but no db.transaction wrapper present",
+    });
+  }
+  bad = _filterMarkers(bad, "mail-store-fts-untransacted");
+  _report("mail-store FTS insert runs inside `db.transaction(...)` " +
+          "(v0.11.25 Codex P1 — state-drift if FTS row fails after canonical row commits)",
+    bad);
+}
+
+// ---- Pattern: b.fsm.define freezes without cloning ----
+//
+// class: fsm-define-no-clone-before-freeze
+//
+// v0.11.25 Codex P2: `Object.freeze({ states: definition.states })`
+// freezes the OUTER object but the inner `states` reference is still
+// the caller's mutable object — `definition.states.foo.onEnter = ...`
+// silently changes every instance's behaviour. The fix deep-clones
+// states + transitions before the freeze. Detector flags any code in
+// `lib/fsm.js` that calls `Object.freeze({ ... states: definition.<x>
+// ... })` (i.e. direct reference, no clone).
+function testFsmDefineClonesBeforeFreeze() {
+  var bad = [];
+  var path = "lib/fsm.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  // If the freeze block literally references `definition.states` or
+  // `definition.transitions` in a value position, that's the bug.
+  var lines = content.split(/\r?\n/);
+  var inFreezeBlock = false;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (/Object\.freeze\(\s*\{/.test(line)) inFreezeBlock = true;
+    if (inFreezeBlock) {
+      if (/(states|transitions)\s*:\s*definition\.(states|transitions)\b/.test(line)) {
+        bad.push({ file: path, line: i + 1, content: line.trim() });
+      }
+      if (/\}\s*\)/.test(line)) inFreezeBlock = false;
+    }
+  }
+  bad = _filterMarkers(bad, "fsm-define-no-clone-before-freeze");
+  _report("b.fsm.define deep-clones states + transitions before Object.freeze " +
+          "(v0.11.25 Codex P2 — caller-side mutation can't drift frozen runtime)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -8535,6 +8895,18 @@ async function run() {
   testNoOutcomeBranchFallthroughToFailed();
   testNoSmtpTransportHostnameLocalOpt();
   testResolverQueryMxShapeNormalised();
+  // v0.11.25 — b.money primitive ships with a must-compose detector so
+  // Number-typed amounts never reach a Money construction or a
+  // Money-shaped arithmetic site.
+  testNoNumberMoneyArithmetic();
+  // v0.11.25 — b.auth.botChallenge: refuse any audit emit that carries
+  // the verifier's `secret` opt.
+  testBotChallengeSecretNotInAudit();
+  // v0.11.25 review-fix detectors (Codex P1/P1/P2): nonceStore awaited,
+  // mail-store FTS insert transaction-wrapped, fsm.define deep-clones.
+  testNonceStoreAwaited();
+  testMailStoreFtsInTransaction();
+  testFsmDefineClonesBeforeFreeze();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
