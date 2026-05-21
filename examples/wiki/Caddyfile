@@ -13,7 +13,7 @@ blamejs.com, www.blamejs.com {
 
 	# Pass through to the wiki container by service name on the
 	# compose network (Caddy resolves "wiki" to the container).
-	reverse_proxy wiki:8080 {
+	reverse_proxy wiki:3008 {
 		# Forward the original scheme so the wiki's CORS same-origin
 		# detection trusts X-Forwarded-Proto: https.
 		header_up X-Forwarded-Proto https

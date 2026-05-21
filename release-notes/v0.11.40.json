@@ -1,0 +1,25 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.40",
+  "date": "2026-05-21",
+  "headline": "Wiki Docker default port moves from 8080 → 3008",
+  "summary": "The `examples/wiki` Docker stack now defaults to port 3008 throughout — `WIKI_PORT`, the Dockerfile `EXPOSE` directive, the in-container HEALTHCHECK URL, the dev `docker-compose.yml` host mapping, the Caddy reverse-proxy upstream, and the `server.js` + `lib/build-app.js` code defaults. Production deployments (`docker-compose.prod.yml`) are operator-invisible since Caddy fronts the container on 80/443 — the upstream port is never exposed to the host. Dev users hitting the wiki container directly now use `http://localhost:3008`. Operators who set `WIKI_PORT` explicitly in their `.env` keep working unchanged.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Wiki default port 8080 → 3008",
+          "body": "Default `WIKI_PORT` moves from 8080 (HTTP-alt, frequently collides with Tomcat / Jenkins / Confluence / Spring-Boot defaults) to 3008 (IANA-unassigned, no service-convention collision). The new default applies consistently across: `examples/wiki/Dockerfile` (`ENV WIKI_PORT`, `EXPOSE`, HEALTHCHECK URL), `examples/wiki/server.js`, `examples/wiki/lib/build-app.js`, `examples/wiki/docker-compose.yml` (host mapping `3008:3008`), `examples/wiki/docker-compose.prod.yml` (internal-network expose), `examples/wiki/Caddyfile` (upstream resolver), `examples/wiki/README.md`, `examples/wiki/DEPLOY.md`."
+        },
+        {
+          "title": "Operator action",
+          "body": "Dev users with `localhost:8080` bookmarks, curl scripts, host-firewall allowlists, or IDE port forwarders pointed at the wiki need to switch to `localhost:3008`. Operators who set `WIKI_PORT=8080` explicitly in their `.env` keep working unchanged. Production deployments behind Caddy see no change — the upstream port is internal-network only."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "IANA Service Name and Port Number Registry", "url": "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml" }
+  ]
+}

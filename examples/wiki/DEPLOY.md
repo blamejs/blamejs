@@ -2,7 +2,7 @@
 
 The wiki ships with two compose configurations:
 
-- `docker-compose.yml` — local dev. Builds from source, exposes 8080.
+- `docker-compose.yml` — local dev. Builds from source, exposes 3008.
 - `docker-compose.prod.yml` — production overlay. Pulls the published GHCR image, fronts it with Caddy for automatic TLS, exposes 80/443.
 
 ## Quick deploy to a VPS for `blamejs.com`
@@ -33,7 +33,7 @@ BLAMEJS_VAULT_PASSPHRASE=<a different strong passphrase>
 
 # Optional — defaults shown
 WIKI_ADMIN_EMAIL=admin@blamejs.com
-WIKI_PORT=8080
+WIKI_PORT=3008
 LOG_LEVEL=info
 
 # Optional — outbound page-edit webhook
@@ -63,7 +63,7 @@ The wiki container reads its configuration from environment. `docker-compose.pro
 |---|---|---|---|
 | `WIKI_ADMIN_PASSWORD` | **yes (production)** | random + printed to stdout once | Seeded admin login. Setting it explicitly avoids the random-on-each-restart pattern. |
 | `WIKI_ADMIN_EMAIL` | no | `admin@blamejs.com` | Seeded admin login email. |
-| `WIKI_PORT` | no | `8080` | HTTP listen port inside the container. Caddy proxies to this; rarely overridden. |
+| `WIKI_PORT` | no | `3008` | HTTP listen port inside the container. Caddy proxies to this; rarely overridden. |
 | `WIKI_DATA_DIR` | no | `/data` | On-disk path the wiki writes vault key + sqlite + audit chain to. Bound to a Docker volume in the compose. |
 | `WIKI_WEBHOOK_URL` | no | unset | Outbound HTTPS endpoint that receives one POST per `wiki.page.edited` event. |
 | `WIKI_WEBHOOK_SECRET` | required if URL set | unset | HMAC secret the webhook receiver uses to verify the request signature. |
