@@ -284,6 +284,178 @@ async function testFetchChangedSinceImpliesCondstore() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+// ---- v0.11.28 — NOTIFY / METADATA / CATENATE ----
+
+async function testCapabilityAdvertisesNewExtensions() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("CAP advertises NOTIFY/METADATA/CATENATE (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({ tlsContext: ctx, mailStore: stub });
+  var c = await _connectAndLogin(srv);
+  try {
+    var reply = await _sendCommand(c.socket, "a1", "CAPABILITY");
+    check("CAPABILITY advertises NOTIFY",       /\bNOTIFY\b/.test(reply));
+    check("CAPABILITY advertises METADATA",     /\bMETADATA\b/.test(reply));
+    check("CAPABILITY advertises METADATA-SERVER", /METADATA-SERVER/.test(reply));
+    check("CAPABILITY advertises CATENATE",     /\bCATENATE\b/.test(reply));
+    check("CAPABILITY does NOT advertise COMPRESS=DEFLATE",
+          !/COMPRESS=DEFLATE/.test(reply));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testNotifyNoneAndSet() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("NOTIFY (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var subscribeCalls = [];
+  stub.subscribeNotify = function (actor, spec, emitFn) {
+    subscribeCalls.push({ actor: actor, spec: spec, emitFn: emitFn });
+    return Promise.resolve();
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var rSet = await _sendCommand(c.socket, "a1",
+      "NOTIFY SET (SELECTED (MessageNew FlagChange))");
+    check("NOTIFY SET → OK",                        /^a1 OK /m.test(rSet));
+    check("subscribeNotify hook called",            subscribeCalls.length === 1);
+    check("backend got spec verbatim",
+          subscribeCalls[0].spec === "(SELECTED (MessageNew FlagChange))");
+
+    var rNone = await _sendCommand(c.socket, "a2", "NOTIFY NONE");
+    check("NOTIFY NONE → OK",                       /^a2 OK /m.test(rNone));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testNotifyBackendMissing() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("NOTIFY backend missing (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  // No subscribeNotify hook.
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var rSet = await _sendCommand(c.socket, "a1",
+      "NOTIFY SET (SELECTED (MessageNew))");
+    check("NOTIFY without backend → NO",            /^a1 NO /m.test(rSet));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testGetSetMetadata() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("GETMETADATA / SETMETADATA (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  stub.getMetadata = function (actor, mailbox, names) {
+    return Promise.resolve(names.map(function (n) {
+      return { entry: n, value: n === "/private/comment" ? "hello" : null };
+    }));
+  };
+  var setCalls = [];
+  stub.setMetadata = function (actor, mailbox, entries) {
+    setCalls.push({ actor: actor, mailbox: mailbox, entries: entries });
+    return Promise.resolve();
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var rGet = await _sendCommand(c.socket, "a1",
+      "GETMETADATA INBOX (/private/comment /shared/admin)");
+    check("GETMETADATA returns OK",                /^a1 OK /m.test(rGet));
+    check("GETMETADATA untagged METADATA line",    /^\* METADATA /m.test(rGet));
+    check("GETMETADATA includes /private/comment value",
+          /\/private\/comment "hello"/.test(rGet));
+    check("GETMETADATA NIL for unknown entry",     /\/shared\/admin NIL/.test(rGet));
+
+    var rSet = await _sendCommand(c.socket, "a2",
+      "SETMETADATA INBOX (/private/comment \"updated\")");
+    check("SETMETADATA returns OK",                /^a2 OK /m.test(rSet));
+    check("setMetadata hook called",               setCalls.length === 1);
+    check("setMetadata mailbox forwarded",         setCalls[0].mailbox === "INBOX");
+    check("setMetadata entry+value parsed",
+          setCalls[0].entries.length === 1 &&
+          setCalls[0].entries[0].entry === "/private/comment" &&
+          setCalls[0].entries[0].value === "updated");
+
+    await _sendCommand(c.socket, "a3",
+      "SETMETADATA INBOX (/private/comment NIL)");
+    check("SETMETADATA NIL clears entry",
+          setCalls.length === 2 && setCalls[1].entries[0].value === null);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testMetadataBackendMissing() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("METADATA backend missing (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  // No getMetadata / setMetadata.
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var rGet = await _sendCommand(c.socket, "a1", "GETMETADATA INBOX (/private/x)");
+    check("GETMETADATA without backend → NO",      /^a1 NO /m.test(rGet));
+    var rSet = await _sendCommand(c.socket, "a2", "SETMETADATA INBOX (/private/x \"y\")");
+    check("SETMETADATA without backend → NO",      /^a2 NO /m.test(rSet));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testCatenateBackendMissing() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("CATENATE backend missing (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  // No appendCatenate hook.
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    // APPEND ... CATENATE — backend missing, gets NO with reason.
+    var r = await _sendCommand(c.socket, "a1",
+      "APPEND INBOX CATENATE (URL \"imap://x/INBOX;UID=1\")");
+    check("APPEND CATENATE without backend → NO",  /^a1 NO /m.test(r));
+    check("refusal mentions backend not configured", /backend not configured/i.test(r));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testStoreSilentEmitsModseqUnderCondstore() {
   // Codex P1 — `.SILENT` STORE under CONDSTORE / UNCHANGEDSINCE MUST
   // still emit an untagged FETCH carrying the new MODSEQ for each
@@ -342,6 +514,13 @@ async function run() {
   await testStoreUnchangedSinceConflict();
   await testFetchChangedSinceImpliesCondstore();
   await testStoreSilentEmitsModseqUnderCondstore();
+  // v0.11.28 — NOTIFY / METADATA / CATENATE
+  await testCapabilityAdvertisesNewExtensions();
+  await testNotifyNoneAndSet();
+  await testNotifyBackendMissing();
+  await testGetSetMetadata();
+  await testMetadataBackendMissing();
+  await testCatenateBackendMissing();
 }
 
 module.exports = { run: run };
