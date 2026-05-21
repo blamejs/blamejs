@@ -8409,6 +8409,117 @@ function testBotChallengeSecretNotInAudit() {
     bad);
 }
 
+// ---- Pattern: nonceStore.has/.set treated as sync ----
+//
+// class: noncestore-sync-treatment
+//
+// v0.11.25 Codex P1: `b.webhook.verify`'s replay-defense path
+// originally called `ns.has(key)` synchronously — but operators wire
+// Redis / KV / DynamoDB adapters whose `has` returns Promise<boolean>.
+// `if (Promise)` is always truthy → every first-time webhook gets
+// refused as a replay. The fix awaits `has` + `set`; this detector
+// flags any code that calls `<x>.has(...)` or `<x>.set(...)` against
+// an identifier shape-hinted as a nonce/replay/replays store WITHOUT
+// `await` / `.then(` in the same line.
+function testNonceStoreAwaited() {
+  var files = _libFiles();
+  var bad = [];
+  var re = /\b(\w*(?:nonce|replay|nonceStore|replayStore)\w*)\.(has|set)\s*\(/;
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      if (!re.test(line)) continue;
+      // Skip when the line already awaits OR `.then(`s the call.
+      if (/\bawait\b/.test(line)) continue;
+      if (/\.then\s*\(/.test(line)) continue;
+      bad.push({ file: _relPath(files[i]), line: j + 1, content: line.trim() });
+    }
+  }
+  bad = _filterMarkers(bad, "noncestore-sync-treatment");
+  _report("nonceStore-shaped `.has(...)` / `.set(...)` calls await the result " +
+          "(v0.11.25 Codex P1 — async backends return Promises)",
+    bad);
+}
+
+// ---- Pattern: mail-store FTS insert outside transaction ----
+//
+// class: mail-store-fts-untransacted
+//
+// v0.11.25 Codex P1: appendMessage runs `stmtInsertMsg` →
+// `stmtBumpFolderModseq` → `stmtBumpQuota` → `stmtInsertFts`. Without
+// a `db.transaction(...)` wrap, a crash between the 3rd and 4th
+// statement persists the message but leaves the FTS index out of
+// step (the row exists but is unsearchable). Detector flags any
+// `stmtInsertFts.run(...)` call site in `lib/mail-store.js` whose
+// surrounding function does NOT include a `db.transaction(` call.
+function testMailStoreFtsInTransaction() {
+  var bad = [];
+  var path = "lib/mail-store.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  // If the file references stmtInsertFts.run(...) at all, the closest-
+  // enclosing function MUST also reference `db.transaction(` somewhere
+  // — either the caller in `appendMessage` (the public surface) or
+  // the inner `_appendMessage` body itself. The cheapest correct check
+  // is file-level: if there's an stmtInsertFts.run( there MUST be at
+  // least one `db.transaction(` reference too.
+  if (/\bstmtInsertFts\.run\s*\(/.test(content) && !/\bdb\.transaction\s*\(/.test(content)) {
+    var idx = content.search(/\bstmtInsertFts\.run\s*\(/);
+    var lineNo = content.slice(0, idx).split(/\r?\n/).length;
+    bad.push({
+      file: path, line: lineNo,
+      content: "stmtInsertFts.run referenced but no db.transaction wrapper present",
+    });
+  }
+  bad = _filterMarkers(bad, "mail-store-fts-untransacted");
+  _report("mail-store FTS insert runs inside `db.transaction(...)` " +
+          "(v0.11.25 Codex P1 — state-drift if FTS row fails after canonical row commits)",
+    bad);
+}
+
+// ---- Pattern: b.fsm.define freezes without cloning ----
+//
+// class: fsm-define-no-clone-before-freeze
+//
+// v0.11.25 Codex P2: `Object.freeze({ states: definition.states })`
+// freezes the OUTER object but the inner `states` reference is still
+// the caller's mutable object — `definition.states.foo.onEnter = ...`
+// silently changes every instance's behaviour. The fix deep-clones
+// states + transitions before the freeze. Detector flags any code in
+// `lib/fsm.js` that calls `Object.freeze({ ... states: definition.<x>
+// ... })` (i.e. direct reference, no clone).
+function testFsmDefineClonesBeforeFreeze() {
+  var bad = [];
+  var path = "lib/fsm.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  // If the freeze block literally references `definition.states` or
+  // `definition.transitions` in a value position, that's the bug.
+  var lines = content.split(/\r?\n/);
+  var inFreezeBlock = false;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (/Object\.freeze\(\s*\{/.test(line)) inFreezeBlock = true;
+    if (inFreezeBlock) {
+      if (/(states|transitions)\s*:\s*definition\.(states|transitions)\b/.test(line)) {
+        bad.push({ file: path, line: i + 1, content: line.trim() });
+      }
+      if (/\}\s*\)/.test(line)) inFreezeBlock = false;
+    }
+  }
+  bad = _filterMarkers(bad, "fsm-define-no-clone-before-freeze");
+  _report("b.fsm.define deep-clones states + transitions before Object.freeze " +
+          "(v0.11.25 Codex P2 — caller-side mutation can't drift frozen runtime)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -8791,6 +8902,11 @@ async function run() {
   // v0.11.25 — b.auth.botChallenge: refuse any audit emit that carries
   // the verifier's `secret` opt.
   testBotChallengeSecretNotInAudit();
+  // v0.11.25 review-fix detectors (Codex P1/P1/P2): nonceStore awaited,
+  // mail-store FTS insert transaction-wrapped, fsm.define deep-clones.
+  testNonceStoreAwaited();
+  testMailStoreFtsInTransaction();
+  testFsmDefineClonesBeforeFreeze();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
