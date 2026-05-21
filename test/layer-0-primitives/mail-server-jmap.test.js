@@ -321,6 +321,241 @@ function testEventSourceBadCloseAfter() {
   check("400 cites invalidArguments",    /jmap:error:invalidArguments/.test(mr.res._buf()));
 }
 
+// ---- v0.11.30 — JMAP blob upload + download (RFC 8620 §6) ----
+
+function _makeUploadReqRes(url, contentType, bodyChunks) {
+  var resBuf = "";
+  var resHeaders = {};
+  var statusCode = 200;
+  var listeners = {};
+  var ended = false;
+  var req = {
+    url:     url,
+    user:    { id: "u1" },
+    headers: { "content-type": contentType || "application/octet-stream" },
+    on:      function (ev, fn) { listeners[ev] = listeners[ev] || []; listeners[ev].push(fn); },
+    destroy: function () { (listeners["error"] || []).forEach(function (fn) { try { fn(new Error("destroyed")); } catch (_e) {} }); },
+    _fire:   function (ev, arg) { (listeners[ev] || []).forEach(function (fn) { try { fn(arg); } catch (_e) {} }); },
+  };
+  var res = {
+    get statusCode() { return statusCode; },
+    set statusCode(v) { statusCode = v; },
+    setHeader: function (k, v) { resHeaders[k.toLowerCase()] = v; },
+    write:    function (chunk) { resBuf += chunk; },
+    end:      function (chunk) { if (chunk) resBuf += chunk; ended = true; },
+    _buf:     function () { return resBuf; },
+    _headers: function () { return resHeaders; },
+    _status:  function () { return statusCode; },
+    _ended:   function () { return ended; },
+  };
+  // Schedule the body chunks to be delivered after the handler installs its listeners.
+  setImmediate(function () {
+    (bodyChunks || []).forEach(function (chunk) { req._fire("data", chunk); });
+    req._fire("end");
+  });
+  return { req: req, res: res };
+}
+
+async function testUploadHandlerHappyPath() {
+  var uploads = [];
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      uploadBlob: function (actor, accountId, type, bytes) {
+        uploads.push({ actor: actor, accountId: accountId, type: type, size: bytes.length });
+        return Promise.resolve({ blobId: "blob_42", type: type, size: bytes.length });
+      },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var body = Buffer.from("Hello, blob world.");
+  var mr = _makeUploadReqRes("/jmap/upload/A1", "text/plain", [body]);
+  jmap.uploadHandler(mr.req, mr.res);
+  // Wait for setImmediate + handler resolution.
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("upload → 201 Created",                    mr.res._status() === 201);
+  check("upload → JSON body with blobId",
+        /"blobId":"blob_42"/.test(mr.res._buf()));
+  check("upload → accountId echoed",               /"accountId":"A1"/.test(mr.res._buf()));
+  check("upload → backend called once",            uploads.length === 1);
+  check("upload → bytes forwarded byte-equal",     uploads[0].size === body.length);
+  check("upload → content-type forwarded",         uploads[0].type === "text/plain");
+}
+
+async function testUploadHandlerOversizeRefused() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      uploadBlob: function () { return Promise.resolve({ blobId: "x" }); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+    maxBlobBytes: 64,                                                                                  // allow:raw-byte-literal — tight test cap
+  });
+  var bigBody = Buffer.alloc(200, 0x41);                                                                // allow:raw-byte-literal — 'A' fill
+  var mr = _makeUploadReqRes("/jmap/upload/A1", "application/octet-stream", [bigBody]);
+  jmap.uploadHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("upload oversize → 413",                   mr.res._status() === 413);
+  check("upload oversize → limit:maxSizeUpload",   /"limit":"maxSizeUpload"/.test(mr.res._buf()));
+}
+
+function testUploadHandlerRefusesUnauth() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {}, uploadBlob: function () { return Promise.resolve({ blobId: "x" }); } },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/upload/A1", "text/plain", [Buffer.from("x")]);
+  mr.req.user = null;
+  jmap.uploadHandler(mr.req, mr.res);
+  check("upload unauth → 401",                     mr.res._status() === 401);
+  check("upload unauth → forbidden type",          /jmap:error:forbidden/.test(mr.res._buf()));
+}
+
+function testUploadHandlerWithoutBackend() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },                                                       // no uploadBlob
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/upload/A1", "text/plain", [Buffer.from("x")]);
+  jmap.uploadHandler(mr.req, mr.res);
+  check("upload no-backend → 503",                 mr.res._status() === 503);
+  check("upload no-backend → serverUnavailable",   /jmap:error:serverUnavailable/.test(mr.res._buf()));
+}
+
+function testUploadHandlerRefusesBadAccountId() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {}, uploadBlob: function () { return Promise.resolve({ blobId: "x" }); } },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  // accountId with disallowed chars (path traversal shape).
+  var mr = _makeUploadReqRes("/jmap/upload/..%2Fevil", "text/plain", []);
+  jmap.uploadHandler(mr.req, mr.res);
+  check("upload bad accountId → 400",              mr.res._status() === 400);
+  check("upload bad accountId → invalidArguments", /jmap:error:invalidArguments/.test(mr.res._buf()));
+}
+
+async function testDownloadHandlerHappyPath() {
+  var calls = [];
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      downloadBlob: function (actor, accountId, blobId) {
+        calls.push({ accountId: accountId, blobId: blobId });
+        return Promise.resolve({ bytes: Buffer.from("hello blob"), type: "text/plain" });
+      },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/download/A1/blob_42/note.txt", null, []);
+  jmap.downloadHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("download → 200",                          mr.res._status() === 200);
+  check("download → content-type from backend",    mr.res._headers()["content-type"] === "text/plain");
+  check("download → body bytes match",             /hello blob/.test(mr.res._buf()));
+  check("download → backend got accountId+blobId",
+        calls[0].accountId === "A1" && calls[0].blobId === "blob_42");
+  check("download → Content-Disposition attachment",
+        /attachment; filename="note\.txt"/.test(mr.res._headers()["content-disposition"] || ""));
+}
+
+async function testDownloadHandlerMalformedUrl() {
+  // Codex P2 — A URL like `/jmap/download/A1/B1` (missing the `name`
+  // segment) MUST refuse with 400 invalidArguments, not silently
+  // remap (accountId="download", blobId="A1", name="B1").
+  var calls = [];
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      downloadBlob: function (_a, accountId, blobId) {
+        calls.push({ accountId: accountId, blobId: blobId });
+        return Promise.resolve({ bytes: Buffer.from("x"), type: "text/plain" });
+      },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/download/A1/B1", null, []);
+  jmap.downloadHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("download missing name → 400",         mr.res._status() === 400);
+  check("download malformed → invalidArguments", /jmap:error:invalidArguments/.test(mr.res._buf()));
+  check("download malformed → backend not called", calls.length === 0);
+}
+
+async function testJmapIdAcceptsFullLength() {
+  // Codex P1 — JMAP Id is up to 255 octets. Upload + download MUST
+  // accept the full spec length, not refuse at 64.
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      uploadBlob: function () { return Promise.resolve({ blobId: "B" }); },
+      downloadBlob: function () { return Promise.resolve({ bytes: Buffer.from("x"), type: "text/plain" }); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var longId = "A".repeat(200);                                                                       // allow:raw-byte-literal — 200 chars, under RFC 8620 §1.2 255 cap
+  var mrUp = _makeUploadReqRes("/jmap/upload/" + longId, "text/plain", [Buffer.from("hi")]);
+  jmap.uploadHandler(mrUp.req, mrUp.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("upload accepts 200-char accountId",   mrUp.res._status() === 201);
+  var mrDn = _makeUploadReqRes("/jmap/download/" + longId + "/blob_42/note.txt", null, []);
+  jmap.downloadHandler(mrDn.req, mrDn.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("download accepts 200-char accountId", mrDn.res._status() === 200);
+  // 256+ chars still refuse.
+  var tooLongId = "A".repeat(256);                                                                    // allow:raw-byte-literal — 256 chars, just over the cap
+  var mrTooLong = _makeUploadReqRes("/jmap/upload/" + tooLongId, "text/plain", [Buffer.from("hi")]);
+  jmap.uploadHandler(mrTooLong.req, mrTooLong.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("upload refuses 256+ accountId",       mrTooLong.res._status() === 400);
+}
+
+async function testDownloadHandlerNotFound() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      downloadBlob: function () { return Promise.resolve(null); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/download/A1/missing/note.txt", null, []);
+  jmap.downloadHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("download missing → 404",                  mr.res._status() === 404);
+}
+
+function testDownloadHandlerRefusesUnauth() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {}, downloadBlob: function () {} },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/download/A1/blob/note.txt", null, []);
+  mr.req.user = null;
+  jmap.downloadHandler(mr.req, mr.res);
+  check("download unauth → 401",                   mr.res._status() === 401);
+}
+
+function testDownloadHandlerWithoutBackend() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/download/A1/blob/note.txt", null, []);
+  jmap.downloadHandler(mr.req, mr.res);
+  check("download no-backend → 503",               mr.res._status() === 503);
+}
+
 async function run() {
   testSurface();
   testBadOptsRefused();
@@ -339,6 +574,18 @@ async function run() {
   await testEventSourceStateChangeAndCloseAfter();
   await testEventSourcePingZeroDisables();
   testEventSourceBadCloseAfter();
+  // v0.11.30 — blob upload + download
+  await testUploadHandlerHappyPath();
+  await testUploadHandlerOversizeRefused();
+  testUploadHandlerRefusesUnauth();
+  testUploadHandlerWithoutBackend();
+  testUploadHandlerRefusesBadAccountId();
+  await testDownloadHandlerHappyPath();
+  await testDownloadHandlerNotFound();
+  testDownloadHandlerRefusesUnauth();
+  testDownloadHandlerWithoutBackend();
+  await testDownloadHandlerMalformedUrl();
+  await testJmapIdAcceptsFullLength();
 }
 
 module.exports = { run: run };
