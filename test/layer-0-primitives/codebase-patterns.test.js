@@ -2263,6 +2263,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/guard-email.js:_detectAddressIssues",
+        "lib/mail-server-jmap.js:eventSourceHandler",
+        "lib/middleware/scim-server.js:_parseQuery",
+      ],
+      reason: "v0.11.29 — operator-supplied string-keyed parameter walk: each function iterates an external key=value source (`address` field components / SSE query-params / SCIM filter expression) and dispatches branch-per-key. Shared shape is the loop that splits → trims → conditionally maps each key into a different output domain (RFC 5321 address validation issues / RFC 8620 §7.3 SSE subscription opts / RFC 7644 SCIM 2.0 filter AST). Consolidating would couple unrelated wire-format vocabularies.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/ddl-change-control.js:create",
         "lib/network.js:_setSocketKeepAlive",
         "lib/webhook.js:sign",
@@ -8708,6 +8717,52 @@ function testCatenatePartsOrderPreserved() {
     bad);
 }
 
+// ---- Pattern: JMAP EventSource ping=0 opt-out + interval in payload ----
+//
+// class: jmap-eventsource-ping-shape
+//
+// v0.11.29 Codex P1+P2 — RFC 8620 §7.3 specifies (a) `ping=0` is the
+// explicit opt-out for the keepalive event channel (the server MUST
+// NOT emit ping events when ping=0), and (b) ping payload carries
+// `{ "interval": <N> }` so clients can detect interval drift +
+// know whether the server clamped their requested value.
+//
+// Detector flags `lib/mail-server-jmap.js` if either property
+// regresses: ping=0 not specially handled (re-clamped to default), OR
+// ping payload still emits `data: {}` instead of carrying interval.
+function testJmapEventSourcePingShape() {
+  var bad = [];
+  var path = "lib/mail-server-jmap.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  if (/eventSourceHandler/.test(content)) {
+    if (!/params\.ping\s*===\s*"0"/.test(content) && !/pingDisabled\s*=\s*true/.test(content)) {
+      bad.push({
+        file: path, line: 1,
+        content: "eventSourceHandler missing `ping=0` opt-out — RFC 8620 §7.3",
+      });
+    }
+    if (/event:\s*ping\\ndata:\s*\{\}\\n\\n/.test(content) ||
+        /res\.write\("event: ping\\ndata: \{\}/.test(content)) {
+      bad.push({
+        file: path, line: 1,
+        content: "eventSourceHandler emits empty ping payload — RFC 8620 §7.3 expects { interval: <N> }",
+      });
+    }
+    if (!/interval\s*:\s*pingN/.test(content) && !/interval:\s*pingN/.test(content)) {
+      bad.push({
+        file: path, line: 1,
+        content: "ping payload does not include `interval: pingN` — RFC 8620 §7.3",
+      });
+    }
+  }
+  bad = _filterMarkers(bad, "jmap-eventsource-ping-shape");
+  _report("JMAP EventSource `ping=0` opt-out + payload carries `{interval:N}` " +
+          "(v0.11.29 Codex P1+P2 — RFC 8620 §7.3)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -9105,6 +9160,9 @@ async function run() {
   // v0.11.28 review-fix detector (Codex P1): CATENATE parts must
   // validate parens + preserve order per RFC 4469 §3.
   testCatenatePartsOrderPreserved();
+  // v0.11.29 review-fix detector (Codex P1+P2): EventSource ping=0
+  // opt-out + interval in payload per RFC 8620 §7.3.
+  testJmapEventSourcePingShape();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
