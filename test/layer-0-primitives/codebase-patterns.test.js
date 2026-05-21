@@ -8579,17 +8579,16 @@ function testBdatLastSingleReply() {
   var lines = content.split(/\r?\n/);
   for (var i = 0; i < lines.length - 5; i++) {
     if (!/octets received/.test(lines[i])) continue;
-    // Look ahead 5 lines for _finalizeAcceptedBody. If we see one
-    // before an `if (wasLast)` / `if (isLast)` / `else` branch, the
-    // two replies are emitted on the same path — Codex's exact bug.
-    var branched = false;
+    // Look ahead 5 lines for _finalizeAcceptedBody. Whichever pattern
+    // we hit first decides: a branch line (`if (wasLast)` /
+    // `if (isLast)` / `} else {`) means the two replies are on
+    // different code paths (legal); a `_finalizeAcceptedBody(...,
+    // "BDAT")` call BEFORE any branch means both reply-emitters run
+    // on the same path — Codex's exact bug.
     for (var k = 1; k <= 5 && i + k < lines.length; k++) {
       var probe = lines[i + k];
-      if (/\bif\s*\(\s*(wasLast|isLast)\b|}\s*else\s*\{/.test(probe)) {
-        branched = true;
-        break;
-      }
-      if (/_finalizeAcceptedBody\s*\(.*BDAT/.test(probe) && !branched) {
+      if (/\bif\s*\(\s*(wasLast|isLast)\b|}\s*else\s*\{/.test(probe)) break;
+      if (/_finalizeAcceptedBody\s*\(.*BDAT/.test(probe)) {
         bad.push({
           file: path, line: i + 1,
           content: "250 octets received emitted before _finalizeAcceptedBody(BDAT) without branch",
