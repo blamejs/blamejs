@@ -149,6 +149,151 @@ async function testNoActorRefused() {
     rv.type === "urn:ietf:params:jmap:error:forbidden");
 }
 
+// ---- v0.11.29 — JMAP Push (EventSource SSE per RFC 8620 §7.3) ----
+
+function _makeMockReqRes(url) {
+  var resBuf = "";
+  var resHeaders = {};
+  var statusCode = 200;
+  var listeners = {};
+  var ended = false;
+  var req = {
+    url:     url,
+    user:    { id: "u1" },
+    on:      function (ev, fn) { listeners[ev] = listeners[ev] || []; listeners[ev].push(fn); },
+    _fire:   function (ev) { (listeners[ev] || []).forEach(function (fn) { try { fn(); } catch (_e) {} }); },
+  };
+  var res = {
+    get statusCode() { return statusCode; },
+    set statusCode(v) { statusCode = v; },
+    setHeader: function (k, v) { resHeaders[k.toLowerCase()] = v; },
+    write:    function (chunk) { resBuf += chunk; },
+    end:      function (chunk) { if (chunk) resBuf += chunk; ended = true; },
+    _buf:     function () { return resBuf; },
+    _headers: function () { return resHeaders; },
+    _status:  function () { return statusCode; },
+    _ended:   function () { return ended; },
+  };
+  return { req: req, res: res };
+}
+
+function testEventSourceHandlerExists() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  check("eventSourceHandler exposed", typeof jmap.eventSourceHandler === "function");
+}
+
+function testEventSourceRefusesUnauthenticated() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {}, subscribePush: function () { return Promise.resolve(); } },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource");
+  mr.req.user = null;
+  jmap.eventSourceHandler(mr.req, mr.res);
+  check("unauthenticated → 401",         mr.res._status() === 401);
+  check("401 carries forbidden type",    /jmap:error:forbidden/.test(mr.res._buf()));
+}
+
+function testEventSourceRefusesWithoutBackend() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },                                                       // no subscribePush
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  check("no backend → 503",              mr.res._status() === 503);
+  check("503 carries serverUnavailable", /jmap:error:serverUnavailable/.test(mr.res._buf()));
+}
+
+async function testEventSourceStreamHeadersAndConnect() {
+  var subscribeCalls = [];
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function (actor, types, emitFn) {
+        subscribeCalls.push({ actor: actor, types: types, emitFn: emitFn });
+        return Promise.resolve(function () { /* unsub */ });
+      },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource?types=Email,Mailbox&closeafter=no&ping=60");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  // Wait for the subscribePush promise chain to settle.
+  await new Promise(function (r) { setImmediate(r); });
+  var h = mr.res._headers();
+  check("Content-Type text/event-stream", /^text\/event-stream/.test(h["content-type"] || ""));
+  check("Cache-Control no-cache",          h["cache-control"] === "no-cache");
+  check("Connection keep-alive",           h["connection"] === "keep-alive");
+  check("X-Accel-Buffering no",            h["x-accel-buffering"] === "no");
+  check("buffer carries retry hint",       /retry: 5000/.test(mr.res._buf()));
+  check("buffer carries connected comment", /: connected/.test(mr.res._buf()));
+  check("subscribePush called once",       subscribeCalls.length === 1);
+  check("subscribePush received types",
+        subscribeCalls[0].types && subscribeCalls[0].types[0] === "Email" &&
+        subscribeCalls[0].types[1] === "Mailbox");
+  mr.req._fire("close");
+}
+
+async function testEventSourceWildcardTypes() {
+  var subscribed = null;
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function (actor, types) { subscribed = types; return Promise.resolve(); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource?types=*");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(r); });
+  check("types=* → backend gets null (wildcard)", subscribed === null);
+  mr.req._fire("close");
+}
+
+async function testEventSourceStateChangeAndCloseAfter() {
+  var emitFn = null;
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function (actor, types, fn) {
+        emitFn = fn;
+        return Promise.resolve();
+      },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource?closeafter=state");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(r); });
+  // Push a StateChange — handler MUST emit `event: state` and close.
+  emitFn({ kind: "StateChange", changed: { "A1": { Email: "abc" } } });
+  check("state event emitted",
+        /event: state/.test(mr.res._buf()) && /"@type":"StateChange"/.test(mr.res._buf()));
+  check("closeafter=state closes stream",  mr.res._ended() === true);
+}
+
+function testEventSourceBadCloseAfter() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {}, subscribePush: function () { return Promise.resolve(); } },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource?closeafter=banana");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  check("invalid closeafter → 400",      mr.res._status() === 400);
+  check("400 cites invalidArguments",    /jmap:error:invalidArguments/.test(mr.res._buf()));
+}
+
 async function run() {
   testSurface();
   testBadOptsRefused();
@@ -158,6 +303,14 @@ async function run() {
   await testUnknownMethod();
   await testMethodThrewMaskedAsServerFail();
   await testNoActorRefused();
+  // v0.11.29 — JMAP Push (EventSource SSE per RFC 8620 §7.3)
+  testEventSourceHandlerExists();
+  testEventSourceRefusesUnauthenticated();
+  testEventSourceRefusesWithoutBackend();
+  await testEventSourceStreamHeadersAndConnect();
+  await testEventSourceWildcardTypes();
+  await testEventSourceStateChangeAndCloseAfter();
+  testEventSourceBadCloseAfter();
 }
 
 module.exports = { run: run };

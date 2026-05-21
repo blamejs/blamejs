@@ -2263,6 +2263,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/guard-email.js:_detectAddressIssues",
+        "lib/mail-server-jmap.js:eventSourceHandler",
+        "lib/middleware/scim-server.js:_parseQuery",
+      ],
+      reason: "v0.11.29 — operator-supplied string-keyed parameter walk: each function iterates an external key=value source (`address` field components / SSE query-params / SCIM filter expression) and dispatches branch-per-key. Shared shape is the loop that splits → trims → conditionally maps each key into a different output domain (RFC 5321 address validation issues / RFC 8620 §7.3 SSE subscription opts / RFC 7644 SCIM 2.0 filter AST). Consolidating would couple unrelated wire-format vocabularies.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/ddl-change-control.js:create",
         "lib/network.js:_setSocketKeepAlive",
         "lib/webhook.js:sign",
