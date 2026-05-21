@@ -87,7 +87,7 @@ function testFromIcalNoVevent() {
   var threw = null;
   try { b.calendar.fromIcal("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\nEND:VCALENDAR\r\n"); }
   catch (e) { threw = e; }
-  check("fromIcal with zero VEVENTs throws", threw && (threw.code || "").indexOf("calendar/no-vevent") !== -1);
+  check("fromIcal with zero components throws", threw && (threw.code || "").indexOf("calendar/no-component") !== -1);
 }
 
 function testRrulePreserved() {
@@ -239,6 +239,97 @@ function testExpandRecurrenceByMonthFilter() {
   check("third January 2028",               instances[2] === "2028-01-15T09:00:00Z");
 }
 
+// ---- v0.11.35 — VTODO → JSCalendar Task ----
+
+function testVtodoToTaskRoundTrip() {
+  var ical =
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n" +
+    "BEGIN:VTODO\r\nUID:task-1@x\r\n" +
+    "DTSTAMP:20260521T100000Z\r\n" +
+    "DTSTART:20260522T090000\r\n" +
+    "DUE:20260522T170000\r\n" +
+    "DURATION:PT8H\r\n" +
+    "STATUS:IN-PROCESS\r\n" +
+    "PERCENT-COMPLETE:25\r\n" +
+    "SUMMARY:Write docs\r\n" +
+    "DESCRIPTION:JSCalendar Task release notes\r\n" +
+    "END:VTODO\r\n" +
+    "END:VCALENDAR\r\n";
+  var task = b.calendar.fromIcal(ical);
+  check("VTODO → Task @type",                  task["@type"] === "Task");
+  check("VTODO uid",                            task.uid === "task-1@x");
+  check("VTODO start mapped",                   task.start === "2026-05-22T09:00:00");
+  check("VTODO due mapped",                     task.due === "2026-05-22T17:00:00");
+  check("DURATION → estimatedDuration",         task.estimatedDuration === "PT8H");
+  check("STATUS IN-PROCESS → progress in-process", task.progress === "in-process");
+  check("PERCENT-COMPLETE 25 mapped",           task.percentComplete === 25);
+  check("title from SUMMARY",                   task.title === "Write docs");
+
+  // Round-trip back to iCalendar.
+  var back = b.calendar.toIcal(task);
+  check("toIcal emits BEGIN:VTODO",             /BEGIN:VTODO/.test(back));
+  check("toIcal emits END:VTODO",               /END:VTODO/.test(back));
+  check("toIcal does NOT emit VEVENT",          !/BEGIN:VEVENT/.test(back));
+  check("toIcal preserves UID",                 /UID:task-1@x/.test(back));
+  check("toIcal preserves DTSTART",             /DTSTART:20260522T090000/.test(back));
+  check("toIcal preserves DUE",                 /DUE:20260522T170000/.test(back));
+  check("toIcal preserves DURATION",            /DURATION:PT8H/.test(back));
+  check("toIcal preserves STATUS",              /STATUS:IN-PROCESS/.test(back));
+  check("toIcal preserves PERCENT-COMPLETE",    /PERCENT-COMPLETE:25/.test(back));
+}
+
+function testTaskValidateRefusals() {
+  function expectCode(label, jsCal, codeFragment) {
+    var threw = null;
+    try { b.calendar.validate(jsCal); } catch (e) { threw = e; }
+    check(label, threw && (threw.code || "").indexOf(codeFragment) !== -1);
+  }
+  expectCode("Task with bad progress refused",
+    { "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z", progress: "started" }, "calendar/bad-progress");
+  expectCode("Task with bad percent refused",
+    { "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z", percentComplete: 150 }, "calendar/bad-percent");
+  expectCode("Task with bad due refused",
+    { "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z", due: "not-a-datetime" }, "calendar/bad-due");
+  expectCode("Task with bad estimatedDuration refused",
+    { "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z", estimatedDuration: "8h" }, "calendar/bad-duration");
+  // Happy path.
+  var rv = b.calendar.validate({
+    "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z",
+    progress: "needs-action", percentComplete: 0, due: "2026-05-22T17:00:00",
+  });
+  check("valid Task accepted",                  rv && rv["@type"] === "Task");
+}
+
+function testCompletedTaskWithProgressUpdated() {
+  var ical =
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
+    "BEGIN:VTODO\r\nUID:done@x\r\n" +
+    "DTSTAMP:20260521T100000Z\r\n" +
+    "STATUS:COMPLETED\r\n" +
+    "PERCENT-COMPLETE:100\r\n" +
+    "COMPLETED:20260521T093000Z\r\n" +
+    "SUMMARY:Reticulate splines\r\n" +
+    "END:VTODO\r\nEND:VCALENDAR\r\n";
+  var task = b.calendar.fromIcal(ical);
+  check("progress completed mapped",            task.progress === "completed");
+  check("percentComplete 100",                  task.percentComplete === 100);
+  check("COMPLETED → progressUpdated UTC",      task.progressUpdated === "2026-05-21T09:30:00Z");
+  var back = b.calendar.toIcal(task);
+  check("toIcal preserves COMPLETED",           /COMPLETED:20260521T093000Z/.test(back));
+}
+
+function testMixedVcalendarReturnsArray() {
+  var ical =
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
+    "BEGIN:VEVENT\r\nUID:e1\r\nDTSTAMP:20260521T100000Z\r\nSUMMARY:Event\r\nEND:VEVENT\r\n" +
+    "BEGIN:VTODO\r\nUID:t1\r\nDTSTAMP:20260521T100000Z\r\nSUMMARY:Task\r\nEND:VTODO\r\n" +
+    "END:VCALENDAR\r\n";
+  var rv = b.calendar.fromIcal(ical);
+  check("mixed VCALENDAR returns array",        Array.isArray(rv) && rv.length === 2);
+  check("first element is Event",               rv[0]["@type"] === "Event");
+  check("second element is Task",               rv[1]["@type"] === "Task");
+}
+
 function testJmapCatalogueCarriesCalendarMethods() {
   var reg = b.mail.serverRegistry.create({
     protocol:  "jmap",
@@ -264,6 +355,11 @@ function run() {
   testFractionalSecondsStrippedInToIcal();
   testExpandRecurrenceByDayFilter();
   testExpandRecurrenceByMonthFilter();
+  // v0.11.35 — VTODO → JSCalendar Task
+  testVtodoToTaskRoundTrip();
+  testTaskValidateRefusals();
+  testCompletedTaskWithProgressUpdated();
+  testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
 }
 
