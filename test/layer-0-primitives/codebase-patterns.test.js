@@ -8764,6 +8764,80 @@ function testJmapEventSourcePingShape() {
     bad);
 }
 
+// ---- Pattern: JMAP Id cap matches RFC 8620 §1.2 (255 octets) ----
+//
+// class: jmap-id-undersized-cap
+//
+// v0.11.30 Codex P1 — JMAP `Id` values are valid up to 255 octets per
+// RFC 8620 §1.2 (`[A-Za-z0-9_-]`). The earlier blob handler regex
+// `{1,64}` refused legitimate-shape accounts. Detector flags any
+// `{1,64}` accountId / blobId / Id-shape regex in mail-server-jmap.js.
+function testJmapIdNotUndersized() {
+  var bad = [];
+  var path = "lib/mail-server-jmap.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  // Match `[A-Za-z0-9_-]{1,N}` where N < 255.
+  var lines = content.split(/\r?\n/);
+  for (var i = 0; i < lines.length; i += 1) {
+    var line = lines[i];
+    if (/^\s*(\/\/|\*)/.test(line)) continue;
+    var m = line.match(/\[A-Za-z0-9[_\\-]+\]\{1,(\d+)\}/);                                             // allow:regex-no-length-cap — inspects code text, fixed length
+    if (!m) continue;
+    var n = parseInt(m[1], 10);
+    if (isFinite(n) && n > 0 && n < 255) {                                                            // allow:raw-byte-literal — RFC 8620 §1.2 max Id length
+      // accountId / blobId / Id-shape — only flag when the line
+      // is in a JMAP-handler context (the regex appears alongside an
+      // accountId / blobId identifier mention nearby).
+      var window = (lines[i - 1] || "") + "\n" + line + "\n" + (lines[i + 1] || "");
+      if (/accountId|blobId|jmap|JMAP/.test(window)) {
+        bad.push({ file: path, line: i + 1, content: line.trim() });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "jmap-id-undersized-cap");
+  _report("JMAP Id regex caps at RFC 8620 §1.2 255-octet limit (Codex P1 v0.11.30)",
+    bad);
+}
+
+// ---- Pattern: URL-path-segment extraction must use bounded split ----
+//
+// class: url-path-unbounded-regex
+//
+// v0.11.30 CodeQL — `pathOnly.replace(/\/+$/, "")` runs an unbounded
+// quantifier on uncontrolled `req.url`. Even when anchored, CodeQL
+// flags the polynomial-regex risk class. The framework now wraps URL
+// splitting in `_splitPathSegments` which (a) caps input length first
+// and (b) walks the string via a single-pass charCodeAt loop, no
+// regex. Detector flags any `pathOnly\.replace\(/\\/\+\$/` shape in
+// mail-server-jmap.js / mail-server-imap.js — both listeners get the
+// same scrutiny.
+function testUrlPathBoundedSplit() {
+  var bad = [];
+  var files = [
+    "lib/mail-server-jmap.js",
+    "lib/mail-server-imap.js",
+  ];
+  for (var fi = 0; fi < files.length; fi += 1) {
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i += 1) {
+      var line = lines[i];
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      if (/\.replace\s*\(\s*\/\\?\/\+\$\//.test(line)) {
+        bad.push({ file: files[fi], line: i + 1, content: line.trim() });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "url-path-unbounded-regex");
+  _report("URL path-segment extraction goes through bounded `_splitPathSegments` " +
+          "(v0.11.30 CodeQL — polynomial-regex risk on uncontrolled req.url)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -9164,6 +9238,10 @@ async function run() {
   // v0.11.29 review-fix detector (Codex P1+P2): EventSource ping=0
   // opt-out + interval in payload per RFC 8620 §7.3.
   testJmapEventSourcePingShape();
+  // v0.11.30 review-fix detectors (Codex P1 + CodeQL): JMAP Id cap
+  // matches RFC 8620 §1.2 + URL-path split is bounded.
+  testJmapIdNotUndersized();
+  testUrlPathBoundedSplit();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.

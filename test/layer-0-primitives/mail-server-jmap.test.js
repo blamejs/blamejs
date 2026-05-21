@@ -465,6 +465,59 @@ async function testDownloadHandlerHappyPath() {
         /attachment; filename="note\.txt"/.test(mr.res._headers()["content-disposition"] || ""));
 }
 
+async function testDownloadHandlerMalformedUrl() {
+  // Codex P2 — A URL like `/jmap/download/A1/B1` (missing the `name`
+  // segment) MUST refuse with 400 invalidArguments, not silently
+  // remap (accountId="download", blobId="A1", name="B1").
+  var calls = [];
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      downloadBlob: function (_a, accountId, blobId) {
+        calls.push({ accountId: accountId, blobId: blobId });
+        return Promise.resolve({ bytes: Buffer.from("x"), type: "text/plain" });
+      },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeUploadReqRes("/jmap/download/A1/B1", null, []);
+  jmap.downloadHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("download missing name → 400",         mr.res._status() === 400);
+  check("download malformed → invalidArguments", /jmap:error:invalidArguments/.test(mr.res._buf()));
+  check("download malformed → backend not called", calls.length === 0);
+}
+
+async function testJmapIdAcceptsFullLength() {
+  // Codex P1 — JMAP Id is up to 255 octets. Upload + download MUST
+  // accept the full spec length, not refuse at 64.
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      uploadBlob: function () { return Promise.resolve({ blobId: "B" }); },
+      downloadBlob: function () { return Promise.resolve({ bytes: Buffer.from("x"), type: "text/plain" }); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var longId = "A".repeat(200);                                                                       // allow:raw-byte-literal — 200 chars, under RFC 8620 §1.2 255 cap
+  var mrUp = _makeUploadReqRes("/jmap/upload/" + longId, "text/plain", [Buffer.from("hi")]);
+  jmap.uploadHandler(mrUp.req, mrUp.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("upload accepts 200-char accountId",   mrUp.res._status() === 201);
+  var mrDn = _makeUploadReqRes("/jmap/download/" + longId + "/blob_42/note.txt", null, []);
+  jmap.downloadHandler(mrDn.req, mrDn.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("download accepts 200-char accountId", mrDn.res._status() === 200);
+  // 256+ chars still refuse.
+  var tooLongId = "A".repeat(256);                                                                    // allow:raw-byte-literal — 256 chars, just over the cap
+  var mrTooLong = _makeUploadReqRes("/jmap/upload/" + tooLongId, "text/plain", [Buffer.from("hi")]);
+  jmap.uploadHandler(mrTooLong.req, mrTooLong.res);
+  await new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+  check("upload refuses 256+ accountId",       mrTooLong.res._status() === 400);
+}
+
 async function testDownloadHandlerNotFound() {
   var jmap = b.mail.server.jmap.create({
     mailStore: {
@@ -531,6 +584,8 @@ async function run() {
   await testDownloadHandlerNotFound();
   testDownloadHandlerRefusesUnauth();
   testDownloadHandlerWithoutBackend();
+  await testDownloadHandlerMalformedUrl();
+  await testJmapIdAcceptsFullLength();
 }
 
 module.exports = { run: run };
