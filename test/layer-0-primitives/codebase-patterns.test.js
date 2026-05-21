@@ -8520,6 +8520,90 @@ function testFsmDefineClonesBeforeFreeze() {
     bad);
 }
 
+// ---- Pattern: mail-server BDAT/binary lineBuffer through UTF-8 string ----
+//
+// class: smtp-linebuffer-utf8-roundtrip
+//
+// v0.11.26 Codex P1: when a mail-server (submission / MX) keeps the
+// line-buffer as a UTF-8 string, the BDAT / BINARYMIME / 8BITMIME path
+// loses bytes — invalid UTF-8 sequences get replaced with U+FFFD, and
+// binary attachments come out corrupted at the agent layer. The fix
+// keeps the line-buffer as a Buffer; per-command parsing decodes only
+// the line slice. Detector flags any mail-server*.js file that
+// declares `var lineBuffer = ""` (string init) — the lineBuffer MUST
+// be a Buffer.
+function testMailServerLineBufferIsBuffer() {
+  var bad = [];
+  var files = _libFiles().filter(function (p) {
+    return /lib\/mail-server-(submission|mx|imap|pop3|managesieve|jmap)\.js$/.test(_relPath(p));
+  });
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      // Match `var lineBuffer = "";` — string initialisation.
+      if (/\b(var|let|const)\s+lineBuffer\s*=\s*""/.test(line)) {
+        bad.push({ file: _relPath(files[i]), line: j + 1, content: line.trim() });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "smtp-linebuffer-utf8-roundtrip");
+  _report("mail-server line-buffer initialised as Buffer (not string) " +
+          "(v0.11.26 Codex P1 — UTF-8 roundtrip corrupts binary BDAT / 8BITMIME payloads)",
+    bad);
+}
+
+// ---- Pattern: BDAT LAST emits double 250 reply ----
+//
+// class: bdat-last-double-reply
+//
+// v0.11.26 Codex P1: when a BDAT chunk completes AND `isLast`, the
+// per-chunk acknowledgement ("250 <N> octets received") MUST NOT be
+// emitted alongside the finalize reply ("250 Message queued") — RFC
+// 3030 §2.2 specifies one reply per BDAT command. Two replies
+// desynchronise the client (the extra 250 gets consumed as the
+// reply to the next command). Detector flags any code in mail-
+// server-submission.js that calls `_writeReply(..., "250 ...
+// octets received")` immediately before `_finalizeAcceptedBody(...,
+// "BDAT")` without an intervening branch / return.
+function testBdatLastSingleReply() {
+  var bad = [];
+  var path = "lib/mail-server-submission.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  var lines = content.split(/\r?\n/);
+  for (var i = 0; i < lines.length - 5; i++) {
+    if (!/octets received/.test(lines[i])) continue;
+    // Look ahead 5 lines for _finalizeAcceptedBody. If we see one
+    // before an `if (wasLast)` / `if (isLast)` / `else` branch, the
+    // two replies are emitted on the same path — Codex's exact bug.
+    var branched = false;
+    for (var k = 1; k <= 5 && i + k < lines.length; k++) {
+      var probe = lines[i + k];
+      if (/\bif\s*\(\s*(wasLast|isLast)\b|}\s*else\s*\{/.test(probe)) {
+        branched = true;
+        break;
+      }
+      if (/_finalizeAcceptedBody\s*\(.*BDAT/.test(probe) && !branched) {
+        bad.push({
+          file: path, line: i + 1,
+          content: "250 octets received emitted before _finalizeAcceptedBody(BDAT) without branch",
+        });
+        break;
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "bdat-last-double-reply");
+  _report("BDAT LAST emits exactly one reply per command " +
+          "(v0.11.26 Codex P1 — RFC 3030 §2.2 — double-250 desyncs client)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -8907,6 +8991,10 @@ async function run() {
   testNonceStoreAwaited();
   testMailStoreFtsInTransaction();
   testFsmDefineClonesBeforeFreeze();
+  // v0.11.26 review-fix detectors (Codex P1/P1): mail-server line-buffer
+  // keeps raw bytes; BDAT LAST emits one reply.
+  testMailServerLineBufferIsBuffer();
+  testBdatLastSingleReply();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.

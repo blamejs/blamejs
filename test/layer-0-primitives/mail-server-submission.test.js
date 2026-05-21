@@ -302,6 +302,47 @@ async function testBdatBadArgs() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+async function testBdatBinaryBytesPreserved() {
+  // Codex P1 — BDAT payloads can be 8-bit / binary (BINARYMIME, MIME
+  // attachments). The line-buffer drain MUST NOT round-trip bytes
+  // through UTF-8 — invalid sequences get replaced with U+FFFD and
+  // the body corrupts. Send a payload containing every non-CR/LF
+  // byte value 0x00..0xFF and assert byte-for-byte equality.
+  var bundle = await _makePermissiveServer();
+  if (!bundle) { check("BDAT binary bytes preserved (skipped)", true); return; }
+  var srv = bundle.srv;
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+    await _sendCommand(socket, "MAIL FROM:<a@example.com>");
+    await _sendCommand(socket, "RCPT TO:<b@example.com>");
+    // RFC 822-shaped header + binary body (every byte except CR/LF
+    // in the body slot). Header MUST end with CRLF CRLF; the binary
+    // section starts after.
+    var header = Buffer.from(
+      "From: a@example.com\r\nTo: b@example.com\r\nSubject: bin\r\n" +
+      "Content-Type: application/octet-stream\r\n\r\n", "utf8");
+    var binBytes = [];
+    for (var i = 0; i < 256; i += 1) {
+      // Skip 0x0A/0x0D — bare CR/LF inside a BDAT header section
+      // would still be invalid SMTP, but for the body any byte is
+      // legal under BINARYMIME.
+      binBytes.push(i);
+    }
+    var body = Buffer.concat([header, Buffer.from(binBytes)]);
+    var reply = await _sendBdat(socket, body, true);
+    check("BDAT LAST with binary body → 250",   /^250 /m.test(reply));
+    check("agent received body length",        bundle.handoffs[0] && bundle.handoffs[0].body.length === body.length);
+    // Byte-for-byte equality
+    var same = bundle.handoffs[0].body.equals(body);
+    check("agent received body byte-equal",    same === true);
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatOversizeRefused() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -339,6 +380,7 @@ async function run() {
   await testBdatZeroByteLast();
   await testBdatOutsideTransaction();
   await testBdatBadArgs();
+  await testBdatBinaryBytesPreserved();
   await testBdatOversizeRefused();
 }
 
