@@ -1,0 +1,52 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.37",
+  "date": "2026-05-21",
+  "headline": "`b.calendar` VJOURNAL ↔ JSCalendar Note (RFC 5545 §3.6.3)",
+  "summary": "Closes the v0.11.31 deferral on VJOURNAL. `b.calendar.fromIcal` now recognises VJOURNAL components and maps them to JSCalendar-shaped Note objects (`@type: \"Note\"`). `b.calendar.toIcal` emits a VJOURNAL envelope when the input `@type` is `Note`. `b.calendar.validate` adds Note-specific shape rules: optional `start` LocalDateTime, no `duration` / `due` / `progress` / `percentComplete` / `progressUpdated` (those are Event / Task-only properties), optional `status` from the RFC 5545 §3.8.1.11 VJOURNAL vocabulary (`draft` | `final` | `cancelled`). VJOURNAL is the only iCalendar component that may carry multiple DESCRIPTION properties — Note preserves operator-visible boundaries by joining them with a blank-line separator. A VCALENDAR carrying VEVENT + VTODO + VJOURNAL children now returns a mixed `Event` + `Task` + `Note` array.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.calendar.fromIcal` maps VJOURNAL → JSCalendar Note",
+          "body": "VJOURNAL components in the VCALENDAR map to `@type: \"Note\"` objects with `uid` / `updated` / `title` (SUMMARY) / `description` (DESCRIPTION) / `start` (DTSTART → LocalDateTime, optional) / `timeZone` / `status` (lower-cased STATUS) / `locations` / `recurrenceRules`. UTC DTSTART maps to `timeZone: \"Etc/UTC\"` the same way DTSTART does for Event."
+        },
+        {
+          "title": "`b.calendar.toIcal` emits VJOURNAL when `@type === \"Note\"`",
+          "body": "The envelope is `BEGIN:VJOURNAL` / `END:VJOURNAL` instead of `BEGIN:VEVENT` or `BEGIN:VTODO`. Note's `status` round-trips uppercased per RFC 5545 §3.8.1.11. Note does NOT emit DURATION / DUE / PERCENT-COMPLETE / COMPLETED on the wire (those properties are forbidden on VJOURNAL per RFC 5545 §3.6.3 grammar)."
+        },
+        {
+          "title": "`b.calendar.validate` learns Note-specific shape rules (RFC 5545 §3.6.3)",
+          "body": "Note's `start` must be a LocalDateTime when present. Setting `duration`, `due`, `progress`, `percentComplete`, or `progressUpdated` on a Note is refused (those are Event / Task-only properties). `status` must be in the `JSCAL_NOTE_STATUS` catalogue (`draft` | `final` | `cancelled` — different from the Task progress vocabulary). Structured `CalendarError` codes: `calendar/bad-note-status` plus reuse of `calendar/bad-due`, `calendar/bad-progress`, `calendar/bad-duration`, `calendar/bad-percent`, `calendar/bad-progress-updated` for the forbidden-property refusals."
+        },
+        {
+          "title": "Multiple DESCRIPTION properties preserved",
+          "body": "VJOURNAL is the only iCalendar component permitted to carry multiple DESCRIPTION properties (one per discrete journal entry). `fromIcal` joins them into a single Note.description with `\\n\\n` between entries, preserving the operator-visible boundary. Single-DESCRIPTION VJOURNALs map to the literal string with no join."
+        },
+        {
+          "title": "Mixed-component VCALENDAR returns array of Event + Task + Note shapes",
+          "body": "A VCALENDAR carrying VEVENT + VTODO + VJOURNAL children now returns an Array — events first, tasks second, journals third, in their declared order. The single-component shortcut (returning the bare object) still applies when only one component is present."
+        },
+        {
+          "title": "`JSCAL_TYPES.Note` and `JSCAL_NOTE_STATUS` exports",
+          "body": "`b.calendar.JSCAL_TYPES.Note === \"Note\"` (the discriminator string). `b.calendar.JSCAL_NOTE_STATUS` exposes the `draft` / `final` / `cancelled` vocabulary as a frozen object for operator-side enum lookups."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "JSCalendar `Note` is a blamejs-recognised extension",
+          "body": "RFC 8984 §1.2 only enumerates `Event`, `Task`, and `Group` as discriminator values. `Note` is not formally an RFC 8984 type — blamejs adopts it as a recognised extension shape for VJOURNAL round-trip interop. Operators interoperating with strict RFC 8984 consumers should map Note → Group + a vendor-namespaced property before exchange."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "RFC 5545 §3.6.3 (iCalendar VJOURNAL component)",            "url": "https://www.rfc-editor.org/rfc/rfc5545.html#section-3.6.3" },
+    { "label": "RFC 5545 §3.8.1.11 (STATUS — DRAFT/FINAL/CANCELLED on VJOURNAL)", "url": "https://www.rfc-editor.org/rfc/rfc5545.html#section-3.8.1.11" },
+    { "label": "RFC 8984 §1.2 (JSCalendar @type discriminator)",            "url": "https://www.rfc-editor.org/rfc/rfc8984.html#section-1.2" }
+  ]
+}
