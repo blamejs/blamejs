@@ -456,6 +456,61 @@ async function testCatenateBackendMissing() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+async function testCatenatePartOrderingAndValidation() {
+  // Codex P1 — CATENATE parts MUST preserve client-specified ORDER
+  // (semantics depend on sequential concatenation). Also: malformed
+  // paren list must refuse BEFORE the backend dispatch; multi-literal
+  // TEXT parts are deferred-with-condition for v1 (operators that need
+  // TEXT-CATENATE use APPEND with a single literal).
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("CATENATE part-ordering + validation (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var appendCalls = [];
+  stub.appendCatenate = function (mailbox, parts, opts) {
+    appendCalls.push({ mailbox: mailbox, parts: parts, opts: opts });
+    return Promise.resolve({ uid: 42, uidValidity: 1 });                                              // allow:raw-byte-literal — test-only stub uid
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+
+    // Multi-URL CATENATE — order must be preserved.
+    var rOrder = await _sendCommand(c.socket, "a1",
+      "APPEND INBOX CATENATE (URL \"imap://x/A;UID=1\" URL \"imap://x/B;UID=2\" URL \"imap://x/C;UID=3\")");
+    check("CATENATE multi-URL → OK with APPENDUID",
+          /^a1 OK \[APPENDUID 1 42\] /m.test(rOrder));
+    check("backend received exactly 3 parts",       appendCalls[0].parts.length === 3);
+    check("part order A then B then C",
+          appendCalls[0].parts[0].url.indexOf("A;UID=1") !== -1 &&
+          appendCalls[0].parts[1].url.indexOf("B;UID=2") !== -1 &&
+          appendCalls[0].parts[2].url.indexOf("C;UID=3") !== -1);
+
+    // Missing-closing-paren — refuse without calling backend.
+    var beforeCount = appendCalls.length;
+    var rMalformed = await _sendCommand(c.socket, "a2",
+      "APPEND INBOX CATENATE (URL \"imap://x/A\"");
+    check("malformed CATENATE refuses (no closing paren)",
+          /^a2 BAD /m.test(rMalformed));
+    check("backend not called on malformed CATENATE",
+          appendCalls.length === beforeCount);
+
+    // TEXT-literal CATENATE — v1 defer-with-condition; refuse with NO.
+    var rText = await _sendCommand(c.socket, "a3",
+      "APPEND INBOX CATENATE (TEXT 1)");
+    check("CATENATE TEXT part refused in v1",
+          /^a3 NO /m.test(rText) && /TEXT-literal parts not yet implemented/i.test(rText));
+
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testStoreSilentEmitsModseqUnderCondstore() {
   // Codex P1 — `.SILENT` STORE under CONDSTORE / UNCHANGEDSINCE MUST
   // still emit an untagged FETCH carrying the new MODSEQ for each
@@ -521,6 +576,7 @@ async function run() {
   await testGetSetMetadata();
   await testMetadataBackendMissing();
   await testCatenateBackendMissing();
+  await testCatenatePartOrderingAndValidation();
 }
 
 module.exports = { run: run };

@@ -8659,6 +8659,55 @@ function testCondstoreImplicitEngage() {
     bad);
 }
 
+// ---- Pattern: CATENATE parts list must validate parens + preserve order ----
+//
+// class: catenate-parens-order
+//
+// v0.11.28 Codex P1 #1: a CATENATE handler that strips `(` from the
+// start and an optional `)` from the end without first asserting BOTH
+// were present can dispatch a truncated parts list to the backend
+// (e.g. the IMAP literal-aware parser fires the handler as soon as
+// the first literal is consumed, with the closing paren still on the
+// wire). Refuse without a closing paren.
+//
+// v0.11.28 Codex P1 #2: the handler MUST walk the parts list LEFT-TO-
+// RIGHT preserving the client-specified order. RFC 4469 CATENATE
+// concatenates parts in sequence; reordering URLs ahead of TEXT
+// literals produces a different message body than the client built.
+//
+// Detector flags any `lib/mail-server-imap.js` code that extracts
+// `URL` parts via `match(/URL.../g)` ahead of TEXT-part collection
+// without a left-to-right walker — the regex-collect-all-then-append
+// shape is the exact bug.
+function testCatenatePartsOrderPreserved() {
+  var bad = [];
+  var path = "lib/mail-server-imap.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  // `partsBody.match(/URL.../gi)` followed by `parts.push({ kind: "TEXT"`
+  // in the same function indicates the collect-URLs-then-TEXT pattern.
+  if (/partsBody\.match\s*\(\s*\/URL/.test(content) &&
+      /parts\.push\(\s*\{\s*kind\s*:\s*"TEXT"/.test(content)) {
+    bad.push({
+      file: path, line: 1,
+      content: "URL parts extracted via .match()/g before sequential TEXT walk — order regression risk",
+    });
+  }
+  // Closing-paren validation must guard the body slice. The acceptable
+  // shape is `if (body[0] !== "(" || body[body.length - 1] !== ")")`.
+  if (/CATENATE/.test(content) && !/!==\s*"\("\s*\|\|.*!==\s*"\)"/.test(content)) {
+    bad.push({
+      file: path, line: 1,
+      content: "CATENATE handler does not validate ( ... ) parens before backend dispatch",
+    });
+  }
+  bad = _filterMarkers(bad, "catenate-parens-order");
+  _report("CATENATE handler validates parens + walks parts left-to-right " +
+          "(v0.11.28 Codex P1 — RFC 4469 §3 order-preserving concatenation)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -9053,6 +9102,9 @@ async function run() {
   // v0.11.27 review-fix detector (Codex P2): CHANGEDSINCE / UNCHANGEDSINCE
   // implicitly engage CONDSTORE per RFC 7162 §3.1.2.
   testCondstoreImplicitEngage();
+  // v0.11.28 review-fix detector (Codex P1): CATENATE parts must
+  // validate parens + preserve order per RFC 4469 §3.
+  testCatenatePartsOrderPreserved();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
