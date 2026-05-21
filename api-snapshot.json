@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.30",
-  "createdAt": "2026-05-21T15:41:42.348Z",
+  "frameworkVersion": "0.11.31",
+  "createdAt": "2026-05-21T16:41:23.378Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5569,6 +5569,126 @@
           "arity": 1
         },
         "parse": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "calendar": {
+      "type": "object",
+      "members": {
+        "CalendarError": {
+          "type": "function",
+          "arity": 4
+        },
+        "JSCAL_ALERT_ACTIONS": {
+          "type": "object",
+          "members": {
+            "display": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "email": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "JSCAL_FREQUENCIES": {
+          "type": "object",
+          "members": {
+            "daily": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "hourly": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "minutely": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "monthly": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "secondly": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "weekly": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "yearly": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "JSCAL_TYPES": {
+          "type": "object",
+          "members": {
+            "Alert": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Event": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Group": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Link": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Location": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Participant": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Recurrence": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Task": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "TimeZone": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "MAX_EXPAND_INSTANCES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "MAX_EXPAND_SPAN_MS": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "expandRecurrence": {
+          "type": "function",
+          "arity": 2
+        },
+        "fromIcal": {
+          "type": "function",
+          "arity": 2
+        },
+        "toIcal": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
           "type": "function",
           "arity": 1
         }
@@ -36983,6 +37103,70 @@
                 "jmap": {
                   "type": "object",
                   "members": {
+                    "Calendar/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Calendar/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Calendar/query": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Calendar/queryChanges": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "Calendar/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEvent/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEvent/copy": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEvent/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEvent/query": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEvent/queryChanges": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEvent/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEventNotification/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEventNotification/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEventNotification/query": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEventNotification/queryChanges": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "CalendarEventNotification/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
                     "Core/echo": {
                       "type": "primitive",
                       "valueType": "number"
@@ -37068,6 +37252,18 @@
                       "valueType": "number"
                     },
                     "Mailbox/set": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ParticipantIdentity/changes": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ParticipantIdentity/get": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "ParticipantIdentity/set": {
                       "type": "primitive",
                       "valueType": "number"
                     },

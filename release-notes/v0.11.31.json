@@ -1,0 +1,56 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.31",
+  "date": "2026-05-21",
+  "headline": "`b.calendar` — JSCalendar (RFC 8984) primitive + JMAP Calendars method catalogue",
+  "summary": "JSCalendar is the JSON-native calendar grammar JMAP Calendars rides on. The framework now ships `b.calendar` — a thin layer over the existing `b.safeIcal.parse` (RFC 5545 bounded parser shipped earlier) that exposes validate / fromIcal / toIcal / expandRecurrence. The JMAP method catalogue at `b.mail.serverRegistry` picks up the 15 Calendar / CalendarEvent / CalendarEventNotification / ParticipantIdentity methods per the draft-ietf-jmap-calendars spec, so operators wire them through the existing `b.mail.server.jmap.create({ methods: { ... } })` dispatch path without `allowExperimental: true` escape-hatches.\n\nv1 scope: validate JSCalendar Event / Task shape per RFC 8984 §5/§6, bidirectional VEVENT ↔ JSCalendar conversion, RRULE expansion for FREQ=DAILY/WEEKLY/MONTHLY/YEARLY/HOURLY/MINUTELY/SECONDLY with INTERVAL / COUNT / UNTIL / BYDAY / BYMONTH / BYMONTHDAY. BYSETPOS / BYWEEKNO / BYYEARDAY filters + non-Gregorian calendars (RFC 7529) + JSCalendar Group objects + VTODO/VJOURNAL mapping are deferred-with-condition for follow-up slices.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.calendar.validate(jsCal)` — JSCalendar Event/Task shape gate (RFC 8984 §5/§6)",
+          "body": "Asserts `@type` ∈ { 'Event', 'Task' }, non-empty `uid` (≤ 1024 bytes), `updated` matches UTCDateTime grammar, Event's optional `start` matches LocalDateTime, `duration` is RFC 8601 PnYnMnDTnHnMnS, every `recurrenceRules[i].@type` is 'RecurrenceRule' with `frequency` in the JSCAL_FREQUENCIES catalogue, every `alerts.{id}.action` is 'display' or 'email'. Returns the input on success; throws `CalendarError` with a structured `.code` (`calendar/no-uid`, `calendar/bad-recurrence`, etc.) on refusal so operator-side error handling has a stable surface."
+        },
+        {
+          "title": "`b.calendar.fromIcal(text, opts?)` + `b.calendar.toIcal(jsCal, opts?)`",
+          "body": "Bidirectional bridge: iCalendar (RFC 5545) ↔ JSCalendar (RFC 8984). `fromIcal` runs the text through `b.safeIcal.parse` (already CVE-bounded for parser DoS) and maps the first VEVENT into an Event object (UID → uid, DTSTAMP → updated, DTSTART → start, DURATION → duration, SUMMARY → title, DESCRIPTION → description, LOCATION → locations[L1].name, RRULE → recurrenceRules[0]). `toIcal` round-trips the same shape back through a CRLF-folded VCALENDAR envelope per RFC 5545 §3.1 (75-octet content-line cap). Operators wire it on the EmailSubmission send path so calendar invitations from a JSCalendar back-end emit RFC 5545 over MIME, and inbound iCalendar attachments parse straight into the JMAP method's Event return shape."
+        },
+        {
+          "title": "`b.calendar.expandRecurrence(event, { from, to, max })` — bounded RRULE expansion",
+          "body": "Emits ISO 8601 UTC instance timestamps for an Event in the operator's `[from, to]` window. Supports FREQ=DAILY/WEEKLY/MONTHLY/YEARLY/HOURLY/MINUTELY/SECONDLY with INTERVAL, COUNT, UNTIL. Bounded by `MAX_EXPAND_INSTANCES` (4096) and `MAX_EXPAND_SPAN_MS` (10 years) — refuses with `calendar/oversize-expansion-span` when the window exceeds 10 years (CVE-2024-39687-class recurrence-bomb defense, mirroring the parser-side caps already in `b.safeIcal`). LocalDateTime starts without a `timeZone` are treated as floating-UTC during expansion so wall-clock semantics survive `Date.parse` host-locale interpretation."
+        },
+        {
+          "title": "JMAP method catalogue: Calendar / CalendarEvent / CalendarEventNotification / ParticipantIdentity",
+          "body": "15 new methods added to `JMAP_METHODS` in `lib/mail-server-registry.js` per draft-ietf-jmap-calendars: `Calendar/{get,changes,set,query,queryChanges}`, `CalendarEvent/{get,changes,query,queryChanges,set,copy}`, `CalendarEventNotification/{get,changes,query,queryChanges,set}`, `ParticipantIdentity/{get,changes,set}`. Operators wire concrete handlers through the existing `b.mail.server.jmap.create({ methods: { 'CalendarEvent/get': async function (actor, args) { ... } } })` path — no `allowExperimental: true` escape-hatch is required."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Recurrence-bomb expansion caps",
+          "body": "`MAX_EXPAND_INSTANCES = 4096` + `MAX_EXPAND_SPAN_MS = 10 years` clamp the expansion budget at the framework boundary so an operator who forwards an unbounded JSCalendar from a hostile peer cannot DoS the host. The caps mirror `b.safeIcal`'s RRULE COUNT + BY-entries caps (which already defend the CVE-2024-39687 class). The 10-year span refusal carries `code: 'calendar/oversize-expansion-span'` so operators distinguish bomb defense from legitimate too-wide-window misconfiguration."
+        },
+        {
+          "title": "UID + duration + UTCDateTime parsing is strict",
+          "body": "`validate` refuses `uid` over 1024 bytes (anti-DoS), `updated` that doesn't match the RFC 8984 §1.4.3 `\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z` UTCDateTime grammar exactly (no `+00:00` aliases, no fractional-second-only suffixes), and `duration` that isn't `PnYnMnDTnHnMnS`. Hostile JSCalendar payloads from federation peers can't slip non-canonical-shape values into the operator's storage layer through the validator."
+        },
+        {
+          "title": "iCalendar parsing routed through bounded `b.safeIcal.parse`",
+          "body": "`fromIcal` does NOT roll its own RFC 5545 parser — it forwards to `b.safeIcal.parse` which is already audit-hardened (CVE-2024-39929 / CVE-2025-30258 mitigation, bounded depth, capped RRULE COUNT + BY-entries). The JSCalendar layer composes the existing security substrate rather than re-litigating it."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "RFC 8984 (JSCalendar — JSON Representation of Calendar Data)",          "url": "https://www.rfc-editor.org/rfc/rfc8984.html" },
+    { "label": "RFC 5545 (iCalendar — Internet Calendaring and Scheduling Core Object)", "url": "https://www.rfc-editor.org/rfc/rfc5545.html" },
+    { "label": "draft-ietf-jmap-calendars (JMAP for Calendars)",                        "url": "https://datatracker.ietf.org/doc/draft-ietf-jmap-calendars/" },
+    { "label": "RFC 8620 (JMAP Core)",                                                  "url": "https://www.rfc-editor.org/rfc/rfc8620.html" },
+    { "label": "RFC 8601 (Duration grammar PnYnMnDTnHnMnS)",                            "url": "https://www.rfc-editor.org/rfc/rfc3339.html" },
+    { "label": "RFC 7986 (New properties for iCalendar)",                               "url": "https://www.rfc-editor.org/rfc/rfc7986.html" },
+    { "label": "CVE-2024-39687 (iCalendar recurrence-bomb expansion)",                  "url": "https://nvd.nist.gov/vuln/detail/CVE-2024-39687" }
+  ]
+}

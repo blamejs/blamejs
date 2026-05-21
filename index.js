@@ -98,6 +98,7 @@ var safeSieve = require("./lib/safe-sieve");
 var safeIcap = require("./lib/safe-icap");
 var safeIcal = require("./lib/safe-ical");
 var safeVcard = require("./lib/safe-vcard");
+var calendar = require("./lib/calendar");
 var mailStore = require("./lib/mail-store");
 var ntpCheck = require("./lib/ntp-check");
 var auditSign = require("./lib/audit-sign");
@@ -622,6 +623,7 @@ module.exports = {
   safeIcap:         safeIcap,
   safeIcal:         safeIcal,
   safeVcard:        safeVcard,
+  calendar:         calendar,
   mailStore:        mailStore,
   safeSchema:       safeSchema,
   pagination:       pagination,

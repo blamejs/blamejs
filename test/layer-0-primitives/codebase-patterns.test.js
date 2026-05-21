@@ -2273,6 +2273,24 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/ai-model-manifest.js:build",
+        "lib/calendar.js:validate",
+        "lib/vex.js:statement",
+      ],
+      reason: "v0.11.31 — per-spec required-field assertion + typed-error pattern. Each primitive walks an operator-supplied document object, asserts the spec-mandated `@type` discriminator + required keys (`uid` / `componentId` / `vulnerability` / etc.), and throws a domain-typed FrameworkError with a `/<spec>/<violation>` code. CycloneDX 1.6 ML-BOM vs JSCalendar Event/Task vs OASIS CSAF 2.1 VEX statement — three different document schemas; consolidating the assert-prelude would couple unrelated spec vocabularies.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/a2a.js:_validateCardShape",
+        "lib/calendar.js:validate",
+        "lib/middleware/assetlinks.js:create",
+      ],
+      reason: "v0.11.31 — opts-object shape validator pattern. Each primitive accepts a structured document (W3C A2A signed agent-card / JSCalendar Event-or-Task / Android Asset Links manifest), walks the per-spec required keys, and throws a domain-typed error. The shared shingle is the per-field `typeof !== \"string\" || length === 0 || ...test(...)` chain; the per-spec vocabulary diverges entirely.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/ddl-change-control.js:create",
         "lib/network.js:_setSocketKeepAlive",
         "lib/webhook.js:sign",
