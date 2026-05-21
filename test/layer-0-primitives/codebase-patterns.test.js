@@ -2261,6 +2261,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/agent-posture-chain.js:_union",
+        "lib/compliance-ai-act.js:classify",
+        "lib/mail-store.js:create",
+      ],
+      reason: "v0.11.23 — id-array dedup primitive: each function consumes an operator-supplied identifier array and collapses duplicates via `Object.create(null)` + `uniqueIds.push` BEFORE the per-id loop that mutates shared state (posture-set union, classification accumulator, quota decrement). The shingle similarity is the shared dedup idiom; the bodies do entirely different work (W3C agent posture set merge / EU AI Act Annex IV classification / mail-store hardExpunge quota decrement). Consolidating would couple unrelated dataflow domains.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/audit-daily-review.js:create",
         "lib/auth/saml.js:create",
         "lib/auth/oid4vci.js:create",

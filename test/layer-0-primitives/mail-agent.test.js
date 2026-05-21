@@ -206,9 +206,9 @@ async function testExpungeHardDelete() {
     check("expunge: duplicate ids collapsed to single delete",
       rvDup.deleted.length === 1 && rvDup.deleted[0] === dupMeta.objectid);
     check("expunge: duplicate-id quota stays non-negative",
-      quotaAfter.used_bytes >= 0 && quotaAfter.used_count >= 0);
+      quotaAfter.usedBytes >= 0 && quotaAfter.usedCount >= 0);
     check("expunge: duplicate-id quota decrements exactly once",
-      (quotaBefore.used_count - quotaAfter.used_count) === 1);
+      (quotaBefore.usedCount - quotaAfter.usedCount) === 1);
   } finally { _teardown(fx); }
 }
 
