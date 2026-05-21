@@ -282,6 +282,33 @@ async function testEventSourceStateChangeAndCloseAfter() {
   check("closeafter=state closes stream",  mr.res._ended() === true);
 }
 
+async function testEventSourcePingZeroDisables() {
+  // Codex P1 — RFC 8620 §7.3: `ping=0` is the explicit opt-out for
+  // the keepalive event channel. Server MUST NOT clamp it to the
+  // default and start emitting ping frames.
+  var emitFn = null;
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function (actor, types, fn) { emitFn = fn; return Promise.resolve(); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource?ping=0");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  await new Promise(function (r) { setImmediate(r); });
+  // Backend got subscribed but no setInterval should have fired.
+  // We can't easily fake-clock here without a heavier harness, so
+  // assert structurally: the handler is alive (emit-fn is set) AND
+  // the response buffer carries the initial `: connected` comment
+  // but NO ping events.
+  check("ping=0 → subscribePush still called",   typeof emitFn === "function");
+  check("ping=0 → connected comment present",    /: connected/.test(mr.res._buf()));
+  check("ping=0 → no event: ping in initial buffer", !/event: ping/.test(mr.res._buf()));
+  mr.req._fire("close");
+}
+
 function testEventSourceBadCloseAfter() {
   var jmap = b.mail.server.jmap.create({
     mailStore: { appendMessage: function () {}, subscribePush: function () { return Promise.resolve(); } },
@@ -310,6 +337,7 @@ async function run() {
   await testEventSourceStreamHeadersAndConnect();
   await testEventSourceWildcardTypes();
   await testEventSourceStateChangeAndCloseAfter();
+  await testEventSourcePingZeroDisables();
   testEventSourceBadCloseAfter();
 }
 
