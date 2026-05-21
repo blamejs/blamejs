@@ -574,6 +574,59 @@ function testNoteRefusalCases() {
     "calendar/bad-note-status");
 }
 
+function testMultipleRecurrenceRulesUnion() {
+  // RFC 8984 §4.3.2 — multiple RecurrenceRule objects expand
+  // independently and union; per-rule count applies per rule.
+  var ev = {
+    "@type":  "Event",
+    uid:      "multi-rule",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-19T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [
+      { "@type": "RecurrenceRule", frequency: "daily",   count: 3 },
+      { "@type": "RecurrenceRule", frequency: "monthly", count: 3 },
+    ],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-05-18T00:00:00Z", to: "2026-08-01T00:00:00Z" });
+  // Day 1 of the daily rule == first instance of the monthly rule — dedup.
+  check("union: dedup leaves 5 instances (3 daily + 3 monthly - 1 overlap)", insts.length === 5);
+  check("union: sorted ascending", insts[0] === "2026-05-19T09:00:00Z" &&
+                                    insts[4] === "2026-07-19T09:00:00Z");
+}
+
+function testRecurrenceRulesDedupSameRule() {
+  var ev = {
+    "@type":  "Event",
+    uid:      "dup-rule",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-19T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [
+      { "@type": "RecurrenceRule", frequency: "daily", count: 3 },
+      { "@type": "RecurrenceRule", frequency: "daily", count: 3 },
+    ],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-05-18T00:00:00Z", to: "2026-06-01T00:00:00Z" });
+  check("duplicate rules dedupe", insts.length === 3);
+}
+
+function testMultipleRecurrenceRulesBoundedByMax() {
+  var ev = {
+    "@type":  "Event",
+    uid:      "bounded-rule",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-19T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [
+      { "@type": "RecurrenceRule", frequency: "daily", count: 10 },
+      { "@type": "RecurrenceRule", frequency: "daily", count: 10, interval: 2 },
+    ],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-05-18T00:00:00Z", to: "2026-07-01T00:00:00Z", max: 5 });
+  check("global maxCount applies to unioned set", insts.length === 5);
+}
+
 function testMixedVcalendarReturnsArray() {
   var ical =
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
@@ -628,6 +681,9 @@ function run() {
   testVjournalMultipleDescriptionJoined();
   testNoteToIcalRoundTrip();
   testNoteRefusalCases();
+  testMultipleRecurrenceRulesUnion();
+  testRecurrenceRulesDedupSameRule();
+  testMultipleRecurrenceRulesBoundedByMax();
   testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
 }
