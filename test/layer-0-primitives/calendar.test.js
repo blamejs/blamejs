@@ -167,6 +167,78 @@ function testExpandRecurrenceCapEnforced() {
   check("instance count cap honoured",      instances.length <= 50);
 }
 
+function testUtcDtstartRoundTripPreserved() {
+  // Codex P1 — DTSTART:...Z must produce a JSCalendar Event with
+  // timeZone="Etc/UTC" so the round-trip back to iCalendar preserves
+  // the `Z` suffix instead of emitting floating local time.
+  var ical =
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
+    "BEGIN:VEVENT\r\nUID:u@x\r\nDTSTAMP:20260521T100000Z\r\n" +
+    "DTSTART:20260522T090000Z\r\nDURATION:PT1H\r\nSUMMARY:UTC test\r\n" +
+    "END:VEVENT\r\nEND:VCALENDAR\r\n";
+  var ev = b.calendar.fromIcal(ical);
+  check("UTC DTSTART → timeZone Etc/UTC",   ev.timeZone === "Etc/UTC");
+  var back = b.calendar.toIcal(ev);
+  check("toIcal preserves Z suffix",        /DTSTART:20260522T090000Z/.test(back));
+  check("toIcal does NOT emit floating DTSTART", !/DTSTART:20260522T090000\r\n/.test(back));
+  check("toIcal does NOT emit TZID for Etc/UTC", !/TZID=Etc\/UTC/.test(back));
+}
+
+function testFractionalSecondsStrippedInToIcal() {
+  // Codex P2 — validate accepts fractional-second UTCDateTime but
+  // toIcal MUST emit RFC 5545 form (no fractional seconds).
+  var ev = {
+    "@type":  "Event",
+    uid:      "frac",
+    updated:  "2026-05-21T10:00:00.123Z",
+    title:    "frac",
+    start:    "2026-05-22T09:00:00.456",
+    duration: "PT1H",
+    timeZone: "Etc/UTC",
+  };
+  var ical = b.calendar.toIcal(ev);
+  check("fractional updated stripped in DTSTAMP", /DTSTAMP:20260521T100000Z/.test(ical));
+  check("DTSTAMP does NOT carry fractional",     !/DTSTAMP:[^\r\n]*\.\d/.test(ical));
+  check("fractional start stripped in DTSTART",   /DTSTART:20260522T090000Z/.test(ical));
+  check("DTSTART does NOT carry fractional",     !/DTSTART:[^\r\n]*\.\d/.test(ical));
+}
+
+function testExpandRecurrenceByDayFilter() {
+  // Codex P1 — FREQ=DAILY;BYDAY=MO must only emit Mondays.
+  var ev = {
+    "@type":  "Event",
+    uid:      "mondays-only",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-18T09:00:00",                                                                   // 2026-05-18 is a Monday
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "daily",
+                        byDay: [{ "@type": "NDay", day: "mo" }], count: 3 }],
+  };
+  var instances = b.calendar.expandRecurrence(ev, { from: "2026-05-18T00:00:00Z", to: "2026-07-01T00:00:00Z" });
+  check("BYDAY=MO emits 3 instances",      instances.length === 3);
+  // 2026-05-18 (Mon), 2026-05-25 (Mon), 2026-06-01 (Mon).
+  check("first Monday",                     instances[0] === "2026-05-18T09:00:00Z");
+  check("second Monday is +7 days",         instances[1] === "2026-05-25T09:00:00Z");
+  check("third Monday is +14 days",         instances[2] === "2026-06-01T09:00:00Z");
+}
+
+function testExpandRecurrenceByMonthFilter() {
+  // FREQ=YEARLY;BYMONTH=1 — January-only birthday-class.
+  var ev = {
+    "@type":  "Event",
+    uid:      "yearly-jan",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-01-15T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "yearly",
+                        byMonth: ["1"], count: 3 }],
+  };
+  var instances = b.calendar.expandRecurrence(ev, { from: "2026-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" });
+  check("BYMONTH=1 yearly emits 3 Januaries", instances.length === 3);
+  check("first January 2026",               instances[0] === "2026-01-15T09:00:00Z");
+  check("third January 2028",               instances[2] === "2028-01-15T09:00:00Z");
+}
+
 function testJmapCatalogueCarriesCalendarMethods() {
   var reg = b.mail.serverRegistry.create({
     protocol:  "jmap",
@@ -188,6 +260,10 @@ function run() {
   testExpandRecurrenceWeeklyInterval();
   testExpandRecurrenceUntil();
   testExpandRecurrenceCapEnforced();
+  testUtcDtstartRoundTripPreserved();
+  testFractionalSecondsStrippedInToIcal();
+  testExpandRecurrenceByDayFilter();
+  testExpandRecurrenceByMonthFilter();
   testJmapCatalogueCarriesCalendarMethods();
 }
 

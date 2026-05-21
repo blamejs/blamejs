@@ -8856,6 +8856,38 @@ function testUrlPathBoundedSplit() {
     bad);
 }
 
+// ---- Pattern: iCal UTC ↔ JSCalendar timezone round-trip ----
+//
+// class: calendar-utc-roundtrip-loss
+//
+// v0.11.31 Codex P1 #1 — fromIcal must recognise a UTC-suffix DTSTART
+// (`...Z`) and set `timeZone: "Etc/UTC"` on the JSCalendar Event so
+// the round-trip back through toIcal emits a `Z`-suffix DTSTART
+// instead of floating local time (RFC 5545 §3.3.5 form 1).
+function testCalendarUtcRoundtrip() {
+  var bad = [];
+  var path = "lib/calendar.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  if (/_veventToJsCalEvent/.test(content)) {
+    if (!/timeZone\s*=\s*"Etc\/UTC"/.test(content) && !/timeZone:\s*"Etc\/UTC"/.test(content)) {
+      bad.push({ file: path, line: 1,
+        content: "iCal UTC DTSTART (...Z) must map to JSCalendar timeZone='Etc/UTC' (RFC 8984 §1.4.4)" });
+    }
+  }
+  if (/function\s+toIcal\b/.test(content)) {
+    if (!/timeZone\s*===\s*"Etc\/UTC"|timeZone\s*===\s*"UTC"/.test(content)) {
+      bad.push({ file: path, line: 1,
+        content: "toIcal must check timeZone === 'Etc/UTC' to emit a Z-suffix DTSTART (RFC 5545 §3.3.5)" });
+    }
+  }
+  bad = _filterMarkers(bad, "calendar-utc-roundtrip-loss");
+  _report("b.calendar UTC ↔ JSCalendar timeZone round-trip preserves absolute-instant semantics " +
+          "(v0.11.31 Codex P1 — RFC 8984 §1.4.4)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -9260,6 +9292,9 @@ async function run() {
   // matches RFC 8620 §1.2 + URL-path split is bounded.
   testJmapIdNotUndersized();
   testUrlPathBoundedSplit();
+  // v0.11.31 review-fix detector (Codex P1): UTC DTSTART round-trip
+  // preserves timeZone="Etc/UTC" per RFC 8984 §1.4.4.
+  testCalendarUtcRoundtrip();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
