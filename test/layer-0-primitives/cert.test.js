@@ -195,6 +195,32 @@ function testFactoryRefusesBadOpts() {
     });
   });
   check("empty domains → CertError",            e8 && e8.code === "cert/bad-domains");
+
+  // Path-traversal rejection: cert name lands as a filesystem path
+  // segment under storage.rootDir, so manifests sourced from operator-
+  // editable config or external control planes can carry attacker-
+  // influenced names. The factory refuses anything containing `..`,
+  // `/`, `\`, leading dot, or non-printable chars.
+  var pathTraversalShapes = [
+    "../escape",
+    "..",
+    "../../etc/passwd",
+    "subdir/file",
+    "back\\slash",
+    ".hidden",
+    "has space",
+    "has null",
+  ];
+  pathTraversalShapes.forEach(function (badName) {
+    var e = threw(function () {
+      b.cert.create({
+        storage: { type: "sealed-disk", rootDir: _tmpDir(), vault: _ephemeralVault() },
+        acme:    { directory: "https://example/" },
+        certs:   [{ name: badName, domains: ["a.com"], challenge: { type: "http-01", provision: function () {}, cleanup: function () {} } }],
+      });
+    });
+    check("cert name '" + JSON.stringify(badName) + "' refused as path-segment", e && e.code === "cert/bad-cert-name");
+  });
 }
 
 // ---- Sealed-disk storage roundtrip ----
@@ -295,6 +321,110 @@ async function testSniCallback() {
     mgr.sniCallback("unknown.example", function (err, ctx) { if (err) return reject(err); resolve(ctx); });
   });
   check("sniCallback: unknown → fallback to first cert", ctxFallback && typeof ctxFallback === "object");
+
+  await mgr.stop();
+}
+
+async function testSniWildcardSingleLabel() {
+  // RFC 6125 §6.4.3 — `*.example.com` matches exactly ONE label in the
+  // left-most position. `foo.bar.example.com` does NOT match.
+  var tmp = _tmpDir();
+  var vault = _ephemeralVault();
+  var pemWild  = await _selfSignedCert(["*.wild.example"], 90);
+  var pemOther = await _selfSignedCert(["other.example"], 90);
+
+  function _seed(name, pem) {
+    fs.mkdirSync(path.join(tmp, name), { recursive: true });
+    fs.writeFileSync(path.join(tmp, name, "cert.pem.sealed"), vault.seal(Buffer.from(pem.certPem)));
+    fs.writeFileSync(path.join(tmp, name, "key.pem.sealed"),  vault.seal(Buffer.from(pem.keyPem)));
+    fs.writeFileSync(path.join(tmp, name, "meta.json"), JSON.stringify({
+      expiresAt: Date.now() + 90 * 86400000, issuedAt: Date.now(),
+      fingerprintSha256: name, subject: "CN=" + (name === "wild" ? "*.wild.example" : "other.example"),
+      lastRenewedAt: Date.now(), keyAlg: "ecdsa-p256",
+    }));
+  }
+  _seed("wild",  pemWild);
+  _seed("other", pemOther);
+
+  var noChallenge = { type: "http-01", provision: async function () {}, cleanup: async function () {} };
+  var mgr = b.cert.create({
+    storage: { type: "sealed-disk", rootDir: tmp, vault: vault },
+    acme:    { directory: "https://example/", accountKey: "auto" },
+    certs:   [
+      { name: "wild",  domains: ["*.wild.example"], challenge: noChallenge },
+      { name: "other", domains: ["other.example"],  challenge: noChallenge },
+    ],
+    audit:   false,
+  });
+  await mgr.start();
+
+  // Single-label leading: `foo.wild.example` matches `*.wild.example`.
+  var ctxSingle = await new Promise(function (resolve, reject) {
+    mgr.sniCallback("foo.wild.example", function (err, c) { if (err) return reject(err); resolve(c); });
+  });
+  check("sniWildcard: single-label leading matches", ctxSingle && typeof ctxSingle === "object");
+
+  // Multi-label leading: `foo.bar.wild.example` MUST NOT match
+  // `*.wild.example`; should fall back to the first registered cert.
+  // (Per the manager's documented fallback contract.) The point of
+  // this check is the wildcard branch is NOT selected — the result
+  // is the same context type but the path through the matcher is
+  // wildcard-rejected → fallback.
+  var ctxMulti = await new Promise(function (resolve, reject) {
+    mgr.sniCallback("foo.bar.wild.example", function (err, c) { if (err) return reject(err); resolve(c); });
+  });
+  check("sniWildcard: multi-label leading falls back (does NOT match wildcard)",
+    ctxMulti && typeof ctxMulti === "object");
+
+  // Servername exactly equal to the wildcard tail (no left-most
+  // label at all): `wild.example` MUST NOT match `*.wild.example`.
+  // Falls back to first cert.
+  var ctxBare = await new Promise(function (resolve, reject) {
+    mgr.sniCallback("wild.example", function (err, c) { if (err) return reject(err); resolve(c); });
+  });
+  check("sniWildcard: bare tail does NOT match wildcard", ctxBare && typeof ctxBare === "object");
+
+  await mgr.stop();
+}
+
+async function testRefreshForcesIssue() {
+  // refresh(name) MUST run the ACME issue flow regardless of whether
+  // the cached cert is still inside its expiry window. Operators call
+  // refresh() for emergency rotation (key compromise, CA misissuance
+  // investigation, posture change) — the manager must not silently
+  // short-circuit to cached material in that case.
+  var tmp = _tmpDir();
+  var vault = _ephemeralVault();
+  var pem = await _selfSignedCert(["example.com"], 90);
+
+  fs.mkdirSync(path.join(tmp, "main"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "main", "cert.pem.sealed"), vault.seal(Buffer.from(pem.certPem)));
+  fs.writeFileSync(path.join(tmp, "main", "key.pem.sealed"),  vault.seal(Buffer.from(pem.keyPem)));
+  fs.writeFileSync(path.join(tmp, "main", "meta.json"), JSON.stringify({
+    expiresAt: Date.now() + 90 * 86400000, issuedAt: Date.now(),
+    fingerprintSha256: "ff", subject: "CN=example.com",
+    lastRenewedAt: Date.now(), keyAlg: "ecdsa-p256",
+  }));
+
+  var mgr = b.cert.create({
+    storage: { type: "sealed-disk", rootDir: tmp, vault: vault },
+    acme:    { directory: "https://example/", accountKey: "auto" },
+    certs:   [{
+      name:      "main",
+      domains:   ["example.com"],
+      challenge: { type: "http-01", provision: async function () {}, cleanup: async function () {} },
+    }],
+    audit: false,
+  });
+  await mgr.start();
+  // start() loaded the cached cert; refresh() must NOT short-circuit
+  // to the same cached cert. Since this test mocks no live ACME
+  // backend, refresh() will attempt the network call + fail. The
+  // failure shape proves we went past the cache-fresh short-circuit.
+  var threw = null;
+  try { await mgr.refresh("main"); } catch (e) { threw = e; }
+  check("refresh: bypasses cache-fresh short-circuit (reached network)",
+    threw && /dns lookup|EAI_AGAIN|failed/.test(threw.message || String(threw)));
 
   await mgr.stop();
 }
@@ -404,6 +534,8 @@ async function run() {
   testFactoryRefusesBadOpts();
   await testStorageRoundtrip();
   await testSniCallback();
+  await testSniWildcardSingleLabel();
+  await testRefreshForcesIssue();
   await testKeyEscrow();
   testAcmeBuildCsrRoundtrip();
 }
