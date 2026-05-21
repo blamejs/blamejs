@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.31",
-  "createdAt": "2026-05-21T16:41:23.378Z",
+  "frameworkVersion": "0.11.32",
+  "createdAt": "2026-05-21T17:22:44.655Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36081,6 +36081,14 @@
                   "type": "function",
                   "arity": 4
                 },
+                "decrypt": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "encrypt": {
+                  "type": "function",
+                  "arity": 1
+                },
                 "experimental": {
                   "type": "object",
                   "members": {
@@ -36114,6 +36122,19 @@
                 "verify": {
                   "type": "function",
                   "arity": 1
+                },
+                "wkd": {
+                  "type": "object",
+                  "members": {
+                    "computeUrl": {
+                      "type": "function",
+                      "arity": 2
+                    },
+                    "fetch": {
+                      "type": "function",
+                      "arity": 2
+                    }
+                  }
                 }
               }
             },
