@@ -2252,6 +2252,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/a2a.js:_validateCardShape",
+        "lib/acme.js:buildCsr",
+        "lib/guard-mail-move.js:validate",
+      ],
+      reason: "v0.11.22 — per-spec input-shape validation prelude: each primitive accepts an operator-supplied opts blob and walks a documented per-field shape check (A2A signed agent-card vs PKCS#10 CSR opts vs IMAP MOVE intent). The shingle similarity is the shared `if (typeof X !== 'string' || X.length === 0)` / `if (!Array.isArray(Y))` / per-field range checks; the bodies enforce entirely different spec contracts (W3C A2A card schema / RFC 2986 CSR opts / RFC 9051 IMAP MOVE).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/audit-daily-review.js:create",
         "lib/auth/saml.js:create",
         "lib/auth/oid4vci.js:create",

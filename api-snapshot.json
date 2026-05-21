@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.21",
-  "createdAt": "2026-05-20T22:39:44.329Z",
+  "frameworkVersion": "0.11.22",
+  "createdAt": "2026-05-21T00:22:48.497Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5512,6 +5512,19 @@
           "arity": 1
         },
         "parse": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "cert": {
+      "type": "object",
+      "members": {
+        "CertError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
           "type": "function",
           "arity": 1
         }

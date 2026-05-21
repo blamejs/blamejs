@@ -373,6 +373,7 @@ var workerPool = require("./lib/worker-pool");
 var authBotChallenge = require("./lib/auth-bot-challenge");
 var sessionDeviceBinding = require("./lib/session-device-binding");
 var acme = require("./lib/acme");
+var cert = require("./lib/cert");
 var watcher = require("./lib/watcher");
 var localDbThin = require("./lib/local-db-thin");
 var daemon = require("./lib/daemon");
@@ -656,6 +657,7 @@ module.exports = {
   authBotChallenge: authBotChallenge,
   sessionDeviceBinding: sessionDeviceBinding,
   acme:             acme,
+  cert:             cert,
   ntpCheck:         ntpCheck,
   tlsExporter:      tlsExporter,
   watcher:          watcher,
