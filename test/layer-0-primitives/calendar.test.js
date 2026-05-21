@@ -499,6 +499,81 @@ function testByTimeAllInvalidIsNoop() {
   check("byHour:[9,99,17] mixed keeps valid (9 + 17 = 2 hours / day)", insts2.length === 2);
 }
 
+function testVjournalToJsCalNote() {
+  var ical =
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
+    "BEGIN:VJOURNAL\r\nUID:j1@example.com\r\nDTSTAMP:20260521T100000Z\r\n" +
+    "DTSTART:20260521T120000Z\r\nSUMMARY:Sprint standup\r\n" +
+    "DESCRIPTION:Day 1 of the sprint.\r\nSTATUS:FINAL\r\n" +
+    "END:VJOURNAL\r\nEND:VCALENDAR\r\n";
+  var note = b.calendar.fromIcal(ical);
+  check("VJOURNAL maps to Note @type",       note["@type"] === "Note");
+  check("Note carries uid",                  note.uid === "j1@example.com");
+  check("Note carries title",                note.title === "Sprint standup");
+  check("Note carries description",          note.description === "Day 1 of the sprint.");
+  check("Note carries lower-cased status",   note.status === "final");
+  check("Note maps UTC DTSTART to Etc/UTC",  note.timeZone === "Etc/UTC");
+  check("Note carries start LocalDateTime",  note.start === "2026-05-21T12:00:00");
+}
+
+function testVjournalMultipleDescriptionJoined() {
+  // RFC 5545 §3.6.3 — VJOURNAL is the only component that may carry
+  // multiple DESCRIPTION properties. Confirm join with blank-line.
+  var ical =
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
+    "BEGIN:VJOURNAL\r\nUID:j2\r\nDTSTAMP:20260521T100000Z\r\n" +
+    "DESCRIPTION:Entry one.\r\nDESCRIPTION:Entry two.\r\n" +
+    "END:VJOURNAL\r\nEND:VCALENDAR\r\n";
+  var note = b.calendar.fromIcal(ical);
+  check("multi-DESCRIPTION joined with blank line", note.description === "Entry one.\n\nEntry two.");
+}
+
+function testNoteToIcalRoundTrip() {
+  var note = {
+    "@type":   "Note",
+    uid:       "j1@example.com",
+    updated:   "2026-05-21T10:00:00Z",
+    title:     "Sprint standup",
+    start:     "2026-05-21T12:00:00",
+    timeZone:  "Etc/UTC",
+    status:    "final",
+    description: "Day 1 of the sprint.",
+  };
+  check("Note validates",                    b.calendar.validate(note) === note);
+  var ical = b.calendar.toIcal(note);
+  check("toIcal emits BEGIN:VJOURNAL",       ical.indexOf("BEGIN:VJOURNAL") !== -1);
+  check("toIcal emits STATUS:FINAL",         ical.indexOf("STATUS:FINAL") !== -1);
+  check("toIcal emits UTC DTSTART",          ical.indexOf("DTSTART:20260521T120000Z") !== -1);
+  check("toIcal does NOT emit DURATION",     ical.indexOf("DURATION:") === -1);
+  check("toIcal does NOT emit DUE",          ical.indexOf("DUE:") === -1);
+}
+
+function testNoteRefusalCases() {
+  function expectCode(label, jsCal, codeFragment) {
+    var threw = null;
+    try { b.calendar.validate(jsCal); } catch (e) { threw = e; }
+    check(label, threw && (threw.code || "").indexOf(codeFragment) !== -1);
+  }
+  expectCode("Note with due refused",
+    { "@type": "Note", uid: "x", updated: "2026-05-21T10:00:00Z", due: "2026-05-22T00:00:00" },
+    "calendar/bad-due");
+  expectCode("Note with progress refused",
+    { "@type": "Note", uid: "x", updated: "2026-05-21T10:00:00Z", progress: "completed" },
+    "calendar/bad-progress");
+  expectCode("Note with duration refused",
+    { "@type": "Note", uid: "x", updated: "2026-05-21T10:00:00Z", duration: "PT1H" },
+    "calendar/bad-duration");
+  expectCode("Note with percentComplete refused",
+    { "@type": "Note", uid: "x", updated: "2026-05-21T10:00:00Z", percentComplete: 50 },
+    "calendar/bad-percent");
+  expectCode("Note with progressUpdated refused",
+    { "@type": "Note", uid: "x", updated: "2026-05-21T10:00:00Z", progressUpdated: "2026-05-21T10:00:00Z" },
+    "calendar/bad-progress-updated");
+  expectCode("Note with non-VJOURNAL status refused (in-process is VTODO-only)",
+    { "@type": "Note", uid: "x", updated: "2026-05-21T10:00:00Z", status: "in-process" },
+    "calendar/bad-note-status");
+}
+
 function testMixedVcalendarReturnsArray() {
   var ical =
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
@@ -549,6 +624,10 @@ function run() {
   testExpandRecurrenceByHour();
   testByWeekNoIsoWeekYearGuard();
   testByTimeAllInvalidIsNoop();
+  testVjournalToJsCalNote();
+  testVjournalMultipleDescriptionJoined();
+  testNoteToIcalRoundTrip();
+  testNoteRefusalCases();
   testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
 }

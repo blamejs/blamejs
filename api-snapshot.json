@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.11.36",
-  "createdAt": "2026-05-21T20:46:20.642Z",
+  "frameworkVersion": "0.11.37",
+  "createdAt": "2026-05-21T21:47:26.583Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5627,6 +5627,23 @@
             }
           }
         },
+        "JSCAL_NOTE_STATUS": {
+          "type": "object",
+          "members": {
+            "cancelled": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "draft": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "final": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
         "JSCAL_TASK_PROGRESS": {
           "type": "object",
           "members": {
@@ -5668,6 +5685,10 @@
               "valueType": "string"
             },
             "Location": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Note": {
               "type": "primitive",
               "valueType": "string"
             },
