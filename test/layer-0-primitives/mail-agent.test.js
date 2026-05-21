@@ -185,6 +185,30 @@ async function testExpungeHardDelete() {
     check("expunge: unknown id refused with not-in-folder",
       rv2.deleted.length === 0 && rv2.refused.length === 1 &&
       rv2.refused[0].reason === "not-in-folder");
+
+    // Duplicate objectids in input MUST NOT drive quota negative.
+    // Codex P1 on v0.11.23 PR #127: hardExpunge previously appended
+    // the same row twice when the same id appeared twice, causing
+    // double quota decrement + duplicate ids in `deleted`. The store
+    // now dedupes at entry; the agent passes through.
+    var dupMeta = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: dup-test", "Message-Id: <md@x>",
+      "Date: Wed, 14 May 2026 12:00:00 +0000",
+    ], "x"));
+    fx.store.moveMessages("INBOX", "Trash", [dupMeta.objectid]);
+    var quotaBefore = fx.store.quota("Trash");
+    var rvDup = await agent.expunge({
+      actor:    actor,
+      folder:   "Trash",
+      objectIds: [dupMeta.objectid, dupMeta.objectid, dupMeta.objectid],
+    });
+    var quotaAfter = fx.store.quota("Trash");
+    check("expunge: duplicate ids collapsed to single delete",
+      rvDup.deleted.length === 1 && rvDup.deleted[0] === dupMeta.objectid);
+    check("expunge: duplicate-id quota stays non-negative",
+      quotaAfter.used_bytes >= 0 && quotaAfter.used_count >= 0);
+    check("expunge: duplicate-id quota decrements exactly once",
+      (quotaBefore.used_count - quotaAfter.used_count) === 1);
   } finally { _teardown(fx); }
 }
 

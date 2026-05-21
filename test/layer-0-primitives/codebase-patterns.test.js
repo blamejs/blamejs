@@ -5402,6 +5402,31 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "Codex P1 on v0.11.22 PR #126 — `b.cert.create` accepted manifest cert names like `../escape` and `subdir/file` because only non-empty validation ran at the factory; the name then landed as a filesystem path segment under storage.rootDir. The fix added a strict `[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}` character class + explicit `..` refusal. The bug class — operator-supplied identifier used as a path segment without sanitization — is broader than this one primitive. Detector flags any `path.join(..., X.name|id)` shape in lib/ that doesn't also compose `b.safePath.resolve` OR refuse `..` via a regex on the same identifier. Imperfect; behavioral path-traversal tests in the consuming primitive's own test file (e.g. cert.test.js's 8 bad-name shapes) are the per-primitive regression guard.",
   },
+
+  {
+    // Codex P1 on v0.11.23 PR #127 — `b.mailStore.create(...).hardExpunge`
+    // looped over the input objectids array per-element and ran a
+    // `stmtDecrementQuota` inside the loop, so `hardExpunge(folder, [id, id])`
+    // double-decremented the per-folder quota even though only one
+    // message physically existed. The fix dedupes the input array
+    // before the loop. The general bug class — accumulator update
+    // inside a loop over operator-supplied ids without dedup — is
+    // broader: any sum / count / quota / counter that decrements
+    // (or increments) once per loop iteration over an operator-
+    // supplied id array MUST dedupe first or the operator can drive
+    // the counter past zero / cause double-counting of work.
+    id: "quota-decrement-loop-over-ids-without-dedup",
+    primitive: "deduplicate operator-supplied id arrays before the per-id accumulator update — `var seen = Object.create(null); var unique = []; for (...) if (!seen[id]) { seen[id] = true; unique.push(id); }` OR `Array.from(new Set(ids))`",
+    // Match any file that calls a `stmtDecrement*` / `stmtBumpQuota`
+    // / `stmtDecrementBytes` shape inside a per-id loop. The
+    // companion check requires a dedup primitive (Object.create(null)
+    // + .push to a uniqueIds array, OR `new Set(`) in the same file.
+    regex: /stmt(?:Decrement|Bump)(?:Quota|Bytes|Count)/,
+    requires: /Object\.create\(\s*null\s*\)|new\s+Set\s*\(|uniqueIds|seenIds/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.11.23 PR #127 — `hardExpunge` per-id loop ran a quota decrement against each iteration regardless of duplicates. Calling with `[id, id]` drove `usedBytes` / `usedCount` negative + duplicated the deleted-id list. Bug class: accumulator-update-inside-loop-over-operator-supplied-ids. Detector flags any file that touches `stmtDecrement(Quota|Bytes|Count)` or `stmtBump(Quota|Bytes|Count)` and requires a dedup primitive (`Object.create(null)` + `uniqueIds.push` OR `new Set(`) in the same file. Per-primitive behavioral regression tests (mail-agent.test.js's `[id, id, id]` triple-input case) are the per-call-site guard.",
+  },
   {
     // v0.10.14 — raw `audit.emit(...)` outside a try/catch swallow
     // crashes hot paths when the audit sink throws. Hot-path audit
