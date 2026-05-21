@@ -8603,6 +8603,62 @@ function testBdatLastSingleReply() {
     bad);
 }
 
+// ---- Pattern: CHANGEDSINCE / UNCHANGEDSINCE must engage CONDSTORE ----
+//
+// class: condstore-implicit-engage-missing
+//
+// v0.11.27 Codex P2: RFC 7162 §3.1.2 — any FETCH/STORE that carries a
+// CHANGEDSINCE or UNCHANGEDSINCE modifier implicitly engages CONDSTORE
+// for the session (and the server MUST emit MODSEQ in subsequent
+// responses). Detector flags any `lib/mail-server-imap.js` code that
+// parses `changedSince` / `unchangedSince` but does not write
+// `state.enabledCondStore = true` in the same function.
+function testCondstoreImplicitEngage() {
+  var bad = [];
+  var path = "lib/mail-server-imap.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  // Find every function that parses a `changedSince` or
+  // `unchangedSince` local — those handlers MUST also set
+  // `state.enabledCondStore = true` somewhere in scope.
+  var lines = content.split(/\r?\n/);
+  var funcStart = -1;
+  var funcSawParse = false;
+  var funcSawEngage = false;
+  for (var i = 0; i < lines.length; i += 1) {
+    var line = lines[i];
+    if (/^\s*function\s+_handle\w+/.test(line)) {
+      // Close out previous function.
+      if (funcSawParse && !funcSawEngage) {
+        bad.push({
+          file: path, line: funcStart + 1,
+          content: "handler parses changedSince/unchangedSince but never sets state.enabledCondStore = true",
+        });
+      }
+      funcStart = i;
+      funcSawParse = false;
+      funcSawEngage = false;
+    }
+    if (/\b(changedSince|unchangedSince)\s*=\s*(parseInt|usN|csN|\d)/.test(line)) {
+      funcSawParse = true;
+    }
+    if (/state\.enabledCondStore\s*=\s*true/.test(line)) {
+      funcSawEngage = true;
+    }
+  }
+  if (funcSawParse && !funcSawEngage) {
+    bad.push({
+      file: path, line: funcStart + 1,
+      content: "handler parses changedSince/unchangedSince but never sets state.enabledCondStore = true",
+    });
+  }
+  bad = _filterMarkers(bad, "condstore-implicit-engage-missing");
+  _report("IMAP handlers that parse CHANGEDSINCE / UNCHANGEDSINCE engage CONDSTORE " +
+          "(v0.11.27 Codex P2 — RFC 7162 §3.1.2 implicit-enable semantics)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -8994,6 +9050,9 @@ async function run() {
   // keeps raw bytes; BDAT LAST emits one reply.
   testMailServerLineBufferIsBuffer();
   testBdatLastSingleReply();
+  // v0.11.27 review-fix detector (Codex P2): CHANGEDSINCE / UNCHANGEDSINCE
+  // implicitly engage CONDSTORE per RFC 7162 §3.1.2.
+  testCondstoreImplicitEngage();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
