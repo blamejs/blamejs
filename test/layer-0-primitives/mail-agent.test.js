@@ -135,6 +135,90 @@ async function testFlagMoveDelete() {
   } finally { _teardown(fx); }
 }
 
+async function testExpungeHardDelete() {
+  // Hard expunge — composes legal-hold + retention-floor refusal
+  // gates before the destructive SQL runs.
+  var fx = await _setup("expunge");
+  try {
+    var agent = b.mail.agent.create({ store: fx.store });
+    var actor = { id: "u1" };
+
+    // Append + move to Trash (soft-delete) so we have material to expunge.
+    var m1 = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: doomed-1", "Message-Id: <m1@x>",
+      "Date: Wed, 14 May 2026 12:00:00 +0000",
+    ], "x"));
+    var m2 = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: doomed-2", "Message-Id: <m2@x>",
+      "Date: Wed, 14 May 2026 12:00:01 +0000",
+    ], "x"));
+    var m3 = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: held", "Message-Id: <m3@x>",
+      "Date: Wed, 14 May 2026 12:00:02 +0000",
+    ], "x"));
+    fx.store.moveMessages("INBOX", "Trash", [m1.objectid, m2.objectid, m3.objectid]);
+
+    // Place m3 on legal hold — expunge must refuse it specifically.
+    fx.store.setLegalHold([m3.objectid], { hold: true });
+
+    var rv = await agent.expunge({
+      actor:    actor,
+      folder:   "Trash",
+      objectIds: [m1.objectid, m2.objectid, m3.objectid],
+    });
+    check("expunge: 2 deleted, 1 refused",
+      rv.deleted.length === 2 && rv.refused.length === 1);
+    check("expunge: refusal reason is legal-hold",
+      rv.refused[0].reason === "legal-hold" && rv.refused[0].id === m3.objectid);
+    check("expunge: m1 + m2 actually gone",
+      fx.store.fetchByObjectId("Trash", m1.objectid) === null &&
+      fx.store.fetchByObjectId("Trash", m2.objectid) === null);
+    check("expunge: m3 still in Trash (legal hold)",
+      fx.store.fetchByObjectId("Trash", m3.objectid) !== null);
+
+    // Unknown id refuses with not-in-folder.
+    var rv2 = await agent.expunge({
+      actor:    actor,
+      folder:   "Trash",
+      objectIds: ["obj_does-not-exist"],
+    });
+    check("expunge: unknown id refused with not-in-folder",
+      rv2.deleted.length === 0 && rv2.refused.length === 1 &&
+      rv2.refused[0].reason === "not-in-folder");
+  } finally { _teardown(fx); }
+}
+
+async function testExpungeRetentionFloor() {
+  // Retention floor refusal — under HIPAA posture, complianceFloor
+  // returns the regulator-mandated minimum retention TTL. A
+  // newly-appended message refuses expunge with `retention-floor`.
+  var fx = await _setup("expungefloor");
+  try {
+    var agent = b.mail.agent.create({ store: fx.store, posture: "hipaa" });
+    // HIPAA posture requires actor.purposeOfUse per
+    // guardMailQuery.validateActor's POSTURE_ACTOR_FIELDS table.
+    var actor = { id: "u1", purposeOfUse: "treatment" };
+    var meta = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: too-young-to-die", "Message-Id: <m@x>",
+      "Date: Wed, 14 May 2026 12:00:00 +0000",
+    ], "x"));
+    fx.store.moveMessages("INBOX", "Trash", [meta.objectid]);
+
+    var rv = await agent.expunge({
+      actor:    actor,
+      folder:   "Trash",
+      objectIds: [meta.objectid],
+    });
+    check("expunge: HIPAA-posture refuses young message",
+      rv.deleted.length === 0 && rv.refused.length === 1 &&
+      rv.refused[0].reason === "retention-floor");
+    check("expunge: refusal carries floorMs + posture metadata",
+      rv.refused[0].floorMs > 0 && rv.refused[0].posture === "hipaa");
+    check("expunge: message still in Trash",
+      fx.store.fetchByObjectId("Trash", meta.objectid) !== null);
+  } finally { _teardown(fx); }
+}
+
 async function testNotImplemented() {
   var fx = await _setup("notimpl");
   try {
@@ -290,6 +374,8 @@ async function run() {
   await testFoldersFetch();
   await testSearchThread();
   await testFlagMoveDelete();
+  await testExpungeHardDelete();
+  await testExpungeRetentionFloor();
   await testNotImplemented();
   await testPosture();
   await testPermissions();
