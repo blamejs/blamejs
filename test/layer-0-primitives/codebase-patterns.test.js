@@ -2291,6 +2291,25 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/importmap-integrity.js:build",
+        "lib/mail-server-jmap.js:emailSubmissionSetHandler",
+        "lib/middleware/security-headers.js:create",
+      ],
+      reason: "v0.11.38 — opts-object prelude that walks an operator-supplied map and validates each entry against a per-spec shape. Importmap-Integrity (W3C draft) walks `opts.modules`, JMAP EmailSubmission/set (RFC 8621 §7.5) walks `args.create`, security-headers walks `opts.headers`. Each entry's shape check is spec-distinct (SRI module shape vs JMAP EmailSubmission shape with envelope.mailFrom + envelope.rcptTo + identityId + emailId vs HTTP header-value sanitisation); only the `Object.keys + for-i loop + per-entry typeof guard` shell shingles.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/guard-mail-move.js:validate",
+        "lib/guard-posture-chain.js:validate",
+        "lib/mail-auth.js:arcEvaluate",
+        "lib/mail-server-jmap.js:emailSubmissionSetHandler",
+      ],
+      reason: "v0.11.38 — per-spec validation walker pattern. Each primitive iterates an operator-supplied collection (IMAP MOVE intent / posture-set hop chain / ARC chain hops / JMAP EmailSubmission create/update/destroy maps) and emits a typed refusal per entry. RFC 9051 IMAP MOVE state-machine vs RFC 9.5 posture-chain ordering vs RFC 8617 ARC chain re-evaluation vs RFC 8621 §7.5 EmailSubmission shape — the shingle is the iterator + per-element error-shape construction; the body validations enforce four unrelated spec vocabularies.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/ddl-change-control.js:create",
         "lib/network.js:_setSocketKeepAlive",
         "lib/webhook.js:sign",
