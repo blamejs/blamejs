@@ -318,6 +318,40 @@ function testCompletedTaskWithProgressUpdated() {
   check("toIcal preserves COMPLETED",           /COMPLETED:20260521T093000Z/.test(back));
 }
 
+function testTaskProgressFailedRefused() {
+  // Codex P1 — `progress: "failed"` cannot round-trip through RFC 5545
+  // STATUS (no FAILED value defined). Catalogue refuses.
+  var threw = null;
+  try {
+    b.calendar.validate({
+      "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z",
+      progress: "failed",
+    });
+  } catch (e) { threw = e; }
+  check("progress=failed refused (no RFC 5545 STATUS)",
+        threw && (threw.code || "").indexOf("calendar/bad-progress") !== -1);
+}
+
+function testTaskPercentCompleteIntegerRequired() {
+  // Codex P2 — JSCalendar UnsignedInt + iCal PERCENT-COMPLETE both
+  // require integer. 12.5 must refuse.
+  var threw = null;
+  try {
+    b.calendar.validate({
+      "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z",
+      percentComplete: 12.5,
+    });
+  } catch (e) { threw = e; }
+  check("percentComplete float refused",
+        threw && (threw.code || "").indexOf("calendar/bad-percent") !== -1);
+  // 12 still accepted.
+  var rv = b.calendar.validate({
+    "@type": "Task", uid: "x", updated: "2026-05-21T10:00:00Z",
+    percentComplete: 12,
+  });
+  check("integer percentComplete accepted", rv && rv["@type"] === "Task");
+}
+
 function testMixedVcalendarReturnsArray() {
   var ical =
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
@@ -359,6 +393,8 @@ function run() {
   testVtodoToTaskRoundTrip();
   testTaskValidateRefusals();
   testCompletedTaskWithProgressUpdated();
+  testTaskProgressFailedRefused();
+  testTaskPercentCompleteIntegerRequired();
   testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
 }
