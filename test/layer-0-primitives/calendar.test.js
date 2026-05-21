@@ -438,6 +438,67 @@ function testExpandRecurrenceByHour() {
   check("every instance is hour 9 or 17",    instances.every(function (s) { return /T(09|17):00:00Z$/.test(s); }));
 }
 
+function testByWeekNoIsoWeekYearGuard() {
+  // 2021-01-01 is ISO week 53 of WEEK-YEAR 2020 (2021 has only 52 ISO
+  // weeks). A 2021-anchored BYWEEKNO=53 rule must NOT match Jan 1
+  // 2021 — the candidate's ISO week-year differs from its Gregorian
+  // year, so the rule rejects it.
+  var ev = {
+    "@type":  "Event",
+    uid:      "isoweekyear",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2021-01-01T00:00:00",
+    timeZone: "Etc/UTC",
+    duration: "PT1H",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "yearly", byWeekNo: [53] }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2021-01-01T00:00:00Z", to: "2021-12-31T23:59:59Z" });
+  check("BYWEEKNO=53 rejects Jan 1 2021 (week 53 of 2020)", insts.length === 0);
+
+  // Boundary positive: Dec 28 2020 IS ISO week 53 of week-year 2020,
+  // and its Gregorian year matches — must emit.
+  var ev2 = {
+    "@type":  "Event",
+    uid:      "isoweekyear-positive",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2020-12-28T00:00:00",
+    timeZone: "Etc/UTC",
+    duration: "PT1H",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "yearly", byWeekNo: [53] }],
+  };
+  var insts2 = b.calendar.expandRecurrence(ev2, { from: "2020-12-28T00:00:00Z", to: "2020-12-31T23:59:59Z" });
+  check("BYWEEKNO=53 accepts Dec 28 2020 (week 53 of week-year 2020)", insts2.length >= 1);
+}
+
+function testByTimeAllInvalidIsNoop() {
+  // byHour:[99] — every value is out of range. Must drop to no-op
+  // (rule continues unfiltered) rather than match-nothing.
+  var ev = {
+    "@type":  "Event",
+    uid:      "byhour-noop",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-21T10:00:00",
+    timeZone: "Etc/UTC",
+    duration: "PT1H",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "daily", byHour: [99] }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-05-21T00:00:00Z", to: "2026-05-25T23:59:59Z" });
+  check("byHour:[99] all-invalid drops to no-op (5 daily instances)", insts.length === 5);
+
+  // Mixed valid + invalid — valid ones still filter
+  var ev2 = {
+    "@type":  "Event",
+    uid:      "byhour-mixed",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-21T00:00:00",
+    timeZone: "Etc/UTC",
+    duration: "PT1H",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "hourly", byHour: [9, 99, 17] }],
+  };
+  var insts2 = b.calendar.expandRecurrence(ev2, { from: "2026-05-21T00:00:00Z", to: "2026-05-21T23:59:59Z" });
+  check("byHour:[9,99,17] mixed keeps valid (9 + 17 = 2 hours / day)", insts2.length === 2);
+}
+
 function testMixedVcalendarReturnsArray() {
   var ical =
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
@@ -486,6 +547,8 @@ function run() {
   testExpandRecurrenceByYearDayNegative();
   testExpandRecurrenceByWeekNo();
   testExpandRecurrenceByHour();
+  testByWeekNoIsoWeekYearGuard();
+  testByTimeAllInvalidIsNoop();
   testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
 }
