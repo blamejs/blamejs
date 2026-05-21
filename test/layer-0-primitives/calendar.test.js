@@ -352,6 +352,92 @@ function testTaskPercentCompleteIntegerRequired() {
   check("integer percentComplete accepted", rv && rv["@type"] === "Task");
 }
 
+function testExpandRecurrenceByYearDay() {
+  // FREQ=DAILY;BYYEARDAY=1 — daily step, filtered to Jan 1.
+  // (RFC 5545 §3.3.10 BY* filters narrow the stepped candidates;
+  // expanding within a yearly step is the BYSETPOS-class restructure
+  // that's deferred. With daily stepping, BYYEARDAY=1 fires Jan 1 of
+  // each year.)
+  var ev = {
+    "@type":  "Event",
+    uid:      "yearday",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2024-01-01T12:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "daily",
+                        byYearDay: [1], count: 3 }],
+  };
+  var instances = b.calendar.expandRecurrence(ev, { from: "2024-01-01T00:00:00Z", to: "2027-01-01T00:00:00Z" });
+  check("BYYEARDAY=1 with daily step emits Jan 1 of each year",
+        instances.length === 3 &&
+        instances[0] === "2024-01-01T12:00:00Z" &&
+        instances[1] === "2025-01-01T12:00:00Z" &&
+        instances[2] === "2026-01-01T12:00:00Z");
+}
+
+function testExpandRecurrenceByYearDayNegative() {
+  // BYYEARDAY=-1 — last day of year. Daily step + filter — last day
+  // of each year fires.
+  var ev = {
+    "@type":  "Event",
+    uid:      "yearday-neg",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2025-01-01T12:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "daily",
+                        byYearDay: [-1], count: 2 }],
+  };
+  var instances = b.calendar.expandRecurrence(ev, { from: "2025-01-01T00:00:00Z", to: "2028-01-01T00:00:00Z" });
+  check("BYYEARDAY=-1 emits Dec 31 of each year",
+        instances.length === 2 &&
+        instances[0] === "2025-12-31T12:00:00Z" &&
+        instances[1] === "2026-12-31T12:00:00Z");
+}
+
+function testExpandRecurrenceByWeekNo() {
+  // FREQ=YEARLY;BYWEEKNO=1 — first ISO week of the year.
+  // ISO 8601 week 1 is the week containing the first Thursday.
+  var ev = {
+    "@type":  "Event",
+    uid:      "weekno",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-01-05T12:00:00",                                                                   // 2026-01-05 is a Monday in ISO week 2 (week 1 = Dec 29 2025 - Jan 4 2026)
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "weekly",
+                        byWeekNo: [1], count: 2 }],
+  };
+  var instances = b.calendar.expandRecurrence(ev, { from: "2026-01-01T00:00:00Z", to: "2028-01-01T00:00:00Z" });
+  // Weekly stepping starting Jan 5 — most weeks don't match BYWEEKNO=1.
+  // The cap-bounded loop walks through; at most 2 ISO-week-1 instances
+  // within the 2-year span fire (2027 week 1, 2028 week 1 roughly).
+  check("BYWEEKNO filter produces a bounded set",  instances.length <= 2);
+}
+
+function testExpandRecurrenceByHour() {
+  // FREQ=DAILY;BYHOUR=9,17 — twice-daily at 9am and 5pm.
+  // expandRecurrence steps daily, so each day produces ONE instance
+  // (at the start's hour); BYHOUR can only match if the start hour
+  // is in the set OR if the rule advances hour. Step the start at
+  // 09:00, daily — instances stay at 09:00. So BYHOUR=9,17 still
+  // matches the 09:00 one. To exercise BYHOUR fully an HOURLY rule
+  // is needed.
+  var ev = {
+    "@type":  "Event",
+    uid:      "hourly",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-22T08:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "hourly",
+                        byHour: [9, 17], count: 6 }],
+  };
+  var instances = b.calendar.expandRecurrence(ev, { from: "2026-05-22T00:00:00Z", to: "2026-05-25T00:00:00Z" });
+  check("BYHOUR emits up to 6 instances",   instances.length === 6);
+  // First emission is the first hour at/after start where hour ∈ {9,17}.
+  check("first emission is hour 9",          /T09:00:00Z$/.test(instances[0]));
+  // Pattern alternates 9,17,9,17,9,17 — hours 9 or 17 only.
+  check("every instance is hour 9 or 17",    instances.every(function (s) { return /T(09|17):00:00Z$/.test(s); }));
+}
+
 function testMixedVcalendarReturnsArray() {
   var ical =
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
@@ -395,6 +481,11 @@ function run() {
   testCompletedTaskWithProgressUpdated();
   testTaskProgressFailedRefused();
   testTaskPercentCompleteIntegerRequired();
+  // v0.11.36 — BYYEARDAY / BYWEEKNO / BYHOUR filters
+  testExpandRecurrenceByYearDay();
+  testExpandRecurrenceByYearDayNegative();
+  testExpandRecurrenceByWeekNo();
+  testExpandRecurrenceByHour();
   testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
 }

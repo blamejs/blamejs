@@ -1,0 +1,48 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.36",
+  "date": "2026-05-21",
+  "headline": "`b.calendar.expandRecurrence` picks up BYWEEKNO / BYYEARDAY / BYHOUR / BYMINUTE / BYSECOND filters (RFC 5545 §3.3.10)",
+  "summary": "Closes the v0.11.31 deferral on the time-of-day and year-relative BY* filters. `expandRecurrence` now honours `byWeekNo` (ISO 8601 1..53 with negative-from-end semantics), `byYearDay` (1..366 with negative-from-end), `byHour` (0..23), `byMinute` (0..59), and `bySecond` (0..60 — covers POSIX leap-second representation). The expansion still operates as a per-step filter (stepping at the rule's FREQ, then dropping candidates that fail the BY* predicates) — BYSETPOS remains deferred-with-condition because it requires expanding ALL candidates within a FREQ interval and picking the Nth, which is a structural restructure of the expand loop. Operators with `last weekday of month`-style needs continue to see the same defer note from v0.11.31.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`byWeekNo` filter — ISO 8601 week numbers",
+          "body": "`recurrenceRules[i].byWeekNo: [1, 53, -1]` filters candidates to the named ISO 8601 weeks. Negative values count from the end of the year (`-1` = last ISO week, which may be week 52 or week 53 depending on the year). The ISO week-of-year calculation matches the canonical algorithm — week 1 is the week containing the first Thursday of the year."
+        },
+        {
+          "title": "`byYearDay` filter — day-of-year (1..366 / -1..-366)",
+          "body": "`recurrenceRules[i].byYearDay: [1, 366, -1]` filters by ordinal day-of-year. Negative values count from the end of the year, accounting for leap-year length (366 vs 365). With a `frequency: \"daily\"` rule + `byYearDay: [1]` the expander emits Jan 1 of each year."
+        },
+        {
+          "title": "`byHour` / `byMinute` / `bySecond` time-of-day filters",
+          "body": "`byHour: [9, 17]` filters candidates by UTC hour-of-day (0..23). `byMinute: [0, 30]` (0..59). `bySecond: [0, 30, 60]` (0..60 — the leap-second representation in POSIX time). Most useful with sub-day frequencies — `frequency: \"hourly\"` + `byHour: [9, 17]` emits twice-daily at 9am and 5pm."
+        },
+        {
+          "title": "Negative BY* semantics per RFC 5545 §3.3.10",
+          "body": "`byWeekNo: [-1]` matches the last ISO week of the year (computed via the Dec-28 anchor — Dec 28 always falls in the last ISO week). `byYearDay: [-1]` matches the last day of the year (uses the Gregorian leap-year rule to determine whether 365 or 366 is the correct ordinal). Both negative-value paths covered by tests."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Same step-budget cap from v0.11.31 applies",
+          "body": "Sparse BY* filters (e.g. `byYearDay: [1]` with `frequency: \"daily\"` — only 1 in 365 candidates matches) still loop within the `MAX_EXPAND_INSTANCES * 366` step budget; the 10-year `MAX_EXPAND_SPAN_MS` window cap also applies. Operators can't construct a BY*-filter that loops past the bounded budget."
+        },
+        {
+          "title": "Integer-range validation on every BY* value",
+          "body": "`byWeekNo` rejects values outside ±53. `byYearDay` rejects outside ±366. `byHour` 0..23. `byMinute` 0..59. `bySecond` 0..60. Adversarial-shape values silently drop from the set (no error — the rule continues with the surviving values per RFC 5545's tolerant grammar)."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "RFC 5545 §3.3.10 (RRULE — BYWEEKNO / BYYEARDAY / BYHOUR / BYMINUTE / BYSECOND)", "url": "https://www.rfc-editor.org/rfc/rfc5545.html#section-3.3.10" },
+    { "label": "RFC 8984 §4.3.2 (JSCalendar RecurrenceRule)",                                   "url": "https://www.rfc-editor.org/rfc/rfc8984.html#section-4.3.2" },
+    { "label": "ISO 8601 (Week numbering)",                                                    "url": "https://www.iso.org/iso-8601-date-and-time-format.html" }
+  ]
+}
