@@ -38,9 +38,11 @@ function extractSection(text, version) {
   var lines = text.split(/\r?\n/);
   var out = [];
   var capturing = false;
-  // Each version entry begins with `- vX.Y.Z (...) — ...` and ends
-  // at the next `- v...` line OR a `## v0.x.x` section break.
-  var entryStartRe = /^- v(\d+\.\d+\.\d+) \(/;
+  // Each version entry begins with `- **X.Y.Z** (...) — ...` (the
+  // shape gen-changelog.js produces from release-notes/v*.json) and
+  // ends at the next `- **...` entry line OR a `## v0.x.x` section
+  // break.
+  var entryStartRe = /^- \*\*(\d+\.\d+\.\d+)\*\* \(/;
   var sectionBreakRe = /^## v\d/;
   for (var i = 0; i < lines.length; i += 1) {
     var ln = lines[i];
@@ -79,8 +81,8 @@ function main() {
   var section = extractSection(text, version);
   if (section.length === 0) {
     console.error("[check-changelog-extract] FAIL: no CHANGELOG entry found for v" + version);
-    console.error("[check-changelog-extract] Expected a line matching `- v" + version +
-      " (YYYY-MM-DD) — <summary>`");
+    console.error("[check-changelog-extract] Expected a line matching `- **" + version +
+      "** (YYYY-MM-DD) — <summary>`");
     console.error("[check-changelog-extract] The workflow's release-notes extract will produce 0 lines and refuse to publish.");
     process.exit(1);
   }

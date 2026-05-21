@@ -7971,6 +7971,92 @@ function testNoHexShaCompareEquals() {
     matches);
 }
 
+// ---- Pattern: per-recipient outcome loop fall-through to failure path ----
+//
+// class: outcome-branch-fallthrough-to-failed
+//
+// v0.11.24 mail-send-deliver bring-up: the per-recipient delivery loop
+// branched `if (res.outcome === "delivered") { delivered.push({...}); }`
+// but had no `continue;` after the push — execution fell through into
+// the unconditional `failed.push({...})` + DSN-emit path further down
+// the loop body. Every recipient that delivered successfully also
+// landed in `failed[]`. The fix added an explicit `continue;` (and
+// re-shaped the conditional so only converted-permanent / direct-
+// permanent reaches the failure handler).
+//
+// The shape is generic: an outcome-classifying loop where the SUCCESS
+// branch pushes into a success array but doesn't exit the iteration
+// before the FAILURE-side push runs. This detector flags occurrences
+// of `<name>.push(` for a success-shaped array immediately followed
+// (within 12 lines, no intervening `continue;` / `return` / `break`)
+// by `failed.push(` in the same function body.
+function testNoOutcomeBranchFallthroughToFailed() {
+  var files = _libFiles();
+  var bad = [];
+  var successNames = ["delivered", "succeeded", "sent", "completed"];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      var hit = false;
+      var successName = null;
+      for (var k = 0; k < successNames.length; k++) {
+        var name = successNames[k];
+        // Match `<name>.push(`  (object-property push, not a bare var).
+        if (new RegExp("\\b" + name + "\\.push\\s*\\(").test(line)) {
+          hit = true;
+          successName = name;
+          break;
+        }
+      }
+      if (!hit) continue;
+      // Skip if THIS very line also exits the iteration.
+      if (/\b(continue|return|break)\b/.test(line)) continue;
+      // Look ahead up to 12 lines for `failed.push(` without an
+      // intervening exit. The push is open-paren-only so multi-line
+      // arg lists still count as exit-free if no continue lands.
+      var exitedEarly = false;
+      var foundFailedPush = false;
+      var failedLine = -1;
+      for (var step = 1; step <= 12 && j + step < lines.length; step++) {
+        var probe = lines[j + step];
+        if (/^\s*(\/\/|\*)/.test(probe)) continue;
+        if (/\b(continue|return|break|throw)\b/.test(probe)) {
+          exitedEarly = true;
+          break;
+        }
+        // Closing `}` at column 0-4 ends the immediate enclosing block;
+        // if we reach the loop's `}` without a continue, that's the fall-
+        // through shape we want to catch — but reaching a SIBLING `}`
+        // means we left the if-block already. Conservative: stop scan on
+        // a line that starts with `}` followed by `else` (clearly a
+        // sibling branch in the same if-else chain — not an exit).
+        if (/\bfailed\.push\s*\(/.test(probe)) {
+          foundFailedPush = true;
+          failedLine = j + step;
+          break;
+        }
+      }
+      if (foundFailedPush && !exitedEarly) {
+        bad.push({
+          file:    _relPath(files[i]),
+          line:    j + 1,
+          content: successName + ".push(...) → failed.push(...) " +
+                   "fall-through (line " + (failedLine + 1) + ")",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "outcome-branch-fallthrough-to-failed");
+  _report("per-recipient outcome loop: `delivered`/`succeeded`/`sent`/`completed` " +
+          ".push branch exits the iteration before reaching `failed.push` " +
+          "(v0.11.24 mail-send-deliver bring-up)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -8342,6 +8428,8 @@ async function run() {
   testSealWithoutAad();
   testNoRawMibLiteral();
   testNoHexShaCompareEquals();
+  // v0.11.24 — mail-send-deliver bring-up bug class.
+  testNoOutcomeBranchFallthroughToFailed();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
