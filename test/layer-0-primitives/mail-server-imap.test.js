@@ -257,6 +257,80 @@ async function testStoreUnchangedSinceConflict() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+async function testFetchChangedSinceImpliesCondstore() {
+  // Codex P2 — `FETCH ... (CHANGEDSINCE n)` MUST include MODSEQ in
+  // untagged responses even when the client never issued
+  // `ENABLE CONDSTORE`. Per RFC 7162 §3.1.2 the modifier engages
+  // CONDSTORE implicitly for the session.
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("FETCH CHANGEDSINCE implies CONDSTORE (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["PLAIN", "LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    // No ENABLE CONDSTORE — go straight to FETCH with CHANGEDSINCE.
+    var reply = await _sendCommand(c.socket, "a2", "FETCH 1:* (FLAGS) (CHANGEDSINCE 15)");
+    check("CHANGEDSINCE injects MODSEQ even without ENABLE",
+          /MODSEQ \(20\)/.test(reply));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testStoreSilentEmitsModseqUnderCondstore() {
+  // Codex P1 — `.SILENT` STORE under CONDSTORE / UNCHANGEDSINCE MUST
+  // still emit an untagged FETCH carrying the new MODSEQ for each
+  // successfully-updated message. Without it CONDSTORE clients
+  // can't refresh their local modseq state after a silent update.
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("SILENT STORE emits MODSEQ under CONDSTORE (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["PLAIN", "LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    await _sendCommand(c.socket, "a2", "ENABLE CONDSTORE");
+    // SILENT STORE — would normally suppress untagged FETCH, but
+    // under CONDSTORE the MODSEQ update must still come through.
+    var reply = await _sendCommand(c.socket, "a3",
+      "STORE 1:* +FLAGS.SILENT (\\Flagged)");
+    check("SILENT STORE under CONDSTORE emits MODSEQ-only FETCH",
+          /\* 1 FETCH \(MODSEQ \(11\)\)/.test(reply));
+    check("SILENT STORE under CONDSTORE does NOT emit FLAGS",
+          !/FLAGS \(/.test(reply.split("a3 OK")[0]));
+    // Non-CONDSTORE .SILENT — no untagged FETCH at all.
+    var stub2 = _makeStubMailStore();
+    var srv2 = b.mail.server.imap.create({
+      tlsContext: ctx, mailStore: stub2, profile: "permissive",
+      auth: { mechanisms: ["PLAIN", "LOGIN"], verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1" } });
+      } },
+    });
+    var c2 = await _connectAndLogin(srv2);
+    await _sendCommand(c2.socket, "a0", "LOGIN test test");
+    await _sendCommand(c2.socket, "a1", "SELECT INBOX");
+    var legacy = await _sendCommand(c2.socket, "a2", "STORE 1:* +FLAGS.SILENT (\\Flagged)");
+    check("SILENT STORE without CONDSTORE emits no untagged FETCH",
+          !/\* 1 FETCH /.test(legacy));
+    c.socket.destroy(); c2.socket.destroy();
+    await srv2.close({ timeoutMs: 1000 });                                                              // allow:raw-time-literal — test-only short drain
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function run() {
   testSurface();
   testRequiresTlsContext();
@@ -266,6 +340,8 @@ async function run() {
   await testEnableCondstore();
   await testFetchChangedSinceParses();
   await testStoreUnchangedSinceConflict();
+  await testFetchChangedSinceImpliesCondstore();
+  await testStoreSilentEmitsModseqUnderCondstore();
 }
 
 module.exports = { run: run };
