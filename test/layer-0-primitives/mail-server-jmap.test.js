@@ -556,6 +556,38 @@ function testDownloadHandlerWithoutBackend() {
   check("download no-backend → 503",               mr.res._status() === 503);
 }
 
+// ---- v0.11.34 — JMAP WebSocket transport (RFC 8887) ----
+
+function testWebSocketHandlerExposed() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  check("webSocketHandler exposed", typeof jmap.webSocketHandler === "function");
+}
+
+function testWebSocketHandlerRefusesUnauthenticated() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {}, subscribePush: function () { return Promise.resolve(); } },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  // Mock socket — record what's written.
+  var writes = "";
+  var destroyed = false;
+  var sock = {
+    write: function (b) { writes += b; },
+    destroy: function () { destroyed = true; },
+    on: function () {},
+    once: function () {},
+  };
+  var req = { user: null, url: "/jmap/ws", headers: {} };
+  jmap.webSocketHandler(req, sock, Buffer.alloc(0));
+  check("unauth → 401 written",                /^HTTP\/1\.1 401/.test(writes));
+  check("unauth → socket destroyed",            destroyed === true);
+}
+
 async function run() {
   testSurface();
   testBadOptsRefused();
@@ -586,6 +618,9 @@ async function run() {
   testDownloadHandlerWithoutBackend();
   await testDownloadHandlerMalformedUrl();
   await testJmapIdAcceptsFullLength();
+  // v0.11.34 — JMAP WebSocket transport (RFC 8887)
+  testWebSocketHandlerExposed();
+  testWebSocketHandlerRefusesUnauthenticated();
 }
 
 module.exports = { run: run };

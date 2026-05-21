@@ -1,0 +1,58 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.34",
+  "date": "2026-05-21",
+  "headline": "JMAP WebSocket transport (RFC 8887) on `b.mail.server.jmap`",
+  "summary": "Closes the v0.11.29 deferral. The JMAP listener now exposes `webSocketHandler(req, socket, head)` — a turnkey RFC 8887 transport built on the framework's `b.websocket.handleUpgrade`. Clients connect with the `jmap` subprotocol; bidirectional JSON frames carry `{ \"@type\": \"Request\" }` / `{ \"@type\": \"WebSocketPushEnable\" }` / `{ \"@type\": \"WebSocketPushDisable\" }` from the client, and `{ \"@type\": \"Response\" }` / `{ \"@type\": \"StateChange\" }` / `{ \"@type\": \"RequestError\" }` from the server. `Request` frames flow through the same `dispatch(actor, request)` path the HTTP `apiHandler` uses; `WebSocketPushEnable` hooks the operator's `mailStore.subscribePush(actor, types, emitFn)` and converts backend StateChange events into outbound WebSocket frames.\n\nThe session resource picks up `webSocketUrl` so clients discover the endpoint via the same JMAP session-discovery flow they use for `apiUrl` / `eventSourceUrl` / `uploadUrl` / `downloadUrl`. permessage-deflate is OFF by default — same CRIME-class compression-oracle threat model as the v0.11.28 IMAP COMPRESS=DEFLATE intentional skip — operators opt in via `opts.webSocketPermessageDeflate`.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`webSocketHandler(req, socket, head)` on the listener handle",
+          "body": "Mount on the operator's HTTP server's `'upgrade'` event. Auth is delegated to the surrounding HTTP middleware (the handler expects `req.user` / `req.actor` to be populated by upstream auth); unauthenticated requests write `HTTP/1.1 401 Unauthorized` to the raw socket per the WebSocket spec's pre-handshake error shape. RFC 8887 §3.1 requires the `jmap` subprotocol; the handler refuses the upgrade with close-code 1002 if `Sec-WebSocket-Protocol: jmap` is missing."
+        },
+        {
+          "title": "Bidirectional JSON-framed transport",
+          "body": "Client → server `@type`: `Request` (same body as HTTP POST — `{ using, methodCalls, createdIds? }`), `WebSocketPushEnable` (`{ dataTypes?, pushState? }`), `WebSocketPushDisable`. Server → client `@type`: `Response` (`{ requestId, methodResponses, sessionState, createdIds }`), `StateChange` (`{ changed, pushed? }`), `RequestError` (`{ requestId, type, description }`). Unknown `@type` frames trigger a `RequestError` rather than tearing down the channel."
+        },
+        {
+          "title": "Push integration shares the operator hook with EventSource",
+          "body": "`WebSocketPushEnable` forwards `(actor, dataTypes, emitFn)` to `mailStore.subscribePush` — the same backend hook the EventSource handler (v0.11.29) consumes. Operators wire push once and both transports surface the same `StateChange` events. Per-connection `WebSocketPushDisable` calls the unsubscribe function the backend returned from `subscribePush`. Connection close cleans up implicitly."
+        },
+        {
+          "title": "Session resource carries `webSocketUrl`",
+          "body": "The session JSON now includes `webSocketUrl: opts.webSocketUrl || \"/jmap/ws\"` per RFC 8887 §3. Operators discoverable-by-default — clients using a stock JMAP library find the WS endpoint via the session resource the same way they find `apiUrl` today."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Binary frames refused",
+          "body": "JMAP is JSON-only over WebSocket. Binary frames trigger a `RequestError` with `type: \"notJSON\"`; the connection stays open so the next text frame can be valid. Prevents a misbehaving client from sneaking opaque bytes past the JSON parser."
+        },
+        {
+          "title": "JSON parse routed through `b.safeJson.parse`",
+          "body": "WebSocket text frames are parsed through `b.safeJson.parse` with the per-connection `maxBytes` cap (default 10 MiB; operator-tunable via `opts.webSocketMaxMessageBytes`). Catches CVE-2020-7660-class prototype-pollution payloads + adversarial-depth JSON before they reach the JMAP method dispatcher."
+        },
+        {
+          "title": "permessage-deflate OFF by default (CRIME-class threat)",
+          "body": "RFC 7692 permessage-deflate enables compression-oracle attacks (CVE-2012-4929 CRIME class) when the operator pipes JSON containing both attacker-controlled and confidential data through the same connection. Default is OFF; operators with explicit threat-model justification opt in via `opts.webSocketPermessageDeflate = true`. Mirrors the v0.11.28 IMAP COMPRESS=DEFLATE intentional refusal."
+        },
+        {
+          "title": "Subprotocol negotiation refuses non-`jmap` clients",
+          "body": "If the client's `Sec-WebSocket-Protocol` header doesn't include `jmap`, the listener refuses the upgrade with close-code 1002 (protocol error). RFC 8887 §3.1 — the JMAP-WS connection is identified by the subprotocol; refusing here prevents the connection from being misinterpreted as a generic WebSocket channel by middleware downstream."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "RFC 8887 (JMAP over WebSocket)",                                    "url": "https://www.rfc-editor.org/rfc/rfc8887.html" },
+    { "label": "RFC 8620 (JMAP Core)",                                              "url": "https://www.rfc-editor.org/rfc/rfc8620.html" },
+    { "label": "RFC 6455 (The WebSocket Protocol)",                                 "url": "https://www.rfc-editor.org/rfc/rfc6455.html" },
+    { "label": "RFC 7692 (Compression Extensions for WebSocket — NOT enabled)",     "url": "https://www.rfc-editor.org/rfc/rfc7692.html" },
+    { "label": "CVE-2012-4929 (CRIME — compression-oracle attack on TLS)",          "url": "https://nvd.nist.gov/vuln/detail/CVE-2012-4929" }
+  ]
+}
