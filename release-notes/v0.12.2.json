@@ -24,6 +24,10 @@
         {
           "title": "`scripts/release.js` signature verification uses `git verify-commit` as the canonical truth",
           "body": "The v0.12.0 orchestrator's commit-signature gate parsed `git log -1 --pretty=%h %G? %GS` looking for `G` in the second column. On some platforms the `%G?` format token's `?` character can be eaten by argument resolution, returning empty stdout even when the signature is Good. The fix runs `git verify-commit HEAD` (whose exit code is the canonical signal `required_signatures` GH ruleset enforces) as the primary check; the `%G?` parse stays as a human-readable confirmation but no longer gates the script. Surfaced via dogfooding the orchestrator on this very release."
+        },
+        {
+          "title": "`scripts/release.js` Docker bind-mount path handles Windows host paths with spaces",
+          "body": "The `push` phase's gitleaks step bind-mounted the repo root via `-v <path>:/repo`. The previous path transform produced `/C:/Users/...` on Windows, which Docker's `-v src:dst[:mode]` parser interpreted as having three colon-separated fields. Fix: transform `C:\\Users\\...` to `//c/Users/...` (lowercased drive letter, double-slash prefix — matches Git Bash's `$(pwd)` form Docker Desktop accepts). POSIX hosts pass through unchanged. Operators with Windows paths containing spaces, parentheses, or special characters can now run `node scripts/release.js push` without manual mount fiddling."
         }
       ]
     }

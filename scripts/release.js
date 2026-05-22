@@ -353,10 +353,19 @@ function cmdPush() {
   var next = _readPackageVersion();
 
   _section("gitleaks");
-  var here = ROOT;
-  // Docker mount path quirk — Git Bash on Windows needs the leading
-  // slash. POSIX hosts pass it through unchanged.
-  var mount = process.platform === "win32" ? "/" + here.replace(/\\/g, "/") : here;
+  // Docker bind-mount path: Windows host paths look like
+  // `C:\Users\Robert\Dropbox (Personal)\...`; Docker Desktop accepts
+  // them as `//c/Users/Robert/Dropbox (Personal)/...` (double leading
+  // slash + lowercased drive letter without colon — Git Bash's
+  // `$(pwd)` form). The colon in `C:` confuses Docker's `-v src:dst`
+  // splitter, so transform here.
+  var mount;
+  if (process.platform === "win32") {
+    var posixified = ROOT.replace(/\\/g, "/");
+    mount = "//" + posixified.charAt(0).toLowerCase() + posixified.slice(2);   // C:/x → //c/x
+  } else {
+    mount = ROOT;
+  }
   _run("docker", [
     "run", "--rm",
     "-v", mount + ":/repo",
