@@ -142,7 +142,13 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **Pub/sub + events** — distributed pub/sub with cluster-table / Redis PUB/SUB / custom backends (`b.pubsub`); framework-emitted signal bus for breach / integrity events (`b.events`)
 - **CloudEvents + SSE** — CloudEvents 1.0 envelope for AWS EventBridge / Knative / Azure Event Grid / Google Eventarc / CNCF (`b.cloudEvents`); Server-Sent Events with newline-injection refusal in `event:` / `id:` / `data:` / `Last-Event-ID` (CVE-2026-33128 / 29085 / 44217 class) (`b.sse`, `b.middleware.sse`)
 - **Mail (outbound)** — multipart + attachments + DKIM + calendar invites; bounce intake (`b.mail`, `b.mailBounce`)
+- **Mail (outbound delivery)** — turnkey MX-lookup → MTA-STS-fetch → DANE-TLSA → REQUIRETLS handshake → SMTP wire layer → RFC 3464 DSN-on-permanent-failure → deferred-retry scheduling, all wired once (`b.mail.send.deliver`)
 - **Mail (inbound auth)** — SPF / DMARC / ARC verify + ARC chain signing for relays (`b.mail.spf`, `b.mail.dmarc`, `b.mail.arc`)
+- **Mail server listeners** — RFC 5321 MX inbound (`b.mail.server.mx`), RFC 6409 submission with SASL + identity-binding (`b.mail.server.submission`), RFC 9051 IMAP4rev2 with CONDSTORE / QRESYNC / NOTIFY / METADATA / CATENATE (`b.mail.server.imap`), RFC 8620 + RFC 8621 JMAP Core + Mail over HTTP/SSE/WebSocket (`b.mail.server.jmap`), POP3 (`b.mail.server.pop3`), ManageSieve (`b.mail.server.managesieve`)
+- **JMAP EmailSubmission reference** — composes `b.mail.send.deliver` to land the RFC 8621 §7.5 surface end-to-end (`b.mail.server.jmap.emailSubmissionSetHandler`)
+- **Mail crypto** — PQC-first S/MIME via CMS (`b.mail.crypto.cms`) + OpenPGP encrypt/decrypt + WKD key discovery with IDN-homograph defense (`b.mail.crypto.pgp`)
+- **Mail-stack agent** — multi-threaded worker pool + queue dispatch + sealed mail-store backed by SQLite FTS5 (`b.mail.agent`, `b.mailStore`)
+- **JSCalendar** — RFC 8984 Event/Task/Note/Group with iCalendar (RFC 5545) round-trip + RRULE expansion (every BY* filter + BYSETPOS + multi-rule UNION) for JMAP Calendars interop (`b.calendar`)
 - **Notifications** — generic dispatcher with operator-supplied transports (`b.notify`); TCPA / FCC 1:1 prior-express-written-consent + 10DLC carrier-shaped consent snapshot for SMS marketing (`b.tcpa10dlc`)
 - **File uploads** — chunked with per-chunk SHA3-512 verification + atomic finalize + tombstone cleanup (`b.fileUpload`)
 ### AI / agentic
@@ -164,7 +170,9 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
   - **APAC + LATAM** — `dpdp` / `pipl-cn` / `lgpd-br` / `appi-jp` / `pdpa-sg` / `quebec-25` / `irap` / `kr-ai-basic` / `pipa-kr` / `au-privacy` / `th-pdpa` / `vn-pdp` / `id-pdp` / `my-pdpa` / `cl-pdpa` / `mx-lfpdppp` / `ar-pdpa`
   - **Child privacy / age-appropriate design** — `ca-aadc` / `ny-safe-kids` / `ny-saffe` / `md-kids-code` / `vt-aadc`
   - **Financial / data-portability** — `fapi2` / `fapi-2.0-message-signing` / `fdx` / `dsr`
-  - **AI governance** — `co-ai` / `il-hb3773` / `tx-traiga` / `ut-aipa` / `nyc-ll144` / `ca-tfaia` / `ca-sb942` / `ca-ab853` / `cn-ai-label` / `iso-42001` / `iso-23894`
+  - **AI governance** — `co-ai` / `il-hb3773` / `tx-traiga` / `ut-aipa` / `nyc-ll144` / `nyc-ll144-2024` / `sb-53` / `ca-tfaia` / `ca-sb942` / `ca-ab853` / `cn-ai-label` / `iso-42001` / `iso-23894` / `nist-ai-rmf-1.0` / `nist-ai-600-1-genai`
+  - **Federal / sectoral** — `42-cfr-part-2` / `hti-1` / `uscdi-v4` / `irs-1075` / `nist-csf-2.0` / `nist-800-53-r5-privacy` / `nist-800-172-r3` / `m-22-09` / `m-22-18` / `ffiec-cat-2` / `cri-profile-v2.0`
+  - **Critical infrastructure / info-sharing** — `soci-au` / `tlp-2.0`
   - **Accessibility** — `wcag-2-2`
   - **Other** — `bsi-c5` / `ens-es` / etc.
 - **AI Act ⇄ ISO cross-walk** — `b.compliance.aiAct.crossWalkIso42001()` + `crossWalkIso23894()` map every AI Act article (Art. 9 risk management → Art. 73 incident reporting) to the matching ISO/IEC 42001:2023 Annex A controls and ISO/IEC 23894:2023 risk-management clauses for ISO-certification audit packs
