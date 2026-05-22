@@ -8921,15 +8921,12 @@ function testCalendarBysetposStartGate() {
   try { content = fs.readFileSync(path, "utf8"); }
   catch (_e) { return; }
   if (/_expandWithBysetpos\b/.test(content)) {
-    // The emit loop must reference startMs in its filter chain so
-    // pre-DTSTART candidates from the period enumeration drop.
-    var blockMatch = /_expandWithBysetpos[\s\S]+?\n\}\n/.exec(content);
-    if (blockMatch) {
-      var block = blockMatch[0];
-      if (!/pickedMs\s*<\s*startMs|pickedMs\s*<=\s*startMs/.test(block)) {
-        bad.push({ file: path, line: 1,
-          content: "_expandWithBysetpos emit loop must gate `pickedMs < startMs` (RFC 5545 §3.8.5.3 — no instances before DTSTART)" });
-      }
+    // The function body must contain a pre-DTSTART gate on the
+    // picked candidates. Simple file-scope contains-check is enough
+    // since `pickedMs` is locally-scoped to the bysetpos expander.
+    if (!/pickedMs\s*<\s*startMs|pickedMs\s*<=\s*startMs/.test(content)) {
+      bad.push({ file: path, line: 1,
+        content: "_expandWithBysetpos emit loop must gate `pickedMs < startMs` (RFC 5545 §3.8.5.3 — no instances before DTSTART)" });
     }
   }
   bad = _filterMarkers(bad, "calendar-bysetpos-start-gate");
