@@ -627,6 +627,110 @@ function testMultipleRecurrenceRulesBoundedByMax() {
   check("global maxCount applies to unioned set", insts.length === 5);
 }
 
+function testBysetposLastFridayOfMonth() {
+  var ev = {
+    "@type":  "Event",
+    uid:      "lastfri",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-01T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "monthly",
+                        byDay: ["FR"], bySetPos: [-1], count: 3 }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-05-01T00:00:00Z", to: "2026-09-01T00:00:00Z" });
+  check("BYSETPOS=-1: 3 last-Friday instances", insts.length === 3);
+  check("May 2026 last Friday = May 29",        insts[0] === "2026-05-29T09:00:00Z");
+  check("Jun 2026 last Friday = Jun 26",        insts[1] === "2026-06-26T09:00:00Z");
+}
+
+function testBysetposSecondTuesdayOfMonth() {
+  var ev = {
+    "@type":  "Event",
+    uid:      "secondtue",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-01T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "monthly",
+                        byDay: ["TU"], bySetPos: [2], count: 2 }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-05-01T00:00:00Z", to: "2026-08-01T00:00:00Z" });
+  check("BYSETPOS=2: second Tuesday count = 2", insts.length === 2);
+  check("May 2026 2nd Tuesday = May 12",        insts[0] === "2026-05-12T09:00:00Z");
+}
+
+function testBysetposYearlyFirstSundayOfOctober() {
+  // DST-end pattern — "first Sunday of October each year".
+  var ev = {
+    "@type":  "Event",
+    uid:      "dstend",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-10-01T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "yearly",
+                        byMonth: [10], byDay: ["SU"], bySetPos: [1], count: 3 }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-10-01T00:00:00Z", to: "2030-01-01T00:00:00Z" });
+  check("YEARLY BYSETPOS=1 emits 3 instances", insts.length === 3);
+  check("2026 first Sunday of Oct = Oct 4",    insts[0] === "2026-10-04T09:00:00Z");
+}
+
+function testBysetposCombinedPositions() {
+  var ev = {
+    "@type":  "Event",
+    uid:      "firstlast",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-01T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "monthly",
+                        byDay: ["MO", "TU", "WE", "TH", "FR"],
+                        bySetPos: [1, -1], count: 4 }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-05-01T00:00:00Z", to: "2026-08-01T00:00:00Z" });
+  check("BYSETPOS=[1,-1]: first+last weekday of month, 4 total", insts.length === 4);
+}
+
+function testBysetposNeverEmitsBeforeStart() {
+  // Codex P1 — BYSETPOS path enumerates from the period boundary
+  // (month/year/week start), so without a DTSTART floor it could
+  // emit instances from BEFORE the rule's start. Start = May 20
+  // Friday; BYDAY=FR;BYSETPOS=1 — the candidate set for May would
+  // normally include May 1 (first Friday). The detector confirms
+  // pre-start instances are refused.
+  var ev = {
+    "@type":  "Event",
+    uid:      "pre-start",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-20T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "monthly",
+                        byDay: ["FR"], bySetPos: [1], count: 3 }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-01-01T00:00:00Z", to: "2026-12-01T00:00:00Z" });
+  check("BYSETPOS=1 + start mid-month: no instances before start",
+    insts.every(function (iso) { return iso >= "2026-05-20T00:00:00Z"; }));
+  // First emission must be the first BY*-matching candidate that is
+  // AT OR AFTER start — for FR;BYSETPOS=1 starting May 20 the first
+  // satisfying entry IS the May-period first-Friday = May 1 (dropped)
+  // → June first-Friday = June 5.
+  check("first emission is first Friday of June (May's was pre-start)",
+    insts[0] === "2026-06-05T09:00:00Z");
+}
+
+function testBysetposRefusesDailyFrequency() {
+  var ev = {
+    "@type":  "Event",
+    uid:      "baddaily",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-01T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "daily", bySetPos: [1] }],
+  };
+  var threw = null;
+  try { b.calendar.expandRecurrence(ev, { from: "2026-05-01T00:00:00Z", to: "2026-08-01T00:00:00Z" }); }
+  catch (e) { threw = e; }
+  check("BYSETPOS+DAILY refused", threw && (threw.code || "").indexOf("calendar/bad-recurrence") !== -1);
+}
+
 function testMixedVcalendarReturnsArray() {
   var ical =
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" +
@@ -684,6 +788,12 @@ function run() {
   testMultipleRecurrenceRulesUnion();
   testRecurrenceRulesDedupSameRule();
   testMultipleRecurrenceRulesBoundedByMax();
+  testBysetposLastFridayOfMonth();
+  testBysetposSecondTuesdayOfMonth();
+  testBysetposYearlyFirstSundayOfOctober();
+  testBysetposCombinedPositions();
+  testBysetposNeverEmitsBeforeStart();
+  testBysetposRefusesDailyFrequency();
   testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
 }

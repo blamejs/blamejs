@@ -8907,6 +8907,34 @@ function testCalendarUtcRoundtrip() {
     bad);
 }
 
+// v0.11.41 Codex P1 — BYSETPOS path enumerates candidates starting at
+// the period boundary (month/year/week start), so without a startMs
+// gate it can emit recurrence instances BEFORE the rule's DTSTART —
+// violating RFC 5545 §3.8.5.3 semantics + consuming COUNT on
+// instances the operator never asked for. Detector forces the
+// expand-with-bysetpos emit loop in lib/calendar.js to keep a
+// `pickedMs < startMs` (or equivalent) guard.
+function testCalendarBysetposStartGate() {
+  var bad = [];
+  var path = "lib/calendar.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  if (/_expandWithBysetpos\b/.test(content)) {
+    // The function body must contain a pre-DTSTART gate on the
+    // picked candidates. Simple file-scope contains-check is enough
+    // since `pickedMs` is locally-scoped to the bysetpos expander.
+    if (!/pickedMs\s*<\s*startMs|pickedMs\s*<=\s*startMs/.test(content)) {
+      bad.push({ file: path, line: 1,
+        content: "_expandWithBysetpos emit loop must gate `pickedMs < startMs` (RFC 5545 §3.8.5.3 — no instances before DTSTART)" });
+    }
+  }
+  bad = _filterMarkers(bad, "calendar-bysetpos-start-gate");
+  _report("b.calendar BYSETPOS expand path refuses pre-DTSTART instances " +
+          "(v0.11.41 Codex P1 — RFC 5545 §3.8.5.3)",
+    bad);
+}
+
 function testKnownAntipatterns() {
   // class: known-antipattern
   // Fires at n=1 — any file matching a registered antipattern (and not
@@ -9314,6 +9342,9 @@ async function run() {
   // v0.11.31 review-fix detector (Codex P1): UTC DTSTART round-trip
   // preserves timeZone="Etc/UTC" per RFC 8984 §1.4.4.
   testCalendarUtcRoundtrip();
+  // v0.11.41 review-fix detector (Codex P1): BYSETPOS expand path
+  // refuses pre-DTSTART instances per RFC 5545 §3.8.5.3.
+  testCalendarBysetposStartGate();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
