@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.12.5",
+  "date": "2026-05-22",
+  "headline": "`b.metrics` content-negotiates OpenMetrics 1.0 + auto-attaches trace exemplars on request histograms",
+  "summary": "The `/metrics` scrape endpoint now serves `application/openmetrics-text; version=1.0.0; charset=utf-8` when the scraper requests it via the `Accept` header (Prometheus 2.x strict mode, OpenObservability tooling). Legacy scrapers still get `text/plain; version=0.0.4` — no operator with the default Prometheus client sees a content-type change. Separately, the framework's request-duration histogram middleware now auto-attaches the active sampled trace's `trace_id` + `span_id` as the OpenMetrics §6.2 exemplar on every bucket sample, so Grafana / Tempo / Jaeger scrapers can pivot from a slow-bucket histogram to the exact trace that produced the sample. The wiring is composition-only — `b.middleware.tracePropagate` populates `req.trace.{traceId,parentId,sampled}`, the metrics middleware reads it, no operator opt-in needed.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`Accept` content-negotiation on `b.metrics.expositionHandler()`",
+          "body": "When the scraper's `Accept` header includes `application/openmetrics-text`, the handler renders the OpenMetrics 1.0 wire format (`# UNIT` lines, `_total` suffix on counters, `# EOF` terminator, exemplar shape) and serves `application/openmetrics-text; version=1.0.0; charset=utf-8`. Otherwise serves Prometheus 0.0.4 `text/plain` as before. Operators relying on the legacy Prometheus content-type see no change."
+        },
+        {
+          "title": "Auto-attached trace exemplars on request-duration histograms",
+          "body": "When `b.middleware.tracePropagate` populates `req.trace.{traceId, parentId, sampled}` on the inbound request and the trace is sampled, the framework's built-in `requestDuration` histogram middleware attaches `{ labels: { trace_id, span_id }, value: <duration>, timestamp: <unix-sec> }` as the OpenMetrics §6.2 exemplar on the corresponding bucket. Downstream Grafana / Tempo / Jaeger UIs render the exemplar dot on each bucket — operator clicks the dot to pivot from `slow request, 99th percentile` to the trace that produced it."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "OpenMetrics 1.0 §1.2 (content negotiation)",  "url": "https://prometheus.io/docs/specs/om/open_metrics_spec/" },
+    { "label": "OpenMetrics 1.0 §6.2 (exemplars)",            "url": "https://prometheus.io/docs/specs/om/open_metrics_spec/" },
+    { "label": "W3C Trace Context (traceparent header)",      "url": "https://www.w3.org/TR/trace-context/" }
+  ]
+}
