@@ -8909,6 +8909,52 @@ function testCalendarUtcRoundtrip() {
     bad);
 }
 
+// v0.11.44 wiki-port drift — the v0.11.40 port swap (8080 → 3008)
+// missed .github/workflows/release-container.yml's post-publish smoke
+// step. The wiki container builds for v0.11.40 / .42 / .43 all failed
+// because the smoke curled localhost:8080 against a listener on 3008,
+// so no image landed in GHCR for three patch releases. Detector
+// catches any future port collision between examples/wiki and the
+// container-build smoke workflow: if WIKI_PORT is set to X in
+// examples/wiki/Dockerfile, the workflow's `-p host:container` map +
+// curl host MUST also reference X.
+function testWikiPortAgreesAcrossArtifacts() {
+  var bad = [];
+  var dockerfile;
+  try { dockerfile = fs.readFileSync("examples/wiki/Dockerfile", "utf8"); }
+  catch (_e) { return; }
+  // Extract WIKI_PORT default from `ENV ... WIKI_PORT=<n>`.
+  var dfMatch = /WIKI_PORT\s*=\s*(\d+)/.exec(dockerfile);
+  if (!dfMatch) return;
+  var wikiPort = dfMatch[1];
+  var workflowPath = ".github/workflows/release-container.yml";
+  var workflow;
+  try { workflow = fs.readFileSync(workflowPath, "utf8"); }
+  catch (_e) { return; }
+  // The smoke step has `-p X:X` + `curl http://localhost:X/healthz`.
+  // Both X's must equal the Dockerfile's WIKI_PORT.
+  var workflowLines = workflow.split(/\r?\n/);
+  for (var wli = 0; wli < workflowLines.length; wli += 1) {
+    var line = workflowLines[wli];
+    var portMap = /-p\s+(\d+):(\d+)/.exec(line);
+    if (portMap && (portMap[1] !== wikiPort || portMap[2] !== wikiPort)) {
+      bad.push({ file: workflowPath, line: wli + 1,
+        content: "release-container.yml smoke `-p " + portMap[1] + ":" + portMap[2] +
+                 "` doesn't match examples/wiki/Dockerfile WIKI_PORT=" + wikiPort });
+    }
+    var curlMatch = /localhost:(\d+)\/healthz/.exec(line);
+    if (curlMatch && curlMatch[1] !== wikiPort) {
+      bad.push({ file: workflowPath, line: wli + 1,
+        content: "release-container.yml smoke curls localhost:" + curlMatch[1] +
+                 " but examples/wiki/Dockerfile WIKI_PORT=" + wikiPort });
+    }
+  }
+  bad = _filterMarkers(bad, "wiki-port-cross-artifact-drift");
+  _report("wiki port agrees across examples/wiki/Dockerfile + release-container.yml smoke step " +
+          "(v0.11.44 — prevent re-emergence of the v0.11.40 missed-port-bump silent-deploy failure)",
+    bad);
+}
+
 // v0.11.43 drift cleanup — every `@nav` value in a lib/*.js @module
 // block MUST be one of the canonical category names below. The wiki
 // sidebar derives directly from `@nav`, so unreviewed drift surfaces
@@ -9446,6 +9492,10 @@ async function run() {
   // v0.11.43 wiki nav drift detector: every @nav in lib/*.js must
   // be a registered canonical category.
   testNavCategoryAllowlist();
+  // v0.11.44 wiki-port cross-artifact detector: the Dockerfile's
+  // WIKI_PORT default must match the release-container.yml smoke
+  // step's port mapping + curl host.
+  testWikiPortAgreesAcrossArtifacts();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
