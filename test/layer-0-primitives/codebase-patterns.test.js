@@ -2203,6 +2203,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/oid4vp.js:_validateDcql",
         "lib/auth/sd-jwt-vc-issuer.js:create",
         "lib/auth/step-up.js:parseAuthorizationDetails",
+        "lib/calendar.js:validate",
         "lib/fedcm.js:accountsResponse",
         "lib/fedcm.js:wellKnown",
         "lib/guard-saga-config.js:validate",
@@ -2213,7 +2214,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/dsr.js:create",
         "lib/middleware/assetlinks.js:create",
       ],
-      reason: "v0.10.16 — opts-object structural validation pattern: each primitive walks an operator-supplied opts/config object, asserts required-key presence with primitive-typed errors, and emits spec-named refusal codes. FedCM endpoints (W3C 2024), DCQL queries (OID4VP), AuthorizationDetails (RFC 9396), Assetlinks (Android), DualControl declarations, break-glass policy sets, DSR rights, sd-jwt-vc issuer — each enforces a distinct spec's required-field list. The repeating shingle is the boilerplate guard shape; consolidating couples unrelated spec namespaces.",
+      reason: "v0.10.16 — opts-object structural validation pattern: each primitive walks an operator-supplied opts/config object, asserts required-key presence with primitive-typed errors, and emits spec-named refusal codes. FedCM endpoints (W3C 2024), DCQL queries (OID4VP), AuthorizationDetails (RFC 9396), Assetlinks (Android), DualControl declarations, break-glass policy sets, DSR rights, sd-jwt-vc issuer, JSCalendar Event/Task/Note/Group (RFC 8984) — each enforces a distinct spec's required-field list. The repeating shingle is the boilerplate guard shape; consolidating couples unrelated spec namespaces.",
     },
     {
       mode:  "family-subset",
@@ -2284,9 +2285,10 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/a2a.js:_validateCardShape",
         "lib/calendar.js:validate",
+        "lib/fedcm.js:wellKnown",
         "lib/middleware/assetlinks.js:create",
       ],
-      reason: "v0.11.31 — opts-object shape validator pattern. Each primitive accepts a structured document (W3C A2A signed agent-card / JSCalendar Event-or-Task / Android Asset Links manifest), walks the per-spec required keys, and throws a domain-typed error. The shared shingle is the per-field `typeof !== \"string\" || length === 0 || ...test(...)` chain; the per-spec vocabulary diverges entirely.",
+      reason: "v0.11.31 — opts-object shape validator pattern. Each primitive accepts a structured document (W3C A2A signed agent-card / JSCalendar Event/Task/Note/Group / Android Asset Links manifest / FedCM well-known manifest), walks the per-spec required keys, and throws a domain-typed error. The shared shingle is the per-field `typeof !== \"string\" || length === 0 || ...test(...)` chain; the per-spec vocabulary diverges entirely.",
     },
     {
       mode:  "family-subset",
