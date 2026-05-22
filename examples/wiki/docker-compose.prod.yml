@@ -45,7 +45,7 @@ services:
     # Pull the published image instead of building from source. Pin to
     # a specific version in production so a forgotten `docker compose
     # pull` doesn't quietly upgrade.
-    image: ghcr.io/blamejs/blamejs-wiki:0.3.24
+    image: ghcr.io/blamejs/blamejs-wiki:0.11.45
     build: !reset null
     container_name: blamejs-wiki
     # Don't expose 3008 on the host — only Caddy talks to it on the

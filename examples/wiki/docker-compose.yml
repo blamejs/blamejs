@@ -14,7 +14,7 @@ services:
     build:
       context: ../..
       dockerfile: examples/wiki/Dockerfile
-    image: blamejs-wiki:0.3.8
+    image: blamejs-wiki:0.11.45
     container_name: blamejs-wiki
     restart: unless-stopped
     ports:
