@@ -13,7 +13,14 @@ blamejs.com, www.blamejs.com {
 
 	# Pass through to the wiki container by service name on the
 	# compose network (Caddy resolves "wiki" to the container).
-	reverse_proxy wiki:8080 {
+	# Caddy reads {$WIKI_PORT} from its own environment at config-load
+	# time. The prod compose passes WIKI_PORT through to BOTH the wiki
+	# and caddy services so an operator who overrides WIKI_PORT in
+	# `.env` gets a consistent upstream — without this, an operator
+	# carrying WIKI_PORT=8080 from a pre-v0.11.40 deploy would have
+	# the wiki listening on 8080 while Caddy forwarded to the new
+	# default, surfacing as 502s on the public site.
+	reverse_proxy wiki:{$WIKI_PORT:3008} {
 		# Forward the original scheme so the wiki's CORS same-origin
 		# detection trusts X-Forwarded-Proto: https.
 		header_up X-Forwarded-Proto https
