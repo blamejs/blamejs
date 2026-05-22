@@ -671,6 +671,14 @@ function testGroupRefusalCases() {
       entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }],
       categories: { sprint: "yes" } },
     "calendar/bad-categories");
+  // Codex P1 — `typeof null === "object"` would let `categories: null`
+  // skip the type check + cause Object.keys(null) to throw a raw
+  // TypeError instead of a structured `calendar/bad-categories`.
+  expectCode("null categories refused with structured error",
+    { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z",
+      entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }],
+      categories: null },
+    "calendar/bad-categories");
   expectCode("non-string source refused",
     { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z",
       entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }],
