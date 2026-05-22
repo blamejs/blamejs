@@ -181,6 +181,30 @@ function _ok(msg) {
   console.log("ok: " + msg);
 }
 
+// Verify HEAD's commit signature using two independent code paths:
+//   1. `git verify-commit HEAD` — exits 0 on Good signature; this is
+//      the canonical truth signal (matches what GitHub's
+//      required_signatures ruleset checks).
+//   2. `git log -1 --pretty=%h %G? %GS` — capture the sha + signature
+//      letter + signer email for human-readable confirmation.
+// The script previously relied solely on (2), but the `%G?` token's
+// `?` character can be eaten on some platforms when spawned through
+// shell-resolution layers; (1) is a reliable boolean even when (2)
+// returns empty stdout.
+function _verifyCommitSignature(label) {
+  var verifyRv = _capture("git", ["verify-commit", "HEAD"]);
+  if (verifyRv.status !== 0) {
+    var hint = "release: " + label + " commit signature is not Good — " +
+               "check SSH signing setup (commit.gpgsign=true + gpg.format=ssh + " +
+               "~/.ssh/allowed_signers populated).";
+    if (verifyRv.stderr) hint += "\n" + verifyRv.stderr;
+    throw new Error(hint);
+  }
+  var sig = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
+  console.log("signature: " + (sig.stdout || "(captured empty — verify-commit reports Good)"));
+  _ok(label + " commit signature verified");
+}
+
 // ---- Subcommands ---------------------------------------------------------
 
 function cmdPrepare(opts) {
@@ -289,11 +313,7 @@ function cmdCommit() {
   var headSubject = _capture("git", ["log", "-1", "--pretty=%s"]).stdout;
   if (headSubject.indexOf(next + " — ") === 0) {
     _ok("HEAD already carries a " + next + " release commit (resume mode)");
-    var sigCheck = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
-    console.log("signature: " + sigCheck.stdout);
-    if (sigCheck.stdout.indexOf(" G ") === -1) {
-      throw new Error("release: existing commit signature is not Good — amend with `git commit --amend --no-edit -S` after fixing the SSH-signing setup");
-    }
+    _verifyCommitSignature("existing");
     console.log("\nnext: node scripts/release.js push");
     return;
   }
@@ -320,11 +340,7 @@ function cmdCommit() {
   _run("git", ["commit", "-F", msgPath]);
   _ok("signed commit");
 
-  var sig = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
-  console.log("signature: " + sig.stdout);
-  if (sig.stdout.indexOf(" G ") === -1) {
-    throw new Error("release: commit signature is not Good — check SSH signing setup (CLAUDE.md)");
-  }
+  _verifyCommitSignature("new");
 
   console.log("\nnext: node scripts/release.js push");
 }

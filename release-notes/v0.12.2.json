@@ -17,6 +17,15 @@
           "body": "Replaces the four-bullet manual flow with the orchestrator surface, including the `all` / `all --minor` one-shot, the per-phase subcommands, and the pre-requisites the script enforces (release-notes JSON present, SSH signing config in place). The downstream wiki-image deploy step on the host (pin `docker-compose.prod.yml` + `docker compose pull && up -d`) is unchanged."
         }
       ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`scripts/release.js` signature verification uses `git verify-commit` as the canonical truth",
+          "body": "The v0.12.0 orchestrator's commit-signature gate parsed `git log -1 --pretty=%h %G? %GS` looking for `G` in the second column. On some platforms the `%G?` format token's `?` character can be eaten by argument resolution, returning empty stdout even when the signature is Good. The fix runs `git verify-commit HEAD` (whose exit code is the canonical signal `required_signatures` GH ruleset enforces) as the primary check; the `%G?` parse stays as a human-readable confirmation but no longer gates the script. Surfaced via dogfooding the orchestrator on this very release."
+        }
+      ]
     }
   ],
   "references": []
