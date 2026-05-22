@@ -257,13 +257,46 @@ function cmdSmoke() {
 
 function cmdCommit() {
   _section("commit");
-  if (!_gitOnMain()) {
-    throw new Error("release: commit must run on main (release branch is created here)");
-  }
   var next = _readPackageVersion();
   var branch = _releaseBranchFor(next);
-  _run("git", ["checkout", "-b", branch]);
-  _ok("created " + branch);
+  var current = _gitBranch();
+
+  // Resumable: if a previous `commit` invocation failed AFTER the
+  // `git checkout -b` (e.g. signature verification, write-protected
+  // file, hook failure), the branch already exists. Switch to it
+  // instead of refusing. The remaining checks (the commit itself,
+  // signature verify) are idempotent.
+  if (current === branch) {
+    _ok("already on " + branch + " (resume mode)");
+  } else if (current === "main") {
+    var branchExists = _capture("git", ["rev-parse", "--verify", "--quiet", branch]).status === 0;
+    if (branchExists) {
+      _run("git", ["checkout", branch]);
+      _ok("checked out existing " + branch + " (resume mode)");
+    } else {
+      _run("git", ["checkout", "-b", branch]);
+      _ok("created " + branch);
+    }
+  } else {
+    throw new Error("release: commit must run on main or " + branch +
+                    " (currently on " + current + ")");
+  }
+
+  // If HEAD already carries a commit for this release (re-run after
+  // signature failure was resolved out-of-band, or just an over-eager
+  // re-invocation), skip the second commit. Verify the existing
+  // signature instead.
+  var headSubject = _capture("git", ["log", "-1", "--pretty=%s"]).stdout;
+  if (headSubject.indexOf(next + " — ") === 0) {
+    _ok("HEAD already carries a " + next + " release commit (resume mode)");
+    var sigCheck = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
+    console.log("signature: " + sigCheck.stdout);
+    if (sigCheck.stdout.indexOf(" G ") === -1) {
+      throw new Error("release: existing commit signature is not Good — amend with `git commit --amend --no-edit -S` after fixing the SSH-signing setup");
+    }
+    console.log("\nnext: node scripts/release.js push");
+    return;
+  }
 
   // Compose commit body from the release-notes JSON. Operators can
   // amend post-commit; the auto-generated body is meant as a sensible
@@ -390,6 +423,24 @@ function cmdMerge() {
   if (state.mergeStateStatus !== "CLEAN" || state.mergeable !== "MERGEABLE") {
     throw new Error("release: PR #" + prNum + " not mergeable (state=" +
                     state.mergeStateStatus + " mergeable=" + state.mergeable + ")");
+  }
+  // Re-check unresolved review threads RIGHT BEFORE the merge call.
+  // `watch` enforces zero unresolved at watch time, but a reviewer
+  // can open a new thread between watch + merge, or main-protection
+  // may not enforce `require_review_thread_resolution` on every repo
+  // — the merge gate stays robust either way.
+  var threadRv = _capture("gh", ["api", "graphql",
+                                  "-f", "query=query { repository(owner:\"blamejs\",name:\"blamejs\") { pullRequest(number:" + prNum +
+                                       ") { reviewThreads(first:50) { nodes { isResolved comments(first:1) { nodes { author{login} body } } } } } } }",
+                                  "--jq", ".data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved==false))"]);
+  var unresolved = JSON.parse(threadRv.stdout || "[]");
+  if (unresolved.length > 0) {
+    console.log("\nunresolved review threads opened since watch (" + unresolved.length + "):");
+    unresolved.forEach(function (t) {
+      var c = t.comments && t.comments.nodes && t.comments.nodes[0];
+      if (c) console.log("  - by " + c.author.login + ": " + c.body.split("\n")[0]);
+    });
+    throw new Error("release: refusing to merge PR #" + prNum + " — unresolved review threads");
   }
   _run("gh", ["pr", "merge", prNum, "--squash", "--delete-branch"]);
   _ok("PR #" + prNum + " squash-merged");
