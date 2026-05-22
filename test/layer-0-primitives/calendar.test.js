@@ -689,6 +689,33 @@ function testBysetposCombinedPositions() {
   check("BYSETPOS=[1,-1]: first+last weekday of month, 4 total", insts.length === 4);
 }
 
+function testBysetposNeverEmitsBeforeStart() {
+  // Codex P1 — BYSETPOS path enumerates from the period boundary
+  // (month/year/week start), so without a DTSTART floor it could
+  // emit instances from BEFORE the rule's start. Start = May 20
+  // Friday; BYDAY=FR;BYSETPOS=1 — the candidate set for May would
+  // normally include May 1 (first Friday). The detector confirms
+  // pre-start instances are refused.
+  var ev = {
+    "@type":  "Event",
+    uid:      "pre-start",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-05-20T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "monthly",
+                        byDay: ["FR"], bySetPos: [1], count: 3 }],
+  };
+  var insts = b.calendar.expandRecurrence(ev, { from: "2026-01-01T00:00:00Z", to: "2026-12-01T00:00:00Z" });
+  check("BYSETPOS=1 + start mid-month: no instances before start",
+    insts.every(function (iso) { return iso >= "2026-05-20T00:00:00Z"; }));
+  // First emission must be the first BY*-matching candidate that is
+  // AT OR AFTER start — for FR;BYSETPOS=1 starting May 20 the first
+  // satisfying entry IS the May-period first-Friday = May 1 (dropped)
+  // → June first-Friday = June 5.
+  check("first emission is first Friday of June (May's was pre-start)",
+    insts[0] === "2026-06-05T09:00:00Z");
+}
+
 function testBysetposRefusesDailyFrequency() {
   var ev = {
     "@type":  "Event",
@@ -765,6 +792,7 @@ function run() {
   testBysetposSecondTuesdayOfMonth();
   testBysetposYearlyFirstSundayOfOctober();
   testBysetposCombinedPositions();
+  testBysetposNeverEmitsBeforeStart();
   testBysetposRefusesDailyFrequency();
   testMixedVcalendarReturnsArray();
   testJmapCatalogueCarriesCalendarMethods();
