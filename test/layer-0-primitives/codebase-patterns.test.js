@@ -8937,9 +8937,13 @@ function testCalendarTypeofObjectRefusesNull() {
     if (!hasArrayCheck) continue;
     // Look both backward (this line + 1 prior, for `if (x === null ||`
     // shape) and inside the same line + the next 2 lines for an
-    // explicit null refusal of the same identifier.
-    var nullGuardRe = new RegExp(ident.replace(/[.[\]"]/g, "\\$&") +
-      "\\s*===\\s*null|!\\s*" + ident.replace(/[.[\]"]/g, "\\$&") + "\\b");
+    // explicit null refusal of the same identifier. Full regex-meta
+    // escape so any character in `ident` is treated literally —
+    // CodeQL flags partial escapes (js/incomplete-sanitization) when
+    // backslash isn't covered.
+    var identEscaped = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var nullGuardRe = new RegExp(identEscaped +
+      "\\s*===\\s*null|!\\s*" + identEscaped + "\\b");
     var hasNullGuard = nullGuardRe.test(line) ||
       (i > 0 && nullGuardRe.test(lines[i - 1])) ||
       (i + 1 < lines.length && nullGuardRe.test(lines[i + 1]));
