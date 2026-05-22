@@ -8,6 +8,7 @@
  *
  * Usage:
  *   node scripts/release.js prepare    # bump + regen CHANGELOG + api-snapshot + static gates
+ *   node scripts/release.js regen      # re-regen CHANGELOG + api-snapshot (after release-notes edits)
  *   node scripts/release.js smoke      # SMOKE_PARALLEL=64 + (optional) wiki e2e
  *   node scripts/release.js commit     # release branch + signed commit
  *   node scripts/release.js push       # gitleaks + push + open PR
@@ -181,6 +182,24 @@ function _ok(msg) {
   console.log("ok: " + msg);
 }
 
+// Shared artifact-regeneration helper. Called by `prepare` after the
+// version bump, and standalone via `regen` when the operator edits
+// release-notes mid-flow (e.g. addressing a Codex P1/P2 finding that
+// belongs in the operator-facing release notes). Idempotent — running
+// it twice with no edits in between is a no-op.
+function _regenArtifacts(opts) {
+  opts = opts || {};
+  if (opts.rollupOnMinor) {
+    _run("node", ["scripts/consolidate-release-notes.js", "--prune"]);
+    _ok("prior minor's release-notes rolled up");
+  }
+  _run("node", ["scripts/generate-changelog-entry.js", "--rebuild"]);
+  _run("node", ["scripts/refresh-api-snapshot.js"]);
+  _run("node", ["scripts/check-api-snapshot.js"]);
+  _run("node", ["scripts/check-changelog-extract.js"]);
+  _ok("CHANGELOG + api-snapshot regenerated");
+}
+
 // Verify HEAD's commit signature using two independent code paths:
 //   1. `git verify-commit HEAD` — exits 0 on Good signature; this is
 //      the canonical truth signal (matches what GitHub's
@@ -231,15 +250,7 @@ function cmdPrepare(opts) {
   // files into a single rollup so smoke's release-notes rollup gate
   // stays green. No-op on patch bumps.
   var minorRotated = current.split(".")[1] !== next.split(".")[1];
-  if (minorRotated) {
-    _run("node", ["scripts/consolidate-release-notes.js", "--prune"]);
-    _ok("prior minor's release-notes rolled up");
-  }
-  _run("node", ["scripts/generate-changelog-entry.js", "--rebuild"]);
-  _run("node", ["scripts/refresh-api-snapshot.js"]);
-  _run("node", ["scripts/check-api-snapshot.js"]);
-  _run("node", ["scripts/check-changelog-extract.js"]);
-  _ok("CHANGELOG + api-snapshot regenerated");
+  _regenArtifacts({ rollupOnMinor: minorRotated });
 
   _section("static gates");
   _run("npx", ["--yes", "eslint@latest", "--max-warnings", "0", "."]);
@@ -248,6 +259,19 @@ function cmdPrepare(opts) {
   _ok("eslint + codebase-patterns + source-comment-blocks clean");
 
   console.log("\nnext: node scripts/release.js smoke");
+}
+
+function cmdRegen() {
+  _section("regen");
+  // Operators edit release-notes/v<next>.json mid-flow (e.g.
+  // addressing a Codex finding that belongs in the operator-facing
+  // notes, or fixing a leak-vocabulary refusal that the changelog
+  // emitter raised). This subcommand re-runs the artifact pipeline
+  // without re-bumping the version. Safe to run from any branch.
+  var next = _readPackageVersion();
+  _ensureReleaseNotes(next);
+  _regenArtifacts();
+  console.log("\nnext: re-run the phase you were on (commit / push / watch / ...)");
 }
 
 function cmdSmoke() {
@@ -580,6 +604,7 @@ function cmdHelp() {
   console.log("");
   console.log("Usage:");
   console.log("  node scripts/release.js prepare [--minor]   # bump + regen + static gates");
+  console.log("  node scripts/release.js regen               # re-regen artifacts after release-notes edits");
   console.log("  node scripts/release.js smoke               # framework + wiki e2e if needed");
   console.log("  node scripts/release.js commit              # release branch + signed commit");
   console.log("  node scripts/release.js push                # gitleaks + push + open PR");
@@ -603,6 +628,7 @@ var opts = {
 try {
   switch (sub) {
     case "prepare": cmdPrepare(opts); break;
+    case "regen":   cmdRegen();       break;
     case "smoke":   cmdSmoke();       break;
     case "commit":  cmdCommit();      break;
     case "push":    cmdPush();        break;

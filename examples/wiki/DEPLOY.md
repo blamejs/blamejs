@@ -189,6 +189,7 @@ node scripts/release.js all
 
 # Or individual phases:
 node scripts/release.js prepare    # bump + regen CHANGELOG + api-snapshot + static gates
+node scripts/release.js regen      # re-regen artifacts after release-notes edits (mid-flow)
 node scripts/release.js smoke      # SMOKE_PARALLEL=64 + (auto) wiki e2e if examples/wiki touched
 node scripts/release.js commit     # release/v<next> branch + signed commit (resumable)
 node scripts/release.js push       # gitleaks + push + open PR

@@ -30,6 +30,15 @@
           "body": "The `push` phase's gitleaks step bind-mounted the repo root via `-v <path>:/repo`. The previous path transform produced `/C:/Users/...` on Windows, which Docker's `-v src:dst[:mode]` parser interpreted as having three colon-separated fields. Fix: transform `C:\\Users\\...` to `//c/Users/...` (lowercased drive letter, double-slash prefix — matches Git Bash's `$(pwd)` form Docker Desktop accepts). POSIX hosts pass through unchanged. Operators with Windows paths containing spaces, parentheses, or special characters can now run `node scripts/release.js push` without manual mount fiddling."
         }
       ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`scripts/release.js regen` — re-run artifact regeneration mid-flow",
+          "body": "Edits to `release-notes/v<next>.json` after `prepare` (e.g. addressing a Codex finding, fixing a leak-vocabulary refusal) previously required running `node scripts/generate-changelog-entry.js --rebuild` + `scripts/refresh-api-snapshot.js` + `scripts/check-api-snapshot.js` + `scripts/check-changelog-extract.js` manually. The new `regen` subcommand wraps all four into a single idempotent step. Safe to run any time from any branch. The `prepare` phase calls the same shared helper internally so behaviour stays consistent."
+        }
+      ]
     }
   ],
   "references": []
