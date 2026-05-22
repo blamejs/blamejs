@@ -8909,6 +8909,57 @@ function testCalendarUtcRoundtrip() {
     bad);
 }
 
+// v0.12.1 compliance posture coverage — every POSTURE_DEFAULTS key
+// MUST be in KNOWN_POSTURES (else `b.compliance.set(posture)` refuses
+// despite cascade config being wired) AND every KNOWN_POSTURES entry
+// MUST have a REGIME_MAP record (else `b.compliance.describe(posture)`
+// returns null and admin UI / audit reports render empty). The v0.12.1
+// backfill closed 65 missing entries across both axes; this detector
+// catches future drift the same shape.
+function testCompliancePostureCoverage() {
+  var bad = [];
+  var content;
+  try { content = fs.readFileSync("lib/compliance.js", "utf8"); }
+  catch (_e) { return; }
+  var lines = content.split(/\r?\n/);
+  var inKnown = false, inDefaults = false, inRegime = false;
+  var known = Object.create(null);
+  var defaults = Object.create(null);
+  var regime = Object.create(null);
+  var knownLineOf = Object.create(null);
+  var defaultsLineOf = Object.create(null);
+  for (var i = 0; i < lines.length; i += 1) {
+    var ln = lines[i];
+    if (/^var KNOWN_POSTURES/.test(ln))   { inKnown = true; continue; }
+    if (/^var POSTURE_DEFAULTS/.test(ln)) { inDefaults = true; continue; }
+    if (/^var REGIME_MAP/.test(ln))       { inRegime = true; continue; }
+    if (/^\]\);|^\}\);/.test(ln))         { inKnown = inDefaults = inRegime = false; continue; }
+    var m = ln.match(/^\s*"([^"]+)"/);
+    if (!m) continue;
+    if (inKnown)    { known[m[1]] = true; knownLineOf[m[1]] = i + 1; }
+    if (inDefaults) { defaults[m[1]] = true; defaultsLineOf[m[1]] = i + 1; }
+    if (inRegime)   { regime[m[1]] = true; }
+  }
+  Object.keys(defaults).forEach(function (p) {
+    if (!known[p]) {
+      bad.push({ file: "lib/compliance.js", line: defaultsLineOf[p],
+        content: "POSTURE_DEFAULTS[\"" + p + "\"] has no KNOWN_POSTURES entry — " +
+                 "b.compliance.set(\"" + p + "\") will refuse even though cascade config is wired" });
+    }
+  });
+  Object.keys(known).forEach(function (p) {
+    if (!regime[p]) {
+      bad.push({ file: "lib/compliance.js", line: knownLineOf[p],
+        content: "KNOWN_POSTURES[\"" + p + "\"] has no REGIME_MAP record — " +
+                 "b.compliance.describe(\"" + p + "\") returns null + admin UI renders empty" });
+    }
+  });
+  bad = _filterMarkers(bad, "compliance-posture-coverage-drift");
+  _report("b.compliance posture catalog coverage — KNOWN_POSTURES ⊇ POSTURE_DEFAULTS, REGIME_MAP ⊇ KNOWN_POSTURES " +
+          "(v0.12.1 — prevent broken b.compliance.set() / null describe() drift)",
+    bad);
+}
+
 // v0.11.44 wiki-port drift — the v0.11.40 port swap (8080 → 3008)
 // missed .github/workflows/release-container.yml's post-publish smoke
 // step. The wiki container builds for v0.11.40 / .42 / .43 all failed
@@ -9496,6 +9547,9 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
+  // v0.12.1 compliance posture coverage detector: KNOWN_POSTURES ⊇
+  // POSTURE_DEFAULTS + REGIME_MAP ⊇ KNOWN_POSTURES.
+  testCompliancePostureCoverage();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
