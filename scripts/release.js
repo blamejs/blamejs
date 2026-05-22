@@ -8,6 +8,7 @@
  *
  * Usage:
  *   node scripts/release.js prepare    # bump + regen CHANGELOG + api-snapshot + static gates
+ *   node scripts/release.js regen      # re-regen CHANGELOG + api-snapshot (after release-notes edits)
  *   node scripts/release.js smoke      # SMOKE_PARALLEL=64 + (optional) wiki e2e
  *   node scripts/release.js commit     # release branch + signed commit
  *   node scripts/release.js push       # gitleaks + push + open PR
@@ -181,6 +182,48 @@ function _ok(msg) {
   console.log("ok: " + msg);
 }
 
+// Shared artifact-regeneration helper. Called by `prepare` after the
+// version bump, and standalone via `regen` when the operator edits
+// release-notes mid-flow (e.g. addressing a Codex P1/P2 finding that
+// belongs in the operator-facing release notes). Idempotent — running
+// it twice with no edits in between is a no-op.
+function _regenArtifacts(opts) {
+  opts = opts || {};
+  if (opts.rollupOnMinor) {
+    _run("node", ["scripts/consolidate-release-notes.js", "--prune"]);
+    _ok("prior minor's release-notes rolled up");
+  }
+  _run("node", ["scripts/generate-changelog-entry.js", "--rebuild"]);
+  _run("node", ["scripts/refresh-api-snapshot.js"]);
+  _run("node", ["scripts/check-api-snapshot.js"]);
+  _run("node", ["scripts/check-changelog-extract.js"]);
+  _ok("CHANGELOG + api-snapshot regenerated");
+}
+
+// Verify HEAD's commit signature using two independent code paths:
+//   1. `git verify-commit HEAD` — exits 0 on Good signature; this is
+//      the canonical truth signal (matches what GitHub's
+//      required_signatures ruleset checks).
+//   2. `git log -1 --pretty=%h %G? %GS` — capture the sha + signature
+//      letter + signer email for human-readable confirmation.
+// The script previously relied solely on (2), but the `%G?` token's
+// `?` character can be eaten on some platforms when spawned through
+// shell-resolution layers; (1) is a reliable boolean even when (2)
+// returns empty stdout.
+function _verifyCommitSignature(label) {
+  var verifyRv = _capture("git", ["verify-commit", "HEAD"]);
+  if (verifyRv.status !== 0) {
+    var hint = "release: " + label + " commit signature is not Good — " +
+               "check SSH signing setup (commit.gpgsign=true + gpg.format=ssh + " +
+               "~/.ssh/allowed_signers populated).";
+    if (verifyRv.stderr) hint += "\n" + verifyRv.stderr;
+    throw new Error(hint);
+  }
+  var sig = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
+  console.log("signature: " + (sig.stdout || "(captured empty — verify-commit reports Good)"));
+  _ok(label + " commit signature verified");
+}
+
 // ---- Subcommands ---------------------------------------------------------
 
 function cmdPrepare(opts) {
@@ -207,15 +250,7 @@ function cmdPrepare(opts) {
   // files into a single rollup so smoke's release-notes rollup gate
   // stays green. No-op on patch bumps.
   var minorRotated = current.split(".")[1] !== next.split(".")[1];
-  if (minorRotated) {
-    _run("node", ["scripts/consolidate-release-notes.js", "--prune"]);
-    _ok("prior minor's release-notes rolled up");
-  }
-  _run("node", ["scripts/generate-changelog-entry.js", "--rebuild"]);
-  _run("node", ["scripts/refresh-api-snapshot.js"]);
-  _run("node", ["scripts/check-api-snapshot.js"]);
-  _run("node", ["scripts/check-changelog-extract.js"]);
-  _ok("CHANGELOG + api-snapshot regenerated");
+  _regenArtifacts({ rollupOnMinor: minorRotated });
 
   _section("static gates");
   _run("npx", ["--yes", "eslint@latest", "--max-warnings", "0", "."]);
@@ -224,6 +259,19 @@ function cmdPrepare(opts) {
   _ok("eslint + codebase-patterns + source-comment-blocks clean");
 
   console.log("\nnext: node scripts/release.js smoke");
+}
+
+function cmdRegen() {
+  _section("regen");
+  // Operators edit release-notes/v<next>.json mid-flow (e.g.
+  // addressing a Codex finding that belongs in the operator-facing
+  // notes, or fixing a leak-vocabulary refusal that the changelog
+  // emitter raised). This subcommand re-runs the artifact pipeline
+  // without re-bumping the version. Safe to run from any branch.
+  var next = _readPackageVersion();
+  _ensureReleaseNotes(next);
+  _regenArtifacts();
+  console.log("\nnext: re-run the phase you were on (commit / push / watch / ...)");
 }
 
 function cmdSmoke() {
@@ -289,11 +337,7 @@ function cmdCommit() {
   var headSubject = _capture("git", ["log", "-1", "--pretty=%s"]).stdout;
   if (headSubject.indexOf(next + " — ") === 0) {
     _ok("HEAD already carries a " + next + " release commit (resume mode)");
-    var sigCheck = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
-    console.log("signature: " + sigCheck.stdout);
-    if (sigCheck.stdout.indexOf(" G ") === -1) {
-      throw new Error("release: existing commit signature is not Good — amend with `git commit --amend --no-edit -S` after fixing the SSH-signing setup");
-    }
+    _verifyCommitSignature("existing");
     console.log("\nnext: node scripts/release.js push");
     return;
   }
@@ -320,11 +364,7 @@ function cmdCommit() {
   _run("git", ["commit", "-F", msgPath]);
   _ok("signed commit");
 
-  var sig = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
-  console.log("signature: " + sig.stdout);
-  if (sig.stdout.indexOf(" G ") === -1) {
-    throw new Error("release: commit signature is not Good — check SSH signing setup (CLAUDE.md)");
-  }
+  _verifyCommitSignature("new");
 
   console.log("\nnext: node scripts/release.js push");
 }
@@ -337,10 +377,19 @@ function cmdPush() {
   var next = _readPackageVersion();
 
   _section("gitleaks");
-  var here = ROOT;
-  // Docker mount path quirk — Git Bash on Windows needs the leading
-  // slash. POSIX hosts pass it through unchanged.
-  var mount = process.platform === "win32" ? "/" + here.replace(/\\/g, "/") : here;
+  // Docker bind-mount path: Windows host paths look like
+  // `C:\Users\Robert\Dropbox (Personal)\...`; Docker Desktop accepts
+  // them as `//c/Users/Robert/Dropbox (Personal)/...` (double leading
+  // slash + lowercased drive letter without colon — Git Bash's
+  // `$(pwd)` form). The colon in `C:` confuses Docker's `-v src:dst`
+  // splitter, so transform here.
+  var mount;
+  if (process.platform === "win32") {
+    var posixified = ROOT.replace(/\\/g, "/");
+    mount = "//" + posixified.charAt(0).toLowerCase() + posixified.slice(2);   // C:/x → //c/x
+  } else {
+    mount = ROOT;
+  }
   _run("docker", [
     "run", "--rm",
     "-v", mount + ":/repo",
@@ -555,6 +604,7 @@ function cmdHelp() {
   console.log("");
   console.log("Usage:");
   console.log("  node scripts/release.js prepare [--minor]   # bump + regen + static gates");
+  console.log("  node scripts/release.js regen               # re-regen artifacts after release-notes edits");
   console.log("  node scripts/release.js smoke               # framework + wiki e2e if needed");
   console.log("  node scripts/release.js commit              # release branch + signed commit");
   console.log("  node scripts/release.js push                # gitleaks + push + open PR");
@@ -578,6 +628,7 @@ var opts = {
 try {
   switch (sub) {
     case "prepare": cmdPrepare(opts); break;
+    case "regen":   cmdRegen();       break;
     case "smoke":   cmdSmoke();       break;
     case "commit":  cmdCommit();      break;
     case "push":    cmdPush();        break;

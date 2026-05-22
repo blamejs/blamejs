@@ -181,13 +181,35 @@ For `main`, require the CI workflow's lint-summary job to pass before merge. The
 
 ### Tag-driven releases
 
-The release-container workflow triggers on `push: tags: ["v*"]`. The standard release flow is:
+The release-container workflow triggers on `push: tags: ["v*"]`. The canonical release flow runs through `node scripts/release.js`, which orchestrates everything from version bump through publish:
 
-1. Bump `version` in `package.json` on `main`
-2. Commit + push `main`
-3. `git tag vX.Y.Z && git push origin vX.Y.Z` — this is what triggers the release pipeline
-4. Workflow runs all 5 jobs; on success, image is at `ghcr.io/<your-org>/blamejs-wiki:<tag>` (signed, scanned, smoke-tested)
-5. Pin the new tag in `docker-compose.prod.yml`'s `image:` line on the deploy host, then `docker compose pull && docker compose up -d`
+```bash
+# One-shot — patch bump, runs every gate in sequence, opens PR, watches CI, tags, watches publish
+node scripts/release.js all
+
+# Or individual phases:
+node scripts/release.js prepare    # bump + regen CHANGELOG + api-snapshot + static gates
+node scripts/release.js regen      # re-regen artifacts after release-notes edits (mid-flow)
+node scripts/release.js smoke      # SMOKE_PARALLEL=64 + (auto) wiki e2e if examples/wiki touched
+node scripts/release.js commit     # release/v<next> branch + signed commit (resumable)
+node scripts/release.js push       # gitleaks + push + open PR
+node scripts/release.js watch      # gh pr checks --watch + flag unresolved Codex threads
+node scripts/release.js merge      # squash-merge after re-checking threads
+node scripts/release.js tag        # signed annotated tag + push tag
+node scripts/release.js publish    # watch npm-publish + release-container workflows
+
+# Minor bump (rolls up prior minor's release-notes automatically):
+node scripts/release.js all --minor
+
+# Read-only state report:
+node scripts/release.js status
+```
+
+Pre-requisites the script enforces:
+- Operator wrote `release-notes/v<next>.json` (the only manual content step). The script refuses with a stub template if missing.
+- SSH signing config in place (the script refuses if `git log -1 --pretty='%G?'` doesn't report `G`).
+
+After the tag push, the release-container workflow runs all 5 jobs; on success, image is at `ghcr.io/<your-org>/blamejs-wiki:<tag>` (signed, scanned, smoke-tested). Operators pin the new tag in `docker-compose.prod.yml`'s `image:` line on the deploy host, then `docker compose pull && docker compose up -d`.
 
 Hot-fixes / dry-runs use the `workflow_dispatch` trigger with the `dry_run` input — run the build + scan path without pushing or signing, useful for verifying a Dockerfile change before tagging:
 
