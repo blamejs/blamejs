@@ -8909,6 +8909,51 @@ function testCalendarUtcRoundtrip() {
     bad);
 }
 
+// v0.11.43 drift cleanup — every `@nav` value in a lib/*.js @module
+// block MUST be one of the canonical category names below. The wiki
+// sidebar derives directly from `@nav`, so unreviewed drift surfaces
+// as a duplicate / typo'd category visible to operators. Adding a
+// new category is a deliberate site-information-architecture edit —
+// it lands in this allowlist + the operator-facing site.config pin
+// list (FIRST_GROUPS / LAST_GROUPS) at the same time.
+function testNavCategoryAllowlist() {
+  var NAV_ALLOWLIST = {
+    "AI": 1, "Agent": 1, "Async": 1, "Communication": 1, "Compliance": 1,
+    "Concepts": 1, "Crypto": 1, "DX": 1, "Data": 1, "Domain": 1,
+    "Filesystem": 1, "Guards": 1, "HTTP": 1, "Identity": 1, "MCP": 1,
+    "Mail": 1, "Network": 1, "Observability": 1, "Other": 1, "Parsers": 1,
+    "Primitives": 1, "Process": 1, "Production": 1, "Reference": 1,
+    "Security": 1, "Supply Chain": 1, "Tools": 1, "Validation": 1,
+    "Welcome": 1,
+  };
+  var bad = [];
+  var libFiles = fs.readdirSync("lib")
+    .filter(function (f) { return /\.js$/.test(f); })
+    .map(function (f) { return "lib/" + f; });
+  for (var nf = 0; nf < libFiles.length; nf += 1) {
+    var navPath = libFiles[nf];
+    var navContent;
+    try { navContent = fs.readFileSync(navPath, "utf8"); }
+    catch (_e) { continue; }
+    var navLines = navContent.split(/\r?\n/);
+    for (var nli = 0; nli < navLines.length; nli += 1) {
+      var nm = /^\s*\*\s*@nav\s+(.+?)\s*$/.exec(navLines[nli]);
+      if (!nm) continue;
+      var nav = nm[1];
+      if (!Object.prototype.hasOwnProperty.call(NAV_ALLOWLIST, nav)) {
+        bad.push({ file: navPath, line: nli + 1,
+          content: "@nav \"" + nav + "\" is not in the canonical category allowlist — " +
+                   "merge into an existing category (preferred) or add to NAV_ALLOWLIST + " +
+                   "FIRST_GROUPS / LAST_GROUPS in examples/wiki/site.config.js" });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "nav-category-allowlist-drift");
+  _report("lib/*.js @nav categories match the canonical wiki sidebar list " +
+          "(v0.11.43 — prevent re-emergence of Networking-vs-Network / Agent-vs-Agent-Protocols dups)",
+    bad);
+}
+
 // v0.11.42 Codex P1 — `typeof X !== "object"` accepts null (because
 // `typeof null === "object"`), so a structured-validation refusal can
 // be bypassed by passing null and crashing the next Object.keys / .X
@@ -9398,6 +9443,9 @@ async function run() {
   // v0.11.42 review-fix detector (Codex P1): typeof X !== "object"
   // checks must refuse null (since typeof null === "object").
   testCalendarTypeofObjectRefusesNull();
+  // v0.11.43 wiki nav drift detector: every @nav in lib/*.js must
+  // be a registered canonical category.
+  testNavCategoryAllowlist();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.
