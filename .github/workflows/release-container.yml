@@ -162,7 +162,7 @@ jobs:
       # Note: load: true forces single-arch (amd64). The multi-arch
       # build happens on the post-scan push step below.
       - name: Build (local-only, for Trivy)
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
         with:
           context: .
           file: examples/wiki/Dockerfile
@@ -210,7 +210,7 @@ jobs:
       - name: Push (multi-arch, after Trivy gate)
         id: push
         if: ${{ !inputs.dry_run && steps.tags.outputs.is_tag == 'true' }}
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
         with:
           context: .
           file: examples/wiki/Dockerfile
