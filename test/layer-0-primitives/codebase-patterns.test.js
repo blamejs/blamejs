@@ -2203,6 +2203,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/oid4vp.js:_validateDcql",
         "lib/auth/sd-jwt-vc-issuer.js:create",
         "lib/auth/step-up.js:parseAuthorizationDetails",
+        "lib/calendar.js:validate",
         "lib/fedcm.js:accountsResponse",
         "lib/fedcm.js:wellKnown",
         "lib/guard-saga-config.js:validate",
@@ -2213,7 +2214,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/dsr.js:create",
         "lib/middleware/assetlinks.js:create",
       ],
-      reason: "v0.10.16 — opts-object structural validation pattern: each primitive walks an operator-supplied opts/config object, asserts required-key presence with primitive-typed errors, and emits spec-named refusal codes. FedCM endpoints (W3C 2024), DCQL queries (OID4VP), AuthorizationDetails (RFC 9396), Assetlinks (Android), DualControl declarations, break-glass policy sets, DSR rights, sd-jwt-vc issuer — each enforces a distinct spec's required-field list. The repeating shingle is the boilerplate guard shape; consolidating couples unrelated spec namespaces.",
+      reason: "v0.10.16 — opts-object structural validation pattern: each primitive walks an operator-supplied opts/config object, asserts required-key presence with primitive-typed errors, and emits spec-named refusal codes. FedCM endpoints (W3C 2024), DCQL queries (OID4VP), AuthorizationDetails (RFC 9396), Assetlinks (Android), DualControl declarations, break-glass policy sets, DSR rights, sd-jwt-vc issuer, JSCalendar Event/Task/Note/Group (RFC 8984) — each enforces a distinct spec's required-field list. The repeating shingle is the boilerplate guard shape; consolidating couples unrelated spec namespaces.",
     },
     {
       mode:  "family-subset",
@@ -2284,9 +2285,10 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/a2a.js:_validateCardShape",
         "lib/calendar.js:validate",
+        "lib/fedcm.js:wellKnown",
         "lib/middleware/assetlinks.js:create",
       ],
-      reason: "v0.11.31 — opts-object shape validator pattern. Each primitive accepts a structured document (W3C A2A signed agent-card / JSCalendar Event-or-Task / Android Asset Links manifest), walks the per-spec required keys, and throws a domain-typed error. The shared shingle is the per-field `typeof !== \"string\" || length === 0 || ...test(...)` chain; the per-spec vocabulary diverges entirely.",
+      reason: "v0.11.31 — opts-object shape validator pattern. Each primitive accepts a structured document (W3C A2A signed agent-card / JSCalendar Event/Task/Note/Group / Android Asset Links manifest / FedCM well-known manifest), walks the per-spec required keys, and throws a domain-typed error. The shared shingle is the per-field `typeof !== \"string\" || length === 0 || ...test(...)` chain; the per-spec vocabulary diverges entirely.",
     },
     {
       mode:  "family-subset",
@@ -8907,6 +8909,54 @@ function testCalendarUtcRoundtrip() {
     bad);
 }
 
+// v0.11.42 Codex P1 — `typeof X !== "object"` accepts null (because
+// `typeof null === "object"`), so a structured-validation refusal can
+// be bypassed by passing null and crashing the next Object.keys / .X
+// access with a raw TypeError instead of the structured error
+// callers depend on. Detector flags any line in lib/calendar.js
+// containing `typeof <ident> !== "object"` paired with
+// `!Array.isArray(<ident>)` that does NOT also gate on `=== null`.
+function testCalendarTypeofObjectRefusesNull() {
+  var bad = [];
+  var path = "lib/calendar.js";
+  var content;
+  try { content = fs.readFileSync(path, "utf8"); }
+  catch (_e) { return; }
+  var lines = content.split(/\r?\n/);
+  for (var i = 0; i < lines.length; i += 1) {
+    var line = lines[i];
+    var m = /typeof\s+([a-zA-Z_$][\w.$\]["]*)\s*!==?\s*"object"/.exec(line);
+    if (!m) continue;
+    var ident = m[1];
+    // Look ahead 5 lines for a paired Array.isArray check; if absent
+    // this isn't a "is this a plain object" guard so skip.
+    var hasArrayCheck = false;
+    for (var j = 0; j < 5 && i + j < lines.length; j += 1) {
+      if (lines[i + j].indexOf("Array.isArray") !== -1) { hasArrayCheck = true; break; }
+    }
+    if (!hasArrayCheck) continue;
+    // Look both backward (this line + 1 prior, for `if (x === null ||`
+    // shape) and inside the same line + the next 2 lines for an
+    // explicit null refusal of the same identifier. Full regex-meta
+    // escape so any character in `ident` is treated literally —
+    // CodeQL flags partial escapes (js/incomplete-sanitization) when
+    // backslash isn't covered.
+    var identEscaped = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var nullGuardRe = new RegExp(identEscaped +
+      "\\s*===\\s*null|!\\s*" + identEscaped + "\\b");
+    var hasNullGuard = nullGuardRe.test(line) ||
+      (i > 0 && nullGuardRe.test(lines[i - 1])) ||
+      (i + 1 < lines.length && nullGuardRe.test(lines[i + 1]));
+    if (!hasNullGuard) {
+      bad.push({ file: path, line: i + 1, content: line.trim() });
+    }
+  }
+  bad = _filterMarkers(bad, "calendar-typeof-object-accepts-null");
+  _report("b.calendar validator's `typeof X !== \"object\"` checks must explicitly refuse null " +
+          "(v0.11.42 Codex P1 — structured-error stability)",
+    bad);
+}
+
 // v0.11.41 Codex P1 — BYSETPOS path enumerates candidates starting at
 // the period boundary (month/year/week start), so without a startMs
 // gate it can emit recurrence instances BEFORE the rule's DTSTART —
@@ -9345,6 +9395,9 @@ async function run() {
   // v0.11.41 review-fix detector (Codex P1): BYSETPOS expand path
   // refuses pre-DTSTART instances per RFC 5545 §3.8.5.3.
   testCalendarBysetposStartGate();
+  // v0.11.42 review-fix detector (Codex P1): typeof X !== "object"
+  // checks must refuse null (since typeof null === "object").
+  testCalendarTypeofObjectRefusesNull();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.

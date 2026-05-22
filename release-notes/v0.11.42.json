@@ -1,0 +1,34 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.11.42",
+  "date": "2026-05-22",
+  "headline": "`b.calendar` JSCalendar Group objects (RFC 8984 §1.4.4)",
+  "summary": "Closes the v0.11.31 deferral on JSCalendar Group. `b.calendar.validate` now recognises `@type: \"Group\"` as a container envelope for multiple Event / Task / Note entries that share a logical name + categories. `b.calendar.toIcal` emits a single VCALENDAR wrap containing every entry's component in declared order (VEVENT for Event, VTODO for Task, VJOURNAL for Note). Group is JSCalendar-only — iCalendar has no envelope-level metadata for Group.name / Group.categories, so a Group's metadata is dropped on the iCal-side of a round-trip; operators preserving Group state across systems use the JSON-native surface.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`@type: \"Group\"` envelope (RFC 8984 §1.4.4)",
+          "body": "A Group carries `uid`, `updated`, `entries` (required non-empty array), and optional `name`, `description`, `categories` (String-keyed Boolean set), and `source` (URI string). Entries are validated recursively — each entry must be a valid Event / Task / Note per its own type rules. Groups nesting Groups is refused (RFC 8984 does not define a nesting semantic)."
+        },
+        {
+          "title": "`b.calendar.toIcal` emits single VCALENDAR for Group",
+          "body": "When `@type === \"Group\"`, toIcal emits one BEGIN:VCALENDAR / END:VCALENDAR envelope containing every entry's component in declared order. The Group's own uid / updated / name / description / categories are NOT round-tripped to iCalendar (RFC 5545 has no envelope-level metadata for these); operators preserving Group state across a round-trip use the JSON-native JSCalendar surface."
+        },
+        {
+          "title": "Refusal vocabulary",
+          "body": "New structured `CalendarError` codes: `calendar/bad-entries` (entries missing, empty, non-array, or any entry malformed / Group-typed), `calendar/bad-group` (entry-specific field like start / duration / due / progress / recurrenceRules set on the Group envelope), `calendar/bad-categories` (non-object categories or non-`true` value), `calendar/bad-source` (non-string source)."
+        },
+        {
+          "title": "`JSCAL_TYPES.Group` export",
+          "body": "`b.calendar.JSCAL_TYPES.Group === \"Group\"` exposes the discriminator string for operator-side type-dispatch."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "RFC 8984 §1.4.4 (JSCalendar Group)", "url": "https://www.rfc-editor.org/rfc/rfc8984.html#section-1.4.4" },
+    { "label": "RFC 5545 §3.4 (VCALENDAR envelope)", "url": "https://www.rfc-editor.org/rfc/rfc5545.html#section-3.4" }
+  ]
+}

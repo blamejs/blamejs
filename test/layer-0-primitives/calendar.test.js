@@ -627,6 +627,88 @@ function testMultipleRecurrenceRulesBoundedByMax() {
   check("global maxCount applies to unioned set", insts.length === 5);
 }
 
+function testGroupValidateHappyPath() {
+  var group = {
+    "@type": "Group",
+    uid:     "g1",
+    updated: "2026-05-21T10:00:00Z",
+    name:    "Sprint cadence",
+    description: "Recurring rituals for the team",
+    categories: { sprint: true, ops: true },
+    entries: [
+      { "@type": "Event", uid: "e1", updated: "2026-05-21T10:00:00Z",
+        start: "2026-05-22T09:00:00", timeZone: "Etc/UTC", duration: "PT1H", title: "Standup" },
+      { "@type": "Task",  uid: "t1", updated: "2026-05-21T10:00:00Z",
+        title: "Retro prep", progress: "needs-action" },
+      { "@type": "Note",  uid: "n1", updated: "2026-05-21T10:00:00Z",
+        title: "Postmortem outline", status: "draft" },
+    ],
+  };
+  check("Group validate returns input on success", b.calendar.validate(group) === group);
+}
+
+function testGroupRefusalCases() {
+  function expectCode(label, obj, codeFrag) {
+    var threw = null;
+    try { b.calendar.validate(obj); } catch (e) { threw = e; }
+    check(label, threw && (threw.code || "").indexOf(codeFrag) !== -1);
+  }
+  expectCode("empty entries refused",
+    { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z", entries: [] },
+    "calendar/bad-entries");
+  expectCode("Group with entry-specific field refused",
+    { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z",
+      entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }],
+      start: "2026-05-22T09:00:00" },
+    "calendar/bad-group");
+  expectCode("Group nesting refused",
+    { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z",
+      entries: [{ "@type": "Group", uid: "nested", updated: "2026-05-21T10:00:00Z",
+                  entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }] }] },
+    "calendar/bad-entries");
+  expectCode("non-true category value refused",
+    { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z",
+      entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }],
+      categories: { sprint: "yes" } },
+    "calendar/bad-categories");
+  // Codex P1 — `typeof null === "object"` would let `categories: null`
+  // skip the type check + cause Object.keys(null) to throw a raw
+  // TypeError instead of a structured `calendar/bad-categories`.
+  expectCode("null categories refused with structured error",
+    { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z",
+      entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }],
+      categories: null },
+    "calendar/bad-categories");
+  expectCode("non-string source refused",
+    { "@type": "Group", uid: "x", updated: "2026-05-21T10:00:00Z",
+      entries: [{ "@type": "Event", uid: "a", updated: "2026-05-21T10:00:00Z" }],
+      source: 42 },
+    "calendar/bad-source");
+}
+
+function testGroupToIcalSingleEnvelope() {
+  var group = {
+    "@type": "Group",
+    uid:     "g2",
+    updated: "2026-05-21T10:00:00Z",
+    name:    "Multi",
+    entries: [
+      { "@type": "Event", uid: "e1", updated: "2026-05-21T10:00:00Z",
+        start: "2026-05-22T09:00:00", timeZone: "Etc/UTC", title: "Standup" },
+      { "@type": "Task",  uid: "t1", updated: "2026-05-21T10:00:00Z",
+        title: "Retro prep" },
+      { "@type": "Note",  uid: "n1", updated: "2026-05-21T10:00:00Z",
+        title: "Notes" },
+    ],
+  };
+  var ical = b.calendar.toIcal(group);
+  check("Group emits single VCALENDAR wrap",     (ical.match(/BEGIN:VCALENDAR/g) || []).length === 1);
+  check("Group emits VEVENT for Event entry",    ical.indexOf("BEGIN:VEVENT") !== -1);
+  check("Group emits VTODO for Task entry",      ical.indexOf("BEGIN:VTODO") !== -1);
+  check("Group emits VJOURNAL for Note entry",   ical.indexOf("BEGIN:VJOURNAL") !== -1);
+  check("Group emits only one PRODID",           (ical.match(/PRODID:/g) || []).length === 1);
+}
+
 function testBysetposLastFridayOfMonth() {
   var ev = {
     "@type":  "Event",
@@ -788,6 +870,9 @@ function run() {
   testMultipleRecurrenceRulesUnion();
   testRecurrenceRulesDedupSameRule();
   testMultipleRecurrenceRulesBoundedByMax();
+  testGroupValidateHappyPath();
+  testGroupRefusalCases();
+  testGroupToIcalSingleEnvelope();
   testBysetposLastFridayOfMonth();
   testBysetposSecondTuesdayOfMonth();
   testBysetposYearlyFirstSundayOfOctober();
