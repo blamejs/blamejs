@@ -14,7 +14,20 @@
         },
         {
           "title": "Auto-attached trace exemplars on request-duration histograms",
-          "body": "When `b.middleware.tracePropagate` populates `req.trace.{traceId, parentId, sampled}` on the inbound request and the trace is sampled, the framework's built-in `requestDuration` histogram middleware attaches `{ labels: { trace_id, span_id }, value: <duration>, timestamp: <unix-sec> }` as the OpenMetrics §6.2 exemplar on the corresponding bucket. Downstream Grafana / Tempo / Jaeger UIs render the exemplar dot on each bucket — operator clicks the dot to pivot from `slow request, 99th percentile` to the trace that produced it."
+          "body": "When `b.middleware.spanHttpServer` populates `req.span.{traceId, spanId, sampled}` on the inbound request and the span is sampled, the framework's built-in `requestDuration` histogram middleware attaches `{ labels: { trace_id, span_id }, value: <duration>, timestamp: <unix-sec> }` as the OpenMetrics §6.2 exemplar on the corresponding bucket. The exemplar's `span_id` is the server-handling span, not the upstream `traceparent`'s parent-id, so the metric-to-trace pivot in Grafana / Tempo / Jaeger lands on the work the metric measured. Operators wiring `tracePropagate` without `spanHttpServer` fall back to `req.trace.spanId` when populated; the framework never invents a span_id from the upstream parent."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Accept-header weighted negotiation (Codex P1)",
+          "body": "The first pass treated any `Accept` header containing `application/openmetrics-text` as an unconditional OpenMetrics request — clients sending `Accept: text/plain;q=1.0, application/openmetrics-text;q=0.5` got OpenMetrics back instead of their preferred Prometheus 0.0.4. Fix: parse Accept via `b.requestHelpers.parseQualityList` and compare q-values for `application/openmetrics-text` vs `text/plain` (wildcards `*/*`, `application/*`, `text/*` honored). Defaults to Prometheus when both q-values are equal or zero (backward compatibility with the legacy default content-type)."
+        },
+        {
+          "title": "Exemplar span_id sources the active server span, not the upstream parent (Codex P2)",
+          "body": "The first pass used `req.trace.parentId` for the exemplar's `span_id` label — but `parentId` is the upstream caller's span (or empty for root requests), not the server-handling span. Fix: prefer `req.span.spanId` (set by `b.middleware.spanHttpServer`), falling back to `req.trace.spanId` for operators wiring `tracePropagate` without `spanHttpServer`. Never synthesises a span_id from `parentId`."
         }
       ]
     }
