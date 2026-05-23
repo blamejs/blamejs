@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.11",
-  "createdAt": "2026-05-23T19:12:47.343Z",
+  "frameworkVersion": "0.12.12",
+  "createdAt": "2026-05-23T21:15:03.328Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1493,6 +1493,35 @@
               "arity": 1
             },
             "report": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "disclosure": {
+          "type": "object",
+          "members": {
+            "AiDisclosureError": {
+              "type": "function",
+              "arity": 4
+            },
+            "DEEPFAKE_CONTENT_TYPES": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "SUPPORTED_JURISDICTIONS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "chatbot": {
+              "type": "function",
+              "arity": 2
+            },
+            "deepfake": {
+              "type": "function",
+              "arity": 2
+            },
+            "emotion": {
               "type": "function",
               "arity": 1
             }

@@ -442,6 +442,7 @@ module.exports = {
     input:           aiInput,
     aiContentDetect: require("./lib/ai-content-detect"),
     modelManifest:   require("./lib/ai-model-manifest"),
+    disclosure:      require("./lib/ai-disclosure"),
   },
   promisePool:      require("./lib/promise-pool"),
   sdNotify:         require("./lib/sd-notify"),

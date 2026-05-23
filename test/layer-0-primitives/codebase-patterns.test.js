@@ -2242,11 +2242,33 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/ai-disclosure.js:chatbot",
         "lib/backup/index.js:bundleAdapterStorage",
         "lib/importmap-integrity.js:build",
         "lib/metrics.js:shadowRegistry",
       ],
-      reason: "v0.12.11 — bundleAdapterStorage's opts-validation cascade (cryptoStrategy / recipient / passphrase / posture branches each with their own throw-on-bad-shape gates) reaches 50-token duplication with importmap-integrity.build's manifest-shape cascade + metrics.shadowRegistry's registry-config cascade by coincidence of the chained-if-throw-Error pattern. Each cascade carries primitive-specific semantics (crypto strategy vs SRI hash list vs shadow-collector config); extracting would require a generic options-cascade helper that loses the per-primitive error codes operators grep for in audit logs.",
+      reason: "v0.12.11/v0.12.12 — opts-validation cascade shape (chained `if (typeof opts.X !== \"...\") throw ...`) reaches 50-token duplication across primitives that each carry distinct semantic vocabulary. bundleAdapterStorage validates cryptoStrategy / recipient / passphrase / posture; importmap-integrity.build validates SRI hash list / nonce policy; metrics.shadowRegistry validates collector config; ai-disclosure.chatbot validates session / placement / jurisdiction per EU AI Act Art. 50(1). Extracting would require a generic options-cascade helper that loses per-primitive error codes operators grep for in audit logs.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/ai-disclosure.js:chatbot",
+        "lib/auth/dpop.js:_canonicalJwk",
+        "lib/auth/sd-jwt-vc-holder.js:store",
+        "lib/compliance-sanctions.js:screen",
+        "lib/dora.js:_validateReportInput",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
+        "lib/guard-envelope.js:check",
+        "lib/guard-list-unsubscribe.js:validate",
+        "lib/guard-mail-query.js:validateActor",
+        "lib/guard-mail-reply.js:validate",
+        "lib/guard-saga-config.js:validate",
+        "lib/guard-trace-context.js:validate",
+        "lib/incident-report.js:open",
+        "lib/mail-greylist.js:check",
+        "lib/mail-helo.js:evaluate",
+      ],
+      reason: "v0.12.12 — `if (!opts || typeof opts !== \"object\") throw Error(...) ; if (typeof opts.X !== \"string\") throw Error(...)` argument-shape preamble is the framework's standard primitive boundary check. Every guard family member + every compliance / mail / auth primitive that takes an opts object shares this shingle. Extracting would require a generic argShape helper, but the throw-on-bad-shape carries primitive-specific Error subclasses (AiDisclosureError, GuardEnvelopeError, etc.) that operators grep for. Family is wide and stays inline by design.",
     },
     {
       mode:  "family-subset",
@@ -5622,6 +5644,25 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "Codex P1 on v0.12.7 PR #158 — archive-read.extract used renameSync to atomically place each decompressed entry at its canonical destination + tracked written[].path for catch-block cleanup. When the destination directory was non-empty, the rename silently overwrote operator files; on extract abort, the cleanup deleted them. Fix: refuse upfront if destination path exists, force operators to use a fresh / empty subtree. Detector locks the shape: any extract code that tracks resolvedPath for catch-block cleanup MUST carry a `destination-exists` refusal in the same file.",
+  },
+
+  {
+    // Codex P1A on v0.12.12 PR #163 — "on-request" placement
+    // semantics collapsed into "always" when shouldEmit didn't
+    // gate on an explicit `opts.requested` signal. Detector locks
+    // the contract: any compliance-disclosure primitive in
+    // lib/ai-disclosure.js with a placement-mode dispatch MUST
+    // gate the "on-request" branch on an explicit opt rather than
+    // unconditionally returning true. The pattern is narrow
+    // (file-scoped to ai-disclosure.js) because the bug shape was
+    // specific to the Art. 50 placement enum.
+    id: "ai-disclosure-on-request-without-requested-gate",
+    primitive: "in lib/ai-disclosure.js, placement === \"on-request\" branches must gate on an explicit opt (e.g. opts.requested === true) so the disclosure doesn't fire on every call. Without the gate, on-request collapses into always-on semantics and the operator's three placement modes become two.",
+    regex: /placement\s*===\s*["']on-request["']/,
+    requires: /requested|allow:ai-disclosure-on-request-without-requested-gate/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1A on v0.12.12 PR #163 — ai-disclosure.chatbot's on-request placement returned shouldEmit=true unconditionally, breaking the three-mode placement contract. Detector locks the static shape so a future placement primitive in ai-disclosure.js can't regress.",
   },
 
   // Codex P1 on v0.12.11 PR #162 — surfaced the NaN/Infinity bypass
