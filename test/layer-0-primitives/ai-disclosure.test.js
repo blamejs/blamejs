@@ -37,6 +37,31 @@ async function testChatbotPostFirstContact() {
   check("chatbot: shouldEmit false after first-message already emitted", !d.shouldEmit);
 }
 
+async function testChatbotFirstMessageMutatesSession() {
+  // Codex P1B on v0.12.12 PR #163 — first-message must mutate
+  // session.aiDisclosureEmitted so the next call sees it.
+  var session = { id: "s-codex-b" };
+  var d1 = b.ai.disclosure.chatbot(session, { placement: "first-message" });
+  check("chatbot: first call emits", d1.shouldEmit === true);
+  check("chatbot: session.aiDisclosureEmitted mutated after first emit",
+    session.aiDisclosureEmitted === true);
+  var d2 = b.ai.disclosure.chatbot(session, { placement: "first-message" });
+  check("chatbot: second call on same session no longer emits", d2.shouldEmit === false);
+}
+
+async function testChatbotOnRequestGatesOnRequested() {
+  // Codex P1A on v0.12.12 PR #163 — "on-request" without
+  // opts.requested must NOT emit (otherwise on-request collapses
+  // to always-on).
+  var d1 = b.ai.disclosure.chatbot({ id: "s-or-1" }, { placement: "on-request" });
+  check("chatbot: on-request without opts.requested does not emit", d1.shouldEmit === false);
+  var d2 = b.ai.disclosure.chatbot({ id: "s-or-2" }, {
+    placement: "on-request",
+    requested: true,
+  });
+  check("chatbot: on-request with opts.requested:true emits", d2.shouldEmit === true);
+}
+
 async function testChatbotAlwaysPlacement() {
   var d = b.ai.disclosure.chatbot({ id: "s3", aiDisclosureEmitted: true }, {
     placement: "always",
@@ -141,6 +166,8 @@ async function testAuditDropSilent() {
 
 async function run() {
   await testChatbotFirstContact();
+  await testChatbotFirstMessageMutatesSession();
+  await testChatbotOnRequestGatesOnRequested();
   await testChatbotPostFirstContact();
   await testChatbotAlwaysPlacement();
   await testChatbotRefusesBadJurisdiction();

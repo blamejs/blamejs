@@ -5646,6 +5646,25 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Codex P1 on v0.12.7 PR #158 — archive-read.extract used renameSync to atomically place each decompressed entry at its canonical destination + tracked written[].path for catch-block cleanup. When the destination directory was non-empty, the rename silently overwrote operator files; on extract abort, the cleanup deleted them. Fix: refuse upfront if destination path exists, force operators to use a fresh / empty subtree. Detector locks the shape: any extract code that tracks resolvedPath for catch-block cleanup MUST carry a `destination-exists` refusal in the same file.",
   },
 
+  {
+    // Codex P1A on v0.12.12 PR #163 — "on-request" placement
+    // semantics collapsed into "always" when shouldEmit didn't
+    // gate on an explicit `opts.requested` signal. Detector locks
+    // the contract: any compliance-disclosure primitive in
+    // lib/ai-disclosure.js with a placement-mode dispatch MUST
+    // gate the "on-request" branch on an explicit opt rather than
+    // unconditionally returning true. The pattern is narrow
+    // (file-scoped to ai-disclosure.js) because the bug shape was
+    // specific to the Art. 50 placement enum.
+    id: "ai-disclosure-on-request-without-requested-gate",
+    primitive: "in lib/ai-disclosure.js, placement === \"on-request\" branches must gate on an explicit opt (e.g. opts.requested === true) so the disclosure doesn't fire on every call. Without the gate, on-request collapses into always-on semantics and the operator's three placement modes become two.",
+    regex: /placement\s*===\s*["']on-request["']/,
+    requires: /requested|allow:ai-disclosure-on-request-without-requested-gate/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1A on v0.12.12 PR #163 — ai-disclosure.chatbot's on-request placement returned shouldEmit=true unconditionally, breaking the three-mode placement contract. Detector locks the static shape so a future placement primitive in ai-disclosure.js can't regress.",
+  },
+
   // Codex P1 on v0.12.11 PR #162 — surfaced the NaN/Infinity bypass
   // through `typeof X === "number" ? X : default` gating. The
   // pattern exists widely in the codebase (~29 call sites at the
