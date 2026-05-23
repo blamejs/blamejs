@@ -125,6 +125,60 @@ function testVerifyExtractionPathRefusals() {
   check("verifyExtractionPath: 4 refusals", refusals === 4);
 }
 
+async function testExtractRefusesOverwrite() {
+  // Codex P1 on v0.12.7 PR #158 — the catch-block cleanup deleted
+  // PRE-EXISTING destination files on abort because the rename-onto-
+  // canonical-path path overwrote them first, then `written[].path`
+  // got rm'd. Fix is to refuse overwrite up front; this regression
+  // test verifies the new refusal fires + that the pre-existing file
+  // is left untouched.
+  var z = b.archive.zip();
+  z.addFile("readme.txt", "from-archive\n");
+  var bytes = z.toBuffer();
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-overwrite-test-"));
+  try {
+    var collidePath = path.join(dest, "readme.txt");
+    fs.writeFileSync(collidePath, "operator's pre-existing file\n");
+    var refused = null;
+    try {
+      await b.safeArchive.extract({ source: bytes, destination: dest });
+    } catch (e) { refused = e; }
+    check("extract: refuses pre-existing destination file",
+      refused && /destination-exists/.test(refused.code || refused.message));
+    var stillThere = fs.readFileSync(collidePath, "utf8");
+    check("extract: pre-existing file untouched on refusal",
+      stillThere === "operator's pre-existing file\n");
+  } finally {
+    fs.rmSync(dest, { recursive: true, force: true });
+  }
+}
+
+async function testSafeArchiveRefusesTrustedStreamSource() {
+  // Codex P2 on v0.12.7 PR #158 — safeArchive.extract accepted
+  // trusted-stream adapters via the input-shape validator but the
+  // implementation called the random-access reader, which threw the
+  // wrong-entry-point error. Fix is to refuse trusted-stream sources
+  // upfront with a typed safe-archive code.
+  var nodeStream = require("node:stream");
+  var fakeReadable = new nodeStream.Readable({ read: function () {} });
+  var adapter = b.archive.adapters.trustedStream(fakeReadable);
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-trusted-refusal-"));
+  try {
+    var refused = null;
+    try {
+      await b.safeArchive.extract({
+        source:      adapter,
+        destination: dest,
+      });
+    } catch (e) { refused = e; }
+    check("safeArchive.extract: trusted-stream upfront refused",
+      refused && /trusted-stream-unsupported/.test(refused.code || refused.message));
+  } finally {
+    fakeReadable.destroy();
+    fs.rmSync(dest, { recursive: true, force: true });
+  }
+}
+
 async function testGuardArchiveInspect() {
   var z = b.archive.zip();
   z.addFile("safe.txt", "safe");
@@ -177,6 +231,8 @@ async function run() {
   testEntryTypePolicy();
   testVerifyExtractionPathHappy();
   testVerifyExtractionPathRefusals();
+  await testExtractRefusesOverwrite();
+  await testSafeArchiveRefusesTrustedStreamSource();
   await testGuardArchiveInspect();
   await testBundleAdapterStorageRoundTrip();
 }

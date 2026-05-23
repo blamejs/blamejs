@@ -5561,6 +5561,36 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P1 on v0.12.7 PR #158 — archive-read.extract's rollback
+    // cleanup deleted PRE-EXISTING destination files when a later
+    // entry failed. The renameSync(tmpPath, resolvedPath) silently
+    // overwrote operator files at the destination, then on abort the
+    // catch-block rmSync wiped them out — permanent data loss
+    // disguised as atomic rollback. Fix: refuse to write when the
+    // destination path already exists; force operators to extract
+    // into a fresh / empty subtree.
+    //
+    // Detector scope: any lib/archive*.js or lib/safe-archive.js file
+    // that calls renameSync into a path it ALSO tracks for cleanup
+    // MUST refuse overwrite up-front. Codify as a file-scoped invariant:
+    // archive-read.js must contain "destination-exists" refusal code.
+    id: "archive-extract-overwrite-without-refusal",
+    primitive: "extract loops in lib/archive-read.js MUST refuse to write to a destination path that already exists — atomic rollback via tmp-rename + tracked-path cleanup is only safe when every tracked path was newly created. Pre-existing files at the destination + catch-block rmSync = data loss.",
+    // File-scoped: only fires on archive-read.js / safe-archive.js
+    // shape. The pattern is renameSync of a tmpPath onto resolvedPath
+    // (the canonical destination variable) — atomic-file.js's
+    // operator-file rename is a different shape (operator already
+    // owns the destination context); http-client.js's atomic-tmp
+    // rename writes operator-supplied paths under operator-supplied
+    // tmp dirs, also a different concern.
+    regex: /written\.push\s*\(\s*\{[^}]*path:\s*resolvedPath/,
+    requires: /destination-exists/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.12.7 PR #158 — archive-read.extract used renameSync to atomically place each decompressed entry at its canonical destination + tracked written[].path for catch-block cleanup. When the destination directory was non-empty, the rename silently overwrote operator files; on extract abort, the cleanup deleted them. Fix: refuse upfront if destination path exists, force operators to use a fresh / empty subtree. Detector locks the shape: any extract code that tracks resolvedPath for catch-block cleanup MUST carry a `destination-exists` refusal in the same file.",
+  },
+
+  {
     // Codex P2 on v0.11.22 PR #126 — `b.cert.create`'s SNI dispatch
     // wildcard-matched `*.example.com` against `foo.bar.example.com`
     // (multi-label) because the suffix check was `endsWith(pattern.
