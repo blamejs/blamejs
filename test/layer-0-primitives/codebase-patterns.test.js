@@ -4894,6 +4894,21 @@ async function testNoDuplicateCodeBlocks() {
       reason: "self-update.poll-opts extension of the four-way factory-prelude cluster (sanctions-fetcher / DSR / outbox / self-update) that shares applyDefaults + validateOpts cascade. Four different domains, four different error classes (ComplianceSanctionsFetcherError / DsrError / OutboxError / SelfUpdateError).",
     },
     {
+      // [fp:09ad583326fb] v0.12.6 — OTLP protobuf encoder addition extended
+      // the otlp-exporter.js create() prelude into the same factory-prelude
+      // cluster dsr + span-http-server already shared. Three different
+      // domains (GDPR Art. 17 data-subject request, HTTP server-span auto-
+      // wiring, OTLP trace exporter) with three distinct error classes
+      // (DsrError / SpanHttpError / OtlpExporterError); the shingle is the
+      // validateOpts(opts, [...key-list...], "<primitive>.create") boilerplate.
+      files: [
+        "lib/dsr.js:create",
+        "lib/middleware/span-http-server.js:create",
+        "lib/observability-otlp-exporter.js:create",
+      ],
+      reason: "v0.12.6 — OTLP protobuf encoder addition pulled observability-otlp-exporter.js:create into the same validateOpts + applyDefaults prelude cluster dsr + span-http-server already shared. Three different domains (GDPR Art. 17 data-subject request workflow / HTTP server-span auto-wiring / OTLP trace exporter) with three distinct error classes (DsrError / SpanHttpError / OtlpExporterError); the shingle is the per-primitive validateOpts(opts, [...key-list...], '<primitive>.create') call.",
+    },
+    {
       // [fp:b73d9d193b7b]
       files: [
         "lib/audit-daily-review.js:create",
