@@ -198,7 +198,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **i18n** — CLDR plural rules, Accept-Language negotiation, Intl formatters, RTL (`b.i18n`)
 - **CSV** — RFC 4180 with Excel formula-injection prevention (`b.csv`)
 - **IDs + slugs** — RFC 9562 UUID v4 + v7 (`b.uuid`); URL-safe slugs (`b.slug`)
-- **Time + archive** — TZ-aware datetime (`b.time`); ZIP creation (`b.archive`)
+- **Time + archive** — TZ-aware datetime (`b.time`); ZIP creation + adversarial-safe read with bomb caps + path-traversal + LFH/CD-skew defense (`b.archive` + `b.archive.read.zip`); one-liner quarantine extraction (`b.safeArchive.extract`); fs / objectStore / http / buffer / trusted-stream adapter contract (`b.archive.adapters`)
 - **Pagination + forms** — HMAC-signed cursor pagination (`b.pagination`); HTML form rendering + validation + CSRF (`b.forms`)
 
 ### Production
