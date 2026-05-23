@@ -2188,6 +2188,51 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/archive-read.js:_emitAudit",
+        "lib/archive.js:_emitAudit",
+        "lib/http-client.js:_emitAudit",
+      ],
+      reason: "v0.12.7 — Per-module `_emitAudit(opts, action, outcome, metadata)` shape repeats across primitives that drop-silently emit to opts.audit.safeEmit if present. Each module's audit events carry a primitive-specific `action:` namespace (archive.read.*, archive.zip.*, http-client.*) + per-primitive metadata fields; consolidating would lose the namespace + force every consumer to import the same audit helper. Three-file repetition is the expected shape per `feedback_audit_safeEmit_per_module_emitAudit_shape`.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/archive-adapters.js:fs",
+        "lib/archive-adapters.js:http",
+        "lib/network-smtp-policy.js:mtaStsFetch",
+        "lib/parsers/safe-env.js:readVar",
+      ],
+      reason: "v0.12.7 — `if (typeof <opt> !== \"string\" || <opt>.length === 0) throw new <Error>(...)` shape repeats across primitives validating REQUIRED string opts. validateOpts.requireNonEmptyString covers most call sites; the four flagged here are inline because they each carry a primitive-specific error CODE (adapter/bad-arg, smtp-policy/bad-arg, safe-env/bad-arg) that the helper's caller-error-class shape doesn't compose cleanly across — each primitive's typed-error class is module-local + the message string names the local opt. The duplicated shape is the symptom, not the cause; the cause is that JS doesn't have a way to throw an instance of caller-namespaced ErrorClass without the local closure.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/archive-read.js:extract",
+        "lib/auth/ciba.js:pollToken",
+        "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
+        "lib/auth/oid4vci.js:issueCredential",
+      ],
+      reason: "v0.12.7 — `try { ... await ... } catch (e) { /* per-step cleanup */ throw e; }` shape repeats across primitives doing multi-step async work with per-step rollback. archive-read.extract cleans up partial-extract files; ciba.pollToken cleans up rate-limit + retry state; oid4vci.exchange/issueCredential clean up partial credential-state. Each catch body is primitive-specific (the cleanup it does is the primitive's responsibility) — extraction would require a generic transaction-style helper which is itself a v1.0+ surface decision. Three-file repetition with primitive-specific cleanup bodies stays as the documented exception.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/agent-idempotency.js:_checkArgs",
+        "lib/agent-tenant.js:_sealField",
+        "lib/atomic-file.js:copyDirRecursive",
+        "lib/ddl-change-control.js:approve",
+        "lib/ddl-change-control.js:reject",
+        "lib/deprecate.js:alias",
+        "lib/guard-filename.js:verifyExtractionPath",
+        "lib/jose-jwe-experimental.js:decrypt",
+        "lib/mail-deploy.js:_validateTlsRptReport",
+        "lib/totp.js:uri",
+      ],
+      reason: "v0.12.7 — Generic string-argument validation shape: `if (typeof X !== \"string\" || X.length === 0) throw new <ErrorClass>(<code>, ...)` repeats across primitives validating REQUIRED non-empty string opts. Each call site emits a primitive-specific typed error class (BackupError, GuardFilenameError, IdempotencyError, AgentTenantError, AtomicFileError, DdlError, DeprecateError, JoseError, MailDeployError, TotpError) so extracting to a shared helper would lose the per-primitive error namespace. validateOpts.requireNonEmptyString covers most call sites where the caller's typed-error class composes with the helper's caller-error-class shape; the 9 file paths here are inline because each one's typed error has a primitive-local code namespace + message string the helper can't compose cleanly. Same shape as the v0.10.16 client-hints/csp/sandbox family-subset reason (inline for per-primitive typed errors). 5/9/3-file subsets at smaller token windows are the same family — one entry covers all of them.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/client-hints.js:acceptList",
         "lib/csp.js:build",
         "lib/mail-spam-score.js:_sanitizeReasons",
@@ -5391,7 +5436,10 @@ var KNOWN_ANTIPATTERNS = [
       "lib/observability-otlp-exporter.js",    // byResource grouping (Map<resKey, bucket>) — object-literal factory
       "lib/otel-export.js",                    // counters / observations (2 sites) — object-literal factory
       "lib/pubsub.js",                         // exactSubs (Map<channel, Set<sub>>) — Set factory
+      "lib/backup/index.js",                   // bundleAdapterStorage.listBundles: byBundle (Map<bundleId, stats>) — object-literal factory
     ],
+    // Strong-dup allowlists added with v0.12.7 archive substrate
+    // — see KNOWN_CLUSTERS additions below for structural reasons.
     reason: "Node 26 ships Map.prototype.getOrInsertComputed(key, factory) — a single-lookup get-or-insert that replaces the two-step `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` pattern. The sweep is deferred to the Node 26 floor-bump (eligible Oct 2026); engines.node is `>=24` today. Allowlist above is the survey ground truth from memory/specs/node-26-map-getorinsert-migration.md. New code post-this-patch trips the detector — either wait for the floor bump, or add the call site to BOTH the allowlist AND the migration spec in the same patch. When the floor moves, the bump commit walks the allowlist, rewrites each call site, drops the allowlist + flips the detector to enforce.",
   },
   {
