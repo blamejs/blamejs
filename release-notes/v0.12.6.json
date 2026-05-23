@@ -15,6 +15,14 @@
         {
           "title": "Full OTLP trace schema encoded via `lib/protobuf-encoder.js`",
           "body": "ResourceSpans / ScopeSpans / Span / Event / Status / KeyValue / AnyValue / ArrayValue are emitted per the opentelemetry-proto repo's field numbers + wire types. `trace_id` and `span_id` round-trip as fixed-length bytes (16 + 8 octets respectively). `start_time_unix_nano` / `end_time_unix_nano` use `fixed64` for the nanosecond precision the JSON path's number type lossily encoded. SpanKind enum mapping covers unspecified / internal / server / client / producer / consumer."
+        },
+        {
+          "title": "`pb.int64` / `pb.sint64` — signed-integer varint shapes on `lib/protobuf-encoder.js`",
+          "body": "Negative integer attribute values in OTLP `AnyValue` (e.g. retry-after offsets, signed metric deltas) emit as proto3 `int64` — wire-type 0 varint, 10-byte two's-complement reinterpret per the spec. `pb.sint64` adds ZigZag-encoded varint for cases where small negatives dominate. Both accept Number / BigInt / digit-string inputs with explicit `[-2^63, 2^63 - 1]` range validation."
+        },
+        {
+          "title": "`pb.fixed64` accepts string-form uint64 values",
+          "body": "OTLP/JSON encodes uint64 as a JSON string (per the proto3 JSON mapping) — the framework's tracer emits `start_time_unix_nano` / `end_time_unix_nano` as digit-string BigInt-to-string conversions so the JSON path stays lossless. `pb.fixed64` now accepts that same digit-string shape on the protobuf path so a single timestamp representation flows through both encodings without a separate coercion step. Refuses non-digit strings and silently-rounded Numbers above `Number.MAX_SAFE_INTEGER`."
         }
       ]
     },

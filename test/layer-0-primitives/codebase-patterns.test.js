@@ -5487,6 +5487,32 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P1 on v0.12.6 PR #157 — `_anyValueToProto`'s negative-int
+    // path emitted `pb.embeddedMessage(N, pb._writeVarint(v >>> 0))`
+    // which (a) wraps a varint payload in wire-type 2 (length-delimited)
+    // instead of wire-type 0 (varint, which int64 mandates per the
+    // proto3 spec), AND (b) truncates negatives via `v >>> 0` losing
+    // both sign and magnitude beyond 32 bits. Collectors reject the
+    // whole batch when they decode a wire-type mismatch on a known
+    // scalar field, so a single negative AnyValue poisons the export.
+    //
+    // The right shape is `pb.int64(field, value)` (10-byte two's-
+    // complement varint for negatives via BigInt) or `pb.sint64` (ZigZag
+    // when small negatives dominate). The detector flags the
+    // `embeddedMessage(N, ..._writeVarint...)` shape that mixes
+    // wire types — wrapping a raw varint in a length-delimited message
+    // is almost always a bug. Operators legitimately wrapping
+    // `_writeVarint` bytes inside `embeddedMessage` for a packed-repeated
+    // field MUST allowlist with a written reason.
+    id: "protobuf-embeddedmessage-wrapping-varint",
+    primitive: "Use `pb.uint64` / `pb.int64` / `pb.sint64` / `pb.uint32` for scalar varint fields; `embeddedMessage` is for nested message bodies, not raw varints. Mixing wire types causes collectors to reject the whole payload.",
+    regex: /pb\.embeddedMessage\s*\([^)]*pb\._writeVarint/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.12.6 PR #157 — `_anyValueToProto` negative-int path wrapped a varint payload in `embeddedMessage` (wire-type 2) instead of using `int64` (wire-type 0 varint). The wire-type mismatch poisons the whole OTLP batch; the `v >>> 0` truncation also dropped sign + high bits. Fixed by adding `pb.int64` + `pb.sint64` to the encoder + routing the negative-int branch through `pb.int64`. Detector locks the shape: `embeddedMessage(N, _writeVarint(...))` cannot recur.",
+  },
+
+  {
     // Codex P2 on v0.11.22 PR #126 — `b.cert.create`'s SNI dispatch
     // wildcard-matched `*.example.com` against `foo.bar.example.com`
     // (multi-label) because the suffix check was `endsWith(pattern.
