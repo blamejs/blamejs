@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.8",
-  "createdAt": "2026-05-23T15:51:43.409Z",
+  "frameworkVersion": "0.12.9",
+  "createdAt": "2026-05-23T16:46:31.079Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1706,6 +1706,10 @@
           "type": "function",
           "arity": 4
         },
+        "ArchiveGzError": {
+          "type": "function",
+          "arity": 4
+        },
         "TarError": {
           "type": "function",
           "arity": 4
@@ -1742,6 +1746,10 @@
               "arity": 2
             }
           }
+        },
+        "gz": {
+          "type": "function",
+          "arity": 2
         },
         "read": {
           "type": "object",
@@ -1795,6 +1803,14 @@
                   "valueType": "boolean"
                 }
               }
+            },
+            "fromGzip": {
+              "type": "function",
+              "arity": 2
+            },
+            "gz": {
+              "type": "function",
+              "arity": 2
             },
             "tar": {
               "type": "function",

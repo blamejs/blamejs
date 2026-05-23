@@ -5616,6 +5616,31 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // v0.12.9 — Direct node:zlib gunzip calls in lib/ must compose
+    // b.safeDecompress (1 GiB output / 100× ratio default caps) so a
+    // hostile gzip stream can't OOM or expand-bomb the host. Mirrors
+    // the v0.11.5 must-compose pattern. lib/archive-gz.js IS the
+    // canonical gunzip site (it wires safeDecompress in directly);
+    // every other lib/ call to zlib.gunzipSync / zlib.createGunzip
+    // must either route through b.safeDecompress OR carry a marker
+    // explaining why it's safe to bypass (e.g. the caller already
+    // applied `maxOutputLength` AND the input is operator-controlled).
+    id: "archive-gz-without-safedecompress",
+    primitive: "every lib/ call to zlib.gunzipSync / zlib.createGunzip / gunzip MUST either go through lib/archive-gz.js (which composes b.safeDecompress) OR carry an `allow:archive-gz-without-safedecompress` marker with the reason the bomb gate is bypassed (typically: `maxOutputLength` is already enforced + the input is operator-trusted).",
+    regex: /zlib\.(?:gunzipSync|createGunzip)\b/,
+    requires: /safeDecompress|maxOutputLength|allow:archive-gz-without-safedecompress/,
+    skipCommentLines: true,
+    allowlist: [
+      // archive-gz.js is the canonical gunzip site — it directly
+      // imports safeDecompress and routes every call through it.
+      // Listed here so the detector doesn't false-positive against
+      // its own enforcement file.
+      "lib/archive-gz.js",
+    ],
+    reason: "v0.12.9 — b.archive.read.gz is the framework's gzip read primitive and composes b.safeDecompress for every gunzip. Direct lib/ zlib.gunzipSync / zlib.createGunzip calls must either route through b.archive.read.gz, compose b.safeDecompress inline, OR carry an explicit `maxOutputLength` cap with the bypass marker. The detector locks the contract so v0.13+ primitives that handle a gzip-wrapped payload can't quietly drop the bomb cap.",
+  },
+
+  {
     // Codex P1 on v0.12.8 PR #159 — archive-tar-read.js's walker
     // advanced `pos` by the declared padded block size without
     // checking that those bytes existed in the buffer. A truncated
