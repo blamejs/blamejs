@@ -119,6 +119,58 @@ async function testBackupPassphraseHipaaRequires128() {
   }
 }
 
+async function testPassphraseNanInfinityRefused() {
+  // Codex P1 on v0.12.11 PR #162 — typeof NaN === "number" passed
+  // the old typeof gate but NaN < 128 is false, bypassing entropy
+  // floor under HIPAA. Same for Infinity.
+  var refused = null;
+  try {
+    await b.archive.wrapWithPassphrase(Buffer.from("bytes"), {
+      passphrase:     "weak",
+      minEntropyBits: NaN,
+    });
+  } catch (e) { refused = e; }
+  check("wrapWithPassphrase: NaN minEntropyBits refused upfront",
+    refused && /bad-arg/.test(refused.code || refused.message));
+  var refused2 = null;
+  try {
+    b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: os.tmpdir() }),
+      format:         "tar.gz",
+      cryptoStrategy: "passphrase",
+      passphrase:     "weak",
+      posture:        "hipaa",
+      passphraseMinEntropyBits: NaN,
+    });
+  } catch (e) { refused2 = e; }
+  check("backup: NaN passphraseMinEntropyBits refused so HIPAA floor can't bypass",
+    refused2 && /bad-arg/.test(refused2.code || refused2.message));
+}
+
+async function testBufferPassphraseEntropyFromBytes() {
+  // Codex P2 on v0.12.11 PR #162 — Buffer passphrases shouldn't
+  // be UTF-8 decoded for entropy estimation. A 32-byte CSPRNG
+  // buffer should pass an 80-bit floor; the prior code path
+  // UTF-8 decoded the random bytes and false-rejected.
+  var randomBuf = b.crypto.generateBytes(32);  // 32 unique random bytes typically → ~32 * 5 = 160 bits
+  var sealed = await b.archive.wrapWithPassphrase(Buffer.from("PHI"), {
+    passphrase:     randomBuf,
+    minEntropyBits: 80,
+  });
+  check("wrapWithPassphrase: Buffer passphrase scored from byte alphabet, not UTF-8 decoding",
+    sealed.slice(0, 5).toString("ascii") === "BAWPP");
+  // All-zero buffer must still fail — zero alphabet = zero entropy.
+  var refused = null;
+  try {
+    await b.archive.wrapWithPassphrase(Buffer.from("bytes"), {
+      passphrase:     Buffer.alloc(64),  // all zeros — one unique byte → 0 bits entropy
+      minEntropyBits: 80,
+    });
+  } catch (e) { refused = e; }
+  check("wrapWithPassphrase: all-zero Buffer passphrase refused (zero byte-alphabet)",
+    refused && /weak-passphrase/.test(refused.code || refused.message));
+}
+
 async function testBackupPassphraseDirectoryRefused() {
   var refused = null;
   try {
@@ -138,6 +190,8 @@ async function run() {
   await testPassphraseRefusesBadMagic();
   await testPassphraseRefusesWrongPassword();
   await testPassphraseRefusesWeakEntropy();
+  await testPassphraseNanInfinityRefused();
+  await testBufferPassphraseEntropyFromBytes();
   await testBackupPassphraseRoundTrip();
   await testBackupPassphraseHipaaRequires128();
   await testBackupPassphraseDirectoryRefused();

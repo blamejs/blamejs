@@ -5624,6 +5624,19 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Codex P1 on v0.12.7 PR #158 — archive-read.extract used renameSync to atomically place each decompressed entry at its canonical destination + tracked written[].path for catch-block cleanup. When the destination directory was non-empty, the rename silently overwrote operator files; on extract abort, the cleanup deleted them. Fix: refuse upfront if destination path exists, force operators to use a fresh / empty subtree. Detector locks the shape: any extract code that tracks resolvedPath for catch-block cleanup MUST carry a `destination-exists` refusal in the same file.",
   },
 
+  // Codex P1 on v0.12.11 PR #162 — surfaced the NaN/Infinity bypass
+  // through `typeof X === "number" ? X : default` gating. The
+  // pattern exists widely in the codebase (~29 call sites at the
+  // time the finding was filed) — most are framework-controlled
+  // (numeric byte-slot reads from Buffers, enum-tag checks) where
+  // NaN-vs-number is moot. Adding a static detector here would
+  // cause widespread false positives without surfacing the actual
+  // operator-opt-controlled bug pattern. The runtime gate in
+  // lib/backup/index.js + lib/archive-wrap.js IS the fix; a
+  // future patch can sweep the 29 sites if any are found to be
+  // operator-opt controlled. See feedback_typeof_number_nan_bypass
+  // (write this as a memory if it recurs).
+
   {
     // Codex P2 on v0.12.10 PR #161 — partial recipient objects
     // ({ publicKey } alone) silently triggered b.crypto.encrypt's
