@@ -46,6 +46,35 @@ async function testWrapRefusesWrongKey() {
     refused && /decrypt-failed/.test(refused.code || refused.message));
 }
 
+async function testWrapRefusesPartialStaticRecipient() {
+  // Codex P2 on v0.12.10 PR #161 — partial recipient ({ publicKey }
+  // alone) silently triggered b.crypto.encrypt's ML-KEM-only
+  // fallback, degrading the documented hybrid contract.
+  var pair = b.crypto.generateEncryptionKeyPair();
+  var refused = null;
+  try {
+    b.archive.wrap(Buffer.from("bytes"), { recipient: { publicKey: pair.publicKey } });
+  } catch (e) { refused = e; }
+  check("archive.wrap: refuses partial static recipient (missing ecPublicKey)",
+    refused && /hybrid-required/.test(refused.code || refused.message));
+}
+
+async function testBackupRecipientDirectoryRefused() {
+  // Codex P1 on v0.12.10 PR #161 — recipient strategy + directory
+  // format would write plaintext per-file; refuse upfront.
+  var refused = null;
+  try {
+    b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: os.tmpdir() }),
+      format:         "directory",
+      cryptoStrategy: "recipient",
+      recipient:      b.crypto.generateEncryptionKeyPair(),
+    });
+  } catch (e) { refused = e; }
+  check("backup: recipient + directory format refused upfront",
+    refused && /recipient-strategy-needs-bundled-format/.test(refused.code || refused.message));
+}
+
 async function testWrapRequiresRecipient() {
   var refused = null;
   try { b.archive.wrap(Buffer.from("bytes"), {}); } catch (e) { refused = e; }
@@ -128,10 +157,12 @@ async function run() {
   await testWrapUnwrapRoundTrip();
   await testWrapRefusesBadMagic();
   await testWrapRefusesWrongKey();
+  await testWrapRefusesPartialStaticRecipient();
   await testWrapRequiresRecipient();
   await testTenantStrategyDeferred();
   await testBackupRecipientRoundTrip();
   await testBackupRecipientStrategyRequiresKeys();
+  await testBackupRecipientDirectoryRefused();
   await testBackupPostureRefusesPlaintext();
 }
 

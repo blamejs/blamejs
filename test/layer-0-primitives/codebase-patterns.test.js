@@ -5616,6 +5616,35 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P2 on v0.12.10 PR #161 — partial recipient objects
+    // ({ publicKey } alone) silently triggered b.crypto.encrypt's
+    // ML-KEM-only fallback, degrading archive-wrap's documented
+    // hybrid contract (ML-KEM-1024 + P-384 ECDH). Detector locks
+    // the shape: any caller that constructs a recipient with
+    // `publicKey:` MUST also carry `ecPublicKey:` in the same
+    // object literal OR carry an `allow:archive-wrap-partial-recipient`
+    // marker explaining why KEM-only is intentional (typically:
+    // the operator explicitly opted into b.crypto.encryptMlkemOnly).
+    id: "archive-wrap-recipient-missing-ec-half",
+    primitive: "static-key recipients for b.archive.wrap / bundleAdapterStorage `recipient:` opt MUST carry BOTH publicKey (ML-KEM-1024 PEM) AND ecPublicKey (P-384 ECDH PEM). Partial recipients trip b.crypto.encrypt's ML-KEM-only fallback which silently degrades the hybrid defense-in-depth contract this surface promises.",
+    // File-scoped: ANY recipient: { publicKey: ... } object literal
+    // in lib/ MUST also include ecPublicKey in the same object.
+    // Fires only when ` publicKey: ` appears inside a `recipient: {`
+    // bracket; the codebase patterns walker is line-based so this
+    // is approximate but catches the obvious smell.
+    regex: /recipient:\s*\{\s*[^}]*publicKey:/,
+    requires: /ecPublicKey|allow:archive-wrap-partial-recipient/,
+    skipCommentLines: true,
+    allowlist: [
+      // archive-wrap.js IS the runtime-refusal site for partial
+      // recipients (throws archive-wrap/hybrid-required); it
+      // references partial-recipient shapes in error messages.
+      "lib/archive-wrap.js",
+    ],
+    reason: "Codex P2 on v0.12.10 PR #161 — archive-wrap's recipient contract is hybrid PQC by design. Partial recipient objects degrade to KEM-only with only a one-shot audit. Detector locks the static-side gate so library code composing wrap/unwrap can't silently drop the ECDH leg.",
+  },
+
+  {
     // v0.12.10 — when bundleAdapterStorage carries a posture that
     // mandates encryption-at-rest (HIPAA / PCI-DSS / similar), the
     // same call-site MUST propagate cryptoStrategy: "recipient"
