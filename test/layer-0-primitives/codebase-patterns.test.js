@@ -5616,6 +5616,30 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P1 on v0.12.8 PR #159 — archive-tar-read.js's walker
+    // advanced `pos` by the declared padded block size without
+    // checking that those bytes existed in the buffer. A truncated
+    // archive (header says 11 bytes, buffer holds 8) silently
+    // produced an entry whose extract() sliced the 8-byte prefix
+    // and wrote it as if it were the complete file. Fix: refuse
+    // upfront with a `truncated-entry` typed error when
+    // `bodyStart + paddedSize > bytes.length`. Same shape applies
+    // to the pax-extended-header path (its `bodyEnd` advance was
+    // the same uncapped arithmetic).
+    id: "archive-tar-walker-without-truncation-check",
+    primitive: "tar walkers in lib/archive-tar-read.js MUST verify that the declared block size fits within the remaining buffer before advancing `pos` — a header that claims more bytes than the buffer holds is a truncated archive, not a valid entry. The refusal carries `truncated-entry` code so operators can distinguish wire-format-bad input from policy-bad input.",
+    // File-scoped: only fires on archive-tar-read.js. The walker
+    // advances pos by paddedSize (Math.ceil(hdr.size / BLOCK_SIZE)
+    // * BLOCK_SIZE) — any code that adds paddedSize to pos without
+    // a preceding bounds check is the smell.
+    regex: /pos\s*\+=\s*paddedSize/,
+    requires: /truncated-entry/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.12.8 PR #159 — archive-tar-read.js's tar walker recorded each entry and advanced pos by paddedSize without verifying the declared bytes existed in the buffer. A truncated archive silently produced a partial-content entry on extract — exact reproducer in the Codex thread: declared 11-byte file backed by 8 bytes of buffer produced an 8-byte output. Fix: refuse upfront with `archive-tar/truncated-entry` typed error. Detector locks the shape: any code path that advances pos by paddedSize in archive-tar-read.js MUST carry a `truncated-entry` refusal in the same file.",
+  },
+
+  {
     // Codex P2 on v0.11.22 PR #126 — `b.cert.create`'s SNI dispatch
     // wildcard-matched `*.example.com` against `foo.bar.example.com`
     // (multi-label) because the suffix check was `endsWith(pattern.

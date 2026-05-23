@@ -158,13 +158,64 @@ async function testBackupTarFormatDefault() {
   }
 }
 
+async function testTarTruncationRefused() {
+  // Codex P1 on v0.12.8 PR #159 — declare 11 bytes in the header
+  // but truncate the buffer to 8 payload bytes. The walker must
+  // refuse upfront rather than emitting a partial entry.
+  var t = b.archive.tar();
+  t.addFile("payload.txt", Buffer.from("hello world"));    // 11 bytes
+  var bytes = t.toBuffer();
+  // First header block is at offset 0-511; first data block at
+  // 512-1023 (padded to 512 bytes from the declared 11). Truncate to
+  // 768 bytes: header survives intact but the data block ends
+  // halfway — walker must refuse before slicing partial bytes as
+  // a "complete" file.
+  var truncated = bytes.slice(0, 768);
+  var refused = null;
+  try {
+    var reader = b.archive.read.tar(b.archive.adapters.buffer(truncated));
+    await reader.extract({
+      destination: fs.mkdtempSync(path.join(os.tmpdir(), "bjs-tar-trunc-")),
+    });
+  } catch (e) { refused = e; }
+  check("archive.read.tar: truncated entry refused with typed error",
+    refused && /truncated-entry/.test(refused.code || refused.message));
+}
+
+async function testBackupBundleTooLargeRefused() {
+  // Codex P2 on v0.12.8 PR #159 — bundleAdapterStorage with a
+  // tight maxBundleBytes cap must refuse oversized payloads upfront
+  // rather than OOM during in-memory tar materialization.
+  var srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-bk-bulk-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-bk-bulk-dest-"));
+  try {
+    fs.writeFileSync(path.join(srcDir, "big.bin"), Buffer.alloc(64 * 1024));
+    var storage = b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:         "tar",
+      maxBundleBytes: 16 * 1024,
+    });
+    var refused = null;
+    try {
+      await storage.writeBundle("2026-05-23T00-00-00-000Z-abcdef12", srcDir);
+    } catch (e) { refused = e; }
+    check("backup: bundle exceeding maxBundleBytes refused upfront",
+      refused && /bundle-too-large/.test(refused.code || refused.message));
+  } finally {
+    try { fs.rmSync(srcDir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest,   { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
 async function run() {
   await testTarRoundTrip();
   await testSafeArchiveTarExtract();
   testTarEntryPolicy();
   await testTarChecksumDetection();
+  await testTarTruncationRefused();
   await testBackupMigrateDirectoryToTar();
   await testBackupTarFormatDefault();
+  await testBackupBundleTooLargeRefused();
 }
 
 module.exports = { run: run };
