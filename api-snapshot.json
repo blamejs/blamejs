@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.7",
-  "createdAt": "2026-05-23T14:13:23.835Z",
+  "frameworkVersion": "0.12.8",
+  "createdAt": "2026-05-23T15:51:43.409Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1706,6 +1706,10 @@
           "type": "function",
           "arity": 4
         },
+        "TarError": {
+          "type": "function",
+          "arity": 4
+        },
         "adapters": {
           "type": "object",
           "members": {
@@ -1792,11 +1796,19 @@
                 }
               }
             },
+            "tar": {
+              "type": "function",
+              "arity": 2
+            },
             "zip": {
               "type": "function",
               "arity": 2
             }
           }
+        },
+        "tar": {
+          "type": "function",
+          "arity": 0
         },
         "zip": {
           "type": "function",
@@ -4450,6 +4462,10 @@
           "arity": 1
         },
         "diskStorage": {
+          "type": "function",
+          "arity": 1
+        },
+        "migrate": {
           "type": "function",
           "arity": 1
         },
@@ -16436,6 +16452,10 @@
           "arity": 1
         },
         "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "tarEntryPolicy": {
           "type": "function",
           "arity": 1
         },
