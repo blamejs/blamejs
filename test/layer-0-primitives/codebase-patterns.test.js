@@ -2242,6 +2242,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/backup/index.js:bundleAdapterStorage",
+        "lib/importmap-integrity.js:build",
+        "lib/metrics.js:shadowRegistry",
+      ],
+      reason: "v0.12.11 — bundleAdapterStorage's opts-validation cascade (cryptoStrategy / recipient / passphrase / posture branches each with their own throw-on-bad-shape gates) reaches 50-token duplication with importmap-integrity.build's manifest-shape cascade + metrics.shadowRegistry's registry-config cascade by coincidence of the chained-if-throw-Error pattern. Each cascade carries primitive-specific semantics (crypto strategy vs SRI hash list vs shadow-collector config); extracting would require a generic options-cascade helper that loses the per-primitive error codes operators grep for in audit logs.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/agent-idempotency.js:_checkArgs",
         "lib/agent-tenant.js:_sealField",
         "lib/atomic-file.js:copyDirRecursive",
