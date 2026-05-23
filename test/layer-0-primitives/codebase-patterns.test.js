@@ -5616,6 +5616,59 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P1 + P2 on v0.12.9 PR #160 — backup readBundle's
+    // tar.gz restore path inherited archive.read.gz defaults (1 GiB
+    // output / 100× ratio), which made the SAME primitive write
+    // bundles it couldn't read back. The detector enforces the
+    // write/read contract for self-authored gzip payloads: any
+    // lib/ call to `archive.read.gz(...)` from a context that has
+    // its own size budget (paired with a `maxBundleBytes` /
+    // `maxOutputBytes` / `maxPayloadBytes` opt) MUST propagate
+    // that budget to read.gz via `maxDecompressedBytes` AND
+    // disable the ratio cap (`maxExpansionRatio: 0`) — bombs in
+    // self-authored payloads are already prevented at write time.
+    id: "archive-read-gz-without-self-authored-budget",
+    primitive: "callers of archive.read.gz from a context that gates its own writes on a size cap (maxBundleBytes / similar) must pass maxDecompressedBytes + maxExpansionRatio:0 so the write/read contract is symmetric. Bomb defenses live at the upstream cap; the gz layer just decompresses.",
+    // File-scoped: only fires on backup/index.js shapes for now.
+    // archive.read.gz called with no opts is fine in operator code
+    // (adversarial-input case); the antipattern is when the caller
+    // also writes payloads under its own size cap.
+    regex: /archive(?:Lazy\(\))?\.read\.gz\s*\([^)]*\)\s*[^,{]/,
+    requires: /maxDecompressedBytes/,
+    skipCommentLines: true,
+    allowlist: [
+      // archive-gz.js IS the read.gz primitive itself.
+      "lib/archive-gz.js",
+    ],
+    reason: "Codex P1/P2 on v0.12.9 PR #160 — backup readBundle's tar.gz restore inherited the 100× ratio + 1 GiB output defaults, breaking restore for zero-filled DB dumps + ~1-8 GiB bundles that writeBundle accepts. Fix: every archive.read.gz call from a primitive with its own size budget propagates that budget. Detector locks the symmetry.",
+  },
+
+  {
+    // v0.12.9 — Direct node:zlib gunzip calls in lib/ must compose
+    // b.safeDecompress (1 GiB output / 100× ratio default caps) so a
+    // hostile gzip stream can't OOM or expand-bomb the host. Mirrors
+    // the v0.11.5 must-compose pattern. lib/archive-gz.js IS the
+    // canonical gunzip site (it wires safeDecompress in directly);
+    // every other lib/ call to zlib.gunzipSync / zlib.createGunzip
+    // must either route through b.safeDecompress OR carry a marker
+    // explaining why it's safe to bypass (e.g. the caller already
+    // applied `maxOutputLength` AND the input is operator-controlled).
+    id: "archive-gz-without-safedecompress",
+    primitive: "every lib/ call to zlib.gunzipSync / zlib.createGunzip / gunzip MUST either go through lib/archive-gz.js (which composes b.safeDecompress) OR carry an `allow:archive-gz-without-safedecompress` marker with the reason the bomb gate is bypassed (typically: `maxOutputLength` is already enforced + the input is operator-trusted).",
+    regex: /zlib\.(?:gunzipSync|createGunzip)\b/,
+    requires: /safeDecompress|maxOutputLength|allow:archive-gz-without-safedecompress/,
+    skipCommentLines: true,
+    allowlist: [
+      // archive-gz.js is the canonical gunzip site — it directly
+      // imports safeDecompress and routes every call through it.
+      // Listed here so the detector doesn't false-positive against
+      // its own enforcement file.
+      "lib/archive-gz.js",
+    ],
+    reason: "v0.12.9 — b.archive.read.gz is the framework's gzip read primitive and composes b.safeDecompress for every gunzip. Direct lib/ zlib.gunzipSync / zlib.createGunzip calls must either route through b.archive.read.gz, compose b.safeDecompress inline, OR carry an explicit `maxOutputLength` cap with the bypass marker. The detector locks the contract so v0.13+ primitives that handle a gzip-wrapped payload can't quietly drop the bomb cap.",
+  },
+
+  {
     // Codex P1 on v0.12.8 PR #159 — archive-tar-read.js's walker
     // advanced `pos` by the declared padded block size without
     // checking that those bytes existed in the buffer. A truncated
