@@ -5616,6 +5616,30 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // v0.12.10 — when bundleAdapterStorage carries a posture that
+    // mandates encryption-at-rest (HIPAA / PCI-DSS / similar), the
+    // same call-site MUST propagate cryptoStrategy: "recipient"
+    // (or refuse upstream) — the storage adapter alone cannot
+    // satisfy the regulatory contract. The library-internal refusal
+    // at `backup/posture-requires-encryption` is the runtime gate;
+    // this detector locks the shape at the static-analysis layer
+    // so any future caller that drops cryptoStrategy from a
+    // posture-bearing call surfaces during codebase-patterns.
+    id: "backup-adapter-storage-without-posture-check",
+    primitive: "any bundleAdapterStorage({ ... posture: ... }) call site that names a posture from the HIPAA / PCI-DSS / etc. set MUST also pass cryptoStrategy. The library-side refusal exists; the detector exists so the contract can't drift silently when a primitive composes bundleAdapterStorage indirectly.",
+    regex: /bundleAdapterStorage\s*\([^)]*posture:/,
+    requires: /cryptoStrategy|allow:backup-adapter-storage-without-posture-check/,
+    skipCommentLines: true,
+    allowlist: [
+      // backup/index.js IS the primitive — the runtime refusal lives
+      // there. Self-allowed so the detector doesn't flag the
+      // refusal-emitting code itself.
+      "lib/backup/index.js",
+    ],
+    reason: "v0.12.10 — Flavor 1 recipient wrap lands as bundleAdapterStorage's cryptoStrategy: \"recipient\". HIPAA + PCI-DSS postures refuse cryptoStrategy: \"none\" at runtime; this detector adds the static-side gate so a primitive composing bundleAdapterStorage with a posture opt can't accidentally drop the cryptoStrategy propagation. Future Flavor 2 (per-entry, v0.12.11) extends the same contract.",
+  },
+
+  {
     // Codex P1 + P2 on v0.12.9 PR #160 — backup readBundle's
     // tar.gz restore path inherited archive.read.gz defaults (1 GiB
     // output / 100× ratio), which made the SAME primitive write

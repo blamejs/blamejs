@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.9",
-  "createdAt": "2026-05-23T16:46:31.079Z",
+  "frameworkVersion": "0.12.10",
+  "createdAt": "2026-05-23T18:01:15.953Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1710,6 +1710,10 @@
           "type": "function",
           "arity": 4
         },
+        "ArchiveWrapError": {
+          "type": "function",
+          "arity": 4
+        },
         "TarError": {
           "type": "function",
           "arity": 4
@@ -1825,6 +1829,14 @@
         "tar": {
           "type": "function",
           "arity": 0
+        },
+        "unwrap": {
+          "type": "function",
+          "arity": 2
+        },
+        "wrap": {
+          "type": "function",
+          "arity": 2
         },
         "zip": {
           "type": "function",
