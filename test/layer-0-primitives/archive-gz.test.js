@@ -80,6 +80,33 @@ async function testTarToGzip() {
   }
 }
 
+async function testBackupTarGzHighRatioRoundTrip() {
+  // Codex P1 on v0.12.9 PR #160 — a zero-filled file compresses
+  // at >100× ratio; the default safeDecompress ratio cap was
+  // refusing legitimate self-authored bundles on read.
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-tgzr-src-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-tgzr-dest-"));
+  var verify = path.join(os.tmpdir(), "bjs-tgzr-verify-" + Date.now());
+  try {
+    // 1 MiB of zeros — gzip should compress this to a few hundred
+    // bytes (ratio ~ 5000×), well past the 100× default.
+    fs.writeFileSync(path.join(src, "zeros.bin"), Buffer.alloc(1024 * 1024));
+    var storage = b.backup.bundleAdapterStorage({
+      adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:  "tar.gz",
+    });
+    var bundleId = "2026-05-23T17-30-00-000Z-11223344";
+    await storage.writeBundle(bundleId, src);
+    await storage.readBundle(bundleId, verify);
+    check("backup tar.gz: high-ratio bundle restores past the 100× default",
+      fs.readFileSync(path.join(verify, "zeros.bin")).length === 1024 * 1024);
+  } finally {
+    try { fs.rmSync(src,    { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest,   { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(verify, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
 async function testBackupTarGzRoundTrip() {
   var src = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-tgz-src-"));
   var dest = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-tgz-dest-"));
@@ -119,6 +146,7 @@ async function run() {
   await testGzBombCapRefused();
   await testTarToGzip();
   await testBackupTarGzRoundTrip();
+  await testBackupTarGzHighRatioRoundTrip();
 }
 
 module.exports = { run: run };

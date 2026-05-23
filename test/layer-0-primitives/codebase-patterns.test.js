@@ -5616,6 +5616,34 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P1 + P2 on v0.12.9 PR #160 — backup readBundle's
+    // tar.gz restore path inherited archive.read.gz defaults (1 GiB
+    // output / 100× ratio), which made the SAME primitive write
+    // bundles it couldn't read back. The detector enforces the
+    // write/read contract for self-authored gzip payloads: any
+    // lib/ call to `archive.read.gz(...)` from a context that has
+    // its own size budget (paired with a `maxBundleBytes` /
+    // `maxOutputBytes` / `maxPayloadBytes` opt) MUST propagate
+    // that budget to read.gz via `maxDecompressedBytes` AND
+    // disable the ratio cap (`maxExpansionRatio: 0`) — bombs in
+    // self-authored payloads are already prevented at write time.
+    id: "archive-read-gz-without-self-authored-budget",
+    primitive: "callers of archive.read.gz from a context that gates its own writes on a size cap (maxBundleBytes / similar) must pass maxDecompressedBytes + maxExpansionRatio:0 so the write/read contract is symmetric. Bomb defenses live at the upstream cap; the gz layer just decompresses.",
+    // File-scoped: only fires on backup/index.js shapes for now.
+    // archive.read.gz called with no opts is fine in operator code
+    // (adversarial-input case); the antipattern is when the caller
+    // also writes payloads under its own size cap.
+    regex: /archive(?:Lazy\(\))?\.read\.gz\s*\([^)]*\)\s*[^,{]/,
+    requires: /maxDecompressedBytes/,
+    skipCommentLines: true,
+    allowlist: [
+      // archive-gz.js IS the read.gz primitive itself.
+      "lib/archive-gz.js",
+    ],
+    reason: "Codex P1/P2 on v0.12.9 PR #160 — backup readBundle's tar.gz restore inherited the 100× ratio + 1 GiB output defaults, breaking restore for zero-filled DB dumps + ~1-8 GiB bundles that writeBundle accepts. Fix: every archive.read.gz call from a primitive with its own size budget propagates that budget. Detector locks the symmetry.",
+  },
+
+  {
     // v0.12.9 — Direct node:zlib gunzip calls in lib/ must compose
     // b.safeDecompress (1 GiB output / 100× ratio default caps) so a
     // hostile gzip stream can't OOM or expand-bomb the host. Mirrors
