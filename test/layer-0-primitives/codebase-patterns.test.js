@@ -2189,10 +2189,11 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/archive-read.js:_emitAudit",
+        "lib/archive-tar-read.js:_emitAudit",
         "lib/archive.js:_emitAudit",
         "lib/http-client.js:_emitAudit",
       ],
-      reason: "v0.12.7 — Per-module `_emitAudit(opts, action, outcome, metadata)` shape repeats across primitives that drop-silently emit to opts.audit.safeEmit if present. Each module's audit events carry a primitive-specific `action:` namespace (archive.read.*, archive.zip.*, http-client.*) + per-primitive metadata fields; consolidating would lose the namespace + force every consumer to import the same audit helper. Three-file repetition is the expected shape per `feedback_audit_safeEmit_per_module_emitAudit_shape`.",
+      reason: "v0.12.7 + v0.12.8 — Per-module `_emitAudit(opts, action, outcome, metadata)` shape repeats across primitives that drop-silently emit to opts.audit.safeEmit if present. Each module's audit events carry a primitive-specific `action:` namespace (archive.read.*, archive.zip.*, archive.read.tar.*, http-client.*) + per-primitive metadata fields; consolidating would lose the namespace + force every consumer to import the same audit helper. Four-file repetition is the expected shape per `feedback_audit_safeEmit_per_module_emitAudit_shape`. archive-tar.js (write) does NOT carry _emitAudit — the read side lives in sibling archive-tar-read.js so the @primitive validator can pair both `b.archive.tar` (write) and `b.archive.read.tar` (read) cleanly.",
     },
     {
       mode:  "family-subset",
@@ -2208,11 +2209,35 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/archive-read.js:extract",
+        "lib/archive-tar-read.js:extract",
         "lib/auth/ciba.js:pollToken",
         "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
         "lib/auth/oid4vci.js:issueCredential",
       ],
-      reason: "v0.12.7 — `try { ... await ... } catch (e) { /* per-step cleanup */ throw e; }` shape repeats across primitives doing multi-step async work with per-step rollback. archive-read.extract cleans up partial-extract files; ciba.pollToken cleans up rate-limit + retry state; oid4vci.exchange/issueCredential clean up partial credential-state. Each catch body is primitive-specific (the cleanup it does is the primitive's responsibility) — extraction would require a generic transaction-style helper which is itself a v1.0+ surface decision. Three-file repetition with primitive-specific cleanup bodies stays as the documented exception.",
+      reason: "v0.12.7 + v0.12.8 — `try { ... await ... } catch (e) { /* per-step cleanup */ throw e; }` shape repeats across primitives doing multi-step async work with per-step rollback. archive-read.extract + archive-tar.extract both clean up partial-extract files; ciba.pollToken cleans up rate-limit + retry state; oid4vci.exchange/issueCredential clean up partial credential-state. Each catch body is primitive-specific (the cleanup it does is the primitive's responsibility) — extraction would require a generic transaction-style helper which is itself a v1.0+ surface decision. Five-file repetition with primitive-specific cleanup bodies stays as the documented exception.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/archive-tar-read.js:_classifyTypeflag",
+        "lib/archive-tar-read.js:inspect",
+        "lib/auth/ciba.js:_registerInitialInterval",
+        "lib/auth/oauth.js:exchangeToken",
+        "lib/auth/oauth.js:pollDeviceCode",
+        "lib/auth/oid4vci.js:createCredentialOffer",
+        "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
+        "lib/restore-rollback.js:swap",
+      ],
+      reason: "v0.12.8 — Compact branching helpers (`if (x === A) return ...; if (x === B) return ...;` switch-style) repeat across primitives that map operator-supplied enum values to internal labels. archive-tar-read._classifyTypeflag maps single-char tar typeflags (0/1/2/3/4/5/6/7/x/g) to entry-type labels (file/symlink/hardlink/device/fifo/directory/etc.); archive-tar-read.inspect dispatches on the same typeflag set per-entry — distinct vocabulary from oauth.exchangeToken / oid4vci.createCredentialOffer / etc. which dispatch on grant_type / credential_format / step. The match is shape (chain of if-equals-return), not semantic. Extraction would require a generic enum-dispatch helper for trivially-different enums — that's an obscured abstraction. Each call site's enum + label set is primitive-specific.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/archive-read.js:_normalizeEntryTypePolicy",
+        "lib/archive-tar-read.js:_normalizeEntryTypePolicy",
+        "lib/archive.js:writeTo",
+      ],
+      reason: "v0.12.8 — `_normalizeEntryTypePolicy` shape is genuinely duplicated between archive-read.js + archive-tar-read.js — both copy DEFAULT_ENTRY_TYPE_POLICY and merge with operator opts. Could extract to a shared lib/_archive-policy.js helper in a future patch; for v0.12.8 keeping the duplication so the format-specific entry-type vocabulary (zip's external-attrs vs tar's typeflag) stays close to the reader that uses it. archive.js:writeTo is the unrelated third file in the dup cluster — its toBuffer + writeFileSync shape happens to share the 50-token shingle by coincidence (writeTo is the legacy ZIP write-to-path helper, not policy-related).",
     },
     {
       mode:  "family-subset",
@@ -5588,6 +5613,30 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "Codex P1 on v0.12.7 PR #158 — archive-read.extract used renameSync to atomically place each decompressed entry at its canonical destination + tracked written[].path for catch-block cleanup. When the destination directory was non-empty, the rename silently overwrote operator files; on extract abort, the cleanup deleted them. Fix: refuse upfront if destination path exists, force operators to use a fresh / empty subtree. Detector locks the shape: any extract code that tracks resolvedPath for catch-block cleanup MUST carry a `destination-exists` refusal in the same file.",
+  },
+
+  {
+    // Codex P1 on v0.12.8 PR #159 — archive-tar-read.js's walker
+    // advanced `pos` by the declared padded block size without
+    // checking that those bytes existed in the buffer. A truncated
+    // archive (header says 11 bytes, buffer holds 8) silently
+    // produced an entry whose extract() sliced the 8-byte prefix
+    // and wrote it as if it were the complete file. Fix: refuse
+    // upfront with a `truncated-entry` typed error when
+    // `bodyStart + paddedSize > bytes.length`. Same shape applies
+    // to the pax-extended-header path (its `bodyEnd` advance was
+    // the same uncapped arithmetic).
+    id: "archive-tar-walker-without-truncation-check",
+    primitive: "tar walkers in lib/archive-tar-read.js MUST verify that the declared block size fits within the remaining buffer before advancing `pos` — a header that claims more bytes than the buffer holds is a truncated archive, not a valid entry. The refusal carries `truncated-entry` code so operators can distinguish wire-format-bad input from policy-bad input.",
+    // File-scoped: only fires on archive-tar-read.js. The walker
+    // advances pos by paddedSize (Math.ceil(hdr.size / BLOCK_SIZE)
+    // * BLOCK_SIZE) — any code that adds paddedSize to pos without
+    // a preceding bounds check is the smell.
+    regex: /pos\s*\+=\s*paddedSize/,
+    requires: /truncated-entry/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P1 on v0.12.8 PR #159 — archive-tar-read.js's tar walker recorded each entry and advanced pos by paddedSize without verifying the declared bytes existed in the buffer. A truncated archive silently produced a partial-content entry on extract — exact reproducer in the Codex thread: declared 11-byte file backed by 8 bytes of buffer produced an 8-byte output. Fix: refuse upfront with `archive-tar/truncated-entry` typed error. Detector locks the shape: any code path that advances pos by paddedSize in archive-tar-read.js MUST carry a `truncated-entry` refusal in the same file.",
   },
 
   {
