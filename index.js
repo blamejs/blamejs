@@ -458,6 +458,7 @@ module.exports = {
   cbor:             require("./lib/cbor"),
   cose:             require("./lib/cose"),
   cwt:              require("./lib/cwt"),
+  eat:              require("./lib/eat"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,

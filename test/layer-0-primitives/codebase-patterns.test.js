@@ -2255,6 +2255,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/eat.js:verify",
+        "lib/auth/jar.js:parse",
+        "lib/auth/status-list.js:fromJwt",
+      ],
+      reason: "v0.12.35 — token-verify delegation prelude: each validates an opts blob, delegates the signature/structure verification to a lower primitive, then applies its own post-checks + builds a typed result. eat.verify delegates to b.cwt.verify then enforces nonce / dbgstat / profile (RFC 9711); jar.parse delegates to b.auth.jwt.verifyExternal then enforces iss / client_id / anti-nesting (RFC 9101); status-list.fromJwt delegates to a JWS verify then reads the status-list bits. The shingle is the validate→delegate→post-check shape; each enforces a distinct spec's claims.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/archive-adapters.js:fs",
         "lib/archive-adapters.js:http",
         "lib/network-smtp-policy.js:mtaStsFetch",
