@@ -108,6 +108,88 @@ async function testRewrapRefusesPlaintextBundle() {
   }
 }
 
+async function testRewrapHipaaPreservesEntropyFloor() {
+  // Codex P1 on v0.12.21 PR #172 — under HIPAA posture, the
+  // storage's effective entropy floor is 128 bits. rewrapBundle
+  // must enforce that floor regardless of what
+  // opts.passphraseMinEntropyBits says — otherwise a rotation to
+  // a weak passphrase that writeBundle would refuse slips through.
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "rw-hipaa-src-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "rw-hipaa-dest-"));
+  try {
+    fs.writeFileSync(path.join(src, "phi.json"), "{\"id\":42}", { mode: 0o600 });
+    var strongPass = "aLongCorrectHorseBatteryStaple9876!Phrase";   // ~227 bits
+    var storage = b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:         "tar.gz",
+      cryptoStrategy: "passphrase",
+      passphrase:     strongPass,
+      posture:        "hipaa",
+    });
+    var bid = "2026-05-24T07-30-00-000Z-bbbb1111";
+    await storage.writeBundle(bid, src);
+    // Try rotating to a passphrase that's ~100 bits — passes the
+    // default 80-bit floor but should be refused under HIPAA's
+    // 128-bit floor.
+    var weakPass = "lowercaseonlyword123";  // 20 chars, lower+digit alphabet=36 → ~103 bits — above 80, below 128
+    var refused = null;
+    try {
+      await storage.rewrapBundle(bid, { newPassphrase: weakPass });
+    } catch (e) { refused = e; }
+    check("rewrapBundle: HIPAA posture's 128-bit entropy floor enforced across rotation",
+      refused && /weak-passphrase/.test(refused.code || refused.message));
+  } finally {
+    try { fs.rmSync(src,  { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
+async function testRewrapWithLegacyAdapter() {
+  // Codex P2 on v0.12.21 PR #172 — adapters without readPartial
+  // get envelopeKind: "unknown" from bundleInfo. rewrapBundle
+  // must fall back to sniffing the loaded sealed bytes rather
+  // than refusing with no-envelope-to-rewrap.
+  var pair = b.crypto.generateEncryptionKeyPair();
+  var newPair = b.crypto.generateEncryptionKeyPair();
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "rw-leg-src-"));
+  var fullDest = fs.mkdtempSync(path.join(os.tmpdir(), "rw-leg-dest-"));
+  try {
+    fs.writeFileSync(path.join(src, "a"), "x", { mode: 0o600 });
+    // Bootstrap with the full fsAdapter to get a valid bundle.
+    var bootstrap = b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: fullDest }),
+      format:         "tar.gz",
+      cryptoStrategy: "recipient",
+      recipient:      pair,
+    });
+    var bid = "2026-05-24T07-45-00-000Z-cccc2222";
+    await bootstrap.writeBundle(bid, src);
+    // Re-wrap the bundle bytes through a legacy adapter that
+    // exposes only the minimum contract (no readPartial / statKey).
+    var fullAdapter = b.backup.bundleAdapterStorage.fsAdapter({ root: fullDest });
+    var legacyAdapter = {
+      writeFile: fullAdapter.writeFile,
+      readFile:  fullAdapter.readFile,
+      listKeys:  fullAdapter.listKeys,
+      deleteKey: fullAdapter.deleteKey,
+      hasKey:    fullAdapter.hasKey,
+      // Intentionally omit readPartial + statKey.
+    };
+    var legacyStorage = b.backup.bundleAdapterStorage({
+      adapter:        legacyAdapter,
+      format:         "tar.gz",
+      cryptoStrategy: "recipient",
+      recipient:      pair,
+    });
+    var rw = await legacyStorage.rewrapBundle(bid, { newRecipient: newPair });
+    check("rewrapBundle: legacy adapter (no readPartial) succeeds via fallback sniff",
+      rw.oldEnvelopeKind === "recipient" && rw.newEnvelopeKind === "recipient");
+  } finally {
+    try { fs.rmSync(src,      { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(fullDest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
 async function testRewrapRefusesMissingNewRecipient() {
   var oldPair = b.crypto.generateEncryptionKeyPair();
   var src = fs.mkdtempSync(path.join(os.tmpdir(), "rw-nr-src-"));
@@ -137,6 +219,8 @@ async function run() {
   await testRewrapPassphraseRotation();
   await testRewrapRefusesPlaintextBundle();
   await testRewrapRefusesMissingNewRecipient();
+  await testRewrapHipaaPreservesEntropyFloor();
+  await testRewrapWithLegacyAdapter();
 }
 
 module.exports = { run: run };
