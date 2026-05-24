@@ -24,17 +24,34 @@ async function testAccumulatesWithinWindow() {
   var r2 = q.consume("t", "m", 1);
   check("consume: second charge accumulates", r2.used === 2 && r2.remaining === 1);
   check("consume: dimension + period echoed", r2.dimension === "requests" && r2.period === "hour");
+  check("consume: effective enforcement echoed", r2.enforcement === "hard");
   check("consume: resetsAt is after windowStart", r2.resetsAt > r2.windowStart);
 }
 
-async function testHardRefundsOnOverage() {
+async function testHardConditionalReserve() {
   var q = _q();
   q.consume("t", "m", 3);                                 // exactly at limit — allowed
   check("hard: at-limit charge allowed", q.check("t", "m").used === 3);
   var refused = null;
   try { q.consume("t", "m", 1); } catch (e) { refused = e; }
   check("hard: over-limit consume throws", refused && refused.code === "aiQuota/exceeded");
-  check("hard: rejected reservation refunded (counter unchanged)", q.check("t", "m").used === 3);
+  check("hard: rejected consume never charges (counter unchanged)", q.check("t", "m").used === 3);
+}
+
+async function testHardReserveNoTransientOvercount() {
+  // Codex P1 on PR #178 — hard mode must reserve via an atomic
+  // conditional test-and-charge, never charge-then-refund. A rejected
+  // over-budget call must leave the counter exactly unchanged so a
+  // concurrent / subsequent smaller call that fits is not falsely
+  // denied by a transient over-count.
+  var q = _q({ limit: 10 });
+  q.consume("t", "m", 8);
+  var refused = null;
+  try { q.consume("t", "m", 3); } catch (e) { refused = e; }   // 8+3=11 > 10 → refused
+  check("reserve: over-budget call refused", refused && refused.code === "aiQuota/exceeded");
+  check("reserve: refused call left counter at 8 (no transient charge)", q.check("t", "m").used === 8);
+  var fits = q.consume("t", "m", 1);                            // 8+1=9 ≤ 10 → allowed
+  check("reserve: smaller call that fits is not falsely denied", fits.allowed === true && fits.used === 9);
 }
 
 async function testSoftAdmitsButReports() {
@@ -58,6 +75,7 @@ async function testPerCallEnforcementOverride() {
   q.consume("t", "m", 3);
   var over = q.consume("t", "m", 1, { enforcement: "warn" });
   check("override: per-call warn admits over a hard default", over.allowed === true && over.exceeded === true);
+  check("override: result reports the effective (overridden) enforcement", over.enforcement === "warn");
   var bad = null;
   try { q.consume("t", "m", 1, { enforcement: "nope" }); } catch (e) { bad = e; }
   check("override: bad per-call enforcement refused", bad && bad.code === "aiQuota/bad-enforcement");
@@ -101,13 +119,18 @@ async function testSharedStoreAggregatesAcrossEnforcers() {
   // Two enforcers sharing one store model a two-node cluster: the
   // ceiling is enforced on the AGGREGATE, not per-process.
   var counters = new Map();
+  function slot(k, win) {
+    var e = counters.get(k);
+    if (!e || e.expiresAt <= Date.now()) { e = { v: 0, expiresAt: Date.now() + win }; counters.set(k, e); }
+    return e;
+  }
   var store = {
-    incrBy: function (k, amt, win) {
-      var e = counters.get(k);
-      if (!e || e.expiresAt <= Date.now()) { e = { v: 0, expiresAt: Date.now() + win }; counters.set(k, e); }
-      e.v += amt; return e.v;
+    reserve: function (k, amt, limit, win) {
+      var e = slot(k, win);
+      if (e.v + amt > limit) return { allowed: false, used: e.v };
+      e.v += amt; return { allowed: true, used: e.v };
     },
-    decrBy: function (k, amt) { var e = counters.get(k); if (e) { e.v -= amt; if (e.v < 0) e.v = 0; } },
+    add: function (k, amt, win) { var e = slot(k, win); e.v += amt; return e.v; },
     get: function (k) { var e = counters.get(k); return (e && e.expiresAt > Date.now()) ? e.v : 0; },
     reset: function (k) { if (k === undefined) counters.clear(); else counters.delete(k); },
   };
@@ -136,7 +159,7 @@ async function testResetSemantics() {
 
 async function testResetTenantWideUnsupportedWithExternalStore() {
   var noop = function () {};
-  var store = { incrBy: function () { return 0; }, decrBy: noop, get: function () { return 0; }, reset: noop };
+  var store = { reserve: function () { return { allowed: true, used: 0 }; }, add: function () { return 0; }, get: function () { return 0; }, reset: noop };
   var q = b.ai.quota.create({ dimension: "requests", period: "hour", limit: 5, store: store, audit: false });
   var refused = null;
   try { q.reset("t"); } catch (e) { refused = e; }
@@ -152,7 +175,7 @@ async function testConfigValidation() {
     [{ dimension: "tokens", period: "hour", limit: 1, enforcement: "nope" }, "aiQuota/bad-enforcement"],
     [{ dimension: "tokens", period: "hour", limit: 1, perTenant: { x: -3 } }, "aiQuota/bad-override"],
     [{ dimension: "tokens", period: "hour", limit: 1, perModel: [] }, "aiQuota/bad-override"],
-    [{ dimension: "tokens", period: "hour", limit: 1, store: { incrBy: function () {} } }, "aiQuota/bad-store"],
+    [{ dimension: "tokens", period: "hour", limit: 1, store: { reserve: function () {} } }, "aiQuota/bad-store"],
   ];
   var allCorrect = true;
   for (var i = 0; i < cases.length; i++) {
@@ -214,7 +237,8 @@ async function testSecondWindowRollover() {
 
 async function run() {
   await testAccumulatesWithinWindow();
-  await testHardRefundsOnOverage();
+  await testHardConditionalReserve();
+  await testHardReserveNoTransientOvercount();
   await testSoftAdmitsButReports();
   await testWarnAdmitsAdvisory();
   await testPerCallEnforcementOverride();

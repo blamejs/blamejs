@@ -2212,7 +2212,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/pagination.js:cursor",
         "lib/pagination.js:offset",
       ],
-      reason: "v0.12.27 — defensive typeof-guard validation prelude (`if (!x || typeof x !== \"object\" || typeof x.fn !== \"function\") throw new <Error>(...)`). ai-quota._validateStore asserts the optional cross-node counter store exposes incrBy / decrBy / get / reset; tus-upload.create validates the resumable-upload opts shape; pagination.cursor / pagination.offset validate paging opts. Each throws a primitive-specific typed error (AiQuotaError / TusUploadError / PaginationError); the shingle is the typeof-guard cascade shape, not behaviour.",
+      reason: "v0.12.27 — defensive typeof-guard validation prelude (`if (!x || typeof x !== \"object\" || typeof x.fn !== \"function\") throw new <Error>(...)`). ai-quota._validateStore asserts the optional cross-node counter store exposes reserve / add / get / reset; tus-upload.create validates the resumable-upload opts shape; pagination.cursor / pagination.offset validate paging opts. Each throws a primitive-specific typed error (AiQuotaError / TusUploadError / PaginationError); the shingle is the typeof-guard cascade shape, not behaviour.",
     },
     {
       mode:  "family-subset",
@@ -5450,6 +5450,24 @@ function testNoStateStampsInPublicDocs() {
 //   4. The catalog scans whole-file content (multiline regex) so
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
+  {
+    // A hard quota / rate / budget ceiling must be enforced with an
+    // atomic conditional reserve — the limit test and the charge are
+    // one indivisible operation ("add only if current + amount fits").
+    // Charge-then-refund (an unconditional `incrBy` followed by a
+    // compensating `decrBy` on overflow) transiently inflates a shared
+    // counter: under cross-node concurrency a smaller call that should
+    // fit can be falsely denied while an over-budget call's charge is
+    // still pending its refund. The textual tell of that broken shape
+    // is a counter store that exposes / requires a `decrBy` refund op.
+    // b.ai.quota originally shipped the refund shape and was reworked
+    // to `store.reserve` (Codex P1 on PR #178, v0.12.27).
+    id: "limit-store-charge-then-refund",
+    primitive: "atomic conditional reserve (limit test + charge as one operation) for hard quota / rate / budget enforcement — see lib/ai-quota.js store.reserve; never charge-then-refund (incrBy + a compensating decrBy)",
+    regex: /\bdecrBy\b/,
+    allowlist: [],
+    reason: "Hard quota / rate / budget ceilings must be enforced with an atomic conditional reserve (the limit test and the charge are one indivisible operation), never charge-then-refund (an unconditional increment plus a compensating `decrBy`). The refund shape transiently over-counts a shared counter and falsely denies concurrent calls that should fit (Codex P1 on PR #178, v0.12.27 — b.ai.quota originally shipped this shape and was reworked to store.reserve). A future store that genuinely needs a decrement for a non-ceiling gauge metric allowlists with a structural reason explaining why no limit decision reads the counter mid-refund.",
+  },
   {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
     // (TC39 stage-4, lands in V8 13.x). It replaces the two-step
