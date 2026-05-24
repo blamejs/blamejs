@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.24",
-  "createdAt": "2026-05-24T09:01:45.072Z",
+  "frameworkVersion": "0.12.25",
+  "createdAt": "2026-05-24T09:29:22.216Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1512,6 +1512,10 @@
             "SUPPORTED_JURISDICTIONS": {
               "type": "instance",
               "ctorName": "Array"
+            },
+            "applyAll": {
+              "type": "function",
+              "arity": 1
             },
             "chatbot": {
               "type": "function",
