@@ -457,6 +457,7 @@ module.exports = {
   jose:             { jwe: { experimental: require("./lib/jose-jwe-experimental") } },
   cbor:             require("./lib/cbor"),
   cose:             require("./lib/cose"),
+  cwt:              require("./lib/cwt"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
