@@ -445,6 +445,7 @@ module.exports = {
     disclosure:      require("./lib/ai-disclosure"),
     quota:           require("./lib/ai-quota"),
     capability:      require("./lib/ai-capability"),
+    dp:              require("./lib/ai-dp"),
   },
   promisePool:      require("./lib/promise-pool"),
   sdNotify:         require("./lib/sd-notify"),
