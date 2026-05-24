@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.34",
-  "createdAt": "2026-05-24T21:55:00.445Z",
+  "frameworkVersion": "0.12.35",
+  "createdAt": "2026-05-24T23:01:48.006Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14767,6 +14767,117 @@
           "ctorName": "Array"
         },
         "send": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "eat": {
+      "type": "object",
+      "members": {
+        "CLAIM_LABELS": {
+          "type": "object",
+          "members": {
+            "dbgstat": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "eat_profile": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "hwmodel": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "hwversion": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "location": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "manifests": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "measurements": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "nonce": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "oemboot": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "oemid": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "submods": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sueids": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "swname": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "swversion": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ueid": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "uptime": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "DBGSTAT": {
+          "type": "object",
+          "members": {
+            "disabled": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "disabled-fully-and-permanently": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "disabled-permanently": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "disabled-since-boot": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "enabled": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "EatError": {
+          "type": "function",
+          "arity": 4
+        },
+        "sign": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
           "type": "function",
           "arity": 2
         }
