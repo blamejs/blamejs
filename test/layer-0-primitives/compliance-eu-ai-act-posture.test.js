@@ -35,6 +35,30 @@ async function testCacGenaiLabelPostureDefaults() {
     b.compliance.postureDefault("cac-genai-label", "auditChainSignedRequired") === true);
 }
 
+async function testLegacyAiActAliasGetsSameCascade() {
+  // Codex P1 on v0.12.26 PR #177 — the legacy `ai-act` short
+  // name was in KNOWN_POSTURES but the POSTURE_DEFAULTS row was
+  // missing. Deployments pinned to the legacy alias would get
+  // null from postureDefault() and bypass the encryption gate.
+  check("legacy ai-act: backupEncryptionRequired same as eu-ai-act",
+    b.compliance.postureDefault("ai-act", "backupEncryptionRequired") === true);
+  check("legacy ai-act: tlsMinVersion same as eu-ai-act",
+    b.compliance.postureDefault("ai-act", "tlsMinVersion") === "TLSv1.3");
+  check("legacy ai-act: requireVacuumAfterErase same as eu-ai-act",
+    b.compliance.postureDefault("ai-act", "requireVacuumAfterErase") === true);
+  // Verify backup encryption gate covers the legacy alias too.
+  var refused = null;
+  try {
+    b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: os.tmpdir() }),
+      posture:        "ai-act",
+      cryptoStrategy: "none",
+    });
+  } catch (e) { refused = e; }
+  check("legacy ai-act: backup posture-gate refuses cryptoStrategy: none",
+    refused && /posture-requires-encryption/.test(refused.code || refused.message));
+}
+
 async function testBackupRefusesPlaintextUnderAiPostures() {
   var postures = ["eu-ai-act", "ca-ab-853", "cac-genai-label"];
   for (var i = 0; i < postures.length; i += 1) {
@@ -55,6 +79,7 @@ async function run() {
   await testEuAiActPostureDefaults();
   await testCaAb853PostureDefaults();
   await testCacGenaiLabelPostureDefaults();
+  await testLegacyAiActAliasGetsSameCascade();
   await testBackupRefusesPlaintextUnderAiPostures();
 }
 
