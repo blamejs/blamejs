@@ -86,6 +86,50 @@ async function testCloneRefusesSameId() {
   }
 }
 
+async function testCloneOverwritePurgesStaleKeys() {
+  // Codex P1 on v0.12.23 PR #174 — overwrite=true must purge
+  // existing dst keys before writing the new ones. Otherwise a
+  // dst=tar bundle overwritten by a src=directory clone keeps
+  // both formats present + bundleInfo reads the stale tar.
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "cb-ow-src-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "cb-ow-dest-"));
+  try {
+    fs.writeFileSync(path.join(src, "manifest.json"), "{\"v\":1}", { mode: 0o600 });
+    fs.writeFileSync(path.join(src, "data"), "directory-bundle-payload", { mode: 0o600 });
+    // Write a tar.gz bundle at dst first.
+    var tarStorage = b.backup.bundleAdapterStorage({
+      adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:  "tar.gz",
+    });
+    var dstId = "2026-05-24T14-00-00-000Z-bbaa9988";
+    var srcSrc = fs.mkdtempSync(path.join(os.tmpdir(), "cb-ow-srcsrc-"));
+    fs.writeFileSync(path.join(srcSrc, "x"), "y", { mode: 0o600 });
+    await tarStorage.writeBundle(dstId, srcSrc);  // dst now has bundle.tar.gz
+    // Write a directory bundle that will become the clone source.
+    var dirStorage = b.backup.bundleAdapterStorage({
+      adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:  "directory",
+    });
+    var srcId = "2026-05-24T14-15-00-000Z-ccbb7766";
+    await dirStorage.writeBundle(srcId, src);
+    // Clone src (directory) over dst (tar.gz) with overwrite=true.
+    await dirStorage.cloneBundle(srcId, dstId, { overwrite: true });
+    // Verify dst no longer has the stale bundle.tar.gz key —
+    // bundleInfo should report directory format.
+    var info = await dirStorage.bundleInfo(dstId);
+    check("cloneBundle: overwrite=true purged stale tar.gz before writing new directory keys",
+      info.format === "directory");
+    // Also verify no bundle.tar.gz file lingers on disk.
+    var staleTarGzExists = fs.existsSync(path.join(dest, dstId, "bundle.tar.gz"));
+    check("cloneBundle: stale bundle.tar.gz key removed from storage",
+      staleTarGzExists === false);
+    try { fs.rmSync(srcSrc, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  } finally {
+    try { fs.rmSync(src,  { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
 async function testClonePreservesEnvelope() {
   // Verify the clone preserves a recipient-wrapped bundle's
   // envelope bytes exactly — operators using cloneBundle for
@@ -120,6 +164,7 @@ async function run() {
   await testCloneTarGzPlaintext();
   await testCloneRefusesExistingDst();
   await testCloneRefusesSameId();
+  await testCloneOverwritePurgesStaleKeys();
   await testClonePreservesEnvelope();
 }
 
