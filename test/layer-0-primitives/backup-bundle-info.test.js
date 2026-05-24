@@ -96,6 +96,60 @@ async function testBundleInfoNotFound() {
   }
 }
 
+async function testBundleInfoLargeBundleUsesPartialRead() {
+  // Codex P1 on v0.12.17 PR #168 — bundleInfo's envelope probe
+  // claimed 5 bytes but read the full payload. With a 1 MiB
+  // bundle + readPartial-capable adapter, the probe should consume
+  // at most 16 bytes; verify by mocking an adapter whose readFile
+  // throws "DO NOT CALL" but whose readPartial returns the magic.
+  var calls = { readFile: 0, readPartial: 0 };
+  var sealedHead = Buffer.concat([Buffer.from("BAWRP"), Buffer.alloc(11)]);   // 16 bytes
+  var mockAdapter = {
+    writeFile: async function () {},
+    readFile:  async function () { calls.readFile += 1; throw new Error("readFile MUST NOT be called for the probe"); },
+    listKeys:  async function () { return []; },
+    deleteKey: async function () {},
+    hasKey:    async function (key) { return /bundle\.tar\.gz$/.test(key); },
+    readPartial: async function (key, length) {
+      calls.readPartial += 1;
+      return sealedHead.slice(0, length);
+    },
+    statKey:   async function () { return { size: 1024 * 1024, mtimeMs: 0 }; },
+  };
+  var storage = b.backup.bundleAdapterStorage({ adapter: mockAdapter });
+  var info = await storage.bundleInfo("2026-05-23T23-00-00-000Z-bbbbbbbb");
+  check("bundleInfo: probe routes through readPartial when adapter exposes it",
+    calls.readPartial === 1 && calls.readFile === 0);
+  check("bundleInfo: envelopeKind correctly identified from partial read",
+    info.envelopeKind === "recipient");
+  check("bundleInfo: sizeBytes from statKey", info.sizeBytes === 1024 * 1024);
+}
+
+async function testListBundlesTarGzWinsOverTar() {
+  // Codex P2 on v0.12.17 PR #168 — when both bundle.tar and
+  // bundle.tar.gz exist for the same bundleId (e.g. operator
+  // migration in progress), listBundles must report tar.gz to
+  // align with readBundle's precedence. Verify by injecting both
+  // keys via a mock adapter.
+  var mockAdapter = {
+    writeFile: async function () {},
+    readFile:  async function () { return Buffer.alloc(0); },
+    listKeys:  async function () {
+      // Return keys in tar-first order; tar.gz should still win.
+      return [
+        "2026-05-23T22-00-00-000Z-aabbccdd/bundle.tar",
+        "2026-05-23T22-00-00-000Z-aabbccdd/bundle.tar.gz",
+      ];
+    },
+    deleteKey: async function () {},
+    hasKey:    async function () { return false; },
+  };
+  var storage = b.backup.bundleAdapterStorage({ adapter: mockAdapter });
+  var list = await storage.listBundles();
+  check("listBundles: tar.gz precedence applied when both formats exist",
+    list.length === 1 && list[0].format === "tar.gz");
+}
+
 async function testListBundlesCarriesFormat() {
   var src = fs.mkdtempSync(path.join(os.tmpdir(), "lb-src-"));
   var dest = fs.mkdtempSync(path.join(os.tmpdir(), "lb-dest-"));
@@ -128,6 +182,8 @@ async function run() {
   await testBundleInfoTarPassphrase();
   await testBundleInfoPlaintext();
   await testBundleInfoNotFound();
+  await testBundleInfoLargeBundleUsesPartialRead();
+  await testListBundlesTarGzWinsOverTar();
   await testListBundlesCarriesFormat();
 }
 
