@@ -153,6 +153,56 @@ async function testRequirementsValidation() {
   check("requirements: unknown requirement key rejected", unknownKey !== null);
 }
 
+async function testNonNumericRequirementFailsClosed() {
+  // Codex P1 on PR #179 — a non-numeric numeric-minimum (NaN, "128k",
+  // a bad parse) used to make the `<` comparison false and SILENTLY
+  // satisfy the requirement, so an undersized model could be picked.
+  // It must now fail fast at the validation boundary, not fail open.
+  var f = _fleet();
+  var bads = [
+    function () { f.route({ requirements: { minContextTokens: "300000" } }); },   // string
+    function () { f.route({ requirements: { minContextTokens: NaN } }); },
+    function () { f.route({ requirements: { minOutputTokens: Infinity } }); },
+    function () { f.route({ requirements: { minPromptCachingTokens: -1 } }); },
+    function () { f.satisfies("opus", { minContextTokens: "lots" }); },           // same boundary on satisfies()
+    function () { f.route({ requirements: { toolUse: 1 } }); },                   // non-boolean opt-in
+    function () { f.route({ requirements: { citationSupport: "yes" } }); },
+  ];
+  var ok = true;
+  for (var i = 0; i < bads.length; i++) {
+    var caught = null;
+    try { bads[i](); } catch (e) { caught = e; }
+    if (!caught || caught.code !== "aiCapability/bad-requirements") { ok = false; }
+  }
+  check("requirements: non-numeric / non-boolean values fail closed (no silent satisfy)", ok);
+  // A valid numeric minimum still routes.
+  check("requirements: valid numeric minimum still routes",
+    f.route({ requirements: { minContextTokens: 100000 } }).modelId === "haiku");
+}
+
+async function testMalformedCostBasisFailsFast() {
+  // Codex P2 on PR #179 — a malformed costBasis field used to coerce
+  // to 0 and underprice a candidate, deterministically biasing the
+  // "cheapest" choice. Present-but-non-numeric fields now throw.
+  var f = _fleet();
+  var bads = [
+    function () { f.route({ requirements: {}, costBasis: { inputTokens: "lots" } }); },
+    function () { f.route({ requirements: {}, costBasis: { outputTokens: NaN } }); },
+    function () { f.route({ requirements: {}, costBasis: { inputTokens: -5 } }); },
+    function () { f.route({ requirements: {}, costBasis: { bogus: 1 } }); },        // unknown key
+  ];
+  var ok = true;
+  for (var i = 0; i < bads.length; i++) {
+    var caught = null;
+    try { bads[i](); } catch (e) { caught = e; }
+    if (!caught) ok = false;
+  }
+  check("costBasis: malformed fields fail fast (no silent zero-coercion)", ok);
+  // An absent field is still fine (treated as 0 tokens on that side).
+  check("costBasis: absent field defaults cleanly",
+    f.route({ requirements: {}, costBasis: { inputTokens: 1000 } }).modelId === "haiku");
+}
+
 async function run() {
   await testDescribeListRegister();
   await testRouteCheapestSatisfying();
@@ -164,6 +214,8 @@ async function run() {
   await testDescriptorFrozenImmutable();
   await testConfigValidation();
   await testRequirementsValidation();
+  await testNonNumericRequirementFailsClosed();
+  await testMalformedCostBasisFailsFast();
 }
 
 module.exports = { run: run };
