@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.26",
-  "createdAt": "2026-05-24T10:16:51.122Z",
+  "frameworkVersion": "0.12.27",
+  "createdAt": "2026-05-24T15:13:24.570Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1574,6 +1574,31 @@
             "verify": {
               "type": "function",
               "arity": 3
+            }
+          }
+        },
+        "quota": {
+          "type": "object",
+          "members": {
+            "AiQuotaError": {
+              "type": "function",
+              "arity": 4
+            },
+            "DIMENSIONS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "ENFORCEMENTS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "PERIODS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
+              "type": "function",
+              "arity": 1
             }
           }
         }
@@ -6344,6 +6369,27 @@
           "type": "object",
           "members": {
             "42-cfr-part-2": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ai-act": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
