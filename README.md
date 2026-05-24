@@ -127,6 +127,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **URL + path** — `b.safeUrl` (IDN mixed-script / homograph refuse); `b.safeJsonPath` (refuses filter `?(...)`, deep-scan `$..`, script-shape `(@.x)` for safe Postgres JSONB ops)
 - **Binary codec** — `b.cbor` bounded deterministic CBOR (RFC 8949 §4.2): depth/size caps, indefinite-length + reserved-info + tag + duplicate-key refusal, `requireDeterministic` canonical-form check; the in-tree substrate under COSE / CWT / SCITT / WebAuthn attestation
 - **COSE signing** — `b.cose` COSE_Sign1 sign/verify (RFC 9052) over `b.cbor`: classical ES256/384/512 + EdDSA (final COSE ids, interoperable today) plus ML-DSA-87 (PQC-forward, draft id); bounded + alg-allowlisted + crit-bypass-checked verification; the signed-statement substrate under SCITT / CWT / C2PA
+- **CBOR Web Token** — `b.cwt` CWT sign/verify (RFC 8392) over `b.cose`: standard-claim mapping (iss/sub/aud/exp/nbf/iat/cti) + `exp`/`nbf` clock-skew enforcement + `iss`/`aud` matching; the CBOR-native JWT for constrained / IoT / FIDO / verifiable-credential contexts
 - **Document parsers** — `b.parsers` (XML / TOML / YAML / .env); `b.config` (schema-validated env)
 - **File-type detection** — `b.fileType` magic-byte content classification with deny-on-upload categories (image / document / archive / executable / etc.)
 ### Content-safety gates

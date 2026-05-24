@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.33",
-  "createdAt": "2026-05-24T20:50:22.285Z",
+  "frameworkVersion": "0.12.34",
+  "createdAt": "2026-05-24T21:55:00.445Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13990,6 +13990,56 @@
           "arity": 2
         },
         "stringify": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "cwt": {
+      "type": "object",
+      "members": {
+        "CLAIM_LABELS": {
+          "type": "object",
+          "members": {
+            "aud": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "cti": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "exp": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "iat": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "iss": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "nbf": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "sub": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "CwtError": {
+          "type": "function",
+          "arity": 4
+        },
+        "sign": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
           "type": "function",
           "arity": 2
         }
