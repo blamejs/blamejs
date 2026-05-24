@@ -2199,10 +2199,11 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/ai-quota.js:_emitAudit",
+        "lib/ai-capability.js:_emitAudit",
         "lib/cert.js:_emitAudit",
         "lib/mail-send-deliver.js:_auditEmit",
       ],
-      reason: "v0.12.27 — per-module drop-silent audit-emit helper (`try { audit().safeEmit({ action, outcome, metadata }); } catch (_e) {}`). Same family as the archive / http-client _emitAudit cluster (feedback_audit_safeEmit_per_module_emitAudit_shape): ai-quota.js emits ai/quota-applied + ai/quota-exceeded, cert.js emits certificate-lifecycle events, mail-send-deliver.js emits delivery events. Each carries a primitive-specific `action:` namespace + metadata fields; consolidating would force a shared audit import and lose the per-primitive namespace operators grep for in audit logs.",
+      reason: "v0.12.27 + v0.12.28 — per-module drop-silent audit-emit helper (`try { audit().safeEmit({ action, outcome, metadata }); } catch (_e) {}`). Same family as the archive / http-client _emitAudit cluster (feedback_audit_safeEmit_per_module_emitAudit_shape): ai-quota.js emits ai/quota-applied + ai/quota-exceeded, ai-capability.js emits ai/capability-routed + ai/capability-no-candidate, cert.js emits certificate-lifecycle events, mail-send-deliver.js emits delivery events. Each carries a primitive-specific `action:` namespace + metadata fields; consolidating would force a shared audit import and lose the per-primitive namespace operators grep for in audit logs.",
     },
     {
       mode:  "family-subset",
@@ -2213,6 +2214,16 @@ async function testNoDuplicateCodeBlocks() {
         "lib/pagination.js:offset",
       ],
       reason: "v0.12.27 — defensive typeof-guard validation prelude (`if (!x || typeof x !== \"object\" || typeof x.fn !== \"function\") throw new <Error>(...)`). ai-quota._validateStore asserts the optional cross-node counter store exposes reserve / add / get / reset; tus-upload.create validates the resumable-upload opts shape; pagination.cursor / pagination.offset validate paging opts. Each throws a primitive-specific typed error (AiQuotaError / TusUploadError / PaginationError); the shingle is the typeof-guard cascade shape, not behaviour.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/ai-capability.js:create",
+        "lib/cert.js:create",
+        "lib/mail-send-deliver.js:create",
+        "lib/auth/sd-jwt-vc-holder.js:create",
+      ],
+      reason: "v0.12.28 — factory-primitive opts-validation prelude (`validateOpts.requireObject + validateOpts(allowedKeys) + per-field typed-error throws + closure-captured return`). ai-capability.create validates a model-descriptor registry + builds a router closure; cert.create / mail-send-deliver.create / sd-jwt-vc-holder.create each validate a distinct spec's opts (X.509 cert issuance / RFC 5321 SMTP send / SD-JWT-VC holder store). Each throws a primitive-specific typed error (AiCapabilityError / CertError / MailSendError / SdJwtVcError); the shingle is the create()-factory validation idiom, not behaviour. Same family as the v0.10.16 factory-primitive validateOpts cluster.",
     },
     {
       mode:  "family-subset",

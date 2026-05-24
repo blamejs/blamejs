@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.27",
-  "createdAt": "2026-05-24T15:13:24.570Z",
+  "frameworkVersion": "0.12.28",
+  "createdAt": "2026-05-24T15:47:42.211Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1493,6 +1493,23 @@
               "arity": 1
             },
             "report": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "capability": {
+          "type": "object",
+          "members": {
+            "AiCapabilityError": {
+              "type": "function",
+              "arity": 4
+            },
+            "REASONING_TIERS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "create": {
               "type": "function",
               "arity": 1
             }

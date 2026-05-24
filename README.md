@@ -163,6 +163,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **Agent identity** — A2A signed agent-card primitive (Linux Foundation Agentic AI Foundation v1.x, ML-DSA-87) (`b.a2a`)
 - **Content provenance** — C2PA 2.1 + California SB-942 / AB-853 manifest builder for AI-generated media (provider, model id + version, timestamp, content ID, signed) (`b.contentCredentials`)
 - **AI usage quotas** — per-tenant / per-model budgets metered by tokens / requests / cost-usd / compute-hours over calendar-aligned windows, with an atomic conditional reserve (no charge-then-refund race) + hard/soft/warn enforcement and an optional cross-node store; defends OWASP LLM10:2025 unbounded consumption / denial-of-wallet (`b.ai.quota`)
+- **AI capability routing** — model-capability registry (context window / modalities / tool use / reasoning tier / cost rates) + a router that picks the cheapest model satisfying a request's requirements, refusing capability mismatches before the inference call (NIST AI RMF MAP + Model Cards); composes with `b.ai.quota` cost budgets (`b.ai.capability`)
 ### Compliance regimes
 
 - **Posture coordinator** — `b.compliance` cascades operator-declared regime into retention / audit / db / cryptoField via POSTURE_DEFAULTS:
