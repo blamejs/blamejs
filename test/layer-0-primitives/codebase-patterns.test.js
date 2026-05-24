@@ -5647,6 +5647,34 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P1 on v0.12.13 PR #164 — listKeys against a paginated
+    // object-store backend dropped every key past the first page
+    // because the call sent only one client.list() and ignored
+    // the `truncated` / `continuationToken` contract. Detector
+    // locks the shape: any lib/ call to `client.list(...)` paired
+    // with `truncated` consumption MUST also walk the
+    // continuationToken loop, OR the call site must carry an
+    // `allow:list-without-pagination` marker explaining why
+    // single-page is sufficient (typically: the caller already
+    // bounds the prefix or already passes a maxResults that's
+    // known to be larger than the universe).
+    id: "object-store-list-without-pagination",
+    primitive: "object-store list calls in lib/ MUST walk truncated / continuationToken pages — single-shot list silently truncates at the backend's page cap (1000 by default). The runtime symptom is silent data loss in listBundles / deleteBundle. Either follow the pagination loop or carry the `allow:list-without-pagination` marker with the bound reason.",
+    regex: /\bclient\.list\s*\(/,
+    requires: /continuationToken|truncated|allow:list-without-pagination/,
+    skipCommentLines: true,
+    allowlist: [
+      // backup/index.js IS the runtime pagination site (walks the
+      // loop with the runaway-cap defence). Allowlisted because
+      // the inline `client.list` calls there are inside the
+      // walker itself; the detector would false-positive on the
+      // call inside the do-while.
+      "lib/backup/index.js",
+    ],
+    reason: "Codex P1 on v0.12.13 PR #164 — objectStoreAdapter.listKeys called client.list once and never followed the truncated/continuationToken pagination contract. The fix walks the loop with a PAGINATION_CAP safety net. Detector locks the shape so a future caller of client.list can't silently drop pagination.",
+  },
+
+  {
     // Codex P1A on v0.12.12 PR #163 — "on-request" placement
     // semantics collapsed into "always" when shouldEmit didn't
     // gate on an explicit `opts.requested` signal. Detector locks

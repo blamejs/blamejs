@@ -88,6 +88,53 @@ async function testObjectStoreAdapterRefusesBadClient() {
     refused2 && /client is required/.test(refused2.message || ""));
 }
 
+async function testObjectStoreAdapterPagination() {
+  // Codex P1 on v0.12.13 PR #164 — listKeys must follow
+  // truncated / continuationToken pages. Mock a client that
+  // returns 3 pages then exhausts.
+  var pages = [
+    { items: [{ key: "p/a" }, { key: "p/b" }], truncated: true, continuationToken: "tok1" },
+    { items: [{ key: "p/c" }, { key: "p/d" }], truncated: true, continuationToken: "tok2" },
+    { items: [{ key: "p/e" }],                  truncated: false, continuationToken: null  },
+  ];
+  var calls = [];
+  var client = {
+    put:    async function () { return { size: 0 }; },
+    get:    async function () { return Buffer.alloc(0); },
+    head:   async function () { return { size: 0 }; },
+    delete: async function () { return true; },
+    list:   async function (prefix, opts) {
+      calls.push({ prefix: prefix, token: (opts && opts.continuationToken) || null });
+      return pages.shift();
+    },
+  };
+  var adapter = b.backup.bundleAdapterStorage.objectStoreAdapter(client, { prefix: "p" });
+  var keys = await adapter.listKeys("");
+  check("objectStoreAdapter.listKeys: walks all paginated pages",
+    keys.length === 5 && keys.join(",") === "a,b,c,d,e");
+  check("objectStoreAdapter.listKeys: forwarded continuationToken across calls",
+    calls.length === 3 && calls[1].token === "tok1" && calls[2].token === "tok2");
+}
+
+async function testObjectStoreAdapterPaginationRunaway() {
+  // A misbehaving backend that returns truncated:true forever
+  // must trip the safety cap rather than spin.
+  var client = {
+    put:    async function () { return { size: 0 }; },
+    get:    async function () { return Buffer.alloc(0); },
+    head:   async function () { return { size: 0 }; },
+    delete: async function () { return true; },
+    list:   async function () {
+      return { items: [{ key: "k" }], truncated: true, continuationToken: "ever" };
+    },
+  };
+  var adapter = b.backup.bundleAdapterStorage.objectStoreAdapter(client);
+  var refused = null;
+  try { await adapter.listKeys(""); } catch (e) { refused = e; }
+  check("objectStoreAdapter.listKeys: runaway pagination refused with typed error",
+    refused && /list-pagination-runaway/.test(refused.code || refused.message));
+}
+
 async function testObjectStoreAdapterPrefixTraversalRefused() {
   var client = b.objectStore.buildBackend({
     protocol: "local",
@@ -105,6 +152,8 @@ async function run() {
   await testObjectStoreAdapterRoundTrip();
   await testObjectStoreAdapterWithRecipient();
   await testObjectStoreAdapterRefusesBadClient();
+  await testObjectStoreAdapterPagination();
+  await testObjectStoreAdapterPaginationRunaway();
   await testObjectStoreAdapterPrefixTraversalRefused();
 }
 
