@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.25",
-  "createdAt": "2026-05-24T09:29:22.216Z",
+  "frameworkVersion": "0.12.26",
+  "createdAt": "2026-05-24T10:16:51.122Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6406,6 +6406,27 @@
                 }
               }
             },
+            "ca-ab-853": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "ca-ab853": {
               "type": "object",
               "members": {
@@ -6449,6 +6470,27 @@
               }
             },
             "ca-tfaia": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "cac-genai-label": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -6957,6 +6999,27 @@
               }
             },
             "eidas-2": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eu-ai-act": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -8922,6 +8985,27 @@
                 }
               }
             },
+            "ca-ab-853": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "ca-ab853": {
               "type": "object",
               "members": {
@@ -8986,6 +9070,27 @@
               }
             },
             "ca-tfaia": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "cac-genai-label": {
               "type": "object",
               "members": {
                 "citation": {
@@ -9658,6 +9763,27 @@
               }
             },
             "ens-es": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "eu-ai-act": {
               "type": "object",
               "members": {
                 "citation": {
