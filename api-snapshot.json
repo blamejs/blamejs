@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.31",
-  "createdAt": "2026-05-24T18:49:21.531Z",
+  "frameworkVersion": "0.12.32",
+  "createdAt": "2026-05-24T19:44:18.478Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6002,6 +6002,27 @@
         "validate": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "cbor": {
+      "type": "object",
+      "members": {
+        "CborError": {
+          "type": "function",
+          "arity": 4
+        },
+        "Tag": {
+          "type": "function",
+          "arity": 2
+        },
+        "decode": {
+          "type": "function",
+          "arity": 2
+        },
+        "encode": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
