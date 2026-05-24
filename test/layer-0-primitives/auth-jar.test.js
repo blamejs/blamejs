@@ -92,6 +92,16 @@ async function testClientIdBinding() {
   var e2 = null;
   try { await b.auth.jar.parse(wrongIss, _parseOpts()); } catch (e) { e2 = e; }
   check("parse: iss not matching expected client refused (verifyExternal issuer pin)", e2 !== null);
+
+  // Codex P2 on PR #182 — a request object that OMITS client_id must
+  // be refused (RFC 9101 §5.2 requires it in the signed object), not
+  // waved through on the strength of an outer query-param client_id.
+  var noClientId = _signRs256(KEYS.privateKey, { alg: "RS256", typ: "oauth-authz-req+jwt", kid: "c1" },
+    { iss: CLIENT, aud: AS, response_type: "code", redirect_uri: "https://app/cb",
+      iat: _nowSec(), exp: _nowSec() + 120 });
+  var e3 = null;
+  try { await b.auth.jar.parse(noClientId, _parseOpts()); } catch (e) { e3 = e; }
+  check("parse: missing client_id claim refused (RFC 9101 §5.2)", e3 && e3.code === "auth-jar/missing-client-id");
 }
 
 async function testAlgConfusionDelegated() {
