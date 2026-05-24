@@ -1,0 +1,26 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.12.27",
+  "date": "2026-05-24",
+  "headline": "`b.ai.quota` — per-tenant, per-model AI usage budgets with atomic consume-and-check",
+  "summary": "`b.ai.quota.create(opts)` builds an enforcer that caps AI inference usage per `(tenant, model, dimension, period)` and defends OWASP LLM Top 10 2025 LLM10 (Unbounded Consumption) — the class that includes denial-of-wallet, where an attacker drives a high volume of pay-per-use inferences until the bill itself is the attack. Meter by `tokens`, `requests`, `cost-usd`, or `compute-hours` over a calendar-aligned UTC window (`second` through `month`). `consume(tenant, model, amount)` is a single atomic check-and-charge: under the default `hard` enforcement it reserves the amount only if it fits under the ceiling, otherwise it refuses without charging — there is no separate check-then-add shape to race. The in-memory counter is per-process; multi-node deployments supply an `opts.store` adapter (Redis `INCRBY`, a SQL `UPDATE ... RETURNING`) whose `incrBy` / `decrBy` are atomic on the shared backend to enforce one aggregate ceiling across the cluster. Limit resolution is most-specific-first: `perTenantModel` over `perTenant` over `perModel` over the default `limit`; tenant and model identifiers are percent-encoded into the counter key so a hostile tenant name cannot collide with another tenant's budget.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.ai.quota.create(opts)` — per-tenant AI usage-budget enforcer",
+          "body": "Returns `{ consume, check, snapshot, reset }` scoped to one `dimension` (`tokens` / `requests` / `cost-usd` / `compute-hours`) and one `period` (`second` / `minute` / `hour` / `day` / `week` (Monday-aligned) / `month` (1st-of-month), all UTC-aligned). `consume(tenant, model, amount, opts?)` returns `{ used, limit, remaining, allowed, exceeded, windowStart, resetsAt, ... }`. `check(tenant, model)` is the read-only snapshot. Spin up one enforcer per dimension you meter — a monthly `cost-usd` budget and a per-minute `tokens` burst cap coexist as two `create()` calls sharing one store. Defends OWASP LLM10:2025 Unbounded Consumption / denial-of-wallet; maps to NIST AI RMF (AI 100-1) MANAGE 2.x and EU AI Act Art. 15 (robustness / resource-exhaustion resilience)."
+        },
+        {
+          "title": "`hard` / `soft` / `warn` enforcement",
+          "body": "`hard` (default) refuses the over-budget call and throws `aiQuota/exceeded` without charging — the rejected reservation is refunded so the counter is untouched. `soft` admits the charge but reports `allowed: false` so the caller decides whether to honor it. `warn` admits and allows (advisory), flagging `exceeded: true`. A per-call `consume(..., { enforcement })` override lets one endpoint soften the mode for a trusted internal caller without a second enforcer. Every over-budget event emits `ai/quota-exceeded` through the drop-silent audit chain (`ai/quota-applied` on success), tagged with the active cluster node id for attribution."
+        },
+        {
+          "title": "Cross-node aggregate budgets via `opts.store`",
+          "body": "The default counter is in-memory (per-process). Supply `opts.store` exposing atomic `incrBy` / `decrBy` / `get` / `reset` (Redis, a shared SQL row) and the ceiling is enforced on the cluster-wide aggregate: the `hard`-mode incr-test-refund shape stays correct across nodes where a plain read-then-add would race. Per-tenant and per-model limit overrides (`perTenant` / `perModel` / `perTenantModel`) are validated at config time so a malformed cap surfaces at boot, not as a silent fall-through to the default."
+        }
+      ]
+    }
+  ]
+}

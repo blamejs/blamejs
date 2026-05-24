@@ -443,6 +443,7 @@ module.exports = {
     aiContentDetect: require("./lib/ai-content-detect"),
     modelManifest:   require("./lib/ai-model-manifest"),
     disclosure:      require("./lib/ai-disclosure"),
+    quota:           require("./lib/ai-quota"),
   },
   promisePool:      require("./lib/promise-pool"),
   sdNotify:         require("./lib/sd-notify"),

@@ -2198,6 +2198,25 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/ai-quota.js:_emitAudit",
+        "lib/cert.js:_emitAudit",
+        "lib/mail-send-deliver.js:_auditEmit",
+      ],
+      reason: "v0.12.27 — per-module drop-silent audit-emit helper (`try { audit().safeEmit({ action, outcome, metadata }); } catch (_e) {}`). Same family as the archive / http-client _emitAudit cluster (feedback_audit_safeEmit_per_module_emitAudit_shape): ai-quota.js emits ai/quota-applied + ai/quota-exceeded, cert.js emits certificate-lifecycle events, mail-send-deliver.js emits delivery events. Each carries a primitive-specific `action:` namespace + metadata fields; consolidating would force a shared audit import and lose the per-primitive namespace operators grep for in audit logs.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/ai-quota.js:_validateStore",
+        "lib/middleware/tus-upload.js:create",
+        "lib/pagination.js:cursor",
+        "lib/pagination.js:offset",
+      ],
+      reason: "v0.12.27 — defensive typeof-guard validation prelude (`if (!x || typeof x !== \"object\" || typeof x.fn !== \"function\") throw new <Error>(...)`). ai-quota._validateStore asserts the optional cross-node counter store exposes incrBy / decrBy / get / reset; tus-upload.create validates the resumable-upload opts shape; pagination.cursor / pagination.offset validate paging opts. Each throws a primitive-specific typed error (AiQuotaError / TusUploadError / PaginationError); the shingle is the typeof-guard cascade shape, not behaviour.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/archive-adapters.js:fs",
         "lib/archive-adapters.js:http",
         "lib/network-smtp-policy.js:mtaStsFetch",
