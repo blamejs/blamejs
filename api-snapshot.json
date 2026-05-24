@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.32",
-  "createdAt": "2026-05-24T19:44:18.478Z",
+  "frameworkVersion": "0.12.33",
+  "createdAt": "2026-05-24T20:50:22.285Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13449,6 +13449,52 @@
         "serialize": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "cose": {
+      "type": "object",
+      "members": {
+        "ALGORITHMS": {
+          "type": "object",
+          "members": {
+            "ES256": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ES384": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ES512": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "EdDSA": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ML-DSA-87": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "COSE_SIGN1_TAG": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "CoseError": {
+          "type": "function",
+          "arity": 4
+        },
+        "sign": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
