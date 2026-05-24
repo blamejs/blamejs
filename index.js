@@ -444,6 +444,7 @@ module.exports = {
     modelManifest:   require("./lib/ai-model-manifest"),
     disclosure:      require("./lib/ai-disclosure"),
     quota:           require("./lib/ai-quota"),
+    capability:      require("./lib/ai-capability"),
   },
   promisePool:      require("./lib/promise-pool"),
   sdNotify:         require("./lib/sd-notify"),
