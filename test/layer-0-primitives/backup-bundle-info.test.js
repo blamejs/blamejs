@@ -178,6 +178,37 @@ async function testListBundlesWithStats() {
   }
 }
 
+async function testBundleInfoDirectoryCreatedAt() {
+  // Codex P2 on v0.12.18 PR #169 — directory-format bundles MUST
+  // populate createdAt from the manifest.json (parity with
+  // listBundles({ withStats })). Previously the stat lookup was
+  // gated inside `if (payloadKey !== null)` which skipped
+  // directory bundles entirely.
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "bidir-src-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "bidir-dest-"));
+  try {
+    fs.writeFileSync(path.join(src, "a"), "x", { mode: 0o600 });
+    fs.writeFileSync(path.join(src, "manifest.json"), "{\"version\":1}", { mode: 0o600 });
+    var storage = b.backup.bundleAdapterStorage({
+      adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:  "directory",
+    });
+    var bid = "2026-05-24T00-45-00-000Z-aaaa9999";
+    await storage.writeBundle(bid, src);
+    var info = await storage.bundleInfo(bid);
+    check("bundleInfo: directory-format bundle reports createdAt from manifest",
+      typeof info.createdAt === "string" && /^\d{4}-\d{2}-\d{2}T/.test(info.createdAt));
+    check("bundleInfo: directory-format bundle reports format \"directory\"",
+      info.format === "directory");
+    var list = await storage.listBundles({ withStats: true });
+    check("listBundles+withStats vs bundleInfo: createdAt parity for directory format",
+      list[0].createdAt === info.createdAt);
+  } finally {
+    try { fs.rmSync(src,  { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
 async function testBundleInfoCreatedAt() {
   var src = fs.mkdtempSync(path.join(os.tmpdir(), "bica-src-"));
   var dest = fs.mkdtempSync(path.join(os.tmpdir(), "bica-dest-"));
@@ -235,6 +266,7 @@ async function run() {
   await testListBundlesCarriesFormat();
   await testListBundlesWithStats();
   await testBundleInfoCreatedAt();
+  await testBundleInfoDirectoryCreatedAt();
 }
 
 module.exports = { run: run };
