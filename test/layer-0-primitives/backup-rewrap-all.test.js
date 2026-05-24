@@ -87,6 +87,53 @@ async function testRewrapAllMixedPlaintextAndEncrypted() {
   }
 }
 
+async function testRewrapAllAllSkippableFirst() {
+  // Codex P1 on v0.12.22 PR #173 — if the first `concurrency`
+  // entries are all skippable (directory / plaintext), the
+  // warm-up drained them synchronously without spawning inflight
+  // workers + the drain loop exited immediately, leaving the
+  // remaining pending bundles unprocessed. Fix: _spawn drains
+  // skippable entries internally until it finds one that needs
+  // an async rewrap. Verify by writing 4 plaintext bundles + 1
+  // encrypted at the end + asserting the encrypted one is still
+  // rotated.
+  var oldPair = b.crypto.generateEncryptionKeyPair();
+  var newPair = b.crypto.generateEncryptionKeyPair();
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "rwa-skipfirst-src-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "rwa-skipfirst-dest-"));
+  try {
+    fs.writeFileSync(path.join(src, "a"), "x", { mode: 0o600 });
+    var pt = b.backup.bundleAdapterStorage({
+      adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:  "tar.gz",
+    });
+    // Write 4 plaintext bundles with bundleIds that sort BEFORE
+    // the encrypted one — listBundles is sorted descending so
+    // these 4 will come first in the iteration order.
+    await pt.writeBundle("2026-05-24T01-00-00-000Z-cccccc01", src);
+    await pt.writeBundle("2026-05-24T01-15-00-000Z-cccccc02", src);
+    await pt.writeBundle("2026-05-24T01-30-00-000Z-cccccc03", src);
+    await pt.writeBundle("2026-05-24T01-45-00-000Z-cccccc04", src);
+    // One encrypted bundle at the back of the queue.
+    var enc = b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:         "tar.gz",
+      cryptoStrategy: "recipient",
+      recipient:      oldPair,
+    });
+    await enc.writeBundle("2026-05-23T20-00-00-000Z-dddddd05", src);
+    var report = await enc.rewrapAllBundles({
+      newRecipient: newPair,
+      concurrency:  4,                                                                // matches the warm-up; ensures the bug repro shape
+    });
+    check("rewrapAllBundles: all-skippable warm-up drains then proceeds to encrypted bundle",
+      report.total === 5 && report.rotated === 1 && report.skipped === 4);
+  } finally {
+    try { fs.rmSync(src,  { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
 async function testRewrapAllEmptyStorage() {
   var dest = fs.mkdtempSync(path.join(os.tmpdir(), "rwa-empty-"));
   try {
@@ -107,6 +154,7 @@ async function testRewrapAllEmptyStorage() {
 async function run() {
   await testRewrapAllRecipient();
   await testRewrapAllMixedPlaintextAndEncrypted();
+  await testRewrapAllAllSkippableFirst();
   await testRewrapAllEmptyStorage();
 }
 
