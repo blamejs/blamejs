@@ -14,12 +14,12 @@ var check = helpers.check;
 async function testAutoUnwrapRecipient() {
   var pair = b.crypto.generateEncryptionKeyPair();
   var srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-auw-src-"));
-  fs.writeFileSync(path.join(srcDir, "data.json"), "{\"v\":1}");
+  fs.writeFileSync(path.join(srcDir, "data.json"), "{\"v\":1}", { mode: 0o600 });
   var t = b.archive.tar();
   t.addFile("data.json", fs.readFileSync(path.join(srcDir, "data.json")));
   var sealed = b.archive.wrap(t.toBuffer(), { recipient: pair });
   var sealedPath = path.join(os.tmpdir(), "auw-r-" + Date.now() + ".bin");
-  fs.writeFileSync(sealedPath, sealed);
+  fs.writeFileSync(sealedPath, sealed, { mode: 0o600 });
   var dest = path.join(os.tmpdir(), "auw-r-dest-" + Date.now());
   try {
     var result = await b.safeArchive.extract({
@@ -39,14 +39,14 @@ async function testAutoUnwrapRecipient() {
 
 async function testAutoUnwrapPassphrase() {
   var srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-auw-p-"));
-  fs.writeFileSync(path.join(srcDir, "data.json"), "{\"v\":2}");
+  fs.writeFileSync(path.join(srcDir, "data.json"), "{\"v\":2}", { mode: 0o600 });
   var t = b.archive.tar();
   t.addFile("data.json", fs.readFileSync(path.join(srcDir, "data.json")));
   var sealed = await b.archive.wrapWithPassphrase(t.toBuffer(), {
     passphrase: "aLongCorrectHorseBatteryStaple9876!Phrase",
   });
   var sealedPath = path.join(os.tmpdir(), "auw-p-" + Date.now() + ".bin");
-  fs.writeFileSync(sealedPath, sealed);
+  fs.writeFileSync(sealedPath, sealed, { mode: 0o600 });
   var dest = path.join(os.tmpdir(), "auw-p-dest-" + Date.now());
   try {
     var result = await b.safeArchive.extract({
@@ -68,7 +68,7 @@ async function testAutoUnwrapRefusesMissingRecipient() {
   var pair = b.crypto.generateEncryptionKeyPair();
   var sealed = b.archive.wrap(Buffer.from("X"), { recipient: pair });
   var sealedPath = path.join(os.tmpdir(), "auw-nor-" + Date.now() + ".bin");
-  fs.writeFileSync(sealedPath, sealed);
+  fs.writeFileSync(sealedPath, sealed, { mode: 0o600 });
   var refused = null;
   try {
     await b.safeArchive.extract({
@@ -86,7 +86,7 @@ async function testAutoUnwrapRefusesMissingPassphrase() {
     passphrase: "aLongCorrectHorseBatteryStaple9876!Phrase",
   });
   var sealedPath = path.join(os.tmpdir(), "auw-nop-" + Date.now() + ".bin");
-  fs.writeFileSync(sealedPath, sealed);
+  fs.writeFileSync(sealedPath, sealed, { mode: 0o600 });
   var refused = null;
   try {
     await b.safeArchive.extract({
