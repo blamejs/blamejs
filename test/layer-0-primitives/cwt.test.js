@@ -82,6 +82,29 @@ async function testTaggedAndTamper() {
   check("verify: tampered token refused by the COSE signature check", tampered && tampered.code === "cose/bad-signature");
 }
 
+async function testRobustTagAndMalformedClaims() {
+  // Codex P1 on PR #185 — a non-minimal CBOR tag-61 encoding
+  // (0xd9 0x00 0x3d, the 2-byte-argument form) must still be unwrapped.
+  var bare = await b.cwt.sign({ iss: "x" }, { alg: "ES256", privateKey: EC.privateKey });
+  var nonMinimal = Buffer.concat([Buffer.from([0xd9, 0x00, 0x3d]), bare]);
+  var v = await b.cwt.verify(nonMinimal, { algorithms: ["ES256"], publicKey: EC.publicKey });
+  check("verify: non-minimal tag-61 encoding accepted (interop)", v.claims.iss === "x");
+
+  // Codex P2 on PR #185 — a present-but-non-numeric exp must be
+  // refused, not silently skipped (it would otherwise never expire).
+  var badExp = b.cbor.encode(new Map([[1, "iss-A"], [4, "whenever"]]));   // label 4 = exp, string value
+  var badToken = await b.cose.sign(badExp, { alg: "ES256", privateKey: EC.privateKey });
+  var e1 = null;
+  try { await b.cwt.verify(badToken, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { e1 = e; }
+  check("verify: malformed (non-numeric) exp refused", e1 && e1.code === "cwt/malformed-claim");
+
+  var badNbf = b.cbor.encode(new Map([[5, "soon"]]));   // label 5 = nbf
+  var badNbfToken = await b.cose.sign(badNbf, { alg: "ES256", privateKey: EC.privateKey });
+  var e2 = null;
+  try { await b.cwt.verify(badNbfToken, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { e2 = e; }
+  check("verify: malformed (non-numeric) nbf refused", e2 && e2.code === "cwt/malformed-claim");
+}
+
 async function testValidation() {
   var bad = null;
   try { await b.cwt.sign({ exp: "not-a-number" }, { alg: "ES256", privateKey: EC.privateKey }); } catch (e) { bad = e; }
@@ -100,6 +123,7 @@ async function run() {
   await testTimeClaims();
   await testIssuerAudience();
   await testTaggedAndTamper();
+  await testRobustTagAndMalformedClaims();
   await testValidation();
 }
 
