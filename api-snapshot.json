@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.13",
-  "createdAt": "2026-05-24T01:04:57.785Z",
+  "frameworkVersion": "0.12.14",
+  "createdAt": "2026-05-24T01:55:37.193Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1854,6 +1854,10 @@
               "arity": 2
             }
           }
+        },
+        "sniffEnvelope": {
+          "type": "function",
+          "arity": 1
         },
         "tar": {
           "type": "function",
