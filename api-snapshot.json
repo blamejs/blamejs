@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.35",
-  "createdAt": "2026-05-24T23:01:48.006Z",
+  "frameworkVersion": "0.12.36",
+  "createdAt": "2026-05-24T23:35:33.143Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13455,6 +13455,23 @@
     "cose": {
       "type": "object",
       "members": {
+        "AEAD_ALGORITHMS": {
+          "type": "object",
+          "members": {
+            "A128GCM": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "A256GCM": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "ChaCha20-Poly1305": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
         "ALGORITHMS": {
           "type": "object",
           "members": {
@@ -13480,6 +13497,10 @@
             }
           }
         },
+        "COSE_ENCRYPT0_TAG": {
+          "type": "primitive",
+          "valueType": "number"
+        },
         "COSE_SIGN1_TAG": {
           "type": "primitive",
           "valueType": "number"
@@ -13487,6 +13508,14 @@
         "CoseError": {
           "type": "function",
           "arity": 4
+        },
+        "decrypt0": {
+          "type": "function",
+          "arity": 2
+        },
+        "encrypt0": {
+          "type": "function",
+          "arity": 2
         },
         "sign": {
           "type": "function",
