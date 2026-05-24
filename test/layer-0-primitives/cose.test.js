@@ -90,10 +90,25 @@ async function testValidation() {
   check("sign/verify: malformed args throw the right codes", ok);
 
   // Detached payload (nil) is explicitly unsupported in v1.
-  var detached = b.cbor.encode(new b.cbor.Tag(18, [b.cbor.encode(new Map([[1, -7]])), new Map(), null, Buffer.from([0, 0])]));
+  var protBstr = b.cbor.encode(new Map([[1, -7]]));
+  var detached = b.cbor.encode(new b.cbor.Tag(18, [protBstr, new Map(), null, Buffer.from([0, 0])]));
   var det = null;
   try { await b.cose.verify(detached, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { det = e; }
   check("verify: detached payload refused (v1 attached-only)", det && det.code === "cose/detached-unsupported");
+
+  // Codex P2 on PR #184 — a non-byte payload (text string here) must
+  // be refused, not returned as a non-Buffer.
+  var textPayload = b.cbor.encode(new b.cbor.Tag(18, [protBstr, new Map(), "not-bytes", Buffer.from([0, 0])]));
+  var np = null;
+  try { await b.cose.verify(textPayload, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { np = e; }
+  check("verify: non-byte payload refused", np && np.code === "cose/malformed");
+
+  // Codex P2 on PR #184 — a non-map unprotected header must be refused,
+  // not silently coerced to empty.
+  var badUnprot = b.cbor.encode(new b.cbor.Tag(18, [protBstr, ["array-not-map"], Buffer.from("p"), Buffer.from([0, 0])]));
+  var bu = null;
+  try { await b.cose.verify(badUnprot, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { bu = e; }
+  check("verify: non-map unprotected header refused", bu && bu.code === "cose/malformed");
 }
 
 async function run() {
