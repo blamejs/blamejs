@@ -150,6 +150,54 @@ async function testListBundlesTarGzWinsOverTar() {
     list.length === 1 && list[0].format === "tar.gz");
 }
 
+async function testListBundlesWithStats() {
+  // v0.12.18 — listBundles({ withStats: true }) populates
+  // createdAt + size from statKey when the adapter exposes it.
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "lbws-src-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "lbws-dest-"));
+  try {
+    fs.writeFileSync(path.join(src, "a"), "x", { mode: 0o600 });
+    var storage = b.backup.bundleAdapterStorage({
+      adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:  "tar.gz",
+    });
+    var bid = "2026-05-24T00-00-00-000Z-99887766";
+    await storage.writeBundle(bid, src);
+    var noStats = await storage.listBundles();
+    check("listBundles: default call leaves size + createdAt null",
+      noStats[0].size === null && noStats[0].createdAt === null);
+    var withStats = await storage.listBundles({ withStats: true });
+    check("listBundles({ withStats: true }): size populated",
+      typeof withStats[0].size === "number" && withStats[0].size > 0);
+    check("listBundles({ withStats: true }): createdAt is ISO string",
+      typeof withStats[0].createdAt === "string" &&
+      /^\d{4}-\d{2}-\d{2}T/.test(withStats[0].createdAt));
+  } finally {
+    try { fs.rmSync(src,  { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
+async function testBundleInfoCreatedAt() {
+  var src = fs.mkdtempSync(path.join(os.tmpdir(), "bica-src-"));
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "bica-dest-"));
+  try {
+    fs.writeFileSync(path.join(src, "a"), "x", { mode: 0o600 });
+    var storage = b.backup.bundleAdapterStorage({
+      adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:  "tar",
+    });
+    var bid = "2026-05-24T00-30-00-000Z-aabbccdd";
+    await storage.writeBundle(bid, src);
+    var info = await storage.bundleInfo(bid);
+    check("bundleInfo: createdAt is ISO string from statKey.mtimeMs",
+      typeof info.createdAt === "string" && /^\d{4}-\d{2}-\d{2}T/.test(info.createdAt));
+  } finally {
+    try { fs.rmSync(src,  { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+}
+
 async function testListBundlesCarriesFormat() {
   var src = fs.mkdtempSync(path.join(os.tmpdir(), "lb-src-"));
   var dest = fs.mkdtempSync(path.join(os.tmpdir(), "lb-dest-"));
@@ -185,6 +233,8 @@ async function run() {
   await testBundleInfoLargeBundleUsesPartialRead();
   await testListBundlesTarGzWinsOverTar();
   await testListBundlesCarriesFormat();
+  await testListBundlesWithStats();
+  await testBundleInfoCreatedAt();
 }
 
 module.exports = { run: run };
