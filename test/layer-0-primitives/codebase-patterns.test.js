@@ -2240,6 +2240,21 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/cose.js:verify",
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/break-glass.js:_validatePolicySet",
+        "lib/calendar.js:validate",
+        "lib/db.js:declareRequireDualControl",
+        "lib/dsr.js:create",
+        "lib/fedcm.js:wellKnown",
+        "lib/middleware/assetlinks.js:create",
+        "lib/network-heartbeat.js:start",
+      ],
+      reason: "v0.12.33 — opts / structure validation prelude (`validateOpts(allowedKeys) + chained required-field + typeof guards + typed-error throw`). cose.verify validates a COSE_Sign1 opts blob + decoded structure (RFC 9052); the peers each validate a distinct spec's shape (SD-JWT-VC issuer opts / break-glass policy set / JSCalendar object / DDL dual-control declaration / DSR request / FedCM well-known manifest / Android Asset Links / heartbeat config). Each throws a primitive-specific typed error; the shingle is the validateOpts-then-guard idiom, not behaviour. Same family as the v0.12.29 input-shape-validation cluster.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/archive-adapters.js:fs",
         "lib/archive-adapters.js:http",
         "lib/network-smtp-policy.js:mtaStsFetch",

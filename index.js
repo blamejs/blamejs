@@ -456,6 +456,7 @@ module.exports = {
   // the codepoint-stability contract.
   jose:             { jwe: { experimental: require("./lib/jose-jwe-experimental") } },
   cbor:             require("./lib/cbor"),
+  cose:             require("./lib/cose"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,

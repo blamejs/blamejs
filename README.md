@@ -126,6 +126,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **JSON / SQL / schema** — `b.safeJson` (with `maxKeys` cap defending CVE-2026-21717 V8 HashDoS), `b.safeBuffer`, `b.safeSql`, `b.safeSchema`
 - **URL + path** — `b.safeUrl` (IDN mixed-script / homograph refuse); `b.safeJsonPath` (refuses filter `?(...)`, deep-scan `$..`, script-shape `(@.x)` for safe Postgres JSONB ops)
 - **Binary codec** — `b.cbor` bounded deterministic CBOR (RFC 8949 §4.2): depth/size caps, indefinite-length + reserved-info + tag + duplicate-key refusal, `requireDeterministic` canonical-form check; the in-tree substrate under COSE / CWT / SCITT / WebAuthn attestation
+- **COSE signing** — `b.cose` COSE_Sign1 sign/verify (RFC 9052) over `b.cbor`: classical ES256/384/512 + EdDSA (final COSE ids, interoperable today) plus ML-DSA-87 (PQC-forward, draft id); bounded + alg-allowlisted + crit-bypass-checked verification; the signed-statement substrate under SCITT / CWT / C2PA
 - **Document parsers** — `b.parsers` (XML / TOML / YAML / .env); `b.config` (schema-validated env)
 - **File-type detection** — `b.fileType` magic-byte content classification with deny-on-upload categories (image / document / archive / executable / etc.)
 ### Content-safety gates
