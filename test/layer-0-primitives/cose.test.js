@@ -64,6 +64,16 @@ function testEncrypt0() {
   var noAlgs = null;
   try { b.cose.decrypt0(enc, { key: key }); } catch (e) { noAlgs = e; }
   check("decrypt0: missing algorithms refused", noAlgs && noAlgs.code === "cose/algorithms-required");
+
+  // Codex P2 on PR #187 — an unprotectedHeaders override of label 5
+  // (IV) would emit a token whose stored IV disagrees with the AEAD
+  // IV (undecryptable); it must be refused.
+  var ivOverride = null;
+  try { b.cose.encrypt0(Buffer.from("x"), { key: key, unprotectedHeaders: { 5: Buffer.alloc(12) } }); } catch (e) { ivOverride = e; }
+  check("encrypt0: unprotectedHeaders IV override (label 5) refused", ivOverride && ivOverride.code === "cose/reserved-header");
+  // A non-IV unprotected header is still allowed + surfaced.
+  var withHdr = b.cose.encrypt0(Buffer.from("x"), { key: key, unprotectedHeaders: { 4: Buffer.from("kid-1") } });
+  check("encrypt0: non-IV unprotected header preserved", b.cose.decrypt0(withHdr, { key: key, algorithms: ["ChaCha20-Poly1305"] }).unprotectedHeaders.get(4).toString() === "kid-1");
 }
 
 async function testClassicalUseableToday() {
