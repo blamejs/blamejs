@@ -75,6 +75,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
   - RP-Initiated / Front-Channel / Back-Channel Logout 1.0 (`parseFrontchannelLogoutRequest` + `verifyBackchannelLogoutToken` with jti-replay defense)
   - RFC 9207 AS Issuer Identifier validation on callbacks (`parseCallback` — refuses iss mismatch + OP `error=` redirect)
   - OAuth 2.0 JARM signed-response decode (`parseJarmResponse`)
+  - RFC 9101 JWT-Secured Authorization Request verification — server-side request-object parse with mandatory alg allowlist + iss/client_id/aud binding + anti-nesting (`b.auth.jar.parse`)
   - One-time-use refresh-token rotation with operator-supplied replay-defense callback (RFC 9700 §4.13 / OAuth 2.1 §6.1 — `refreshAccessToken({ seen })`)
 - **Federation / VC** — CIBA Core 1.0 (`b.auth.ciba`, poll/ping/push); OpenID Federation 1.0 trust chain + metadata_policy (`b.auth.openidFederation`); SAML 2.0 SP with XMLDSig signature-wrapping defense + RFC 9525 server-identity (`b.auth.saml`); OpenID4VCI 1.0 issuer (`b.auth.oid4vci`); OpenID4VP 1.0 verifier with DCQL (`b.auth.oid4vp`); SD-JWT VC with `key_attestation` extension (`b.auth.sdJwtVc`)
 - **Sessions** — `b.session`
