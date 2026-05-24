@@ -66,6 +66,33 @@ async function testApplyAllRefusesBadScenario() {
     refused4 && /unknown kind/.test(refused4.message || ""));
 }
 
+async function testApplyAllAtomicValidation() {
+  // Codex P1 on v0.12.25 PR #176 — applyAll must validate the
+  // ENTIRE scenario before emitting anything. If a later kind
+  // throws (missing contentType, unknown kind), earlier kinds
+  // (chatbot session mutation, audit emission) must not have
+  // fired.
+  var events = [];
+  var fakeAudit = { safeEmit: function (e) { events.push(e); } };
+  var session = { id: "s-atom" };
+  var refused = null;
+  try {
+    b.ai.disclosure.applyAll({
+      kinds:       ["chatbot", "deepfake"],
+      session:     session,
+      content:     "imageBytes",
+      // contentType missing — deepfake validation will fail
+      audit:       fakeAudit,
+    });
+  } catch (e) { refused = e; }
+  check("applyAll: bundled call with invalid later kind throws",
+    refused !== null);
+  check("applyAll: session NOT mutated when bundle validation fails",
+    session.aiDisclosureEmitted !== true);
+  check("applyAll: no audit events emitted when bundle validation fails",
+    events.length === 0);
+}
+
 async function testApplyAllSharedAuditPropagated() {
   var events = [];
   var fakeAudit = { safeEmit: function (e) { events.push(e); } };
@@ -85,6 +112,7 @@ async function run() {
   await testApplyAllEmotion();
   await testApplyAllAllThree();
   await testApplyAllRefusesBadScenario();
+  await testApplyAllAtomicValidation();
   await testApplyAllSharedAuditPropagated();
 }
 
