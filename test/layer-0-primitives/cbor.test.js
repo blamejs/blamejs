@@ -44,7 +44,12 @@ function testAppendixAVectors() {
   }
   check("encode: matches RFC 8949 Appendix A integer/string/array vectors", ok);
   check("encode: bytes h'01020304' → 4401020304", _hex(cbor.encode(Buffer.from([1, 2, 3, 4]))) === "4401020304");
-  check("encode: float 1.5 → fb3ff8000000000000", _hex(cbor.encode(1.5)) === "fb3ff8000000000000");
+  // Preferred float serialization (§4.2.1): shortest width that
+  // round-trips. 1.5 fits float16; an integer-valued float is encoded
+  // as an integer (deterministic encoding prefers the shortest form).
+  check("encode: float 1.5 → f93e00 (preferred half)", _hex(cbor.encode(1.5)) === "f93e00");
+  check("encode: 100000 → integer, not float", _hex(cbor.encode(100000)) === "1a000186a0");
+  check("encode: 3.4 → float64 (not half/float32 representable)", _hex(cbor.encode(3.4)) === "fb400b333333333333");
   check("encode: map {1:2,3:4} (int keys) → a201020304", _hex(cbor.encode(new Map([[1, 2], [3, 4]]))) === "a201020304");
   check("encode: nested {a:1,b:[2,3]} → a26161016162820203", _hex(cbor.encode({ a: 1, b: [2, 3] })) === "a26161016162820203");
 }
@@ -71,6 +76,23 @@ function testRoundTrip() {
   check("round-trip: negative int", cbor.decode(cbor.encode(-100)) === -100);
   check("round-trip: float64", cbor.decode(cbor.encode(3.14159)) === 3.14159);
   check("decode: float16 (0xf93e00 = 1.5)", cbor.decode(Buffer.from([0xf9, 0x3e, 0x00])) === 1.5);
+  // Preferred-width round-trips: each chooses the shortest exact form.
+  [1.5, -2.5, 0.5, 3.4, 1e300, 5.960464477539063e-8].forEach(function (n) {
+    check("preferred-float round-trip " + n, cbor.decode(cbor.encode(n)) === n);
+  });
+  // A canonically float16-encoded value passes requireDeterministic
+  // (the preferred-serialization fix — float64 emission would falsely
+  // reject it).
+  check("requireDeterministic: float16-canonical input accepted", cbor.decode(cbor.encode(1.5), { requireDeterministic: true }) === 1.5);
+}
+
+function testInvalidUtf8() {
+  // CBOR text strings must be valid UTF-8 (§3.1) — malformed bytes are
+  // refused, not silently replaced with U+FFFD.
+  var bad = null;
+  try { cbor.decode(Buffer.from([0x63, 0xff, 0xff, 0xff])); } catch (e) { bad = e; }   // text(3) + invalid bytes
+  check("decode: invalid UTF-8 text string refused", bad && bad.code === "cbor/invalid-utf8");
+  check("decode: valid multibyte UTF-8 preserved", cbor.decode(cbor.encode("héllo ☃")) === "héllo ☃");
 }
 
 function testTags() {
@@ -140,6 +162,7 @@ function run() {
   testAppendixAVectors();
   testDeterministicEncoding();
   testRoundTrip();
+  testInvalidUtf8();
   testTags();
   testBoundedRefusals();
   testRequireDeterministic();
