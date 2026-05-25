@@ -16,6 +16,17 @@ var nodeCrypto = require("node:crypto");
 var EC = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
 var ED = nodeCrypto.generateKeyPairSync("ed25519");
 
+// Sign an arbitrary header + payload as a compact JWS with the EC key —
+// bypasses b.vc.issue's validation so the verify-side fail-closed paths
+// (malformed validity, crit) can be exercised on a real signature.
+function _rawJose(header, payloadObj) {
+  var h = Buffer.from(JSON.stringify(header), "utf8").toString("base64url");
+  var p = Buffer.from(JSON.stringify(payloadObj), "utf8").toString("base64url");
+  var signingInput = h + "." + p;
+  var sig = nodeCrypto.sign("sha256", Buffer.from(signingInput, "ascii"), { key: EC.privateKey, dsaEncoding: "ieee-p1363" });
+  return signingInput + "." + sig.toString("base64url");
+}
+
 function _cred(extra) {
   return Object.assign({
     "@context": ["https://www.w3.org/ns/credentials/v2"],
@@ -102,6 +113,20 @@ async function testRefusals() {
   var e5 = null;
   try { await b.vc.verify(jws, { algorithms: ["ES256"], publicKey: EC.publicKey, at: new Date("nope") }); } catch (e) { e5 = e; }
   check("verify: invalid opts.at refused", e5 && e5.code === "vc/bad-at");
+
+  // crit-bypass defense: a critical header extension the verifier does
+  // not implement must be refused (the check precedes signature verify).
+  var critTok = _rawJose({ alg: "ES256", typ: "vc+jwt", crit: ["https://example/ext"] }, _cred());
+  var e6 = null;
+  try { await b.vc.verify(critTok, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { e6 = e; }
+  check("verify: JWS crit header refused", e6 && e6.code === "vc/crit-unsupported");
+
+  // A malformed validity field on a validly-signed credential fails
+  // closed at verify (not just at issue) — no silent skip.
+  var badValidityTok = _rawJose({ alg: "ES256", typ: "vc+jwt" }, _cred({ validUntil: "not-a-date" }));
+  var e7 = null;
+  try { await b.vc.verify(badValidityTok, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { e7 = e; }
+  check("verify: malformed validUntil refused (fail closed)", e7 && e7.code === "vc/bad-validity");
 }
 
 async function testTemporalAndStructural() {
@@ -133,6 +158,11 @@ async function testTemporalAndStructural() {
     try { await b.vc.issue(structural[i][1], { securing: "jose", alg: "ES256", privateKey: EC.privateKey }); } catch (e) { err = e; }
     check("issue refuses: " + structural[i][0], err && err.code === structural[i][2]);
   }
+
+  // issue refuses a malformed validity datetime (structural, fail closed)
+  var em = null;
+  try { await b.vc.issue(_cred({ validFrom: "yesterday" }), { securing: "jose", alg: "ES256", privateKey: EC.privateKey }); } catch (e) { em = e; }
+  check("issue refuses malformed validFrom", em && em.code === "vc/bad-validity");
 
   // issuer-as-object { id } is accepted
   var jo = await b.vc.issue(_cred({ issuer: { id: "did:example:obj", name: "Acme" } }), { securing: "jose", alg: "ES256", privateKey: EC.privateKey });
