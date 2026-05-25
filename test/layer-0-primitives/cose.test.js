@@ -88,6 +88,34 @@ async function testClassicalUseableToday() {
   check("EdDSA: round-trips (string payload → bstr)", (await b.cose.verify(sed, { algorithms: ["EdDSA"], publicKey: ED.publicKey })).payload.toString() === "msg");
 }
 
+async function testProtectedHeaders() {
+  // Extra integrity-protected headers (numeric labels) ride in the
+  // protected map and are covered by the signature — a CWT_Claims map
+  // (label 15) is the SCITT case.
+  var cwtClaims = new Map([[1, "iss.example"], [2, "subject-id"]]);
+  var s = await b.cose.sign(Buffer.from("artifact"), {
+    alg: "ES256", privateKey: EC.privateKey,
+    protectedHeaders: { 15: cwtClaims }, contentType: "application/spdx+json",
+  });
+  var v = await b.cose.verify(s, { algorithms: ["ES256"], publicKey: EC.publicKey });
+  check("protectedHeaders: label 15 (CWT_Claims) in protected map", v.protectedHeaders.get(15) instanceof Map && v.protectedHeaders.get(15).get(1) === "iss.example");
+  check("protectedHeaders: string content-type (label 3) preserved", v.protectedHeaders.get(3) === "application/spdx+json");
+
+  // alg (label 1) is reserved — protectedHeaders cannot override it.
+  var reserved = null;
+  try {
+    await b.cose.sign(Buffer.from("x"), { alg: "ES256", privateKey: EC.privateKey, protectedHeaders: { 1: -7 } });
+  } catch (e) { reserved = e; }
+  check("protectedHeaders: setting label 1 (alg) refused", reserved && reserved.code === "cose/reserved-header");
+
+  // A protected-header object accepts a Map too (integer keys preserved).
+  var sMap = await b.cose.sign(Buffer.from("y"), {
+    alg: "ES256", privateKey: EC.privateKey, protectedHeaders: new Map([[15, cwtClaims]]),
+  });
+  var vMap = await b.cose.verify(sMap, { algorithms: ["ES256"], publicKey: EC.publicKey });
+  check("protectedHeaders: Map input round-trips", vMap.protectedHeaders.get(15).get(2) === "subject-id");
+}
+
 async function testPqcForward() {
   var s = await b.cose.sign(Buffer.from("pqc"), { alg: "ML-DSA-87", privateKey: ML.privateKey });
   var v = await b.cose.verify(s, { algorithms: ["ML-DSA-87"], publicKey: ML.publicKey });
@@ -168,6 +196,7 @@ async function run() {
   testSurface();
   testEncrypt0();
   await testClassicalUseableToday();
+  await testProtectedHeaders();
   await testPqcForward();
   await testTamperAndAllowlist();
   await testCritBypassDefense();

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.36",
-  "createdAt": "2026-05-24T23:35:33.143Z",
+  "frameworkVersion": "0.12.37",
+  "createdAt": "2026-05-25T00:30:27.634Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -47796,6 +47796,27 @@
         "parseCron": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "scitt": {
+      "type": "object",
+      "members": {
+        "CWT_CLAIMS_LABEL": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "ScittError": {
+          "type": "function",
+          "arity": 4
+        },
+        "signStatement": {
+          "type": "function",
+          "arity": 2
+        },
+        "verifyStatement": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
