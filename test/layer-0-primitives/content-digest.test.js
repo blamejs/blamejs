@@ -51,6 +51,11 @@ function testRefusals() {
   check("verify: missing required algorithm refused", code(function () { b.contentDigest.verify(SHA256, BODY, { required: ["sha-512"] }); }) === "content-digest/missing-algorithm");
   // Malformed byte-sequence value.
   check("verify: non-byte-sequence value refused", code(function () { b.contentDigest.verify("sha-256=abc", BODY); }) === "content-digest/bad-field");
+  // Non-canonical / garbage-suffixed base64 (Node's lax decoder would
+  // otherwise accept these) is refused.
+  var good = SHA256.slice("sha-256=:".length, -1);
+  check("verify: stray characters in byte sequence refused", code(function () { b.contentDigest.verify("sha-256=:" + good.slice(0, -2) + "!!:", BODY); }) === "content-digest/bad-field");
+  check("verify: non-canonical base64 padding refused", code(function () { b.contentDigest.verify("sha-256=:" + good + "==:", BODY); }) === "content-digest/bad-field");
   // create refuses insecure algorithms.
   check("create: insecure algorithm refused", code(function () { b.contentDigest.create(BODY, { algorithms: ["md5"] }); }) === "content-digest/insecure-algorithm");
   check("create: unknown algorithm refused", code(function () { b.contentDigest.create(BODY, { algorithms: ["sha3-256"] }); }) === "content-digest/unsupported-algorithm");
