@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.50",
-  "createdAt": "2026-05-25T13:31:06.521Z",
+  "frameworkVersion": "0.12.51",
+  "createdAt": "2026-05-25T14:53:56.538Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -41573,6 +41573,53 @@
             "clearCache": {
               "type": "function",
               "arity": 0
+            },
+            "dane": {
+              "type": "object",
+              "members": {
+                "DaneError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "SELECTORS": {
+                  "type": "object",
+                  "members": {
+                    "0": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "1": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "USAGES": {
+                  "type": "object",
+                  "members": {
+                    "0": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "1": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "2": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "3": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "matchCertificate": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
             },
             "discoverEncrypted": {
               "type": "function",

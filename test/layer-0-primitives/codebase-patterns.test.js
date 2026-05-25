@@ -2267,10 +2267,13 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/cose.js:_coseKeyBytes",
+        "lib/cose.js:_bstr",
         "lib/mdoc.js:_bytes",
         "lib/network-dnssec.js:_bytes",
+        "lib/network-dane.js:_bytes",
+        "lib/tsa.js:_bytes",
       ],
-      reason: "v0.12.48 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across three byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes) naming the local argument; the duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
+      reason: "v0.12.48 / v0.12.51 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes, dane/bad-bytes, tsa/bad-input) naming the local argument; network-dane additionally coerces a hex string. The duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
     },
     {
       mode:  "family-subset",
