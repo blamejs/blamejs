@@ -153,10 +153,25 @@ function testAtomic() {
   check("b.jsonPointer.JsonPointerError exists", typeof b.jsonPointer.JsonPointerError === "function" && typeof b.jsonPatch.OPS === "object" && typeof b.jsonPointer.ARRAY_INDEX_RE.test === "function");
 }
 
+function testSecurity() {
+  // Prototype pollution: add /__proto__ must create a literal own key, not
+  // touch the prototype.
+  var polluted = b.jsonPatch.apply({}, [{ op: "add", path: "/__proto__", value: { polluted: true } }]);
+  check("patch: /__proto__ becomes a literal own key", Object.prototype.hasOwnProperty.call(polluted, "__proto__") && polluted.polluted === undefined);
+  check("patch: Object.prototype not polluted", ({}).polluted === undefined);
+  // Nested __proto__ traversal is blocked (no own __proto__ to descend).
+  check("patch: descend through __proto__ refused", code(function () { b.jsonPatch.apply({}, [{ op: "add", path: "/__proto__/polluted", value: true }]); }) === "json-patch/path-not-found");
+  check("patch: Object.prototype still clean after nested attempt", ({}).polluted === undefined);
+  // Invalid tilde escapes are rejected.
+  check("pointer: invalid ~ escape (~2) refused", code(function () { b.jsonPointer.get({ x: 1 }, "/~2"); }) === "json-pointer/bad-pointer");
+  check("pointer: trailing ~ refused", code(function () { b.jsonPointer.get({ x: 1 }, "/foo~"); }) === "json-pointer/bad-pointer");
+}
+
 async function run() {
   testPointer();
   testPatchConformance();
   testAtomic();
+  testSecurity();
 }
 
 module.exports = { run: run };
