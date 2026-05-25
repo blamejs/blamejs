@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.54",
-  "createdAt": "2026-05-25T18:34:52.229Z",
+  "frameworkVersion": "0.12.55",
+  "createdAt": "2026-05-25T19:45:48.985Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -48695,6 +48695,18 @@
       "type": "object",
       "members": {
         "ByteSequence": {
+          "type": "function",
+          "arity": 1
+        },
+        "Date": {
+          "type": "function",
+          "arity": 1
+        },
+        "Decimal": {
+          "type": "function",
+          "arity": 1
+        },
+        "DisplayString": {
           "type": "function",
           "arity": 1
         },

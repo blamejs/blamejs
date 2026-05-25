@@ -24,6 +24,8 @@ function mineVal(v) {
   if (v instanceof SF.Token) return { token: v.value };
   if (v instanceof SF.ByteSequence) return { binary: b32(v.value) };
   if (v instanceof SF.Decimal) return v.value;   // compare a Decimal numerically (httpwg uses plain numbers)
+  if (v instanceof SF.Date) return { date: v.value };
+  if (v instanceof SF.DisplayString) return { displaystring: v.value };
   return v;
 }
 function mineParams(map) { var o = []; map.forEach(function (v, k) { o.push([k, mineVal(v)]); }); return o; }
@@ -37,6 +39,8 @@ function mine(out, type) {
 function httpVal(v) {
   if (v && v.__type === "token") return { token: v.value };
   if (v && v.__type === "binary") return { binary: v.value };
+  if (v && v.__type === "date") return { date: v.value };
+  if (v && v.__type === "displaystring") return { displaystring: v.value };
   return v;
 }
 function httpParams(arr) { return arr.map(function (p) { return [p[0], httpVal(p[1])]; }); }
@@ -86,6 +90,26 @@ var CASES = [
   { name: "dictionary bare key", raw: "a=1, b, c=3", t: "dictionary", expected: [["a", [1, []]], ["b", [true, []]], ["c", [3, []]]] },
   { name: "dictionary inner-list value", raw: "a=(1 2)", t: "dictionary", expected: [["a", [[[1, []], [2, []]], []]]] },
   { name: "trailing comma dict", raw: "a=1,", t: "dictionary", must_fail: true },
+  // RFC 9651 Date (§3.3.7)
+  { name: "date epoch", raw: "@0", t: "item", expected: [{ __type: "date", value: 0 }, []] },
+  { name: "date positive", raw: "@1659578233", t: "item", expected: [{ __type: "date", value: 1659578233 }, []] },
+  { name: "date negative", raw: "@-1659578233", t: "item", expected: [{ __type: "date", value: -1659578233 }, []] },
+  { name: "date decimal", raw: "@1659578233.12", t: "item", must_fail: true },
+  { name: "date too large", raw: "@1000000000000000", t: "item", must_fail: true },
+  { name: "date empty", raw: "@", t: "item", must_fail: true },
+  { name: "date sign only", raw: "@-", t: "item", must_fail: true },
+  { name: "date non-digit", raw: "@abc", t: "item", must_fail: true },
+  // RFC 9651 Display String (§3.3.8)
+  { name: "ascii display string", raw: '%"foo bar"', t: "item", expected: [{ __type: "displaystring", value: "foo bar" }, []] },
+  { name: "non-ascii display string (lowercase escaping)", raw: '%"f%c3%bc%c3%bc"', t: "item", expected: [{ __type: "displaystring", value: "füü" }, []] },
+  { name: "non-ascii display string (uppercase escaping)", raw: '%"f%C3%BC"', t: "item", must_fail: true },
+  { name: "non-ascii display string (unescaped)", raw: '%"füü"', t: "item", must_fail: true },
+  { name: "display string quoting", raw: '%"foo %22bar%22 \\ baz"', t: "item", expected: [{ __type: "displaystring", value: 'foo "bar" \\ baz' }, []] },
+  { name: "bad display string utf-8", raw: '%"%c3%28"', t: "item", must_fail: true },
+  { name: "bad display string hex", raw: '%"%g0%1w"', t: "item", must_fail: true },
+  { name: "truncated display string escape", raw: '%"%"', t: "item", must_fail: true },
+  { name: "unbalanced display string", raw: '%"foo', t: "item", must_fail: true },
+  { name: "single-quoted display string", raw: "%'foo'", t: "item", must_fail: true },
 ];
 
 function testConformance() {
@@ -151,6 +175,8 @@ function testSurface() {
   check("b.structuredFields.Token constructs a token", new b.structuredFields.Token("gzip").value === "gzip");
   check("b.structuredFields.ByteSequence constructs a byte sequence", Buffer.isBuffer(new b.structuredFields.ByteSequence(Buffer.from("x")).value));
   check("b.structuredFields.Decimal constructs a decimal", new b.structuredFields.Decimal(1.5).value === 1.5);
+  check("b.structuredFields.Date round-trips", b.structuredFields.serialize({ value: new b.structuredFields.Date(1659578233), params: new Map() }, "item") === "@1659578233");
+  check("b.structuredFields.DisplayString escapes non-ASCII", b.structuredFields.serialize({ value: new b.structuredFields.DisplayString("füü"), params: new Map() }, "item") === '%"f%c3%bc%c3%bc"');
 }
 
 async function run() {
