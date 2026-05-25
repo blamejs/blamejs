@@ -76,6 +76,14 @@ async function _makeMdoc(cert, opts) {
       ["validUntil", validUntilTag],
     ])],
   ]);
+  // Optional deviceKeyInfo.deviceKey (a COSE_Key) for device-auth tests.
+  if (opts.deviceJwk) {
+    mso.set("deviceKeyInfo", new Map([["deviceKey", new Map([
+      [1, 2], [-1, 1],
+      [-2, Buffer.from(opts.deviceJwk.x, "base64url")],
+      [-3, Buffer.from(opts.deviceJwk.y, "base64url")],
+    ])]]));
+  }
   var payload = cbor.encode(new cbor.Tag(24, cbor.encode(mso)));
   var signed = await b.cose.sign(payload, { alg: opts.alg || "ES256", privateKey: cert.key, unprotectedHeaders: { 33: cert.certDer } });
   var issuerAuth = cbor.decode(signed, { allowedTags: [18, 24] }).value;
@@ -212,12 +220,56 @@ async function testChainAndInputGuards() {
   check("verify: missing algorithms refused", e4 && e4.code === "mdoc/algorithms-required");
 }
 
+async function testDeviceAuth() {
+  var cert = _makeCert();
+  var device = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var deviceJwk = device.publicKey.export({ format: "jwk" });
+  // issuer-signed mdoc carrying the device key in the MSO
+  var mdoc = await _makeMdoc(cert, { deviceJwk: deviceJwk });
+  var issuer = await b.mdoc.verifyIssuerSigned(mdoc, { algorithms: ["ES256"] });
+  check("verifyIssuerSigned: returns the deviceKey", issuer.deviceKey instanceof Map || (issuer.deviceKey && typeof issuer.deviceKey === "object"));
+
+  // build a DeviceSigned: detached COSE_Sign1 over DeviceAuthentication
+  var sessionTranscript = ["DE-bytes", "ER-bytes", ["handover", 1]];
+  var deviceNsBytes = new cbor.Tag(24, cbor.encode(new Map()));
+  var da = ["DeviceAuthentication", sessionTranscript, DOCTYPE, deviceNsBytes];
+  var daBytes = cbor.encode(new cbor.Tag(24, cbor.encode(da)));
+  var sig = await b.cose.sign(daBytes, { alg: "ES256", privateKey: device.privateKey, detached: true });
+  var sigArr = cbor.decode(sig, { allowedTags: [18, 24] }).value;
+  var deviceSigned = new Map([["nameSpaces", deviceNsBytes], ["deviceAuth", new Map([["deviceSignature", sigArr]])]]);
+
+  var out = await b.mdoc.verifyDeviceAuth({ deviceKey: issuer.deviceKey, deviceSigned: deviceSigned, docType: DOCTYPE, sessionTranscript: sessionTranscript, algorithms: ["ES256"] });
+  check("verifyDeviceAuth: verifies with the MSO device key", out.docType === DOCTYPE && out.alg === "ES256");
+
+  // wrong session transcript → signature fails (binding works)
+  var e1 = null;
+  try { await b.mdoc.verifyDeviceAuth({ deviceKey: issuer.deviceKey, deviceSigned: deviceSigned, docType: DOCTYPE, sessionTranscript: ["tampered"], algorithms: ["ES256"] }); } catch (e) { e1 = e; }
+  check("verifyDeviceAuth: wrong sessionTranscript refused", e1 && e1.code === "cose/bad-signature");
+
+  // wrong docType → signature fails
+  var e2 = null;
+  try { await b.mdoc.verifyDeviceAuth({ deviceKey: issuer.deviceKey, deviceSigned: deviceSigned, docType: "org.iso.18013.5.1.other", sessionTranscript: sessionTranscript, algorithms: ["ES256"] }); } catch (e) { e2 = e; }
+  check("verifyDeviceAuth: wrong docType refused", e2 && e2.code === "cose/bad-signature");
+
+  // MAC variant → unsupported (deferred)
+  var dsMac = new Map([["nameSpaces", deviceNsBytes], ["deviceAuth", new Map([["deviceMac", [Buffer.alloc(3), new Map(), null, Buffer.alloc(8)]]])]]);
+  var e3 = null;
+  try { await b.mdoc.verifyDeviceAuth({ deviceKey: issuer.deviceKey, deviceSigned: dsMac, docType: DOCTYPE, sessionTranscript: sessionTranscript, algorithms: ["ES256"] }); } catch (e) { e3 = e; }
+  check("verifyDeviceAuth: MAC variant refused (deferred)", e3 && e3.code === "mdoc/device-mac-unsupported");
+
+  // missing sessionTranscript
+  var e4 = null;
+  try { await b.mdoc.verifyDeviceAuth({ deviceKey: issuer.deviceKey, deviceSigned: deviceSigned, docType: DOCTYPE, algorithms: ["ES256"] }); } catch (e) { e4 = e; }
+  check("verifyDeviceAuth: missing sessionTranscript refused", e4 && e4.code === "mdoc/no-session-transcript");
+}
+
 async function run() {
   testSurface();
   await testRoundTrip();
   await testDigestAndSignatureRefusals();
   await testValidityAndDocType();
   await testChainAndInputGuards();
+  await testDeviceAuth();
 }
 
 module.exports = { run: run };
