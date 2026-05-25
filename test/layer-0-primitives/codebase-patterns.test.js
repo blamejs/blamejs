@@ -2273,6 +2273,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/cert.js:create",
+        "lib/mail-send-deliver.js:deliver",
+        "lib/vc.js:present",
+      ],
+      reason: "v0.12.42 — validateOpts-then-guard prelude shared by three builder-style functions: cert.create mints a certificate, mail-send-deliver.deliver sends a message, vc.present builds + signs a Verifiable Presentation. The common shingle is the `validateOpts(allowedKeys) + required-field / non-empty-array guards + typed-error throw` idiom; the bodies diverge entirely (X.509 minting / SMTP delivery / VC-JOSE-COSE presentation envelope). Same validate-then-guard family as the v0.12.29 / v0.12.33 / v0.12.40 clusters.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/eat.js:verify",
         "lib/auth/jar.js:parse",
         "lib/auth/status-list.js:fromJwt",
