@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.53",
-  "createdAt": "2026-05-25T17:13:42.241Z",
+  "frameworkVersion": "0.12.54",
+  "createdAt": "2026-05-25T18:34:52.229Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -48694,13 +48694,29 @@
     "structuredFields": {
       "type": "object",
       "members": {
+        "ByteSequence": {
+          "type": "function",
+          "arity": 1
+        },
+        "Token": {
+          "type": "function",
+          "arity": 1
+        },
         "containsControlBytes": {
           "type": "function",
           "arity": 2
         },
+        "parse": {
+          "type": "function",
+          "arity": 3
+        },
         "refuseControlBytes": {
           "type": "function",
           "arity": 2
+        },
+        "serialize": {
+          "type": "function",
+          "arity": 3
         },
         "splitTopLevel": {
           "type": "function",
