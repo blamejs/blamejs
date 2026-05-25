@@ -43,6 +43,13 @@ function testJcsConformance() {
   check("JCS: no Unicode normalization", cj.stringifyJcs({ k: "Å" }) === '{"k":"Å"}');
 }
 
+function testSparseArrays() {
+  // Sparse-array holes serialize as null, not invalid JSON elisions ([,1]).
+  var sparse = [1, , 3]; // eslint-disable-line no-sparse-arrays
+  check("JCS: sparse array holes → null", cj.stringifyJcs(sparse) === "[1,null,3]");
+  check("JCS: explicit undefined in array → null", cj.stringifyJcs([1, undefined, 3]) === "[1,null,3]");
+}
+
 function testStrictRefusals() {
   check("JCS: BigInt refused", /BigInt/.test(code(function () { cj.stringifyJcs({ n: 1n }); })));
   check("JCS: Buffer refused", /Buffer/.test(code(function () { cj.stringifyJcs({ b: Buffer.from("x") }); })));
@@ -62,6 +69,7 @@ function testLenientStringify() {
 async function run() {
   testSurface();
   testJcsConformance();
+  testSparseArrays();
   testStrictRefusals();
   testLenientStringify();
 }
