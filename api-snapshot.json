@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.45",
-  "createdAt": "2026-05-25T08:50:22.492Z",
+  "frameworkVersion": "0.12.46",
+  "createdAt": "2026-05-25T09:27:35.244Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -40440,6 +40440,10 @@
         "MdocError": {
           "type": "function",
           "arity": 4
+        },
+        "verifyDeviceAuth": {
+          "type": "function",
+          "arity": 1
         },
         "verifyIssuerSigned": {
           "type": "function",
