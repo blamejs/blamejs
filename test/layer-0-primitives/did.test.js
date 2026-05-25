@@ -84,6 +84,14 @@ function testDidWeb() {
   check("did:web: method + id parsed", p.method === "web" && p.id === "example.com:issuers:42");
   check("did:web: path URL derived", p.url === "https://example.com/issuers/42/did.json");
   check("did:web: bare host → .well-known", b.did.parse("did:web:example.com").url === "https://example.com/.well-known/did.json");
+  // Port encoded as %3A in the host is decoded to ':'.
+  check("did:web: %3A port decoded in host", b.did.parse("did:web:example.com%3A8443:a").url === "https://example.com:8443/a/did.json");
+  // Escaped reserved chars in a PATH segment stay verbatim (not turned
+  // into URL control syntax) — a path %3F must not become '?'.
+  check("did:web: escaped delimiter in path preserved", b.did.parse("did:web:example.com:foo%3Fbar").url === "https://example.com/foo%3Fbar/did.json");
+  // A malformed percent-escape must not throw a raw URIError.
+  var pctCode = (function () { try { b.did.parse("did:web:example.com:%"); return "ok"; } catch (e) { return e.code || e.name; } })();
+  check("did:web: malformed escape does not throw URIError", pctCode === "ok");
 
   var issuer = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   var webDid = "did:web:example.com";
