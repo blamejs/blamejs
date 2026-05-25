@@ -394,6 +394,7 @@ var webPush = require("./lib/web-push-vapid");
 var fedcm = require("./lib/fedcm");
 var dbsc = require("./lib/dbsc");
 var importmapIntegrity = require("./lib/importmap-integrity");
+var privacyPass = require("./lib/privacy-pass");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
@@ -409,6 +410,7 @@ module.exports = {
   fedcm:            fedcm,
   dbsc:             dbsc,
   importmapIntegrity: importmapIntegrity,
+  privacyPass:      privacyPass,
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,
