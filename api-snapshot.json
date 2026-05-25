@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.56",
-  "createdAt": "2026-05-25T21:09:07.457Z",
+  "frameworkVersion": "0.12.57",
+  "createdAt": "2026-05-25T21:59:09.487Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -37003,6 +37003,23 @@
           "arity": 4
         },
         "create": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "linkHeader": {
+      "type": "object",
+      "members": {
+        "LinkHeaderError": {
+          "type": "function",
+          "arity": 4
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
+        },
+        "serialize": {
           "type": "function",
           "arity": 1
         }
