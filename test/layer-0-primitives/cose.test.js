@@ -18,9 +18,62 @@ var ML = nodeCrypto.generateKeyPairSync("ml-dsa-87");
 function testSurface() {
   check("b.cose.sign exposed", typeof b.cose.sign === "function");
   check("b.cose.verify exposed", typeof b.cose.verify === "function");
+  check("b.cose.encrypt0 exposed", typeof b.cose.encrypt0 === "function");
+  check("b.cose.decrypt0 exposed", typeof b.cose.decrypt0 === "function");
   check("b.cose.ALGORITHMS exposes COSE alg ids", b.cose.ALGORITHMS["ES256"] === -7 && b.cose.ALGORITHMS["ML-DSA-87"] === -50);
+  check("b.cose.AEAD_ALGORITHMS exposes AEAD ids", b.cose.AEAD_ALGORITHMS["ChaCha20-Poly1305"] === 24 && b.cose.AEAD_ALGORITHMS["A256GCM"] === 3);
   check("b.cose.COSE_SIGN1_TAG is 18", b.cose.COSE_SIGN1_TAG === 18);
-  check("b.cose.CborError-style CoseError exposed", typeof b.cose.CoseError === "function");
+  check("b.cose.COSE_ENCRYPT0_TAG is 16", b.cose.COSE_ENCRYPT0_TAG === 16);
+  check("b.cose.CoseError exposed", typeof b.cose.CoseError === "function");
+}
+
+function testEncrypt0() {
+  var key = b.crypto.generateBytes(32);
+  var enc = b.cose.encrypt0(Buffer.from("secret-payload"), { alg: "ChaCha20-Poly1305", key: key });
+  check("encrypt0: tagged COSE_Encrypt0 (tag 16 → 0xd0)", enc[0] === 0xd0);
+  var d = b.cose.decrypt0(enc, { key: key, algorithms: ["ChaCha20-Poly1305"] });
+  check("encrypt0: round-trips plaintext + alg", d.plaintext.toString() === "secret-payload" && d.alg === "ChaCha20-Poly1305");
+
+  var wrongKey = null;
+  try { b.cose.decrypt0(enc, { key: b.crypto.generateBytes(32), algorithms: ["ChaCha20-Poly1305"] }); } catch (e) { wrongKey = e; }
+  check("decrypt0: wrong key refused", wrongKey && wrongKey.code === "cose/decrypt-failed");
+
+  var t = Buffer.from(enc); t[t.length - 1] ^= 0xff;
+  var tampered = null;
+  try { b.cose.decrypt0(t, { key: key, algorithms: ["ChaCha20-Poly1305"] }); } catch (e) { tampered = e; }
+  check("decrypt0: tampered ciphertext refused", tampered && tampered.code === "cose/decrypt-failed");
+
+  var notAllowed = null;
+  try { b.cose.decrypt0(enc, { key: key, algorithms: ["A256GCM"] }); } catch (e) { notAllowed = e; }
+  check("decrypt0: alg not in allowlist refused", notAllowed && notAllowed.code === "cose/alg-not-allowed");
+
+  // A256GCM opt-in round-trip.
+  var encG = b.cose.encrypt0(Buffer.from("g"), { alg: "A256GCM", key: key });
+  check("encrypt0: A256GCM round-trip", b.cose.decrypt0(encG, { key: key, algorithms: ["A256GCM"] }).plaintext.toString() === "g");
+
+  // external_aad must match.
+  var encA = b.cose.encrypt0(Buffer.from("z"), { key: key, externalAad: Buffer.from("ctx-A") });
+  var aadMismatch = null;
+  try { b.cose.decrypt0(encA, { key: key, algorithms: ["ChaCha20-Poly1305"], externalAad: Buffer.from("ctx-B") }); } catch (e) { aadMismatch = e; }
+  check("decrypt0: external_aad mismatch refused", aadMismatch && aadMismatch.code === "cose/decrypt-failed");
+
+  // Key-length + algorithms-required validation.
+  var badKey = null;
+  try { b.cose.encrypt0(Buffer.from("x"), { alg: "A128GCM", key: key }); } catch (e) { badKey = e; }   // 32-byte key for A128GCM (needs 16)
+  check("encrypt0: wrong key length refused", badKey && badKey.code === "cose/bad-key");
+  var noAlgs = null;
+  try { b.cose.decrypt0(enc, { key: key }); } catch (e) { noAlgs = e; }
+  check("decrypt0: missing algorithms refused", noAlgs && noAlgs.code === "cose/algorithms-required");
+
+  // Codex P2 on PR #187 — an unprotectedHeaders override of label 5
+  // (IV) would emit a token whose stored IV disagrees with the AEAD
+  // IV (undecryptable); it must be refused.
+  var ivOverride = null;
+  try { b.cose.encrypt0(Buffer.from("x"), { key: key, unprotectedHeaders: { 5: Buffer.alloc(12) } }); } catch (e) { ivOverride = e; }
+  check("encrypt0: unprotectedHeaders IV override (label 5) refused", ivOverride && ivOverride.code === "cose/reserved-header");
+  // A non-IV unprotected header is still allowed + surfaced.
+  var withHdr = b.cose.encrypt0(Buffer.from("x"), { key: key, unprotectedHeaders: { 4: Buffer.from("kid-1") } });
+  check("encrypt0: non-IV unprotected header preserved", b.cose.decrypt0(withHdr, { key: key, algorithms: ["ChaCha20-Poly1305"] }).unprotectedHeaders.get(4).toString() === "kid-1");
 }
 
 async function testClassicalUseableToday() {
@@ -113,6 +166,7 @@ async function testValidation() {
 
 async function run() {
   testSurface();
+  testEncrypt0();
   await testClassicalUseableToday();
   await testPqcForward();
   await testTamperAndAllowlist();
