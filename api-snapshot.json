@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.40",
-  "createdAt": "2026-05-25T03:52:08.305Z",
+  "frameworkVersion": "0.12.41",
+  "createdAt": "2026-05-25T05:05:33.017Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14408,6 +14408,96 @@
         "create": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "did": {
+      "type": "object",
+      "members": {
+        "DidError": {
+          "type": "function",
+          "arity": 4
+        },
+        "MULTICODEC": {
+          "type": "object",
+          "members": {
+            "231": {
+              "type": "object",
+              "members": {
+                "curveOid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "237": {
+              "type": "object",
+              "members": {
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "4608": {
+              "type": "object",
+              "members": {
+                "curveOid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "4609": {
+              "type": "object",
+              "members": {
+                "curveOid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "kind": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "keyToDid": {
+          "type": "function",
+          "arity": 1
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
+        },
+        "resolve": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
