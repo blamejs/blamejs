@@ -50,6 +50,12 @@ function testRefusals() {
   check("matchCertificate: bad certificate refused", code(function () { b.network.dns.dane.matchCertificate({ tlsa: [TLSA_DANE_EE], certificate: Buffer.from("not a cert") }); }) === "dane/bad-certificate");
   // Empty TLSA set refused.
   check("matchCertificate: empty TLSA set refused", code(function () { b.network.dns.dane.matchCertificate({ tlsa: [], certificate: cert() }); }) === "dane/bad-arg");
+  // String enum values are refused (they coerce on key lookup but break
+  // the strict-=== usage logic), not silently accepted.
+  check("matchCertificate: string usage refused", code(function () { b.network.dns.dane.matchCertificate({ tlsa: [{ usage: "3", selector: 1, matchingType: 1, data: TLSA_DANE_EE.data }], certificate: cert() }); }) === "dane/unsupported-usage");
+  // Prototype-chain keys must not slip past the enum check.
+  check("matchCertificate: __proto__ matchingType refused", code(function () { b.network.dns.dane.matchCertificate({ tlsa: [{ usage: 3, selector: 1, matchingType: "__proto__", data: TLSA_DANE_EE.data }], certificate: cert() }); }) === "dane/unsupported-matching");
+  check("matchCertificate: __proto__ selector refused", code(function () { b.network.dns.dane.matchCertificate({ tlsa: [{ usage: 3, selector: "__proto__", matchingType: 1, data: TLSA_DANE_EE.data }], certificate: cert() }); }) === "dane/unsupported-selector");
 }
 
 function testPkixUsage() {
