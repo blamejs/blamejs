@@ -150,6 +150,10 @@ function testDidJwk() {
   check("did:jwk: unsupported kty refused", code(function () {
     b.did.resolve("did:jwk:" + Buffer.from(JSON.stringify({ kty: "RSA", n: "x", e: "AQAB" }), "utf8").toString("base64url"));
   }) === "did/unsupported-key");
+  // keyToDid must also refuse an unsupported key when emitting did:jwk —
+  // generation and resolution share the allowlist so the DID round-trips.
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  check("did:jwk: keyToDid refuses RSA (round-trip guarantee)", code(function () { b.did.keyToDid(rsa.publicKey, { method: "jwk" }); }) === "did/unsupported-key");
 }
 
 async function run() {
