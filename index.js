@@ -462,6 +462,7 @@ module.exports = {
   scitt:            require("./lib/scitt"),
   tsa:              require("./lib/tsa"),
   vc:               require("./lib/vc"),
+  mdoc:             require("./lib/mdoc"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,

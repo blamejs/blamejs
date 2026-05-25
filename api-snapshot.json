@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.39",
-  "createdAt": "2026-05-25T02:42:46.281Z",
+  "frameworkVersion": "0.12.40",
+  "createdAt": "2026-05-25T03:52:08.305Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -40316,6 +40316,36 @@
         "validateToolInput": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "mdoc": {
+      "type": "object",
+      "members": {
+        "DIGEST_ALGS": {
+          "type": "object",
+          "members": {
+            "SHA-256": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SHA-384": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SHA-512": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "MdocError": {
+          "type": "function",
+          "arity": 4
+        },
+        "verifyIssuerSigned": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

@@ -2255,6 +2255,24 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/mdoc.js:verifyIssuerSigned",
+        "lib/tsa.js:verifyToken",
+        "lib/vc.js:verify",
+      ],
+      reason: "v0.12.40 — signature-verify entry preamble shared by three credential / token verifiers: `validateOpts(allowedKeys) + mandatory algorithms-allowlist check + opts.at valid-Date guard + publicKey/keyResolver presence check`, then divergent domain logic. tsa.verifyToken verifies an RFC 3161 timestamp token (CMS SignedData + message-imprint + EKU); vc.verify verifies a W3C VC-JOSE-COSE credential (JWS/COSE + VCDM structural + validity window); mdoc.verifyIssuerSigned verifies an ISO 18013-5 mdoc (COSE_Sign1 IssuerAuth + MSO valueDigests matching). Each consumes a different wire format, returns a different shape, and throws a primitive-specific typed error — the shingle is the validate-then-guard preamble, not behaviour. Same family as the v0.12.33 cose.verify cluster.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/dual-control.js:create",
+        "lib/mdoc.js:verifyIssuerSigned",
+        "lib/tsa.js:verifyToken",
+      ],
+      reason: "v0.12.40 — validateOpts-then-guard prelude shared between a create-style validator (dual-control.create builds a two-person-rule grant after validating its opts) and the timestamp / mdoc verifiers. The common shingle is the `validateOpts(allowedKeys) + chained guard + typed-error` idiom; the bodies diverge entirely (dual-control persists a control record; tsa/mdoc verify cryptographic structures). Same validate-then-guard family as the v0.12.29 / v0.12.33 clusters.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/eat.js:verify",
         "lib/auth/jar.js:parse",
         "lib/auth/status-list.js:fromJwt",
