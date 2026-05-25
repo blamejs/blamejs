@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.44",
-  "createdAt": "2026-05-25T07:30:14.381Z",
+  "frameworkVersion": "0.12.45",
+  "createdAt": "2026-05-25T08:22:09.840Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13516,6 +13516,10 @@
         "encrypt0": {
           "type": "function",
           "arity": 2
+        },
+        "importKey": {
+          "type": "function",
+          "arity": 1
         },
         "sign": {
           "type": "function",

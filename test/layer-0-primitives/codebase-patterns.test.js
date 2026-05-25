@@ -6232,6 +6232,13 @@ var KNOWN_ANTIPATTERNS = [
       // supplies the alg allowlist), so there is no `alg` to pass to
       // _assertAlgKtyMatch; the kty/crv allowlist is the confusion guard.
       "lib/did.js",
+      // cose.js — importKey maps a COSE_Key to a KeyObject after
+      // allowlisting kty (OKP/EC2) + crv (Ed25519 / P-256 / P-384 /
+      // P-521 / secp256k1); the JWK is constructed from the COSE_Key, not
+      // attacker-chosen alg-vs-kty, and b.cose.verify supplies the alg
+      // allowlist separately. Same kty/crv-allowlist confusion guard as
+      // did.js — there is no verification `alg` carried in a COSE_Key.
+      "lib/cose.js",
     ],
     reason: "CVE-2026-22817 — every JWT verifier that resolves a JWK BY ATTACKER-CONTROLLED HEADER (kid / x5t) must cross-check the declared alg against the JWK's kty (and crv for EC) BEFORE handing the key to node:crypto.verify. Imports that skip the check are exactly the confused-deputy shape (RS256→HS256 family). The shared helper `jwtExternal._assertAlgKtyMatch(alg, jwk)` is the single point of enforcement; new code routes through it. Allowlist entries are sign-side / pinned-cert paths where the JWK is not attacker-supplied, or (did.js) where a kty/crv allowlist stands in for alg/kty because the format carries no verification alg.",
   },

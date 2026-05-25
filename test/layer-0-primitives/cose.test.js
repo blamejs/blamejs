@@ -170,12 +170,12 @@ async function testValidation() {
   }
   check("sign/verify: malformed args throw the right codes", ok);
 
-  // Detached payload (nil) is explicitly unsupported in v1.
+  // A detached (nil) payload without opts.externalPayload is refused.
   var protBstr = b.cbor.encode(new Map([[1, -7]]));
   var detached = b.cbor.encode(new b.cbor.Tag(18, [protBstr, new Map(), null, Buffer.from([0, 0])]));
   var det = null;
   try { await b.cose.verify(detached, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { det = e; }
-  check("verify: detached payload refused (v1 attached-only)", det && det.code === "cose/detached-unsupported");
+  check("verify: detached payload without externalPayload refused", det && det.code === "cose/detached-no-payload");
 
   // Codex P2 on PR #184 — a non-byte payload (text string here) must
   // be refused, not returned as a non-Buffer.
@@ -192,6 +192,53 @@ async function testValidation() {
   check("verify: non-map unprotected header refused", bu && bu.code === "cose/malformed");
 }
 
+async function testDetachedPayload() {
+  var payload = Buffer.from("detached COSE payload", "utf8");
+  var det = await b.cose.sign(payload, { alg: "ES256", privateKey: EC.privateKey, detached: true });
+  // payload slot must be nil
+  var arr = b.cbor.decode(det, { allowedTags: [18] }).value;
+  check("detached: payload slot is nil", arr[2] === null);
+  var out = await b.cose.verify(det, { algorithms: ["ES256"], publicKey: EC.publicKey, externalPayload: payload });
+  check("detached: verify with externalPayload returns it", out.payload.equals(payload));
+
+  var noPay = null;
+  try { await b.cose.verify(det, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { noPay = e; }
+  check("detached: verify without externalPayload refused", noPay && noPay.code === "cose/detached-no-payload");
+
+  var wrong = null;
+  try { await b.cose.verify(det, { algorithms: ["ES256"], publicKey: EC.publicKey, externalPayload: Buffer.from("x") }); } catch (e) { wrong = e; }
+  check("detached: wrong externalPayload fails signature", wrong && wrong.code === "cose/bad-signature");
+
+  // attached token + externalPayload is ambiguous
+  var att = await b.cose.sign(payload, { alg: "ES256", privateKey: EC.privateKey });
+  var amb = null;
+  try { await b.cose.verify(att, { algorithms: ["ES256"], publicKey: EC.publicKey, externalPayload: payload }); } catch (e) { amb = e; }
+  check("detached: externalPayload on an attached token refused", amb && amb.code === "cose/payload-ambiguous");
+}
+
+async function testImportKey() {
+  // EC2 P-256 COSE_Key built from the JWK, then used to verify.
+  var jwk = EC.publicKey.export({ format: "jwk" });
+  var coseKey = new Map([[1, 2], [-1, 1], [-2, Buffer.from(jwk.x, "base64url")], [-3, Buffer.from(jwk.y, "base64url")]]);
+  var imported = b.cose.importKey(coseKey);
+  check("importKey: EC2 P-256 matches the JWK x", imported.export({ format: "jwk" }).x === jwk.x);
+  var att = await b.cose.sign(Buffer.from("k"), { alg: "ES256", privateKey: EC.privateKey });
+  check("importKey: imported key verifies a COSE_Sign1", (await b.cose.verify(att, { algorithms: ["ES256"], publicKey: imported })).payload.toString() === "k");
+
+  // OKP Ed25519
+  var ejwk = ED.publicKey.export({ format: "jwk" });
+  var okp = new Map([[1, 1], [-1, 6], [-2, Buffer.from(ejwk.x, "base64url")]]);
+  check("importKey: OKP Ed25519", b.cose.importKey(okp).asymmetricKeyType === "ed25519");
+
+  // unsupported curve / kty refused
+  var bad = null;
+  try { b.cose.importKey(new Map([[1, 2], [-1, 99], [-2, Buffer.from(jwk.x, "base64url")], [-3, Buffer.from(jwk.y, "base64url")]])); } catch (e) { bad = e; }
+  check("importKey: unsupported EC2 curve refused", bad && bad.code === "cose/unsupported-key");
+  var badKty = null;
+  try { b.cose.importKey(new Map([[1, 4], [-2, Buffer.from(jwk.x, "base64url")]])); } catch (e) { badKty = e; }
+  check("importKey: unsupported kty refused", badKty && (badKty.code === "cose/unsupported-key" || badKty.code === "cose/bad-cose-key"));
+}
+
 async function run() {
   testSurface();
   testEncrypt0();
@@ -201,6 +248,8 @@ async function run() {
   await testTamperAndAllowlist();
   await testCritBypassDefense();
   await testValidation();
+  await testDetachedPayload();
+  await testImportKey();
 }
 
 module.exports = { run: run };
