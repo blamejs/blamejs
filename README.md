@@ -89,6 +89,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **Financial / Open Banking** — FAPI 2.0 Final composite posture (PAR + PKCE-S256 + DPoP-or-mTLS + RFC 9207); runtime enforcement helpers `b.fapi2.assertCallback` (refuses missing iss + bare-param under message-signing) and `b.fapi2.assertAuthzRequest` (refuses non-JAR); CFPB §1033 / FDX 6.0 consumer-financial-data-sharing wrapper (`b.fdx`)
 - **Data-subject coordination** — cross-table export / rectify / erase / restrict / objection (`b.subject`, `b.subject.eraseHard`); subject-level legal-hold registry consulted by erase + retention paths (FRCP Rule 26/37(e), GDPR Art 17(3)(e), SEC Rule 17a-4, HIPAA §164.530(j)(2)) (`b.legalHold`)
 - **Account safety** — adaptive bot-challenge staircase (`b.authBotChallenge`); session-to-device-posture binding with fail-closed verify (`b.sessionDeviceBinding`)
+- **Anonymous authorization** — Privacy Pass origin side (RFC 9577/9578 — `b.privacyPass`): issue a `WWW-Authenticate: PrivateToken` challenge and verify a presented Blind-RSA (type 0x0002) token against the issuer public key, with no issuer callback and no client identity
 ### Crypto
 
 - **At-rest envelope** — envelope-versioned PQC (ML-KEM-1024 + P-384 hybrid, XChaCha20-Poly1305, SHAKE256); vault sealing (`b.crypto`, `b.vault`)

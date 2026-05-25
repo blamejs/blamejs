@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.51",
-  "createdAt": "2026-05-25T14:53:56.538Z",
+  "frameworkVersion": "0.12.52",
+  "createdAt": "2026-05-25T16:02:59.536Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44976,6 +44976,31 @@
               "arity": 3
             }
           }
+        }
+      }
+    },
+    "privacyPass": {
+      "type": "object",
+      "members": {
+        "PrivacyPassError": {
+          "type": "function",
+          "arity": 4
+        },
+        "TOKEN_TYPE_BLIND_RSA": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "buildChallenge": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseToken": {
+          "type": "function",
+          "arity": 1
+        },
+        "verifyToken": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
