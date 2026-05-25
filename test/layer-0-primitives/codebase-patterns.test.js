@@ -6234,7 +6234,8 @@ var KNOWN_ANTIPATTERNS = [
       "lib/did.js",
       // cose.js — importKey maps a COSE_Key to a KeyObject after
       // allowlisting kty (OKP/EC2) + crv (Ed25519 / P-256 / P-384 /
-      // P-521 / secp256k1); the JWK is constructed from the COSE_Key, not
+      // P-521 — the curves b.cose.verify has an algorithm for); the JWK
+      // is constructed from the COSE_Key, not
       // attacker-chosen alg-vs-kty, and b.cose.verify supplies the alg
       // allowlist separately. Same kty/crv-allowlist confusion guard as
       // did.js — there is no verification `alg` carried in a COSE_Key.

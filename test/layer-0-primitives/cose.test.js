@@ -237,6 +237,14 @@ async function testImportKey() {
   var badKty = null;
   try { b.cose.importKey(new Map([[1, 4], [-2, Buffer.from(jwk.x, "base64url")]])); } catch (e) { badKty = e; }
   check("importKey: unsupported kty refused", badKty && (badKty.code === "cose/unsupported-key" || badKty.code === "cose/bad-cose-key"));
+
+  // secp256k1 (crv id 8) is refused — b.cose has no ES256K path, so
+  // accepting it would let it verify under ES256 (alg/curve mis-binding).
+  var k1 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp256k1" });
+  var k1jwk = k1.publicKey.export({ format: "jwk" });
+  var secpBad = null;
+  try { b.cose.importKey(new Map([[1, 2], [-1, 8], [-2, Buffer.from(k1jwk.x, "base64url")], [-3, Buffer.from(k1jwk.y, "base64url")]])); } catch (e) { secpBad = e; }
+  check("importKey: secp256k1 refused (no ES256K binding)", secpBad && secpBad.code === "cose/unsupported-key");
 }
 
 async function run() {
