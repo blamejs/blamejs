@@ -2267,10 +2267,13 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/cose.js:_coseKeyBytes",
+        "lib/cose.js:_bstr",
         "lib/mdoc.js:_bytes",
         "lib/network-dnssec.js:_bytes",
+        "lib/network-dane.js:_bytes",
+        "lib/tsa.js:_bytes",
       ],
-      reason: "v0.12.48 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across three byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes) naming the local argument; the duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
+      reason: "v0.12.48 / v0.12.51 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes, dane/bad-bytes, tsa/bad-input) naming the local argument; network-dane additionally coerces a hex string. The duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
     },
     {
       mode:  "family-subset",
@@ -6289,6 +6292,20 @@ var KNOWN_ANTIPATTERNS = [
     regex: /_findKeyByTag\s*\(/,
     allowlist: [],
     reason: "DNSSEC key-tag collision false-negative — a 16-bit DNSKEY tag is not unique within an RRset (RFC 4034 Appendix B explicitly permits collisions). Picking the first key with a matching tag and verifying only against it rejects an otherwise-valid chain when a colliding non-signing key sorts earlier. RFC 4035 §5.3.1 requires trying every key whose tag and algorithm match until one validates; the framework does this via `_keysByTag` + `_verifyRrsetWithAnyKey`. The single-result `_findKeyByTag` helper must not be (re)introduced for signature key selection.",
+  },
+  {
+    // Wire-enum validation against a lookup table must use an integer +
+    // own-property check, never `key in TABLE` or `TABLE[key] !==
+    // undefined`: `in` / member access walk the prototype chain, so an
+    // attacker-supplied `"__proto__"` (or a string `"1"` that coerces on
+    // lookup but then fails strict-=== comparisons) slips past. The
+    // dane TLSA usage / selector / matching-type enums are validated via
+    // `_enumField` (typeof number + Number.isInteger + hasOwnProperty).
+    id: "dane-enum-unsafe-membership",
+    primitive: "_enumField(v, TABLE, ...) — integer + Object.prototype.hasOwnProperty, never `v in TABLE` / `TABLE[v] === undefined`",
+    regex: /\b(?:in\s+(?:USAGES|SELECTORS|MATCHING)\b|(?:USAGES|SELECTORS|MATCHING)\s*\[[^\]]+\]\s*===?\s*undefined)/,
+    allowlist: [],
+    reason: "Prototype-key / string-coercion bypass — validating an untrusted wire enum with `key in TABLE` or `TABLE[key] !== undefined` accepts inherited keys such as `__proto__` (and string keys like `\"1\"` that coerce on lookup but break later strict-=== branches). The DANE TLSA enums (certificate usage / selector / matching type) must be validated with a numeric + integer + own-property test (`_enumField`). The unsafe membership forms must not appear for these tables.",
   },
   {
     // CVE-2026-23552 — cross-realm JWT acceptance via non-CT iss
