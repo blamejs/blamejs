@@ -6215,8 +6215,16 @@ var KNOWN_ANTIPATTERNS = [
       // jwtExternal._assertAlgKtyMatch BEFORE createPublicKey on
       // the browser-supplied DBSC binding JWK.
       "lib/dbsc.js",
+      // did.js — _jwkToKey allowlists the JWK's kty/crv (OKP/Ed25519 or
+      // EC/P-256/P-384/secp256k1) and refuses any other type BEFORE
+      // createPublicKey, which is the DID-context equivalent of the
+      // alg/kty cross-check: a DID document carries verification keys,
+      // not a verification alg (the consuming verifier — b.vc / b.mdoc —
+      // supplies the alg allowlist), so there is no `alg` to pass to
+      // _assertAlgKtyMatch; the kty/crv allowlist is the confusion guard.
+      "lib/did.js",
     ],
-    reason: "CVE-2026-22817 — every JWT verifier that resolves a JWK BY ATTACKER-CONTROLLED HEADER (kid / x5t) must cross-check the declared alg against the JWK's kty (and crv for EC) BEFORE handing the key to node:crypto.verify. Imports that skip the check are exactly the confused-deputy shape (RS256→HS256 family). The shared helper `jwtExternal._assertAlgKtyMatch(alg, jwk)` is the single point of enforcement; new code routes through it. Allowlist entries are sign-side / pinned-cert paths where the JWK is not attacker-supplied.",
+    reason: "CVE-2026-22817 — every JWT verifier that resolves a JWK BY ATTACKER-CONTROLLED HEADER (kid / x5t) must cross-check the declared alg against the JWK's kty (and crv for EC) BEFORE handing the key to node:crypto.verify. Imports that skip the check are exactly the confused-deputy shape (RS256→HS256 family). The shared helper `jwtExternal._assertAlgKtyMatch(alg, jwk)` is the single point of enforcement; new code routes through it. Allowlist entries are sign-side / pinned-cert paths where the JWK is not attacker-supplied, or (did.js) where a kty/crv allowlist stands in for alg/kty because the format carries no verification alg.",
   },
   {
     // CVE-2026-23552 — cross-realm JWT acceptance via non-CT iss

@@ -463,6 +463,7 @@ module.exports = {
   tsa:              require("./lib/tsa"),
   vc:               require("./lib/vc"),
   mdoc:             require("./lib/mdoc"),
+  did:              require("./lib/did"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
