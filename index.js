@@ -396,6 +396,7 @@ var dbsc = require("./lib/dbsc");
 var importmapIntegrity = require("./lib/importmap-integrity");
 var privacyPass = require("./lib/privacy-pass");
 var contentDigest = require("./lib/content-digest");
+var canonicalJson = require("./lib/canonical-json");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
@@ -413,6 +414,7 @@ module.exports = {
   importmapIntegrity: importmapIntegrity,
   privacyPass:      privacyPass,
   contentDigest:    contentDigest,
+  canonicalJson:    canonicalJson,
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,

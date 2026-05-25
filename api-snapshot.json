@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.55",
-  "createdAt": "2026-05-25T19:45:48.985Z",
+  "frameworkVersion": "0.12.56",
+  "createdAt": "2026-05-25T21:09:07.457Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6000,6 +6000,23 @@
           "arity": 2
         },
         "validate": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
+    "canonicalJson": {
+      "type": "object",
+      "members": {
+        "sortKeys": {
+          "type": "function",
+          "arity": 1
+        },
+        "stringify": {
+          "type": "function",
+          "arity": 2
+        },
+        "stringifyJcs": {
           "type": "function",
           "arity": 1
         }
