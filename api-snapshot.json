@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.38",
-  "createdAt": "2026-05-25T01:35:37.361Z",
+  "frameworkVersion": "0.12.39",
+  "createdAt": "2026-05-25T02:42:46.281Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49030,6 +49030,80 @@
         "wrap": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "vc": {
+      "type": "object",
+      "members": {
+        "JOSE_ALGS": {
+          "type": "object",
+          "members": {
+            "ES256": {
+              "type": "object",
+              "members": {
+                "dsaEncoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ES384": {
+              "type": "object",
+              "members": {
+                "dsaEncoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "ES512": {
+              "type": "object",
+              "members": {
+                "dsaEncoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "EdDSA": {
+              "type": "object",
+              "members": {
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "null"
+                }
+              }
+            }
+          }
+        },
+        "VCDM_V2_CONTEXT": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "VcError": {
+          "type": "function",
+          "arity": 4
+        },
+        "issue": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
