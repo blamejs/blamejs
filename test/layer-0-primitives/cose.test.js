@@ -292,6 +292,14 @@ function testMac0() {
   var aadBad = null;
   try { b.cose.macVerify0(ma, { algorithms: ["HMAC-512/512"], key: key, externalAad: Buffer.from("ctx-B", "utf8") }); } catch (e) { aadBad = e; }
   check("mac0: external_aad mismatch refused", aadBad && aadBad.code === "cose/bad-tag");
+
+  // crit-bypass defense: a COSE_Mac0 marking an unknown critical header
+  // is refused (matching b.cose.verify).
+  var protCrit = b.cbor.encode(new Map([[1, 5], [2, [99]]]));
+  var macCrit = b.cbor.encode(new b.cbor.Tag(17, [protCrit, new Map(), Buffer.from("x", "utf8"), Buffer.alloc(32)]));
+  var critErr = null;
+  try { b.cose.macVerify0(macCrit, { algorithms: ["HMAC-256/256"], key: key }); } catch (e) { critErr = e; }
+  check("mac0: unknown crit header refused", critErr && critErr.code === "cose/crit-unknown");
 }
 
 module.exports = { run: run };
