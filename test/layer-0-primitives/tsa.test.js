@@ -261,6 +261,25 @@ function testChainVerify() {
   var e1 = null;
   try { b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [otherPem] }); } catch (e) { e1 = e; }
   check("chain verify refuses an unrelated anchor", e1 && e1.code === "tsa/untrusted-chain");
+
+  // A single PEM *string* anchor must enforce the chain — not silently
+  // skip it (the string shape previously bypassed the array-only guard).
+  var okStr = b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: anchorPem });
+  check("string trustAnchorsPem enforces + accepts the matching anchor", okStr.policy === "1.2.3.4.1");
+  var e2 = null;
+  try { b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: otherPem }); } catch (e) { e2 = e; }
+  check("string trustAnchorsPem refuses an unrelated anchor (no fail-open)", e2 && e2.code === "tsa/untrusted-chain");
+
+  // Empty / malformed anchor shapes are refused, never silently skipped.
+  var e3 = null;
+  try { b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [] }); } catch (e) { e3 = e; }
+  check("empty trustAnchorsPem array refused", e3 && e3.code === "tsa/bad-trust-anchors");
+
+  // An Invalid Date for opts.at must throw, not silently disable the
+  // validity-window check (NaN comparisons).
+  var e4 = null;
+  try { b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [anchorPem], at: new Date("not-a-date") }); } catch (e) { e4 = e; }
+  check("invalid opts.at Date refused", e4 && e4.code === "tsa/bad-at");
 }
 
 function testParseResponseAndInputGuards() {
