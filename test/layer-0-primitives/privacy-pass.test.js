@@ -61,6 +61,20 @@ function testBuildChallengeRoundTrip() {
   var t = b.privacyPass.parseToken(token());
   check("buildChallenge: SHA-256(challenge) == token challenge_digest", Buffer.compare(digest, t.challengeDigest) === 0);
   check("buildChallenge: emits a PrivateToken WWW-Authenticate header", /^PrivateToken challenge="/.test(c.wwwAuthenticate));
+  // RFC 9577 §2.1: auth-param values are padded base64url.
+  var cv = c.wwwAuthenticate.match(/challenge="([^"]+)"/)[1];
+  check("buildChallenge: challenge value is base64url with padding (len % 4 === 0)", cv.length % 4 === 0 && !/[+/]/.test(cv));
+  var ck = b.privacyPass.buildChallenge({ issuerName: "issuer.example", tokenKey: spki() });
+  check("buildChallenge: token-key value is padded base64url", /token-key="([^"]+)"/.test(ck.wwwAuthenticate) && ck.wwwAuthenticate.match(/token-key="([^"]+)"/)[1].length % 4 === 0);
+}
+
+function testPemKeyId() {
+  // A PEM-encoded issuer key must derive the same token_key_id as the raw
+  // SPKI bytes (Node can re-encode an rsa-pss AlgorithmIdentifier on
+  // export, so the PEM body bytes — not a re-export — must be hashed).
+  var pem = "-----BEGIN PUBLIC KEY-----\n" + spki().toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") + "\n-----END PUBLIC KEY-----\n";
+  var out = b.privacyPass.verifyToken({ token: token(), issuerPublicKey: pem });
+  check("verifyToken: real token verifies with a PEM issuer key", out.ok === true);
 }
 
 function testRefusals() {
@@ -92,6 +106,7 @@ async function run() {
   testParse();
   testRealVector();
   testBuildChallengeRoundTrip();
+  testPemKeyId();
   testRefusals();
 }
 
