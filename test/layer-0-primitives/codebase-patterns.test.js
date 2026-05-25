@@ -2257,10 +2257,20 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/mdoc.js:verifyIssuerSigned",
+        "lib/network-dnssec.js:verifyRrset",
         "lib/tsa.js:verifyToken",
         "lib/vc.js:verify",
       ],
-      reason: "v0.12.40 — signature-verify entry preamble shared by three credential / token verifiers: `validateOpts(allowedKeys) + mandatory algorithms-allowlist check + opts.at valid-Date guard + publicKey/keyResolver presence check`, then divergent domain logic. tsa.verifyToken verifies an RFC 3161 timestamp token (CMS SignedData + message-imprint + EKU); vc.verify verifies a W3C VC-JOSE-COSE credential (JWS/COSE + VCDM structural + validity window); mdoc.verifyIssuerSigned verifies an ISO 18013-5 mdoc (COSE_Sign1 IssuerAuth + MSO valueDigests matching). Each consumes a different wire format, returns a different shape, and throws a primitive-specific typed error — the shingle is the validate-then-guard preamble, not behaviour. Same family as the v0.12.33 cose.verify cluster.",
+      reason: "v0.12.40 — signature-verify entry preamble shared by four credential / token / DNS verifiers: `validateOpts(allowedKeys) + mandatory algorithms-allowlist check + opts.at valid-Date guard + publicKey/keyResolver presence check`, then divergent domain logic. tsa.verifyToken verifies an RFC 3161 timestamp token (CMS SignedData + message-imprint + EKU); vc.verify verifies a W3C VC-JOSE-COSE credential (JWS/COSE + VCDM structural + validity window); mdoc.verifyIssuerSigned verifies an ISO 18013-5 mdoc (COSE_Sign1 IssuerAuth + MSO valueDigests matching); network-dnssec.verifyRrset verifies a DNSSEC RRSIG (RFC 4034 canonical RRset + RRSIG-prefix reconstruction). Each consumes a different wire format, returns a different shape, and throws a primitive-specific typed error — the shingle is the validate-then-guard preamble, not behaviour. Same family as the v0.12.33 cose.verify cluster.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/cose.js:_coseKeyBytes",
+        "lib/mdoc.js:_bytes",
+        "lib/network-dnssec.js:_bytes",
+      ],
+      reason: "v0.12.48 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across three byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes) naming the local argument; the duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
     },
     {
       mode:  "family-subset",
@@ -6241,6 +6251,15 @@ var KNOWN_ANTIPATTERNS = [
       // allowlist separately. Same kty/crv-allowlist confusion guard as
       // did.js — there is no verification `alg` carried in a COSE_Key.
       "lib/cose.js",
+      // network-dnssec.js — _dnskeyToKey constructs the JWK ITSELF from
+      // the DNSSEC algorithm number (8/13/14/15, validated against the
+      // ALGORITHMS table) — kty/crv are derived from that number, never
+      // read from an attacker-supplied JWK. verifyRrset also refuses an
+      // RRSIG whose algorithm disagrees with the DNSKEY's before the key
+      // is built, so the alg→kty/crv binding is fixed at the source. The
+      // confused-deputy (alg-vs-kty) shape cannot arise — there is no
+      // externally-chosen kty to confuse.
+      "lib/network-dnssec.js",
     ],
     reason: "CVE-2026-22817 — every JWT verifier that resolves a JWK BY ATTACKER-CONTROLLED HEADER (kid / x5t) must cross-check the declared alg against the JWK's kty (and crv for EC) BEFORE handing the key to node:crypto.verify. Imports that skip the check are exactly the confused-deputy shape (RS256→HS256 family). The shared helper `jwtExternal._assertAlgKtyMatch(alg, jwk)` is the single point of enforcement; new code routes through it. Allowlist entries are sign-side / pinned-cert paths where the JWK is not attacker-supplied, or (did.js) where a kty/crv allowlist stands in for alg/kty because the format carries no verification alg.",
   },
