@@ -398,6 +398,8 @@ var privacyPass = require("./lib/privacy-pass");
 var contentDigest = require("./lib/content-digest");
 var canonicalJson = require("./lib/canonical-json");
 var linkHeader = require("./lib/link-header");
+var jsonPointer = require("./lib/json-pointer");
+var jsonPatch = require("./lib/json-patch");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
@@ -417,6 +419,8 @@ module.exports = {
   contentDigest:    contentDigest,
   canonicalJson:    canonicalJson,
   linkHeader:       linkHeader,
+  jsonPointer:      jsonPointer,
+  jsonPatch:        jsonPatch,
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,
