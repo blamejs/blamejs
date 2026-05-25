@@ -170,12 +170,75 @@ async function testTemporalAndStructural() {
   check("verify: object issuer id extracted", oo.issuer === "did:example:obj");
 }
 
+async function testPresentation() {
+  var HOLDER = nodeCrypto.generateKeyPairSync("ed25519");
+  var holderId = "did:example:holder";
+  var jws = await b.vc.issue(_cred(), { securing: "jose", alg: "ES256", privateKey: EC.privateKey });
+
+  // jose VP wrapping a VC, with nonce + audience holder-binding
+  var vp = await b.vc.present({
+    credentials: [jws], holder: holderId, securing: "jose", alg: "EdDSA", privateKey: HOLDER.privateKey,
+    nonce: "chal-1", audience: "https://verifier.example",
+  });
+  check("present: VP is a compact JWS", typeof vp === "string" && vp.split(".").length === 3);
+  check("present: typ vp+jwt", JSON.parse(Buffer.from(vp.split(".")[0], "base64url").toString("utf8")).typ === "vp+jwt");
+
+  var out = await b.vc.verifyPresentation(vp, {
+    algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, expectedHolder: holderId,
+    nonce: "chal-1", audience: "https://verifier.example",
+    verifyCredentials: true, credentialOpts: { algorithms: ["ES256"], publicKey: EC.publicKey },
+  });
+  check("verifyPresentation: holder returned", out.holder === holderId && out.securing === "jose");
+  check("verifyPresentation: enclosed VC verified", out.credentials.length === 1 && out.credentials[0].credential.credentialSubject.degree === "BS");
+
+  // cose VP
+  var coseVc = await b.vc.issue(_cred(), { securing: "cose", alg: "ES256", privateKey: EC.privateKey });
+  var vpc = await b.vc.present({ credentials: [coseVc], holder: holderId, securing: "cose", alg: "EdDSA", privateKey: HOLDER.privateKey });
+  var outc = await b.vc.verifyPresentation(vpc, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, verifyCredentials: true, credentialOpts: { algorithms: ["ES256"], publicKey: EC.publicKey } });
+  check("cose VP: round-trips + enclosed VC verified", outc.holder === holderId && outc.credentials.length === 1);
+
+  // refusals
+  var e1 = null;
+  try { await b.vc.verifyPresentation(vp, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, nonce: "wrong" }); } catch (e) { e1 = e; }
+  check("verifyPresentation: nonce mismatch refused", e1 && e1.code === "vc/nonce-mismatch");
+  var e2 = null;
+  try { await b.vc.verifyPresentation(vp, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, audience: "https://other" }); } catch (e) { e2 = e; }
+  check("verifyPresentation: audience mismatch refused", e2 && e2.code === "vc/audience-mismatch");
+  var e3 = null;
+  try { await b.vc.verifyPresentation(vp, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, expectedHolder: "did:example:other" }); } catch (e) { e3 = e; }
+  check("verifyPresentation: holder mismatch refused", e3 && e3.code === "vc/holder-mismatch");
+  // verifying the VP with the wrong typ (a VC) must fail typ check
+  var e4 = null;
+  try { await b.vc.verifyPresentation(jws, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { e4 = e; }
+  check("verifyPresentation: a VC (vc+jwt) is refused as a VP", e4 && e4.code === "vc/bad-typ");
+  // a VP cannot be verified as a VC
+  var e5 = null;
+  try { await b.vc.verify(vp, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey }); } catch (e) { e5 = e; }
+  check("verify: a VP (vp+jwt) is refused as a VC", e5 && e5.code === "vc/bad-typ");
+  // present requires credentials + holder
+  var e6 = null;
+  try { await b.vc.present({ credentials: [], holder: holderId, securing: "jose", alg: "EdDSA", privateKey: HOLDER.privateKey }); } catch (e) { e6 = e; }
+  check("present: empty credentials refused", e6 && e6.code === "vc/no-credentials");
+
+  // A holder-signed VP with a NON-ARRAY verifiableCredential must fail
+  // closed (not coerce to [] and skip credential verification).
+  var badVp = { "@context": ["https://www.w3.org/ns/credentials/v2"], type: ["VerifiablePresentation"], holder: holderId, verifiableCredential: { foo: "bar" } };
+  var h = Buffer.from(JSON.stringify({ alg: "EdDSA", typ: "vp+jwt" }), "utf8").toString("base64url");
+  var p = Buffer.from(JSON.stringify(badVp), "utf8").toString("base64url");
+  var si = h + "." + p;
+  var badVpJws = si + "." + nodeCrypto.sign(null, Buffer.from(si, "ascii"), HOLDER.privateKey).toString("base64url");
+  var e7 = null;
+  try { await b.vc.verifyPresentation(badVpJws, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, verifyCredentials: true, credentialOpts: { algorithms: ["ES256"], publicKey: EC.publicKey } }); } catch (e) { e7 = e; }
+  check("verifyPresentation: non-array verifiableCredential refused (no bypass)", e7 && e7.code === "vc/bad-presentation");
+}
+
 async function run() {
   testSurface();
   await testJoseRoundTrip();
   await testCoseRoundTrip();
   await testRefusals();
   await testTemporalAndStructural();
+  await testPresentation();
 }
 
 module.exports = { run: run };
