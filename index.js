@@ -461,6 +461,7 @@ module.exports = {
   eat:              require("./lib/eat"),
   scitt:            require("./lib/scitt"),
   tsa:              require("./lib/tsa"),
+  vc:               require("./lib/vc"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
