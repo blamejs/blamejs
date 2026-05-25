@@ -219,6 +219,17 @@ async function testPresentation() {
   var e6 = null;
   try { await b.vc.present({ credentials: [], holder: holderId, securing: "jose", alg: "EdDSA", privateKey: HOLDER.privateKey }); } catch (e) { e6 = e; }
   check("present: empty credentials refused", e6 && e6.code === "vc/no-credentials");
+
+  // A holder-signed VP with a NON-ARRAY verifiableCredential must fail
+  // closed (not coerce to [] and skip credential verification).
+  var badVp = { "@context": ["https://www.w3.org/ns/credentials/v2"], type: ["VerifiablePresentation"], holder: holderId, verifiableCredential: { foo: "bar" } };
+  var h = Buffer.from(JSON.stringify({ alg: "EdDSA", typ: "vp+jwt" }), "utf8").toString("base64url");
+  var p = Buffer.from(JSON.stringify(badVp), "utf8").toString("base64url");
+  var si = h + "." + p;
+  var badVpJws = si + "." + nodeCrypto.sign(null, Buffer.from(si, "ascii"), HOLDER.privateKey).toString("base64url");
+  var e7 = null;
+  try { await b.vc.verifyPresentation(badVpJws, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, verifyCredentials: true, credentialOpts: { algorithms: ["ES256"], publicKey: EC.publicKey } }); } catch (e) { e7 = e; }
+  check("verifyPresentation: non-array verifiableCredential refused (no bypass)", e7 && e7.code === "vc/bad-presentation");
 }
 
 async function run() {
