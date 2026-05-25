@@ -397,6 +397,7 @@ var importmapIntegrity = require("./lib/importmap-integrity");
 var privacyPass = require("./lib/privacy-pass");
 var contentDigest = require("./lib/content-digest");
 var canonicalJson = require("./lib/canonical-json");
+var linkHeader = require("./lib/link-header");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
@@ -415,6 +416,7 @@ module.exports = {
   privacyPass:      privacyPass,
   contentDigest:    contentDigest,
   canonicalJson:    canonicalJson,
+  linkHeader:       linkHeader,
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,
