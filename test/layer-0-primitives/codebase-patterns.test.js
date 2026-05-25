@@ -2241,6 +2241,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/cose.js:verify",
+        "lib/cose.js:macVerify0",
         "lib/auth/sd-jwt-vc-issuer.js:create",
         "lib/break-glass.js:_validatePolicySet",
         "lib/calendar.js:validate",

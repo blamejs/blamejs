@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.46",
-  "createdAt": "2026-05-25T09:27:35.244Z",
+  "frameworkVersion": "0.12.47",
+  "createdAt": "2026-05-25T10:04:36.249Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13501,6 +13501,10 @@
           "type": "primitive",
           "valueType": "number"
         },
+        "COSE_MAC0_TAG": {
+          "type": "primitive",
+          "valueType": "number"
+        },
         "COSE_SIGN1_TAG": {
           "type": "primitive",
           "valueType": "number"
@@ -13508,6 +13512,23 @@
         "CoseError": {
           "type": "function",
           "arity": 4
+        },
+        "MAC_ALGORITHMS": {
+          "type": "object",
+          "members": {
+            "HMAC-256/256": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "HMAC-384/384": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "HMAC-512/512": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
         },
         "decrypt0": {
           "type": "function",
@@ -13520,6 +13541,14 @@
         "importKey": {
           "type": "function",
           "arity": 1
+        },
+        "mac0": {
+          "type": "function",
+          "arity": 2
+        },
+        "macVerify0": {
+          "type": "function",
+          "arity": 2
         },
         "sign": {
           "type": "function",
