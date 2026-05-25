@@ -159,6 +159,15 @@ function testDecimalTypePreserved() {
   check("serialize: an integral JS number serializes as an Integer", SF.serialize({ value: 5, params: new Map() }, "item") === "5");
 }
 
+function testDisplayStringSurrogate() {
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  // A lone UTF-16 surrogate is not a valid Unicode string — serialize must
+  // fail rather than silently emit U+FFFD (RFC 9651 §4.1.10).
+  check("serialize: lone surrogate display string refused", code(function () { SF.serialize({ value: new SF.DisplayString("a\uD800b"), params: new Map() }, "item"); }) === "structured-fields/serialize");
+  // A valid astral code point (surrogate pair) serializes fine.
+  check("serialize: astral code point display string ok", SF.serialize({ value: new SF.DisplayString("\u{1F600}"), params: new Map() }, "item") === '%"%f0%9f%98%80"');
+}
+
 function testTypedError() {
   function E(code, msg) { this.code = code; this.message = msg; }
   E.prototype = Object.create(Error.prototype);
@@ -184,6 +193,7 @@ async function run() {
   testConformance();
   testSerialize();
   testDecimalTypePreserved();
+  testDisplayStringSurrogate();
   testTypedError();
 }
 
