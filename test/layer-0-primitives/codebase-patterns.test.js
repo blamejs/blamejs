@@ -2272,9 +2272,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/network-dnssec.js:_bytes",
         "lib/network-dane.js:_bytes",
         "lib/privacy-pass.js:_bytes",
+        "lib/content-digest.js:_bodyBytes",
         "lib/tsa.js:_bytes",
       ],
-      reason: "v0.12.48 / v0.12.51 / v0.12.52 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes, dane/bad-bytes, tsa/bad-input) naming the local argument; network-dane additionally coerces a hex string. The duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
+      reason: "v0.12.48 / v0.12.51 / v0.12.52 / v0.12.53 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes, dane/bad-bytes, tsa/bad-input) naming the local argument; network-dane additionally coerces a hex string. The duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
     },
     {
       mode:  "family-subset",
@@ -2438,6 +2439,15 @@ async function testNoDuplicateCodeBlocks() {
         "lib/vault-aad.js:_canonicalize",
       ],
       reason: "v0.10.16 — tree-walker / link-collection helpers: each primitive walks an arbitrary nested structure (HAL _links normalization across string|object|array, JMAP back-reference resolution, ACME profile enumeration, template variable substitution, AuthResults header emission, mail-query AST walk, vault-AAD canonicalization). The shared shape is the `if (typeof x === 'string')` / `else if (Array.isArray(x))` / `else for-in object` dispatch; the bodies do entirely different semantic work per spec (RFC 4287 HAL / RFC 8620 JMAP / RFC 8555 ACME / Mustache-ish / RFC 8601 AuthResults).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/content-digest.js:<top>",
+        "lib/network-dane.js:<top>",
+        "lib/tsa.js:<top>",
+      ],
+      reason: "v0.12.53 — identical framework require preamble + module-local typed-error declaration (`var nodeCrypto = require(\"node:crypto\"); var bCrypto = require(\"./crypto\"); var validateOpts = require(\"./validate-opts\"); var { defineClass } = require(\"./framework-error\"); var XError = defineClass(\"XError\", { alwaysPermanent: true });`). This is the standard top-of-file boilerplate for a crypto-touching primitive that throws a namespaced error; the only divergence is the error class name. Top-of-file requires are the project convention (rule §3), so the shared shape is unavoidable boilerplate, not extractable behaviour.",
     },
     {
       mode:  "family-subset",

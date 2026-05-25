@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.52",
-  "createdAt": "2026-05-25T16:02:59.536Z",
+  "frameworkVersion": "0.12.53",
+  "createdAt": "2026-05-25T17:13:42.241Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13418,6 +13418,27 @@
           "arity": 2
         },
         "signCose": {
+          "type": "function",
+          "arity": 2
+        },
+        "verify": {
+          "type": "function",
+          "arity": 3
+        }
+      }
+    },
+    "contentDigest": {
+      "type": "object",
+      "members": {
+        "ACTIVE_ALGORITHMS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ContentDigestError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
           "type": "function",
           "arity": 2
         },
