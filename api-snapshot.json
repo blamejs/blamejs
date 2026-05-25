@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.37",
-  "createdAt": "2026-05-25T00:30:27.634Z",
+  "frameworkVersion": "0.12.38",
+  "createdAt": "2026-05-25T01:35:37.361Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -48635,6 +48635,97 @@
         "tap": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "tsa": {
+      "type": "object",
+      "members": {
+        "IMPRINT_HASHES": {
+          "type": "object",
+          "members": {
+            "SHA-256": {
+              "type": "object",
+              "members": {
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "oid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "SHA-384": {
+              "type": "object",
+              "members": {
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "oid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "SHA-512": {
+              "type": "object",
+              "members": {
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "oid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "SHA3-256": {
+              "type": "object",
+              "members": {
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "oid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "SHA3-512": {
+              "type": "object",
+              "members": {
+                "nodeHash": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "oid": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "TsaError": {
+          "type": "function",
+          "arity": 4
+        },
+        "buildRequest": {
+          "type": "function",
+          "arity": 2
+        },
+        "parseResponse": {
+          "type": "function",
+          "arity": 1
+        },
+        "verifyToken": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
