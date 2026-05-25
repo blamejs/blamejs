@@ -278,6 +278,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 - [ ] Confirm `vault: { mode: "wrapped" }` in the app's config (not `"plaintext"`)
 - [ ] Store the passphrase in a secret manager (1Password / Vault / AWS Secrets Manager / sops) — never in git, never in shell history
 - [ ] Rotate the vault passphrase quarterly: `blamejs vault rotate`
+- [ ] In FIPS / regulated deployments, run `b.crypto.selfTest()` at start-up as a power-on integrity gate — it KATs SHA3/SHAKE against NIST FIPS 202 vectors and pairwise-tests ML-KEM-1024 / ML-DSA-87 / SLH-DSA-SHAKE-256f, throwing `crypto/self-test-failed` (fail closed) if the crypto stack is broken
 
 **Audit chain**
 - [ ] Run `blamejs audit verify-chain --db <path>` weekly via cron — walks the live audit chain end-to-end and reports tampering with `breakAt` / `breakRowId` / expected-vs-actual prevHash

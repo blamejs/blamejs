@@ -92,6 +92,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 ### Crypto
 
 - **At-rest envelope** — envelope-versioned PQC (ML-KEM-1024 + P-384 hybrid, XChaCha20-Poly1305, SHAKE256); vault sealing (`b.crypto`, `b.vault`)
+- **Power-on self-test** — `b.crypto.selfTest()` runs FIPS 140-3-style integrity checks: NIST FIPS 202 known-answer tests (SHA3-256/512, SHAKE256), AEAD round-trip + tamper-detect, and ML-KEM-1024 / ML-DSA-87 / SLH-DSA-SHAKE-256f pairwise-consistency + negative tests; fails closed (throws) on any mismatch
 - **Field-level + crypto-shred** — `b.cryptoField.eraseRow`; per-column data residency tagging + per-row keys (`K_row = HKDF(K_table, rowId)`) so erasing the per-row key makes WAL / replica residuals undecryptable (`b.cryptoField.declareColumnResidency`, `b.cryptoField.declarePerRowKey`)
 - **AAD-bound sealed columns** — AEAD tag tied to `(table, rowId, column, schemaVersion)`; copy-paste between rows or schema-version replay surfaces as refused decrypt (`b.vault.aad`)
 - **Signed webhooks + API encryption** — SLH-DSA-SHAKE-256f default; ML-DSA-65 opt-in; ECIES API encryption (`b.webhook`, `b.crypto`)
