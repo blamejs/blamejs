@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.49",
-  "createdAt": "2026-05-25T12:28:18.912Z",
+  "frameworkVersion": "0.12.50",
+  "createdAt": "2026-05-25T13:31:06.521Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -41674,6 +41674,10 @@
                     }
                   }
                 },
+                "DEFAULT_ROOT_ANCHORS": {
+                  "type": "instance",
+                  "ctorName": "Array"
+                },
                 "DnssecError": {
                   "type": "function",
                   "arity": 4
@@ -41685,6 +41689,10 @@
                 "nsec3Hash": {
                   "type": "function",
                   "arity": 2
+                },
+                "verifyChain": {
+                  "type": "function",
+                  "arity": 1
                 },
                 "verifyDenial": {
                   "type": "function",
