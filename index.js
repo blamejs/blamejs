@@ -459,6 +459,7 @@ module.exports = {
   cose:             require("./lib/cose"),
   cwt:              require("./lib/cwt"),
   eat:              require("./lib/eat"),
+  scitt:            require("./lib/scitt"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
