@@ -258,6 +258,40 @@ async function run() {
   await testValidation();
   await testDetachedPayload();
   await testImportKey();
+  testMac0();
+}
+
+function testMac0() {
+  var key = nodeCrypto.randomBytes(32);
+  var pt = Buffer.from("cose mac0 payload", "utf8");
+  var m = b.cose.mac0(pt, { alg: "HMAC-256/256", key: key });
+  check("mac0: tagged COSE_Mac0 (tag 17 → 0xd1)", m[0] === 0xd1);
+  var out = b.cose.macVerify0(m, { algorithms: ["HMAC-256/256"], key: key });
+  check("mac0: round-trips payload + alg", out.payload.equals(pt) && out.alg === "HMAC-256/256");
+
+  var wrongKey = null;
+  try { b.cose.macVerify0(m, { algorithms: ["HMAC-256/256"], key: nodeCrypto.randomBytes(32) }); } catch (e) { wrongKey = e; }
+  check("mac0: wrong key refused", wrongKey && wrongKey.code === "cose/bad-tag");
+
+  var tampered = Buffer.from(m); tampered[tampered.length - 1] ^= 0xff;
+  var tamp = null;
+  try { b.cose.macVerify0(tampered, { algorithms: ["HMAC-256/256"], key: key }); } catch (e) { tamp = e; }
+  check("mac0: tampered tag refused", tamp && tamp.code === "cose/bad-tag");
+
+  var notAllowed = null;
+  try { b.cose.macVerify0(m, { algorithms: ["HMAC-512/512"], key: key }); } catch (e) { notAllowed = e; }
+  check("mac0: alg not in allowlist refused", notAllowed && notAllowed.code === "cose/alg-not-allowed");
+
+  var md = b.cose.mac0(pt, { alg: "HMAC-384/384", key: key, detached: true });
+  check("mac0: detached verify with externalPayload", b.cose.macVerify0(md, { algorithms: ["HMAC-384/384"], key: key, externalPayload: pt }).payload.equals(pt));
+  var noPay = null;
+  try { b.cose.macVerify0(md, { algorithms: ["HMAC-384/384"], key: key }); } catch (e) { noPay = e; }
+  check("mac0: detached without externalPayload refused", noPay && noPay.code === "cose/detached-no-payload");
+
+  var ma = b.cose.mac0(pt, { alg: "HMAC-512/512", key: key, externalAad: Buffer.from("ctx-A", "utf8") });
+  var aadBad = null;
+  try { b.cose.macVerify0(ma, { algorithms: ["HMAC-512/512"], key: key, externalAad: Buffer.from("ctx-B", "utf8") }); } catch (e) { aadBad = e; }
+  check("mac0: external_aad mismatch refused", aadBad && aadBad.code === "cose/bad-tag");
 }
 
 module.exports = { run: run };
