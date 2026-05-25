@@ -216,6 +216,36 @@ function testNsec3OptOut() {
   check("verifyDenial: Opt-Out NXDOMAIN accepted with allowOptOut", out.ok && out.optOut === true);
 }
 
+function testWildcardMatchRejected() {
+  // NXDOMAIN must NOT be accepted when the wildcard at the closest
+  // encloser EXISTS (matches). A forged NXDOMAIN could otherwise suppress
+  // data that wildcard expansion should have synthesised.
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  var salt = Buffer.alloc(0);
+  function H(n) { return b.network.dns.dnssec.nsec3Hash(n, { salt: salt, iterations: 0 }); }
+  function enc(buf) {
+    var bits = 0, val = 0, out = "";
+    for (var i = 0; i < buf.length; i++) { val = (val << 8) | buf[i]; bits += 8; while (bits >= 5) { bits -= 5; out += B32H[(val >> bits) & 31]; } }
+    if (bits > 0) out += B32H[(val << (5 - bits)) & 31];
+    return out;
+  }
+  var hT = H("test"), hX = H("x.test"), hW = H("*.test");
+  var recs = [
+    { owner: enc(hT) + ".test", rdata: nsec3Rdata({ iterations: 0, next: bufInc(hT, 1), types: ["NS", "SOA"] }) },
+    { owner: enc(bufInc(hX, -1)) + ".test", rdata: nsec3Rdata({ iterations: 0, next: bufInc(hX, 1) }) },
+    { owner: enc(hW) + ".test", rdata: nsec3Rdata({ iterations: 0, next: bufInc(hW, 1), types: ["A"] }) }, // wildcard EXISTS (matches)
+  ];
+  check("verifyDenial: NSEC3 NXDOMAIN refused when wildcard matches (exists)", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain", zone: "test", nsec3: recs }); }) === "dnssec/denial-not-proven");
+
+  // NSEC equivalent: the wildcard owner exists in the chain.
+  var nsec = [
+    { owner: "example.com", rdata: nsecRdata("*.example.com", ["A", "NS", "SOA", "RRSIG", "DNSKEY"]) },
+    { owner: "*.example.com", rdata: nsecRdata("a.example.com", ["A", "RRSIG"]) },
+    { owner: "a.example.com", rdata: nsecRdata("example.com", ["A", "RRSIG"]) },
+  ];
+  check("verifyDenial: NSEC NXDOMAIN refused when wildcard owner exists", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "b.example.com", proof: "nxdomain", zone: "example.com", nsec: nsec }); }) === "dnssec/denial-not-proven");
+}
+
 function testNsec() {
   // Synthetic NSEC zone: apex + one name, both with bitmaps.
   var recs = [
@@ -248,6 +278,7 @@ async function run() {
   testNsec3Real();
   testNsec3Caps();
   testNsec3OptOut();
+  testWildcardMatchRejected();
   testNsec();
   testDenialArgs();
 }

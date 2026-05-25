@@ -6264,6 +6264,20 @@ var KNOWN_ANTIPATTERNS = [
     reason: "CVE-2026-22817 — every JWT verifier that resolves a JWK BY ATTACKER-CONTROLLED HEADER (kid / x5t) must cross-check the declared alg against the JWK's kty (and crv for EC) BEFORE handing the key to node:crypto.verify. Imports that skip the check are exactly the confused-deputy shape (RS256→HS256 family). The shared helper `jwtExternal._assertAlgKtyMatch(alg, jwk)` is the single point of enforcement; new code routes through it. Allowlist entries are sign-side / pinned-cert paths where the JWK is not attacker-supplied, or (did.js) where a kty/crv allowlist stands in for alg/kty because the format carries no verification alg.",
   },
   {
+    // DNSSEC denial-of-existence: a wildcard at the closest encloser in
+    // an NXDOMAIN (Name Error) proof must be proven NON-EXISTENT
+    // (covered). Accepting a MATCHING wildcard owner as proof lets a
+    // forged NXDOMAIN suppress data that wildcard expansion should have
+    // synthesised (RFC 4035 §5.4, RFC 5155 §8.4). The bug shape is a
+    // boolean gate that treats "covered OR matched" as acceptable:
+    // `!findCover(x) && !findMatch(x)`. The fix requires cover alone.
+    id: "nsec-wildcard-cover-or-match-accepted",
+    primitive: "wildcard non-existence in an NXDOMAIN proof requires findCover() alone — never `!findCover(x) && !findMatch(x)`",
+    regex: /!\s*findCover\s*\([^)]*\)\s*&&\s*!\s*findMatch\s*\(/,
+    allowlist: [],
+    reason: "DNSSEC NXDOMAIN over-acceptance — for a Name Error proof the source-of-synthesis wildcard must be COVERED (proven absent). A matching wildcard owner means the wildcard exists and the query should have been answered by expansion, so a response claiming NXDOMAIN is forged. The `!findCover(x) && !findMatch(x)` gate accepts a matching wildcard as proof and must never appear; the correct gate is `!findCover(x)`. Detection is precise: only the cover-OR-match denial gate matches. Wildcard-NODATA (which legitimately needs a MATCHING wildcard with the type absent) uses `findMatch(...)` standalone with a type-bitmap check, not this gate, so it does not match.",
+  },
+  {
     // CVE-2026-23552 — cross-realm JWT acceptance via non-CT iss
     // compare. `payload.iss !== expectedIssuer` (or claims.iss / token.iss)
     // leaks prefix-timing bytes that let an attacker narrow which
