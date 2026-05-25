@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.48",
-  "createdAt": "2026-05-25T11:29:28.593Z",
+  "frameworkVersion": "0.12.49",
+  "createdAt": "2026-05-25T12:28:18.912Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -41679,6 +41679,14 @@
                   "arity": 4
                 },
                 "keyTag": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "nsec3Hash": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verifyDenial": {
                   "type": "function",
                   "arity": 1
                 },

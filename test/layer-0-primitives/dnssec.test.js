@@ -113,11 +113,174 @@ function testVerifyDs() {
   check("verifyDs: key-tag mismatch refused", code(function () { b.network.dns.dnssec.verifyDs({ ownerName: "cloudflare.com", dnskeyRdata: cf.ksk.rdata, ds: Object.assign({}, ds, { keyTag: (tag + 1) & 0xffff }) }); }) === "dnssec/keytag-mismatch");
 }
 
+// --- Denial of existence (NSEC / NSEC3) ---
+
+var B32H = "0123456789ABCDEFGHIJKLMNOPQRSTUV";
+function b32hDecode(s) {
+  s = s.toUpperCase();
+  var bits = 0, val = 0, out = [];
+  for (var i = 0; i < s.length; i++) { val = (val << 5) | B32H.indexOf(s[i]); bits += 5; if (bits >= 8) { bits -= 8; out.push((val >> bits) & 0xff); } }
+  return Buffer.from(out);
+}
+var TY = { A: 1, NS: 2, CNAME: 5, SOA: 6, MX: 15, TXT: 16, AAAA: 28, RRSIG: 46, DNSKEY: 48, NSEC3PARAM: 51, CAA: 257, SRV: 33, DS: 43 };
+function encodeBitmap(names) {
+  if (!names.length) return Buffer.alloc(0);
+  var byWin = {};
+  names.forEach(function (nm) { var t = TY[nm]; (byWin[t >> 8] = byWin[t >> 8] || {})[t & 0xff] = 1; });
+  var parts = [];
+  Object.keys(byWin).map(Number).sort(function (a, c) { return a - c; }).forEach(function (w) {
+    var bitsSet = Object.keys(byWin[w]).map(Number);
+    var len = (Math.max.apply(null, bitsSet) >> 3) + 1, bm = Buffer.alloc(len);
+    bitsSet.forEach(function (bit) { bm[bit >> 3] |= 0x80 >> (bit & 7); });
+    parts.push(Buffer.from([w, len]), bm);
+  });
+  return Buffer.concat(parts);
+}
+function nsec3Rdata(opts) {
+  var salt = opts.salt || Buffer.alloc(0);
+  var next = Buffer.isBuffer(opts.next) ? opts.next : b32hDecode(opts.next);
+  return Buffer.concat([
+    Buffer.from([opts.hashAlg === undefined ? 1 : opts.hashAlg, opts.flags || 0, (opts.iterations >> 8) & 0xff, opts.iterations & 0xff, salt.length]),
+    salt, Buffer.from([next.length]), next, encodeBitmap(opts.types || []),
+  ]);
+}
+function nsecRdata(nextName, types) {
+  var labels = nextName.replace(/\.$/, "").split(".");
+  var parts = [];
+  labels.forEach(function (l) { var bb = Buffer.from(l, "ascii"); parts.push(Buffer.from([bb.length]), bb); });
+  parts.push(Buffer.from([0]));
+  return Buffer.concat(parts.concat([encodeBitmap(types)]));
+}
+function bufInc(buf, delta) { var b2 = Buffer.from(buf); b2[b2.length - 1] = (b2[b2.length - 1] + delta) & 0xff; return b2; }
+
+// Real `iana.org` NXDOMAIN proof (NSEC3, SHA-1, 0 iterations, empty salt),
+// captured via Cloudflare DoH for nonexistent-blamejs-test-xyz.iana.org.
+var IANA_NSEC3 = [
+  { owner: "uqk2hjod270o42j2v1hoi7qtr945lhmb.iana.org", next: "VAVBTBDJ8O7H3CJCP1HL1CDPRTFQP46L", types: [] },
+  { owner: "mvnqhoigoa305s1i78hp6cdv5n7lcutc.iana.org", next: "NGJOKE6KAKN5BC83M0IAPQVRBAJKQI3M", types: ["A", "NS", "SOA", "MX", "TXT", "AAAA", "RRSIG", "DNSKEY", "NSEC3PARAM", "CAA"] },
+  { owner: "0d5cbi611aogl6kk8jjsopfic6dcb42t.iana.org", next: "26CS5JG5RASD1SS5VNTJ9PSC7FDVQIEO", types: ["CNAME", "RRSIG"] },
+];
+function ianaRecords() {
+  return IANA_NSEC3.map(function (r) { return { owner: r.owner, rdata: nsec3Rdata({ iterations: 0, next: r.next, types: r.types }) }; });
+}
+
+function testNsec3Real() {
+  // The NSEC3 hash of the apex equals the real apex owner label byte-exact.
+  var h = b.network.dns.dnssec.nsec3Hash("iana.org", { salt: Buffer.alloc(0), iterations: 0 });
+  check("nsec3Hash: matches the real iana.org apex owner label", Buffer.compare(h, b32hDecode("MVNQHOIGOA305S1I78HP6CDV5N7LCUTC")) === 0);
+
+  var out = b.network.dns.dnssec.verifyDenial({ qname: "nonexistent-blamejs-test-xyz.iana.org", proof: "nxdomain", zone: "iana.org", nsec3: ianaRecords() });
+  check("verifyDenial: real iana.org NXDOMAIN proven (NSEC3)", out.ok && out.proof === "nxdomain" && out.mechanism === "nsec3" && out.closestEncloser === "iana.org." && out.optOut === false);
+
+  // Apex NODATA: the apex NSEC3 matches iana.org; a type absent from its
+  // bitmap is proven NODATA, a type present is refused.
+  var nodata = b.network.dns.dnssec.verifyDenial({ qname: "iana.org", qtype: "SRV", proof: "nodata", zone: "iana.org", nsec3: ianaRecords() });
+  check("verifyDenial: real iana.org NODATA for absent type proven", nodata.ok && nodata.proof === "nodata" && nodata.matched === true);
+
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  check("verifyDenial: NODATA refused when type IS present", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "iana.org", qtype: "A", proof: "nodata", zone: "iana.org", nsec3: ianaRecords() }); }) === "dnssec/denial-not-proven");
+  // Removing the next-closer cover breaks the NXDOMAIN proof.
+  check("verifyDenial: NXDOMAIN refused without a covering NSEC3", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "nonexistent-blamejs-test-xyz.iana.org", proof: "nxdomain", zone: "iana.org", nsec3: [ianaRecords()[1]] }); }) === "dnssec/denial-not-proven");
+}
+
+function testNsec3Caps() {
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  // Iterations beyond the cap are refused (iterated-SHA-1 DoS bound).
+  var heavy = [{ owner: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.x", rdata: nsec3Rdata({ iterations: 9999, next: b32hDecode("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB") }) }];
+  check("verifyDenial: excessive NSEC3 iterations refused", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "q.x", proof: "nxdomain", zone: "x", nsec3: heavy }); }) === "dnssec/nsec3-iterations-excessive");
+  // Unsupported hash algorithm refused.
+  var badHash = [{ owner: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.x", rdata: nsec3Rdata({ hashAlg: 2, iterations: 0, next: b32hDecode("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB") }) }];
+  check("verifyDenial: unsupported NSEC3 hash algorithm refused", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "q.x", proof: "nxdomain", zone: "x", nsec3: badHash }); }) === "dnssec/unsupported-nsec3-hash");
+}
+
+function testNsec3OptOut() {
+  // Construct an Opt-Out NXDOMAIN: matching apex + opt-out next-closer
+  // cover + covered wildcard, using real hashes of chosen names.
+  var salt = Buffer.alloc(0);
+  function H(n) { return b.network.dns.dnssec.nsec3Hash(n, { salt: salt, iterations: 0 }); }
+  var hT = H("test"), hX = H("x.test"), hW = H("*.test");
+  function b32hEncode(buf) {
+    var bits = 0, val = 0, out = "";
+    for (var i = 0; i < buf.length; i++) { val = (val << 8) | buf[i]; bits += 8; while (bits >= 5) { bits -= 5; out += B32H[(val >> bits) & 31]; } }
+    if (bits > 0) out += B32H[(val << (5 - bits)) & 31];
+    return out;
+  }
+  var recs = [
+    { owner: b32hEncode(hT) + ".test", rdata: nsec3Rdata({ flags: 0, iterations: 0, next: bufInc(hT, 1), types: ["NS", "SOA"] }) },
+    { owner: b32hEncode(bufInc(hX, -1)) + ".test", rdata: nsec3Rdata({ flags: 1, iterations: 0, next: bufInc(hX, 1) }) },
+    { owner: b32hEncode(bufInc(hW, -1)) + ".test", rdata: nsec3Rdata({ flags: 0, iterations: 0, next: bufInc(hW, 1) }) },
+  ];
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  check("verifyDenial: Opt-Out NXDOMAIN refused by default", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain", zone: "test", nsec3: recs }); }) === "dnssec/denial-opt-out");
+  var out = b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain", zone: "test", nsec3: recs, allowOptOut: true });
+  check("verifyDenial: Opt-Out NXDOMAIN accepted with allowOptOut", out.ok && out.optOut === true);
+}
+
+function testWildcardMatchRejected() {
+  // NXDOMAIN must NOT be accepted when the wildcard at the closest
+  // encloser EXISTS (matches). A forged NXDOMAIN could otherwise suppress
+  // data that wildcard expansion should have synthesised.
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  var salt = Buffer.alloc(0);
+  function H(n) { return b.network.dns.dnssec.nsec3Hash(n, { salt: salt, iterations: 0 }); }
+  function enc(buf) {
+    var bits = 0, val = 0, out = "";
+    for (var i = 0; i < buf.length; i++) { val = (val << 8) | buf[i]; bits += 8; while (bits >= 5) { bits -= 5; out += B32H[(val >> bits) & 31]; } }
+    if (bits > 0) out += B32H[(val << (5 - bits)) & 31];
+    return out;
+  }
+  var hT = H("test"), hX = H("x.test"), hW = H("*.test");
+  var recs = [
+    { owner: enc(hT) + ".test", rdata: nsec3Rdata({ iterations: 0, next: bufInc(hT, 1), types: ["NS", "SOA"] }) },
+    { owner: enc(bufInc(hX, -1)) + ".test", rdata: nsec3Rdata({ iterations: 0, next: bufInc(hX, 1) }) },
+    { owner: enc(hW) + ".test", rdata: nsec3Rdata({ iterations: 0, next: bufInc(hW, 1), types: ["A"] }) }, // wildcard EXISTS (matches)
+  ];
+  check("verifyDenial: NSEC3 NXDOMAIN refused when wildcard matches (exists)", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain", zone: "test", nsec3: recs }); }) === "dnssec/denial-not-proven");
+
+  // NSEC equivalent: the wildcard owner exists in the chain.
+  var nsec = [
+    { owner: "example.com", rdata: nsecRdata("*.example.com", ["A", "NS", "SOA", "RRSIG", "DNSKEY"]) },
+    { owner: "*.example.com", rdata: nsecRdata("a.example.com", ["A", "RRSIG"]) },
+    { owner: "a.example.com", rdata: nsecRdata("example.com", ["A", "RRSIG"]) },
+  ];
+  check("verifyDenial: NSEC NXDOMAIN refused when wildcard owner exists", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "b.example.com", proof: "nxdomain", zone: "example.com", nsec: nsec }); }) === "dnssec/denial-not-proven");
+}
+
+function testNsec() {
+  // Synthetic NSEC zone: apex + one name, both with bitmaps.
+  var recs = [
+    { owner: "example.com", rdata: nsecRdata("a.example.com", ["A", "NS", "SOA", "RRSIG", "DNSKEY"]) },
+    { owner: "a.example.com", rdata: nsecRdata("example.com", ["A", "RRSIG"]) },
+  ];
+  var nx = b.network.dns.dnssec.verifyDenial({ qname: "b.example.com", proof: "nxdomain", zone: "example.com", nsec: recs });
+  check("verifyDenial: NSEC NXDOMAIN proven (covering + wildcard)", nx.ok && nx.mechanism === "nsec" && nx.closestEncloser === "example.com.");
+
+  var nd = b.network.dns.dnssec.verifyDenial({ qname: "example.com", qtype: "MX", proof: "nodata", zone: "example.com", nsec: recs });
+  check("verifyDenial: NSEC NODATA proven for absent type", nd.ok && nd.matched === true);
+
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  check("verifyDenial: NSEC NODATA refused when type present", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "example.com", qtype: "A", proof: "nodata", zone: "example.com", nsec: recs }); }) === "dnssec/denial-not-proven");
+}
+
+function testDenialArgs() {
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  check("verifyDenial: bad proof value refused", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "x.iana.org", proof: "maybe", zone: "iana.org", nsec3: ianaRecords() }); }) === "dnssec/bad-arg");
+  check("verifyDenial: zone not a suffix of qname refused", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "x.example.org", proof: "nxdomain", zone: "iana.org", nsec3: ianaRecords() }); }) === "dnssec/bad-arg");
+  check("verifyDenial: both nsec and nsec3 supplied refused", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "x.iana.org", proof: "nxdomain", zone: "iana.org", nsec3: ianaRecords(), nsec: [{ owner: "iana.org", rdata: nsecRdata("a.iana.org", []) }] }); }) === "dnssec/bad-arg");
+  check("verifyDenial: nodata without qtype refused", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "iana.org", proof: "nodata", zone: "iana.org", nsec3: ianaRecords() }); }) === "dnssec/bad-arg");
+}
+
 async function run() {
   testSurface();
   testRealVectors();
   testRefusals();
   testVerifyDs();
+  testNsec3Real();
+  testNsec3Caps();
+  testNsec3OptOut();
+  testWildcardMatchRejected();
+  testNsec();
+  testDenialArgs();
 }
 
 module.exports = { run: run };
