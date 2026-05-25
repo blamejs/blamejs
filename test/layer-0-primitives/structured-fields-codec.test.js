@@ -23,6 +23,7 @@ function b32(buf) {
 function mineVal(v) {
   if (v instanceof SF.Token) return { token: v.value };
   if (v instanceof SF.ByteSequence) return { binary: b32(v.value) };
+  if (v instanceof SF.Decimal) return v.value;   // compare a Decimal numerically (httpwg uses plain numbers)
   return v;
 }
 function mineParams(map) { var o = []; map.forEach(function (v, k) { o.push([k, mineVal(v)]); }); return o; }
@@ -69,6 +70,7 @@ var CASES = [
   { name: "unknown boolean", raw: "?Q", t: "item", must_fail: true },
   { name: "basic binary", raw: ":aGVsbG8=:", t: "item", expected: [{ __type: "binary", value: "NBSWY3DP" }, []] },
   { name: "empty binary", raw: "::", t: "item", expected: [{ __type: "binary", value: "" }, []] },
+  { name: "unpadded binary (RFC 8941 §4.2.7 synthesizes padding)", raw: ":aGVsbG8:", t: "item", expected: [{ __type: "binary", value: "NBSWY3DP" }, []] },
   { name: "padding at beginning", raw: ":=aGVsbG8=:", t: "item", must_fail: true },
   { name: "empty item", raw: "", t: "item", must_fail: true },
   { name: "leading space item", raw: " \t 1", t: "item", must_fail: true },
@@ -123,6 +125,16 @@ function testSerialize() {
   check("serialize: invalid token refused", code(function () { SF.serialize({ value: new SF.Token("1bad"), params: new Map() }, "item"); }) === "structured-fields/serialize");
 }
 
+function testDecimalTypePreserved() {
+  // A numerically-integral Decimal must NOT serialize back to an Integer.
+  var parsed = SF.parse("1.0", "item");
+  check("parse: '1.0' yields a Decimal (not a bare integer)", parsed.value instanceof SF.Decimal);
+  check("serialize: Decimal 1.0 round-trips to '1.0', not '1'", SF.serialize(parsed, "item") === "1.0");
+  check("serialize: explicit SfDecimal forces the decimal form", SF.serialize({ value: new SF.Decimal(5), params: new Map() }, "item") === "5.0");
+  check("serialize: a fractional JS number still serializes as a Decimal", SF.serialize({ value: 2.5, params: new Map() }, "item") === "2.5");
+  check("serialize: an integral JS number serializes as an Integer", SF.serialize({ value: 5, params: new Map() }, "item") === "5");
+}
+
 function testTypedError() {
   function E(code, msg) { this.code = code; this.message = msg; }
   E.prototype = Object.create(Error.prototype);
@@ -138,12 +150,14 @@ function testSurface() {
   check("b.structuredFields.serialize round-trips an item", b.structuredFields.serialize({ value: 42, params: new Map() }, "item") === "42");
   check("b.structuredFields.Token constructs a token", new b.structuredFields.Token("gzip").value === "gzip");
   check("b.structuredFields.ByteSequence constructs a byte sequence", Buffer.isBuffer(new b.structuredFields.ByteSequence(Buffer.from("x")).value));
+  check("b.structuredFields.Decimal constructs a decimal", new b.structuredFields.Decimal(1.5).value === 1.5);
 }
 
 async function run() {
   testSurface();
   testConformance();
   testSerialize();
+  testDecimalTypePreserved();
   testTypedError();
 }
 
