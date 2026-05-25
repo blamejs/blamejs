@@ -128,12 +128,41 @@ function testRefusals() {
   check("RSA key → unsupported", code(function () { b.did.keyToDid(rsa.publicKey); }) === "did/unsupported-key");
 }
 
+function testDidJwk() {
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var ed = nodeCrypto.generateKeyPairSync("ed25519");
+
+  var dj = b.did.keyToDid(ec.publicKey, { method: "jwk" });
+  check("did:jwk: keyToDid produces a did:jwk", dj.indexOf("did:jwk:") === 0);
+  check("did:jwk: parse method", b.did.parse(dj).method === "jwk");
+  var r = b.did.resolve(dj);
+  check("did:jwk: resolves to the key", _spkiEq(r.verificationMethods[0].publicKey, ec.publicKey));
+  check("did:jwk: vm type JsonWebKey2020 + publicKeyJwk", r.verificationMethods[0].type === "JsonWebKey2020" && !!r.didDocument.verificationMethod[0].publicKeyJwk);
+  check("did:jwk: Ed25519 round-trips", _spkiEq(b.did.resolve(b.did.keyToDid(ed.publicKey, { method: "jwk" })).verificationMethods[0].publicKey, ed.publicKey));
+  // keyToDid default is still did:key
+  check("did:jwk: keyToDid default is did:key", b.did.keyToDid(ec.publicKey).indexOf("did:key:") === 0);
+  // private member is stripped from the produced did:jwk
+  var decoded = JSON.parse(Buffer.from(dj.slice("did:jwk:".length), "base64url").toString("utf8"));
+  check("did:jwk: no private 'd' member encoded", decoded.d === undefined && typeof decoded.x === "string");
+
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  check("did:jwk: non-JSON id refused", code(function () { b.did.resolve("did:jwk:" + Buffer.from("not json", "utf8").toString("base64url")); }) === "did/bad-jwk");
+  check("did:jwk: unsupported kty refused", code(function () {
+    b.did.resolve("did:jwk:" + Buffer.from(JSON.stringify({ kty: "RSA", n: "x", e: "AQAB" }), "utf8").toString("base64url"));
+  }) === "did/unsupported-key");
+  // keyToDid must also refuse an unsupported key when emitting did:jwk —
+  // generation and resolution share the allowlist so the DID round-trips.
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  check("did:jwk: keyToDid refuses RSA (round-trip guarantee)", code(function () { b.did.keyToDid(rsa.publicKey, { method: "jwk" }); }) === "did/unsupported-key");
+}
+
 async function run() {
   testSurface();
   testSpecVector();
   testRoundTrips();
   await testCredentialIntegration();
   testDidWeb();
+  testDidJwk();
   testRefusals();
 }
 
