@@ -460,6 +460,7 @@ module.exports = {
   cwt:              require("./lib/cwt"),
   eat:              require("./lib/eat"),
   scitt:            require("./lib/scitt"),
+  tsa:              require("./lib/tsa"),
   queue:            queue,
   logStream:        logStream,
   redact:           redact,
