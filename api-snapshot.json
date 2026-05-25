@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.47",
-  "createdAt": "2026-05-25T10:04:36.249Z",
+  "frameworkVersion": "0.12.48",
+  "createdAt": "2026-05-25T11:29:28.593Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -41577,6 +41577,120 @@
             "discoverEncrypted": {
               "type": "function",
               "arity": 1
+            },
+            "dnssec": {
+              "type": "object",
+              "members": {
+                "ALGORITHMS": {
+                  "type": "object",
+                  "members": {
+                    "8": {
+                      "type": "object",
+                      "members": {
+                        "hash": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "kind": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "name": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "13": {
+                      "type": "object",
+                      "members": {
+                        "coord": {
+                          "type": "primitive",
+                          "valueType": "number"
+                        },
+                        "crv": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hash": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "kind": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "name": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "14": {
+                      "type": "object",
+                      "members": {
+                        "coord": {
+                          "type": "primitive",
+                          "valueType": "number"
+                        },
+                        "crv": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hash": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "kind": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "name": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "15": {
+                      "type": "object",
+                      "members": {
+                        "crv": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "hash": {
+                          "type": "primitive",
+                          "valueType": "null"
+                        },
+                        "kind": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "name": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "DnssecError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "keyTag": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "verifyDs": {
+                  "type": "function",
+                  "arity": 1
+                },
+                "verifyRrset": {
+                  "type": "function",
+                  "arity": 1
+                }
+              }
             },
             "getServers": {
               "type": "function",
