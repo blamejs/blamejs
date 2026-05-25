@@ -40,6 +40,16 @@ function testParse() {
   // Unquoted token param.
   var tok = lh.parse("<https://x>; rel=next; type=text/html");
   check("parse: unquoted token params", tok[0].rel[0] === "next" && tok[0].params.type === "text/html");
+
+  // A comma INSIDE the <uri-reference> is part of the URI, not a separator.
+  var commaUri = lh.parse('<https://example.com/a,b>; rel="next"');
+  check("parse: comma inside <uri> does not split", commaUri.length === 1 && commaUri[0].uri === "https://example.com/a,b");
+  var commaUri2 = lh.parse('<https://x/a,b>; rel="next", <https://x/c,d>; rel="prev"');
+  check("parse: comma-bearing URIs across multiple links", commaUri2.length === 2 && commaUri2[0].uri === "https://x/a,b" && commaUri2[1].uri === "https://x/c,d");
+
+  // RFC 8288 §3.3: a duplicate rel keeps the FIRST occurrence.
+  var dupRel = lh.parse('<https://x>; rel="next"; rel="prev"');
+  check("parse: duplicate rel keeps the first", dupRel[0].rel.join() === "next");
 }
 
 function testSerialize() {

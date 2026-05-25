@@ -2256,6 +2256,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/link-header.js:_splitLinks",
+        "lib/safe-ical.js:_splitUnquoted",
+        "lib/safe-vcard.js:_splitUnquoted",
+      ],
+      reason: "v0.12.57 — format-specific delimiter splitters that track DIFFERENT enclosing state than the generic structuredFields.splitTopLevel: link-header._splitLinks tracks RFC 8288 `<uri-reference>` angle brackets AND quoted strings (a comma inside a URI must not split); safe-ical._splitUnquoted / safe-vcard._splitUnquoted track RFC 5545 / 6350 DQUOTE state with their own escaping. The shared shingle is the `for-loop + inQuote/escape state-machine + slice on the delimiter` idiom; the per-format enclosing rules (angle brackets vs none) are exactly why each can't call the shared splitter.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/mdoc.js:verifyIssuerSigned",
         "lib/network-dnssec.js:verifyRrset",
         "lib/tsa.js:verifyToken",
