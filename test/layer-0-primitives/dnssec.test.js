@@ -331,6 +331,63 @@ function testVerifyChain() {
   check("verifyChain: expired link refused", code(function () { b.network.dns.dnssec.verifyChain({ links: [rootLink()], at: new Date((root.rrsig[48].expiration + 86400) * 1000) }); }) === "dnssec/expired");
   // Empty links refused.
   check("verifyChain: empty links refused", code(function () { b.network.dns.dnssec.verifyChain({ links: [] }); }) === "dnssec/bad-arg");
+
+  // Key-tag collision: two keys in the SIGNED DNSKEY RRset share a tag
+  // (16-bit tags collide, RFC 4034 App B). The non-signing one sorts
+  // first; verifyChain must try every matching key (RFC 4035 §5.3.1) and
+  // not return a false bad-signature.
+  testKeyTagCollision();
+}
+
+var nodeCrypto = require("node:crypto");
+function _ecDnskey(pubKey) {
+  var jwk = pubKey.export({ format: "jwk" });
+  var x = Buffer.from(jwk.x, "base64url"), y = Buffer.from(jwk.y, "base64url");
+  return Buffer.concat([Buffer.from([0x01, 0x01, 3, 13]), x, y]); // flags 257 (KSK/SEP), proto 3, alg 13 (ECDSAP256SHA256)
+}
+function _canonName(name) {
+  var n = name.replace(/\.$/, ""), parts = [];
+  if (n !== "") n.split(".").forEach(function (l) { var bb = Buffer.from(l.toLowerCase(), "ascii"); parts.push(Buffer.from([bb.length]), bb); });
+  parts.push(Buffer.from([0]));
+  return Buffer.concat(parts);
+}
+function _u16b(n) { return Buffer.from([(n >> 8) & 0xff, n & 0xff]); }
+function _u32b(n) { var b2 = Buffer.alloc(4); b2.writeUInt32BE(n >>> 0, 0); return b2; }
+// Build an RRSIG over a DNSKEY RRset signed by an EC P-256 key (mirrors
+// the RFC 4034 §3.1.8.1 signed-data form verifyRrset reconstructs).
+function _signDnskeyRrset(zone, rdatas, priv, signerRdata, inc, exp) {
+  var owner = _canonName(zone), ttl = _u32b(3600), labels = zone.replace(/\.$/, "") === "" ? 0 : zone.replace(/\.$/, "").split(".").length;
+  var keyTag = b.network.dns.dnssec.keyTag(signerRdata);
+  var sorted = rdatas.slice().sort(Buffer.compare);
+  var rrs = [];
+  sorted.forEach(function (rd) { rrs.push(owner, _u16b(48), _u16b(1), ttl, _u16b(rd.length), rd); });
+  var prefix = Buffer.concat([_u16b(48), Buffer.from([13, labels]), ttl, _u32b(exp), _u32b(inc), _u16b(keyTag), _canonName(zone)]);
+  var signed = Buffer.concat([prefix].concat(rrs));
+  var signature = nodeCrypto.sign("sha256", signed, { key: priv, dsaEncoding: "ieee-p1363" });
+  return { algorithm: 13, labels: labels, originalTtl: 3600, expiration: exp, inception: inc, keyTag: keyTag, signerName: zone, signature: signature };
+}
+function testKeyTagCollision() {
+  // Generate EC P-256 keypairs until two DNSKEYs collide on key tag.
+  var byTag = {}, a = null, b2 = null;
+  for (var i = 0; i < 4000 && !b2; i++) {
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    var rd = _ecDnskey(kp.publicKey);
+    var t = b.network.dns.dnssec.keyTag(rd);
+    if (byTag[t]) { a = byTag[t]; b2 = { rd: rd, priv: kp.privateKey }; } else byTag[t] = { rd: rd, priv: kp.privateKey };
+  }
+  check("test generated a key-tag collision", b2 !== null);
+  if (!b2) return;
+  // `a` is the signer; `b2` (same tag, different key) sorts into the set.
+  var rdatas = [a.rd, b2.rd];
+  var now = Math.floor(Date.now() / 1000);
+  var rrsig = _signDnskeyRrset("test.", rdatas, a.priv, a.rd, now - 60, now + 86400);
+  // Trust anchor = DS of the signer (SHA-256 over owner + DNSKEY rdata).
+  var digest = nodeCrypto.createHash("sha256").update(Buffer.concat([_canonName("test."), a.rd])).digest();
+  var anchor = { keyTag: b.network.dns.dnssec.keyTag(a.rd), algorithm: 13, digestType: 2, digest: digest };
+  // Order the set so the non-signing colliding key is tried first.
+  var ordered = (b.network.dns.dnssec.keyTag(rdatas[0]) === rrsig.keyTag && rdatas[0] !== a.rd) ? rdatas : [b2.rd, a.rd];
+  var out = b.network.dns.dnssec.verifyChain({ links: [{ zone: "test.", dnskeys: ordered, dnskeyRrsig: rrsig }], trustAnchors: [anchor], at: new Date((now) * 1000) });
+  check("verifyChain: validates despite a colliding-tag key in the signed set", out.ok === true);
 }
 
 async function run() {

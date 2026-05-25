@@ -6278,6 +6278,19 @@ var KNOWN_ANTIPATTERNS = [
     reason: "DNSSEC NXDOMAIN over-acceptance — for a Name Error proof the source-of-synthesis wildcard must be COVERED (proven absent). A matching wildcard owner means the wildcard exists and the query should have been answered by expansion, so a response claiming NXDOMAIN is forged. The `!findCover(x) && !findMatch(x)` gate accepts a matching wildcard as proof and must never appear; the correct gate is `!findCover(x)`. Detection is precise: only the cover-OR-match denial gate matches. Wildcard-NODATA (which legitimately needs a MATCHING wildcard with the type absent) uses `findMatch(...)` standalone with a type-bitmap check, not this gate, so it does not match.",
   },
   {
+    // DNSSEC key selection: 16-bit key tags collide (RFC 4034 App B), so
+    // selecting a SINGLE DNSKEY by tag and verifying only against it
+    // yields a false `bad-signature` when a colliding non-signing key
+    // appears first in the RRset. A verifier must try EVERY key whose
+    // tag (and algorithm) match (RFC 4035 §5.3.1) — `_keysByTag` +
+    // `_verifyRrsetWithAnyKey`, never a `_findKeyByTag`-style single pick.
+    id: "dnssec-single-key-by-tag",
+    primitive: "_keysByTag(...) + try-every-candidate — never a single-result _findKeyByTag for signature verification",
+    regex: /_findKeyByTag\s*\(/,
+    allowlist: [],
+    reason: "DNSSEC key-tag collision false-negative — a 16-bit DNSKEY tag is not unique within an RRset (RFC 4034 Appendix B explicitly permits collisions). Picking the first key with a matching tag and verifying only against it rejects an otherwise-valid chain when a colliding non-signing key sorts earlier. RFC 4035 §5.3.1 requires trying every key whose tag and algorithm match until one validates; the framework does this via `_keysByTag` + `_verifyRrsetWithAnyKey`. The single-result `_findKeyByTag` helper must not be (re)introduced for signature key selection.",
+  },
+  {
     // CVE-2026-23552 — cross-realm JWT acceptance via non-CT iss
     // compare. `payload.iss !== expectedIssuer` (or claims.iss / token.iss)
     // leaks prefix-timing bytes that let an attacker narrow which
