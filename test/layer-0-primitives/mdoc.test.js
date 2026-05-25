@@ -177,6 +177,13 @@ async function testValidityAndDocType() {
   var e5 = null;
   try { await b.mdoc.verifyIssuerSigned(await _makeMdoc(cert), { algorithms: ["ES256"], at: new Date("nope") }); } catch (e) { e5 = e; }
   check("verify: invalid opts.at refused", e5 && e5.code === "mdoc/bad-at");
+
+  // Two signed IssuerSignedItems with the same elementIdentifier (each
+  // with a valid MSO digest) is ambiguous → fail closed, not last-wins.
+  var dup = await _makeMdoc(cert, { elements: [["family_name", "Doe"], ["family_name", "Roe"]] });
+  var e6 = null;
+  try { await b.mdoc.verifyIssuerSigned(dup, { algorithms: ["ES256"] }); } catch (e) { e6 = e; }
+  check("verify: duplicate elementIdentifier refused", e6 && e6.code === "mdoc/duplicate-element");
 }
 
 async function testChainAndInputGuards() {
