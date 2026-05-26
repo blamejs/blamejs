@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.64",
-  "createdAt": "2026-05-26T06:24:42.598Z",
+  "frameworkVersion": "0.12.65",
+  "createdAt": "2026-05-26T07:47:28.298Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4776,6 +4776,36 @@
           "arity": 1
         },
         "verifySignature": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "base32": {
+      "type": "object",
+      "members": {
+        "ALPHABETS": {
+          "type": "object",
+          "members": {
+            "rfc4648": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rfc4648-hex": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "Base32Error": {
+          "type": "function",
+          "arity": 4
+        },
+        "decode": {
+          "type": "function",
+          "arity": 2
+        },
+        "encode": {
           "type": "function",
           "arity": 2
         }
