@@ -100,11 +100,49 @@ function testRoundTripAndPolicy() {
   check("non-Buffer message refused", code(function () { tsig.sign("not a buffer", { keyName: KEY, secret: SECRET }); }) === "tsig/bad-message");
 }
 
+// dnspython vector with an UPPERCASE key name "Test.Key." — proves the MAC
+// digest downcases names (DNS names are case-insensitive) and the wire
+// preserves the sender's case.
+var UC = {
+  signed: hex("123401000001000000000001076578616d706c6503636f6d00000100010454657374034b65790000fa00ff00000000003d0b686d61632d7368613235360000006a15d3d9012c00202d9c8c40b15f04407fc096200b1403a6535ee57a37580b636690b7e8146a0642123400000000"),
+  mac: "2d9c8c40b15f04407fc096200b1403a6535ee57a37580b636690b7e8146a0642",
+  time: 1779815385,
+};
+
+function testCaseInsensitive() {
+  // Verify a message whose TSIG key name is "Test.Key." against a key map
+  // keyed lower-case — must match (case-insensitive) and the downcased
+  // digest must validate against dnspython's MAC.
+  var r = tsig.verify(UC.signed, { keys: { "test.key.": { secret: SECRET } }, now: UC.time });
+  check("case-insensitive key match + downcased digest verifies", r.valid && r.macValid);
+
+  // Signing with a mixed-case key name reproduces dnspython's MAC byte-exact
+  // (proves the digest downcases, not the wire).
+  var s = tsig.sign(V1.unsigned, { keyName: "Test.Key.", secret: SECRET, time: UC.time, fudge: 300 });
+  check("sign mixed-case key matches dnspython MAC", s.mac.toString("hex") === UC.mac);
+  check("sign preserves the key-name case on the wire", s.wire.includes(Buffer.from("Test", "ascii")));
+}
+
+function testRrHeaderTamper() {
+  // RFC 8945 §4.2 — TSIG RR CLASS must be ANY and TTL must be 0. These
+  // bytes are outside the MAC, so they must be validated explicitly.
+  var tc = Buffer.from(V1.signed);
+  var idx = tc.indexOf(Buffer.from("00fa00ff", "hex"));   // TSIG type (250) + CLASS ANY (255)
+  tc[idx + 3] = 0x01;                                      // CLASS ANY -> IN
+  check("tampered TSIG CLASS is rejected", code(function () { tsig.verify(tc, { keys: { "test.key.": { secret: SECRET } }, now: V1.time }); }) === "tsig/bad-rr");
+
+  var tt = Buffer.from(V1.signed);
+  tt[idx + 7] = 0x01;                                      // a TTL byte -> non-zero
+  check("tampered TSIG TTL is rejected", code(function () { tsig.verify(tt, { keys: { "test.key.": { secret: SECRET } }, now: V1.time }); }) === "tsig/bad-rr");
+}
+
 async function run() {
   testSurface();
   testSignMatchesDnspython();
   testVerifyAcceptsDnspython();
   testVerifyRejects();
+  testCaseInsensitive();
+  testRrHeaderTamper();
   testRoundTripAndPolicy();
 }
 module.exports = { run: run };
