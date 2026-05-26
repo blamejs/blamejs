@@ -53,6 +53,11 @@ function testOptions() {
   check("bad variant throws", code(function () { b.base32.encode(Buffer.from("x"), { variant: "nope" }); }) === "base32/bad-variant");
   check("non-buffer encode throws", code(function () { b.base32.encode("not a buffer"); }) === "base32/bad-input");
   check("non-string decode throws", code(function () { b.base32.decode(123); }) === "base32/bad-input");
+  // Embedded / non-trailing padding is malformed and must be rejected
+  // (not silently truncated at the first "=").
+  check("rejects embedded padding then data", code(function () { b.base32.decode("MZXW=6YTB"); }) === "base32/bad-char");
+  check("rejects padding then data (loose)", code(function () { b.base32.decode("mz=xw", { loose: true }); }) === "base32/bad-char");
+  check("accepts valid trailing padding", b.base32.decode("MZXW6YQ=").toString() === "foob");
 }
 
 function testTotpComposition() {
