@@ -66,6 +66,12 @@ function testLevel4() {
   // Undefined variables are omitted.
   eq("{undef}", "");
   eq("x{?undef}", "x");
+  // Undefined / null members of a list or map are ignored (RFC 6570 §3.2.1).
+  check("undefined list member skipped", b.uriTemplate.expand("{?l*}", { l: ["a", undefined, "b", null, "c"] }) === "?l=a&l=b&l=c");
+  check("undefined list member skipped (joined)", b.uriTemplate.expand("{l}", { l: ["a", undefined, "b"] }) === "a,b");
+  check("all-undefined list omitted", b.uriTemplate.expand("x{?l*}", { l: [undefined, null] }) === "x");
+  check("undefined map value skipped", b.uriTemplate.expand("{?m*}", { m: { a: 1, b: undefined, c: 3 } }) === "?a=1&c=3");
+  check("undefined map value skipped (joined)", b.uriTemplate.expand("{m}", { m: { a: "1", b: undefined, c: "3" } }) === "a,1,c,3");
 }
 
 function testCompileReuse() {
