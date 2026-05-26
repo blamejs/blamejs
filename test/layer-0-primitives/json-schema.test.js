@@ -106,6 +106,17 @@ function testFormat() {
   // assertFormat:true turns it into an assertion.
   check("assertFormat rejects bad email", !b.jsonSchema.isValid({ type: "string", format: "email" }, "nope", { assertFormat: true }));
   check("assertFormat accepts good date-time", b.jsonSchema.isValid({ type: "string", format: "date-time" }, "2020-01-01T00:00:00Z", { assertFormat: true }));
+  // time requires an offset and valid ranges (RFC 3339 full-time).
+  check("time rejects missing offset", !b.jsonSchema.isValid({ format: "time" }, "12:00:00", { assertFormat: true }));
+  check("time rejects out-of-range", !b.jsonSchema.isValid({ format: "time" }, "25:61:61Z", { assertFormat: true }));
+  check("time accepts offset form", b.jsonSchema.isValid({ format: "time" }, "12:00:00+05:30", { assertFormat: true }));
+  // date enforces real field ranges.
+  check("date rejects month 13", !b.jsonSchema.isValid({ format: "date" }, "2020-13-01", { assertFormat: true }));
+  check("date accepts valid", b.jsonSchema.isValid({ format: "date" }, "2020-02-29", { assertFormat: true }));
+  // uri rejects raw spaces and relative refs.
+  check("uri rejects raw space", !b.jsonSchema.isValid({ format: "uri" }, "http://e xample.com", { assertFormat: true }));
+  check("uri rejects relative", !b.jsonSchema.isValid({ format: "uri" }, "/relative/path", { assertFormat: true }));
+  check("uri accepts absolute", b.jsonSchema.isValid({ format: "uri" }, "https://example.com/x", { assertFormat: true }));
 }
 
 async function run() {
