@@ -91,6 +91,13 @@ function testHttpBinary() {
   var pe = b.cloudEvents.http.encodeBinary(b.cloudEvents.wrap({ source: "/x", type: "t", subject: "a b\"cé" }));
   check("header percent-encodes space/quote/unicode", /%20/.test(pe.headers["ce-subject"]) && /%22/.test(pe.headers["ce-subject"]) && /%C3%A9/.test(pe.headers["ce-subject"]));
   check("percent-decode round-trips", b.cloudEvents.http.decodeBinary(pe.headers, "").subject === "a b\"cé");
+  // JSON-media string payloads must be JSON-encoded in the body so they
+  // re-parse — a bare string under application/json (or absent, which
+  // defaults to JSON) round-trips through binary mode.
+  var strEvt = b.cloudEvents.wrap({ source: "/x", type: "t", datacontenttype: "application/json", data: "hello" });
+  var strEnc = b.cloudEvents.http.encodeBinary(strEvt);
+  check("json string payload is JSON-encoded in body", strEnc.body === "\"hello\"");
+  check("json string payload round-trips through binary", b.cloudEvents.http.decodeBinary(strEnc.headers, strEnc.body).data === "hello");
   // Opaque binary body becomes data_base64.
   var ob = b.cloudEvents.http.decodeBinary({ "ce-specversion": "1.0", "ce-id": "1", "ce-source": "/x", "ce-type": "t", "content-type": "application/octet-stream" }, Buffer.from([9, 8, 7]));
   check("opaque body decodes to data_base64", ob.data_base64 === Buffer.from([9, 8, 7]).toString("base64"));
