@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.65",
-  "createdAt": "2026-05-26T07:47:28.298Z",
+  "frameworkVersion": "0.12.66",
+  "createdAt": "2026-05-26T09:03:41.849Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49388,6 +49388,23 @@
           "arity": 1
         },
         "verifyToken": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "uriTemplate": {
+      "type": "object",
+      "members": {
+        "UriTemplateError": {
+          "type": "function",
+          "arity": 4
+        },
+        "compile": {
+          "type": "function",
+          "arity": 1
+        },
+        "expand": {
           "type": "function",
           "arity": 2
         }
