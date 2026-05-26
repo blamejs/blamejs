@@ -405,6 +405,7 @@ var jsonPath = require("./lib/json-path");
 var jtd = require("./lib/jtd");
 var jsonSchema = require("./lib/json-schema");
 var base32 = require("./lib/base32");
+var uriTemplate = require("./lib/uri-template");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
@@ -431,6 +432,7 @@ module.exports = {
   jtd:              jtd,
   jsonSchema:       jsonSchema,
   base32:           base32,
+  uriTemplate:      uriTemplate,
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,
