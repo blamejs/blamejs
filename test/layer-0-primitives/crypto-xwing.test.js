@@ -67,19 +67,22 @@ function testDeterminism() {
   var seed = Buffer.alloc(32, 1);
   check("keygen(seed) is deterministic", x.keygen(seed).publicKey.equals(x.keygen(seed).publicKey));
   var pk = x.keygen(seed).publicKey;
-  var eseed = Buffer.alloc(64, 2);
+  // Distinct eseed halves so the value depends on the draft's split order
+  // (eseed[0:32] = ML-KEM coins, eseed[32:64] = X25519 ephemeral).
+  var eseed = Buffer.concat([Buffer.alloc(32, 2), Buffer.alloc(32, 3)]);
   var a = x.encapsulate(pk, eseed), c2 = x.encapsulate(pk, eseed);
   check("encapsulate(pk, eseed) is deterministic", a.ciphertext.equals(c2.ciphertext) && a.sharedSecret.equals(c2.sharedSecret));
   check("deterministic encaps round-trips", x.decapsulate(seed, a.ciphertext).equals(a.sharedSecret));
 
   // Regression anchors: pinned digests of the full deterministic flow. A change
-  // to the combiner, the seed expansion, or the wire framing breaks these.
+  // to the combiner, the seed expansion, the eseed split order, or the wire
+  // framing breaks these.
   check("keygen(0x01) public key digest is stable",
     nodeCrypto.createHash("sha3-256").update(pk).digest("hex") === "60068c4c0bfc7421bb1cb4a4202bf0ef75ee27e61bf2f6b08780869485cc736a");
-  check("encaps(pk, 0x02) ciphertext digest is stable",
-    nodeCrypto.createHash("sha3-256").update(a.ciphertext).digest("hex") === "6b0ed7a8debc13c4bcef80927445372d164a2fd9d346fabbc4d8b6f7620087d3");
-  check("encaps(pk, 0x02) shared secret is stable",
-    a.sharedSecret.toString("hex") === "719e91c44c2453f268f42cde1cdcee9657777be93c5b922aa6b6d56ff5786b44");
+  check("deterministic ciphertext digest is stable",
+    nodeCrypto.createHash("sha3-256").update(a.ciphertext).digest("hex") === "1422e82c4307fcb8117b28ceaf686241cbe48d1a5546e05cd1aa7401d5fc2624");
+  check("deterministic shared secret is stable",
+    a.sharedSecret.toString("hex") === "356f5611bb146e8baf7fa61410552a9c724a170b8a0d4e742fac19161d8fdf4a");
 }
 
 function testImplicitRejection() {
