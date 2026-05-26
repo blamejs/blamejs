@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.62",
-  "createdAt": "2026-05-26T02:49:26.197Z",
+  "frameworkVersion": "0.12.63",
+  "createdAt": "2026-05-26T04:30:08.809Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6233,7 +6233,56 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "fromJSON": {
+          "type": "function",
+          "arity": 2
+        },
+        "fromJSONBatch": {
+          "type": "function",
+          "arity": 2
+        },
+        "http": {
+          "type": "object",
+          "members": {
+            "decode": {
+              "type": "function",
+              "arity": 3
+            },
+            "decodeBinary": {
+              "type": "function",
+              "arity": 3
+            },
+            "encodeBatch": {
+              "type": "function",
+              "arity": 1
+            },
+            "encodeBinary": {
+              "type": "function",
+              "arity": 1
+            },
+            "encodeStructured": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "isValid": {
+          "type": "function",
+          "arity": 1
+        },
         "parse": {
+          "type": "function",
+          "arity": 1
+        },
+        "toJSON": {
+          "type": "function",
+          "arity": 2
+        },
+        "toJSONBatch": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
           "type": "function",
           "arity": 1
         },
@@ -46097,6 +46146,10 @@
       "type": "object",
       "members": {
         "BASE64URL_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "BASE64_RE": {
           "type": "instance",
           "ctorName": "RegExp"
         },
