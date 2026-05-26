@@ -89,6 +89,29 @@ function testTamperEvidence() {
   check("list reflects stored ids", w.list().indexOf("t") !== -1);
 }
 
+function testCallerCannotMutateThroughInput() {
+  // A caller that keeps a reference to the Buffer it put must not be able to
+  // change the stored record after the fact — the store owns a private copy.
+  var w = b.worm.create({ defaultRetentionMs: 1000 });
+  var input = Buffer.from("original");
+  w.put("k", input);
+  input.write("XXXXXXXX");                       // mutate the caller's buffer
+  var got = w.get("k");
+  check("post-put input mutation does not change stored bytes", got.data.toString() === "original");
+}
+
+function testCallerCannotMutateThroughOutput() {
+  // The buffer get() returns is a copy; mutating it must not corrupt the
+  // record or trip a false tamper on the next read.
+  var w = b.worm.create({ defaultRetentionMs: 1000 });
+  w.put("k", "original");
+  var first = w.get("k");
+  first.data.write("XXXXXXXX");                  // mutate the returned buffer
+  var second = w.get("k");
+  check("mutating get() output does not corrupt the record", second.data.toString() === "original");
+  check("record still verifies after output mutation",        code(function () { w.get("k"); }) === "NO-THROW");
+}
+
 async function run() {
   testSurface();
   testWriteOnceAndRetain();
@@ -96,6 +119,8 @@ async function run() {
   testLegalHold();
   testGovernanceOverride();
   testTamperEvidence();
+  testCallerCannotMutateThroughInput();
+  testCallerCannotMutateThroughOutput();
 }
 module.exports = { run: run };
 if (require.main === module) { run().then(function () { console.log("[worm] OK — " + helpers.getChecks() + " checks passed"); }, function (e) { console.error("FAIL:", e && e.stack || e); process.exit(1); }); }
