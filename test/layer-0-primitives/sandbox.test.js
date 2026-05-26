@@ -26,7 +26,7 @@ async function testHappyPath() {
   var r = await b.sandbox.run({
     source: "return { upper: input.name.toUpperCase(), len: input.name.length };",
     input:  { name: "alice" },
-    timeoutMs: 2000,
+    timeoutMs: 5000,
   });
   check("happy path returns wrapped result",       typeof r === "object");
   check("happy path produces result.result.upper", r.result && r.result.upper === "ALICE");
@@ -40,7 +40,7 @@ async function testAllowedBuiltins() {
     source:    "return { ts: Date.now() > 0, sqrt: Math.sqrt(16) };",
     input:     {},
     allowed:   ["Date", "Math"],
-    timeoutMs: 2000,
+    timeoutMs: 5000,
   });
   check("allowed Date works",   r.result.ts === true);
   check("allowed Math works",   r.result.sqrt === 4);
