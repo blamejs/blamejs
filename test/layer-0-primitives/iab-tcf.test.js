@@ -41,7 +41,8 @@ async function run() {
     // bytes with a zero pad.
     var totalBits = 6 + 36 + 36 + 12 + 12 + 6 + 6 + 6 + 12 + 6 + 1 + 1 +
                     12 + 24 + 24 + 1 + 6 + 6 +
-                    16 + 1 + 16 + 1; // two empty vendor sections
+                    16 + 1 + 16 + 1 + // two empty vendor sections
+                    12;               // NumPubRestrictions (mandatory, =0)
     var byteLen = Math.ceil(totalBits / 8);                                                   // allow:raw-byte-literal — bits-per-byte
     var buf = Buffer.alloc(byteLen);
     // Set version field (top 6 bits of byte 0).
@@ -120,6 +121,10 @@ async function run() {
 
   check("isValid true for the spec vector", b.iabTcf.isValid(SPEC) === true);
   check("isValid false for garbage",        b.iabTcf.isValid("nonsense!!") === false);
+  // A truncated core (a dropped trailing character cuts into the mandatory
+  // NumPubRestrictions field) must NOT validate — the reader's bounds check
+  // rejects it rather than treating the gap as "no restrictions".
+  check("isValid false for a truncated core", b.iabTcf.isValid(SPEC_CORE.slice(0, -1)) === false);
   rejects("encode without core throws", function () { b.iabTcf.encode({}); }, "BAD_INPUT");
   rejects("encode rejects a non-positive id",
     function () { b.iabTcf.encode({ core: { consentLanguage: "EN", publisherCC: "DE", vendorConsents: [0], vendorLIs: [] } }); }, "BAD_VALUE");
