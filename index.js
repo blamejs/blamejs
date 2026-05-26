@@ -57,6 +57,7 @@ var crypto = require("./lib/crypto");
 // remembering separate top-level namespaces. Implementations live in
 // the dedicated lib files; these are thin aliases.
 crypto.hpke = require("./lib/crypto-hpke");
+crypto.oprf = require("./lib/crypto-oprf");
 // Both PQ-HPKE drafts behind one opt-in sub-namespace — see
 // lib/crypto-hpke-pq.js. Operators that need a draft-codepoint
 // shape reach for b.crypto.hpke.pq.connolly / .wg explicitly; the

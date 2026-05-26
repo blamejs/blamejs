@@ -91,6 +91,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **Data-subject coordination** — cross-table export / rectify / erase / restrict / objection (`b.subject`, `b.subject.eraseHard`); subject-level legal-hold registry consulted by erase + retention paths (FRCP Rule 26/37(e), GDPR Art 17(3)(e), SEC Rule 17a-4, HIPAA §164.530(j)(2)) (`b.legalHold`)
 - **Account safety** — adaptive bot-challenge staircase (`b.authBotChallenge`); session-to-device-posture binding with fail-closed verify (`b.sessionDeviceBinding`)
 - **Anonymous authorization** — Privacy Pass origin side (RFC 9577/9578 — `b.privacyPass`): issue a `WWW-Authenticate: PrivateToken` challenge and verify a presented Blind-RSA (type 0x0002) token against the issuer public key, with no issuer callback and no client identity
+- **Oblivious PRF** — RFC 9497 OPRF / VOPRF (`b.crypto.oprf.suite`): learn `F(serverKey, input)` without the server seeing the input — the primitive behind password hardening (pepper a password the server never sees), private set intersection, and Privacy Pass; `oprf` (base) + `voprf` (verifiable, DLEQ-proof) modes over ristretto255-SHA512 / P-256 / P-384 / P-521; validated against the RFC 9497 Appendix-A vectors
 ### Crypto
 
 - **At-rest envelope** — envelope-versioned PQC (ML-KEM-1024 + P-384 hybrid, XChaCha20-Poly1305, SHAKE256); vault sealing (`b.crypto`, `b.vault`)
