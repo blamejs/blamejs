@@ -2256,6 +2256,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/json-path.js:_Parser",
+        "lib/parsers/safe-ini.js:_unquote",
+        "lib/template.js:_tokenizeExpr",
+      ],
+      reason: "v0.12.61 — recursive-descent / cursor-based tokenizers over DIFFERENT grammars: json-path._Parser walks the RFC 9535 JSONPath ABNF, safe-ini._unquote unwraps an INI quoted value, template._tokenizeExpr tokenizes a template expression. The shared shingle is the `index cursor + peek/advance + per-char dispatch` parser idiom; each consumes a distinct grammar with its own token set, so there is no shared parse behaviour to extract.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/link-header.js:_splitLinks",
         "lib/safe-ical.js:_splitUnquoted",
         "lib/safe-vcard.js:_splitUnquoted",

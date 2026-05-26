@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.60",
-  "createdAt": "2026-05-26T01:01:54.808Z",
+  "frameworkVersion": "0.12.61",
+  "createdAt": "2026-05-26T01:47:34.487Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -37016,6 +37016,23 @@
           }
         },
         "apply": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "jsonPath": {
+      "type": "object",
+      "members": {
+        "JsonPathError": {
+          "type": "function",
+          "arity": 4
+        },
+        "paths": {
+          "type": "function",
+          "arity": 2
+        },
+        "query": {
           "type": "function",
           "arity": 2
         }
