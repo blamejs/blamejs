@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.57",
-  "createdAt": "2026-05-25T21:59:09.487Z",
+  "frameworkVersion": "0.12.58",
+  "createdAt": "2026-05-25T23:21:00.370Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36963,6 +36963,69 @@
         "parseQuery": {
           "type": "function",
           "arity": 2
+        }
+      }
+    },
+    "jsonPatch": {
+      "type": "object",
+      "members": {
+        "JsonPatchError": {
+          "type": "function",
+          "arity": 4
+        },
+        "OPS": {
+          "type": "object",
+          "members": {
+            "add": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "copy": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "move": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "remove": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "replace": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "test": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
+        "apply": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "jsonPointer": {
+      "type": "object",
+      "members": {
+        "ARRAY_INDEX_RE": {
+          "type": "instance",
+          "ctorName": "RegExp"
+        },
+        "JsonPointerError": {
+          "type": "function",
+          "arity": 4
+        },
+        "get": {
+          "type": "function",
+          "arity": 2
+        },
+        "parse": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
