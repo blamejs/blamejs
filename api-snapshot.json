@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.2",
-  "createdAt": "2026-05-26T22:29:54.847Z",
+  "frameworkVersion": "0.13.3",
+  "createdAt": "2026-05-26T23:29:35.863Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13999,6 +13999,56 @@
         "verify": {
           "type": "function",
           "arity": 3
+        },
+        "xwing": {
+          "type": "object",
+          "members": {
+            "NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "SIZES": {
+              "type": "object",
+              "members": {
+                "ciphertext": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "publicKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "secretKey": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "sharedSecret": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "XWingError": {
+              "type": "function",
+              "arity": 4
+            },
+            "combiner": {
+              "type": "function",
+              "arity": 4
+            },
+            "decapsulate": {
+              "type": "function",
+              "arity": 2
+            },
+            "encapsulate": {
+              "type": "function",
+              "arity": 2
+            },
+            "keygen": {
+              "type": "function",
+              "arity": 1
+            }
+          }
         }
       }
     },
