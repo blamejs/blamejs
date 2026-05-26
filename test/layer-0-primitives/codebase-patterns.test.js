@@ -2292,8 +2292,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/privacy-pass.js:_bytes",
         "lib/content-digest.js:_bodyBytes",
         "lib/tsa.js:_bytes",
+        "lib/eat.js:_toBuf",
+        "lib/worm.js:_toBytes",
       ],
-      reason: "v0.12.48 / v0.12.51 / v0.12.52 / v0.12.53 — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); throw <Error>`) repeats across byte-string-consuming primitives. Each throws a MODULE-LOCAL typed error code (cose/bad-cose-key, mdoc/bad-input, dnssec/bad-bytes, dane/bad-bytes, tsa/bad-input) naming the local argument; network-dane additionally coerces a hex string. The duplicated three-line shape is the symptom, the cause is that JS can't throw a caller-namespaced ErrorClass without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the typed-error CODE is the divergence the dup detector can't see.",
+      reason: "v0.12.48 / v0.12.51 / v0.12.52 / v0.12.53 / v0.13.x — Buffer-coercion guard (`if (Buffer.isBuffer(x)) return x; if (x instanceof Uint8Array) return Buffer.from(x); ...`) repeats across byte-string-consuming primitives. The throw-on-unknown variants (cose / mdoc / dnssec / dane / tsa) each raise a MODULE-LOCAL typed error code naming the local argument; the JSON-fallback variants (eat._toBuf serializing a CBOR/EAT claims payload, worm._toBytes serializing a record to hash) instead JSON.stringify a non-bytes value. The duplicated prefix is the symptom; the cause is that JS can't throw a caller-namespaced ErrorClass (or choose the domain's serialization) without the local closure. Same documented exception as the v0.12.7 require-non-empty-string cluster — the per-domain error code / serialization is the divergence the dup detector can't see.",
     },
     {
       mode:  "family-subset",
