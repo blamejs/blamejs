@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.66",
-  "createdAt": "2026-05-26T09:03:41.849Z",
+  "frameworkVersion": "0.12.67",
+  "createdAt": "2026-05-26T10:12:15.859Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -37175,6 +37175,48 @@
           "arity": 2
         },
         "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "jwk": {
+      "type": "object",
+      "members": {
+        "JwkError": {
+          "type": "function",
+          "arity": 4
+        },
+        "REQUIRED": {
+          "type": "object",
+          "members": {
+            "AKP": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "EC": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "OKP": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "RSA": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "oct": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
+        "canonicalize": {
+          "type": "function",
+          "arity": 1
+        },
+        "thumbprint": {
           "type": "function",
           "arity": 2
         }
