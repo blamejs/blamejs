@@ -1,6 +1,6 @@
 {
   "$schema": "../scripts/release-notes-schema.json",
-  "version": "0.12.59",
+  "version": "0.12.60",
   "date": "2026-05-25",
   "headline": "`b.jsonMergePatch` — JSON Merge Patch (RFC 7396)",
   "summary": "The simpler companion to JSON Patch: b.jsonMergePatch.merge applies an RFC 7396 merge patch (application/merge-patch+json), the partial-document PATCH body. A member present in the patch replaces or — for nested objects — merges into the target, a member whose value is null removes that key, and a patch that is itself an array, scalar, or null replaces the target wholesale. The inputs are never mutated (the merge runs on a deep copy) and member keys are written as literal own properties, so a \"__proto__\" member cannot reach any prototype. Verified against every RFC 7396 Appendix A test case.",
