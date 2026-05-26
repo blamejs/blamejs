@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.1",
-  "createdAt": "2026-05-26T20:56:45.702Z",
+  "frameworkVersion": "0.13.2",
+  "createdAt": "2026-05-26T22:29:54.847Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36827,6 +36827,14 @@
         "checkVendor": {
           "type": "function",
           "arity": 2
+        },
+        "encode": {
+          "type": "function",
+          "arity": 1
+        },
+        "isValid": {
+          "type": "function",
+          "arity": 1
         },
         "parseString": {
           "type": "function",
