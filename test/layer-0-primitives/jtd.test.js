@@ -39,6 +39,13 @@ function testExplicit(){
   check("timestamp rejects bad date", !b.jtd.isValid({type:"timestamp"}, "1985-13-12T23:20:50Z"));
   check("additionalProperties false rejects extra", !b.jtd.isValid({properties:{a:{type:"string"}}},{a:"x",b:"y"}));
   check("nullable allows null", b.jtd.isValid({type:"string",nullable:true}, null));
+  // RFC 3339 timezone offset range is enforced.
+  check("timestamp rejects offset hour > 23", !b.jtd.isValid({type:"timestamp"}, "2020-01-01T00:00:00+24:00"));
+  check("timestamp rejects offset minute > 59", !b.jtd.isValid({type:"timestamp"}, "2020-01-01T00:00:00+00:99"));
+  check("timestamp accepts valid offset", b.jtd.isValid({type:"timestamp"}, "2020-01-01T00:00:00+05:30"));
+  // metadata must be an object.
+  check("non-object metadata rejected", code(function(){ b.jtd.validate({type:"string",metadata:1}, "x"); }) === "jtd/bad-schema");
+  check("object metadata accepted", b.jtd.isValid({type:"string",metadata:{doc:"x"}}, "y"));
 }
 async function run(){ testSurface(); testValidation(); testInvalidSchemas(); testExplicit(); }
 module.exports={run:run};
