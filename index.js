@@ -400,6 +400,7 @@ var canonicalJson = require("./lib/canonical-json");
 var linkHeader = require("./lib/link-header");
 var jsonPointer = require("./lib/json-pointer");
 var jsonPatch = require("./lib/json-patch");
+var jsonMergePatch = require("./lib/json-merge-patch");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
@@ -421,6 +422,7 @@ module.exports = {
   linkHeader:       linkHeader,
   jsonPointer:      jsonPointer,
   jsonPatch:        jsonPatch,
+  jsonMergePatch:   jsonMergePatch,
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,

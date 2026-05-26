@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.58",
-  "createdAt": "2026-05-25T23:21:00.370Z",
+  "frameworkVersion": "0.12.59",
+  "createdAt": "2026-05-26T00:26:13.823Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36961,6 +36961,19 @@
           "arity": 2
         },
         "parseQuery": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "jsonMergePatch": {
+      "type": "object",
+      "members": {
+        "JsonMergePatchError": {
+          "type": "function",
+          "arity": 4
+        },
+        "merge": {
           "type": "function",
           "arity": 2
         }
