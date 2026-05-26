@@ -71,6 +71,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 
 - **Passwords** — Argon2id + policy primitive (`b.auth.password`); NIST 800-63B / PCI-DSS 4.0 / HIPAA-AAL2 profiles; HaveIBeenPwned k-anonymity breach check; length / context / dictionary / complexity rules; rotation + history
 - **Multi-factor + WebAuthn** — passkeys (WebAuthn), TOTP, JWT (PQ-default)
+- **JWK thumbprint** — RFC 7638 `base64url(SHA-256(canonical-JSON))` key identifier (`b.jwk.thumbprint` / `canonicalize`): EC / RSA / oct / OKP + the AKP post-quantum key type, SHA-256/384/512; the canonical key name behind DPoP `jkt`, ACME account keys, and DBSC session pins
 - **OAuth / OIDC RP** — `b.auth.oauth`
   - RP-Initiated / Front-Channel / Back-Channel Logout 1.0 (`parseFrontchannelLogoutRequest` + `verifyBackchannelLogoutToken` with jti-replay defense)
   - RFC 9207 AS Issuer Identifier validation on callbacks (`parseCallback` — refuses iss mismatch + OP `error=` redirect)
