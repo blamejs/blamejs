@@ -7963,7 +7963,10 @@ function testHostnameCompareTrailingDotNormalize() {
     catch (_e) { continue; }
     if (!reservedHostLiteralRe.test(content)) continue;
     var hasStrip = /\.charAt\([^)]*length\s*-\s*1\)\s*===\s*"\."/.test(content) ||
-                   /while[\s\S]{0,80}length\s*>\s*0[\s\S]{0,80}charAt[\s\S]{0,80}===\s*"\."/.test(content);
+                   /while[\s\S]{0,80}length\s*>\s*0[\s\S]{0,80}charAt[\s\S]{0,80}===\s*"\."/.test(content) ||
+                   // end-anchored regex strip of one-or-more trailing dots:
+                   // .replace(/\.$/, ...) / .replace(/\.+$/, ...) / .replace(/\.*$/, ...)
+                   /\.replace\(\s*\/\\\.[+*]?\$\//.test(content);
     if (hasStrip) continue;
     var m = content.match(reservedHostLiteralRe);
     var lineNum = content.slice(0, m.index).split("\n").length;
