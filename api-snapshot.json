@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.0",
-  "createdAt": "2026-05-26T20:24:46.807Z",
+  "frameworkVersion": "0.13.1",
+  "createdAt": "2026-05-26T20:56:45.702Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -50347,6 +50347,23 @@
         "create": {
           "type": "function",
           "arity": 2
+        }
+      }
+    },
+    "worm": {
+      "type": "object",
+      "members": {
+        "MODES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "WormError": {
+          "type": "function",
+          "arity": 4
+        },
+        "create": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
