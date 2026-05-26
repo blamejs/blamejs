@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.69",
-  "createdAt": "2026-05-26T14:58:13.295Z",
+  "frameworkVersion": "0.12.70",
+  "createdAt": "2026-05-26T16:45:20.778Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -42207,6 +42207,69 @@
             "setServers": {
               "type": "function",
               "arity": 1
+            },
+            "tsig": {
+              "type": "object",
+              "members": {
+                "ALGORITHMS": {
+                  "type": "object",
+                  "members": {
+                    "hmac-sha224": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "hmac-sha256": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "hmac-sha384": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "hmac-sha512": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "ERROR": {
+                  "type": "object",
+                  "members": {
+                    "BADKEY": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "BADSIG": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "BADTIME": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "BADTRUNC": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    },
+                    "NOERROR": {
+                      "type": "primitive",
+                      "valueType": "number"
+                    }
+                  }
+                },
+                "TsigError": {
+                  "type": "function",
+                  "arity": 4
+                },
+                "sign": {
+                  "type": "function",
+                  "arity": 2
+                },
+                "verify": {
+                  "type": "function",
+                  "arity": 2
+                }
+              }
             },
             "useDesignatedResolvers": {
               "type": "function",

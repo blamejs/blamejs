@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.12.70",
+  "date": "2026-05-26",
+  "headline": "`b.network.dns.tsig` — RFC 8945 DNS transaction signatures",
+  "summary": "Sign and verify DNS messages with RFC 8945 TSIG — the shared-key HMAC that authenticates a DNS transaction (zone transfers, dynamic updates, query/response pairs) and proves it was not altered in flight. b.network.dns.tsig.sign(message, opts) appends a TSIG resource record and returns the signed wire; b.network.dns.tsig.verify(message, opts) locates the TSIG record, recomputes the HMAC over the RFC 8945 §4.3.3 digest, compares it in constant time, and checks the time window (valid only within `fudge` seconds of `timeSigned`). HMAC-SHA-256 is the default; SHA-384 / SHA-512 are available and the broken HMAC-MD5 / HMAC-SHA-1 algorithms are refused unless allowLegacy is set. Signing a response chains the request MAC into the digest. Verified byte-for-byte against dnspython 2.8.0 reference signatures. TSIG completes the DNS-trust set alongside the existing DNSSEC (zone-data authentication) and DANE primitives — DNSSEC authenticates the data end-to-end, TSIG authenticates a single hop's transaction with a pre-shared key.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.network.dns.tsig.sign` / `b.network.dns.tsig.verify`",
+          "body": "RFC 8945 TSIG transaction authentication. `sign(message, { keyName, secret, algorithm, fudge, time, requestMac })` appends a TSIG RR to a DNS wire message and returns `{ wire, mac }`; `verify(message, { keys, now, requestMac })` returns `{ valid, keyName, algorithm, timeSigned, error, macValid, timeValid, reason }`, with a constant-time MAC compare (via `b.crypto.timingSafeEqual`), a `fudge`-second time-window check, truncated-MAC handling per §5.2.2.1, and request-MAC chaining for responses (§5.4.1). HMAC-SHA-256 default; HMAC-SHA-384 / SHA-512 supported; HMAC-MD5 / HMAC-SHA-1 refused unless `allowLegacy: true`. The transaction-level companion to `b.network.dns.dnssec` and `b.network.dns.dane`."
+        }
+      ]
+    }
+  ]
+}
