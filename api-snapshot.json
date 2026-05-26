@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.12.63",
-  "createdAt": "2026-05-26T04:30:08.809Z",
+  "frameworkVersion": "0.12.64",
+  "createdAt": "2026-05-26T06:24:42.598Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -37105,6 +37105,31 @@
         "parse": {
           "type": "function",
           "arity": 1
+        }
+      }
+    },
+    "jsonSchema": {
+      "type": "object",
+      "members": {
+        "DIALECT": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "JsonSchemaError": {
+          "type": "function",
+          "arity": 4
+        },
+        "compile": {
+          "type": "function",
+          "arity": 2
+        },
+        "isValid": {
+          "type": "function",
+          "arity": 3
+        },
+        "validate": {
+          "type": "function",
+          "arity": 3
         }
       }
     },

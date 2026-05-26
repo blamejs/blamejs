@@ -403,6 +403,7 @@ var jsonPatch = require("./lib/json-patch");
 var jsonMergePatch = require("./lib/json-merge-patch");
 var jsonPath = require("./lib/json-path");
 var jtd = require("./lib/jtd");
+var jsonSchema = require("./lib/json-schema");
 var standardWebhooks = require("./lib/standard-webhooks");
 var lro = require("./lib/lro");
 var jsonApi = require("./lib/jsonapi");
@@ -427,6 +428,7 @@ module.exports = {
   jsonMergePatch:   jsonMergePatch,
   jsonPath:         jsonPath,
   jtd:              jtd,
+  jsonSchema:       jsonSchema,
   standardWebhooks: standardWebhooks,
   lro:              lro,
   jsonApi:          jsonApi,
