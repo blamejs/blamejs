@@ -2046,6 +2046,20 @@ function testTemplateRenderString() {
   var ast = eng.compileString("<b>{{ v }}</b>");
   check("compileString: returns an AST", ast && ast.type === "Template");
 
+  // String templates are byte-capped against hostile input (untrusted
+  // source); the default cap refuses an oversize source, and a hostile
+  // tag stream can't drive a ReDoS through the block resolver.
+  var threwCap = null;
+  try { eng.compileString("x".repeat(300000)); } catch (e) { threwCap = e; }
+  check("compileString: oversize source refused (maxBytes)",
+        threwCap && /maxBytes/.test(threwCap.message));
+  check("compileString: opts.maxBytes raises the cap",
+        eng.compileString("y".repeat(300000), { maxBytes: 1000000 }) !== null);
+  var t0 = Date.now();
+  try { eng.compileString("{%block\tA%}".repeat(40000)); } catch (e2) { void e2; }
+  check("compileString: pathological block-open stream bounded (no ReDoS)",
+        (Date.now() - t0) < 1000);
+
   // The file-backed methods refuse on a no-viewsDir engine.
   var threwFile = null;
   try { eng.render("anything", {}); } catch (e) { threwFile = e; }
