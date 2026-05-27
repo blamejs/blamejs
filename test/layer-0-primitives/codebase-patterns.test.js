@@ -5788,7 +5788,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     // v0.10.15 — `zlib.gunzipSync` / `zlib.createGunzip` /
     // `zlib.brotliDecompress` without an output-size cap is the
-    // CVE-2025-0725 / CVE-2024-zlib decompression-amplification
+    // CVE-2025-0725 / CWE-409 decompression-amplification
     // class. Attackers craft a kilobyte of compressed input that
     // explodes to gigabytes of output, exhausting memory before the
     // request handler sees the bytes. The defense is either the
@@ -5831,7 +5831,25 @@ var KNOWN_ANTIPATTERNS = [
     requires: /\bmaxOutputLength\b/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "CVE-2025-0725 (libcurl + zlib decompression amplification) + CVE-2024-zlib bomb class. Every gunzip / brotli decompress on operator-supplied bytes MUST bound the output. Use `zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> })` so the operator sees the cap at config time; refusal becomes a typed error before the bomb reaches memory.",
+    reason: "CVE-2025-0725 (libcurl + zlib decompression amplification) + CWE-409 (uncontrolled-resource decompression bomb) class. Every gunzip / brotli decompress on operator-supplied bytes MUST bound the output. Use `zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> })` so the operator sees the cap at config time; refusal becomes a typed error before the bomb reaches memory.",
+  },
+  {
+    // Citation hygiene — a CVE identifier is always
+    // CVE-<4-digit-year>-<sequence>, where the sequence is purely
+    // numeric (CVE numbering spec). A suffix containing a letter —
+    // e.g. a library name dropped in as a placeholder — is a
+    // fabricated / malformed reference that escaped citation review.
+    // Real CVE references are verifiable by an operator auditing the
+    // framework's threat model; placeholder ones mislead. This
+    // detector refuses any CVE token whose post-year segment is not
+    // all-numeric. It cannot verify that a well-formed id is real or
+    // correctly attributed — that stays a reviewer responsibility —
+    // but it makes the structurally-invalid class impossible to ship.
+    id: "malformed-cve-identifier",
+    primitive: "cite a real CVE as CVE-<year>-<digits> (all-numeric sequence) or name the weakness class (CWE / RFC) — never a placeholder id with a non-numeric suffix",
+    regex: /CVE-[0-9]{4}-[0-9]*[a-zA-Z]/,
+    allowlist: [],
+    reason: "A CVE identifier's sequence number is always numeric (CVE-<year>-<digits>). A suffix containing letters is a fabricated placeholder that escaped citation review and misleads operators auditing the threat model. Cite a verifiable CVE or name the weakness class (CWE / RFC).",
   },
 
   {

@@ -3,7 +3,7 @@
  * b.mail.server.mx — inbound SMTP / MX listener.
  *
  * Tests cover the wire-protocol state machine, SMTP-smuggling defense
- * (CVE-2023-51764 / CVE-2024-32178 — bare-LF dot-terminator), open-
+ * (CVE-2023-51764 / -51765 / -51766 — bare-LF dot-terminator), open-
  * relay refusal by default, STARTTLS-stripping defense, and the
  * helper byte-scan primitives (_detectSmugglingShape /
  * _findDotTerminator / _dotUnstuff).
