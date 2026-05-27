@@ -102,6 +102,15 @@ function testFromIcalSafeIcalOptsForwarded() {
   // And a VALID nested profile parses cleanly (no accidental refusal).
   var ev = b.calendar.fromIcal(ical, { safeIcalOpts: { profile: "balanced" } });
   check("fromIcal honors a valid nested safeIcalOpts profile", ev && ev["@type"] === "Event");
+  // Backward-compat: the historically-working TOP-LEVEL parser-options
+  // form must keep working (no patch-release regression).
+  var threwTop = null;
+  try { b.calendar.fromIcal(ical, { profile: "bogus" }); }
+  catch (e) { threwTop = e; }
+  check("fromIcal still honors a top-level profile (no regression)",
+        threwTop && (threwTop.code || "").indexOf("safe-ical/bad-opt") !== -1);
+  var evTop = b.calendar.fromIcal(ical, { profile: "balanced" });
+  check("fromIcal parses with a valid top-level profile", evTop && evTop["@type"] === "Event");
 }
 
 function testFromIcalNoVevent() {

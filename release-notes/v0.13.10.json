@@ -10,7 +10,7 @@
       "items": [
         {
           "title": "`b.calendar.fromIcal` now forwards `safeIcalOpts` to the parser",
-          "body": "The documented `safeIcalOpts` option (parser caps: max bytes, RRULE COUNT/BYxxx limits, nesting depth) was not being passed to `b.safeIcal.parse` — the parser always ran with its default profile, so operator-supplied caps were silently ignored. The nested options now reach the parser. If you relied on passing caps at the top level of the `fromIcal` options (which never took effect), move them under `safeIcalOpts`."
+          "body": "The documented `safeIcalOpts` option (parser caps: max bytes, RRULE COUNT/BYxxx limits, nesting depth) was not being passed to `b.safeIcal.parse` — when supplied under the documented nested key it was silently ignored and the parser ran with its default profile. Both forms now reach the parser: the documented nested `{ safeIcalOpts: { ... } }` and the top-level `{ profile, ... }` that earlier releases accepted, with the nested form winning on conflict. No caller regresses."
         },
         {
           "title": "`b.archive.read.zip` honors the documented `signal` (AbortSignal)",
