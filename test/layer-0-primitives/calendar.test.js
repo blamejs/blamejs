@@ -83,6 +83,27 @@ function testFromIcalRoundTrip() {
   check("toIcal preserves DTSTART",        /DTSTART:20260522T090000/.test(back));
 }
 
+function testFromIcalSafeIcalOptsForwarded() {
+  // @opts documents safeIcalOpts as forwarded to b.safeIcal.parse.
+  // Proof it actually reaches the parser: an unknown profile inside
+  // safeIcalOpts must surface safeIcal's bad-opt refusal. If the opts
+  // were dropped (or the whole outer opts passed instead), safeIcal
+  // would default to "strict" and never throw.
+  var ical =
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n" +
+    "BEGIN:VEVENT\r\nUID:a@b\r\nDTSTAMP:20260521T100000Z\r\n" +
+    "DTSTART:20260522T090000\r\nDURATION:PT1H\r\nSUMMARY:x\r\n" +
+    "END:VEVENT\r\nEND:VCALENDAR\r\n";
+  var threw = null;
+  try { b.calendar.fromIcal(ical, { safeIcalOpts: { profile: "bogus" } }); }
+  catch (e) { threw = e; }
+  check("fromIcal forwards safeIcalOpts to safeIcal.parse (bad profile refused)",
+        threw && (threw.code || "").indexOf("safe-ical/bad-opt") !== -1);
+  // And a VALID nested profile parses cleanly (no accidental refusal).
+  var ev = b.calendar.fromIcal(ical, { safeIcalOpts: { profile: "balanced" } });
+  check("fromIcal honors a valid nested safeIcalOpts profile", ev && ev["@type"] === "Event");
+}
+
 function testFromIcalNoVevent() {
   var threw = null;
   try { b.calendar.fromIcal("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\nEND:VCALENDAR\r\n"); }
@@ -840,6 +861,7 @@ function run() {
   testValidateHappyPath();
   testValidateRefusalCases();
   testFromIcalRoundTrip();
+  testFromIcalSafeIcalOptsForwarded();
   testFromIcalNoVevent();
   testRrulePreserved();
   testExpandRecurrenceDaily();
