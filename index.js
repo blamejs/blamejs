@@ -477,6 +477,7 @@ module.exports = {
     quota:           require("./lib/ai-quota"),
     capability:      require("./lib/ai-capability"),
     dp:              require("./lib/ai-dp"),
+    aedtBiasAudit:   require("./lib/ai-aedt-bias-audit"),
   },
   promisePool:      require("./lib/promise-pool"),
   sdNotify:         require("./lib/sd-notify"),

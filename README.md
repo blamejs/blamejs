@@ -189,6 +189,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **Content provenance** — C2PA 2.1 + California SB-942 / AB-853 manifest builder for AI-generated media (provider, model id + version, timestamp, content ID, signed) (`b.contentCredentials`)
 - **AI usage quotas** — per-tenant / per-model budgets metered by tokens / requests / cost-usd / compute-hours over calendar-aligned windows, with an atomic conditional reserve (no charge-then-refund race) + hard/soft/warn enforcement and an optional cross-node store; defends OWASP LLM10:2025 unbounded consumption / denial-of-wallet (`b.ai.quota`)
 - **AI capability routing** — model-capability registry (context window / modalities / tool use / reasoning tier / cost rates) + a router that picks the cheapest model satisfying a request's requirements, refusing capability mismatches before the inference call (NIST AI RMF MAP + Model Cards); composes with `b.ai.quota` cost budgets (`b.ai.capability`)
+- **AEDT bias audit** — NYC Local Law 144 bias-audit figures (`b.ai.aedtBiasAudit`): selection / scoring rates and EEOC four-fifths-rule impact ratios across sex, race/ethnicity, and their intersection, with the most-selected group and adverse-impact flags (impact ratio < 0.8) for the annual published summary; sub-2% categories excludable per DCWP §5-301
 ### Compliance regimes
 
 - **Posture coordinator** — `b.compliance` cascades operator-declared regime into retention / audit / db / cryptoField via POSTURE_DEFAULTS:
