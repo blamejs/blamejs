@@ -2272,6 +2272,20 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/archive-read.js:_assertGuardMetadata",
+        "lib/archive-tar-read.js:_assertGuardMetadata",
+        "lib/auth/ciba.js:_registerInitialInterval",
+        "lib/auth/oauth.js:exchangeToken",
+        "lib/auth/oauth.js:pollDeviceCode",
+        "lib/auth/oid4vci.js:createCredentialOffer",
+        "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
+        "lib/restore-rollback.js:swap",
+      ],
+      reason: "v0.13.8 — the shared shingle is the framework's emit-audit-then-throw-typed-error idiom (validate/poll/guard → emit a namespaced audit row → throw a primitive-specific FrameworkError), not behaviour. archive-read/archive-tar-read `_assertGuardMetadata` run the b.guardArchive metadata cascade and throw ArchiveReadError/TarError (factored so disk `extract` + in-memory `extractEntries` share one refusal path); ciba/oauth/oid4vci are OAuth/OIDC device-code + credential-offer polling/exchange; restore-rollback.swap is the backup restore swap. Each body is domain-divergent (different inputs, error classes, audit namespaces); consolidating would couple unrelated subsystems to one helper.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/ai-quota.js:_emitAudit",
         "lib/ai-capability.js:_emitAudit",
         "lib/ai-dp.js:_emitAudit",

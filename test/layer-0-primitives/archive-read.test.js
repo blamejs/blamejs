@@ -223,8 +223,58 @@ async function testBundleAdapterStorageRoundTrip() {
   }
 }
 
+// In-memory extraction (serverless / read-only FS): reader.extractEntries()
+// yields decompressed bytes without ever writing to disk, and those bytes are
+// byte-identical to what disk extract() produces.
+async function testExtractEntriesInMemory() {
+  var z = b.archive.zip();
+  z.addFile("readme.txt", "Hello, in-memory!\n");
+  z.addFile("data/nums.csv", "n,sq\n2,4\n");
+  z.addFile("docs/deep.bin", Buffer.from([0, 1, 2, 3, 255]));
+  var bytes = z.toBuffer();
+
+  // Spy: no fs write may happen during the in-memory path.
+  var wrote = false;
+  var origWrite = fs.writeFileSync;
+  fs.writeFileSync = function () { wrote = true; return origWrite.apply(fs, arguments); };
+  var collected = {};
+  try {
+    var reader = b.archive.read.zip(b.archive.adapters.buffer(bytes));
+    for await (var e of reader.extractEntries()) { collected[e.name] = e.bytes; }
+  } finally {
+    fs.writeFileSync = origWrite;
+  }
+  check("zip extractEntries: no disk write", wrote === false);
+  check("zip extractEntries: 3 file entries (dir skipped)", Object.keys(collected).length === 3);
+  check("zip extractEntries: text bytes match", collected["readme.txt"].toString("utf8") === "Hello, in-memory!\n");
+  check("zip extractEntries: binary bytes match", collected["docs/deep.bin"].equals(Buffer.from([0, 1, 2, 3, 255])));
+
+  // Byte-equality with disk extract().
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-archive-mem-"));
+  try {
+    await b.safeArchive.extract({ source: bytes, destination: dest, guardProfile: "balanced" });
+    var diskBin = fs.readFileSync(path.join(dest, "docs/deep.bin"));
+    check("zip extractEntries bytes == disk extract bytes", collected["docs/deep.bin"].equals(diskBin));
+  } finally {
+    fs.rmSync(dest, { recursive: true, force: true });
+  }
+
+  // tar in-memory.
+  var t = b.archive.tar();
+  t.addFile("x.txt", "world\n");
+  t.addFile("sub/y.dat", Buffer.from([9, 8, 7]));
+  var tbytes = t.toBuffer();
+  var tcollected = {};
+  var tr = b.archive.read.tar(b.archive.adapters.buffer(tbytes));
+  for await (var te of tr.extractEntries()) { tcollected[te.name] = te.bytes; }
+  check("tar extractEntries: 2 entries", Object.keys(tcollected).length === 2);
+  check("tar extractEntries: text matches", tcollected["x.txt"].toString("utf8") === "world\n");
+  check("tar extractEntries: binary matches", tcollected["sub/y.dat"].equals(Buffer.from([9, 8, 7])));
+}
+
 async function run() {
   await testRoundTripExtract();
+  await testExtractEntriesInMemory();
   testSafeArchiveErrorClass();
   await testSafeArchiveInspect();
   await testZipBombPolicy();
