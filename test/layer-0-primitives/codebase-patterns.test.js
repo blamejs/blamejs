@@ -5836,20 +5836,27 @@ var KNOWN_ANTIPATTERNS = [
   {
     // Citation hygiene — a CVE identifier is always
     // CVE-<4-digit-year>-<sequence>, where the sequence is purely
-    // numeric (CVE numbering spec). A suffix containing a letter —
-    // e.g. a library name dropped in as a placeholder — is a
-    // fabricated / malformed reference that escaped citation review.
-    // Real CVE references are verifiable by an operator auditing the
-    // framework's threat model; placeholder ones mislead. This
-    // detector refuses any CVE token whose post-year segment is not
-    // all-numeric. It cannot verify that a well-formed id is real or
-    // correctly attributed — that stays a reviewer responsibility —
-    // but it makes the structurally-invalid class impossible to ship.
+    // numeric (CVE numbering spec). Two malformed shapes ship past
+    // review: a non-numeric sequence (`CVE-2024-zlib` — a library
+    // name dropped in as a placeholder), and a real id with a
+    // hyphen-attached word (`CVE-2024-39687-class` — reads as if
+    // `-class` is part of the id). The first is a fabricated
+    // reference; the second is a parse hazard for any tool that
+    // extracts CVE tokens. The annotation convention is a SPACE
+    // before the descriptor (`CVE-2024-39687 class`), which leaves
+    // the id token well-formed. This detector refuses both shapes:
+    // a letter immediately after the year separator, OR a
+    // hyphen-then-letter after the numeric sequence. It cannot
+    // verify that a well-formed id is real or correctly attributed —
+    // that stays a reviewer responsibility — but it makes the
+    // structurally-invalid class impossible to ship. Real CVE
+    // ranges (`CVE-2023-51764 / -51765`) and id-then-space-descriptor
+    // forms pass unchanged.
     id: "malformed-cve-identifier",
-    primitive: "cite a real CVE as CVE-<year>-<digits> (all-numeric sequence) or name the weakness class (CWE / RFC) — never a placeholder id with a non-numeric suffix",
-    regex: /CVE-[0-9]{4}-[0-9]*[a-zA-Z]/,
+    primitive: "cite a real CVE as CVE-<year>-<digits> (all-numeric sequence) then a SPACE before any descriptor — never a non-numeric sequence or a hyphen-attached word",
+    regex: /CVE-[0-9]{4}-(?:[0-9]*[A-Za-z]|[0-9]+-[A-Za-z])/,
     allowlist: [],
-    reason: "A CVE identifier's sequence number is always numeric (CVE-<year>-<digits>). A suffix containing letters is a fabricated placeholder that escaped citation review and misleads operators auditing the threat model. Cite a verifiable CVE or name the weakness class (CWE / RFC).",
+    reason: "A CVE identifier's sequence number is always numeric and the token ends at the sequence (CVE-<year>-<digits>). A non-numeric sequence (CVE-2024-zlib) is a fabricated placeholder; a hyphen-attached word (CVE-2024-39687-class) makes the id un-parseable. Cite a verifiable CVE followed by a space before any class/descriptor word, or name the weakness class (CWE / RFC).",
   },
 
   {
