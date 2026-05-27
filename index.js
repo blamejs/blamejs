@@ -374,6 +374,7 @@ var dualControl = require("./lib/dual-control");
 var retention = require("./lib/retention");
 var legalHold = require("./lib/legal-hold");
 var worm = require("./lib/worm");
+var crdt = require("./lib/crdt");
 var network = require("./lib/network");
 var cloudEvents = require("./lib/cloud-events");
 var dsr = require("./lib/dsr");
@@ -713,6 +714,7 @@ module.exports = {
   retention:        retention,
   legalHold:        legalHold,
   worm:             worm,
+  crdt:             crdt,
   network:          network,
   cloudEvents:      cloudEvents,
   dsr:              dsr,
