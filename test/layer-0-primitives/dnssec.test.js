@@ -390,12 +390,50 @@ function testKeyTagCollision() {
   check("verifyChain: validates despite a colliding-tag key in the signed set", out.ok === true);
 }
 
+// KeyTrap (CVE-2023-50387) amplification caps. The caps fire on COUNT
+// checks before any signature verification, so a single real EC DNSKEY
+// rdata repeated to hit each threshold is enough.
+function testKeyTrapCaps() {
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var rd = _ecDnskey(kp.publicKey);
+  var tag = b.network.dns.dnssec.keyTag(rd);
+  var now = Math.floor(Date.now() / 1000);
+  var rrsig = { algorithm: 13, labels: 1, originalTtl: 3600, expiration: now + 86400,
+    inception: now - 60, keyTag: tag, signerName: "test.", signature: Buffer.alloc(64) };
+  var anchor = [{ keyTag: tag, algorithm: 13, digestType: 2, digest: Buffer.alloc(32) }];
+
+  // > MAX_COLLIDING_KEYS (4) keys sharing one tag (5 identical rdatas all
+  // resolve to the same tag) → refused before any verify.
+  var fiveSameTag = [rd, rd, rd, rd, rd];
+  check("KeyTrap: >4 same-tag DNSKEY candidates refused",
+    code(function () { b.network.dns.dnssec.verifyChain({
+      links: [{ zone: "test.", dnskeys: fiveSameTag, dnskeyRrsig: rrsig }],
+      trustAnchors: anchor, at: new Date(now * 1000) }); }) === "dnssec/too-many-colliding-keys");
+
+  // > MAX_DNSKEYS_PER_ZONE (64) in one zone's RRset → refused.
+  var bigSet = []; for (var i = 0; i < 65; i++) bigSet.push(rd);
+  check("KeyTrap: oversize DNSKEY RRset (>64) refused",
+    code(function () { b.network.dns.dnssec.verifyChain({
+      links: [{ zone: "test.", dnskeys: bigSet, dnskeyRrsig: rrsig }],
+      trustAnchors: anchor, at: new Date(now * 1000) }); }) === "dnssec/too-many-dnskeys");
+
+  // A name encoding to > 255 octets (128 single-char labels = 257 octets)
+  // is refused at canonicalization (RFC 1035 §2.3.4) — bounds the NSEC3
+  // closest-encloser label enumeration.
+  var longName = new Array(129).join("a.") + "a";   // 129 labels of "a"
+  check("KeyTrap: name exceeding 255 octets refused",
+    code(function () { b.network.dns.dnssec.verifyDs({ ownerName: longName,
+      dnskeyRdata: rd, ds: { keyTag: tag, algorithm: 13, digestType: 2, digest: Buffer.alloc(32) } }); }) === "dnssec/bad-name");
+}
+
 async function run() {
   testSurface();
   testRealVectors();
   testRefusals();
   testVerifyDs();
   testVerifyChain();
+  testKeyTrapCaps();
   testNsec3Real();
   testNsec3Caps();
   testNsec3OptOut();
