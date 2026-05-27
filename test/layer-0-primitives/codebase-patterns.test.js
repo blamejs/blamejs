@@ -510,6 +510,77 @@ function testNoUnresolvedMarkers() {
     matches);
 }
 
+// ---- Pattern: overdue defers (promised landing version already shipped) ----
+//
+// A comment/string that promises a feature "lands in vX" / "deferred to vX" /
+// "not supported in vX" is fine while vX is in the future. Once the package
+// version reaches vX, that promise is OVERDUE: either the feature shipped (and
+// the comment is stale and should be corrected) or it never shipped (a real
+// gap to close or an explicit defer-with-condition to record here). This gate
+// surfaces the iabTcf-class "advertised-but-missing / stale-landing" shape on
+// every release rather than letting promised-landing comments rot silently.
+//
+// STALE_DEFER_ALLOWLIST entries are acknowledged overdue mentions: each is
+// either a deliberate defer-with-condition (no operator demand + escape hatch)
+// or an item on the gap backlog being worked down. The key is the file; the
+// value is a list of distinctive content substrings to permit. Remove an entry
+// when the comment is corrected or the gap is closed — that is the backlog.
+var STALE_DEFER_ALLOWLIST = {
+  // Deliberate defer-with-condition: needs an envelope-semantics decision
+  // (per-tenant KEM keypair vs symmetric); explicit escape hatch is passing
+  // { publicKey, ecPublicKey } directly. Tracked for design, not overdue work.
+  "lib/archive-wrap.js": [
+    // quote-free phrases (source has escaped \" so avoid quote chars here)
+    "deferred to v0.12.11",
+    "lands in v0.12.11",
+  ],
+  // Deliberate: Sieve extension refused per RFC 5228 §3.2 — script-declared
+  // capability gating, defer-with-condition (operator demand).
+  "lib/safe-sieve.js": ["not implemented in v0.9.55 — script refused"],
+  // Conditional on a future vendoring decision (no bundled EXIF/IPTC reader);
+  // operator-feeds-metadata escape hatch. Defer-with-condition.
+  "lib/ai-content-detect.js": ["IPTC PhotoMetadata reader lands in v0.10.9"],
+  // GAP BACKLOG (being worked down — these are real overdue items):
+  //   archive-read ZIP64 read + fromTrustedStream (promised v0.12.8) — building.
+  "lib/archive-read.js": [
+    "not supported in v0.12.7. Will land",
+    "switch to tar — lands v0.12.8",
+    "carries ZIP64 sentinel sizes (not supported in v0.12.7)",
+    "deferred to v0.12.8 alongside the tar reader",
+    "fromTrustedStream.inspect() is deferred to v0.12.8",
+    "fromTrustedStream.entries() is deferred to v0.12.8",
+    "fromTrustedStream.extract() is deferred to v0.12.8",
+  ],
+  "lib/safe-archive.js": [
+    "tar lands v0.12.8, gz v0.12.9",
+    "fromTrustedStream` is deferred to v0.12.8",
+  ],
+  // STALE comments (feature shipped; phrased as future) — correcting to past
+  // tense as the backlog is worked; allowlisted until then.
+  "lib/break-glass.js": ["passkey lands in v0.5.2"],
+};
+
+function testNoStaleDefers() {
+  var path = require("node:path");
+  var pkgVersion = require(path.resolve(__dirname, "..", "..", "package.json")).version.split(".").map(Number);
+  function cmp(a, b) { for (var i = 0; i < 3; i += 1) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0); } return 0; }
+  // Promised-landing phrasings only ("X lands in vN" / "deferred to vN" / "not
+  // supported in vN"). NOT "deferred FROM vN" (that is an origin, not a deadline).
+  var PROMISE = /(?:deferred to|lands(?: in)?|will land(?: in)?|not supported in)\s+v?(\d+\.\d+\.\d+)/i;
+  var matches = _scan(PROMISE, { skipComments: false });
+  var overdue = [];
+  matches.forEach(function (m) {
+    var mm = m.content.match(PROMISE);
+    if (!mm) return;
+    if (cmp(mm[1].split(".").map(Number), pkgVersion) >= 0) return;   // future/current promise — fine
+    var allow = STALE_DEFER_ALLOWLIST[m.file] || [];
+    if (allow.some(function (sub) { return m.content.indexOf(sub) !== -1; })) return;
+    overdue.push({ file: m.file, line: m.line, content: "overdue defer (promised v" + mm[1] + ", now v" + pkgVersion.join(".") + "): " + m.content.slice(0, 100) });
+  });
+  _report("no overdue defers in lib/ (promised-landing version already shipped — close the gap, fix the stale comment, or record it in STALE_DEFER_ALLOWLIST)",
+    overdue);
+}
+
 // ---- Pattern: literal NUL bytes (0x00) in source files ----
 //
 // The Edit / Write tooling decodes JSON `\u0000` escape sequences into
@@ -10012,6 +10083,7 @@ async function run() {
   testHttp2TeardownPaired();
   testNoStrayConsoleCalls();
   testNoUnresolvedMarkers();
+  testNoStaleDefers();
   testNoLiteralNulBytesInSource();
   testParserPrimitivesHaveFuzzHarness();
   testSafeGuardWiredInIndex();
