@@ -40,6 +40,11 @@ jobs:
   smoke:
     name: Framework smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Backstop against a hung child no watchdog reaped (and against the
+    # watchdog logic itself regressing): without this a stuck job rides
+    # GitHub's 6-hour default. The full suite finishes in well under
+    # 20 min even on the slow macOS runners; 30 leaves headroom.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -93,6 +98,7 @@ jobs:
   wiki-e2e:
     name: Wiki e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
