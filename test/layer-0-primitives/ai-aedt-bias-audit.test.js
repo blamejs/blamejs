@@ -86,7 +86,12 @@ function testErrors() {
   check("selected > total throws", code(function () { b.ai.aedtBiasAudit({ type: "selection", metadata: MD, categories: { sex: { M: { selected: 5, total: 2 } } } }); }) === "aedt/bad-count");
   check("negative count throws",   code(function () { b.ai.aedtBiasAudit({ type: "selection", metadata: MD, categories: { sex: { M: { selected: -1, total: 2 } } } }); }) === "aedt/bad-count");
   check("bad minCategoryShare throws", code(function () { b.ai.aedtBiasAudit({ type: "selection", metadata: MD, minCategoryShare: 1, categories: { sex: { M: { selected: 1, total: 1 } } } }); }) === "aedt/bad-share");
-  check("unknown opt throws",      code(function () { b.ai.aedtBiasAudit({ type: "selection", metadata: MD, categories: { sex: { M: { selected: 1, total: 1 } } }, bogus: 1 }); }) !== "NO-THROW");
+  // A typoed/unknown option must surface as AedtBiasAuditError (not a generic
+  // Error from validateOpts), so e.code / instanceof handling is reliable.
+  check("unknown opt throws aedt/bad-opts", code(function () { b.ai.aedtBiasAudit({ type: "selection", metadata: MD, categories: { sex: { M: { selected: 1, total: 1 } } }, minCategoryshare: 0.01 }); }) === "aedt/bad-opts");
+  var threw = null;
+  try { b.ai.aedtBiasAudit({ type: "selection", metadata: MD, categories: { sex: { M: { selected: 1, total: 1 } } }, bogus: 1 }); } catch (e) { threw = e; }
+  check("unknown opt error is an AedtBiasAuditError", threw instanceof b.ai.aedtBiasAudit.AedtBiasAuditError);
 }
 
 async function run() {
