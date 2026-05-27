@@ -572,7 +572,10 @@ function testNoStaleDefers() {
   matches.forEach(function (m) {
     var mm = m.content.match(PROMISE);
     if (!mm) return;
-    if (cmp(mm[1].split(".").map(Number), pkgVersion) >= 0) return;   // future/current promise — fine
+    // Only a STRICTLY-FUTURE promise is exempt. A promise for the current
+    // version is due in the release being cut now — if the feature isn't here,
+    // the comment is overdue and must be fixed in this release, not a later one.
+    if (cmp(mm[1].split(".").map(Number), pkgVersion) > 0) return;
     var allow = STALE_DEFER_ALLOWLIST[m.file] || [];
     if (allow.some(function (sub) { return m.content.indexOf(sub) !== -1; })) return;
     overdue.push({ file: m.file, line: m.line, content: "overdue defer (promised v" + mm[1] + ", now v" + pkgVersion.join(".") + "): " + m.content.slice(0, 100) });
