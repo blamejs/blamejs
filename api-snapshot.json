@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.15",
-  "createdAt": "2026-05-27T14:06:31.083Z",
+  "frameworkVersion": "0.13.16",
+  "createdAt": "2026-05-27T16:55:42.429Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -37552,6 +37552,67 @@
         "agent": {
           "type": "object",
           "members": {
+            "COMPOSE_HINT": {
+              "type": "object",
+              "members": {
+                "compose": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "export": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "forward": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "identity.set": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "import": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "job": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.allowList": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.parse": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "mdn.send": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reply": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "send": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.activate": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "sieve.list": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "vacation.set": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "HEAVY_METHODS": {
               "type": "object",
               "members": {
@@ -37661,71 +37722,6 @@
                   "valueType": "string"
                 },
                 "thread": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "vacation.set": {
-                  "type": "primitive",
-                  "valueType": "string"
-                }
-              }
-            },
-            "WIRED_AT": {
-              "type": "object",
-              "members": {
-                "compose": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "export": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "forward": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "identity.set": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "import": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "job": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "mdn.allowList": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "mdn.parse": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "mdn.send": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "reply": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "send": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "sieve.activate": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "sieve.list": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "sieve.put": {
                   "type": "primitive",
                   "valueType": "string"
                 },
