@@ -10,7 +10,16 @@
       "items": [
         {
           "title": "`engine.renderString` / `engine.compileString` — render templates from a string, no viewsDir",
-          "body": "`b.template.create({})` (no `viewsDir`) returns a string-only engine; `renderString(source, data?, { resolve })` and `compileString(source, { resolve })` compile and render from a source string with zero filesystem access — the read-only / serverless path. `{% extends %}` and `{{> partial}}` resolve through `opts.resolve(name) -> string`. The HTML escaping, grammar, and depth caps are identical to the file path. When a `viewsDir` IS configured, `render`/`compile`/`precompileAll` behave exactly as before; without one they refuse with `viewsDir not configured`."
+          "body": "`b.template.create({})` (no `viewsDir`) returns a string-only engine; `renderString(source, data?, { resolve })` and `compileString(source, { resolve })` compile and render from a source string with zero filesystem access — the read-only / serverless path. `{% extends %}` and `{{> partial}}` resolve through `opts.resolve(name) -> string`. The HTML escaping, grammar, and depth caps are identical to the file path. When a `viewsDir` IS configured, `render`/`compile`/`precompileAll` behave exactly as before; without one they refuse with `viewsDir not configured`. `renderString(source, { resolve })` may omit the data argument — an opts object carrying a function `resolve` is recognized as opts, not data."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Vendored `@simplewebauthn/server` refreshed 13.3.0 → 13.3.1",
+          "body": "The vendored WebAuthn server bundle (`b.auth.passkey`'s registration/authentication verification) is refreshed to the latest upstream patch, with the MANIFEST version, CPE, and SHA-256 integrity hashes updated and the bundle re-verified."
         }
       ]
     }

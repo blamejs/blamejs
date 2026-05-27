@@ -2034,6 +2034,14 @@ function testTemplateRenderString() {
   check("renderString: missing partial inlines empty",
         eng.renderString("a{{> nope}}b", {}, { resolve: function () { return undefined; } }) === "ab");
 
+  // Data omitted: renderString(source, { resolve }) treats the opts as
+  // opts (not data) when it carries a function `resolve` + no 3rd arg.
+  var noData = eng.renderString(
+    "{% extends \"base\" %}{% block body %}static{% endblock %}",
+    { resolve: function (name) { return views[name]; } });
+  check("renderString: opts-as-2nd-arg (data omitted) honored",
+        noData === "<html>static</html>");
+
   // compileString returns a reusable AST.
   var ast = eng.compileString("<b>{{ v }}</b>");
   check("compileString: returns an AST", ast && ast.type === "Template");
