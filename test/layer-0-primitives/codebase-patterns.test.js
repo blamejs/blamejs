@@ -7380,6 +7380,36 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Sibling to test-promise-settimeout-sleep, for the timer the
+    // setTimeout regex misses: a COUNTED DRAIN-LOOP that reassigns a
+    // promise to its own `.then()` over and over to "flush N
+    // microtasks/ticks" before asserting — the `_waitMicrotasks(n)`
+    // helper shape (`var p = Promise.resolve(); for (...) p = p.then(
+    // () => new Promise(r => setImmediate(r)));`). Like the fixed
+    // setTimeout sleep it guesses a budget; under SMOKE_PARALLEL=64
+    // contention the awaited async work (a cluster-backend DB take,
+    // a scheduler tick-claim) hasn't resolved within the tick count,
+    // so the next assertion reads stale state. This was the recurring
+    // rate-limit-cluster "4th blocked with 429" flake and the
+    // scheduler-exactly-once tick-claim race. A single `await new
+    // Promise(r => setImmediate(r))` event-loop yield is legitimate
+    // and is NOT matched — only the self-reassigning `<x> = <x>.then(`
+    // drain idiom paired with a timer is. Poll the observable
+    // condition with helpers.waitUntil instead.
+    id: "test-microtask-drain-loop-sleep",
+    primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) — poll the observable condition; never drain a fixed count of microtasks/ticks by reassigning a promise to its own .then() in a loop",
+    scanScope: "test",
+    regex: /\b(\w+)\s*=\s*\1\.then\([\s\S]{0,80}?set(?:Immediate|Timeout)\s*\(/,
+    skipCommentLines: true,
+    allowlist: [
+      // The catalog itself carries this pattern as a regex literal +
+      // in this entry's own prose/reason describing the antipattern.
+      "test/layer-0-primitives/codebase-patterns.test.js",
+    ],
+    reason: "A for-loop that reassigns a promise to its own `.then(() => new Promise(r => setImmediate(r)))` to drain a fixed number of microtask ticks is the same fixed-budget anti-pattern as a setTimeout sleep, just timed in event-loop turns instead of milliseconds — and it flakes the same way: when the async work under test hasn't resolved within the tick count (cluster DB take, scheduler tick-claim) the following assertion reads stale state. Poll the observable condition with helpers.waitUntil(predicate, { timeoutMs, label }); a lone `await new Promise(r => setImmediate(r))` yield is fine and isn't matched.",
+  },
+
+  {
     // v0.10.13 PR #102 macOS hang — stream-throttle.test.js used
     // `setTimeout`-based rate enforcement plus `node:stream.pipeline`
     // and hung the macOS GitHub Actions runner for >2h on two
