@@ -9,8 +9,8 @@
       "heading": "Fixed",
       "items": [
         {
-          "title": "Flaky fixed-delay waits in the rate-limiter / scheduler test suites converted to condition polling",
-          "body": "The rate-limit-cluster and scheduler-exactly-once suites drained a fixed count of event-loop ticks before asserting on asynchronously-updated state; under contended CI the budget could expire before the work settled, producing intermittent failures. They now wait on the actual observable condition. Affects test code only — no change to shipped framework behaviour. The unused tick-drain helper in the websocket-channel suite was removed."
+          "title": "Flaky fixed-budget waits in the rate-limiter / scheduler / sandbox test suites made contention-tolerant",
+          "body": "The rate-limit-cluster and scheduler-exactly-once suites drained a fixed count of event-loop ticks before asserting on asynchronously-updated state; under contended CI the budget could expire before the work settled, producing intermittent failures. They now wait on the actual observable condition (a written response, a settled counter). The sandbox suite's success-path cases gave the worker a 5 s execution budget that cold worker-thread startup under heavily parallel Windows CI could just exceed; those are raised to the framework's 10 s ceiling. Affects test code only — no change to shipped framework behaviour. The unused tick-drain helper in the websocket-channel suite was removed."
         }
       ]
     },

@@ -35,8 +35,13 @@ var _mockRes       = helpers._mockRes;
 // condition, never guess a tick/time budget).
 function _settle(res, okGetter) {
   return helpers.waitUntil(function () {
-    return okGetter() || res._captured().status !== undefined;
-  }, { timeoutMs: 5000, label: "rate-limit-cluster: request settled (next ran or status captured)" });
+    // `ended` is the unambiguous "a response was written" signal —
+    // it flips true only when the mock's end() runs. (status starts
+    // null, so a `status != null` check would read true before any
+    // response and defeat the poll.) A passed request sets ok via
+    // next(); a blocked one ends the response.
+    return okGetter() || res._captured().ended === true;
+  }, { timeoutMs: 5000, label: "rate-limit-cluster: request settled (next ran or response ended)" });
 }
 
 async function testClusterBackendBasicLimit() {
