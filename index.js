@@ -478,6 +478,7 @@ module.exports = {
     capability:      require("./lib/ai-capability"),
     dp:              require("./lib/ai-dp"),
     aedtBiasAudit:   require("./lib/ai-aedt-bias-audit"),
+    frontierModelProtocol: require("./lib/ai-frontier-protocol"),
   },
   promisePool:      require("./lib/promise-pool"),
   sdNotify:         require("./lib/sd-notify"),
