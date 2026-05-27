@@ -228,7 +228,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **i18n** — CLDR plural rules, Accept-Language negotiation, Intl formatters, RTL (`b.i18n`)
 - **CSV** — RFC 4180 with Excel formula-injection prevention (`b.csv`)
 - **IDs + slugs** — RFC 9562 UUID v4 + v7 (`b.uuid`); URL-safe slugs (`b.slug`)
-- **Time + archive** — TZ-aware datetime (`b.time`); ZIP creation + adversarial-safe read with bomb caps + path-traversal + LFH/CD-skew defense (`b.archive` + `b.archive.read.zip`); one-liner quarantine extraction (`b.safeArchive.extract`); in-memory extraction with no disk write for read-only / serverless filesystems (`b.archive.read.zip(...).extractEntries()` / `.tar`); fs / objectStore / http / buffer / trusted-stream adapter contract (`b.archive.adapters`)
+- **Time + archive** — TZ-aware datetime (`b.time`); ZIP creation + adversarial-safe read with bomb caps + path-traversal + LFH/CD-skew defense (`b.archive` + `b.archive.read.zip`); one-liner quarantine extraction (`b.safeArchive.extract`); in-memory extraction with no disk write for read-only / serverless filesystems (`b.archive.read.zip(...).extractEntries()` / `.tar`); fs / objectStore / http / buffer / trusted-stream adapter contract (`b.archive.adapters`); recipient-sealed envelopes — hybrid-PQC key-pair, peer certificate, or per-tenant key with no key-pair to manage (`b.archive.wrap({ recipient: "tenant", tenantId })`)
 - **Pagination + forms** — HMAC-signed cursor pagination (`b.pagination`); HTML form rendering + validation + CSRF (`b.forms`)
 
 ### Production
