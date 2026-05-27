@@ -45,14 +45,23 @@ function _settle(res, okGetter) {
 }
 
 async function testClusterBackendBasicLimit() {
-  // limit=3 / windowMs=10s → first 3 requests pass, 4th blocked.
+  // limit=3 → first 3 requests pass, 4th blocked.
+  // windowMs is a deliberately-large 1h: the fixed-window counter resets
+  // at each `floor(now/windowMs)*windowMs` boundary, so a small window
+  // (e.g. 10s) let the test's sequential awaited calls straddle a window
+  // boundary under SMOKE_PARALLEL=64 CPU contention — the counter reset
+  // mid-test and a "blocked" assertion saw a fresh count (the recurring
+  // rate-limit-cluster flake). A 1h window makes wall-clock progress
+  // during the sub-second test negligible vs the window, so all calls
+  // land in one window. (The rollover test below keeps a small window
+  // on purpose — it needs an aged row to fall into a prior window.)
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rl-"));
   try {
     await setupTestDb(tmpDir);
     var mw = b.middleware.rateLimit({
       backend:  "cluster",
       limit:    3,
-      windowMs: 10000,
+      windowMs: 3600000,
     });
 
     async function fire() {
@@ -90,7 +99,7 @@ async function testClusterBackendIndependentKeys() {
     var mw = b.middleware.rateLimit({
       backend:  "cluster",
       limit:    2,
-      windowMs: 10000,
+      windowMs: 3600000,
       keyFn:    function (req) { return req.headers["x-key"] || "default"; },
     });
 
@@ -127,7 +136,7 @@ async function testClusterBackendWindowRollover() {
     var mw = b.middleware.rateLimit({
       backend:  "cluster",
       limit:    2,
-      windowMs: 10000,
+      windowMs: 3600000,   // 1h — same straddle-immunity as the other tests
     });
 
     async function fire() {
@@ -143,10 +152,12 @@ async function testClusterBackendWindowRollover() {
     await fire(); await fire();
     check("rollover: 3rd in same window blocked",  !(await fire()));
 
-    // Fast-forward: rewrite the row so its windowStart is well in the past.
+    // Fast-forward: rewrite the row so its windowStart is well in the
+    // past — > one window (1h) back so the next take sees it as a prior
+    // window and rolls the count over.
     b.db.prepare(
       "UPDATE _blamejs_rate_limit_counters SET windowStart = ?, count = ?"
-    ).run(Date.now() - 60000, 99);
+    ).run(Date.now() - 7200000, 99);
 
     // The next take's INSERT...ON CONFLICT sees an older windowStart
     // and rolls count back to 1 → request passes.
@@ -169,7 +180,7 @@ async function testClusterBackendAuditEmit() {
     var mw = b.middleware.rateLimit({
       backend:  "cluster",
       limit:    1,
-      windowMs: 10000,
+      windowMs: 3600000,
     });
 
     async function fire() {
@@ -258,7 +269,7 @@ async function testMemoryFixedWindowBasicLimit() {
     backend:   "memory",
     algorithm: "fixed-window",
     max:       3,
-    windowMs:  10000,
+    windowMs:  3600000,
   });
 
   async function fire() {
@@ -284,7 +295,7 @@ async function testMemoryFixedWindowIndependentKeys() {
     backend:   "memory",
     algorithm: "fixed-window",
     max:       2,
-    windowMs:  10000,
+    windowMs:  3600000,
     keyFn:     function (req) { return req.headers["x-key"] || "default"; },
   });
 

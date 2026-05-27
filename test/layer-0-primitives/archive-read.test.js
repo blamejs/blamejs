@@ -125,6 +125,49 @@ function testVerifyExtractionPathRefusals() {
   check("verifyExtractionPath: 4 refusals", refusals === 4);
 }
 
+// Per-segment Windows-extraction hazards — refused even though they stay
+// inside the extraction root (within-root write-target redirection /
+// collision that the containment + realpath checks can't see). Platform-
+// unconditional, with per-check opt-outs for Linux-only targets.
+function testVerifyExtractionPathWindowsHazards() {
+  function expectCode(name, code, opts) {
+    var e = null;
+    try { b.guardFilename.verifyExtractionPath(name, "/tmp", opts); }
+    catch (err) { e = err; }
+    check("verifyExtractionPath refuses " + JSON.stringify(name) + " (" + code + ")",
+      e && (e.code || "").indexOf(code) !== -1);
+  }
+  // Windows reserved device names (bare + with extension + nested segment).
+  expectCode("CON", "filename.extraction-reserved-name");
+  expectCode("aux.txt", "filename.extraction-reserved-name");
+  expectCode("subdir/NUL", "filename.extraction-reserved-name");
+  expectCode("logs/COM1.log", "filename.extraction-reserved-name");
+  // Superscript-digit COM/LPT spoof (U+00B9/B2/B3 — Windows folds to 1/2/3).
+  // Built from codepoints so the test source stays pure-ASCII.
+  expectCode("COM" + String.fromCharCode(0xB9), "filename.extraction-reserved-name");
+  expectCode("sub/LPT" + String.fromCharCode(0xB3), "filename.extraction-reserved-name");
+  // NTFS alternate data streams.
+  expectCode("file.txt:evil.exe", "filename.extraction-ntfs-ads");
+  expectCode("dir/data.bin:$DATA", "filename.extraction-ntfs-ads");
+  // Trailing dot / leading-or-trailing whitespace (Windows strips → collision).
+  expectCode("secret.txt.", "filename.extraction-leading-trailing");
+  expectCode("name with trailing space ", "filename.extraction-leading-trailing");
+
+  // Opt-outs accept the name (then pass the realpath leg into a real root).
+  function expectAccept(name, opts) {
+    var dest = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-vx-"));
+    var ok = false, code = null;
+    try { ok = b.guardFilename.verifyExtractionPath(name, dest, opts).indexOf(dest) === 0; }
+    catch (e) { code = e && e.code; }
+    finally { fs.rmSync(dest, { recursive: true, force: true }); }
+    check("verifyExtractionPath accepts " + JSON.stringify(name) + " with opt-out" +
+      (code ? " (threw " + code + ")" : ""), ok === true);
+  }
+  expectAccept("CON", { reservedNamePolicy: "allow" });
+  expectAccept("file.txt:evil.exe", { adsPolicy: "allow" });
+  expectAccept("secret.txt.", { leadingTrailingPolicy: "allow" });
+}
+
 async function testExtractRefusesOverwrite() {
   // Codex P1 on v0.12.7 PR #158 — the catch-block cleanup deleted
   // PRE-EXISTING destination files on abort because the rename-onto-
@@ -313,6 +356,7 @@ async function run() {
   testEntryTypePolicy();
   testVerifyExtractionPathHappy();
   testVerifyExtractionPathRefusals();
+  testVerifyExtractionPathWindowsHazards();
   await testExtractRefusesOverwrite();
   await testSafeArchiveRefusesTrustedStreamSource();
   await testGuardArchiveInspect();
