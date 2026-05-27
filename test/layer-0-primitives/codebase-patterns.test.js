@@ -5788,7 +5788,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     // v0.10.15 — `zlib.gunzipSync` / `zlib.createGunzip` /
     // `zlib.brotliDecompress` without an output-size cap is the
-    // CVE-2025-0725 / CVE-2024-zlib decompression-amplification
+    // CVE-2025-0725 / CWE-409 decompression-amplification
     // class. Attackers craft a kilobyte of compressed input that
     // explodes to gigabytes of output, exhausting memory before the
     // request handler sees the bytes. The defense is either the
@@ -5831,7 +5831,32 @@ var KNOWN_ANTIPATTERNS = [
     requires: /\bmaxOutputLength\b/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "CVE-2025-0725 (libcurl + zlib decompression amplification) + CVE-2024-zlib bomb class. Every gunzip / brotli decompress on operator-supplied bytes MUST bound the output. Use `zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> })` so the operator sees the cap at config time; refusal becomes a typed error before the bomb reaches memory.",
+    reason: "CVE-2025-0725 (libcurl + zlib decompression amplification) + CWE-409 (uncontrolled-resource decompression bomb) class. Every gunzip / brotli decompress on operator-supplied bytes MUST bound the output. Use `zlib.gunzipSync(buf, { maxOutputLength: <C.BYTES.* constant> })` so the operator sees the cap at config time; refusal becomes a typed error before the bomb reaches memory.",
+  },
+  {
+    // Citation hygiene — a CVE identifier is always
+    // CVE-<4-digit-year>-<sequence>, where the sequence is purely
+    // numeric (CVE numbering spec). Two malformed shapes ship past
+    // review: a non-numeric sequence (`CVE-2024-zlib` — a library
+    // name dropped in as a placeholder), and a real id with a
+    // hyphen-attached word (`CVE-2024-39687-class` — reads as if
+    // `-class` is part of the id). The first is a fabricated
+    // reference; the second is a parse hazard for any tool that
+    // extracts CVE tokens. The annotation convention is a SPACE
+    // before the descriptor (`CVE-2024-39687 class`), which leaves
+    // the id token well-formed. This detector refuses both shapes:
+    // a letter immediately after the year separator, OR a
+    // hyphen-then-letter after the numeric sequence. It cannot
+    // verify that a well-formed id is real or correctly attributed —
+    // that stays a reviewer responsibility — but it makes the
+    // structurally-invalid class impossible to ship. Real CVE
+    // ranges (`CVE-2023-51764 / -51765`) and id-then-space-descriptor
+    // forms pass unchanged.
+    id: "malformed-cve-identifier",
+    primitive: "cite a real CVE as CVE-<year>-<digits> (all-numeric sequence) then a SPACE before any descriptor — never a non-numeric sequence or a hyphen-attached word",
+    regex: /CVE-[0-9]{4}-(?:[0-9]*[A-Za-z]|[0-9]+-[A-Za-z])/,
+    allowlist: [],
+    reason: "A CVE identifier's sequence number is always numeric and the token ends at the sequence (CVE-<year>-<digits>). A non-numeric sequence (CVE-2024-zlib) is a fabricated placeholder; a hyphen-attached word (CVE-2024-39687-class) makes the id un-parseable. Cite a verifiable CVE followed by a space before any class/descriptor word, or name the weakness class (CWE / RFC).",
   },
 
   {
