@@ -9777,6 +9777,49 @@ function testWikiPortAgreesAcrossArtifacts() {
     bad);
 }
 
+// v0.13.19 — a CI job that runs the long test suites (smoke / wiki
+// e2e) MUST declare `timeout-minutes`. Without it a hung child (a
+// leaked timer / socket / fs.watch handle — the macOS smoke-hang
+// class) rides GitHub's 6-hour default before the job is reaped. The
+// smoke runner's per-file watchdog (test/smoke.js) catches most
+// hangs; this job-level backstop catches the rest and a regressed
+// watchdog. Encoded so a new test-running workflow job can't ship
+// without the backstop.
+function testTestJobsDeclareTimeout() {
+  var bad = [];
+  var files = _workflowFiles();
+  for (var fi = 0; fi < files.length; fi += 1) {
+    var wf = files[fi];
+    var text;
+    try { text = fs.readFileSync(wf, "utf8"); }
+    catch (_e) { continue; }
+    var lines = text.split(/\r?\n/);
+    var jobs = [];            // { name, startLine, lines: [] }
+    var inJobs = false;
+    var cur = null;
+    for (var li = 0; li < lines.length; li += 1) {
+      var ln = lines[li];
+      if (!inJobs) { if (/^jobs:\s*$/.test(ln)) inJobs = true; continue; }
+      // A job key sits at exactly 2-space indent under `jobs:`.
+      var jm = ln.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+      if (jm) { cur = { name: jm[1], startLine: li + 1, lines: [] }; jobs.push(cur); continue; }
+      if (cur) cur.lines.push(ln);
+    }
+    for (var ji = 0; ji < jobs.length; ji += 1) {
+      var body = jobs[ji].lines.join("\n");
+      var runsSuite = /node\s+test\/smoke\.js/.test(body) || /node\s+test\/e2e\.js/.test(body);
+      if (runsSuite && !/(^|\n)\s*timeout-minutes\s*:/.test(body)) {
+        bad.push({ file: wf, line: jobs[ji].startLine,
+          content: "CI job '" + jobs[ji].name + "' runs the test suite but declares no " +
+                   "timeout-minutes — a hung job would ride GitHub's 6h default. Add `timeout-minutes: <n>`." });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "ci-test-job-missing-timeout");
+  _report("every CI workflow job that runs the test suite declares timeout-minutes " +
+          "(v0.13.19 — no test job rides GitHub's 6h default when a child hangs)", bad);
+}
+
 // v0.11.43 drift cleanup — every `@nav` value in a lib/*.js @module
 // block MUST be one of the canonical category names below. The wiki
 // sidebar derives directly from `@nav`, so unreviewed drift surfaces
@@ -10319,6 +10362,10 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
+  // v0.13.19 CI hang backstop: every workflow job that runs the test
+  // suite must declare timeout-minutes so a hung child can't ride
+  // GitHub's 6-hour default.
+  testTestJobsDeclareTimeout();
   // v0.12.1 compliance posture coverage detector: KNOWN_POSTURES ⊇
   // POSTURE_DEFAULTS + REGIME_MAP ⊇ KNOWN_POSTURES.
   testCompliancePostureCoverage();

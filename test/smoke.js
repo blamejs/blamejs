@@ -166,6 +166,16 @@ if (!Number.isFinite(PARALLEL) || PARALLEL < 1) PARALLEL = 1;
 if (PARALLEL > 64) PARALLEL = 64;                                                // allow:raw-byte-literal — sanity ceiling on parallel children, not bytes
 void os;
 
+// Per-file watchdog budget. A forked child that never exits (leaked
+// timer / socket / fs.watch handle — more common on macOS) would
+// otherwise hang the whole run until the CI job's wall-clock limit.
+// Past this budget the child is SIGKILLed and the file reported as a
+// failure that NAMES the file, turning an unattributable multi-hour
+// hang into a fast, diagnosable error. Generous (the full host suite
+// runs in ~140s); override with SMOKE_FILE_TIMEOUT_MS.
+var FILE_TIMEOUT_MS = parseInt(process.env.SMOKE_FILE_TIMEOUT_MS || "300000", 10);
+if (!Number.isFinite(FILE_TIMEOUT_MS) || FILE_TIMEOUT_MS < 1000) FILE_TIMEOUT_MS = 300000;
+
 // _readTimings / _writeTimings — persist per-test durations under
 // .test-output/smoke-timings.json so the next run's LPT scheduler can
 // place long-tail tests on the first worker. Median of last 5 runs to
@@ -238,8 +248,46 @@ function _runFileForked(modulePath, displayName) {
     });
     var stdoutBuf = "";
     var stderrBuf = "";
+    // Single-resolve guard: close / error / watchdog can all fire; the
+    // first one wins and cancels the watchdog so a normal exit never
+    // trips it and a kill never double-resolves.
+    var settled = false;
+    function settle(result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      resolve(result);
+    }
+    var watchdog = setTimeout(function () {
+      // Child overran the budget with no exit — reap it and report a
+      // failure that names the file + the most likely cause.
+      try { child.kill("SIGKILL"); } catch (_e) { /* already gone */ }
+      settle({
+        ok:     false,
+        ms:     Date.now() - fileStart,
+        checks: 0,
+        error:  "watchdog: '" + displayName + "' exceeded " + FILE_TIMEOUT_MS +
+                "ms with no exit — likely a leaked handle (timer / socket / fs.watch). " +
+                "Last stderr: " + (stderrBuf.slice(-500) || "(none)"),
+        stderr: stderrBuf,
+        displayName: displayName,
+      });
+    }, FILE_TIMEOUT_MS);
+    if (typeof watchdog.unref === "function") watchdog.unref();
     child.stdout.on("data", function (d) { stdoutBuf += d.toString("utf8"); });
     child.stderr.on("data", function (d) { stderrBuf += d.toString("utf8"); });
+    child.on("error", function (e) {
+      // fork() itself failed (ENOENT / EMFILE / spawn error) — without
+      // this handler the Promise would never resolve and hang the run.
+      settle({
+        ok:     false,
+        ms:     Date.now() - fileStart,
+        checks: 0,
+        error:  displayName + ": fork error: " + ((e && e.message) || String(e)),
+        stderr: stderrBuf,
+        displayName: displayName,
+      });
+    });
     child.on("close", function (code) {
       var ms = Date.now() - fileStart;
       // Last line of stdout is the JSON result line.
@@ -248,7 +296,7 @@ function _runFileForked(modulePath, displayName) {
       var parsed;
       try { parsed = JSON.parse(resultLine); }
       catch (_e) { parsed = { ok: false, error: "no result line; stderr: " + stderrBuf.slice(0, 500) }; }
-      resolve({
+      settle({
         ok:     code === 0 && parsed.ok,
         ms:     ms,
         checks: parsed.checks || 0,
