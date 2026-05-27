@@ -65,6 +65,11 @@ function testGSet() {
   check("gSet has", a.has("x") && !a.has("q"));
   check("gSet supports structured elements", crdt.gSet().add({ k: 1 }).has({ k: 1 }));
   laws("gSet", a, c, d);
+  // value() order must converge for structured elements regardless of merge
+  // order (sorted by the encoded key, not the decoded value).
+  var s1 = crdt.gSet().add({ id: 2 }).add({ id: 1 });
+  var s2 = crdt.gSet().add({ id: 3 });
+  check("gSet structured-element value order converges", JSON.stringify(s1.merge(s2).value()) === JSON.stringify(s2.merge(s1).value()));
 }
 
 function testTwoPSet() {
@@ -120,6 +125,13 @@ function testORMap() {
   var p = crdt.orMap.fromState(merged.state(), { replicaId: "a" }).remove("k2");
   check("orMap remove converges", val(p.merge(merged)) === JSON.stringify({ k1: "v2" }));
   check("orMap rejects non-string key", code(function () { crdt.orMap().set(5, "v"); }) === "crdt/bad-key");
+  // Removing a key clears its register, so a re-add starts clean — a later set
+  // with a lower timestamp than the pre-remove value still wins on this replica.
+  var rr = crdt.orMap({ replicaId: "a" }).set("k", "old", 100);
+  rr.remove("k");
+  rr.set("k", "new", 50);   // lower ts than the removed "old"@100
+  check("orMap remove clears register so re-add wins", rr.get("k") === "new");
+  check("orMap re-add appears in value", JSON.stringify(rr.value()) === JSON.stringify({ k: "new" }));
 }
 
 function testStateRoundTrip() {
