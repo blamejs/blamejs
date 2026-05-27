@@ -221,7 +221,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **PII redaction** — `b.redact`
 - **Decoy detection** — canary-credential / decoy-record framework auditing every positive lookup as `honeytoken.tripped` (`b.honeytoken`)
 - **Boot assertions** — operator-callable security policy assertions (`b.security.assertProduction`); tamper-evident config-baseline drift detection signed with audit-signing key + at-boot vendor-bundle SHA-256 integrity verification across `lib/vendor/*` (`b.configDrift`, `b.configDrift.verifyVendorIntegrity`)
-- **CSP reports + forensic export** — `b.middleware.cspReport`; post-incident audit-bundle composer (`b.auditTools.forensicSnapshot`)
+- **CSP reports + forensic export** — `b.middleware.cspReport`; post-incident audit-bundle composer (`b.auditTools.forensicSnapshot`); audit export / archive / forensic snapshot write to disk or return the encrypted bundle in memory (`returnBytes`) for read-only / serverless filesystems
 
 ### i18n + format helpers
 
