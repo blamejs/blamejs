@@ -51,12 +51,16 @@ function testIncidentReport() {
   var r15 = fp.incidentReport({ type: "loss-of-control-harm", discoveredAt: new Date("2026-06-01T00:00:00Z") });
   check("default deadline is 15 days (360h)", r15.deadlineHours === 360);
   check("15-day dueAt computed", r15.dueAt === "2026-06-16T00:00:00.000Z");
-  check("recipient is CA OES", r15.recipient.indexOf("Office of Emergency Services") !== -1);
+  check("routine report goes to CA OES", r15.recipient.indexOf("Office of Emergency Services") !== -1);
   check("type description carried", r15.typeDescription.indexOf("Loss of control") !== -1);
 
   var r24 = fp.incidentReport({ type: "weights-exfiltration-harm", discoveredAt: new Date("2026-06-01T00:00:00Z"), imminentRiskToLife: true });
   check("imminent-risk deadline is 24 hours", r24.deadlineHours === 24);
   check("24-hour dueAt computed", r24.dueAt === "2026-06-02T00:00:00.000Z");
+  // §22757.13: imminent risk routes to an applicable authority, not OES.
+  check("imminent-risk routes to an applicable authority, not OES", r24.recipient.indexOf("Office of Emergency Services") === -1 && r24.recipient.indexOf("applicable authority") !== -1);
+  // §22757.10(i): the weights category is death/bodily-injury only — no property.
+  check("weights-incident description excludes property", r24.typeDescription.toLowerCase().indexOf("property") === -1);
 }
 
 function testErrors() {
