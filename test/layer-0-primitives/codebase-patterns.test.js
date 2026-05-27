@@ -5862,6 +5862,41 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Codex P1 on v0.13.12 PR #234 — the MX listener's command pump was
+    // made async (gates do DNS / store lookups), and the plaintext
+    // socket.on("data") path was routed through a per-connection
+    // serialization chain (`_feedChunk`). But the post-STARTTLS TLSSocket
+    // fed `_ingestBytes` directly from a sync onData callback that ignored
+    // the returned promise — so on the upgraded socket (where the default
+    // strict/balanced profiles actually run the gates) async gate awaits
+    // could overlap later TLS chunks and gate rejections went unhandled
+    // instead of producing the 421 path. The invariant: the async command
+    // pump (`_ingestBytes`) is fed ONLY through `_feedChunk` (the
+    // `return _ingestBytes(...)` form), so every transport — plaintext and
+    // TLS — shares the one serialized chain. A bare `_ingestBytes(` call
+    // anywhere else is a second, un-serialized feed path. The lookbehind
+    // exempts the function definition (`function _ingestBytes`) and the
+    // single legitimate caller (`return _ingestBytes`); `_ingestBytes` is
+    // unique to lib/mail-server-mx.js so this is effectively file-scoped.
+    id: "mx-ingest-bytes-bypasses-feed-pump",
+    primitive: "feed the MX command pump only via _feedChunk (`return _ingestBytes(...)`); never call _ingestBytes directly from a sync callback — it drops the async pump's promise and breaks command serialization + the 421 error path",
+    regex: /(?<!function )(?<!return )\b_ingestBytes\s*\(/,
+    allowlist: [
+      // The submission listener has its OWN _ingestBytes, and it is
+      // SYNCHRONOUS — its only async work (SASL AUTH) is handled via
+      // internal .then() chains inside the command handler, and RFC 4954
+      // §4 forbids clients pipelining commands across AUTH until the
+      // response is received, so a sync pump is spec-acceptable there.
+      // There is no async-promise to drop, so the bare `_ingestBytes(`
+      // call is safe. This invariant guards the MX listener's async pump
+      // specifically; if the submission pump is ever made async, route it
+      // through a _feedChunk equivalent and drop this allowlist entry.
+      "lib/mail-server-submission.js",
+    ],
+    reason: "Codex P1 on PR #234: the async MX command pump must be fed through the single per-connection serialization chain (_feedChunk → `return _ingestBytes`). A bare `_ingestBytes(` call from a sync callback (the original post-STARTTLS onData) ignores the returned promise, letting async HELO/RBL/greylist gate awaits overlap later chunks and turning gate rejections into unhandled rejections instead of the 421 path. Route every transport (plaintext + TLS) through _feedChunk.",
+  },
+
+  {
     // Codex P1 on v0.12.6 PR #157 — `_anyValueToProto`'s negative-int
     // path emitted `pb.embeddedMessage(N, pb._writeVarint(v >>> 0))`
     // which (a) wraps a varint payload in wire-type 2 (length-delimited)
