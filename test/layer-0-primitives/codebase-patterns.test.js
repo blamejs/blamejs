@@ -566,7 +566,9 @@ function testNoStaleDefers() {
   function cmp(a, b) { for (var i = 0; i < 3; i += 1) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0); } return 0; }
   // Promised-landing phrasings only ("X lands in vN" / "deferred to vN" / "not
   // supported in vN"). NOT "deferred FROM vN" (that is an origin, not a deadline).
-  var PROMISE = /(?:deferred to|lands(?: in)?|will land(?: in)?|not supported in)\s+v?(\d+\.\d+\.\d+)/i;
+  // Accept 2-part (vN.N) AND 3-part (vN.N.N) promised-landing versions —
+  // a 2-part "v0.10" promise slipped past the old 3-part-only pattern.
+  var PROMISE = /(?:deferred to|lands(?: in)?|will land(?: in)?|not supported in)\s+v?(\d+\.\d+(?:\.\d+)?)/i;
   var matches = _scan(PROMISE, { skipComments: false });
   var overdue = [];
   matches.forEach(function (m) {
@@ -6469,9 +6471,10 @@ var KNOWN_ANTIPATTERNS = [
     reason: "CVE-2026-23552 — JWT iss comparisons against attacker-controlled payload values leak prefix-timing via `!==`. Every JWT verifier in the framework (oauth.verifyIdToken / jwt-external.verifyExternal / oauth.parseFrontchannelLogoutRequest / sd-jwt-vc.verify) routes through jwtExternal._issuerMatches for constant-time comparison. Detection is precise: `payload.iss !== ...` / `claims.iss !== ...` / `token.iss !== ...` is the JWT-verify-side shape. Non-JWT iss checks (e.g. discovery-document self-consistency where iss came from the same TLS-fetched body) are not in scope and don't match the regex.",
   },
   {
-    // CVE-2026-23993 — accepting unknown JOSE alg values via a
-    // `switch (alg) { default: ... }` permissive default-branch is
-    // the canonical shape. Verifiers MUST throw in the default
+    // Alg-allowlist gate (CWE-347 improper-sig-verification /
+    // CWE-757 algorithm-downgrade) — accepting unknown JOSE alg
+    // values via a `switch (alg) { default: ... }` permissive
+    // default-branch is the canonical shape. Verifiers MUST throw in the default
     // branch (no fall-through to a permissive "any signature"
     // path). The detector catches `switch (...alg)` (case-
     // insensitive) where the default branch returns/falls through
@@ -6487,7 +6490,7 @@ var KNOWN_ANTIPATTERNS = [
       // branch, so it doesn't match. Other auth files use
       // explicit if-cascades that throw, also not matched.
     ],
-    reason: "CVE-2026-23993 — JWT verifiers that accept unknown alg values via a permissive switch-default branch are the canonical bypass class. Every alg-dispatch primitive in the framework throws in the default branch (`throw new AuthError('.../unsupported-alg', ...)`) so an unrecognized alg can never reach a signature-verify call. The detector specifically flags `switch (alg)` (or `switch (header.alg)` / `switch (sigAlgo)`) whose default-branch returns / breaks rather than throwing. New alg-dispatch code throws in the default — no exceptions.",
+    reason: "Alg-allowlist gate (CWE-347 / CWE-757) — JWT verifiers that accept unknown alg values via a permissive switch-default branch are the canonical bypass class. Every alg-dispatch primitive in the framework throws in the default branch (`throw new AuthError('.../unsupported-alg', ...)`) so an unrecognized alg can never reach a signature-verify call. The detector specifically flags `switch (alg)` (or `switch (header.alg)` / `switch (sigAlgo)`) whose default-branch returns / breaks rather than throwing. New alg-dispatch code throws in the default — no exceptions.",
   },
   {
     id: "inline-codepoint-class-table",

@@ -272,9 +272,41 @@ async function testExtractEntriesInMemory() {
   check("tar extractEntries: binary matches", tcollected["sub/y.dat"].equals(Buffer.from([9, 8, 7])));
 }
 
+// opts.signal (AbortSignal) is documented on b.archive.read.zip — verify
+// it actually aborts the read at the entry boundary rather than being a
+// dead doc opt.
+async function testSignalAbort() {
+  var z = b.archive.zip();
+  z.addFile("a.txt", "one\n");
+  z.addFile("b.txt", "two\n");
+  var bytes = z.toBuffer();
+
+  var ac = new AbortController();
+  ac.abort();   // already aborted before any read
+  var reader = b.archive.read.zip(b.archive.adapters.buffer(bytes), { signal: ac.signal });
+
+  var inspectThrew = null;
+  try { await reader.inspect(); } catch (e) { inspectThrew = e; }
+  check("zip inspect honors an aborted signal",
+        inspectThrew && (inspectThrew.code || "").indexOf("archive-read/aborted") !== -1);
+
+  var extractThrew = null;
+  try { for await (var _e of reader.extractEntries()) { void _e; } }
+  catch (e) { extractThrew = e; }
+  check("zip extractEntries honors an aborted signal",
+        extractThrew && (extractThrew.code || "").indexOf("archive-read/aborted") !== -1);
+
+  // Sanity: with no signal the same reader works.
+  var ok = b.archive.read.zip(b.archive.adapters.buffer(bytes));
+  var n = 0;
+  for await (var e2 of ok.extractEntries()) { void e2; n += 1; }
+  check("zip extractEntries with no signal still yields entries", n === 2);
+}
+
 async function run() {
   await testRoundTripExtract();
   await testExtractEntriesInMemory();
+  await testSignalAbort();
   testSafeArchiveErrorClass();
   await testSafeArchiveInspect();
   await testZipBombPolicy();
