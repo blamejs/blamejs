@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.19",
-  "createdAt": "2026-05-27T20:32:29.864Z",
+  "frameworkVersion": "0.13.20",
+  "createdAt": "2026-05-27T22:14:09.342Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -991,6 +991,10 @@
             "create": {
               "type": "function",
               "arity": 1
+            },
+            "derivedKey": {
+              "type": "function",
+              "arity": 2
             },
             "guards": {
               "type": "object",
