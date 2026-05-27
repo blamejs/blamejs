@@ -125,7 +125,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
   - Rate-limit
   - Security headers with `Permissions-Policy` defaults denying storage-access / browsing-topics / private-aggregation / controlled-frame
   - CSP nonce
-  - Body parser
+  - Body parser — JSON / urlencoded / text / multipart; multipart file parts stream to a tmp dir or buffer in memory (`storage: "memory"`) for read-only / serverless filesystems
   - Compression
   - SSE
   - Request log

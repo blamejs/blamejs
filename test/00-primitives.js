@@ -6599,6 +6599,72 @@ async function testBodyParserMultipartFile() {
   }
 }
 
+async function testBodyParserMultipartMemoryStorage() {
+  // storage: "memory" — file parts buffered in RAM, exposed as
+  // req.files[].buffer with no filesystem touch (serverless / read-only fs).
+  var bp = b.middleware.bodyParser({ multipart: { storage: "memory" } });
+  var boundary = "----blamejs-test-boundary-mem";
+  var fileBytes = Buffer.from("hello in-memory file body");
+  var body = _buildMultipartBody(boundary, [
+    { name: "title",  value: "Mem File" },
+    { name: "upload", value: fileBytes, filename: "mem.txt", contentType: "text/plain" },
+  ]);
+  var req = _mockBodyReq("POST",
+    { "content-type": "multipart/form-data; boundary=" + boundary,
+      "content-length": String(body.length) }, body);
+  var res = _mockBodyRes();
+  await _runBodyParser(bp, req, res);
+  check("multipart memory: text field parsed",       req.body.title === "Mem File");
+  check("multipart memory: file captured",           req.files.length === 1);
+  check("multipart memory: buffer is a Buffer",      Buffer.isBuffer(req.files[0].buffer));
+  check("multipart memory: buffer content matches",  req.files[0].buffer.toString("utf8") === "hello in-memory file body");
+  check("multipart memory: path is null (no disk)",  req.files[0].path === null);
+  check("multipart memory: size matches",            req.files[0].size === fileBytes.length);
+  check("multipart memory: hash present",            typeof req.files[0].hash === "string" && req.files[0].hash.length === 128);
+  // res.finish cleanup is a no-op for memory files (no path) — must not throw.
+  var threwOnFinish = false;
+  try { res.emit("finish"); } catch (_e) { threwOnFinish = true; }
+  check("multipart memory: finish cleanup no-op (no throw)", !threwOnFinish);
+
+  // Per-file size cap still enforced in memory mode.
+  var bpCap = b.middleware.bodyParser({ multipart: { storage: "memory", fileSize: 8 } });
+  var capBody = _buildMultipartBody(boundary, [
+    { name: "upload", value: Buffer.from("way over the eight byte cap"),
+      filename: "big.txt", contentType: "text/plain" },
+  ]);
+  var capReq = _mockBodyReq("POST",
+    { "content-type": "multipart/form-data; boundary=" + boundary,
+      "content-length": String(capBody.length) }, capBody);
+  var capRes = _mockBodyRes();
+  await _runBodyParser(bpCap, capReq, capRes);
+  check("multipart memory: oversize file refused (413)", capRes.statusCode === 413);
+
+  // Bad storage value throws at construction (entry-point tier).
+  var threwBadStorage = false;
+  try { b.middleware.bodyParser({ multipart: { storage: "s3" } }); }
+  catch (e) { threwBadStorage = /storage must be/.test(e.message); }
+  check("multipart memory: invalid storage throws at config", threwBadStorage);
+
+  // Disk mode unchanged: still exposes .path, buffer null.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-mem-"));
+  try {
+    var bpDisk = b.middleware.bodyParser({ multipart: { storage: "disk", tmpDir: tmpDir } });
+    var dBody = _buildMultipartBody(boundary, [
+      { name: "upload", value: Buffer.from("on disk"), filename: "d.txt", contentType: "text/plain" },
+    ]);
+    var dReq = _mockBodyReq("POST",
+      { "content-type": "multipart/form-data; boundary=" + boundary,
+        "content-length": String(dBody.length) }, dBody);
+    var dRes = _mockBodyRes();
+    await _runBodyParser(bpDisk, dReq, dRes);
+    check("multipart memory: disk mode keeps .path",   typeof dReq.files[0].path === "string" && fs.existsSync(dReq.files[0].path));
+    check("multipart memory: disk mode buffer null",   dReq.files[0].buffer === null);
+    dRes.emit("finish");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 async function testBodyParserMultipartFilenameTraversal() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-bp-"));
   try {
@@ -17863,6 +17929,7 @@ async function run() {
   await testBodyParserKeepRawBody();
   await testBodyParserMultipartFields();
   await testBodyParserMultipartFile();
+  await testBodyParserMultipartMemoryStorage();
   await testBodyParserMultipartFilenameTraversal();
   await testBodyParserMultipartFileSizeLimit();
   await testBodyParserMultipartMimeAllowlist();
