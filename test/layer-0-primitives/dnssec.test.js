@@ -390,6 +390,61 @@ function testKeyTagCollision() {
   check("verifyChain: validates despite a colliding-tag key in the signed set", out.ok === true);
 }
 
+// Sign a DS RRset (type 43) with a parent EC key — mirrors
+// _signDnskeyRrset but for the DS record type.
+function _signDsRrset(zone, dsRdatas, parentPriv, parentSignerRdata, inc, exp) {
+  var owner = _canonName(zone), ttl = _u32b(3600);
+  var labels = zone.replace(/\.$/, "") === "" ? 0 : zone.replace(/\.$/, "").split(".").length;
+  var keyTag = b.network.dns.dnssec.keyTag(parentSignerRdata);
+  var sorted = dsRdatas.slice().sort(Buffer.compare);
+  var rrs = [];
+  sorted.forEach(function (rd) { rrs.push(owner, _u16b(43), _u16b(1), ttl, _u16b(rd.length), rd); });
+  var prefix = Buffer.concat([_u16b(43), Buffer.from([13, labels]), ttl, _u32b(exp), _u32b(inc), _u16b(keyTag), _canonName(zone)]);
+  var signed = Buffer.concat([prefix].concat(rrs));
+  var signature = nodeCrypto.sign("sha256", signed, { key: parentPriv, dsaEncoding: "ieee-p1363" });
+  return { algorithm: 13, labels: labels, originalTtl: 3600, expiration: exp, inception: inc, keyTag: keyTag, signerName: zone, signature: signature };
+}
+function _dsRdata(tag, alg, digest) {
+  return Buffer.concat([_u16b(tag), Buffer.from([alg, 2]), digest]);   // keyTag || alg || digestType=2(SHA-256) || digest
+}
+
+// The per-response signature-validation budget scales with chain depth, so
+// a legitimate deep delegation (here 11 links → ~21 verifies, well past the
+// old fixed 16) validates rather than hitting dnssec/validation-budget-
+// exceeded (the regression Codex flagged on PR #236).
+function testDeepChainBudget() {
+  var now = Math.floor(Date.now() / 1000), inc = now - 60, exp = now + 86400;
+  var N = 11;
+  var keys = [];
+  for (var i = 0; i < N; i++) {
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    keys.push({ rd: _ecDnskey(kp.publicKey), priv: kp.privateKey, zone: "z" + i + "." });
+  }
+  var links = [];
+  for (var j = 0; j < N; j++) {
+    var k = keys[j];
+    var link = {
+      zone:        k.zone,
+      dnskeys:     [k.rd],
+      dnskeyRrsig: _signDnskeyRrset(k.zone, [k.rd], k.priv, k.rd, inc, exp),
+    };
+    if (j > 0) {
+      // DS of THIS zone's key, signed by the PARENT (previous link's key).
+      var digest = nodeCrypto.createHash("sha256").update(Buffer.concat([_canonName(k.zone), k.rd])).digest();
+      var dsRd = _dsRdata(b.network.dns.dnssec.keyTag(k.rd), 13, digest);
+      link.dsRdatas = [dsRd];
+      link.dsRrsig  = _signDsRrset(k.zone, [dsRd], keys[j - 1].priv, keys[j - 1].rd, inc, exp);
+    }
+    links.push(link);
+  }
+  // Trust anchor = DS digest of the root (link 0) key.
+  var rootDigest = nodeCrypto.createHash("sha256").update(Buffer.concat([_canonName(keys[0].zone), keys[0].rd])).digest();
+  var anchor = [{ keyTag: b.network.dns.dnssec.keyTag(keys[0].rd), algorithm: 13, digestType: 2, digest: rootDigest }];
+  var out = b.network.dns.dnssec.verifyChain({ links: links, trustAnchors: anchor, at: new Date(now * 1000) });
+  check("deep chain (11 links, ~21 verifies) validates under the depth-scaled budget",
+    out.ok === true && out.path.length === N);
+}
+
 // KeyTrap (CVE-2023-50387) amplification caps. The caps fire on COUNT
 // checks before any signature verification, so a single real EC DNSKEY
 // rdata repeated to hit each threshold is enough.
@@ -434,6 +489,7 @@ async function run() {
   testVerifyDs();
   testVerifyChain();
   testKeyTrapCaps();
+  testDeepChainBudget();
   testNsec3Real();
   testNsec3Caps();
   testNsec3OptOut();
