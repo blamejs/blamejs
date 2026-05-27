@@ -1999,6 +1999,52 @@ function testTemplateBasicRender() {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
+function testTemplateRenderString() {
+  // Serverless / read-only-FS path: render from a source string with no
+  // viewsDir + no disk read. HTML escaping still applies.
+  var eng = b.template.create({});
+  check("renderString: no viewsDir engine created", eng.viewsDir === null);
+  var out = eng.renderString("<h1>{{ greeting }}, {{ name }}!</h1>", { greeting: "Hi", name: "Alice" });
+  check("renderString: substitutes + escapes",
+        out === "<h1>Hi, Alice!</h1>");
+  var hostile = eng.renderString("<p>{{ x }}</p>", { x: "<script>alert(1)</script>" });
+  check("renderString: user values escaped",
+        hostile.indexOf("<script>") === -1 && hostile.indexOf("&lt;script&gt;") !== -1);
+
+  // extends + partial resolved via opts.resolve (no disk).
+  var views = {
+    base:  "<html>{% block body %}default{% endblock %}</html>",
+    greet: "<p>hi {{ n }}</p>",
+  };
+  var composed = eng.renderString(
+    "{% extends \"base\" %}{% block body %}{{> greet}}{% endblock %}",
+    { n: "Bo" },
+    { resolve: function (name) { return views[name]; } });
+  check("renderString: extends + partial via opts.resolve",
+        composed === "<html><p>hi Bo</p></html>");
+
+  // extends with no resolver → clean throw (not a crash).
+  var threwExtends = null;
+  try { eng.renderString("{% extends \"base\" %}{% block body %}x{% endblock %}", {}); }
+  catch (e) { threwExtends = e; }
+  check("renderString: extends without opts.resolve refuses",
+        threwExtends && /extends/.test(threwExtends.message));
+
+  // A missing partial inlines empty (same as the file path).
+  check("renderString: missing partial inlines empty",
+        eng.renderString("a{{> nope}}b", {}, { resolve: function () { return undefined; } }) === "ab");
+
+  // compileString returns a reusable AST.
+  var ast = eng.compileString("<b>{{ v }}</b>");
+  check("compileString: returns an AST", ast && ast.type === "Template");
+
+  // The file-backed methods refuse on a no-viewsDir engine.
+  var threwFile = null;
+  try { eng.render("anything", {}); } catch (e) { threwFile = e; }
+  check("render() without viewsDir refuses",
+        threwFile && /viewsDir not configured/.test(threwFile.message));
+}
+
 function testTemplateRawExpression() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tpl-"));
   try {
@@ -2232,10 +2278,15 @@ function testTemplateMissingViewsDir() {
   catch (e) { threw = e; }
   check("create() rejects missing viewsDir",   threw && /viewsDir does not exist/.test(threw.message));
 
+  // viewsDir is now optional — create({}) returns a string-only engine
+  // (serverless path); the file-backed render() refuses instead.
   threw = null;
-  try { b.template.create({}); }
-  catch (e) { threw = e; }
-  check("create() requires viewsDir",          threw && /viewsDir.*required/.test(threw.message));
+  var eng = null;
+  try { eng = b.template.create({}); } catch (e) { threw = e; }
+  check("create() without viewsDir succeeds (string-only engine)", threw === null && eng !== null);
+  threw = null;
+  try { eng.render("x", {}); } catch (e) { threw = e; }
+  check("render() without viewsDir refuses",   threw && /viewsDir not configured/.test(threw.message));
 }
 
 function testTemplateSurface() {
@@ -17597,6 +17648,7 @@ async function run() {
   testTemplateSurface();
   testTemplateEscapeHtml();
   testTemplateBasicRender();
+  testTemplateRenderString();
   testTemplateRawExpression();
   testTemplateIfElse();
   testTemplateForLoop();
