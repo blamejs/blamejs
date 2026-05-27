@@ -382,6 +382,50 @@ async function testConnectionGates() {
   } finally { await pipeSrv.close({ timeoutMs: 1000 }); }                             // allow:raw-time-literal — test-only short drain
 }
 
+// Gates must run + serialize on the POST-STARTTLS path too — the default
+// strict/balanced profiles require STARTTLS before MAIL, so that's where
+// the gates actually fire. Mint a CA so the client can trust the upgraded
+// connection (no rejectUnauthorized bypass), do a real STARTTLS handshake,
+// and assert the greylist gate produces 450 over TLS.
+async function testGateOverStartTls() {
+  var ca, leaf;
+  try {
+    ca = await b.mtlsEngine.generateCa({ name: "mx-starttls-test-ca" });
+    leaf = await b.mtlsEngine.signClientCert({
+      cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+      usage: "server", sans: ["DNS:localhost", "IP:127.0.0.1"], validityDays: 1,
+    });
+  } catch (_e) {
+    check("gate over STARTTLS (skipped — cert fixture unavailable)", true);
+    return;
+  }
+  var ctx = nodeTls.createSecureContext({ key: leaf.key, cert: leaf.cert });
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "strict", localDomains: ["example.com"],
+    greylist: { check: async function () { return { action: "defer", reason: "first-seen" }; } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var plain, tlsSock;
+  try {
+    plain = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { plain.once("connect", r); });
+    await _readGreeting(plain);
+    await _sendCommand(plain, "EHLO sender.example.com");
+    var stReply = await _sendCommand(plain, "STARTTLS");
+    check("STARTTLS → 220 ready", /^220 /.test(stReply));
+    tlsSock = nodeTls.connect({ socket: plain, ca: [ca.caCertPem], servername: "localhost" });
+    await new Promise(function (r, j) {
+      tlsSock.once("secureConnect", r); tlsSock.once("error", j);
+    });
+    await _sendCommand(tlsSock, "EHLO sender.example.com");   // re-issue per RFC 3207 §4.2
+    await _sendCommand(tlsSock, "MAIL FROM:<s@external.com>");
+    var rcpt = await _sendCommand(tlsSock, "RCPT TO:<alice@example.com>");
+    check("greylist gate runs on the post-STARTTLS serialized pump → 450",
+      /^450 4\.7\.1/.test(rcpt));
+    tlsSock.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
 async function run() {
   testSurface();
   testCreateRequiresTlsContext();
@@ -393,6 +437,7 @@ async function run() {
   await testRelayRefused();
   await testStrictProfileRequiresStartTls();
   await testConnectionGates();
+  await testGateOverStartTls();
 }
 
 module.exports = { run: run };
