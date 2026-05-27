@@ -541,23 +541,19 @@ var STALE_DEFER_ALLOWLIST = {
   // operator-feeds-metadata escape hatch. Defer-with-condition.
   "lib/ai-content-detect.js": ["IPTC PhotoMetadata reader lands in v0.10.9"],
   // GAP BACKLOG (being worked down — these are real overdue items):
-  //   archive-read ZIP64 read + fromTrustedStream (promised v0.12.8) — building.
+  //   archive-read ZIP64 read (promised v0.12.8) — building. (The
+  //   fromTrustedStream defer was reworded to a version-free "not
+  //   implemented / re-opens when needed" in v0.13.15, so it no longer
+  //   needs an allowlist entry.)
   "lib/archive-read.js": [
     "not supported in v0.12.7. Will land",
     "switch to tar — lands v0.12.8",
     "carries ZIP64 sentinel sizes (not supported in v0.12.7)",
-    "deferred to v0.12.8 alongside the tar reader",
-    "fromTrustedStream.inspect() is deferred to v0.12.8",
-    "fromTrustedStream.entries() is deferred to v0.12.8",
-    "fromTrustedStream.extract() is deferred to v0.12.8",
   ],
   "lib/safe-archive.js": [
     "tar lands v0.12.8, gz v0.12.9",
     "fromTrustedStream` is deferred to v0.12.8",
   ],
-  // STALE comments (feature shipped; phrased as future) — correcting to past
-  // tense as the backlog is worked; allowlisted until then.
-  "lib/break-glass.js": ["passkey lands in v0.5.2"],
 };
 
 function testNoStaleDefers() {
