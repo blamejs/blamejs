@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.3",
-  "createdAt": "2026-05-26T23:29:35.863Z",
+  "frameworkVersion": "0.13.4",
+  "createdAt": "2026-05-27T00:29:21.229Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13696,6 +13696,43 @@
               "arity": 1
             }
           }
+        }
+      }
+    },
+    "crdt": {
+      "type": "object",
+      "members": {
+        "CrdtError": {
+          "type": "function",
+          "arity": 4
+        },
+        "gCounter": {
+          "type": "function",
+          "arity": 1
+        },
+        "gSet": {
+          "type": "function",
+          "arity": 1
+        },
+        "lwwRegister": {
+          "type": "function",
+          "arity": 1
+        },
+        "orMap": {
+          "type": "function",
+          "arity": 1
+        },
+        "orSet": {
+          "type": "function",
+          "arity": 1
+        },
+        "pnCounter": {
+          "type": "function",
+          "arity": 1
+        },
+        "twoPSet": {
+          "type": "function",
+          "arity": 1
         }
       }
     },

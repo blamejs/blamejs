@@ -232,6 +232,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 ### Production
 
 - **Cluster + scheduling** — cluster leader election with fenced leases over Postgres/SQLite (`b.cluster`); cron + interval scheduler that runs exactly-once globally (`b.scheduler`)
+- **CRDTs** — state-based conflict-free replicated data types (`b.crdt`): grow-only / PN counters, grow-only / two-phase / observed-remove sets, a last-write-wins register, and an observed-remove map; each `merge` is commutative / associative / idempotent so replicas converge with no coordination — the substrate for active/active and offline-first state, with `state()` / `fromState()` for snapshot via `b.archive` / `b.backup`
 - **Reliability** — retry with full-jitter backoff + circuit breaker (`b.retry`); graceful shutdown (`b.appShutdown`); NTP boot check (`b.ntpCheck`)
 - **Transactional integration** — outbox + dedupe-on-receive inbox; exactly-once semantics across Postgres / SQLite (`b.outbox`, `b.inbox`); Debezium-shape change-event envelope on the outbox (`b.outbox.create({ envelope: "debezium" })`)
 - **Backup + restore** — end-to-end-encrypted bundles with pre-flush fail-closed mode + ML-DSA-87 signed manifests + scheduled backup-restore drills (`b.backup`, `b.backup.scheduleTest`, `b.backupBundle.verifyManifestSignature`); restore with pulled-bundle footprint preflight (`b.restore`); disaster-recovery runbook generator (HIPAA / PCI-DSS / GDPR / SOC 2 / DORA postures) (`b.drRunbook`)
