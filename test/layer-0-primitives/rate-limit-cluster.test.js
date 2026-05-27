@@ -25,16 +25,18 @@ var teardownTestDb = helpers.teardownTestDb;
 var _mockReq       = helpers._mockReq;
 var _mockRes       = helpers._mockRes;
 
-function _waitMicrotasks(n) {
-  // Default to 20 ticks (was 5). CI runners under SMOKE_PARALLEL=64
-  // contention need many more setImmediate ticks before the rate-limit
-  // middleware's async take() against the cluster-backend DB has
-  // finished bumping the counter — without enough ticks the next
-  // fire() reads a stale count and the 4th-request-blocked assertion
-  // misfires.
-  var p = Promise.resolve();
-  for (var i = 0; i < (n || 20); i++) p = p.then(function () { return new Promise(function (r) { setImmediate(r); }); });
-  return p;
+// Poll until the rate-limit middleware has resolved a request — either
+// next() ran (the okGetter flips true) or a response was captured (a
+// status was set on the mock res). Replaces a fixed setImmediate-tick
+// drain that flaked under SMOKE_PARALLEL=64 contention: the async take()
+// against the cluster-backend DB sometimes hadn't bumped the counter
+// within the tick budget, so the next fire() read a stale count and the
+// "4th-request-blocked" assertion misfired (§11b — poll the observable
+// condition, never guess a tick/time budget).
+function _settle(res, okGetter) {
+  return helpers.waitUntil(function () {
+    return okGetter() || res._captured().status !== undefined;
+  }, { timeoutMs: 5000, label: "rate-limit-cluster: request settled (next ran or status captured)" });
 }
 
 async function testClusterBackendBasicLimit() {
@@ -53,7 +55,7 @@ async function testClusterBackendBasicLimit() {
       var res = _mockRes();
       var nextCalled = false;
       mw(req, res, function () { nextCalled = true; });
-      await _waitMicrotasks(20);
+      await _settle(res, function () { return nextCalled; });
       return { passed: nextCalled, status: res._captured().status };
     }
 
@@ -92,7 +94,7 @@ async function testClusterBackendIndependentKeys() {
       var res = _mockRes();
       var ok = false;
       mw(req, res, function () { ok = true; });
-      await _waitMicrotasks(20);
+      await _settle(res, function () { return ok; });
       return ok;
     }
 
@@ -128,7 +130,7 @@ async function testClusterBackendWindowRollover() {
       var res = _mockRes();
       var ok = false;
       mw(req, res, function () { ok = true; });
-      await _waitMicrotasks(20);
+      await _settle(res, function () { return ok; });
       return ok;
     }
 
@@ -170,7 +172,7 @@ async function testClusterBackendAuditEmit() {
       var res = _mockRes();
       var ok = false;
       mw(req, res, function () { ok = true; });
-      await _waitMicrotasks(20);
+      await _settle(res, function () { return ok; });
       return ok;
     }
     await fire();   // pass
@@ -208,7 +210,7 @@ async function testCustomBackendObject() {
     var res = _mockRes();
     var ok = false;
     mw(req, res, function () { ok = true; });
-    await _waitMicrotasks(20);
+    await _settle(res, function () { return ok; });
     return ok;
   }
   check("custom backend: 1st passes",           await fire());
@@ -239,7 +241,7 @@ async function testFailOpenOnBackendError() {
   var res = _mockRes();
   var ok = false;
   mw(req, res, function () { ok = true; });
-  await _waitMicrotasks(20);
+  await _settle(res, function () { return ok; });
   check("backend error → middleware fails open",  ok === true);
 }
 
@@ -259,7 +261,7 @@ async function testMemoryFixedWindowBasicLimit() {
     var res = _mockRes();
     var ok = false;
     mw(req, res, function () { ok = true; });
-    await _waitMicrotasks(20);
+    await _settle(res, function () { return ok; });
     return { passed: ok, status: res._captured().status };
   }
 
@@ -286,7 +288,7 @@ async function testMemoryFixedWindowIndependentKeys() {
     var res = _mockRes();
     var ok = false;
     mw(req, res, function () { ok = true; });
-    await _waitMicrotasks(20);
+    await _settle(res, function () { return ok; });
     return ok;
   }
 
