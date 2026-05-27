@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.5",
-  "createdAt": "2026-05-27T01:38:32.776Z",
+  "frameworkVersion": "0.13.6",
+  "createdAt": "2026-05-27T02:34:13.690Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -1576,6 +1576,10 @@
               "arity": 1
             }
           }
+        },
+        "frontierModelProtocol": {
+          "type": "function",
+          "arity": 1
         },
         "input": {
           "type": "object",
