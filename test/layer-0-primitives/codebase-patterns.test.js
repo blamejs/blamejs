@@ -2390,6 +2390,16 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/cose.js:importKey",
+        "lib/cose.js:exportKey",
+        "lib/did.js:_jwkToKey",
+        "lib/network-dnssec.js:_jwkKey",
+      ],
+      reason: "v0.13.20 — EC/OKP JWK-coordinate handling (`kty` + `crv` switch over P-256/P-384/P-521 + Ed25519, base64url x/y, `createPublicKey({ format: 'jwk' })`) is coincidentally similar across three unrelated wire formats: cose.importKey/exportKey map a COSE_Key (RFC 9052 §7 — INTEGER crv ids -1/-2/-3 and labels) to/from a KeyObject; did._jwkToKey resolves a W3C DID verification method's JWK; network-dnssec._jwkKey reconstructs a DNSKEY's public key. The curve identifiers, the surrounding map shape, and the direction (import builds a key from a map, export emits a map from a key) all differ per spec — extracting a shared helper would couple three independent standards on a syntactic accident. The shingle is the JWK-coordinate idiom, not behaviour; same documented exception as the v0.12.40 signature-verify-preamble cluster.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/dual-control.js:create",
         "lib/mdoc.js:verifyIssuerSigned",
         "lib/tsa.js:verifyToken",
