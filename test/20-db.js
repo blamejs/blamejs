@@ -427,11 +427,41 @@ async function testCrossSchemaAttach() {
   }
 }
 
+async function testUnsealRowNullsForgedValue() {
+  // Security regression (CRYPTO-1): an unseal failure — a DB-write
+  // attacker's forged `vault:<…>` payload, or a valid ciphertext copied
+  // to a different row (AAD mismatch) — must NULL the column so
+  // downstream sees "no value", not the attacker-crafted string. A prior
+  // `unsealed ? unsealed : out[field]` write-back silently kept the
+  // forged value on failure, defeating the documented defense.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cf-forged-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.cryptoField.registerTable("cf_forged_regress", {
+      sealedFields: ["secret"], aad: true, rowIdField: "id",
+    });
+    var sealed = b.cryptoField.sealRow("cf_forged_regress", { id: "r1", secret: "hello" });
+    check("cryptoField valid round-trip",
+      b.cryptoField.unsealRow("cf_forged_regress", sealed).secret === "hello");
+    var forged = b.cryptoField.unsealRow("cf_forged_regress",
+      { id: "r1", secret: "vault.aad:Zm9yZ2VkLWdhcmJhZ2U=" });
+    check("forged sealed value nulls the field (not kept)", forged.secret === null);
+    var crossRow = b.cryptoField.unsealRow("cf_forged_regress",
+      { id: "DIFFERENT-ROW", secret: sealed.secret });
+    check("cross-row-copied ciphertext nulls the field (AAD mismatch)", crossRow.secret === null);
+    var plain = b.cryptoField.unsealRow("cf_forged_regress", { id: "r2", secret: "not-sealed" });
+    check("non-sealed pass-through value is kept", plain.secret === "not-sealed");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- run() ----
 
 async function run() {
   // db basic
   await testDbBasic();
+  await testUnsealRowNullsForgedValue();
   await testDbWriteOps();
   await testDbSealedWithoutDerived();
   await testDbTransactions();
