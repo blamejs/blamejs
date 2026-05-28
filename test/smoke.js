@@ -472,6 +472,31 @@ function _checkChangelogInSync() {
   await _runLayer(5, path.join(__dirname, "50-integration.js"), "Layer 5");
 
   console.log("OK — " + helpers.getChecks() + " checks passed (" + (Date.now() - smokeStart) + "ms total)");
+
+  // Deterministic exit on success. The .catch() below exits 1 on
+  // failure; the success path historically fell through and relied on
+  // the event loop draining on its own. A lingering handle (a forked-
+  // child stdio pipe, a Layer-5 integration server whose socket did not
+  // fully close, an unref-missed timer) then keeps the process alive
+  // after the suite finished, burning the CI job's timeout budget until
+  // the runner cancels it — observed on the slow macos-latest runner
+  // (OK printed, ~3.5 min idle, job-timeout cancel). Reap it here: if
+  // anything still holds the loop open, name the handle kinds so a real
+  // resource leak surfaces in the log rather than being silently masked,
+  // then exit 0.
+  var _stdio = [process.stdout, process.stderr, process.stdin];
+  var _lingering = (typeof process._getActiveHandles === "function"
+    ? process._getActiveHandles() : []).filter(function (h) { return _stdio.indexOf(h) === -1; });
+  if (_lingering.length > 0) {
+    var _kinds = {};
+    _lingering.forEach(function (h) {
+      var name = (h && h.constructor && h.constructor.name) || typeof h;
+      _kinds[name] = (_kinds[name] || 0) + 1;
+    });
+    console.error("smoke: " + _lingering.length + " handle(s) still open after pass — forcing exit. kinds: " +
+      Object.keys(_kinds).map(function (k) { return k + "x" + _kinds[k]; }).join(", "));
+  }
+  process.exit(0);
 })().catch(function (err) {
   console.error("SMOKE TEST FAILED:", err.message);
   console.error(err.stack);
