@@ -172,7 +172,7 @@ jobs:
           sudo install -m 0755 /tmp/actionlint-bin/actionlint /usr/local/bin/actionlint
           actionlint --version
 
-      - name: Run actionlint (+ shellcheck on every run: block)
+      - name: Run actionlint (+ shellcheck on every run block)
         # shellcheck ships preinstalled on ubuntu-latest; actionlint invokes
         # it automatically on each `run:` block. Non-zero exit on any finding
         # keeps this a hard gate (the raven composite's fail_on_error: true).
