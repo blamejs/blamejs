@@ -114,7 +114,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install uv (zizmor distribution)
-        uses: astral-sh/setup-uv@69d3e2780fa0ea7da961bfbb898be32a9b1d10b1  # v7.0.0
+        uses: astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c  # v7.0.0
 
       - name: Run zizmor (fail on level=low across every rule class)
         # `--min-severity low` flags every documented class. Suppression
