@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.24",
-  "createdAt": "2026-05-28T08:46:52.303Z",
+  "frameworkVersion": "0.13.25",
+  "createdAt": "2026-05-28T12:04:05.310Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49735,6 +49735,10 @@
         "init": {
           "type": "function",
           "arity": 1
+        },
+        "isInitialized": {
+          "type": "function",
+          "arity": 0
         },
         "seal": {
           "type": "function",

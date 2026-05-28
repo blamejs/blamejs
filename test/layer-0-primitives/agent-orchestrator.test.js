@@ -361,6 +361,42 @@ async function testShardForSaltedFnv() {
     Object.keys(spread).length >= 4);
 }
 
+async function testRegistryRowSealedAtRest() {
+  // Registry rows seal tenantId + endpoint metadata at rest via
+  // b.cryptoField when a vault is configured. Scope a vault around this
+  // one test (the other tests intentionally run vault-less to exercise
+  // the salted-FNV fallback), capture what lands in the backend, and
+  // assert the sensitive fields are not stored in the clear — then
+  // confirm the tenantId filter still resolves through unseal.
+  var os   = require("node:os");
+  var path = require("node:path");
+  var fs   = require("node:fs");
+  var dir  = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-orch-seal-"));
+  await helpers.setupVaultOnly(dir);
+  try {
+    var captured = null;
+    var backend = {
+      _m: Object.create(null),
+      async get(n) { return this._m[n] || null; },
+      async set(n, row) { this._m[n] = row; if (n === "svc-seal") captured = row; },
+      async delete(n) { delete this._m[n]; },
+      async list() { return Object.values(this._m); },
+    };
+    var orch = b.agent.orchestrator.create({ backend: backend });
+    await orch.register("svc-seal", { kind: "mail", handle: function () {} },
+      { agentKind: "mail", tenantId: "acme-corp", metadata: { endpoint: "https://internal-host:9000" } });
+    check("orch at-rest: tenantId sealed (no plaintext leak)",
+      typeof captured.tenantId === "string" && captured.tenantId.indexOf("acme-corp") === -1);
+    check("orch at-rest: metadata sealed (no endpoint leak)",
+      typeof captured.metadata === "string" && captured.metadata.indexOf("internal-host") === -1);
+    var listed = await orch.list({ tenantId: "acme-corp" });
+    check("orch at-rest: tenantId filter resolves through unseal",
+      listed.length === 1 && listed[0].name === "svc-seal" && listed[0].tenantId === "acme-corp");
+  } finally {
+    helpers.teardownVaultOnly(dir);
+  }
+}
+
 async function run() {
   testSurface();
   await testRegisterLookupUnregister();
@@ -381,6 +417,7 @@ async function run() {
   await testHealth();
   await testStreamRegistry();
   await testPermissions();
+  await testRegistryRowSealedAtRest();
 }
 
 module.exports = { run: run };
