@@ -295,7 +295,9 @@ jobs:
     # repo specifically so the SLSA tag-pin call is permitted. The
     # `slsa-action-not-pinned` codebase-patterns detector allowlists
     # this specific callsite (see test/layer-0-primitives/codebase-patterns.test.js).
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0  # allow:slsa-framework-action-not-sha-pinned — SLSA's internal builder-fetch refuses non-tag refs; mitigated by slsa-framework's upstream tag-protection + immutable-release rules
+    # SLSA's reusable builder workflow refuses non-tag refs (cannot be
+    # SHA-pinned); upstream tag-protection + immutable releases mitigate.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0  # zizmor: ignore[unpinned-uses] allow:slsa-framework-action-not-sha-pinned — SLSA's internal builder-fetch refuses non-tag refs; mitigated by slsa-framework's upstream tag-protection + immutable-release rules
     with:
       base64-subjects:    "${{ needs.validate.outputs.hashes }}"
       upload-assets:      false
