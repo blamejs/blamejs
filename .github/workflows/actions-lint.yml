@@ -114,7 +114,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install uv (zizmor distribution)
-        uses: astral-sh/setup-uv@69d3e2780fa0ea7da961bfbb898be32a9b1d10b1  # v7.0.0
+        uses: astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c  # v7.0.0
 
       - name: Run zizmor (fail on level=low across every rule class)
         # `--min-severity low` flags every documented class. Suppression
@@ -141,8 +141,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Run actionlint
-        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8  # v2.1.2
-        with:
-          fail_on_error: true
-          shellcheck: true
+      - name: Install actionlint (release binary + sha256 verify)
+        # Direct release-binary install instead of the
+        # raven-actions/actionlint composite action. That composite (v2.1.2,
+        # the latest release) startup_failures on the current runner, taking
+        # the whole workflow down before any job runs — which is why this
+        # gate never ran from v0.11.21 onward. The binary path also drops the
+        # composite's transitive github-script / cache action surface, which
+        # fits the gate whose entire purpose is pinning discipline. Mirrors
+        # the pinact install step above.
+        env:
+          ACTIONLINT_VERSION: v1.7.12
+        run: |
+          set -euo pipefail
+          V="${ACTIONLINT_VERSION#v}"
+          curl -fsSLo /tmp/actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/${ACTIONLINT_VERSION}/actionlint_${V}_linux_amd64.tar.gz"
+          curl -fsSLo /tmp/actionlint-checksums.txt "https://github.com/rhysd/actionlint/releases/download/${ACTIONLINT_VERSION}/actionlint_${V}_checksums.txt"
+          ACTUAL=$(sha256sum /tmp/actionlint.tar.gz | awk '{print $1}')
+          EXPECTED=$(grep "actionlint_${V}_linux_amd64.tar.gz\$" /tmp/actionlint-checksums.txt | awk '{print $1}')
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::could not find actionlint_${V}_linux_amd64.tar.gz line in upstream checksums"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::actionlint tarball sha256 ${ACTUAL} does not match upstream-published ${EXPECTED}"
+            exit 1
+          fi
+          mkdir -p /tmp/actionlint-bin
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp/actionlint-bin actionlint
+          sudo install -m 0755 /tmp/actionlint-bin/actionlint /usr/local/bin/actionlint
+          actionlint --version
+
+      - name: Run actionlint (+ shellcheck on every run: block)
+        # shellcheck ships preinstalled on ubuntu-latest; actionlint invokes
+        # it automatically on each `run:` block. Non-zero exit on any finding
+        # keeps this a hard gate (the raven composite's fail_on_error: true).
+        run: |
+          set -euo pipefail
+          actionlint -color
