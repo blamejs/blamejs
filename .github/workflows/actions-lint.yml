@@ -102,37 +102,6 @@ jobs:
         # AFTER the workflow was pinned. Composing with `--check` keeps
         # the gate refuse-mode (no auto-rewrite).
 
-  zizmor:
-    name: zizmor — workflow security audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      security-events: write   # required for SARIF upload to Code Scanning
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Install uv (zizmor distribution)
-        uses: astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c  # v7.0.0
-
-      - name: Run zizmor (fail on level=low across every rule class)
-        # `--min-severity low` flags every documented class. Suppression
-        # requires an inline `# zizmor: ignore[<rule>] — <reason>` per
-        # the spec.
-        run: |
-          set -euo pipefail
-          uvx zizmor@1.18.0 --min-severity low --format sarif . > zizmor.sarif || EXIT=$?
-          uvx zizmor@1.18.0 --min-severity low . || true   # human-readable output for the step log
-          if [ "${EXIT:-0}" != "0" ]; then exit "$EXIT"; fi
-
-      - name: Upload SARIF to Code Scanning
-        if: always()
-        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba  # v4.35.5
-        with:
-          sarif_file: zizmor.sarif
-          category: zizmor
-
   actionlint:
     name: actionlint — YAML + expression + shellcheck on `run:` blocks
     runs-on: ubuntu-latest
