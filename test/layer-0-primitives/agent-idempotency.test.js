@@ -235,8 +235,45 @@ async function testReplayCountAtomic() {
     (r1.replayCount === 2 && r2.replayCount === 1));
 }
 
+async function testAtRestSealingWithVault() {
+  // The cached result is sealed at rest via b.cryptoField when a vault
+  // is configured. Init a vault, capture what actually lands in the
+  // backend, and assert the sensitive payload is not stored in the
+  // clear — then confirm it round-trips. Reset the vault afterwards so
+  // the remaining (vault-less) tests run in their expected mode.
+  var os   = require("node:os");
+  var path = require("node:path");
+  var fs   = require("node:fs");
+  var dir  = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-idem-seal-"));
+  check("vault.isInitialized() is false before init", b.vault.isInitialized() === false);
+  await b.vault.init({ mode: "plaintext", dataDir: dir });
+  try {
+    check("vault.isInitialized() is true after init", b.vault.isInitialized() === true);
+    var SECRET = "patient-PII-9007199254740993";
+    var captured = null;
+    var backend = {
+      _m: Object.create(null),
+      async get(m, a, h) { return this._m[m + a + h] || null; },
+      async put(m, a, h, row) { this._m[m + a + h] = row; captured = row; },
+      async delete(m, a, h) { delete this._m[m + a + h]; },
+    };
+    var idem = b.agent.idempotency.create({ store: backend });
+    await idem.put("move", "u-seal", "jmap-seal-1", { payload: SECRET });
+    check("at-rest: result blob is sealed (no plaintext leak)",
+      typeof captured.resultBlob === "string" && captured.resultBlob.indexOf(SECRET) === -1);
+    check("at-rest: sealed blob carries a vault prefix",
+      /^vault(\.aad)?:/.test(String(captured.resultBlob)));
+    var hit = await idem.get("move", "u-seal", "jmap-seal-1");
+    check("at-rest: sealed result round-trips to plaintext",
+      hit && hit.result && hit.result.payload === SECRET);
+  } finally {
+    b.vault._resetForTest();
+  }
+}
+
 async function run() {
   testSurface();
+  await testAtRestSealingWithVault();
   await testBasicGetPut();
   await testCrossActorIsolation();
   await testCrossMethodIsolation();
