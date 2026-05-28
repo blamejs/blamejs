@@ -14,4 +14,9 @@
 version: 3
 
 ignore_actions:
+  # pinact v3 treats both `name` and `ref` as regular expressions, and
+  # both are required (a name-only entry fails config load with
+  # "initialize ignore_action: ref is required"). `ref: .*` matches the
+  # tag-pinned ref this single exception carries (currently v2.1.0).
   - name: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml
+    ref: .*
