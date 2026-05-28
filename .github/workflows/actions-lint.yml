@@ -114,21 +114,37 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install uv (zizmor distribution)
-        uses: astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c  # v7.0.0
+      - name: Install zizmor (release binary + sha256 verify)
+        # Direct release-binary install instead of astral-sh/setup-uv + uvx.
+        # setup-uv (a third-party action) startup_failures the whole
+        # workflow on the current runner — the same class of failure as the
+        # raven-actions/actionlint composite that took down the actionlint
+        # job (no jobs, no logs). A run: step cannot startup_failure.
+        # zizmor publishes no checksums file, so the expected sha256 is
+        # pinned inline; a mismatch fails closed.
+        env:
+          ZIZMOR_VERSION: v1.18.0
+          ZIZMOR_SHA256:  8e7901319ab7b71c38d6d388a48e02ff65791e5971b2ee6577c9b5c3ab44c65f
+        run: |
+          set -euo pipefail
+          curl -fsSLo /tmp/zizmor.tar.gz "https://github.com/zizmorcore/zizmor/releases/download/${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          ACTUAL=$(sha256sum /tmp/zizmor.tar.gz | awk '{print $1}')
+          if [ "$ACTUAL" != "$ZIZMOR_SHA256" ]; then
+            echo "::error::zizmor tarball sha256 ${ACTUAL} does not match pinned ${ZIZMOR_SHA256}"
+            exit 1
+          fi
+          mkdir -p /tmp/zizmor-bin
+          tar -xzf /tmp/zizmor.tar.gz -C /tmp/zizmor-bin ./zizmor
+          sudo install -m 0755 /tmp/zizmor-bin/zizmor /usr/local/bin/zizmor
+          zizmor --version
 
       - name: Run zizmor (fail on level=low across every rule class)
         # Pure run-gate: zizmor exits non-zero on any finding, failing the
-        # job. The prior version uploaded SARIF to Code Scanning, which
-        # required `permissions: security-events: write` + a
-        # github/codeql-action/upload-sarif step — that combination
-        # startup_failured the entire workflow on the current runner (no
-        # jobs, no logs). The run-gate enforces the same findings without
-        # the upload surface. Inline `# zizmor: ignore[<rule>] — <reason>`
-        # is the suppression mechanism for reviewed exceptions.
+        # job. Inline `# zizmor: ignore[<rule>] — <reason>` is the
+        # suppression mechanism for reviewed exceptions.
         run: |
           set -euo pipefail
-          uvx zizmor@1.18.0 --min-severity low --no-progress .github/workflows/
+          zizmor --min-severity low --no-progress .github/workflows/
 
   actionlint:
     name: actionlint — YAML + expression + shellcheck on `run:` blocks
