@@ -77,6 +77,19 @@ jobs:
           #    pass that test. The strict first-parent invariant is
           #    what the project's squash-merge policy actually
           #    produces; check it directly.
+          echo "::group::diagnostics — origin/main state in CI"
+          echo "remote.origin: $(git remote get-url origin 2>&1 || true)"
+          echo "remote.origin.fetch:"
+          git config --get-all remote.origin.fetch 2>&1 || true
+          echo "origin/main rev-parse: $(git rev-parse origin/main 2>&1 || true)"
+          echo "origin/main log -1:"
+          git log -1 --pretty='%h %s' origin/main 2>&1 || true
+          echo "first 5 of git rev-list --first-parent origin/main:"
+          git rev-list --first-parent origin/main 2>&1 | head -5 || true
+          echo "SHA we are looking for: $SHA"
+          echo "grep result (exit code shown after):"
+          git rev-list --first-parent origin/main 2>/dev/null | grep -x "$SHA" || echo "(no match; grep exit $?)"
+          echo "::endgroup::"
           if ! git rev-list --first-parent origin/main | grep -qx "$SHA"; then
             echo "::error::tag $TAG points at $SHA which is NOT on main's first-parent history"
             echo "::error::this means the tag was created from a side-branch commit that never merged via the project's squash-merge flow"
