@@ -102,11 +102,14 @@ jobs:
 
       - name: Compute version + is_tag flag
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           PKG_VERSION=$(node -e "console.log(require('./package.json').version)")
           echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [ "$EVENT_NAME" = "push" ] && [[ "$REF" == refs/tags/v* ]]; then
             TAG_VERSION="${GITHUB_REF#refs/tags/v}"
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
             if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
@@ -229,7 +232,7 @@ jobs:
         id: subjects
         run: |
           set -euo pipefail
-          TARBALL=$(basename "$(ls dist/*.tgz | head -1)")
+          TARBALL=$(basename "$(find dist -maxdepth 1 -name '*.tgz' | head -1)")
           HASHES=$(
             (cd dist && sha256sum "$TARBALL") && \
             sha256sum sbom.cdx.json sbom.vendored.cdx.json
@@ -424,7 +427,7 @@ jobs:
         # Both written in `<sha>  <filename>` sha-sum-compatible format.
         run: |
           set -euo pipefail
-          TARBALL=$(ls dist/*.tgz | head -1)
+          TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
           node src/scripts/sha3-digest.js "$TARBALL"
 
       - name: PQC sidecar — ML-DSA-65 signature of the tarball
@@ -463,7 +466,7 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          TARBALL=$(ls dist/*.tgz | head -1)
+          TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
           # The signer expects keys/release-pqc-pub.json at the
           # framework root for the self-verify cross-check. Symlink
           # the checked-out src/keys/ into the working directory so
@@ -514,11 +517,11 @@ jobs:
           set -euo pipefail
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Release $TAG already exists. The workflow is authoritative for release creation as of v0.11.7."
-            echo "::error::Manual `gh release create` was removed from the release workflow in v0.11.7."
-            echo "::error::Either delete the existing release (`gh release delete $TAG`) and re-run this workflow, OR push a new tag."
+            echo "::error::Manual 'gh release create' was removed from the release workflow in v0.11.7."
+            echo "::error::Either delete the existing release with 'gh release delete $TAG' and re-run this workflow, OR push a new tag."
             exit 1
           fi
-          TARBALL=$(ls dist/*.tgz | head -1)
+          TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
           # Title comes from the structured release-notes JSON's
           # `headline` field — single source of truth. Format:
           # `vX.Y.Z — <headline>`.
@@ -594,7 +597,7 @@ jobs:
         # mis-classifies a relative path containing `/` as a git
         # spec.
         run: |
-          TARBALL=$(ls dist/*.tgz | head -1)
+          TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
           echo "Publishing: $TARBALL"
           npm publish "./${TARBALL}" --provenance --access public
         env:
