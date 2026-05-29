@@ -466,7 +466,16 @@ async function testEncryptedTmpfsCorruptionAutoRecovers() {
   // unrecoverable crash loop (the blamejs.com wiki looped 4,625 times).
   // The fix: integrity-probe the newer working copy; if bad, discard it
   // and re-decrypt the last-good db.enc. db.enc is never modified.
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-db-tmpfs-corrupt-"));
+  //
+  // Scratch dir lives under the repo-local .test-output (not os.tmpdir):
+  // this test intentionally corrupts its working file in place, which
+  // static analysis (CodeQL js/insecure-temporary-file) flags as an
+  // insecure OS-temp-dir write. A gitignored per-test dir outside the
+  // shared OS temp dir sidesteps that false positive and is cleaner for
+  // test isolation besides.
+  var scratchBase = path.join(__dirname, "..", ".test-output");
+  fs.mkdirSync(scratchBase, { recursive: true });
+  var tmpDir = fs.mkdtempSync(path.join(scratchBase, "db-tmpfs-corrupt-"));
   var schema = [{ name: "recovery_t", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }];
   try {
     await setupTestDb(tmpDir, schema);
