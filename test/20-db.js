@@ -476,9 +476,15 @@ async function testEncryptedTmpfsCorruptionAutoRecovers() {
     var workingPath = b.db.getDbPath();
     b.db._resetForTest();                            // close handle; leaves the working file on disk
 
-    // Corrupt the working copy and stamp it newer than db.enc — the exact
-    // trap shape that produced the crash loop.
-    fs.writeFileSync(workingPath, Buffer.from("not a sqlite database -- corrupt header\n".repeat(8)));
+    // Corrupt the existing working copy in place — overwrite the SQLite
+    // header so the file is no longer a valid database — and stamp it
+    // newer than db.enc (the exact trap shape that produced the crash
+    // loop). Open with "r+" (must already exist; never creates a file) so
+    // this is an in-place corruption of a known file, not temp-file
+    // creation.
+    var corruptFd = fs.openSync(workingPath, "r+");
+    try { fs.writeSync(corruptFd, Buffer.from("not a sqlite database -- corrupt header\n".repeat(8)), 0, undefined, 0); }
+    finally { fs.closeSync(corruptFd); }
     var future = new Date(Date.now() + 60000);
     fs.utimesSync(workingPath, future, future);
 
