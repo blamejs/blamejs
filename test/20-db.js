@@ -520,6 +520,45 @@ async function testEncryptedTmpfsCorruptionAutoRecovers() {
   }
 }
 
+async function testEncryptedCloseKeepsPlaintextWhenEncryptFails() {
+  // close()'s final re-encrypt can fail (full /dev/shm, disk-full). When it
+  // does, the plaintext working copy is the ONLY carrier of writes since
+  // the last periodic flush — close() must NOT unlink it (it used to do so
+  // unconditionally), so the next boot's newer-mtime recovery can pick it
+  // up. db.enc still holds the prior snapshot, so nothing is lost either
+  // way; the bug was discarding the MORE-recent state on an encrypt error.
+  var scratchBase = path.join(__dirname, "..", ".test-output");
+  fs.mkdirSync(scratchBase, { recursive: true });
+  var tmpDir = fs.mkdtempSync(path.join(scratchBase, "db-close-encfail-"));
+  var schema = [{ name: "close_t", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }];
+  try {
+    await setupTestDb(tmpDir, schema);
+    check("close-encfail test runs in encrypted mode", b.db.getMode() === "encrypted");
+    b.db.prepare("INSERT INTO close_t (_id, v) VALUES (?, ?)").run("c1", "kept");
+    await b.db.flushToDisk();   // db.enc now holds the prior snapshot
+
+    var workingDir = path.join(tmpDir, "tmpfs");
+    var workingFile = fs.readdirSync(workingDir).filter(function (f) { return /\.db$/.test(f); })[0];
+    var workingPath = path.join(workingDir, workingFile);
+    check("working copy exists before close", fs.existsSync(workingPath));
+
+    // Force the final encrypt to throw: replace db.enc with a directory so
+    // atomicFile's rename-into-place fails (portable across platforms).
+    var encPath = path.join(tmpDir, "db.enc");
+    fs.rmSync(encPath, { force: true });
+    fs.mkdirSync(encPath);
+
+    // The real close() (the appShutdown db-phase path), not _resetForTest.
+    b.db.close();
+
+    check("encrypt-failed close keeps the plaintext working copy for recovery",
+          fs.existsSync(workingPath));
+  } finally {
+    try { b.db._resetForTest(); } catch (_e) { /* best effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- run() ----
 
 async function run() {
@@ -527,6 +566,7 @@ async function run() {
   await testDbBasic();
   await testUnsealRowNullsForgedValue();
   await testEncryptedTmpfsCorruptionAutoRecovers();
+  await testEncryptedCloseKeepsPlaintextWhenEncryptFails();
   await testDbWriteOps();
   await testDbSealedWithoutDerived();
   await testDbTransactions();

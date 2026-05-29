@@ -9787,6 +9787,53 @@ function testWikiPortAgreesAcrossArtifacts() {
     bad);
 }
 
+// v0.13.34 — the wiki compose stop_grace_period MUST exceed the app
+// shutdown orchestrator's total grace budget (graceMs) plus the forced-
+// exit watchdog margin. Otherwise `docker stop` / a rolling redeploy
+// SIGKILLs the container before the DB re-encrypt phase finishes, losing
+// every write since the last periodic flush — the encrypted-DB data-loss
+// class. Cross-artifact guard so raising graceMs in lib/app-shutdown.js
+// without bumping the compose (or dropping the setting) can't silently
+// reopen the hole.
+function testWikiStopGraceExceedsShutdownBudget() {
+  var bad = [];
+  var shutdownSrc;
+  try { shutdownSrc = fs.readFileSync("lib/app-shutdown.js", "utf8"); }
+  catch (_e) { return; }
+  var graceM  = /DEFAULT_GRACE_MS\s*=\s*C\.TIME\.seconds\((\d+)\)/.exec(shutdownSrc);
+  if (!graceM) return;
+  var marginM = /FORCE_EXIT_MARGIN_MS\s*=\s*C\.TIME\.seconds\((\d+)\)/.exec(shutdownSrc);
+  var graceS  = parseInt(graceM[1], 10);
+  var marginS = marginM ? parseInt(marginM[1], 10) : 0;
+  var minGrace = graceS + marginS;
+  var composeFiles = ["examples/wiki/docker-compose.yml", "examples/wiki/docker-compose.prod.yml"];
+  for (var i = 0; i < composeFiles.length; i += 1) {
+    var cf = composeFiles[i];
+    var text;
+    try { text = fs.readFileSync(cf, "utf8"); }
+    catch (_e) { continue; }
+    var m = /stop_grace_period:\s*'?(\d+)\s*s'?/.exec(text);
+    if (!m) {
+      bad.push({ file: cf, line: 1,
+        content: cf + " declares no stop_grace_period — Docker's 10s default SIGKILLs before " +
+                 "the " + graceS + "s shutdown budget finishes the DB re-encrypt. Set " +
+                 "stop_grace_period to at least " + minGrace + "s." });
+      continue;
+    }
+    var graceSet = parseInt(m[1], 10);
+    if (graceSet < minGrace) {
+      bad.push({ file: cf, line: 1,
+        content: cf + " stop_grace_period is " + graceSet + "s but the shutdown budget (graceMs " +
+                 graceS + "s + watchdog margin " + marginS + "s) needs at least " + minGrace +
+                 "s, or the DB re-encrypt is SIGKILLed mid-flush." });
+    }
+  }
+  bad = _filterMarkers(bad, "wiki-stop-grace-below-shutdown-budget");
+  _report("wiki compose stop_grace_period exceeds the app shutdown grace budget " +
+          "(v0.13.34 — no SIGKILL-before-DB-re-encrypt data loss on docker stop / redeploy)",
+    bad);
+}
+
 // v0.13.19 — a CI job that runs the long test suites (smoke / wiki
 // e2e) MUST declare `timeout-minutes`. Without it a hung child (a
 // leaked timer / socket / fs.watch handle — the macOS smoke-hang
@@ -10372,6 +10419,7 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
+  testWikiStopGraceExceedsShutdownBudget();
   // v0.13.19 CI hang backstop: every workflow job that runs the test
   // suite must declare timeout-minutes so a hung child can't ride
   // GitHub's 6-hour default.

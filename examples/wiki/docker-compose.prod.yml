@@ -68,12 +68,19 @@ services:
     # then has nothing to roll back to.
     volumes:
       - wiki-data:/data
+    # Stop grace must exceed the app's 30s shutdown budget (graceMs) plus
+    # the forced-exit watchdog margin, so a `docker stop` / rolling redeploy
+    # lets the DB re-encrypt phase finish before SIGKILL — otherwise the
+    # final flush is lost and the next boot rolls back to the prior db.enc
+    # snapshot. (Inherited from the base compose; restated here because the
+    # data-loss risk is highest in encrypted mode.)
+    stop_grace_period: 40s
     # NOTE for PaaS platforms (Coolify, Dokku, CapRover, …) that
-    # regenerate this compose file on deploy: set BOTH of the above via
-    # the platform UI instead of hand-editing here — a "Persistent
-    # Storage" mount for /data and a custom docker run option
-    # `--shm-size 512m`. Edits to this file are otherwise overwritten on
-    # the next deploy.
+    # regenerate this compose file on deploy: set the above via the platform
+    # UI instead of hand-editing here — a "Persistent Storage" mount for
+    # /data, a custom docker run option `--shm-size 512m`, and a stop grace
+    # period of at least 40s. Edits to this file are otherwise overwritten
+    # on the next deploy.
     # Full operator-facing environment surface. Every value is
     # overridable from the .env file; defaults match the framework's
     # built-in defaults so an operator who just wants the basics can
