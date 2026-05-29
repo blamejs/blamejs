@@ -559,6 +559,69 @@ async function testEncryptedCloseKeepsPlaintextWhenEncryptFails() {
   }
 }
 
+async function testTmpfsLowSpaceRefusesWritesFailClear() {
+  // When the encrypted-mode tmpfs working copy runs low on free space, the
+  // DB must REFUSE growth writes (INSERT/UPDATE/REPLACE) with a clear error
+  // instead of proceeding into an ENOSPC corruption. DELETE + reads stay
+  // available so retention can reclaim space and the app keeps serving. An
+  // injected statfs reader drives the probe deterministically.
+  var BYTES = b.constants.BYTES;
+  var scratchBase = path.join(__dirname, "..", ".test-output");
+  fs.mkdirSync(scratchBase, { recursive: true });
+  var tmpDir = fs.mkdtempSync(path.join(scratchBase, "db-lowspace-"));
+  var schema = [{ name: "space_t", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }];
+  var fakeFree = BYTES.mib(100);                       // start healthy
+  var fakeStatfs = function () { return { bavail: fakeFree, bsize: 1 }; };
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    setTestPassphraseEnv();
+    b.cluster._resetForTest();
+    b.audit._resetForTest();
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    await b.vault.init({ dataDir: tmpDir });
+    await b.db.init({
+      dataDir: tmpDir, tmpDir: path.join(tmpDir, "tmpfs"), schema: schema,
+      minFreeBytes: BYTES.mib(16), _statfsForTest: fakeStatfs,
+    });
+    check("low-space test runs in encrypted mode", b.db.getMode() === "encrypted");
+
+    b.db.prepare("INSERT INTO space_t (_id, v) VALUES (?, ?)").run("a", "1");
+    check("healthy free space → INSERT succeeds",
+          b.db.prepare("SELECT v FROM space_t WHERE _id = ?").get("a").v === "1");
+
+    // Drop below the threshold and force a probe.
+    fakeFree = BYTES.mib(1);
+    var st = b.db._probeStorageForTest();
+    check("low free space flips writesRefused",       st.writesRefused === true);
+
+    var threw = null;
+    try { b.db.prepare("INSERT INTO space_t (_id, v) VALUES (?, ?)").run("bb", "2"); }
+    catch (e) { threw = e; }
+    check("low space → INSERT throws db/storage-low (fail-clear, not corruption)",
+          threw && threw.code === "db/storage-low");
+
+    // DELETE + reads must still work — the retention escape valve + serving.
+    var delThrew = null;
+    try { b.db.prepare("DELETE FROM space_t WHERE _id = ?").run("a"); } catch (e) { delThrew = e; }
+    check("low space → DELETE still allowed",          delThrew === null);
+    check("low space → reads still allowed",
+          b.db.prepare("SELECT COUNT(*) AS n FROM space_t").get().n === 0);
+
+    // Recover: free space returns → flag clears → growth writes resume.
+    fakeFree = BYTES.mib(100);
+    var st2 = b.db._probeStorageForTest();
+    check("recovered free space clears writesRefused", st2.writesRefused === false);
+    var okErr = null;
+    try { b.db.prepare("INSERT INTO space_t (_id, v) VALUES (?, ?)").run("cc", "3"); }
+    catch (e) { okErr = e; }
+    check("recovered → INSERT succeeds again",         okErr === null);
+  } finally {
+    try { b.db._resetForTest(); } catch (_e) { /* best effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- run() ----
 
 async function run() {
@@ -567,6 +630,7 @@ async function run() {
   await testUnsealRowNullsForgedValue();
   await testEncryptedTmpfsCorruptionAutoRecovers();
   await testEncryptedCloseKeepsPlaintextWhenEncryptFails();
+  await testTmpfsLowSpaceRefusesWritesFailClear();
   await testDbWriteOps();
   await testDbSealedWithoutDerived();
   await testDbTransactions();
