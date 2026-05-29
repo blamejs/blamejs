@@ -49,6 +49,30 @@ function _ephemeralVault() {
   };
 }
 
+function _authVault() {
+  // Unlike the XOR _ephemeralVault (which silently produces garbage on a
+  // tampered blob), this unseal THROWS on corruption — mirroring the real
+  // XChaCha20-Poly1305 vault's authenticated decrypt. Needed to exercise
+  // the manager's corrupt-sealed-file recovery path, which keys off an
+  // unseal throw.
+  var key = crypto.randomBytes(32);
+  return {
+    seal: function (buf) {
+      var tag = crypto.createHmac("sha3-512", key).update(buf).digest();
+      return Buffer.concat([tag, Buffer.from(buf)]);
+    },
+    unseal: function (sealed) {
+      var tag = sealed.subarray(0, 64);
+      var body = sealed.subarray(64);
+      var expect = crypto.createHmac("sha3-512", key).update(body).digest();
+      if (tag.length !== expect.length || !crypto.timingSafeEqual(tag, expect)) {
+        throw new Error("vault: authentication tag mismatch");
+      }
+      return Buffer.from(body);
+    },
+  };
+}
+
 async function _selfSignedCert(domains, validityDays) {
   // Generate a parseable self-signed X.509 cert via the vendored
   // @peculiar/x509 bundle. The cert manager only parses cert PEM (to
@@ -529,6 +553,105 @@ function testAcmeBuildCsrRoundtrip() {
 
 // ---- Run ----
 
+// ---- Corrupt-sealed-state recovery (no boot crash loop) ----
+
+async function testCorruptSealedCertReissues() {
+  // A corrupt sealed cert/key is RECOVERABLE state — the CA re-issues. The
+  // manager must treat an unreadable sealed file like an absent one and
+  // re-issue, NOT let a raw unseal/decrypt error escape out of start(): on
+  // a managed restart the same corrupt file is read on every boot, so a
+  // throw here is an unrecoverable crash loop. (Same shape as the
+  // encrypted-DB tmpfs working-copy recovery.)
+  var tmp = _tmpDir();
+  var vault = _authVault();
+  var pem = await _selfSignedCert(["example.com"], 90);
+
+  fs.mkdirSync(path.join(tmp, "main"), { recursive: true });
+  // Cache-fresh cert + meta, so the ONLY reason start() would reach ACME
+  // is the corruption — not expiry.
+  fs.writeFileSync(path.join(tmp, "main", "cert.pem.sealed"), vault.seal(Buffer.from(pem.certPem)));
+  fs.writeFileSync(path.join(tmp, "main", "key.pem.sealed"),  vault.seal(Buffer.from(pem.keyPem)));
+  fs.writeFileSync(path.join(tmp, "main", "meta.json"), JSON.stringify({
+    expiresAt: Date.now() + 90 * 86400000, issuedAt: Date.now(),
+    fingerprintSha256: "ff", subject: "CN=example.com",
+    lastRenewedAt: Date.now(), keyAlg: "ecdsa-p256",
+  }));
+  // Corrupt the sealed cert in place so unseal throws an auth error.
+  var blob = fs.readFileSync(path.join(tmp, "main", "cert.pem.sealed"));
+  blob[blob.length - 1] ^= 0xff;
+  fs.writeFileSync(path.join(tmp, "main", "cert.pem.sealed"), blob);
+
+  var mgr = b.cert.create({
+    storage: { type: "sealed-disk", rootDir: tmp, vault: vault },
+    acme:    { directory: "https://example/", accountKey: "auto" },
+    certs:   [{ name: "main", domains: ["example.com"],
+      challenge: { type: "http-01", provision: async function () {}, cleanup: async function () {} } }],
+    audit: false,
+  });
+
+  var threw = null;
+  try { await mgr.start(); } catch (e) { threw = e; }
+  var msg = (threw && (threw.message || String(threw))) || "";
+  // With no reachable CA the re-issue fails with a NETWORK error — which
+  // proves start() recovered PAST the corrupt file (rather than crashing
+  // on the unseal error before it ever reached the issue path).
+  check("corrupt sealed cert → no raw unseal crash",
+    threw && !/authentication tag|unseal|decrypt|malformed/i.test(msg));
+  check("corrupt sealed cert → routed to ACME re-issue",
+    threw && /dns lookup|EAI_AGAIN|ENOTFOUND|getaddrinfo|failed|fetch/i.test(msg));
+  try { await mgr.stop(); } catch (_e) { /* never started cleanly */ }
+
+  // Corrupt meta.json (derived index) must ALSO route to re-issue, not
+  // throw cert/bad-meta out of start().
+  var tmp2 = _tmpDir();
+  var v2 = _authVault();
+  fs.mkdirSync(path.join(tmp2, "main"), { recursive: true });
+  fs.writeFileSync(path.join(tmp2, "main", "cert.pem.sealed"), v2.seal(Buffer.from(pem.certPem)));
+  fs.writeFileSync(path.join(tmp2, "main", "key.pem.sealed"),  v2.seal(Buffer.from(pem.keyPem)));
+  fs.writeFileSync(path.join(tmp2, "main", "meta.json"), "{ this is not json ");
+  var mgr2 = b.cert.create({
+    storage: { type: "sealed-disk", rootDir: tmp2, vault: v2 },
+    acme:    { directory: "https://example/", accountKey: "auto" },
+    certs:   [{ name: "main", domains: ["example.com"],
+      challenge: { type: "http-01", provision: async function () {}, cleanup: async function () {} } }],
+    audit: false,
+  });
+  var threw2 = null;
+  try { await mgr2.start(); } catch (e) { threw2 = e; }
+  check("corrupt meta.json → not cert/bad-meta (routes to re-issue)",
+    threw2 && threw2.code !== "cert/bad-meta");
+  try { await mgr2.stop(); } catch (_e) {}
+}
+
+async function testCorruptAccountKeyClearError() {
+  // The ACME account key binds order history, so a corrupt one is NOT
+  // auto-regenerated (that would silently abandon the account). It must
+  // fail with an actionable cert/account-key-unreadable error, not a raw
+  // decrypt throw.
+  var tmp = _tmpDir();
+  var vault = _authVault();
+  fs.mkdirSync(path.join(tmp, "account"), { recursive: true });
+  // A well-formed sealed account key, then corrupted so unseal throws.
+  var realJwk = JSON.stringify({ kty: "EC", crv: "P-256", x: "a", y: "b",
+    privatePem: "p", publicPem: "q" });
+  var sealed = vault.seal(Buffer.from(realJwk));
+  sealed[sealed.length - 1] ^= 0xff;
+  fs.writeFileSync(path.join(tmp, "account", "jwk.json.sealed"), sealed);
+
+  var mgr = b.cert.create({
+    storage: { type: "sealed-disk", rootDir: tmp, vault: vault },
+    acme:    { directory: "https://example/", accountKey: "auto" },
+    certs:   [{ name: "main", domains: ["example.com"],
+      challenge: { type: "http-01", provision: async function () {}, cleanup: async function () {} } }],
+    audit: false,
+  });
+  var threw = null;
+  try { await mgr.start(); } catch (e) { threw = e; }
+  check("corrupt account key → actionable cert/account-key-unreadable",
+    threw && threw.code === "cert/account-key-unreadable");
+  try { await mgr.stop(); } catch (_e) {}
+}
+
 async function run() {
   testSurface();
   testFactoryRefusesBadOpts();
@@ -538,6 +661,8 @@ async function run() {
   await testRefreshForcesIssue();
   await testKeyEscrow();
   testAcmeBuildCsrRoundtrip();
+  await testCorruptSealedCertReissues();
+  await testCorruptAccountKeyClearError();
 }
 
 module.exports = { run: run };
