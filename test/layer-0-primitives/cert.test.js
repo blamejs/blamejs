@@ -618,9 +618,53 @@ async function testCorruptSealedCertReissues() {
   });
   var threw2 = null;
   try { await mgr2.start(); } catch (e) { threw2 = e; }
-  check("corrupt meta.json → not cert/bad-meta (routes to re-issue)",
-    threw2 && threw2.code !== "cert/bad-meta");
+  // With a VALID sealed cert present, a corrupt meta.json is advisory:
+  // expiry + fingerprint are re-derived from the cert itself, so start()
+  // loads the cert cleanly — no cert/bad-meta throw, and no needless
+  // re-issue (a corrupt derived index must not force a network round-trip).
+  check("corrupt meta.json → no cert/bad-meta throw",
+    !threw2 || threw2.code !== "cert/bad-meta");
+  check("corrupt meta.json → cert still loads from the sealed cert",
+    !threw2 && mgr2.getContext("main") && typeof mgr2.getContext("main").cert === "string");
   try { await mgr2.stop(); } catch (_e) {}
+}
+
+async function testStaleMetaDoesNotServeExpiringCert() {
+  // The renewal decision must trust the SEALED cert's own notAfter, not the
+  // plaintext meta.json index. A meta.expiresAt that disagrees with the cert
+  // — drifted, or tampered far-future over an actually-expiring cert — must
+  // NOT let start() short-circuit and serve a cert that is in fact due for
+  // renewal.
+  var tmp = _tmpDir();
+  var vault = _authVault();
+  var pem = await _selfSignedCert(["example.com"], 5);   // real notAfter ~5d out (< 14-day renew window)
+
+  fs.mkdirSync(path.join(tmp, "main"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "main", "cert.pem.sealed"), vault.seal(Buffer.from(pem.certPem)));
+  fs.writeFileSync(path.join(tmp, "main", "key.pem.sealed"),  vault.seal(Buffer.from(pem.keyPem)));
+  // meta claims a FAR-FUTURE expiry, disagreeing with the real cert.
+  fs.writeFileSync(path.join(tmp, "main", "meta.json"), JSON.stringify({
+    expiresAt: Date.now() + 90 * 86400000, issuedAt: Date.now(),
+    fingerprintSha256: "stale", subject: "CN=example.com",
+    lastRenewedAt: Date.now(), keyAlg: "ecdsa-p256",
+  }));
+
+  var mgr = b.cert.create({
+    storage: { type: "sealed-disk", rootDir: tmp, vault: vault },
+    acme:    { directory: "https://example/", accountKey: "auto" },
+    certs:   [{ name: "main", domains: ["example.com"],
+      challenge: { type: "http-01", provision: async function () {}, cleanup: async function () {} } }],
+    audit: false,
+  });
+  var threw = null;
+  try { await mgr.start(); } catch (e) { threw = e; }
+  var msg = (threw && (threw.message || String(threw))) || "";
+  // The real cert is inside the 14-day renewal window, so start() must
+  // attempt renewal (network-fail here) rather than trusting the stale
+  // far-future meta and serving the expiring cert.
+  check("stale far-future meta does not skip renewal of an expiring cert",
+        threw && /dns lookup|EAI_AGAIN|ENOTFOUND|getaddrinfo|failed|fetch/i.test(msg));
+  try { await mgr.stop(); } catch (_e) {}
 }
 
 async function testCorruptAccountKeyClearError() {
@@ -662,6 +706,7 @@ async function run() {
   await testKeyEscrow();
   testAcmeBuildCsrRoundtrip();
   await testCorruptSealedCertReissues();
+  await testStaleMetaDoesNotServeExpiringCert();
   await testCorruptAccountKeyClearError();
 }
 
