@@ -456,12 +456,77 @@ async function testUnsealRowNullsForgedValue() {
   }
 }
 
+async function testEncryptedTmpfsCorruptionAutoRecovers() {
+  // Regression: in encrypted-at-rest mode the live SQLite copy lives in a
+  // tmpfs working file; a corrupt newer working copy (unclean shutdown, or
+  // a full /dev/shm — Docker's 64 MiB default) must NOT be trusted on
+  // boot. decryptToTmp's "newer plaintext wins" crash-recovery path used
+  // to keep it unconditionally, so db.init failed its integrity gate with
+  // "database disk image is malformed" identically on every boot — an
+  // unrecoverable crash loop (the blamejs.com wiki looped 4,625 times).
+  // The fix: integrity-probe the newer working copy; if bad, discard it
+  // and re-decrypt the last-good db.enc. db.enc is never modified.
+  //
+  // Scratch dir lives under the repo-local .test-output (not os.tmpdir):
+  // this test intentionally corrupts its working file in place, which
+  // static analysis (CodeQL js/insecure-temporary-file) flags as an
+  // insecure OS-temp-dir write. A gitignored per-test dir outside the
+  // shared OS temp dir sidesteps that false positive and is cleaner for
+  // test isolation besides.
+  var scratchBase = path.join(__dirname, "..", ".test-output");
+  fs.mkdirSync(scratchBase, { recursive: true });
+  var tmpDir = fs.mkdtempSync(path.join(scratchBase, "db-tmpfs-corrupt-"));
+  var schema = [{ name: "recovery_t", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }];
+  try {
+    await setupTestDb(tmpDir, schema);
+    check("recovery test runs in encrypted mode", b.db.getMode() === "encrypted");
+    b.db.prepare("INSERT INTO recovery_t (_id, v) VALUES (?, ?)").run("r1", "survives");
+    await b.db.flushToDisk();                       // persist to db.enc (last-good snapshot)
+    b.db._resetForTest();                            // close handle; leaves the working file on disk
+
+    // Locate the tmpfs working copy under our own scratch dir (setupTestDb
+    // points the working dir at <tmpDir>/tmpfs). Resolve it from `tmpDir`
+    // — our .test-output mkdtemp — rather than b.db.getDbPath(), so the
+    // path's non-OS-temp provenance stays visible to static analysis.
+    var workingDir = path.join(tmpDir, "tmpfs");
+    var workingFile = fs.readdirSync(workingDir).filter(function (f) { return /\.db$/.test(f); })[0];
+    var workingPath = path.join(workingDir, workingFile);
+
+    // Corrupt the existing working copy in place — overwrite the SQLite
+    // header so the file is no longer a valid database — and stamp it
+    // newer than db.enc (the exact trap shape that produced the crash
+    // loop). Open with "r+" (must already exist; never creates a file) so
+    // this is an in-place corruption of a known file.
+    var corruptFd = fs.openSync(workingPath, "r+");
+    try { fs.writeSync(corruptFd, Buffer.from("not a sqlite database -- corrupt header\n".repeat(8)), 0, undefined, 0); }
+    finally { fs.closeSync(corruptFd); }
+    var future = new Date(Date.now() + 60000);
+    fs.utimesSync(workingPath, future, future);
+
+    // Re-init against the same dataDir. Mirror setupTestDb's pre-init
+    // reset (passphrase env + audit reset) so db.init re-wires audit-sign
+    // from the same passphrase — but do NOT reset the vault, so the
+    // existing db.enc key still decrypts. The corrupt newer working copy
+    // must be discarded and db.enc re-decrypted — boot must succeed.
+    setTestPassphraseEnv();
+    b.audit._resetForTest();
+    await b.db.init({ dataDir: tmpDir, tmpDir: path.join(tmpDir, "tmpfs"), schema: schema });
+    var row = b.db.prepare("SELECT v FROM recovery_t WHERE _id = ?").get("r1");
+    check("corrupt tmpfs working copy auto-recovers from db.enc (no crash loop)",
+          row && row.v === "survives");
+  } finally {
+    try { b.db._resetForTest(); } catch (_e) { /* best effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- run() ----
 
 async function run() {
   // db basic
   await testDbBasic();
   await testUnsealRowNullsForgedValue();
+  await testEncryptedTmpfsCorruptionAutoRecovers();
   await testDbWriteOps();
   await testDbSealedWithoutDerived();
   await testDbTransactions();
