@@ -6871,8 +6871,17 @@ var KNOWN_ANTIPATTERNS = [
       // shared runSql; re-routing through runInTransaction would change
       // semantics (passing module.exports vs database). Keep as-is.
       "lib/db.js",
+      // clusterStorage.transaction(fn) is the cluster-aware ASYNC
+      // transaction primitive (v0.13.38). dbSchema.runInTransaction is
+      // synchronous (BEGIN -> fn() -> COMMIT) and cannot wrap the async fn
+      // the atomic-RMW callers (cache, dual-control) need. The cluster path
+      // delegates to externalDb.transaction; the single-node path issues
+      // BEGIN/COMMIT/ROLLBACK around an awaited fn with shared-connection
+      // serialization (no other statement may interleave). Same legitimate-
+      // primitive justification as db.js.
+      "lib/cluster-storage.js",
     ],
-    reason: "Extracted to dbSchema.runInTransaction. Replaces the inline BEGIN / COMMIT / ROLLBACK try/catch boilerplate in migrations / seeders / db-schema. Handles both raw better-sqlite3 and b.db framework wrapper handles via runSqlOnHandle.",
+    reason: "Extracted to dbSchema.runInTransaction. Replaces the inline BEGIN / COMMIT / ROLLBACK try/catch boilerplate in migrations / seeders / db-schema. Handles both raw better-sqlite3 and b.db framework wrapper handles via runSqlOnHandle. db.js + cluster-storage.js are allowlisted transaction primitives (sync public + async cluster-aware) that can't route through the sync helper.",
   },
   {
     id: "inline-numeric-bounds-cascade",

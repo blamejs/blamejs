@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.13.37",
-  "createdAt": "2026-05-29T14:25:15.225Z",
+  "frameworkVersion": "0.13.38",
+  "createdAt": "2026-05-29T15:55:58.518Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6423,6 +6423,10 @@
           "arity": 1
         },
         "tableName": {
+          "type": "function",
+          "arity": 1
+        },
+        "transaction": {
           "type": "function",
           "arity": 1
         }
