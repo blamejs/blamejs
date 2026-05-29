@@ -482,15 +482,21 @@ async function testEncryptedTmpfsCorruptionAutoRecovers() {
     check("recovery test runs in encrypted mode", b.db.getMode() === "encrypted");
     b.db.prepare("INSERT INTO recovery_t (_id, v) VALUES (?, ?)").run("r1", "survives");
     await b.db.flushToDisk();                       // persist to db.enc (last-good snapshot)
-    var workingPath = b.db.getDbPath();
     b.db._resetForTest();                            // close handle; leaves the working file on disk
+
+    // Locate the tmpfs working copy under our own scratch dir (setupTestDb
+    // points the working dir at <tmpDir>/tmpfs). Resolve it from `tmpDir`
+    // — our .test-output mkdtemp — rather than b.db.getDbPath(), so the
+    // path's non-OS-temp provenance stays visible to static analysis.
+    var workingDir = path.join(tmpDir, "tmpfs");
+    var workingFile = fs.readdirSync(workingDir).filter(function (f) { return /\.db$/.test(f); })[0];
+    var workingPath = path.join(workingDir, workingFile);
 
     // Corrupt the existing working copy in place — overwrite the SQLite
     // header so the file is no longer a valid database — and stamp it
     // newer than db.enc (the exact trap shape that produced the crash
     // loop). Open with "r+" (must already exist; never creates a file) so
-    // this is an in-place corruption of a known file, not temp-file
-    // creation.
+    // this is an in-place corruption of a known file.
     var corruptFd = fs.openSync(workingPath, "r+");
     try { fs.writeSync(corruptFd, Buffer.from("not a sqlite database -- corrupt header\n".repeat(8)), 0, undefined, 0); }
     finally { fs.closeSync(corruptFd); }
