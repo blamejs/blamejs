@@ -38,6 +38,25 @@ async function testBasicGetPut() {
   check("hit2 replayCount = 2",    hit2 && hit2.replayCount === 2);
 }
 
+async function testInMemoryBackendBounded() {
+  // The default in-memory backend caps its entry count so a flood of
+  // distinct idempotency keys can't grow it without bound (OOM). Eviction
+  // is oldest-first — a dropped record just means that one key re-executes
+  // on retry, never a crash. Operators needing a hard guarantee at scale
+  // supply a durable opts.store.
+  var idem = b.agent.idempotency.create({ maxInMemoryEntries: 3 });
+  await idem.put("m", "u", "k1", { n: 1 });
+  await idem.put("m", "u", "k2", { n: 2 });
+  await idem.put("m", "u", "k3", { n: 3 });
+  check("at cap: oldest still present",  (await idem.get("m", "u", "k1")) !== null);
+  // 4th distinct key pushes past the cap → evicts the oldest (k1).
+  await idem.put("m", "u", "k4", { n: 4 });
+  check("over cap: newest key retained", (await idem.get("m", "u", "k4")) !== null);
+  check("over cap: oldest key evicted",  (await idem.get("m", "u", "k1")) === null);
+  check("over cap: middle keys retained",
+        (await idem.get("m", "u", "k2")) !== null && (await idem.get("m", "u", "k3")) !== null);
+}
+
 async function testCrossActorIsolation() {
   var idem = b.agent.idempotency.create({});
   await idem.put("move", "u1", "shared-key", { changed: 1 });
@@ -275,6 +294,7 @@ async function run() {
   testSurface();
   await testAtRestSealingWithVault();
   await testBasicGetPut();
+  await testInMemoryBackendBounded();
   await testCrossActorIsolation();
   await testCrossMethodIsolation();
   await testKeyReuseDifferentArgs();
