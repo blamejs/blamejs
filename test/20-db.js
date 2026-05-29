@@ -622,6 +622,27 @@ async function testTmpfsLowSpaceRefusesWritesFailClear() {
   }
 }
 
+async function testExitHandlerRegisteredOnce() {
+  // The process-exit final-flush handler must register ONCE for the process
+  // lifetime, not on every init(). Re-registering per init leaked an 'exit'
+  // listener on each init/close cycle (MaxListenersExceeded under long runs).
+  var scratchBase = path.join(__dirname, "..", ".test-output");
+  fs.mkdirSync(scratchBase, { recursive: true });
+  var schema = [{ name: "el_t", columns: { _id: "TEXT PRIMARY KEY" } }];
+  var before = process.listenerCount("exit");
+  for (var i = 0; i < 3; i++) {
+    var tmpDir = fs.mkdtempSync(path.join(scratchBase, "db-exit-listener-"));
+    try {
+      await setupTestDb(tmpDir, schema);
+      b.db._resetForTest();
+    } finally {
+      await teardownTestDb(tmpDir);
+    }
+  }
+  var added = process.listenerCount("exit") - before;
+  check("exit handler registered once across init/close cycles (no listener leak)", added <= 1);
+}
+
 // ---- run() ----
 
 async function run() {
@@ -631,6 +652,7 @@ async function run() {
   await testEncryptedTmpfsCorruptionAutoRecovers();
   await testEncryptedCloseKeepsPlaintextWhenEncryptFails();
   await testTmpfsLowSpaceRefusesWritesFailClear();
+  await testExitHandlerRegisteredOnce();
   await testDbWriteOps();
   await testDbSealedWithoutDerived();
   await testDbTransactions();
