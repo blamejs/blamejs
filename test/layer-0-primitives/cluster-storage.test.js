@@ -115,6 +115,11 @@ module.exports = { run: run };
 if (require.main === module) {
   run().then(
     function () { console.log("[cluster-storage] OK — " + helpers.getChecks() + " checks passed"); },
-    function (e) { console.error("FAIL:", e.stack || e); process.exit(1); }
+    // Rethrow rather than console.error(e.stack): this test seeds a vault
+    // passphrase via setupTestDb, and logging the error object trips
+    // CodeQL's clear-text-logging taint (passphrase -> error -> log). The
+    // rethrow lets Node print the uncaught error + stack itself and exit
+    // non-zero, with no logging sink for the taint to reach.
+    function (e) { process.exitCode = 1; throw e; }
   );
 }
