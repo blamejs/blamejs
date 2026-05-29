@@ -9843,6 +9843,39 @@ function testWikiStopGraceExceedsShutdownBudget() {
     bad);
 }
 
+// v0.13.41 — the agent-orchestrator registry-read paths (_list / _lookup)
+// MUST consult the tenant gate (_tenantAllows) so an actor can't enumerate
+// or acquire a handle to another tenant's agent when tenant scoping is on.
+// agent-event-bus enforces this on subscribe/delivery; the orchestrator now
+// mirrors it. Encoded so a refactor can't silently drop the gate from
+// either read path.
+function testOrchestratorRegistryReadsTenantScoped() {
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync("lib/agent-orchestrator.js", "utf8"); }
+  catch (_e) { return; }
+  ["_list", "_lookup"].forEach(function (fn) {
+    var start = src.indexOf("function " + fn + "(");
+    if (start === -1) {
+      bad.push({ file: "lib/agent-orchestrator.js", line: 1,
+        content: fn + " not found — tenant-scope detector can't verify it" });
+      return;
+    }
+    // Body = from this function to the next top-level function declaration.
+    var rest = src.slice(start + 1);
+    var next = rest.search(/\nasync function |\nfunction /);
+    var body = next === -1 ? rest : rest.slice(0, next);
+    if (body.indexOf("_tenantAllows") === -1) {
+      bad.push({ file: "lib/agent-orchestrator.js", line: 1,
+        content: fn + " does not consult _tenantAllows — registry reads must be tenant-scoped " +
+                 "(cross-tenant enumeration / handle acquisition leak)" });
+    }
+  });
+  bad = _filterMarkers(bad, "orchestrator-registry-tenant-scope");
+  _report("agent-orchestrator _list/_lookup consult the tenant gate " +
+          "(v0.13.41 — no cross-tenant registry enumeration / handle acquisition)", bad);
+}
+
 // v0.13.19 — a CI job that runs the long test suites (smoke / wiki
 // e2e) MUST declare `timeout-minutes`. Without it a hung child (a
 // leaked timer / socket / fs.watch handle — the macOS smoke-hang
@@ -10429,6 +10462,7 @@ async function run() {
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
   testWikiStopGraceExceedsShutdownBudget();
+  testOrchestratorRegistryReadsTenantScoped();
   // v0.13.19 CI hang backstop: every workflow job that runs the test
   // suite must declare timeout-minutes so a hung child can't ride
   // GitHub's 6-hour default.

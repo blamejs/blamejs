@@ -66,6 +66,38 @@ async function testList() {
   check("list filter tenant",           aOnly.length === 2);
 }
 
+async function testTenantScopeRegistryReads() {
+  // With tenantScope on, registry reads are scoped to the actor's tenant:
+  // an actor can't enumerate or acquire a handle to another tenant's agent
+  // (the leak agent-event-bus already prevented; orchestrator now mirrors).
+  var perms = {
+    check: function (actor, scope) {
+      // cross-tenant-admin only for actor "admin"; everyone may read.
+      if (scope === "framework-cross-tenant-admin") return !!(actor && actor.id === "admin");
+      return true;
+    },
+  };
+  var orch = b.agent.orchestrator.create({ tenantScope: true, permissions: perms });
+  var registrar = { id: "registrar", scopes: ["agent-registry:write"] };
+  await orch.register("ta.mail", _fakeAgent("a"), { agentKind: "mail", tenantId: "a", actor: registrar });
+  await orch.register("tb.mail", _fakeAgent("b"), { agentKind: "mail", tenantId: "b", actor: registrar });
+
+  var actorA = { id: "ua", tenantId: "a", scopes: ["agent-registry:read"] };
+  var listA = await orch.list({ actor: actorA });
+  check("tenant-scope list: actor sees only own-tenant agents",
+        listA.length === 1 && listA[0].tenantId === "a");
+  var ownLook = await orch.lookup("ta.mail", { actor: actorA });
+  check("tenant-scope lookup: own-tenant agent resolves", ownLook && typeof ownLook === "object");
+  var crossLook = await orch.lookup("tb.mail", { actor: actorA });
+  check("tenant-scope lookup: cross-tenant agent refused (null)", crossLook === null);
+
+  var admin = { id: "admin", tenantId: "ops", scopes: ["agent-registry:read", "framework-cross-tenant-admin"] };
+  var listAdmin = await orch.list({ actor: admin });
+  check("tenant-scope list: cross-tenant-admin sees all", listAdmin.length === 2);
+  var adminCross = await orch.lookup("ta.mail", { actor: admin });
+  check("tenant-scope lookup: cross-tenant-admin resolves any tenant", adminCross && typeof adminCross === "object");
+}
+
 async function testGuardRefusals() {
   var orch = b.agent.orchestrator.create({});
   await expectRejection("register refuses bad name",
@@ -401,6 +433,7 @@ async function run() {
   testSurface();
   await testRegisterLookupUnregister();
   await testList();
+  await testTenantScopeRegistryReads();
   await testGuardRefusals();
   await testElect();
   await testElectCluster();
