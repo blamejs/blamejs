@@ -2586,7 +2586,6 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/ai-disclosure.js:chatbot",
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/compliance-sanctions.js:screen",
         "lib/dora.js:_validateReportInput",
@@ -2988,7 +2987,6 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/guard-email.js:_detectAddressIssues",
         "lib/middleware/scim-server.js:_parseQuery",
-        "lib/self-update.js:_splitSemver",
       ],
       reason: "Three unrelated string-parser primitives that incidentally share a 50-token charCodeAt-driven scan shingle. _detectAddressIssues walks RFC 5322 addr-spec bytes; _parseQuery walks SCIM filter tokens (RFC 7644 §3.4.2.2); _splitSemver walks SemVer 2.0.0 §2 version-core + pre-release + build identifiers. Each owns a domain-specific error class. Consolidation would couple RFC 5322 / RFC 7644 / SemVer parsing into one primitive none of them want.",
     },
@@ -3077,7 +3075,6 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-dkim.js:bootstrap",
         "lib/mail-dkim.js:dualSigner",
         "lib/mail-mdn.js:_generateBoundary",
-        "lib/mail-mdn.js:_validateOpts",
         "lib/mail-mdn.js:build",
         "lib/self-update.js:poll",
         "lib/watcher.js:_detectAutoMode",
@@ -3405,7 +3402,6 @@ async function testNoDuplicateCodeBlocks() {
         // the RFC 8620 / RFC 8621 wire-protocol shape.
         "lib/guard-jmap.js:<top>",
         "lib/guard-jmap.js:validate",
-        "lib/guard-jmap.js:_resolveProfile",
         "lib/guard-jmap.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
@@ -3547,7 +3543,6 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-tenant.js:_checkDestroyPreconditions",
         "lib/agent-idempotency.js:_put",
         "lib/auth/dpop.js:verify",
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/backup/index.js:scheduleTest",
         "lib/break-glass.js:_validatePolicySet",
@@ -3628,7 +3623,6 @@ async function testNoDuplicateCodeBlocks() {
       // jwk canonicalization). Distinct error classes.
       mode:  "family-subset",
       files: [
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/dpop.js:verify",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/compliance-sanctions.js:screen",
@@ -4115,7 +4109,6 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/compliance-sanctions.js:_emitAudit",
         "lib/compliance-sanctions.js:_emitMetric",
         "lib/compliance-sanctions.js:create",
@@ -4389,7 +4382,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/fido-mds3.js:_b64urlDecode",
         "lib/auth/fido-mds3.js:_parseJws",
         "lib/auth/fido-mds3.js:_verifyJws",
-        "lib/auth/fido-mds3.js:_verifyJwsSignature",
+        "lib/auth/fido-mds3.js:_verifyJws",
         "lib/auth/fido-mds3.js:_verifyParamsForAlg",
         "lib/auth/fido-mds3.js:fetch",
         "lib/auth/fido-mds3.js:verifyAuthenticator",
@@ -4606,7 +4599,7 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/guard-list-id.js:_refuse",
         "lib/guard-list-unsubscribe.js:_verdict",
-        "lib/guard-smtp-command.js:_validateAuth",
+        "lib/guard-smtp-command.js:_parseAuthCommandSyntax",
         "lib/safe-dns.js:_decodeOpt",
       ],
       reason: "Three independently-domain'd helpers (List-Unsubscribe verdict assembly / SMTP AUTH mech validation / DNS OPT pseudo-RR decode) share local-var declaration + return-shape token sequence. Bodies are domain-distinct (different field names, different error checks). Consolidation would couple unrelated parsers.",
@@ -5015,7 +5008,6 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/compliance-sanctions.js:screen",
         "lib/dora.js:_validateReportInput",
