@@ -279,6 +279,95 @@ function _report(label, matches) {
 // Adding a marker at a violation line allowlists that one specific
 // occurrence; the reason follows the marker on the same comment line.
 
+// Every `// allow:<class>` suppression marker must name a REGISTERED detector
+// allow-class. A typo'd or stale class (e.g. the historical `setinterval-unref`
+// when the real check is `timer-no-unref`, or `protocol-constant` which names
+// no detector at all) suppresses NOTHING — the detector it claims to silence
+// does not exist — so the underlying violation it was meant to explain ships
+// unflagged. When you add a detector with a new allow-class, register it here.
+var VALID_ALLOW_CLASSES = {
+  "ai-disclosure-on-request-without-requested-gate": 1,
+  "archive-gz-without-safedecompress": 1,
+  "archive-wrap-partial-recipient": 1,
+  "backup-adapter-storage-without-posture-check": 1,
+  "bare-canonicalize-walk": 1,
+  "bare-error-throw": 1,
+  "bare-json-parse": 1,
+  "bare-split-on-quoted-header": 1,
+  "console-direct": 1,
+  "duplicate-regex": 1,
+  "dynamic-regex": 1,
+  "dynamic-require": 1,
+  "from-base64url-untrapped": 1,
+  "fs-path-from-operator-identifier-without-traversal-refusal": 1,
+  "gitleaks-entropy": 1,
+  "handrolled-buffer-collect": 1,
+  "handrolled-debounce": 1,
+  "hostname-compare-trailing-dot": 1,
+  "inline-numeric-bounds-cascade": 1,
+  "inline-require": 1,
+  "inline-require-non-empty-string-validation": 1,
+  "internal-binding-in-prose": 1,
+  "list-without-pagination": 1,
+  "math-random-noncrypto": 1,
+  "no-number-money-arithmetic": 1,
+  "numeric-opt-Infinity": 1,
+  "numeric-opt-no-bounds-check": 1,
+  "process-exit": 1,
+  "raw-byte-literal": 1,
+  "raw-hash-compare": 1,
+  "raw-new-url": 1,
+  "raw-outbound-http": 1,
+  "raw-process-env": 1,
+  "raw-randombytes-token": 1,
+  "raw-time-literal": 1,
+  "raw-timing-safe-equal": 1,
+  "regex-no-length-cap": 1,
+  "seal-without-aad": 1,
+  "silent-catch": 1,
+  "slsa-framework-action-not-sha-pinned": 1,
+  "timer-no-unref": 1,
+  "wildcard-suffix-match-without-single-label-check": 1,
+};
+
+function testNoOrphanAllowClass() {
+  // scanScope: lib + test (every shipped + test source).
+  var files = _libFiles().concat(_testFiles());
+  var bad = [];
+  var re = /\ballow:([a-z][a-zA-Z0-9-]*)/g;
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    // Skip THIS file: it holds the marker machinery + the registry itself,
+    // where `allow:` appears in regexes and the VALID_ALLOW_CLASSES keys.
+    if (rel === "test/layer-0-primitives/codebase-patterns.test.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      // Only inspect the `//` line-comment portion — markers are always
+      // comments, never string literals.
+      var hashIdx = lines[li].indexOf("//");
+      if (hashIdx === -1) continue;
+      var comment = lines[li].slice(hashIdx);
+      var m;
+      re.lastIndex = 0;
+      while ((m = re.exec(comment)) !== null) {
+        var cls = m[1];
+        if (!Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls)) {
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: "unregistered allow-class '" + cls + "' — names no detector " +
+                     "(fix the typo, or register it in VALID_ALLOW_CLASSES)",
+          });
+        }
+      }
+    }
+  }
+  _report("every // allow:<class> marker names a registered detector class", bad);
+}
+
 function testNoRawByteLiterals() {
   // class: raw-byte-literal
   // Byte-SCALE arithmetic — `n * 1024` (KiB), `* 1024 * 1024` (MiB),
@@ -10386,6 +10475,7 @@ function testSafeGuardHasMustComposeDetector() {
 }
 
 async function run() {
+  testNoOrphanAllowClass();
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
   testNumericOptsValidate();
