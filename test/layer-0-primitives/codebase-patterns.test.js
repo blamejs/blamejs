@@ -295,6 +295,7 @@ var VALID_ALLOW_CLASSES = {
   "bare-json-parse": 1,
   "bare-split-on-quoted-header": 1,
   "console-direct": 1,
+  "deny-path-hardcoded-response": 1,
   "duplicate-regex": 1,
   "dynamic-regex": 1,
   "dynamic-require": 1,
@@ -313,6 +314,7 @@ var VALID_ALLOW_CLASSES = {
   "no-number-money-arithmetic": 1,
   "numeric-opt-Infinity": 1,
   "numeric-opt-no-bounds-check": 1,
+  "primitive-unreachable": 1,
   "process-exit": 1,
   "raw-byte-literal": 1,
   "raw-hash-compare": 1,
@@ -2355,6 +2357,16 @@ async function testNoDuplicateCodeBlocks() {
     {
       files: ["lib/guard-filename.js:verifyExtractionPath", "lib/hal.js:resource", "lib/vault-aad.js:_canonicalize"],
       reason: "v0.13.13 — coincidental token shingle of the generic split-then-walk-segments idiom (`x.split(sep); for (...) { var seg = ...; if (...) throw/continue }`). guard-filename verifyExtractionPath walks path components refusing per-segment Windows-extraction hazards (reserved names / NTFS-ADS / trailing-dot); hal.js:resource builds a HAL resource by walking link/embedded keys; vault-aad.js:_canonicalize canonicalizes AAD key-value segments. Three unrelated domains (path safety / hypermedia link assembly / crypto AAD canonicalization) — no shared behaviour to extract; the only commonality is the universal split-and-loop control-flow shape.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/middleware/host-allowlist.js:create",
+        "lib/middleware/require-auth.js:create",
+        "lib/middleware/require-content-type.js:create",
+        "lib/middleware/require-methods.js:create",
+      ],
+      reason: "v0.14.6 — the shared shingle is the uniform deny-path denyResponse() call-site shape. The deny-response WRITER is already extracted to lib/middleware/deny-response.js; what repeats here is each create()'s ctx object literal ({ onDeny, problem, status, info, problemCode, problemTitle, problemDetail, contentType, body }). Each middleware passes a DIFFERENT status (405 / 415 / 421 / 401), problemCode, title, default body and headers — the literal IS the per-middleware configuration the consumer-facing onDeny / problemDetails convention drives. Consolidating further would mean a config table strictly less readable than the inline ctx, and the per-middleware values are exactly the divergence the dup detector can't see.",
     },
     {
       mode:  "family-subset",
@@ -10474,7 +10486,133 @@ function testSafeGuardHasMustComposeDetector() {
     unpaired);
 }
 
+// ---- Pattern: every `@primitive b.X.Y` doc block resolves to a real
+//               callable on the public surface (advertised-vs-actual
+//               reachability). A wiki page that documents an
+//               uncallable path is an operator-facing lie: an operator
+//               following the docs gets `undefined is not a function`.
+//
+// Two shapes this catches:
+//   - a wiring gap (the primitive's `create` exists but was never
+//     wired into index.js, so `b.middleware.requireBoundKey` was
+//     undefined);
+//   - a doc-path drop (`b.cra.conformityAssessment` where the real
+//     path is `b.cra.report.conformityAssessment`).
+//
+// Factory namespaces (the parent exposes `create`) document instance
+// methods on the create()-return value with namespace shorthand
+// (`b.auth.oauth.parseCallback` is reached via
+// `b.auth.oauth.create(...).parseCallback`). Those are NOT gaps, so a
+// parent that exposes `create` is skipped.
+function testPrimitiveReachability() {
+  // class: primitive-unreachable
+  var bSurface;
+  try { bSurface = require("../../index.js"); }
+  catch (_e) { check("primitive-reachability — index.js require", false); return; }
+
+  function resolve(dotted) {
+    var parts = dotted.split(".");
+    var cur = bSurface;
+    for (var i = 1; i < parts.length; i += 1) {
+      if (cur == null) return undefined;
+      cur = cur[parts[i]];
+    }
+    return cur;
+  }
+
+  // @primitive paths that legitimately don't resolve as a flat member
+  // (documented elsewhere / intentional). Keyed by dotted name.
+  var REACHABILITY_ALLOWLIST = {
+    // (none — every surfaced gap is fixed in-tree)
+  };
+
+  var libFiles = _libFiles();
+  var unreachable = [];
+  for (var i = 0; i < libFiles.length; i += 1) {
+    var rel = _relPath(libFiles[i]);
+    var src = fs.readFileSync(libFiles[i], "utf8");
+    var re = /@primitive\s+(b\.[A-Za-z0-9_.]+)/g;
+    var m;
+    while ((m = re.exec(src)) !== null) {
+      var name = m[1];
+      if (REACHABILITY_ALLOWLIST[name]) continue;
+      if (typeof resolve(name) !== "undefined") continue;
+      var parts = name.split(".");
+      var parentName = parts.slice(0, -1).join(".");
+      var parent = resolve(parentName);
+      // Flag only flat namespaces (object parent without a `create`
+      // factory). Factory-instance shorthands are skipped.
+      if (parent && typeof parent === "object" && typeof parent.create !== "function") {
+        unreachable.push({
+          file:    rel,
+          line:    1,
+          content: "@primitive " + name + " documents a b.* path that does not resolve (parent `" +
+                   parentName + "` is a flat namespace without this member). Wire it into the " +
+                   "namespace, or correct the @primitive/@signature path.",
+        });
+      }
+    }
+  }
+  _report("every @primitive b.X.Y doc block resolves to a callable on the public surface " +
+          "(advertised-vs-actual reachability; factory-instance shorthands excluded)",
+    unreachable);
+}
+
+// ---- Pattern: every access-refusal middleware routes its deny
+//               response through lib/middleware/deny-response.js so a
+//               consumer can override the body / Content-Type (emit
+//               RFC 9457 application/problem+json) via the uniform
+//               onDeny / problemDetails opts. A new deny-path
+//               middleware that hardcodes
+//               `res.writeHead(<4xx/5xx>, { "Content-Type": ... })`
+//               locks consumers out of the response shape — the
+//               integration-friction class that blocked downstream
+//               adoption (the rate-limit text/plain 429). ----
+function testDenyPathComposesDenyResponse() {
+  // class: deny-path-hardcoded-response
+  var MW_ROOT = path.resolve(LIB_ROOT, "middleware");
+  // NOT access-refusals: content-servers that 4xx when the
+  // .well-known resource isn't configured, and the CSP report-ingest
+  // machine endpoint. Their 4xx is not a user-facing access denial.
+  var NOT_DENY_PATH = {
+    "lib/middleware/assetlinks.js":       ".well-known content-server; 4xx = not-configured, not access-refusal",
+    "lib/middleware/security-txt.js":     ".well-known content-server; 4xx = not-configured, not access-refusal",
+    "lib/middleware/web-app-manifest.js": "manifest content-server; 4xx = not-configured, not access-refusal",
+    "lib/middleware/csp-report.js":       "CSP report-ingest machine endpoint; 4xx = malformed-report rejection on a browser-posting sink",
+    "lib/middleware/deny-response.js":    "the shared deny-response helper itself",
+  };
+  var denyStatusRe = new RegExp("writeHead\\(\\s*(?:4\\d\\d|5\\d\\d|requestHelpers\\.HTTP_STATUS\\." +
+    "(?:FORBIDDEN|UNAUTHORIZED|NOT_FOUND|BAD_REQUEST|METHOD_NOT_ALLOWED|UNSUPPORTED_MEDIA_TYPE|" +
+    "TOO_MANY_REQUESTS|UNAVAILABLE_FOR_LEGAL_REASONS|MISDIRECTED_REQUEST))");
+  var composesRe = /require\(\s*["']\.\/deny-response["']\s*\)/;
+  var files = fs.readdirSync(MW_ROOT).filter(function (f) { return f.endsWith(".js"); });
+  var violations = [];
+  for (var i = 0; i < files.length; i += 1) {
+    var rel = "lib/middleware/" + files[i];
+    if (NOT_DENY_PATH[rel]) continue;
+    var src = fs.readFileSync(path.join(MW_ROOT, files[i]), "utf8");
+    if (!denyStatusRe.test(src)) continue;       // doesn't write a deny status
+    if (composesRe.test(src)) continue;          // routes through the helper
+    var lines = src.split("\n");
+    var ln = 1;
+    for (var L = 0; L < lines.length; L += 1) {
+      if (denyStatusRe.test(lines[L])) { ln = L + 1; break; }
+    }
+    violations.push({
+      file:    rel,
+      line:    ln,
+      content: "access-refusal middleware writes a deny-status response without composing deny-response.js — " +
+               "route it through denyResponse() so consumers get onDeny / problemDetails (RFC 9457). If this " +
+               "is NOT an access-refusal (content-server / machine endpoint), add it to NOT_DENY_PATH with a reason.",
+    });
+  }
+  _report("every access-refusal middleware composes deny-response.js (onDeny / problemDetails override path)",
+    violations);
+}
+
 async function run() {
+  testPrimitiveReachability();
+  testDenyPathComposesDenyResponse();
   testNoOrphanAllowClass();
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
