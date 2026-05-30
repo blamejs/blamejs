@@ -101,5 +101,5 @@ async function run() {
 module.exports = { run: run };
 if (require.main === module) {
   run().then(function () { process.exit(0); })
-       .catch(function (err) { console.error(err && err.stack); process.exit(1); });
+       .catch(function (err) { console.error(err); process.exit(1); });
 }
