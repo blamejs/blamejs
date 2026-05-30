@@ -9796,6 +9796,57 @@ function testWikiPortAgreesAcrossArtifacts() {
     bad);
 }
 
+// v1 — error codes are the operator-grep contract and must be
+// `namespace/kebab-case`. The first string argument to `new XError(...)`
+// and `XError.factory(...)` IS the code (defineClass constructor signature
+// is (code, message, ...)). Two anti-patterns this locks out, both swept
+// for v1: a bare UPPER_SNAKE code with no namespace (`"BAD_JSON"`), and a
+// camelCase namespace segment (`"aiDp/..."`). Codes built through a
+// `var _err = XError.factory` alias in not-yet-swept modules use the bare
+// `_err("X")` call shape (no literal `.factory(` / `new XError(` at the
+// site), so they are not matched here — they land in the v1.0 namespaced-
+// error sweep. Node-native codes (ETIMEDOUT / ENOENT / ABORT) are set by
+// assignment, not constructed via these literals, so they are untouched.
+function testErrorCodesNamespacedKebab() {
+  // Native error constructors (TypeError, RangeError, ...) take the MESSAGE
+  // first, not a code — only framework defineClass errors are (code, msg).
+  var NATIVE = { Error: 1, TypeError: 1, RangeError: 1, SyntaxError: 1,
+    ReferenceError: 1, EvalError: 1, URIError: 1, AggregateError: 1, InternalError: 1 };
+  var bad = [];
+  var files = _libFiles();
+  var re = /(?:new\s+(\w+Error)\(|(\w+)\.factory\()\s*"([^"]+)"/g;
+  for (var fi = 0; fi < files.length; fi += 1) {
+    var rel = _relPath(files[fi]);
+    if (rel === "lib/framework-error.js") continue;   // the definition site
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li += 1) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;   // skip comment lines
+      var m;
+      re.lastIndex = 0;
+      while ((m = re.exec(line)) !== null) {
+        var ctor = m[1];                  // class name for the `new XError(` form
+        if (ctor && NATIVE[ctor]) continue;   // native error — first arg is the message
+        var code = m[3];
+        var slash = code.indexOf("/");
+        if (/^[A-Z][A-Z0-9_]*$/.test(code)) {
+          bad.push({ file: rel, line: li + 1,
+            content: "error code \"" + code + "\" is bare UPPER_SNAKE — use namespace/kebab-case (e.g. \"" +
+              rel.replace(/^lib\//, "").replace(/\.js$/, "") + "/" + code.toLowerCase().replace(/_/g, "-") + "\")" });
+        } else if (slash > 0 && /[a-z0-9][A-Z]/.test(code.slice(0, slash))) {
+          bad.push({ file: rel, line: li + 1,
+            content: "error code \"" + code + "\" has a camelCase namespace segment — use a kebab-case namespace" });
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "error-code-namespace-kebab");
+  _report("error codes are namespace/kebab-case (v1 — no bare UPPER_SNAKE or camelCase-namespace codes via new XError / factory)", bad);
+}
+
 // v0.13.34 — the wiki compose stop_grace_period MUST exceed the app
 // shutdown orchestrator's total grace budget (graceMs) plus the forced-
 // exit watchdog margin. Otherwise `docker stop` / a rolling redeploy
@@ -10463,6 +10514,7 @@ async function run() {
   testWikiPortAgreesAcrossArtifacts();
   testWikiStopGraceExceedsShutdownBudget();
   testOrchestratorRegistryReadsTenantScoped();
+  testErrorCodesNamespacedKebab();
   // v0.13.19 CI hang backstop: every workflow job that runs the test
   // suite must declare timeout-minutes so a hung child can't ride
   // GitHub's 6-hour default.

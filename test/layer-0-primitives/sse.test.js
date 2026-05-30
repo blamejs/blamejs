@@ -57,7 +57,7 @@ async function run() {
   try { b.sse.serializeEvent({ event: "fake\nevent: hijack", data: "x" }); }
   catch (e) { lowThrew = e; }
   check("b.sse.serializeEvent refuses LF in event",
-        lowThrew && lowThrew.code === "INJECTION");
+        lowThrew && lowThrew.code === "sse/injection");
 
   // ---- _formatEvent ----
   var fe = sseModule._formatEvent;
