@@ -20,7 +20,7 @@ async function run() {
   // ---- guardSdl opts validation ----
   var threw = null;
   try { b.graphqlFederation.guardSdl({}); } catch (e) { threw = e; }
-  check("guardSdl: requires routerToken", threw && threw.code === "BAD_OPTS");
+  check("guardSdl: requires routerToken", threw && threw.code === "graphql-federation/bad-opts");
 
   var ok = b.graphqlFederation.guardSdl({ routerToken: "a".repeat(64) });
   check("guardSdl: returns middleware", typeof ok === "function");

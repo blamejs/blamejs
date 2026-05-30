@@ -1,0 +1,31 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.13.44",
+  "date": "2026-05-29",
+  "headline": "Error codes on the consent, compliance, and protocol namespaces now follow the namespace/kebab-case contract",
+  "summary": "The framework's error contract is `err.code = \"namespace/kebab-case\"`, and the vast majority of namespaces already followed it. This release normalizes the holdouts: fifteen namespaces that threw bare UPPER_SNAKE codes with no namespace, and nine that used a camelCase namespace prefix. After this release every error these namespaces throw carries a `namespace/kebab-case` code, so an operator switching on `err.code` no longer has to special-case them. This is a breaking change for code that matches the old strings — pre-1.0, there is no compatibility shim, so update any `err.code` comparisons against the listed namespaces. A codebase check now enforces the convention so it cannot regress. A small set of older codes (the cluster, scheduler, circuit-breaker, object-store, and upload subsystems) is intentionally left for the 1.0 release, where it will carry a deprecation cycle.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Bare UPPER_SNAKE error codes are now namespaced (breaking)",
+          "body": "Fifteen namespaces threw bare UPPER_SNAKE error codes with no namespace prefix (for example `mcp` threw `BAD_JSON`, `BAD_ENVELOPE`, `BAD_METHOD`). Their `err.code` values are now `namespace/kebab-case` — `mcp/bad-json`, `mcp/bad-envelope`, and so on. The affected namespaces are `b.a2a`, `b.aiInput`, `b.aiPref`, `b.budr`, `b.contentCredentials`, `b.darkPatterns`, `b.fapi2`, `b.fdx`, `b.graphqlFederation`, `b.iabTcf`, `b.iabMspa`, `b.mcp`, `b.secCyber`, `b.sse`, and `b.tcpa10dlc`. Operators matching the old bare codes on `err.code` must update those comparisons; the error message text is unchanged."
+        },
+        {
+          "title": "camelCase error-code namespaces are now kebab-case (breaking)",
+          "body": "Nine namespaces emitted error codes whose namespace segment was camelCase (for example `aiDp/bad-bound`, `argParser/flag-duplicate`). The namespace segment is now kebab-case to match every other code: `ai-dp/`, `ai-capability/`, `ai-quota/`, `arg-parser/`, `audit-sign/`, `auth-step-up/`, `ddl-change-control/`, `dr-runbook/`, `tenant-quota/`, and `boot-gates/`. The `b.*` API namespace keys themselves are unchanged (those remain camelCase, e.g. `b.argParser`); only the `err.code` string changed. Operators matching these `err.code` strings must update them."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Error-code shape is enforced",
+          "body": "A codebase check now flags any error code constructed via `new XError(...)` or the per-class `factory(...)` whose value is a bare UPPER_SNAKE string or carries a camelCase namespace segment, so the `namespace/kebab-case` contract cannot silently regress. It correctly ignores native error constructors (whose first argument is the message, not a code)."
+        }
+      ]
+    }
+  ]
+}
