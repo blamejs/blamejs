@@ -88,16 +88,41 @@ function _bumpMinor(version) {
   return parts[0] + "." + (parts[1] + 1) + ".0";
 }
 
+// Quote a single argument for a Windows cmd.exe command line. Tokens
+// made only of safe characters pass through unquoted; anything else is
+// double-quoted with embedded quotes doubled.
+function _quoteWinArg(a) {
+  a = String(a);
+  if (/^[A-Za-z0-9_@.\-/:=]+$/.test(a)) return a;
+  return '"' + a.replace(/"/g, '""') + '"';
+}
+
 function _run(cmd, args, opts) {
   opts = opts || {};
-  var rv = childProcess.spawnSync(cmd, args, {
+  args = args || [];
+  var spawnCmd = cmd;
+  var spawnArgs = args;
+  var useShell = false;
+  if (_needsShell(cmd)) {
+    // Windows resolves npm / npx through .cmd shims that can only be
+    // launched via a shell (the CVE-2024-27980 mitigation refuses to
+    // spawn .cmd files without one). Node 26's DEP0190 deprecates
+    // pairing an args ARRAY with shell:true because the args would be
+    // concatenated onto the command line without escaping — a quoting /
+    // injection hazard. Build a single, explicitly-quoted command
+    // string and pass NO args array, which is the supported shape.
+    spawnCmd = [cmd].concat(args.map(_quoteWinArg)).join(" ");
+    spawnArgs = undefined;
+    useShell = true;
+  }
+  var rv = childProcess.spawnSync(spawnCmd, spawnArgs, {
     cwd:    opts.cwd   || ROOT,
     stdio:  opts.stdio || "inherit",
     env:    Object.assign({}, process.env, opts.env || {}),
-    shell:  _needsShell(cmd),
+    shell:  useShell,
   });
   if (rv.status !== 0 && !opts.allowFail) {
-    throw new Error("release: " + cmd + " " + (args || []).join(" ") +
+    throw new Error("release: " + cmd + " " + args.join(" ") +
                     " failed with status " + rv.status);
   }
   return rv;
