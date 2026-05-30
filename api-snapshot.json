@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.6",
-  "createdAt": "2026-05-30T16:00:48.364Z",
+  "frameworkVersion": "0.14.7",
+  "createdAt": "2026-05-30T20:25:42.630Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14517,6 +14517,10 @@
         "getDbPath": {
           "type": "function",
           "arity": 0
+        },
+        "getDeclaredColumns": {
+          "type": "function",
+          "arity": 1
         },
         "getMode": {
           "type": "function",
@@ -37103,6 +37107,10 @@
             "create": {
               "type": "function",
               "arity": 1
+            },
+            "createDeadlineClock": {
+              "type": "function",
+              "arity": 1
             }
           }
         }
@@ -49729,6 +49737,10 @@
           }
         },
         "getCurrentPassphrase": {
+          "type": "function",
+          "arity": 0
+        },
+        "getDerivedHashMacKey": {
           "type": "function",
           "arity": 0
         },

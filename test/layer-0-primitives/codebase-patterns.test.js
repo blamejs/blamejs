@@ -309,6 +309,7 @@ var VALID_ALLOW_CLASSES = {
   "inline-require": 1,
   "inline-require-non-empty-string-validation": 1,
   "internal-binding-in-prose": 1,
+  "internal-narrative-comment": 1,
   "list-without-pagination": 1,
   "math-random-noncrypto": 1,
   "no-number-money-arithmetic": 1,
@@ -7951,6 +7952,101 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Codex P1 on v0.11.4 PR #109 — b.audit.useStore({ record }) inlined await on operator-supplied callback. A stalled network call neither resolves nor rejects ⇒ b.audit.record() never returns, emit/safeEmit drains stall behind it; hot-path observability emission is supposed to be drop-silent on hangs. Defense: wrap every external-callback await in safeAsync.withTimeout. Detector catches future operator-supplied async hooks on the same shape (_externalStore / _userStore / _externalSink / _externalCb / _externalCallback / _externalHook).",
   },
 
+  {
+    // v0.14.7 — physically deleting audit-chain rows is a
+    // single-operator-can-erase-evidence risk. `auditTools.purge`
+    // (and the low-level `db.purgeAuditChain` it composes) MUST
+    // consult a dual-control gate — two distinct authorizers — before
+    // the destructive delete runs, so one compromised credential can't
+    // silently truncate the tamper-evident chain. The gate primitive
+    // is `db._checkDualControlGate(table)` (resolved at runtime); the
+    // purge path threads it via `_resolveDualControlGate(opts)` and
+    // refuses with `dual-control-required` when no grant is present.
+    //
+    // Detector: any lib/ call to `purgeAuditChain(` MUST appear in a
+    // file that also names the gate (`_checkDualControlGate` /
+    // `_resolveDualControlGate` / `dualControlGrant`). A new caller
+    // that physically deletes chain rows without routing through the
+    // gate trips here.
+    id: "audit-purge-without-dual-control-gate",
+    primitive: "auditTools.purge({ dualControlGrant }) / db.purgeAuditChain — physical audit-chain deletion MUST consult the dual-control gate (_checkDualControlGate / _resolveDualControlGate); one operator must not be able to erase the tamper-evident chain alone",
+    regex: /\bpurgeAuditChain\s*\(/,
+    requires: /_checkDualControlGate|_resolveDualControlGate|dualControlGrant/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.7 — audit-chain purge is irreversible and tamper-evidence-destroying. The discipline: the chain may only be truncated under a two-authorizer dual-control grant. db.js defines the gate (_checkDualControlGate) and audit-tools.js purge() resolves+enforces it (_resolveDualControlGate) before calling db().purgeAuditChain; both files satisfy the companion check. A future file that calls purgeAuditChain without naming the gate would let a single operator delete evidence — exactly the shape this blocks.",
+  },
+
+  {
+    // v0.14.7 — raw-SQL fragments passed to `whereRaw` / the
+    // WhereBuilder `.raw(sql, params)` escape hatch must parameterize
+    // values via the `params` array, NOT interpolate or concatenate
+    // them into the SQL string. `_assertRawNoStringLiteral` refuses an
+    // embedded `'...'` literal at runtime (unless the caller opts in
+    // with `allowLiterals`), but the static discipline is stronger:
+    // lib/ must never BUILD the raw SQL by `${...}` template
+    // interpolation or `"..." + value` string concatenation — that is
+    // the injection shape the bound-params API exists to prevent.
+    //
+    // Detector fires on a whereRaw/.raw call whose first argument is a
+    // template literal containing `${` or a string-concat expression.
+    // A no-arg `bodyParser.raw()` (different `.raw`) does not match —
+    // the regex requires an interpolated/concatenated string argument.
+    id: "whereraw-interpolated-or-concatenated-sql",
+    primitive: "whereRaw(sql, params) / qb.raw(sql, params) — pass values through the bound `params` array; never `${...}`-interpolate or `+`-concatenate them into the SQL string (that is the injection shape the params API prevents)",
+    regex: /(?:whereRaw|\.raw)\s*\(\s*(?:`[^`]*\$\{|["'][^"']*["']\s*\+|[A-Za-z_$][\w$]*\s*\+\s*["'`])/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.7 — b.db whereRaw / WhereBuilder.raw accept an operator SQL fragment plus a bound-params array. Concatenating or template-interpolating a value into the fragment defeats the placeholder binding and reintroduces SQL injection. lib/ has zero such call sites today; the detector keeps it that way (the runtime _assertRawNoStringLiteral gate is the operator-facing backstop, this is the framework-internal one). No-argument `.raw()` mountings (e.g. bodyParser.raw()) don't match — an interpolated/concatenated string argument is required.",
+  },
+
+  {
+    // v0.14.7 — equality-lookup ("derived") hashes for sealed columns
+    // must be computed through cryptoField._computeDerivedHash, which
+    // honours the per-table / per-column mode policy (salted-sha3 by
+    // default, hmac-shake256 opt-in keyed off vault.getDerivedHashMacKey).
+    // Hand-rolling `sha3Hash(vault.getDerivedHashSalt() + ns + value)`
+    // at a new site bypasses the keyed-MAC option AND the mode policy,
+    // and risks a static-salt regression if the salt source is changed
+    // for one caller but not the canonical helper.
+    //
+    // Detector: direct use of `getDerivedHashSalt().toString("hex") +`
+    // outside crypto-field.js (the canonical helper). The helper itself
+    // is allowlisted.
+    id: "derived-hash-handrolled-outside-crypto-field",
+    primitive: "cryptoField derived/lookup hashes — compute via _computeDerivedHash (honours salted-sha3 vs hmac-shake256 mode + vault.getDerivedHashMacKey); do not hand-roll sha3Hash(getDerivedHashSalt() + ns + value) at call sites",
+    regex: /getDerivedHashSalt\s*\(\s*\)\s*\.toString\s*\(\s*["']hex["']\s*\)\s*\+/,
+    skipCommentLines: true,
+    allowlist: [
+      // The canonical helper — _computeDerivedHash branches on mode here.
+      "lib/crypto-field.js",
+    ],
+    reason: "v0.14.7 — derived-hash equality lookups gained a keyed mode (hmac-shake256 off vault.getDerivedHashMacKey) alongside the salted-sha3 default. The mode decision lives in cryptoField._computeDerivedHash. A site that hand-derives the hash with getDerivedHashSalt() bypasses the keyed option and the per-column mode policy; only the canonical helper (crypto-field.js) may name the salt directly.",
+  },
+
+  {
+    // v0.14.7 — a `db.auth.failed` audit row must record WHICH
+    // relation the rejected credential attempted to reach
+    // (`attemptedTable`), so an operator triaging a credential-abuse
+    // event can scope blast radius without correlating to the raw SQL
+    // log. external-db extracts the target relation defensively
+    // (_extractTargetRelation) and stamps both resource.attemptedTable
+    // and the audit metadata. Emitting the auth-failure audit without
+    // it loses the forensic signal.
+    //
+    // Detector: an `action: "db.auth.failed"` audit emit MUST appear in
+    // a file that also names `attemptedTable`. The metric emitter
+    // (_emitMetric("db.auth.failed", ...)) uses a positional shape, not
+    // `action:`, so it doesn't match.
+    id: "db-auth-failed-audit-without-attempted-relation",
+    primitive: "db.auth.failed audit — stamp the attempted relation (attemptedTable, via _extractTargetRelation) on credential-rejection audit rows so blast radius is triageable without the raw SQL log",
+    regex: /action\s*:\s*["']db\.auth\.failed["']/,
+    requires: /attemptedTable/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.7 — external-db credential-rejection audits (SQLSTATE 28000 / 28P01 / 42501) now carry attemptedTable, the relation the rejected identity tried to touch, extracted defensively from the SQL. The detector requires any file emitting an action:'db.auth.failed' audit to also name attemptedTable so a future emitter can't drop the forensic field.",
+  },
+
 ];
 
 // @example placeholder detection lives in
@@ -10565,9 +10661,9 @@ function testPrimitiveReachability() {
 //               onDeny / problemDetails opts. A new deny-path
 //               middleware that hardcodes
 //               `res.writeHead(<4xx/5xx>, { "Content-Type": ... })`
-//               locks consumers out of the response shape — the
-//               integration-friction class that blocked downstream
-//               adoption (the rate-limit text/plain 429). ----
+//               locks consumers out of the response shape — which is
+//               what pinned rate-limit's 429 to text/plain before this
+//               convention existed. ----
 function testDenyPathComposesDenyResponse() {
   // class: deny-path-hardcoded-response
   var MW_ROOT = path.resolve(LIB_ROOT, "middleware");
@@ -10610,9 +10706,73 @@ function testDenyPathComposesDenyResponse() {
     violations);
 }
 
+// ---- Pattern: operator-facing source comments must describe the code,
+//               not the internal authoring process. These shapes are
+//               internal slice / bug / plan IDs, code-review-process
+//               residue (Codex P-levels, PR numbers), and dated
+//               decision parentheticals — none of which an operator
+//               reading the shipped source can map to anything in their
+//               own checkout. Genuinely operator-meaningful references
+//               (RFC / CVE / NIST / CWE, "since vX.Y.Z", established
+//               terse markers like D-M4 / AUTH-32) are NOT matched.
+//               Allowlist a false positive with `// allow:internal-
+//               narrative-comment`. ----
+function testNoInternalNarrativeComments() {
+  // class: internal-narrative-comment
+  var NARRATIVE = [
+    { re: /\b(?:SUBSTRATE|BUG|MAIL)-\d+\b/,        what: "internal slice/bug ID" },
+    { re: /\b(?:D-[MLH]\d+|AUTH-\d+|CRYPTO-\d+|SUPPLY-\d+)\b/, what: "internal domain/slice ID" },
+    { re: /\bCodex\s+P\d/,                          what: "code-review-process reference (Codex P#)" },
+    { re: /\bF-[A-Z]{2,}-\d+\b/,                    what: "internal feature/plan item ID" },
+    { re: /\bPR\s+#\d+\b/,                          what: "pull-request number (process residue)" },
+    { re: /\b[Aa]udit\s+\d{4}-\d{2}-\d{2}/,         what: "dated audit/decision residue" },
+    { re: /\bReported\s+\d{4}-\d{2}-\d{2}/,         what: "dated report residue" },
+    { re: /\bCore Rule\s+§\d/,                 what: "internal CLAUDE.md rule-number citation" },
+  ];
+  var files = _libFiles();
+  var bad = [];
+  var jsdocLineRe = /^\s*\*/;
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var src = fs.readFileSync(files[fi], "utf8");
+    var lines = src.split("\n");
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      // Scan the comment portion only: a ` * `-prefixed JSDoc line in
+      // full, or the text after a line's first `//`.
+      var comment = null;
+      if (jsdocLineRe.test(line)) {
+        comment = line;
+      } else {
+        var idx = line.indexOf("//");
+        if (idx !== -1) comment = line.slice(idx);
+      }
+      if (comment === null) continue;
+      for (var p = 0; p < NARRATIVE.length; p++) {
+        var m = comment.match(NARRATIVE[p].re);
+        if (m) {
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: NARRATIVE[p].what + ": `" + m[0] + "` in an operator-facing comment — " +
+                     "describe the change, not the internal process (strip the label / drop the " +
+                     "dated parenthetical / cite the public reason instead)",
+          });
+          break;
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "internal-narrative-comment");
+  _report("operator-facing source comments must not carry internal-process narrative " +
+          "(slice / bug / plan IDs, Codex / PR references, dated decision parentheticals)",
+    bad);
+}
+
 async function run() {
   testPrimitiveReachability();
   testDenyPathComposesDenyResponse();
+  testNoInternalNarrativeComments();
   testNoOrphanAllowClass();
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
