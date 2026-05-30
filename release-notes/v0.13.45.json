@@ -1,0 +1,31 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.13.45",
+  "date": "2026-05-29",
+  "headline": "`b.cert` now fetches and staples a validated OCSP response per certificate, and validates declared compliance postures at create()",
+  "summary": "Two capabilities that b.cert documented but did not act on are now wired through. OCSP stapling: the cert manager fetches the leaf's OCSP response from the responder named in its Authority Information Access extension, validates it against the issuer (status, nonce, serial) via b.network.tls.ocsp, caches the DER, and exposes it on getContext().ocspResponse so a TLS server's OCSPRequest handler can staple it. The fetch runs in the background on a refresh timer and never blocks cert.start() — a slow or unreachable responder produces an audited per-certificate failure, not a stalled boot. Compliance postures: opts.compliance names are now validated against b.compliance.KNOWN_POSTURES at create() (an unknown name throws cert/unknown-compliance-posture instead of being silently recorded) and are surfaced on getContext().compliance for an auditor. Storage-confidentiality postures hold by construction because cert keys and certificates are always sealed at rest. The supporting composition primitive b.network.tls.ocsp.fetch (build request, POST to the responder through b.httpClient, validate the response) is now part of the public OCSP surface.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.network.tls.ocsp.fetch — fetch and validate an OCSP response",
+          "body": "The OCSP helper set previously built requests and evaluated responses but had no way to actually retrieve one. b.network.tls.ocsp.fetch({ leafPem, issuerPem, nonce?, timeoutMs? }) reads the responder URL from the leaf certificate's Authority Information Access extension, builds the request, POSTs it through b.httpClient (so the SSRF guard and pinned DNS apply), and validates the response against the issuer — returning the validated DER plus the parsed evaluation. It rejects when the leaf carries no OCSP responder URL or the response fails validation."
+        },
+        {
+          "title": "b.cert staples a validated OCSP response per certificate",
+          "body": "With ocsp.stapling enabled (the default), the cert manager refreshes each certificate's OCSP response on a timer (ocsp.refreshMs, default 12h) and caches the validated DER. getContext(serverName).ocspResponse returns that DER for a TLS server to hand back from its OCSPRequest handler. The refresh runs in the background and is never on the path of cert.start(): an unreachable or slow responder is recorded as an audited cert.ocsp.refresh failure for that certificate and leaves the rest of the manager running."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "opts.compliance posture names are validated at create()",
+          "body": "b.cert.create now checks each name in opts.compliance against b.compliance.KNOWN_POSTURES and throws cert/unknown-compliance-posture on an unrecognized name, so a typo is caught at construction rather than being silently recorded. The declared postures are surfaced on getContext().compliance. Cert keys and certificates are always sealed at rest, so storage-confidentiality postures are satisfied by construction."
+        }
+      ]
+    }
+  ]
+}
