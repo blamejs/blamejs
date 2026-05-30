@@ -1043,6 +1043,213 @@ function testNoInternalBindingNameInProse() {
     bad);
 }
 
+// ---- Pattern: require-block `=` column alignment ----
+//
+// class: require-block-misaligned
+//
+// Within a contiguous top-of-file run of `var <name> = require(...)` /
+// `var { ... } = require(...)` lines, the `=` signs share a column WHEN
+// the block is written in the aligned style. Two styles ship in lib/
+// and BOTH are legitimate:
+//
+//   compact (single space — never flagged):
+//     var C = require("./constants");
+//     var audit = require("./audit");
+//
+//   aligned (padded to a shared column):
+//     var lazyRequire = require("./lazy-require");
+//     var C           = require("./constants");
+//
+// The detector fires only on a sub-block that DECLARES alignment intent
+// (at least one require line carries 2+ spaces before its `=`) and only
+// on a line that COULD reach the block's shared column but doesn't.
+//
+// The shared column is the MODAL `=` column — the column the majority
+// of the block's require lines actually use. A line is a violation when
+// its `=` is off the modal column AND its left-hand side is short enough
+// to reach it: `lhsLen + 1 <= modalCol`. A `var { LongDestructure } =`
+// or a long plain name whose LHS is as wide as (or wider than) the modal
+// column can only ever get a single space — it physically can't align,
+// so that overshoot is house style, not drift, and is EXEMPT. (This is
+// the classic `var guardAgentRegistry = ...` / `var { defineClass } = ...`
+// shape: unfittable, correctly ignored. The target is the fittable line
+// that drifts one column anyway — the stray extra space, or the short
+// `var C =` that didn't get padded to the column.)
+//
+// Sub-blocks align INDEPENDENTLY. A blank line OR an interior `//` /
+// `/* */` comment divider between require lines splits the run: a tier
+// of node: builtins or a lazyRequire tier separated from the relative-
+// require tier by an explanatory comment is its own group, checked on
+// its own column. Only the leading top-of-file require region is
+// inspected — array/object element order, later constant blocks, and
+// every non-require `=` are out of scope.
+//
+// REQUIRE_ALIGN_ALLOWLIST below is the migration backlog: files that
+// align today but carry a fittable drifted line. As each is reflowed to
+// a uniform column (or to compact single-space), drop its entry.
+var REQUIRE_ALIGN_ALLOWLIST = [
+  "lib/ai-pref.js",
+  "lib/archive.js",
+  "lib/auth/oid4vci.js",
+  "lib/cdn-cache-control.js",
+  "lib/compliance-ai-act-logging.js",
+  "lib/compliance-ai-act.js",
+  "lib/db-file-lifecycle.js",
+  "lib/flag-providers.js",
+  "lib/http-client-cookie-jar.js",
+  "lib/http-client.js",
+  "lib/local-db-thin.js",
+  "lib/log-stream-syslog.js",
+  "lib/mail-require-tls.js",
+  "lib/mail-scan.js",
+  "lib/mail-server-imap.js",
+  "lib/mail-server-mx.js",
+  "lib/mail-server-submission.js",
+  "lib/mail-srs.js",
+  "lib/metrics.js",
+  "lib/middleware/body-parser.js",
+  "lib/middleware/tus-upload.js",
+  "lib/pqc-agent.js",
+  "lib/public-suffix.js",
+  "lib/queue.js",
+  "lib/router.js",
+  "lib/scheduler.js",
+  "lib/session-device-binding.js",
+  "lib/test-harness.js",
+  "lib/websocket.js",
+];
+
+// A top-of-file require-assignment line. Plain identifier OR a `{ ... }`
+// destructure on the left; require / lazyRequire on the right.
+var _REQUIRE_ALIGN_LINE = /^\s*var\s+(?:\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*(?:require|lazyRequire)\s*\(/;
+
+// For a require-assignment line: lhsLen (length of the LHS up to and
+// including its last non-space token char), col (the `=` column = lhsLen
+// + the padding spaces), and pad (the padding-space count). Returns null
+// for any line that is not a require-assignment.
+function _requireEqInfo(line) {
+  var m = line.match(/^(.*?[^\s=!<>+\-*/%&|^])(\s*)=\s*(?:require|lazyRequire)\s*\(/);
+  if (!m) return null;
+  return { lhsLen: m[1].length, col: m[1].length + m[2].length, pad: m[2].length };
+}
+
+// The modal `=` column of a sub-block: the column the most require lines
+// land on. Ties break to the wider column (the deliberately-padded one,
+// not a short outlier), so a block of two aligned lines plus a stray
+// short `var C =` resolves to the aligned column.
+function _requireModalColumn(infos) {
+  var counts = {};
+  var best   = null;
+  var bestN  = -1;
+  for (var i = 0; i < infos.length; i++) {
+    var c = infos[i].info.col;
+    counts[c] = (counts[c] || 0) + 1;
+    if (counts[c] > bestN || (counts[c] === bestN && c > best)) {
+      bestN = counts[c];
+      best  = c;
+    }
+  }
+  return best;
+}
+
+function testRequireBlockAlignment() {
+  // class: require-block-misaligned
+  var files = _libFiles();
+  var bad = [];
+
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (REQUIRE_ALIGN_ALLOWLIST.indexOf(rel) !== -1) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+
+    // Locate the first leading require line. Skip the shebang,
+    // "use strict", and the top docblock / comments + blanks. Bail the
+    // moment real code appears before any require (no leading region).
+    var firstReq = -1;
+    for (var j = 0; j < lines.length; j++) {
+      if (_REQUIRE_ALIGN_LINE.test(lines[j])) { firstReq = j; break; }
+      var t = lines[j].trim();
+      if (t === "") continue;
+      if (/^("use strict"|'use strict');?$/.test(t)) continue;
+      if (/^#!/.test(t)) continue;
+      if (/^\/\//.test(t)) continue;
+      if (/^\/\*/.test(t) || /^\*/.test(t) || /\*\//.test(t)) continue;
+      break;
+    }
+    if (firstReq === -1) continue;
+
+    // Collect the contiguous leading require region: require lines,
+    // blank lines (sub-block separators), and interior comment lines
+    // (also sub-block separators). Stop at the first real-code line
+    // that is not a require.
+    var region = [];
+    var inBlockComment = false;
+    for (var k = firstReq; k < lines.length; k++) {
+      var line = lines[k];
+      var tt = line.trim();
+      if (inBlockComment) {
+        region.push({ n: k + 1, line: line, kind: "comment" });
+        if (/\*\//.test(tt)) inBlockComment = false;
+        continue;
+      }
+      if (_REQUIRE_ALIGN_LINE.test(line)) { region.push({ n: k + 1, line: line, kind: "req" }); continue; }
+      if (tt === "") { region.push({ n: k + 1, line: line, kind: "blank" }); continue; }
+      if (/^\/\//.test(tt)) { region.push({ n: k + 1, line: line, kind: "comment" }); continue; }
+      if (/^\/\*/.test(tt)) {
+        region.push({ n: k + 1, line: line, kind: "comment" });
+        if (!/\*\//.test(tt)) inBlockComment = true;
+        continue;
+      }
+      break;
+    }
+
+    // Split the region into sub-blocks separated by a blank line OR a
+    // comment divider; each aligns independently. For every sub-block of
+    // >=3 require lines that shows alignment intent (some line padded
+    // with 2+ spaces before `=`), flag every line whose `=` is off the
+    // modal column yet whose LHS is short enough to reach it.
+    var sub = [];
+    var flush = function () {
+      var infos = [];
+      for (var s = 0; s < sub.length; s++) {
+        if (sub[s].kind !== "req") continue;
+        var info = _requireEqInfo(sub[s].line);
+        if (info) infos.push({ entry: sub[s], info: info });
+      }
+      sub = [];
+      if (infos.length < 3) return;
+      var anyPadded = infos.some(function (e) { return e.info.pad >= 2; });
+      if (!anyPadded) return;                      // compact single-space style — not aligned, not flagged
+      var modalCol = _requireModalColumn(infos);
+      for (var z = 0; z < infos.length; z++) {
+        var e = infos[z];
+        if (e.info.col === modalCol) continue;     // already on the column — fine
+        if (e.info.lhsLen + 1 > modalCol) continue; // LHS too wide to reach the column — house-style overshoot, exempt
+        bad.push({
+          file:    rel,
+          line:    e.entry.n,
+          content: e.entry.line.trim() +
+                   "  — `=` off the require-block column (align every `=` in this " +
+                   "sub-block to one column, or reflow the group to compact single-space)",
+        });
+      }
+    };
+    for (var r = 0; r < region.length; r++) {
+      if (region[r].kind === "blank" || region[r].kind === "comment") { flush(); continue; }
+      sub.push(region[r]);
+    }
+    flush();
+  }
+
+  _report("top-of-file require blocks keep their `=` signs column-aligned " +
+          "(per blank-or-comment-separated sub-block; compact single-space " +
+          "blocks and unfittable-LHS lines exempt)",
+    bad);
+}
+
 function testRequireBindingConsistency() {
   // class: require-binding-name
   // For each module imported via the plain `var <name> = require("<module>")`
@@ -10766,6 +10973,7 @@ async function run() {
   testNoTierTerminologyInLib();
   testNoInlineRequires();
   testRequireBindingConsistency();
+  testRequireBlockAlignment();
   testNodeBuiltinPrefixConsistency();
   testNoInternalBindingNameInProse();
   testNoDynamicRequires();
