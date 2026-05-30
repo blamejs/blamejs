@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.5",
-  "createdAt": "2026-05-30T14:33:33.657Z",
+  "frameworkVersion": "0.14.6",
+  "createdAt": "2026-05-30T16:00:48.364Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -41121,6 +41121,10 @@
           "arity": 1
         },
         "requireAuth": {
+          "type": "function",
+          "arity": 1
+        },
+        "requireBoundKey": {
           "type": "function",
           "arity": 1
         },

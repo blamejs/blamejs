@@ -258,6 +258,17 @@ function cmdPrepare(opts) {
   _run("node", ["scripts/validate-source-comment-blocks.js"]);
   _ok("eslint + codebase-patterns + source-comment-blocks clean");
 
+  _section("supply-chain currency");
+  // A stale SHA-pinned GitHub Action or vendored bundle becomes a
+  // release blocker HERE — with a ready-to-paste pin line in the
+  // actions report — instead of an after-the-fact Dependabot PR.
+  // Each script treats only an actually-newer upstream version as a
+  // failure; transient registry / API errors stay advisory (exit 0)
+  // so a flaky network response doesn't block the cut.
+  _run("node", ["scripts/check-actions-currency.js"]);
+  _run("node", ["scripts/check-vendor-currency.js"]);
+  _ok("github actions + vendored bundles current");
+
   console.log("\nnext: node scripts/release.js smoke");
 }
 
