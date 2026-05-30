@@ -1,0 +1,234 @@
+{
+  "$schema": "../scripts/release-notes-consolidated-schema.json",
+  "minor": "0.14",
+  "releases": [
+    {
+      "version": "0.14.6",
+      "date": "2026-05-30",
+      "headline": "Access-refusal middleware can return RFC 9457 problem+json or a custom response, and several documented-but-uncallable APIs are now reachable",
+      "summary": "Every access-refusal middleware — the auth gates (bearer, DPoP, mTLS, AAL, bound-key), CSRF, CORS, rate-limit, bot-guard, age-gate, the host and network allowlists, and the method and content-type gates — now accepts two uniform options: `problemDetails: true` returns an RFC 9457 `application/problem+json` body, and `onDeny(req, res, info)` hands the response to the caller. With neither set the refusal is byte-for-byte what it was, so this is a drop-in change that lets a service standardize one error envelope across its API instead of working around each middleware's hardcoded body. Alongside that: `b.middleware.requireBoundKey` is now exported (it was documented and tested but never wired into the middleware surface), `b.middleware.bearerAuth` accepts `requiredScopes` (previously rejected at construction, which made its scope-enforcement path unreachable), API-key refusals send the RFC 6750 challenge code that matches the failure, two documented call paths that named a missing namespace segment are corrected, and the release flow now flags stale GitHub Actions and vendored bundles — with a ready-to-paste pin — before a dependency PR is needed.",
+      "sections": [
+        {
+          "heading": "Added",
+          "items": [
+            {
+              "title": "Uniform `onDeny` and `problemDetails` options on every access-refusal middleware",
+              "body": "Each request-lifecycle middleware that refuses a request now takes `problemDetails: true` to emit an RFC 9457 `application/problem+json` body (composing `b.problemDetails`) and `onDeny(req, res, info)` to take over the response entirely; `info` carries the status, a machine reason, and the middleware-specific fields. The deny-path response headers (`Allow`, `WWW-Authenticate`, `Retry-After`, `Accept`) survive every mode. When neither option is set the response is unchanged. Covers `requireAuth`, `requireAal`, `requireMethods`, `requireContentType`, `requireMtls`, `requireBoundKey`, `bearerAuth`, `dpop`, `csrfProtect`, `fetchMetadata`, `botGuard`, `ageGate`, `hostAllowlist`, `networkAllowlist`, `cors`, `rateLimit`, and `dailyByteQuota` (whose existing `onExceeded` keeps working as an alias of `onDeny`)."
+            }
+          ]
+        },
+        {
+          "heading": "Fixed",
+          "items": [
+            {
+              "title": "`b.middleware.requireBoundKey` is now callable",
+              "body": "The Bearer-API-key middleware was documented (with examples and tests) but never exported on `b.middleware`, so `b.middleware.requireBoundKey(...)` threw `undefined is not a function`. It is now wired into the middleware surface."
+            },
+            {
+              "title": "`b.middleware.bearerAuth` accepts `requiredScopes`",
+              "body": "The RFC 6750 scope-enforcement path read `opts.requiredScopes`, but the option was rejected at construction with `unknown option`, making the 403 `insufficient_scope` behavior unreachable. `requiredScopes` is now an accepted option."
+            },
+            {
+              "title": "RFC 6750 challenge codes on API-key refusals",
+              "body": "`b.middleware.requireBoundKey` now sends the `WWW-Authenticate` error code that matches the failure: `insufficient_scope` on a 403 missing-scope, `invalid_token` on an unknown or revoked token, and no error code on a 401 that presented no credentials (RFC 6750 §3). It previously sent `invalid_request` for every refusal."
+            },
+            {
+              "title": "Corrected two documented call paths",
+              "body": "The compliance and network references named a path that dropped a namespace segment: the conformity-assessment scaffold is at `b.cra.report.conformityAssessment` (not `b.cra.conformityAssessment`), and the per-socket tuning helper is at `b.network.socket.applyToSocket` (not `b.network.applyToSocket`). The documented signatures now match the callable paths."
+            },
+            {
+              "title": "GitHub Actions pins refreshed",
+              "body": "`github/codeql-action` 4.35.5 to 4.36.0, and `docker/login-action`, `docker/setup-buildx-action`, and `docker/setup-qemu-action` to their latest releases."
+            }
+          ]
+        },
+        {
+          "heading": "Detectors",
+          "items": [
+            {
+              "title": "`@primitive` reachability gate",
+              "body": "A new check resolves every documented `b.X.Y` primitive against the actual public surface and fails the build when a documented path is not callable (factory-instance shorthands excluded). This is the gate that would have caught the `requireBoundKey` and call-path issues above."
+            },
+            {
+              "title": "Deny-path composition gate",
+              "body": "A new check requires every access-refusal middleware to route its refusal through the shared deny-response writer, so a future middleware cannot reintroduce a hardcoded body that locks callers out of `onDeny` / `problemDetails`."
+            },
+            {
+              "title": "Actions and vendor currency in the release flow",
+              "body": "The release flow now fails the cut when a SHA-pinned GitHub Action or a vendored bundle is behind its latest upstream release. The actions report prints a ready-to-paste `owner/repo@<sha>  # vX.Y.Z` pin and every file and line that uses it, so the bump is copy-paste rather than an after-the-fact dependency PR. Transient registry or API errors stay advisory so a flaky network response does not block an unrelated release."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.14.5",
+      "date": "2026-05-30",
+      "headline": "Finished cleaning up the mislabeled byte-literal lint suppressions, with no API or behavior changes",
+      "summary": "A follow-up to the byte-literal lint tightening. The remaining suppression comments that named the byte-literal check on values that are not byte sizes — JSON-RPC error codes, HTTP status codes, octet ranges, day-in-milliseconds constants — are removed, keeping their explanatory text and any correctly-named companion suppression. Every byte-literal suppression that remains is now on genuine 1024-scale byte arithmetic. Source-comment hygiene only.",
+      "sections": [
+        {
+          "heading": "Changed",
+          "items": [
+            {
+              "title": "Remaining mislabeled byte-literal suppressions removed",
+              "body": "The byte-literal lint was previously a check on any multiple-of-8 integer, so suppression comments naming it were scattered across non-byte values. The last of those (in a handful of files, in mixed comment formats) are now removed — their explanatory text is retained as plain comments, and any correctly-named companion suppression is kept. The only byte-literal suppressions that remain are on genuine 1024-scale byte arithmetic. No change to any exported API, error code, wire format, or runtime behavior."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.14.4",
+      "date": "2026-05-30",
+      "headline": "Removed three pieces of dead code from the SAML, TLS, and JMAP surfaces; no API or behavior changes",
+      "summary": "Cleanup of unreachable code. A reverse signature-algorithm lookup in the SAML verifier was never called — the actual verification path resolves the algorithm through the supported-signature table — so it is removed and a stale comment that referenced it is corrected. A leftover no-op placeholder in the TLS certificate re-encode path (a zero-length slice that was assigned and discarded) is removed, leaving the verbatim extension re-encode it sat next to. An unused JMAP well-known-path constant that existed only to be discarded is removed. None of this changes any exported API, error code, wire format, or runtime behavior.",
+      "sections": [
+        {
+          "heading": "Removed",
+          "items": [
+            {
+              "title": "Unreachable code in SAML, TLS, and JMAP",
+              "body": "Removed `_sigAlgFromUri` from the SAML module (a reverse alg lookup that was never called — the embedded XML-DSig verifier resolves the algorithm via the supported-signature table, and the redirect-binding path uses the forward `_sigAlgUrn`), a discarded zero-length-slice placeholder in the TLS certificate extension re-encode path, and an unused well-known-path constant in the JMAP server. Internal cleanup only — no change to any exported API, error code, wire format, or runtime behavior."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.14.3",
+      "date": "2026-05-30",
+      "headline": "A codebase check now ensures every lint-suppression marker names a real check, so a typo can't silently disable a guard",
+      "summary": "Source files suppress an individual lint with an `// allow:<class>` comment. If the class is mistyped or stale, the comment suppresses nothing — the check it names does not exist — so the issue it was meant to explain ships unflagged. A new codebase check now verifies every `// allow:<class>` marker names a registered check class and fails if it does not, with the full set of valid classes maintained as an explicit registry. Two markers that named a non-kebab class were corrected as part of this. No runtime, API, or wire-format changes.",
+      "sections": [
+        {
+          "heading": "Detectors",
+          "items": [
+            {
+              "title": "Lint-suppression markers must name a registered check",
+              "body": "A new check flags any `// allow:<class>` suppression comment whose class is not one of the registered check classes — catching typos and stale markers (for example a marker that named a check which was later renamed) that would otherwise silently disable the guard they appear to explain. The valid classes are kept as an explicit registry, so adding a check with a new allow-class is a one-line registration. Source-comment hygiene only — no change to any exported API, error code, wire format, or runtime behavior."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.14.2",
+      "date": "2026-05-29",
+      "headline": "Internal lint hygiene: the byte-literal check now flags only genuine byte-scale arithmetic, with no API or behavior changes",
+      "summary": "A no-behavior-change cleanup of the source tree's internal lint markers. The byte-literal lint previously flagged every integer that was a multiple of 8 — which is most numbers — so the source carried a large number of suppression comments on values that were not byte sizes at all (status codes, counts, lengths, radixes, opcodes). The lint now flags only 1024-scale byte arithmetic (the case the C.BYTES.kib/mib/gib helpers exist to replace), and the now-unnecessary suppression comments have been removed while keeping their explanatory text. Several lint-suppression markers that named a check that does not exist were also corrected. None of this changes any API, wire format, or runtime behavior.",
+      "sections": [
+        {
+          "heading": "Changed",
+          "items": [
+            {
+              "title": "Source-tree lint markers cleaned up",
+              "body": "The internal byte-literal lint was tightened to flag only genuine byte-scale (`* 1024`) arithmetic, and the suppression comments it previously required on non-byte integers were removed (their explanatory text is retained as plain comments). A handful of suppression markers that referenced a non-existent check were pointed at the correct one or removed. This is source-comment hygiene only — there is no change to any exported API, error code, wire format, or runtime behavior."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.14.1",
+      "date": "2026-05-29",
+      "headline": "Correctness fixes: JAR request-object typ enforcement, byte-faithful PGP multipart/signed, and SAML InResponseTo binding",
+      "summary": "A set of correctness fixes across the auth, mail-crypto, TLS, and encoder surfaces. The most important: JWT-secured authorization requests (RFC 9101) now require the request object to carry the registered `oauth-authz-req+jwt` typ, closing a cross-JWT-confusion vector; the PGP multipart/signed wrapper is now assembled byte-faithfully so non-ASCII signed content can't be corrupted; and SAML response verification now returns the InResponseTo of the SubjectConfirmation that actually validated. Two of these change behavior — see Changed — and are bug fixes rather than new features.",
+      "sections": [
+        {
+          "heading": "Security",
+          "items": [
+            {
+              "title": "JAR request objects must carry the registered typ (RFC 9101)",
+              "body": "`b.auth.jar.parse` now requires the request-object JWS header to carry `typ: \"oauth-authz-req+jwt\"` (with or without the `application/` prefix); a request object with an absent or different typ is refused with `auth-jar/bad-typ`. RFC 9101 §10.8 specifies this media type precisely to stop a JWT minted for another purpose (an ID token, an access token, a logout token) and signed by the same client key from being replayed as a request object. The existing `iss` / `aud` / `client_id` bindings already constrained that; this restores the explicit type check as well. This is stricter than before — see Changed."
+            }
+          ]
+        },
+        {
+          "heading": "Changed",
+          "items": [
+            {
+              "title": "JAR parsing rejects untyped request objects (breaking)",
+              "body": "Following the typ enforcement above, a request object whose header omits `typ` is now refused. An authorization server whose clients sign request objects without the `oauth-authz-req+jwt` typ must update those clients to set it."
+            },
+            {
+              "title": "PGP sign() returns multipartSigned as a Buffer (breaking)",
+              "body": "`b.mail.crypto.pgp.sign(...).multipartSigned` is now a Buffer instead of a string. The OpenPGP signature covers the signed-part bytes exactly, and a JS-string round trip through latin1/utf8 could corrupt non-ASCII signed content and break verification, so the RFC 3156 multipart/signed wrapper is now assembled as bytes. Code that wrote the previous string to the wire works unchanged when it writes the Buffer; code that did string operations on the value should treat it as a Buffer (its `indexOf` / `toString` still work)."
+            }
+          ]
+        },
+        {
+          "heading": "Fixed",
+          "items": [
+            {
+              "title": "SAML response verification binds InResponseTo to the validated confirmation",
+              "body": "`verifyResponse` returned the InResponseTo of the first SubjectConfirmationData in the assertion rather than of the SubjectConfirmation that actually passed bearer validation. When a response carried more than one SubjectConfirmation, the returned value could come from a non-validated confirmation. It is now the InResponseTo of the confirmation that validated."
+            },
+            {
+              "title": "checkServerIdentity9525 emits the documented CN-fallback audit code",
+              "body": "A CN-only legacy certificate (a Common Name present, no subjectAltName) is now refused by the exported `b.network.tls.checkServerIdentity9525` with the distinct `tls/pkix-cn-fallback-refused` code its documentation promised, so audit logs can tell a CN-only certificate apart from one carrying neither a SAN nor a CN (which still yields `tls/pkix-san-required`). The accept/refuse outcome is unchanged — both are refused; only the audit granularity improved."
+            },
+            {
+              "title": "OIDC back-channel logout / JARM no longer accept dead override parameters",
+              "body": "`verifyBackchannelLogoutToken` and `parseJarmResponse` passed `acceptedAlgs` / `jwksUri` / `maxClockSkewMs` through to the ID-token verifier, which ignored them and applied the configured (create()-time) values. The pass-throughs are removed so the code no longer reads as if those can be overridden per call; the configured trust anchor was — and remains — what applies."
+            },
+            {
+              "title": "Queue lease failures are logged",
+              "body": "The consumer loop's lease-acquisition error path swallowed the backend error silently; it now logs at debug so a flapping backend that has not yet tripped the circuit breaker is visible."
+            },
+            {
+              "title": "Protobuf and ASN.1 encoders reject out-of-range tags",
+              "body": "The protobuf tag encoder rejected nothing and would have emitted a wrong tag for field numbers at or above 2^28 (where the 32-bit shift overflows); the ASN.1 context-tag writers silently truncated tag numbers above 30 (which require the multi-byte high-tag-number form). Both now throw a RangeError rather than encode silently-wrong output. The values these encoders serve are well within range, so no current caller is affected."
+            },
+            {
+              "title": "oid4vci proofAlgorithms default documented accurately",
+              "body": "The documented default proof-algorithm list now matches the code (`[\"ES256\", \"ES384\", \"EdDSA\"]`); the doc previously omitted EdDSA, which the runtime has always accepted by default."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.14.0",
+      "date": "2026-05-29",
+      "headline": "Operator-configurable header and field names across SSE, request-id, rate-limit, age-gate, AI-Act disclosure, GraphQL federation, and the HTTP cache",
+      "summary": "This release makes operator-facing identifiers that were hardcoded configurable. The framework already let operators rename most names (CSRF cookie/field, cookie parser, i18n header/query/cookie, mTLS CA name, and so on); this closes the remaining gaps so a custom or framework-specific name is never frozen. Every new option defaults to the value emitted today, so upgrading changes no behavior — these are additive knobs. It also fixes a request-id asymmetry (the response header is now written on the same name the inbound id is read from) and wires an SSE proxy-buffering option whose escape hatch was documented but never implemented.",
+      "sections": [
+        {
+          "heading": "Added",
+          "items": [
+            {
+              "title": "Configurable cache-status header on the HTTP client",
+              "body": "The outbound HTTP client annotated every cached response with a hardcoded `x-blamejs-cache: HIT|MISS|STALE|REVALIDATED` header. `b.httpClient.cache.create` now takes `statusHeader` (default \"x-blamejs-cache\") — pass a custom name (e.g. \"x-cache\") to rename it, or null/false to suppress it entirely. The decision remains available programmatically on `res.cacheStatus`."
+            },
+            {
+              "title": "Configurable rate-limit header names",
+              "body": "`b.middleware.rateLimit` emitted the de-facto `X-RateLimit-Limit` / `X-RateLimit-Remaining` headers (which are not RFC-pinned). It now accepts `headerPrefix` (default \"X-RateLimit-\") so operators can match the unprefixed IETF-draft `RateLimit-*` names or an upstream gateway's convention; the limit/remaining pair is always built from the same prefix."
+            },
+            {
+              "title": "Configurable age-gate and AI-Act disclosure header names",
+              "body": "`b.middleware.ageGate` now takes `privacyPostureHeader` (default \"X-Privacy-Posture\"; null/false to suppress), and `b.middleware.aiActDisclosure` takes `headerPrefix` (default \"AI-Act-\") that prefixes the emitted Notice / Article / Policy headers. The EU AI Act mandates the disclosure, not the HTTP spelling, so operators matching a downstream convention can rename these."
+            },
+            {
+              "title": "Configurable GraphQL-federation replay-nonce header",
+              "body": "`b.graphqlFederation.guardSdl` read the replay nonce from the Apollo-vendor `x-apollographql-router-nonce` header with no override. It now accepts `nonceHeader` (default unchanged) so an operator fronting the gateway with a non-Apollo router can point the replay check at their own header."
+            },
+            {
+              "title": "SSE proxy-buffering opt-out",
+              "body": "`b.sse.create` and `b.middleware.sse` set `X-Accel-Buffering: no` (the nginx hint that disables proxy buffering). They now accept `proxyBuffer` (default true) — pass false when not behind nginx, or when buffering is controlled at the load balancer, to suppress the nginx-specific header. The opt-out was previously referenced in the documentation but not implemented."
+            }
+          ]
+        },
+        {
+          "heading": "Fixed",
+          "items": [
+            {
+              "title": "Request-id middleware reflects the configured header name",
+              "body": "`b.log.middleware` read the inbound request id from a configurable `headerName` but always wrote the response on the literal `X-Request-Id`. An operator who set a custom `headerName` (e.g. `X-Correlation-Id`) therefore read from one header and emitted another. The response is now written on the same configured name; the default remains `X-Request-Id`, so deployments that did not set `headerName` are unaffected."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
