@@ -314,7 +314,6 @@ var VALID_ALLOW_CLASSES = {
   "math-random-noncrypto": 1,
   "no-number-money-arithmetic": 1,
   "numeric-opt-Infinity": 1,
-  "numeric-opt-no-bounds-check": 1,
   "primitive-unreachable": 1,
   "process-exit": 1,
   "raw-byte-literal": 1,
@@ -460,14 +459,10 @@ function testNoRawByteLiterals() {
         // those are protocol constants, decoded to integers in the
         // PQC_GROUPS table and elsewhere. (0x11EC = 4588 not multiple
         // of 8, 0x11ED = 4589 not multiple of 8 — none trip anyway.)
-        // Skip commonly-decimal protocol constants where
-        // multiple-of-8 is coincidence:
-        //   - 256, 64, 32, 16 — bit-widths (which ARE byte-aligned;
-        //     fundamental fix routes them through C.BYTES.bit-arithmetic
-        //     or names them as protocol constants).
-        // No skip — flag every multiple of 8 strictly. The fundamental
-        // fix path is to use C.BYTES helpers or rename + comment as a
-        // protocol constant where 8-multiple is coincidence.
+        // After the `* 1024` gate above, this multiple-of-8 scan only
+        // runs on byte-scale arithmetic lines, so a multiple-of-8
+        // operand here is genuine byte math — the fix path is to route
+        // it through the C.BYTES helpers.
         hit = true;
         break;
       }
@@ -2104,15 +2099,16 @@ async function testNoDuplicateCodeBlocks() {
   //   SHINGLE_SIZES — token-window sizes scanned. Smaller catches
   //     finer-grain idiom (3-call chains); larger catches whole
   //     function bodies. Multi-pass produces both.
-  //   MIN_DISTINCT_FILES — threshold for cross-file repetition. 3+
-  //     means "appears in at least 3 files" (drift candidate).
+  //   MIN_DISTINCT_FILES — min files for a shingle to enter the
+  //     advisory inventory (2+). The hard-fail gate is the separate
+  //     STRONG_MIN_FILES = 3 (a shape in 3+ files fails the build).
   //   MIN_DISTINCT_TOKENS — skip shingles whose tokens are mostly
   //     punctuation / repeated closer chars.
   //   MAX_REPORTED_PER_LENGTH — cap to keep the report scannable;
   //     biggest-N hits are surfaced first because they represent the
   //     largest primitive opportunities.
   var SHINGLE_SIZES = [60, 50, 40, 30, 22, 16, 12, 8];
-  var MIN_DISTINCT_FILES = 2;          // ≥ 3 files share the shape
+  var MIN_DISTINCT_FILES = 2;          // 2+ files → advisory inventory (STRONG_MIN_FILES = 3 hard-fails)
   var MIN_DISTINCT_TOKENS = 5;
   var _MAX_REPORTED_PER_LENGTH = 5000;
 
@@ -3726,16 +3722,6 @@ async function testNoDuplicateCodeBlocks() {
         "lib/request-helpers.js:parseQualityList",
       ],
       reason: "Comma-separated header value parser walking pieces and splitting on `=` per piece. Each enforces a different grammar (RFC 9213 directive list, RFC 9111 Cache-Control directives, Sec-CH-UA brand-member params, RFC 7240/tus.io upload metadata, RFC 9110 quality-list / Accept-* header). Consolidating would couple unrelated header families.",
-    },
-    {
-      mode: "family-subset",
-      files: [
-        "lib/cdn-cache-control.js:_splitTopLevelCommas",
-        "lib/client-hints.js:_splitTopLevelSemis",
-        "lib/http-client-cache.js:_splitTopLevelCommas",
-        "lib/http-message-signature.js:_splitTopLevelSemis",
-      ],
-      reason: "Quote-aware top-level structured-fields splitter — walks a string respecting RFC 8941 §3.3.3 quoted-string state with backslash-escape so `,` (cdn-cache-control / http-client-cache) or `;` (client-hints brand-member params / http-message-signature Signature-Input params) inside quoted-string values doesn't split mid-value. Same shape replicated across four parsers because they each split on a different delimiter for a different RFC; consolidation candidate via a shared `b.structuredFields.splitTopLevel(s, sep)` helper but the per-file copy is intentional pending the extraction (operator-grep finds the splitter inside the file that uses it).",
     },
     {
       mode: "family-subset",
@@ -5743,7 +5729,7 @@ function testNoDeniedVendors() {
 
 // ---- Pattern 42: state-stamps in user-facing docs (smoke test the wiki) ----
 
-function testNoStateStampsInPublicDocs() {
+function testStateStampScanningDeferred() {
   // feedback_no_state_stamps_in_docs.md — version numbers / test counts
   // in README / SECURITY / CONTRIBUTING etc. rot the moment the next
   // release ships. We can't easily grep these via the lib walker, but
@@ -7974,7 +7960,7 @@ var KNOWN_ANTIPATTERNS = [
     requires: /_checkDualControlGate|_resolveDualControlGate|dualControlGrant/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "v0.14.7 — audit-chain purge is irreversible and tamper-evidence-destroying. The discipline: the chain may only be truncated under a two-authorizer dual-control grant. db.js defines the gate (_checkDualControlGate) and audit-tools.js purge() resolves+enforces it (_resolveDualControlGate) before calling db().purgeAuditChain; both files satisfy the companion check. A future file that calls purgeAuditChain without naming the gate would let a single operator delete evidence — exactly the shape this blocks.",
+    reason: "v0.14.7 — audit-chain purge is irreversible and tamper-evidence-destroying. The discipline: the chain may only be truncated under a two-authorizer dual-control grant. db.js defines the gate (_checkDualControlGate) and audit-tools.js purge() resolves+enforces it (_resolveDualControlGate) before calling db().purgeAuditChain — the only live call site, which satisfies the companion check (db.js's own purgeAuditChain references are its definition + JSDoc, not call sites, so it never matches). A future file that calls purgeAuditChain without naming the gate would let a single operator delete evidence — exactly the shape this blocks.",
   },
 
   {
@@ -10827,7 +10813,7 @@ async function run() {
   testNoHandrolledUrlBuild();
   testNoHandrolledRetryLoop();
   await testNoDuplicateCodeBlocks();
-  testNoStateStampsInPublicDocs();
+  testStateStampScanningDeferred();
   testNoLegacyUrlFormat();
   testNoRawHeadersDistinct();
   testNoDenseWildcardRunsInLib();
