@@ -314,7 +314,6 @@ var VALID_ALLOW_CLASSES = {
   "math-random-noncrypto": 1,
   "no-number-money-arithmetic": 1,
   "numeric-opt-Infinity": 1,
-  "numeric-opt-no-bounds-check": 1,
   "primitive-unreachable": 1,
   "process-exit": 1,
   "raw-byte-literal": 1,
@@ -460,14 +459,10 @@ function testNoRawByteLiterals() {
         // those are protocol constants, decoded to integers in the
         // PQC_GROUPS table and elsewhere. (0x11EC = 4588 not multiple
         // of 8, 0x11ED = 4589 not multiple of 8 — none trip anyway.)
-        // Skip commonly-decimal protocol constants where
-        // multiple-of-8 is coincidence:
-        //   - 256, 64, 32, 16 — bit-widths (which ARE byte-aligned;
-        //     fundamental fix routes them through C.BYTES.bit-arithmetic
-        //     or names them as protocol constants).
-        // No skip — flag every multiple of 8 strictly. The fundamental
-        // fix path is to use C.BYTES helpers or rename + comment as a
-        // protocol constant where 8-multiple is coincidence.
+        // After the `* 1024` gate above, this multiple-of-8 scan only
+        // runs on byte-scale arithmetic lines, so a multiple-of-8
+        // operand here is genuine byte math — the fix path is to route
+        // it through the C.BYTES helpers.
         hit = true;
         break;
       }
@@ -1045,6 +1040,213 @@ function testNoInternalBindingNameInProse() {
   _report("internal binding names (`nodeFs` / `nodePath` / `bCrypto` / " +
           "`retryHelper` / ...) must not appear in operator-facing " +
           "prose — JSDoc comments, error messages, audit metadata",
+    bad);
+}
+
+// ---- Pattern: require-block `=` column alignment ----
+//
+// class: require-block-misaligned
+//
+// Within a contiguous top-of-file run of `var <name> = require(...)` /
+// `var { ... } = require(...)` lines, the `=` signs share a column WHEN
+// the block is written in the aligned style. Two styles ship in lib/
+// and BOTH are legitimate:
+//
+//   compact (single space — never flagged):
+//     var C = require("./constants");
+//     var audit = require("./audit");
+//
+//   aligned (padded to a shared column):
+//     var lazyRequire = require("./lazy-require");
+//     var C           = require("./constants");
+//
+// The detector fires only on a sub-block that DECLARES alignment intent
+// (at least one require line carries 2+ spaces before its `=`) and only
+// on a line that COULD reach the block's shared column but doesn't.
+//
+// The shared column is the MODAL `=` column — the column the majority
+// of the block's require lines actually use. A line is a violation when
+// its `=` is off the modal column AND its left-hand side is short enough
+// to reach it: `lhsLen + 1 <= modalCol`. A `var { LongDestructure } =`
+// or a long plain name whose LHS is as wide as (or wider than) the modal
+// column can only ever get a single space — it physically can't align,
+// so that overshoot is house style, not drift, and is EXEMPT. (This is
+// the classic `var guardAgentRegistry = ...` / `var { defineClass } = ...`
+// shape: unfittable, correctly ignored. The target is the fittable line
+// that drifts one column anyway — the stray extra space, or the short
+// `var C =` that didn't get padded to the column.)
+//
+// Sub-blocks align INDEPENDENTLY. A blank line OR an interior `//` /
+// `/* */` comment divider between require lines splits the run: a tier
+// of node: builtins or a lazyRequire tier separated from the relative-
+// require tier by an explanatory comment is its own group, checked on
+// its own column. Only the leading top-of-file require region is
+// inspected — array/object element order, later constant blocks, and
+// every non-require `=` are out of scope.
+//
+// REQUIRE_ALIGN_ALLOWLIST below is the migration backlog: files that
+// align today but carry a fittable drifted line. As each is reflowed to
+// a uniform column (or to compact single-space), drop its entry.
+var REQUIRE_ALIGN_ALLOWLIST = [
+  "lib/ai-pref.js",
+  "lib/archive.js",
+  "lib/auth/oid4vci.js",
+  "lib/cdn-cache-control.js",
+  "lib/compliance-ai-act-logging.js",
+  "lib/compliance-ai-act.js",
+  "lib/db-file-lifecycle.js",
+  "lib/flag-providers.js",
+  "lib/http-client-cookie-jar.js",
+  "lib/http-client.js",
+  "lib/local-db-thin.js",
+  "lib/log-stream-syslog.js",
+  "lib/mail-require-tls.js",
+  "lib/mail-scan.js",
+  "lib/mail-server-imap.js",
+  "lib/mail-server-mx.js",
+  "lib/mail-server-submission.js",
+  "lib/mail-srs.js",
+  "lib/metrics.js",
+  "lib/middleware/body-parser.js",
+  "lib/middleware/tus-upload.js",
+  "lib/pqc-agent.js",
+  "lib/public-suffix.js",
+  "lib/queue.js",
+  "lib/router.js",
+  "lib/scheduler.js",
+  "lib/session-device-binding.js",
+  "lib/test-harness.js",
+  "lib/websocket.js",
+];
+
+// A top-of-file require-assignment line. Plain identifier OR a `{ ... }`
+// destructure on the left; require / lazyRequire on the right.
+var _REQUIRE_ALIGN_LINE = /^\s*var\s+(?:\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*(?:require|lazyRequire)\s*\(/;
+
+// For a require-assignment line: lhsLen (length of the LHS up to and
+// including its last non-space token char), col (the `=` column = lhsLen
+// + the padding spaces), and pad (the padding-space count). Returns null
+// for any line that is not a require-assignment.
+function _requireEqInfo(line) {
+  var m = line.match(/^(.*?[^\s=!<>+\-*/%&|^])(\s*)=\s*(?:require|lazyRequire)\s*\(/);
+  if (!m) return null;
+  return { lhsLen: m[1].length, col: m[1].length + m[2].length, pad: m[2].length };
+}
+
+// The modal `=` column of a sub-block: the column the most require lines
+// land on. Ties break to the wider column (the deliberately-padded one,
+// not a short outlier), so a block of two aligned lines plus a stray
+// short `var C =` resolves to the aligned column.
+function _requireModalColumn(infos) {
+  var counts = {};
+  var best   = null;
+  var bestN  = -1;
+  for (var i = 0; i < infos.length; i++) {
+    var c = infos[i].info.col;
+    counts[c] = (counts[c] || 0) + 1;
+    if (counts[c] > bestN || (counts[c] === bestN && c > best)) {
+      bestN = counts[c];
+      best  = c;
+    }
+  }
+  return best;
+}
+
+function testRequireBlockAlignment() {
+  // class: require-block-misaligned
+  var files = _libFiles();
+  var bad = [];
+
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (REQUIRE_ALIGN_ALLOWLIST.indexOf(rel) !== -1) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+
+    // Locate the first leading require line. Skip the shebang,
+    // "use strict", and the top docblock / comments + blanks. Bail the
+    // moment real code appears before any require (no leading region).
+    var firstReq = -1;
+    for (var j = 0; j < lines.length; j++) {
+      if (_REQUIRE_ALIGN_LINE.test(lines[j])) { firstReq = j; break; }
+      var t = lines[j].trim();
+      if (t === "") continue;
+      if (/^("use strict"|'use strict');?$/.test(t)) continue;
+      if (/^#!/.test(t)) continue;
+      if (/^\/\//.test(t)) continue;
+      if (/^\/\*/.test(t) || /^\*/.test(t) || /\*\//.test(t)) continue;
+      break;
+    }
+    if (firstReq === -1) continue;
+
+    // Collect the contiguous leading require region: require lines,
+    // blank lines (sub-block separators), and interior comment lines
+    // (also sub-block separators). Stop at the first real-code line
+    // that is not a require.
+    var region = [];
+    var inBlockComment = false;
+    for (var k = firstReq; k < lines.length; k++) {
+      var line = lines[k];
+      var tt = line.trim();
+      if (inBlockComment) {
+        region.push({ n: k + 1, line: line, kind: "comment" });
+        if (/\*\//.test(tt)) inBlockComment = false;
+        continue;
+      }
+      if (_REQUIRE_ALIGN_LINE.test(line)) { region.push({ n: k + 1, line: line, kind: "req" }); continue; }
+      if (tt === "") { region.push({ n: k + 1, line: line, kind: "blank" }); continue; }
+      if (/^\/\//.test(tt)) { region.push({ n: k + 1, line: line, kind: "comment" }); continue; }
+      if (/^\/\*/.test(tt)) {
+        region.push({ n: k + 1, line: line, kind: "comment" });
+        if (!/\*\//.test(tt)) inBlockComment = true;
+        continue;
+      }
+      break;
+    }
+
+    // Split the region into sub-blocks separated by a blank line OR a
+    // comment divider; each aligns independently. For every sub-block of
+    // >=3 require lines that shows alignment intent (some line padded
+    // with 2+ spaces before `=`), flag every line whose `=` is off the
+    // modal column yet whose LHS is short enough to reach it.
+    var sub = [];
+    var flush = function () {
+      var infos = [];
+      for (var s = 0; s < sub.length; s++) {
+        if (sub[s].kind !== "req") continue;
+        var info = _requireEqInfo(sub[s].line);
+        if (info) infos.push({ entry: sub[s], info: info });
+      }
+      sub = [];
+      if (infos.length < 3) return;
+      var anyPadded = infos.some(function (e) { return e.info.pad >= 2; });
+      if (!anyPadded) return;                      // compact single-space style — not aligned, not flagged
+      var modalCol = _requireModalColumn(infos);
+      for (var z = 0; z < infos.length; z++) {
+        var e = infos[z];
+        if (e.info.col === modalCol) continue;     // already on the column — fine
+        if (e.info.lhsLen + 1 > modalCol) continue; // LHS too wide to reach the column — house-style overshoot, exempt
+        bad.push({
+          file:    rel,
+          line:    e.entry.n,
+          content: e.entry.line.trim() +
+                   "  — `=` off the require-block column (align every `=` in this " +
+                   "sub-block to one column, or reflow the group to compact single-space)",
+        });
+      }
+    };
+    for (var r = 0; r < region.length; r++) {
+      if (region[r].kind === "blank" || region[r].kind === "comment") { flush(); continue; }
+      sub.push(region[r]);
+    }
+    flush();
+  }
+
+  _report("top-of-file require blocks keep their `=` signs column-aligned " +
+          "(per blank-or-comment-separated sub-block; compact single-space " +
+          "blocks and unfittable-LHS lines exempt)",
     bad);
 }
 
@@ -2104,15 +2306,16 @@ async function testNoDuplicateCodeBlocks() {
   //   SHINGLE_SIZES — token-window sizes scanned. Smaller catches
   //     finer-grain idiom (3-call chains); larger catches whole
   //     function bodies. Multi-pass produces both.
-  //   MIN_DISTINCT_FILES — threshold for cross-file repetition. 3+
-  //     means "appears in at least 3 files" (drift candidate).
+  //   MIN_DISTINCT_FILES — min files for a shingle to enter the
+  //     advisory inventory (2+). The hard-fail gate is the separate
+  //     STRONG_MIN_FILES = 3 (a shape in 3+ files fails the build).
   //   MIN_DISTINCT_TOKENS — skip shingles whose tokens are mostly
   //     punctuation / repeated closer chars.
   //   MAX_REPORTED_PER_LENGTH — cap to keep the report scannable;
   //     biggest-N hits are surfaced first because they represent the
   //     largest primitive opportunities.
   var SHINGLE_SIZES = [60, 50, 40, 30, 22, 16, 12, 8];
-  var MIN_DISTINCT_FILES = 2;          // ≥ 3 files share the shape
+  var MIN_DISTINCT_FILES = 2;          // 2+ files → advisory inventory (STRONG_MIN_FILES = 3 hard-fails)
   var MIN_DISTINCT_TOKENS = 5;
   var _MAX_REPORTED_PER_LENGTH = 5000;
 
@@ -2590,7 +2793,6 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/ai-disclosure.js:chatbot",
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/compliance-sanctions.js:screen",
         "lib/dora.js:_validateReportInput",
@@ -2992,7 +3194,6 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/guard-email.js:_detectAddressIssues",
         "lib/middleware/scim-server.js:_parseQuery",
-        "lib/self-update.js:_splitSemver",
       ],
       reason: "Three unrelated string-parser primitives that incidentally share a 50-token charCodeAt-driven scan shingle. _detectAddressIssues walks RFC 5322 addr-spec bytes; _parseQuery walks SCIM filter tokens (RFC 7644 §3.4.2.2); _splitSemver walks SemVer 2.0.0 §2 version-core + pre-release + build identifiers. Each owns a domain-specific error class. Consolidation would couple RFC 5322 / RFC 7644 / SemVer parsing into one primitive none of them want.",
     },
@@ -3081,7 +3282,6 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-dkim.js:bootstrap",
         "lib/mail-dkim.js:dualSigner",
         "lib/mail-mdn.js:_generateBoundary",
-        "lib/mail-mdn.js:_validateOpts",
         "lib/mail-mdn.js:build",
         "lib/self-update.js:poll",
         "lib/watcher.js:_detectAutoMode",
@@ -3409,7 +3609,6 @@ async function testNoDuplicateCodeBlocks() {
         // the RFC 8620 / RFC 8621 wire-protocol shape.
         "lib/guard-jmap.js:<top>",
         "lib/guard-jmap.js:validate",
-        "lib/guard-jmap.js:_resolveProfile",
         "lib/guard-jmap.js:compliancePosture",
       ],
       reason: "Guard-family scaffolding required by `b.gateContract` — every guard ships PROFILES (strict/balanced/permissive) + COMPLIANCE_POSTURES (hipaa/pci-dss/gdpr/soc2) + _resolveProfile dispatcher + a top-level @module JSDoc block. Each member's profile body / posture vocab / validate() body is domain-distinct; the surrounding skeleton is the family contract. Consolidation would erase the per-guard validation rules and break the `b.guardAll` registration pattern.",
@@ -3551,7 +3750,6 @@ async function testNoDuplicateCodeBlocks() {
         "lib/agent-tenant.js:_checkDestroyPreconditions",
         "lib/agent-idempotency.js:_put",
         "lib/auth/dpop.js:verify",
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/backup/index.js:scheduleTest",
         "lib/break-glass.js:_validatePolicySet",
@@ -3632,7 +3830,6 @@ async function testNoDuplicateCodeBlocks() {
       // jwk canonicalization). Distinct error classes.
       mode:  "family-subset",
       files: [
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/dpop.js:verify",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/compliance-sanctions.js:screen",
@@ -3726,16 +3923,6 @@ async function testNoDuplicateCodeBlocks() {
         "lib/request-helpers.js:parseQualityList",
       ],
       reason: "Comma-separated header value parser walking pieces and splitting on `=` per piece. Each enforces a different grammar (RFC 9213 directive list, RFC 9111 Cache-Control directives, Sec-CH-UA brand-member params, RFC 7240/tus.io upload metadata, RFC 9110 quality-list / Accept-* header). Consolidating would couple unrelated header families.",
-    },
-    {
-      mode: "family-subset",
-      files: [
-        "lib/cdn-cache-control.js:_splitTopLevelCommas",
-        "lib/client-hints.js:_splitTopLevelSemis",
-        "lib/http-client-cache.js:_splitTopLevelCommas",
-        "lib/http-message-signature.js:_splitTopLevelSemis",
-      ],
-      reason: "Quote-aware top-level structured-fields splitter — walks a string respecting RFC 8941 §3.3.3 quoted-string state with backslash-escape so `,` (cdn-cache-control / http-client-cache) or `;` (client-hints brand-member params / http-message-signature Signature-Input params) inside quoted-string values doesn't split mid-value. Same shape replicated across four parsers because they each split on a different delimiter for a different RFC; consolidation candidate via a shared `b.structuredFields.splitTopLevel(s, sep)` helper but the per-file copy is intentional pending the extraction (operator-grep finds the splitter inside the file that uses it).",
     },
     {
       mode: "family-subset",
@@ -4129,7 +4316,6 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/compliance-sanctions.js:_emitAudit",
         "lib/compliance-sanctions.js:_emitMetric",
         "lib/compliance-sanctions.js:create",
@@ -4403,7 +4589,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/fido-mds3.js:_b64urlDecode",
         "lib/auth/fido-mds3.js:_parseJws",
         "lib/auth/fido-mds3.js:_verifyJws",
-        "lib/auth/fido-mds3.js:_verifyJwsSignature",
+        "lib/auth/fido-mds3.js:_verifyJws",
         "lib/auth/fido-mds3.js:_verifyParamsForAlg",
         "lib/auth/fido-mds3.js:fetch",
         "lib/auth/fido-mds3.js:verifyAuthenticator",
@@ -4620,7 +4806,7 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/guard-list-id.js:_refuse",
         "lib/guard-list-unsubscribe.js:_verdict",
-        "lib/guard-smtp-command.js:_validateAuth",
+        "lib/guard-smtp-command.js:_parseAuthCommandSyntax",
         "lib/safe-dns.js:_decodeOpt",
       ],
       reason: "Three independently-domain'd helpers (List-Unsubscribe verdict assembly / SMTP AUTH mech validation / DNS OPT pseudo-RR decode) share local-var declaration + return-shape token sequence. Bodies are domain-distinct (different field names, different error checks). Consolidation would couple unrelated parsers.",
@@ -5029,7 +5215,6 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       files: [
-        "lib/auth/dpop.js:_canonicalJwk",
         "lib/auth/sd-jwt-vc-holder.js:store",
         "lib/compliance-sanctions.js:screen",
         "lib/dora.js:_validateReportInput",
@@ -5743,7 +5928,7 @@ function testNoDeniedVendors() {
 
 // ---- Pattern 42: state-stamps in user-facing docs (smoke test the wiki) ----
 
-function testNoStateStampsInPublicDocs() {
+function testStateStampScanningDeferred() {
   // feedback_no_state_stamps_in_docs.md — version numbers / test counts
   // in README / SECURITY / CONTRIBUTING etc. rot the moment the next
   // release ships. We can't easily grep these via the lib walker, but
@@ -7974,7 +8159,7 @@ var KNOWN_ANTIPATTERNS = [
     requires: /_checkDualControlGate|_resolveDualControlGate|dualControlGrant/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "v0.14.7 — audit-chain purge is irreversible and tamper-evidence-destroying. The discipline: the chain may only be truncated under a two-authorizer dual-control grant. db.js defines the gate (_checkDualControlGate) and audit-tools.js purge() resolves+enforces it (_resolveDualControlGate) before calling db().purgeAuditChain; both files satisfy the companion check. A future file that calls purgeAuditChain without naming the gate would let a single operator delete evidence — exactly the shape this blocks.",
+    reason: "v0.14.7 — audit-chain purge is irreversible and tamper-evidence-destroying. The discipline: the chain may only be truncated under a two-authorizer dual-control grant. db.js defines the gate (_checkDualControlGate) and audit-tools.js purge() resolves+enforces it (_resolveDualControlGate) before calling db().purgeAuditChain — the only live call site, which satisfies the companion check (db.js's own purgeAuditChain references are its definition + JSDoc, not call sites, so it never matches). A future file that calls purgeAuditChain without naming the gate would let a single operator delete evidence — exactly the shape this blocks.",
   },
 
   {
@@ -10788,6 +10973,7 @@ async function run() {
   testNoTierTerminologyInLib();
   testNoInlineRequires();
   testRequireBindingConsistency();
+  testRequireBlockAlignment();
   testNodeBuiltinPrefixConsistency();
   testNoInternalBindingNameInProse();
   testNoDynamicRequires();
@@ -10827,7 +11013,7 @@ async function run() {
   testNoHandrolledUrlBuild();
   testNoHandrolledRetryLoop();
   await testNoDuplicateCodeBlocks();
-  testNoStateStampsInPublicDocs();
+  testStateStampScanningDeferred();
   testNoLegacyUrlFormat();
   testNoRawHeadersDistinct();
   testNoDenseWildcardRunsInLib();
