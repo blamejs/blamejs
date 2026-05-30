@@ -27,6 +27,16 @@ async function run() {
 
   var pub = b.graphqlFederation.guardSdl({ publicSchemaOk: true });
   check("guardSdl: public schema", typeof pub === "function");
+
+  // nonceHeader override — the replay nonce can be read from a custom
+  // request header (not just the Apollo-vendor default), for operators
+  // fronting the gateway with a non-Apollo router.
+  var withNonce = b.graphqlFederation.guardSdl({
+    routerToken: "a".repeat(64),
+    nonceStore:  { has: function () { return false; }, remember: function () {} },
+    nonceHeader: "x-my-nonce",
+  });
+  check("guardSdl: accepts custom nonceHeader", typeof withNonce === "function");
 }
 
 module.exports = { run: run };
