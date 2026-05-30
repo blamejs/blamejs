@@ -281,13 +281,14 @@ function _report(label, matches) {
 
 function testNoRawByteLiterals() {
   // class: raw-byte-literal
-  // Systemic detection: any integer literal `n >= 8 && n % 8 === 0` is
-  // a byte-shape candidate (8-bit alignment is the universal byte unit).
-  // Use C.BYTES.kib / mib / gib (n) so the framework's byte math has a
-  // single source of truth.
-  // Strings, regex literals, and hex constants are excluded. HTTP
-  // status comparisons, year literals (which can also be multiples of
-  // 8), and lines already routed through C.BYTES.* are skipped.
+  // Byte-SCALE arithmetic — `n * 1024` (KiB), `* 1024 * 1024` (MiB),
+  // `* 1024 * 1024 * 1024` (GiB) — must route through C.BYTES.kib / mib /
+  // gib(n) so the framework's byte math has a single source of truth.
+  // That 1024-scale is exactly what the C.BYTES helpers replace; a bare
+  // multiple-of-8 in any other context (an HTTP status, a radix, a count,
+  // a length, an opcode, an octet, a field width …) is NOT a byte size and
+  // is deliberately NOT flagged. Strings, regex, hex, and C.BYTES-wrapped
+  // lines are excluded.
   var files = _libFiles();
   var bad = [];
   for (var fi = 0; fi < files.length; fi++) {
@@ -312,6 +313,11 @@ function testNoRawByteLiterals() {
       // byte literal (`C.BYTES.mib(64)`, `C.TIME.seconds(8)`) and the
       // wrapping primitive is the single source of truth.
       if (/\bC\.(BYTES|TIME)\.\w+\(/.test(stripped)) continue;
+      // NARROWED: only 1024-scale byte arithmetic is a real byte size that
+      // C.BYTES.kib / mib / gib replaces. Skip every line that is not
+      // byte-scale `* 1024` math — a bare multiple-of-8 elsewhere is not a
+      // byte literal and no longer needs a marker.
+      if (!/\*\s*1024\b/.test(stripped)) continue;
       // Skip lines whose left-hand side explicitly names a non-byte
       // unit. Match the unit token at any position in a SCREAMING_SNAKE
       // identifier (start, middle, or end). Examples:
@@ -383,8 +389,8 @@ function testNoRawByteLiterals() {
     }
   }
   bad = _filterMarkers(bad, "raw-byte-literal");
-  _report("no raw byte-shaped literals (n >= 8 && n % 8 === 0; use " +
-          "C.BYTES.kib / mib / gib or name as protocol constant)",
+  _report("no raw byte-scale literals (1024-scale `* 1024` arithmetic; " +
+          "use C.BYTES.kib / mib / gib)",
     bad);
 }
 
