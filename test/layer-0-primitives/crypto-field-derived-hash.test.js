@@ -93,6 +93,10 @@ async function run() {
 
 module.exports = { run: run };
 if (require.main === module) {
+  // Rethrow on failure so Node surfaces the error and exits non-zero,
+  // instead of logging the caught error object — a taint analyzer traces
+  // a logged error back to the test passphrase fixture (a non-secret
+  // constant) and raises a false clear-text-logging alert.
   run().then(function () { process.exit(0); })
-       .catch(function (err) { console.error(err); process.exit(1); });
+       .catch(function (err) { process.exitCode = 1; throw err; });
 }
