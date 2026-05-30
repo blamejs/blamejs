@@ -119,20 +119,17 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 ### HTTP
 
 - **Router + API specs** — schema-validated routes; OpenAPI publication (`b.openapi`) + AsyncAPI publication for event/streaming (`b.asyncapi`)
-- **Middleware stack (wired by `createApp`)**
-  - CSRF protection
-  - CORS with W3C Private Network Access preflight refusal default + `allowPrivateNetwork` opt
-  - Rate-limit
+- **Middleware stack (`createApp`)** — security layers wired ON by default (Core Rule §3); each is configurable via `middleware.<name>` (operator cookie / field names flow straight through — nothing static is baked in) or opt-out with `false` (disabling a default is audited via `app.middleware.disabled`). Ordered so each layer has what it needs (cookies + CSP nonce + fetch-metadata, then body parser, then CSRF last):
+  - Request-ID tagging and bot-guard
   - Security headers with `Permissions-Policy` defaults denying storage-access / browsing-topics / private-aggregation / controlled-frame
-  - CSP nonce
-  - Body parser — JSON / urlencoded / text / multipart; multipart file parts stream to a tmp dir or buffer in memory (`storage: "memory"`) for read-only / serverless filesystems
-  - Compression
-  - SSE
-  - Request log
   - Threat-aware cookie parser (`b.middleware.cookies`)
-  - Request-time DB role binding (`b.middleware.dbRoleFor`)
-  - In-process CIDR fence (`b.middleware.networkAllowlist`)
+  - CSP nonce — generated per request, merged into the CSP (`b.middleware.cspNonce`)
+  - Fetch-metadata resource-isolation guard (`b.middleware.fetchMetadata`)
+  - Body parser — JSON / urlencoded / text / multipart; multipart file parts stream to a tmp dir or buffer in memory (`storage: "memory"`) for read-only / serverless filesystems
+  - CSRF protection — double-submit cookie + Origin/Referer cross-check; auto-skips Authorization-header / cookieless requests, which are not CSRF-able (`b.middleware.csrfProtect`)
+  - CORS (W3C Private Network Access preflight refusal default + `allowPrivateNetwork` opt) and rate-limit are wired when configured via `middleware.cors` / `middleware.rateLimit`
   - `Cache-Control: no-store` on every 401 from `requireAuth` / `requireAal` / `requireStepUp` per RFC 9111 §5.2.2.5
+- **Additional middleware** to mount in your `routes` callback: compression, SSE, request logging, request-time DB role binding (`b.middleware.dbRoleFor`), in-process CIDR fence (`b.middleware.networkAllowlist`)
 - **Outbound HTTP client** — HTTP/1.1 + HTTP/2 with SSRF gate (cloud-metadata IPs hard-denied; private / loopback / link-local overridable per call); scheme + userinfo + per-host destination allowlist; redirects, multipart, interceptors, progress, encrypted cookie jar (`b.httpClient`, `b.ssrfGuard`, `b.safeUrl`)
 - **Network configurability (`b.network`)** — env-driven NTP / NTS (RFC 8915), IPv4/IPv6 NTP, DNS with IPv6 / DoH / DoT (private-CA pinning) / cache / lookup timeout; local DNSSEC signature verification (RFC 4035 — `b.network.dns.dnssec.verifyRrset` over a canonicalised RRset against RSA / ECDSA P-256·P-384 / Ed25519 DNSKEYs, plus DS-digest + key-tag, plus `verifyDenial` for NSEC / NSEC3 (RFC 5155) NXDOMAIN / NODATA proofs with iteration caps + Opt-Out handling, plus `verifyChain` to validate a full root→TLD→zone delegation chain against the pinned IANA root anchors) so a resolver client can verify both positive and negative answers instead of trusting the upstream AD bit; DANE / TLSA certificate matching (RFC 6698/7671 — `b.network.dns.dane.matchCertificate`) to pin a service's key through DNSSEC instead of a public CA; TSIG transaction signatures (RFC 8945 — `b.network.dns.tsig.sign` / `verify`) for shared-key HMAC authentication of zone transfers, dynamic updates, and query/response pairs, with constant-time MAC compare + fudge-window check (verified against dnspython); outbound HTTP proxy (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`); runtime DPI trust-store CA additions; application-level heartbeats; TCP socket defaults
 - **Error pages** — operator-rendered, no app-frame leakage (`b.errorPage`)

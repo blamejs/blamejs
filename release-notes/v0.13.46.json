@@ -1,0 +1,35 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.13.46",
+  "date": "2026-05-29",
+  "headline": "`createApp` now wires the documented security middleware ON by default — CSRF, CSP nonce, cookie parser, fetch-metadata, and body parser",
+  "summary": "The README has long described a security middleware stack as \"wired by createApp\", but createApp only mounted request-ID, security-headers, and bot-guard by default — CSRF protection, the CSP nonce, the threat-aware cookie parser, the fetch-metadata guard, and the body parser were documented but not actually wired. This release closes that gap: createApp now mounts all of them by default, in dependency order (cookies, CSP nonce, fetch-metadata, then body parser, then CSRF last so it can read a body-field token). This is a behavior change — apps built with createApp now enforce CSRF on state-changing requests by default. Each layer is configurable via opts.middleware.<name> (operator cookie and field names flow straight through — nothing is hardcoded) or can be turned off with false, and disabling a security default now emits an app.middleware.disabled audit event. Every layer is idempotent: an operator who also mounts one of these inside opts.routes gets a no-op second mount rather than a double-apply. The default CSRF is a double-submit cookie that auto-skips requests carrying an Authorization header or no cookies at all, which are not CSRF-able, so token-authenticated API clients are not rejected. The README middleware list is now an accurate description of what createApp wires.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "createApp wires CSRF, CSP nonce, cookie parser, fetch-metadata, and body parser by default (breaking)",
+          "body": "Applications constructed with b.createApp now mount, in order: the threat-aware cookie parser, the CSP nonce generator, the fetch-metadata resource-isolation guard, the body parser (JSON / urlencoded / text / multipart), and CSRF protection — in addition to the request-ID, security-headers, and bot-guard layers already wired. The ordering guarantees CSRF runs after the body parser so a body-field token is available. This is a behavior change: state-changing requests (POST / PUT / DELETE / PATCH) that carry a session cookie are now CSRF-validated by default. Each layer is configured through opts.middleware.<name> (an object passes operator options straight through; cookie and field names are not hardcoded) or disabled with false. Operators who were mounting these middleware themselves inside opts.routes do not need to change anything — the second mount is now a no-op (see idempotency below)."
+        },
+        {
+          "title": "Default CSRF auto-skips token-authenticated and cookieless requests",
+          "body": "The CSRF middleware gains a skipStateless option (default false; createApp's default wiring sets it true). When on, token validation is skipped for requests that carry an Authorization header or no Cookie header at all — such requests are not CSRF-able, because CSRF abuses a victim's ambient cookie credential and these have none. The token is still issued on safe methods so a later cookie-authenticated browser flow works. Cross-site form CSRF is unaffected: the browser auto-sends the victim's cookies, so an attack request always carries a Cookie header and is validated."
+        },
+        {
+          "title": "Disabling a default security middleware is audited",
+          "body": "Passing false for one of the security-on-by-default middleware (for example middleware: { csrf: false }) now emits an app.middleware.disabled audit event naming the middleware, so a weakened posture leaves a trace in the audit chain rather than being silent."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "Idempotent security middleware",
+          "body": "The cookie parser, CSP nonce, fetch-metadata, and CSRF middleware are now idempotent within a request: if one has already run (because createApp wired it and an operator also mounted it), the second instance is a no-op rather than re-parsing, re-generating a nonce, or issuing a second CSRF cookie. This lets an application compose its own middleware order on top of createApp's defaults without double-applying. The body parser already had this behavior."
+        }
+      ]
+    }
+  ]
+}
