@@ -20,6 +20,12 @@ async function run() {
   check("recognizedPurpose(educational-only): commercial-use prohibited", edu.commercialUseProhibited === true);
   check("recognizedPurpose(marketing): null (free-form)",          b.consent.recognizedPurpose("marketing") === null);
   check("recognizedPurpose(unknown): null",                        b.consent.recognizedPurpose("nope-not-real") === null);
+  // A free-form purpose colliding with an Object.prototype member must stay
+  // free-form (null), not resolve to the prototype value (CWE-1321).
+  check("recognizedPurpose(toString): null, not the prototype fn",  b.consent.recognizedPurpose("toString") === null);
+  check("recognizedPurpose(constructor): null",                     b.consent.recognizedPurpose("constructor") === null);
+  check("recognizedPurpose(__proto__): null",                       b.consent.recognizedPurpose("__proto__") === null);
+  check("recognizedPurpose(hasOwnProperty): null",                  b.consent.recognizedPurpose("hasOwnProperty") === null);
 
   var purposes = b.consent.listPurposes();
   check("listPurposes: frozen array",                              Array.isArray(purposes) && Object.isFrozen(purposes));
@@ -45,6 +51,12 @@ async function run() {
     await b.consent.grant({ subjectId: "stu-2", purpose: "marketing", lawfulBasis: "legitimate_interests", channel: "api" });
     check("free-form purpose still grants (back-compat)",
           b.consent.isGranted({ subjectId: "stu-2", purpose: "marketing" }) === true);
+
+    // A free-form purpose colliding with an Object.prototype name is still
+    // free-form — grant() must not enter the recognized-purpose branch.
+    await b.consent.grant({ subjectId: "stu-3", purpose: "toString", lawfulBasis: "legitimate_interests", channel: "api" });
+    check("Object-prototype-named purpose grants as free-form",
+          b.consent.isGranted({ subjectId: "stu-3", purpose: "toString" }) === true);
 
     // withdraw → isGranted false for the same (subjectId, purpose).
     await b.consent.withdraw({ subjectId: "stu-1", purpose: "educational-only" });
