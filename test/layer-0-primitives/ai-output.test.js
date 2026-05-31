@@ -47,7 +47,10 @@ async function run() {
   // Public HTTPS URL — kept (SSRF gate only blocks internal/metadata; a public
   // attacker host over HTTPS is not an SSRF target and the URL survives).
   var pub = b.ai.output.sanitize("[docs](https://example.com/guide)", { audit: false });
-  check("public https url kept", pub.text.indexOf("https://example.com/guide") !== -1);
+  // Exact-equality (not a URL substring search): a public HTTPS URL is
+  // neither neutralized nor mutated, so the output round-trips verbatim
+  // and the verdict is clean.
+  check("public https url kept", pub.verdict === "clean" && pub.text === "[docs](https://example.com/guide)");
 
   // SQL-shape FLAG (no repair — best-effort posture).
   var sql = b.ai.output.sanitize("SELECT * FROM users WHERE id = 1; DROP TABLE users", { audit: false });
