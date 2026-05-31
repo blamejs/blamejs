@@ -427,6 +427,16 @@ async function testExtractToMemoryOrchestrator() {
   check("extractToMemory: passphrase envelope auto-unwrapped + yielded",
         wcollected["readme.txt"] && wcollected["readme.txt"].toString("utf8") === "serverless!\n");
 
+  // A raw b.crypto.encryptPacked blob is NOT an archive-wrap envelope (it
+  // carries no BAWRP/BAWPP magic, only a 1-byte XChaCha20 format header), so
+  // the orchestrator sniffs it as unknown and refuses cleanly rather than
+  // pretending to auto-unwrap a phantom "EPACK" format.
+  var packed = b.crypto.encryptPacked(zbytes, b.crypto.generateBytes(32));
+  var packedThrew = null;
+  try { for await (var pe of b.safeArchive.extractToMemory({ source: packed })) { void pe; } } catch (e) { packedThrew = e; }
+  check("extractToMemory: raw encryptPacked blob refused as unsupported (no phantom EPACK unwrap)",
+        packedThrew && /format-unsupported/.test(packedThrew.code || packedThrew.message));
+
   // trusted-stream source refused upfront — and BP5: the refusal message
   // must no longer name the stale v0.12.8 version.
   var nodeStream = require("node:stream");
