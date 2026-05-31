@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.12",
-  "createdAt": "2026-05-31T17:31:43.430Z",
+  "frameworkVersion": "0.14.13",
+  "createdAt": "2026-05-31T18:34:04.384Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -46557,6 +46557,10 @@
           "arity": 4
         },
         "extract": {
+          "type": "function",
+          "arity": 1
+        },
+        "extractToMemory": {
           "type": "function",
           "arity": 1
         },
