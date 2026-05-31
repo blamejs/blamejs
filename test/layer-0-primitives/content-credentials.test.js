@@ -47,6 +47,27 @@ function _makeTsaCert() {
   return { certDer: certDer, key: kp.privateKey, serial: Buffer.from([0x2a]), issuer: name };
 }
 
+// Build an X.509 cert for `cn`, signed by `issuer` ({ name, key }) or
+// self-signed (issuer null). Used to assemble a real [leaf, intermediate,
+// root] chain so the identity-assertion chain walk is exercised through
+// an intermediate CA, not only a direct-root / self-signed leaf.
+function _makeCert(cn, issuer) {
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var spki = kp.publicKey.export({ type: "spki", format: "der" });
+  var subjName  = _certName(cn);
+  var issuerName = issuer ? issuer.name : subjName;
+  var issuerKey  = issuer ? issuer.key  : kp.privateKey;
+  var sigAlgId = _algId("1.2.840.113549.1.1.11", true);
+  var version = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  var serial = asn1.writeInteger(Buffer.from([0x2b]));
+  var now = Date.now();
+  var validity = asn1.writeSequence([_utcTime(new Date(now - 86400000)), _utcTime(new Date(now + 86400000 * 3650))]);
+  var tbs = asn1.writeSequence([version, serial, sigAlgId, issuerName, validity, subjName, spki]);
+  var tbsSig = nodeCrypto.sign("sha256", tbs, issuerKey);
+  var certDer = asn1.writeSequence([tbs, sigAlgId, asn1.writeBitString(tbsSig, 0)]);
+  return { name: subjName, key: kp.privateKey, pem: new nodeCrypto.X509Certificate(certDer).toString() };
+}
+
 function _makeTsToken(o) {
   var tstChildren = [
     asn1.writeInteger(Buffer.from([1])),
@@ -252,6 +273,19 @@ async function run() {
   check("verifyCose: wrong timestamp nonce fails closed via tsa.verifyToken",
     vNonce.valid === false && /^timestamp-invalid:/.test(vNonce.reason));
 
+  // A cryptographically valid COSE_Sign1 over a payload that is NOT a
+  // complete SB-942 manifest must NOT verify as a content credential —
+  // verifyCose re-runs the required-field gate that verify() applies.
+  var partialCose = b.contentCredentials.signCose({ provider: { name: "x" }, content: { id: "y" } }, {
+    privateKeyPem: pair.privateKey, alg: "ml-dsa-87",
+    timestamp: false, timestampOptOutReason: "test fixture", audit: false,
+  });
+  var vPartial = b.contentCredentials.verifyCose(partialCose.coseSign1, pair.publicKey, {
+    requireTimestamp: false, audit: false,
+  });
+  check("verifyCose: incomplete manifest rejected (missing-required)",
+    vPartial.valid === false && vPartial.reason.indexOf("missing-required") === 0);
+
   // ---- v0.14.11: CAWG identity assertion ----
   check("attachIdentityAssertion is fn", typeof b.contentCredentials.attachIdentityAssertion === "function");
   check("verifyIdentityAssertion is fn", typeof b.contentCredentials.verifyIdentityAssertion === "function");
@@ -283,6 +317,29 @@ async function run() {
     referencedAssertions: refs, identityCertChainPem: orgPem, identityTrustAnchorsPem: orgPem, audit: false,
   });
   check("verifyIdentityAssertion: x509 chained → verified", iaTrusted.valid === true && iaTrusted.verified === true);
+
+  // x509 chain through an INTERMEDIATE CA: chain [leaf, intermediate]
+  // with the root as the trust anchor must verify — the chain walk uses
+  // chain[1..], not only a direct leaf-vs-anchor test.
+  var caRoot  = _makeCert("CAWG Test Root", null);
+  var caInter = _makeCert("CAWG Test Intermediate", { name: caRoot.name, key: caRoot.key });
+  var caLeaf  = _makeCert("Acme Newsroom Leaf", { name: caInter.name, key: caInter.key });
+  var iaChain = b.contentCredentials.verifyIdentityAssertion(ia, orgPair.publicKey, {
+    referencedAssertions: refs,
+    identityCertChainPem: [caLeaf.pem, caInter.pem],
+    identityTrustAnchorsPem: caRoot.pem, audit: false,
+  });
+  check("verifyIdentityAssertion: [leaf,intermediate]→root anchor verified (walks intermediates)",
+    iaChain.valid === true && iaChain.verified === true);
+  // The same chain against an unrelated anchor must NOT verify.
+  var caRogue = _makeCert("Rogue Root", null);
+  var iaWrongAnchor = b.contentCredentials.verifyIdentityAssertion(ia, orgPair.publicKey, {
+    referencedAssertions: refs,
+    identityCertChainPem: [caLeaf.pem, caInter.pem],
+    identityTrustAnchorsPem: caRogue.pem, audit: false,
+  });
+  check("verifyIdentityAssertion: chain to unrelated anchor → not verified",
+    iaWrongAnchor.verified === false);
 
   // Transplanted referenced assertions → fail closed.
   var iaTransplant = b.contentCredentials.verifyIdentityAssertion(ia, orgPair.publicKey, {
