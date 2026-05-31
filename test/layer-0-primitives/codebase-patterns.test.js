@@ -10801,6 +10801,26 @@ function testPrimitiveReachability() {
     return cur;
   }
 
+  // Walk the dotted prefix (every segment except the leaf) so a break at
+  // ANY segment — including a wholesale-wrong namespace whose parent
+  // resolves to undefined — is surfaced rather than silently skipped. A
+  // function OR a `.create`-bearing object anywhere in the chain is a
+  // factory-instance shorthand and stays exempt.
+  function walkPrefix(name) {
+    var parts = name.split(".");
+    var cur = bSurface;
+    for (var i = 1; i < parts.length - 1; i += 1) {
+      if (typeof cur === "function") return { factory: true };
+      if (cur && typeof cur === "object" && typeof cur.create === "function") return { factory: true };
+      if (cur == null || typeof cur[parts[i]] === "undefined") {
+        return { brokenName: parts.slice(0, i + 1).join(".") };
+      }
+      cur = cur[parts[i]];
+    }
+    if (typeof cur === "function") return { factory: true };
+    return { parent: cur, parentName: parts.slice(0, -1).join(".") };
+  }
+
   // @primitive paths that legitimately don't resolve as a flat member
   // (documented elsewhere / intentional). Keyed by dotted name.
   var REACHABILITY_ALLOWLIST = {
@@ -10818,9 +10838,24 @@ function testPrimitiveReachability() {
       var name = m[1];
       if (REACHABILITY_ALLOWLIST[name]) continue;
       if (typeof resolve(name) !== "undefined") continue;
-      var parts = name.split(".");
-      var parentName = parts.slice(0, -1).join(".");
-      var parent = resolve(parentName);
+      var w = walkPrefix(name);
+      // Factory-instance shorthands (b.X.create() → instance method) skip.
+      if (w.factory) continue;
+      if (w.brokenName) {
+        // The whole dotted namespace prefix is unresolvable — the parent
+        // resolved to undefined, so the flat-namespace check below never
+        // fired and the doc-lie was silently skipped. Flag it.
+        unreachable.push({
+          file:    rel,
+          line:    1,
+          content: "@primitive " + name + " documents a b.* path that does not resolve (the namespace `" +
+                   w.brokenName + "` is undefined — no prefix segment resolves on the public surface). " +
+                   "Correct the @primitive/@signature namespace, or wire the namespace into the surface.",
+        });
+        continue;
+      }
+      var parent = w.parent;
+      var parentName = w.parentName;
       // Flag only flat namespaces (object parent without a `create`
       // factory). Factory-instance shorthands are skipped.
       if (parent && typeof parent === "object" && typeof parent.create !== "function") {
@@ -10913,6 +10948,7 @@ function testNoInternalNarrativeComments() {
     { re: /\b[Aa]udit\s+\d{4}-\d{2}-\d{2}/,         what: "dated audit/decision residue" },
     { re: /\bReported\s+\d{4}-\d{2}-\d{2}/,         what: "dated report residue" },
     { re: /\bCore Rule\s+§\d/,                 what: "internal CLAUDE.md rule-number citation" },
+    { re: /----\s*v\d+\.\d+\.\d+/,             what: "version stamp in a section-divider comment" },
   ];
   var files = _libFiles();
   var bad = [];
