@@ -10806,12 +10806,18 @@ function testPrimitiveReachability() {
   // resolves to undefined — is surfaced rather than silently skipped. A
   // function OR a `.create`-bearing object anywhere in the chain is a
   // factory-instance shorthand and stays exempt.
-  function walkPrefix(name) {
+  function walkPrefix(name, surface) {
     var parts = name.split(".");
-    var cur = bSurface;
+    var cur = surface;
     for (var i = 1; i < parts.length - 1; i += 1) {
-      if (typeof cur === "function") return { factory: true };
-      if (cur && typeof cur === "object" && typeof cur.create === "function") return { factory: true };
+      // A missing prefix segment is a wrong-namespace doc path even when
+      // `cur` is itself a factory (has `.create`): a namespace that ALSO
+      // has real static children (e.g. b.mail.create + b.mail.bimi /
+      // b.mail.rbl) is used statically, so an undefined child is a typo,
+      // not a factory-instance method. The factory-shorthand exemption is
+      // therefore applied ONLY at the leaf parent (the trailing function
+      // check below + the caller's `.create` check) — never at an
+      // intermediate segment, which would mask the typo.
       if (cur == null || typeof cur[parts[i]] === "undefined") {
         return { brokenName: parts.slice(0, i + 1).join(".") };
       }
@@ -10827,6 +10833,14 @@ function testPrimitiveReachability() {
     // (none — every surfaced gap is fixed in-tree)
   };
 
+  // Self-test (locks the fix): a missing intermediate segment under a
+  // mixed factory+static namespace must be flagged, never masked by the
+  // factory-shorthand exemption.
+  var _rMock  = { mail: { create: function () {}, bimi: {} } };
+  var _rProbe = walkPrefix("b.mail.bmi.recordShape", _rMock);
+  check("primitive-reachability: typo under a mixed factory namespace is flagged",
+        _rProbe && _rProbe.brokenName === "b.mail.bmi");
+
   var libFiles = _libFiles();
   var unreachable = [];
   for (var i = 0; i < libFiles.length; i += 1) {
@@ -10838,7 +10852,7 @@ function testPrimitiveReachability() {
       var name = m[1];
       if (REACHABILITY_ALLOWLIST[name]) continue;
       if (typeof resolve(name) !== "undefined") continue;
-      var w = walkPrefix(name);
+      var w = walkPrefix(name, bSurface);
       // Factory-instance shorthands (b.X.create() → instance method) skip.
       if (w.factory) continue;
       if (w.brokenName) {
