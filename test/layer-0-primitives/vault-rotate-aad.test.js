@@ -29,6 +29,37 @@ var SECRETS_SCHEMA = [{
   schemaVersion: "1",
 }];
 
+// Discover every lib module that declares an external AAD_ROTATION descriptor
+// by reading its actual export, so the gate-coverage assertion can't drift as
+// modules are added. backend:"external" means the store lives outside db.enc
+// (an operator-supplied backend) and the rotation pipeline can only refuse and
+// point at the module's reseal hook — so every such module MUST be reachable
+// from rotate's EXTERNAL_AAD_MODULE_LOADERS or a rotation silently orphans it.
+function _discoverExternalAadTables() {
+  var libDir = path.join(__dirname, "..", "..", "lib");
+  var files = [];
+  fs.readdirSync(libDir).forEach(function (name) {
+    var full = path.join(libDir, name);
+    if (fs.statSync(full).isDirectory()) {
+      fs.readdirSync(full).forEach(function (n2) { if (n2.slice(-3) === ".js") files.push(path.join(full, n2)); });
+    } else if (name.slice(-3) === ".js") { files.push(full); }
+  });
+  var tables = [];
+  files.forEach(function (f) {
+    if (f.replace(/\\/g, "/").indexOf("/vault/rotate.js") !== -1) return;   // the gate consumes; it doesn't declare
+    var src = fs.readFileSync(f, "utf8");
+    if (src.indexOf("AAD_ROTATION") === -1 || src.indexOf("\"external\"") === -1) return;
+    var mod;
+    try { mod = require(f); } catch (_e) { return; }
+    var desc = mod && mod.AAD_ROTATION;
+    if (!desc) return;
+    (Array.isArray(desc) ? desc : [desc]).forEach(function (d) {
+      if (d && d.backend === "external" && d.table) tables.push(d.table);
+    });
+  });
+  return tables;
+}
+
 async function _reset() {
   process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
   b.cluster._resetForTest();
@@ -38,6 +69,19 @@ async function _reset() {
 }
 
 async function run() {
+  // Gate-coverage invariant: rotate's external-AAD gate must name every
+  // external AAD_ROTATION table any lib module declares. A module that ships
+  // the descriptor but isn't wired into EXTERNAL_AAD_MODULE_LOADERS would let
+  // rotate() succeed with no acknowledgement, orphaning that store under the
+  // retired root (the archive-wrap:tenant-blobs gap caught on PR #293).
+  var declaredExternal = _discoverExternalAadTables();
+  var gatedExternal    = b.vaultRotate._externalAadTables();
+  check("found the external AAD_ROTATION modules (idempotency/orchestrator/tenant/snapshot/archive-wrap)",
+    declaredExternal.length >= 6);
+  var ungated = declaredExternal.filter(function (t) { return gatedExternal.indexOf(t) === -1; });
+  check("rotate's external-AAD gate covers every declared external AAD_ROTATION table (ungated: " + ungated.join(", ") + ")",
+    ungated.length === 0);
+
   var dirNew  = fs.mkdtempSync(path.join(os.tmpdir(), "vr-new-"));
   var dirA    = fs.mkdtempSync(path.join(os.tmpdir(), "vr-a-"));
   var staging = path.join(os.tmpdir(), "vr-stg-" + process.pid + "-" + Date.now());
