@@ -10839,7 +10839,7 @@ function testPrimitiveReachability() {
   var _rMock  = { mail: { create: function () {}, bimi: {} } };
   var _rProbe = walkPrefix("b.mail.bmi.recordShape", _rMock);
   check("primitive-reachability: typo under a mixed factory namespace is flagged",
-        _rProbe && _rProbe.brokenName === "b.mail.bmi");
+        _rProbe.brokenName === "b.mail.bmi");
 
   var libFiles = _libFiles();
   var unreachable = [];
