@@ -164,6 +164,32 @@ async function testDownloadHttpError() {
   });
 }
 
+async function testStreamErrorBodyPreserved() {
+  // A streamed (responseMode "stream") non-2xx must surface a bounded prefix
+  // of the error body on the thrown error instead of draining it to nothing,
+  // so the caller can read the problem+json / encrypted error detail.
+  await _withServer(function (req, res) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "forbidden", detail: "stream-error-detail" }));
+  }, async function (baseUrl) {
+    var thrown = null;
+    try {
+      await b.httpClient.request({
+        url:              baseUrl + "/x",
+        method:           "GET",
+        responseMode:     "stream",
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        allowInternal:    true,
+      });
+    } catch (e) { thrown = e; }
+    check("stream non-2xx: threw HTTP_ERROR",       thrown != null && thrown.code === "HTTP_ERROR");
+    check("stream non-2xx: message names the status", thrown && /403/.test(thrown.message));
+    check("stream non-2xx: err.body is a Buffer",   thrown && Buffer.isBuffer(thrown.body));
+    check("stream non-2xx: err.body carries detail",
+          thrown && thrown.body && /stream-error-detail/.test(thrown.body.toString("utf8")));
+  });
+}
+
 async function testDownloadBadOpts() {
   var thrown = null;
   try {
@@ -266,6 +292,7 @@ async function run() {
   await testDownloadExpectedHashMatch();
   await testDownloadHashMismatch();
   await testDownloadHttpError();
+  await testStreamErrorBodyPreserved();
   await testDownloadBadOpts();
   await testUploadHappyPath();
   await testUploadMissingFile();
