@@ -3,9 +3,10 @@
 // representative connection entry-point wiring (ntpCheck.querySingle; the other
 // five sites compose the identical guard).
 
-var helpers = require("../helpers");
-var b       = helpers.b;
-var check   = helpers.check;
+var helpers     = require("../helpers");
+var b           = helpers.b;
+var check       = helpers.check;
+var redisClient = require("../../lib/redis-client");
 
 function _thrCode(fn) { try { fn(); return null; } catch (e) { return e.code || e.message; } }
 
@@ -53,6 +54,17 @@ function run() {
         _thrCode(function () { b.ntpCheck.querySingle("pool.ntp.org", { port: -1 }); }) === "ntp/bad-port");
   check("ntpCheck.querySingle({port:70000}) throws ntp/bad-port",
         _thrCode(function () { b.ntpCheck.querySingle("pool.ntp.org", { port: 70000 }); }) === "ntp/bad-port");
+
+  // A url-supplied connection port must be range-checked too — the opts.port
+  // guard alone misses a port resolved from the url, so redis://h:0 (parsed to
+  // port 0) would otherwise reach an outbound connect. create() is inert until
+  // .connect(), so a valid url throws nothing.
+  check("redis url-port 0 rejected at create (resolved-port guard)",
+        _thrCode(function () { redisClient.create({ url: "redis://localhost:0" }); }) !== null);
+  check("redis url-port out-of-range rejected at create",
+        _thrCode(function () { redisClient.create({ url: "redis://localhost:99999" }); }) !== null);
+  check("redis valid url-port accepted (no throw at create)",
+        _thrCode(function () { redisClient.create({ url: "redis://localhost:6379" }); }) === null);
 }
 
 module.exports = { run: run };
