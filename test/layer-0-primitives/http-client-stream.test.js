@@ -188,6 +188,32 @@ async function testStreamErrorBodyPreserved() {
     check("stream non-2xx: err.body carries detail",
           thrown && thrown.body && /stream-error-detail/.test(thrown.body.toString("utf8")));
   });
+
+  // A large (> cap) error body must reject promptly with a bounded prefix —
+  // it must NOT leave the request promise pending until the whole body
+  // drains to close (if it did, this test would hang past the file timeout).
+  var BODY_LEN = 50003;
+  await _withServer(function (req, res) {
+    res.writeHead(500, { "Content-Type": "text/plain" });
+    res.end("E".repeat(BODY_LEN) + "TAIL-MARKER");
+  }, async function (baseUrl) {
+    var thrown = null;
+    try {
+      await b.httpClient.request({
+        url:              baseUrl + "/big",
+        method:           "GET",
+        responseMode:     "stream",
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        allowInternal:    true,
+      });
+    } catch (e) { thrown = e; }
+    check("stream large-error: threw HTTP_ERROR (did not hang)",
+          thrown != null && thrown.code === "HTTP_ERROR");
+    check("stream large-error: body bounded well below sent size",
+          thrown && thrown.body && thrown.body.length > 0 && thrown.body.length < BODY_LEN);
+    check("stream large-error: tail beyond cap was dropped",
+          thrown && thrown.body && thrown.body.toString("utf8").indexOf("TAIL-MARKER") === -1);
+  });
 }
 
 async function testDownloadBadOpts() {
