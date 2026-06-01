@@ -1,6 +1,6 @@
 {
   "$schema": "../scripts/release-notes-schema.json",
-  "version": "0.14.15",
+  "version": "0.14.16",
   "date": "2026-05-31",
   "headline": "Connection entry-point ports are validated at config time",
   "summary": "Six connection entry points previously read opts.port with a bare `|| <default>` fallback, silently coercing a string, negative, NaN, or out-of-range port instead of catching the operator's typo. A new b.validateOpts.optionalPort enforces the RFC 6335 §6 wire-valid range and is wired into b.mail.smtpTransport, b.ntpCheck.querySingle, b.networkDns.useDnsOverTls, b.networkNts (KE handshake / query / facade), b.redisClient.create, and createApp().listen — each now throws at construction with a clear message naming the bad value. The app.listen / createApp bind site opts into allowZero so port 0 (the legitimate ephemeral-bind sentinel) still works; the five outbound-connect sites require [1,65535].",
