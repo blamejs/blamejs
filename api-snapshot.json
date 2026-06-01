@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.14",
-  "createdAt": "2026-05-31T19:48:38.125Z",
+  "frameworkVersion": "0.14.16",
+  "createdAt": "2026-06-01T01:11:20.010Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -43285,6 +43285,10 @@
         "NTP_TO_UNIX_OFFSET_SECONDS": {
           "type": "primitive",
           "valueType": "number"
+        },
+        "NtpCheckError": {
+          "type": "function",
+          "arity": 4
         },
         "bootCheck": {
           "type": "function",
