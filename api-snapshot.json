@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.19",
-  "createdAt": "2026-06-02T17:15:17.761Z",
+  "frameworkVersion": "0.14.20",
+  "createdAt": "2026-06-02T21:40:19.656Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -3459,6 +3459,10 @@
         "oauth": {
           "type": "object",
           "members": {
+            "ATTESTATION_ALGS": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
             "DEFAULT_ACCEPTED_ALGS": {
               "type": "instance",
               "ctorName": "Array"
@@ -3590,9 +3594,21 @@
                 }
               }
             },
+            "buildClientAttestation": {
+              "type": "function",
+              "arity": 1
+            },
+            "buildClientAttestationPop": {
+              "type": "function",
+              "arity": 1
+            },
             "create": {
               "type": "function",
               "arity": 1
+            },
+            "verifyClientAttestation": {
+              "type": "function",
+              "arity": 3
             }
           }
         },
@@ -14331,6 +14347,10 @@
     "cryptoField": {
       "type": "object",
       "members": {
+        "CryptoFieldRateError": {
+          "type": "function",
+          "arity": 4
+        },
         "applyPosture": {
           "type": "function",
           "arity": 1
@@ -14340,6 +14360,10 @@
           "arity": 3
         },
         "clearForTest": {
+          "type": "function",
+          "arity": 0
+        },
+        "clearRateCapForTest": {
           "type": "function",
           "arity": 0
         },
@@ -14354,6 +14378,10 @@
         "computeNamespacedHash": {
           "type": "function",
           "arity": 3
+        },
+        "configureUnsealRateCap": {
+          "type": "function",
+          "arity": 1
         },
         "declareColumnResidency": {
           "type": "function",
@@ -14413,11 +14441,11 @@
         },
         "unsealDoc": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         },
         "unsealRow": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         }
       }
     },
@@ -39221,6 +39249,10 @@
               "type": "function",
               "arity": 2
             },
+            "parseForensicReport": {
+              "type": "function",
+              "arity": 2
+            },
             "parseRecord": {
               "type": "function",
               "arity": 1
@@ -43451,6 +43483,10 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "DEPLOYMENT_ENVIRONMENT_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "ERROR_TYPE": {
               "type": "primitive",
               "valueType": "string"
@@ -43464,6 +43500,22 @@
               "valueType": "string"
             },
             "EXCEPTION_TYPE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "FAAS_INSTANCE": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "FAAS_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "FAAS_TRIGGER": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "FAAS_VERSION": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -43563,7 +43615,27 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "K8S_CLUSTER_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_CONTAINER_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_CRONJOB_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_DAEMONSET_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "K8S_DEPLOYMENT_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_JOB_NAME": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -43571,7 +43643,19 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "K8S_NODE_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "K8S_POD_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_REPLICASET_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "K8S_STATEFULSET_NAME": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -43620,6 +43704,18 @@
               "valueType": "string"
             },
             "NETWORK_TRANSPORT": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "OTEL_SCOPE_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "OTEL_SCOPE_VERSION": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "PEER_SERVICE": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -43672,6 +43768,14 @@
               "valueType": "string"
             },
             "SESSION_ID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "TELEMETRY_DISTRO_NAME": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "TELEMETRY_DISTRO_VERSION": {
               "type": "primitive",
               "valueType": "string"
             },

@@ -766,6 +766,178 @@ function testDmarcRuaBuildBadInput() {
   }
 }
 
+// RFC 6591 §4.1 / RFC 7489 §7.3 — a DMARC forensic (RUF) failure
+// report: multipart/report (report-type=feedback-report) whose
+// message/feedback-report part carries Feedback-Type: auth-failure plus
+// the forensic-specific fields (Auth-Failure, Delivery-Result,
+// Identity-Alignment, DKIM-*/SPF-*), and a message/rfc822 part with the
+// reported message.
+var DMARC_RUF_SAMPLE =
+  "From: <postmaster@example.com>\r\n" +
+  "Date: Fri, 15 May 2026 12:00:00 -0400\r\n" +
+  "Subject: FW: DMARC failure report\r\n" +
+  "To: <ruf@sender.example>\r\n" +
+  "MIME-Version: 1.0\r\n" +
+  "Content-Type: multipart/report; report-type=feedback-report;\r\n" +
+  '\tboundary="ruf_boundary_abc"\r\n' +
+  "\r\n" +
+  "--ruf_boundary_abc\r\n" +
+  "Content-Type: text/plain; charset=\"US-ASCII\"\r\n" +
+  "\r\n" +
+  "This is a DMARC authentication-failure report.\r\n" +
+  "\r\n" +
+  "--ruf_boundary_abc\r\n" +
+  "Content-Type: message/feedback-report\r\n" +
+  "\r\n" +
+  "Feedback-Type: auth-failure\r\n" +
+  "User-Agent: ExampleReporter/1.0\r\n" +
+  "Version: 1\r\n" +
+  "Original-Mail-From: <bounce@sender.example>\r\n" +
+  "Original-Rcpt-To: <victim@example.com>\r\n" +
+  "Arrival-Date: Fri, 15 May 2026 11:59:00 -0400\r\n" +
+  "Source-IP: 203.0.113.7\r\n" +
+  "Reported-Domain: sender.example\r\n" +
+  "Authentication-Results: mx.example.com; dmarc=fail header.from=sender.example\r\n" +
+  "Auth-Failure: dmarc\r\n" +
+  "Delivery-Result: reject\r\n" +
+  "Identity-Alignment: none\r\n" +
+  "DKIM-Domain: sender.example\r\n" +
+  "DKIM-Identity: @sender.example\r\n" +
+  "DKIM-Selector: sel2026\r\n" +
+  "DKIM-Canonicalized-Header: from:Sender <noreply@sender.example>\r\n" +
+  "SPF-DNS: txt sender.example \"v=spf1 ip4:198.51.100.0/24 -all\"\r\n" +
+  "\r\n" +
+  "--ruf_boundary_abc\r\n" +
+  "Content-Type: message/rfc822\r\n" +
+  "\r\n" +
+  "From: Sender <noreply@sender.example>\r\n" +
+  "To: <victim@example.com>\r\n" +
+  "Subject: You have won\r\n" +
+  "Message-ID: <forged-123@sender.example>\r\n" +
+  "\r\n" +
+  "Body of the reported message.\r\n" +
+  "--ruf_boundary_abc--\r\n";
+
+function testDmarcForensicSurface() {
+  check("dmarc.parseForensicReport is a function",
+        typeof b.mail.dmarc.parseForensicReport === "function");
+}
+
+function testDmarcForensicParse() {
+  var rv = b.mail.dmarc.parseForensicReport(DMARC_RUF_SAMPLE);
+  check("dmarc.parseForensicReport: ok envelope on a valid report",
+        rv && rv.ok === true && rv.report && typeof rv.report === "object");
+  var rep = rv.report;
+  check("dmarc.parseForensicReport: feedbackType=auth-failure",
+        rep.feedbackType === "auth-failure");
+  check("dmarc.parseForensicReport: authFailure=dmarc (RFC 6591 §3.1)",
+        rep.authFailure === "dmarc");
+  check("dmarc.parseForensicReport: deliveryResult=reject",
+        rep.deliveryResult === "reject");
+  check("dmarc.parseForensicReport: identityAlignment=none (RFC 7489 §7.3)",
+        rep.identityAlignment === "none");
+  check("dmarc.parseForensicReport: DKIM-* fields shaped",
+        rep.dkim && rep.dkim.domain === "sender.example" &&
+        rep.dkim.selector === "sel2026" &&
+        rep.dkim.identity === "@sender.example" &&
+        /noreply@sender\.example/.test(rep.dkim.canonicalizedHeader || ""));
+  check("dmarc.parseForensicReport: spf.dns captured",
+        rep.spf && /v=spf1/.test(rep.spf.dns || ""));
+  check("dmarc.parseForensicReport: base ARF fields carried through",
+        rep.sourceIp === "203.0.113.7" &&
+        rep.reportedDomain === "sender.example" &&
+        /dmarc=fail/.test(rep.authenticationResults || ""));
+  check("dmarc.parseForensicReport: reported message headers parsed",
+        Array.isArray(rep.reportedHeaders) &&
+        rep.reportedHeaderMap["message-id"] === "<forged-123@sender.example>" &&
+        rep.reportedHeaderMap.subject === "You have won");
+  check("dmarc.parseForensicReport: reportedHeaderMap is null-prototype",
+        Object.getPrototypeOf(rep.reportedHeaderMap) === null);
+}
+
+function testDmarcForensicNotAuthFailure() {
+  // An RFC 5965 abuse report is a valid ARF report but NOT a DMARC
+  // forensic report — Feedback-Type must be auth-failure (RFC 7489 §7.3).
+  var abuseReport = DMARC_RUF_SAMPLE.replace(
+    "Feedback-Type: auth-failure", "Feedback-Type: abuse");
+  var rv = b.mail.dmarc.parseForensicReport(abuseReport);
+  check("dmarc.parseForensicReport: non-auth-failure Feedback-Type → typed error (not a throw)",
+        rv && rv.ok === false &&
+        /dmarc-ruf-not-auth-failure/.test(rv.error.code || ""));
+}
+
+function testDmarcForensicMissingAuthFailure() {
+  // RFC 6591 §3.1 — Auth-Failure is required in an auth-failure report.
+  var noAuthFailure = DMARC_RUF_SAMPLE.replace("Auth-Failure: dmarc\r\n", "");
+  var rv = b.mail.dmarc.parseForensicReport(noAuthFailure);
+  check("dmarc.parseForensicReport: missing Auth-Failure → typed error",
+        rv && rv.ok === false &&
+        /dmarc-ruf-missing-auth-failure/.test(rv.error.code || ""));
+}
+
+function testDmarcForensicHostileInputDoesNotThrow() {
+  // Defensive reader — hostile / malformed input MUST return a typed
+  // error, never throw in the hot path that ingested the report.
+  var cases = [null, 12345, "", "not-a-multipart-report",
+               Buffer.from("garbage"),
+               "Content-Type: text/plain\r\n\r\nnope"];
+  for (var i = 0; i < cases.length; i += 1) {
+    var threw = null;
+    var rv = null;
+    try { rv = b.mail.dmarc.parseForensicReport(cases[i]); }
+    catch (e) { threw = e; }
+    check("dmarc.parseForensicReport: hostile input #" + i + " returns typed error, no throw",
+          threw === null && rv && rv.ok === false &&
+          rv.error && typeof rv.error.code === "string");
+  }
+}
+
+function testDmarcForensicReportedHeaderCap() {
+  // RFC 6591 §3.2 reported-header cap — a report whose reported message
+  // carries > the header cap clips the parsed list and flags it, while
+  // still surfacing the verbatim message. Build a reported message with
+  // many headers.
+  var lines = [];
+  for (var i = 0; i < 400; i += 1) lines.push("X-Pad-" + i + ": v" + i);
+  var bigReported = lines.join("\r\n") + "\r\n\r\nbody\r\n";
+  var sample = DMARC_RUF_SAMPLE.replace(
+    "From: Sender <noreply@sender.example>\r\n" +
+    "To: <victim@example.com>\r\n" +
+    "Subject: You have won\r\n" +
+    "Message-ID: <forged-123@sender.example>\r\n" +
+    "\r\n" +
+    "Body of the reported message.\r\n",
+    bigReported);
+  var rv = b.mail.dmarc.parseForensicReport(sample);
+  check("dmarc.parseForensicReport: over-cap reported headers are clipped + flagged",
+        rv && rv.ok === true &&
+        rv.report.reportedHeaders.length === 256 &&
+        rv.report.reportedHeadersTruncated === true);
+}
+
+function testDmarcForensicPrototypePollutionSafe() {
+  // A hostile report naming a feedback-report field or a reported-message
+  // header `__proto__` / `constructor` must not pollute Object.prototype.
+  var sample = DMARC_RUF_SAMPLE
+    // feedback-report field block — exercises the extraFields path.
+    .replace("Auth-Failure: dmarc\r\n",
+             "Auth-Failure: dmarc\r\n__proto__: fieldpoison\r\n")
+    // reported message header block — exercises the reportedHeaderMap path.
+    .replace("From: Sender <noreply@sender.example>\r\n",
+             "From: Sender <noreply@sender.example>\r\n__proto__: hdrpoison\r\n");
+  var rv = b.mail.dmarc.parseForensicReport(sample);
+  check("dmarc.parseForensicReport: __proto__ in feedback field → own data on null-prototype extraFields",
+        rv && rv.ok === true &&
+        Object.getPrototypeOf(rv.report.extraFields) === null &&
+        rv.report.extraFields["__proto__"] === "fieldpoison");
+  check("dmarc.parseForensicReport: __proto__ reported header → own data, no prototype pollution",
+        rv.report.reportedHeaderMap["__proto__"] === "hdrpoison" &&
+        ({}).fieldpoison === undefined &&
+        ({}).hdrpoison === undefined &&
+        Object.prototype.fieldpoison === undefined &&
+        Object.prototype.hdrpoison === undefined);
+}
+
 async function testIprevValidatesPtrShape() {
   // MAIL-50 — PTR result MUST be a valid DNS-name shape (LDH labels,
   // 1..63 octets, total 1..253 octets). Synthesize via a mocked
@@ -1072,6 +1244,13 @@ async function run() {
   testDmarcRuaGunzipBombDistinguished();
   testDmarcRuaBuildRoundTrip();
   testDmarcRuaBuildBadInput();
+  testDmarcForensicSurface();
+  testDmarcForensicParse();
+  testDmarcForensicNotAuthFailure();
+  testDmarcForensicMissingAuthFailure();
+  testDmarcForensicHostileInputDoesNotThrow();
+  testDmarcForensicReportedHeaderCap();
+  testDmarcForensicPrototypePollutionSafe();
   await testIprevValidatesPtrShape();
   await testArcHeaderSourceOrder();
 }

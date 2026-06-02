@@ -150,6 +150,110 @@ function testDefaultDocumentPolicyExportedConstant() {
     typeof m.DEFAULT_DOCUMENT_POLICY === "string" && m.DEFAULT_DOCUMENT_POLICY.length > 0);
 }
 
+function testReportOnlyHeadersEmittedWhenOptedIn() {
+  var mw = b.middleware.securityHeaders({
+    coopReportOnly:           'same-origin; report-to="coop"',
+    coepReportOnly:           'require-corp; report-to="coep"',
+    documentPolicyReportOnly: 'document-write=?0; report-to="docpol"',
+  });
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("Cross-Origin-Opener-Policy-Report-Only emitted when coopReportOnly set",
+    res._hdrs["Cross-Origin-Opener-Policy-Report-Only"] === 'same-origin; report-to="coop"');
+  check("Cross-Origin-Embedder-Policy-Report-Only emitted when coepReportOnly set",
+    res._hdrs["Cross-Origin-Embedder-Policy-Report-Only"] === 'require-corp; report-to="coep"');
+  check("Document-Policy-Report-Only emitted when documentPolicyReportOnly set",
+    res._hdrs["Document-Policy-Report-Only"] === 'document-write=?0; report-to="docpol"');
+}
+
+function testReportOnlyDoesNotTouchEnforcingHeaders() {
+  // Monitor-mode opt-ins must not alter the enforcing COOP / COEP /
+  // Document-Policy headers: COOP stays same-origin, COEP stays off by
+  // default, Document-Policy keeps its enforcing default.
+  var mw = b.middleware.securityHeaders({
+    coopReportOnly: "same-origin",
+    coepReportOnly: "require-corp",
+  });
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("enforcing COOP unchanged by coopReportOnly",
+    res._hdrs["Cross-Origin-Opener-Policy"] === "same-origin");
+  check("COEP stays off by default despite coepReportOnly",
+    res._hdrs["Cross-Origin-Embedder-Policy"] === undefined);
+  check("enforcing Document-Policy unchanged by report-only opts",
+    res._hdrs["Document-Policy"] === b.middleware._modules.securityHeaders.DEFAULT_DOCUMENT_POLICY);
+}
+
+function testReportOnlyDefaultOff() {
+  var mw = b.middleware.securityHeaders();
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("Cross-Origin-Opener-Policy-Report-Only default off",
+    res._hdrs["Cross-Origin-Opener-Policy-Report-Only"] === undefined);
+  check("Cross-Origin-Embedder-Policy-Report-Only default off",
+    res._hdrs["Cross-Origin-Embedder-Policy-Report-Only"] === undefined);
+  check("Document-Policy-Report-Only default off",
+    res._hdrs["Document-Policy-Report-Only"] === undefined);
+}
+
+function testRequireDocumentPolicyEmittedWhenOptedIn() {
+  var mw = b.middleware.securityHeaders({ requireDocumentPolicy: "unsized-media=?0" });
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("Require-Document-Policy emitted when opted in",
+    res._hdrs["Require-Document-Policy"] === "unsized-media=?0");
+}
+
+function testRequireDocumentPolicyDefaultOff() {
+  var mw = b.middleware.securityHeaders();
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("Require-Document-Policy default off",
+    res._hdrs["Require-Document-Policy"] === undefined);
+}
+
+function testServiceWorkerAllowedEmittedWhenOptedIn() {
+  var mw = b.middleware.securityHeaders({ serviceWorkerAllowed: "/" });
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("Service-Worker-Allowed emitted when opted in",
+    res._hdrs["Service-Worker-Allowed"] === "/");
+}
+
+function testServiceWorkerAllowedDefaultOff() {
+  var mw = b.middleware.securityHeaders();
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("Service-Worker-Allowed default off",
+    res._hdrs["Service-Worker-Allowed"] === undefined);
+}
+
+function testNewOptsNonStringIgnored() {
+  // Defensive reader: a non-string (truthy-but-wrong) value emits no
+  // header rather than serializing an object into the response.
+  var mw = b.middleware.securityHeaders({
+    coopReportOnly:        { not: "a string" },
+    serviceWorkerAllowed:  123,
+    requireDocumentPolicy: [],
+  });
+  var res = _mkRes();
+  mw({ headers: {} }, res, function () {});
+  check("non-string coopReportOnly emits no header",
+    res._hdrs["Cross-Origin-Opener-Policy-Report-Only"] === undefined);
+  check("non-string serviceWorkerAllowed emits no header",
+    res._hdrs["Service-Worker-Allowed"] === undefined);
+  check("non-string requireDocumentPolicy emits no header",
+    res._hdrs["Require-Document-Policy"] === undefined);
+}
+
+function testUnknownOptStillRefused() {
+  var threw = false;
+  try {
+    b.middleware.securityHeaders({ coopReportOnlyy: "same-origin" });
+  } catch (_e) { threw = true; }
+  check("typo'd report-only opt refused at config-time", threw);
+}
+
 async function run() {
   testFencedFrameSrcInDefaultCsp();
   testDocumentPolicyDefault();
@@ -163,6 +267,15 @@ async function run() {
   testPermissionsPolicyMultiEntryAccepted();
   testV0870PermissionsPolicyDefaults();
   testDefaultDocumentPolicyExportedConstant();
+  testReportOnlyHeadersEmittedWhenOptedIn();
+  testReportOnlyDoesNotTouchEnforcingHeaders();
+  testReportOnlyDefaultOff();
+  testRequireDocumentPolicyEmittedWhenOptedIn();
+  testRequireDocumentPolicyDefaultOff();
+  testServiceWorkerAllowedEmittedWhenOptedIn();
+  testServiceWorkerAllowedDefaultOff();
+  testNewOptsNonStringIgnored();
+  testUnknownOptStillRefused();
 }
 
 module.exports = { run: run };

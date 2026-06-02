@@ -507,6 +507,11 @@ function testNoRawTimeLiterals() {
         .replace(/'(?:[^'\\]|\\.)*'/g, "")
         .replace(/`(?:[^`\\]|\\.)*`/g, "")
         .replace(/\/(?:[^/\\\n]|\\.)+\/[gimsuy]*/g, "")
+        // Strip a trailing `//` line comment AFTER string/regex removal so
+        // a `// RFC 7800` / `// draft §4.1` annotation can't seed a phantom
+        // time-shape literal. String literals are already gone, so any
+        // remaining `//` opens a real comment; everything to EOL is prose.
+        .replace(/\/\/.*$/, "")
         .replace(/0x[0-9a-fA-F]+/g, "");
       var hit = false;
       // Any `* 1000` that isn't part of `* 1000 * 1000` (already caught
@@ -2591,12 +2596,43 @@ async function testNoDuplicateCodeBlocks() {
       reason: "v0.14.18 — coincidental shingle of the import-public-key-then-wrap-failure idiom (try { keyObj = nodeCrypto.createPublicKey({ key, format }); } catch (e) { throw new AuthError(code, msg + ((e && e.message) || String(e))); }). The alg/key-type cross-check (CVE-2026-22817) is ALREADY routed through the shared jwtExternal._assertAlgKtyMatch helper; what repeats here is only the per-primitive createPublicKey + typed-catch shell. oid4vci._verifyProofJwt imports an OID4VCI proof-JWT holder key and throws auth-oid4vci/*; openid-federation.verifyEntityStatement imports an entity-statement JWS key and throws auth-openid-federation/*; saml._decryptEncryptedAssertion / verifyResponse import SAML XML-DSig / EncryptedAssertion keys (a different signature mechanism entirely) and throw auth-saml/*. Each carries a primitive-local error code namespace operators grep for; consolidating would couple three unrelated credential formats on the createPublicKey boilerplate.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/archive-adapters.js:fs",
+        "lib/archive-adapters.js:http",
+        "lib/archive-adapters.js:close",
+        "lib/crypto-field.js:declarePerRowKey",
+        "lib/crypto-field.js:assertColumnResidency",
+        "lib/network-smtp-policy.js:mtaStsFetch",
+        "lib/parsers/safe-env.js:readVar",
+        "lib/mail-crypto-pgp.js:sign",
+        "lib/metrics.js:shadowRegistry",
+        "lib/tracing.js:spanSync",
+      ],
+      reason: "v0.14.20 — generic validate/guard control-flow shingle that the crypto-field plain-Error → typed-CryptoFieldError(code, msg) conversion tipped over the 3-file threshold. The throw now normalizes to `throw new _ID ( _STR , _STR )` (two-arg framework-error contract) instead of the keyword-`Error` one-arg form, so the early-return + typed-throw prelude in crypto-field.declarePerRowKey / assertColumnResidency now exact-matches the same prelude shape in unrelated primitives: archive-adapters fs/http/close adapter methods, network-smtp-policy.mtaStsFetch (MTA-STS policy fetch), parsers/safe-env.readVar (env-var read), mail-crypto-pgp.sign (PGP detached signature), metrics.shadowRegistry (Prometheus shadow registry), tracing.spanSync (OTEL span helper). Members are unrelated subsystems with primitive-local error namespaces operators grep for; there is no shared behaviour to extract — consolidating would couple field-level encryption, archive I/O, SMTP policy, env parsing, PGP, metrics, and tracing on a trivial guard-then-throw shell.",
+    },
+    {
       files: ["lib/api-key.js:issue", "lib/db-query.js:<top>", "lib/session.js:create"],
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
-      files: ["lib/guard-filename.js:verifyExtractionPath", "lib/hal.js:resource", "lib/vault-aad.js:_canonicalize"],
-      reason: "v0.13.13 — coincidental token shingle of the generic split-then-walk-segments idiom (`x.split(sep); for (...) { var seg = ...; if (...) throw/continue }`). guard-filename verifyExtractionPath walks path components refusing per-segment Windows-extraction hazards (reserved names / NTFS-ADS / trailing-dot); hal.js:resource builds a HAL resource by walking link/embedded keys; vault-aad.js:_canonicalize canonicalizes AAD key-value segments. Three unrelated domains (path safety / hypermedia link assembly / crypto AAD canonicalization) — no shared behaviour to extract; the only commonality is the universal split-and-loop control-flow shape.",
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:buildClientAttestation",
+        "lib/guard-filename.js:verifyExtractionPath",
+        "lib/hal.js:resource",
+        "lib/vault-aad.js:_canonicalize",
+      ],
+      reason: "v0.13.13 — coincidental token shingle of the generic split-then-walk-segments / walk-own-keys idiom (`x.split(sep)` or `Object.keys(x)` then `for (...) { var seg = ...; if (...) throw/continue }`). guard-filename verifyExtractionPath walks path components refusing per-segment Windows-extraction hazards (reserved names / NTFS-ADS / trailing-dot); hal.js:resource builds a HAL resource by walking link/embedded keys; vault-aad.js:_canonicalize canonicalizes AAD key-value segments; oauth.js:buildClientAttestation merges operator extra-claims by walking Object.keys with a prototype-pollution + spec-field-collision guard before signing. Unrelated domains (path safety / hypermedia link assembly / crypto AAD canonicalization / attestation claim merge) — no shared behaviour to extract; the only commonality is the universal walk-and-loop control-flow shape.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:_validateAuthorizationDetailsArray",
+        "lib/auth/step-up.js:parseAuthorizationDetails",
+        "lib/middleware/speculation-rules.js:_validateRules",
+      ],
+      reason: "Coincidental shingle of the array-of-typed-objects validation loop (`if (!Array.isArray(value)) throw; for (...) { var entry = value[i]; if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw; if (typeof entry.type !== 'string' ...) throw; }`). oauth._validateAuthorizationDetailsArray and step-up.parseAuthorizationDetails both gate RFC 9396 authorization_details entries (one pre-parsed, one parsing a request string) and throw auth-oauth/* and auth-step-up/* respectively; speculation-rules._validateRules gates W3C Speculation-Rules prerender/prefetch rule objects and throws a speculation-rules error. The loop shape is the only commonality; each enforces a distinct spec grammar with its own per-entry field requirements and error-code namespace, so there is no shared validator to extract without coupling unrelated request grammars.",
     },
     {
       mode:  "family-subset",
@@ -3107,6 +3143,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/oauth.js:exchangeToken",
         "lib/auth/oauth.js:nativeSsoExchange",
         "lib/auth/oauth.js:pollDeviceCode",
+        "lib/auth/oauth.js:_signAttestationJws",
+        "lib/auth/oauth.js:_verifyAttestationJws",
+        "lib/auth/oauth.js:verifyClientAttestation",
         "lib/auth/oid4vci.js:_verifyProofJwt",
         "lib/auth/oid4vci.js:createCredentialOffer",
         "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
@@ -3122,6 +3161,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/ciba.js:_registerInitialInterval",
         "lib/backup/index.js:scheduleTest",
         "lib/dsr.js:submit",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
         "lib/fedcm.js:accountsResponse",
         "lib/guard-saga-config.js:validate",
         "lib/guard-snapshot-envelope.js:validate",
@@ -3138,7 +3178,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/self-update.js:poll",
         "lib/self-update.js:verify",
       ],
-      reason: "v0.10.16 — JOSE / signature-verify / posture-check prelude across heterogeneous primitives: each verify/check pattern decomposes a token / envelope / posture set, asserts spec-required shape (header.alg in allowlist / kty in allowlist / iss CT-compare / aud match / time-window), and dispatches per-alg via shared helpers. The shingle similarity is the boilerplate header-parse + alg-allowlist + timing-safe compare; each primitive enforces a distinct spec (RFC 7519 JWT / RFC 7515 JWS / RFC 9449 DPoP / OASIS CSAF VEX / FIDO MDS / SAML 2.0 / RFC 9528 SD-JWT / W3C FedCM 2024 / RFC 8917 backchannel-logout / SBOM compliance / OIDC Federation / OID4VCI / CIBA / RFC 8460 TLS-RPT / restore-rollback). Consolidating would lose per-spec error code namespacing.",
+      reason: "v0.10.16 — JOSE / signature-verify / posture-check prelude across heterogeneous primitives: each verify/check pattern decomposes a token / envelope / posture set, asserts spec-required shape (header.alg in allowlist / kty in allowlist / iss CT-compare / aud match / time-window), and dispatches per-alg via shared helpers. The shingle similarity is the boilerplate header-parse + alg-allowlist + timing-safe compare; each primitive enforces a distinct spec (RFC 7519 JWT / RFC 7515 JWS / RFC 9449 DPoP / OAuth 2.0 Client Attestation draft / OASIS CSAF VEX / FIDO MDS / SAML 2.0 / RFC 9528 SD-JWT / W3C FedCM 2024 / RFC 8917 backchannel-logout / SBOM compliance / OIDC Federation / OID4VCI / CIBA / RFC 8460 TLS-RPT / restore-rollback). The OAuth client-attestation sign/verify path (_signAttestationJws / _verifyAttestationJws / verifyClientAttestation) shares the JWS header-parse + per-alg nodeCrypto.sign/verify + constant-time aud/jti compare shell while throwing its own auth-oauth/attestation-* code namespace. Consolidating would lose per-spec error code namespacing.",
     },
     {
       mode:  "family-subset",
@@ -5227,14 +5267,18 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/ai-adverse-decision.js:wrap",
         "lib/audit-daily-review.js:create",
+        "lib/auth/oauth.js:buildClientAttestationPop",
+        "lib/auth/saml.js:create",
         "lib/cloud-events.js:wrap",
+        "lib/data-act.js:shareWithThirdParty",
         "lib/ddl-change-control.js:create",
         "lib/external-db-migrate.js:create",
         "lib/fda-21cfr11.js:posture",
         "lib/observability-tracer.js:create",
+        "lib/outbox.js:create",
         "lib/redact.js:installOutboundDlp",
       ],
-      reason: "Observability-emit + validateOpts prelude family — each primitive opens with the validateOpts cascade then attaches an observability.event call (tracer span / decision audit / DDL approval / migration / 21 CFR signature / DLP scan). Eight different domains; consolidating would force a single emit shape and lose per-primitive event-name conventions.",
+      reason: "Observability-emit + validateOpts prelude family — each primitive opens with the `validateOpts(opts, [keys], label)` key-set cascade then a sequence of validateOpts.requireX / optionalX field checks (and most attach an observability.event call: tracer span / decision audit / DDL approval / migration / 21 CFR signature / DLP scan / third-party data share). The OAuth buildClientAttestationPop opens with the same validateOpts key-set + requireNonEmptyString / optionalPositiveInt prelude before minting the PoP JWT. Different domains; consolidating would force a single emit shape and lose per-primitive event-name conventions and error-code namespaces.",
     },
     {
       mode:  "family-subset",
@@ -6110,6 +6154,7 @@ var KNOWN_ANTIPATTERNS = [
     regex: /var\s+\w+\s*=\s*\w+\.get\s*\([^;]+\)\s*;\s*\n\s*if\s*\(\s*!\s*\w+\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
     allowlist: [
       "lib/cache.js",                          // tagIndex (Map<tag, Set<key>>) — Set factory
+      "lib/crypto-field.js",                   // _rateFailWindows (Map<actor:table:column, ts[]>) in _rateNoteFailure — timestamp-array factory
       "lib/deprecate.js",                      // _seen (Map<name:since, entry>) — object-literal factory
       "lib/i18n-messageformat.js",             // _pluralRulesCache (Map<key, Intl.PluralRules>) — Intl factory
       "lib/i18n.js",                           // formatter cache (Map<key, formatter>) — closure factory
