@@ -307,6 +307,6 @@ module.exports = { run: run };
 if (require.main === module) {
   run().then(
     function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
-    function (e) { console.error("FAIL:", e && e.stack || e); process.exit(1); }
+    function (e) { process.exitCode = 1; throw e; }
   );
 }
