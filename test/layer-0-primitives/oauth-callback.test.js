@@ -238,7 +238,7 @@ async function run() {
 
   var jtiSeen = {};
   var seenJti = function (jti) { if (jtiSeen[jti]) { return false; } jtiSeen[jti] = 1; return true; };
-  var verified = b.auth.oauth.verifyClientAttestation(attestation, pop, {
+  var verified = await b.auth.oauth.verifyClientAttestation(attestation, pop, {
     attesterJwk:      attesterPubJwk,
     expectedAudience: "https://as.example.com",
     expectedClientId: "wallet-app",
@@ -252,7 +252,7 @@ async function run() {
   // replay (jti already seen) refused — draft §12.1
   var attThrew = null;
   try {
-    b.auth.oauth.verifyClientAttestation(attestation, pop, {
+    await b.auth.oauth.verifyClientAttestation(attestation, pop, {
       attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com", seenJti: seenJti });
   } catch (e) { attThrew = e; }
   check("oauth.verifyClientAttestation: jti replay refused (draft §12.1)",
@@ -261,7 +261,7 @@ async function run() {
   // wrong audience refused — draft §8 step 7
   attThrew = null;
   try {
-    b.auth.oauth.verifyClientAttestation(attestation, pop, {
+    await b.auth.oauth.verifyClientAttestation(attestation, pop, {
       attesterJwk: attesterPubJwk, expectedAudience: "https://other.example.com" });
   } catch (e) { attThrew = e; }
   check("oauth.verifyClientAttestation: PoP aud mismatch refused",
@@ -273,7 +273,7 @@ async function run() {
     instancePrivateKey: attackerKp.privateKey, audience: "https://as.example.com" });
   attThrew = null;
   try {
-    b.auth.oauth.verifyClientAttestation(attestation, forgedPop, {
+    await b.auth.oauth.verifyClientAttestation(attestation, forgedPop, {
       attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com" });
   } catch (e) { attThrew = e; }
   check("oauth.verifyClientAttestation: PoP not signed by cnf key refused",
@@ -284,7 +284,7 @@ async function run() {
   var rogueAtt = b.auth.oauth.buildClientAttestation({
     clientId: "wallet-app", attesterPrivateKey: attackerKp.privateKey, instanceKeyJwk: instancePubJwk });
   try {
-    b.auth.oauth.verifyClientAttestation(rogueAtt, b.auth.oauth.buildClientAttestationPop({
+    await b.auth.oauth.verifyClientAttestation(rogueAtt, b.auth.oauth.buildClientAttestationPop({
       instancePrivateKey: instanceKp.privateKey, audience: "https://as.example.com" }), {
       attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com" });
   } catch (e) { attThrew = e; }
@@ -294,7 +294,7 @@ async function run() {
   // client_id mismatch refused — draft §8 step 10
   attThrew = null;
   try {
-    b.auth.oauth.verifyClientAttestation(attestation, b.auth.oauth.buildClientAttestationPop({
+    await b.auth.oauth.verifyClientAttestation(attestation, b.auth.oauth.buildClientAttestationPop({
       instancePrivateKey: instanceKp.privateKey, audience: "https://as.example.com" }), {
       attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com",
       expectedClientId: "different-client" });
@@ -305,12 +305,12 @@ async function run() {
   // challenge binding — draft §8 step 5/6
   var popChal = b.auth.oauth.buildClientAttestationPop({
     instancePrivateKey: instanceKp.privateKey, audience: "https://as.example.com", challenge: "srv-nonce-1" });
-  var vChal = b.auth.oauth.verifyClientAttestation(attestation, popChal, {
+  var vChal = await b.auth.oauth.verifyClientAttestation(attestation, popChal, {
     attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com", challenge: "srv-nonce-1" });
   check("oauth.verifyClientAttestation: matching challenge accepted", vChal.clientId === "wallet-app");
   attThrew = null;
   try {
-    b.auth.oauth.verifyClientAttestation(attestation, popChal, {
+    await b.auth.oauth.verifyClientAttestation(attestation, popChal, {
       attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com", challenge: "WRONG" });
   } catch (e) { attThrew = e; }
   check("oauth.verifyClientAttestation: challenge mismatch refused",
@@ -328,11 +328,66 @@ async function run() {
   // 5-segment JWE refused on the verifier path
   attThrew = null;
   try {
-    b.auth.oauth.verifyClientAttestation("a.b.c.d.e", pop, {
+    await b.auth.oauth.verifyClientAttestation("a.b.c.d.e", pop, {
       attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com" });
   } catch (e) { attThrew = e; }
   check("oauth.verifyClientAttestation: 5-segment JWE attestation refused",
         attThrew && attThrew.code === "auth-oauth/attestation-jwe-refused");
+
+  // builder infers the JWS alg from the key type — a non-EC attester key
+  // with no explicit `algorithm` must produce a self-consistent JWS (header
+  // alg matches the signing key), not a fixed ES256 header the verifier's
+  // alg/kty cross-check would reject.
+  var edAttKp = crypto.generateKeyPairSync("ed25519");
+  var edAtt = b.auth.oauth.buildClientAttestation({
+    clientId: "wallet-app", attesterPrivateKey: edAttKp.privateKey, instanceKeyJwk: instancePubJwk });
+  var edAttHdr = JSON.parse(Buffer.from(edAtt.split(".")[0], "base64url").toString("utf8"));
+  check("oauth.buildClientAttestation: Ed25519 key infers EdDSA alg", edAttHdr.alg === "EdDSA");
+  var edVerified = await b.auth.oauth.verifyClientAttestation(edAtt, b.auth.oauth.buildClientAttestationPop({
+    instancePrivateKey: instanceKp.privateKey, audience: "https://as.example.com" }), {
+    attesterJwk: edAttKp.publicKey.export({ format: "jwk" }), expectedAudience: "https://as.example.com" });
+  check("oauth.verifyClientAttestation: Ed25519-signed attestation verifies", edVerified.clientId === "wallet-app");
+
+  var rsaAttKp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaAttHdr = JSON.parse(Buffer.from(b.auth.oauth.buildClientAttestation({
+    clientId: "wallet-app", attesterPrivateKey: rsaAttKp.privateKey, instanceKeyJwk: instancePubJwk
+  }).split(".")[0], "base64url").toString("utf8"));
+  check("oauth.buildClientAttestation: RSA key infers RS256 alg", rsaAttHdr.alg === "RS256");
+
+  // an explicit alg incompatible with the key is refused BEFORE signing
+  // (a P-256 key cannot produce an RS256 signature).
+  attThrew = null;
+  try {
+    b.auth.oauth.buildClientAttestation({ clientId: "w", attesterPrivateKey: attesterKp.privateKey,
+      instanceKeyJwk: instancePubJwk, algorithm: "RS256" });
+  } catch (e) { attThrew = e; }
+  check("oauth.buildClientAttestation: explicit alg incompatible with key refused",
+        attThrew && attThrew.code === "auth-oauth/attestation-alg-key-mismatch");
+
+  // async (Promise) replay store is awaited — a Redis/DB seenJti returns a
+  // Promise; the verifier must await it so a resolved `false` (replayed
+  // jti) refuses instead of comparing a never-`false` Promise object.
+  var asyncSeen = {};
+  var asyncSeenJti = function (jti) {
+    return Promise.resolve().then(function () {
+      if (asyncSeen[jti]) { return false; }
+      asyncSeen[jti] = 1;
+      return true;
+    });
+  };
+  var popAsync = b.auth.oauth.buildClientAttestationPop({
+    instancePrivateKey: instanceKp.privateKey, audience: "https://as.example.com" });
+  var asyncOk = await b.auth.oauth.verifyClientAttestation(attestation, popAsync, {
+    attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com", seenJti: asyncSeenJti });
+  check("oauth.verifyClientAttestation: async seenJti first sighting accepted",
+        asyncOk.clientId === "wallet-app");
+  attThrew = null;
+  try {
+    await b.auth.oauth.verifyClientAttestation(attestation, popAsync, {
+      attesterJwk: attesterPubJwk, expectedAudience: "https://as.example.com", seenJti: asyncSeenJti });
+  } catch (e) { attThrew = e; }
+  check("oauth.verifyClientAttestation: async seenJti replay refused (Promise awaited)",
+        attThrew && attThrew.code === "auth-oauth/attestation-pop-replay");
 
   // instance-bound convenience builder produces both headers
   var hdrs = oaRar.clientAttestationHeaders({
