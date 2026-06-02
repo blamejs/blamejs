@@ -212,6 +212,16 @@ async function run() {
   } catch (e) { overThrew = e; }
   check("oauth: granted location beyond request refused (RFC 9396 over-grant)",
         overThrew && overThrew.code === "auth-oauth/authorization-details-over-grant");
+  // privileges over-grant — `privileges` is a registered array-valued common
+  // data field (RFC 9396 §2.1); a granted privileges array the request never
+  // constrained is the sharpest escalation and must be refused.
+  overThrew = null;
+  try {
+    X._crossCheckGrantedAuthorizationDetails(
+      [{ type: "payment_initiation", privileges: ["admin"] }], requested, true);
+  } catch (e) { overThrew = e; }
+  check("oauth: granted privilege beyond request refused (RFC 9396 over-grant)",
+        overThrew && overThrew.code === "auth-oauth/authorization-details-over-grant");
 
   // ---- draft-ietf-oauth-attestation-based-client-auth ----
   var attesterKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });

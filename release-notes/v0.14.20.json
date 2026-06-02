@@ -39,6 +39,15 @@
       ]
     },
     {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`b.auth.sdJwtVc.holder` signed the key-binding JWT with a non-key-derived algorithm",
+          "body": "The holder helper defaulted the key-binding JWT (KB-JWT) signing algorithm to a fixed `ES256` regardless of the holder key type, so a non-EC-P-256 holder key produced a presentation that either could not be built (an Ed25519 or P-384 key) or whose KB-JWT header advertised `ES256` while the signature used the actual key — a self-invalid token a verifier rejects. The algorithm is now derived from the holder key: ES256 / ES384 by EC curve, EdDSA for Ed25519 / Ed448, and ML-DSA-87 / ML-DSA-65 for an ML-DSA key. An RSA holder key, which has no supported KB-JWT algorithm, is refused at `holder.create` with a clear error instead of producing a broken presentation. An EC P-256 holder key, and any explicit `algorithm`, behave exactly as before."
+        }
+      ]
+    },
+    {
       "heading": "Security",
       "items": [
         {
@@ -55,8 +64,8 @@
       "heading": "Migration",
       "items": [
         {
-          "title": "No action required; every addition is additive or opt-in",
-          "body": "The OAuth `authorizationDetails` request parameter, the granted-details cross-check, the client-attestation builders / verifier, the sealed-field unseal rate cap, the DMARC forensic-report parser, the monitor-mode and embedder browser headers, the fetch-metadata FedCM / Storage-Access options, and the new OpenTelemetry attribute keys are all additive or opt-in. A client that passes no `authorizationDetails`, an operator who calls no `configureUnsealRateCap`, and a security-headers / fetch-metadata configuration that sets none of the new options all see prior behavior byte-for-byte unchanged."
+          "title": "No action required; additions are additive or opt-in",
+          "body": "The OAuth `authorizationDetails` request parameter, the granted-details cross-check, the client-attestation builders / verifier, the sealed-field unseal rate cap, the DMARC forensic-report parser, the monitor-mode and embedder browser headers, the fetch-metadata FedCM / Storage-Access options, and the new OpenTelemetry attribute keys are all additive or opt-in. A client that passes no `authorizationDetails`, an operator who calls no `configureUnsealRateCap`, and a security-headers / fetch-metadata configuration that sets none of the new options all see prior behavior byte-for-byte unchanged. The one behavior change is the SD-JWT VC holder fix: a `b.auth.sdJwtVc.holder` built with an RSA holder key is now refused at `holder.create` (RSA has no supported KB-JWT algorithm; it previously produced a self-invalid presentation) — switch such a holder to an EC P-256 / P-384, Ed25519, or ML-DSA key. EC P-256 holders and any explicit `algorithm` are unaffected."
         }
       ]
     }

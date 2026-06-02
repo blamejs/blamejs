@@ -650,6 +650,51 @@ function testHolderValidation() {
   check("holder.create: missing holderKey throws", threwNoKey);
 }
 
+// The holder must derive the KB-JWT alg from the holder key type when no
+// explicit `algorithm` is given — a fixed "ES256" default signed a non-EC
+// holder key under a header alg that disagreed with the key (un-signable
+// or a self-invalid KB-JWT a verifier rejects).
+async function testHolderAlgFromKeyType() {
+  var issuerKey = _newKeyPair();
+  var edHolder = nodeCrypto.generateKeyPairSync("ed25519");
+  var sd = sdJwtVc.issue({
+    issuer: "https://issuer", vct: "https://example/identity",
+    claims: { given_name: "Alice" },
+    selectivelyDisclosed: ["given_name"],
+    issuerKey: issuerKey.privateKey,
+    holderKey: _jwk(edHolder.publicKey),
+  });
+  var holder = sdJwtVc.holder.create({
+    storage:   sdJwtVc.holder.memoryStorage(),
+    holderKey: edHolder.privateKey,        // Ed25519, no explicit algorithm
+  });
+  await holder.store({ id: "c", sdJwt: sd.token });
+  var pres = await holder.present({
+    credentialId: "c", disclosedClaimNames: ["given_name"],
+    audience: "https://verifier", nonce: "n-1",
+  });
+  var kbJwt = pres.presentation.split("~").pop();
+  var kbAlg = JSON.parse(Buffer.from(kbJwt.split(".")[0], "base64url").toString("utf8")).alg;
+  check("holder: Ed25519 key infers EdDSA KB-JWT alg (not fixed ES256)", kbAlg === "EdDSA");
+  var verified = await sdJwtVc.verify(pres.presentation, {
+    issuerKeyResolver: async function () { return issuerKey.publicKey; },
+    audience: "https://verifier", nonce: "n-1", requireKeyBinding: true,
+  });
+  check("holder: Ed25519-bound presentation round-trips", verified.valid && verified.kbValidated);
+
+  // An RSA holder key has no KB-JWT alg in SUPPORTED_ALGS — refuse at
+  // create time rather than emit a self-invalid ES256-headed token.
+  var rsaThrew = null;
+  try {
+    sdJwtVc.holder.create({
+      storage:   sdJwtVc.holder.memoryStorage(),
+      holderKey: nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey,
+    });
+  } catch (e) { rsaThrew = e; }
+  check("holder.create: RSA holder key refused with a clear error",
+        rsaThrew && rsaThrew.code === "auth-sd-jwt-vc/holder-key-unsupported");
+}
+
 // ---- Module exports ----
 
 function testExports() {
@@ -696,5 +741,6 @@ function testExports() {
   await testHolderDelete();
   await testHolderPresentNonexistent();
   testHolderValidation();
+  await testHolderAlgFromKeyType();
   testExports();
 })().catch(function (e) { console.error(e); process.exit(1); });
