@@ -310,7 +310,8 @@ async function run() {
     b.externalDb.init({
       backends: { pgmain: { dialect: "postgres", connect: od.connect, query: od.query, close: od.close } },
     });
-    await b.externalDb.query("SELECT id FROM users WHERE id = $1", [7]);
+    await b.externalDb.query("SELECT id FROM users WHERE id = $1", [7]);                              // default — no includeSqlInAudit
+    await b.externalDb.query("SELECT id FROM users WHERE id = $1", [7], { includeSqlInAudit: true }); // opted in
     await b.externalDb.transaction(async function (tx) { await tx.query("SELECT 1"); });
     await new Promise(function (r) { setImmediate(r); });
   } finally {
@@ -318,15 +319,21 @@ async function run() {
   }
   var qRow = otelRows.filter(function (r) { return r.action === "system.externaldb.query"; });
   check("OTel: db.system maps dialect to OTel registry value (postgres→postgresql)",
-    qRow.length >= 1 && qRow[0].metadata["db.system"] === "postgresql");
+    qRow.length >= 2 && qRow[0].metadata["db.system"] === "postgresql");
   check("OTel: db.name carries the backend name",
-    qRow.length >= 1 && qRow[0].metadata["db.name"] === "pgmain");
-  check("OTel: db.operation is the leading SQL keyword",
-    qRow.length >= 1 && qRow[0].metadata["db.operation"] === "SELECT");
-  check("OTel: db.statement carries sanitized SQL (no bound values)",
-    qRow.length >= 1 &&
-    qRow[0].metadata["db.statement"] === "SELECT id FROM users WHERE id = $1" &&
-    qRow[0].metadata["db.statement"].indexOf("7") === -1);
+    qRow.length >= 2 && qRow[0].metadata["db.name"] === "pgmain");
+  check("OTel: db.operation is the leading SQL keyword (always emitted)",
+    qRow.length >= 2 && qRow[0].metadata["db.operation"] === "SELECT");
+  // db.statement carries the SQL text (which can hold operator-inlined PII /
+  // secrets), so it is gated behind the includeSqlInAudit opt-out: omitted by
+  // default, present only when the operator opts in. This is the regression
+  // guard for the privacy gate.
+  check("OTel: db.statement OMITTED by default (respects includeSqlInAudit opt-out)",
+    qRow.length >= 2 && qRow[0].metadata["db.statement"] === undefined);
+  check("OTel: db.statement present + sanitized only when includeSqlInAudit:true",
+    qRow.length >= 2 &&
+    qRow[1].metadata["db.statement"] === "SELECT id FROM users WHERE id = $1" &&
+    qRow[1].metadata["db.statement"].indexOf("7") === -1);
   var txRow = otelRows.filter(function (r) { return r.action === "system.externaldb.transaction"; });
   check("OTel: transaction span carries db.system + db.operation BEGIN",
     txRow.length >= 1 &&
