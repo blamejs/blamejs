@@ -1,0 +1,73 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.14.20",
+  "date": "2026-06-02",
+  "headline": "OAuth Rich Authorization Requests and client attestation, a sealed-field unseal rate cap, DMARC forensic-report parsing, monitor-mode browser-isolation headers, and FedCM / Storage-Access fetch-metadata",
+  "summary": "This release extends several standards surfaces the framework already covered in part. The OAuth client gains RFC 9396 Rich Authorization Requests: a typed `authorizationDetails` array is validated before the request and the granted details in the token response are cross-checked, refusing a grant the OP broadened beyond what was asked. The client also gains the OAuth 2.0 Attestation-Based Client Authentication primitives — it can build the `OAuth-Client-Attestation` / `-PoP` JWT pair and verify an inbound attestation. Sealed-field reads gain an opt-in unseal-failure rate cap that throttles a decryption-oracle / brute-force burst against attacker-written sealed columns (CWE-307). The inbound mail stack gains a DMARC forensic (RUF) report parser, the inverse of the aggregate-report parser. On the browser side, the security-headers middleware adds report-only COOP / COEP / Document-Policy variants for safe cross-origin-isolation rollout plus the embedder Require-Document-Policy and Service-Worker-Allowed headers, and the fetch-metadata middleware recognizes the FedCM `webidentity` destination and the Storage-Access request headers first-class. Observability adds a batch of current OpenTelemetry semantic-convention attributes. Every addition is additive or opt-in: an operator who sets no new option, and configures no rate cap, sees prior behavior unchanged.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "OAuth client: RFC 9396 Rich Authorization Requests (`authorizationDetails`)",
+          "body": "The OAuth / OIDC client accepts an `authorizationDetails` array (RFC 9396 §2 — each element a typed object) on the authorization and pushed-authorization-request paths; it is validated at config time (every element must be an object carrying a string `type`) and serialized as the `authorization_details` parameter, with a cap on the serialized payload. When `verifyAuthorizationDetails` is set, the granted `authorization_details` returned in the token response (RFC 9396 §7) is cross-checked against the request, and a grant that exceeds what was requested is refused — defending against an upstream broadened-grant privilege escalation. Without `authorizationDetails`, the request is unchanged."
+        },
+        {
+          "title": "OAuth 2.0 Attestation-Based Client Authentication",
+          "body": "`b.auth.oauth.buildClientAttestation` and `buildClientAttestationPop` mint the `OAuth-Client-Attestation` JWT (a client-backend-signed assertion binding a per-instance key, `typ: oauth-client-attestation+jwt`) and its per-instance `OAuth-Client-Attestation-PoP` proof; `verifyClientAttestation` validates the pair, including the alg allowlist (`ATTESTATION_ALGS`), the audience, and a constant-time `jti` check. This is the wallet / per-device client-authentication shape used in OpenID4VCI and the EUDI Wallet, an alternative to a shared `client_secret`."
+        },
+        {
+          "title": "`b.cryptoField.configureUnsealRateCap` — sealed-field decryption-oracle throttle",
+          "body": "An opt-in per-(actor, table, column) sliding-window cap on sealed-column unseal failures. A DB-write attacker who can place crafted `vault:` / `vault.aad:` bytes in sealed columns can force KEM decapsulation / AEAD verification on attacker-controlled input on every read; past `threshold` failures within `windowMs`, further unseal attempts for that tuple are refused for `cooldownMs` with a typed `CryptoFieldRateError` and a distinct `system.crypto.unseal_rate_exceeded` audit event (CWE-307; OWASP ASVS v5 §2.2.1; NIST SP 800-63B §5.2.2). Default off — with no cap configured, `unsealRow` behaves exactly as before (null the field, emit `system.crypto.unseal_failed`); the cap is count-based and lazily pruned, with no background timer."
+        },
+        {
+          "title": "`b.mail.dmarc.parseForensicReport` — RFC 6591 forensic (RUF) report parser",
+          "body": "Parses a DMARC failure (forensic) report: a `multipart/report; report-type=feedback-report` message (RFC 6591 §3) whose `message/feedback-report` subpart carries the `Feedback-Type: auth-failure` fields, with the required-field set validated (`Auth-Failure` and the other §3.1 fields) and a part-count and byte cap bounding a hostile report. It is the inbound inverse of the aggregate-report path, so an operator ingesting RUF mail has a parser symmetric with the existing aggregate parser and the v0.14.19 aggregate builder."
+        },
+        {
+          "title": "Monitor-mode cross-origin-isolation and embedder headers",
+          "body": "`b.middleware.securityHeaders` gains `coopReportOnly`, `coepReportOnly`, and `documentPolicyReportOnly` — set a policy string to emit the matching `*-Report-Only` header so a UA evaluates and reports violations without enforcing, the safe way to stage a COOP / COEP / Document-Policy rollout (WHATWG HTML cross-origin isolation; W3C Document Policy). `requireDocumentPolicy` emits the embedder `Require-Document-Policy` a parent demands of subframes, and `serviceWorkerAllowed` emits `Service-Worker-Allowed` to broaden a service worker's registration scope (W3C Service Workers). All default off."
+        },
+        {
+          "title": "fetch-metadata: FedCM `webidentity` and Storage-Access headers",
+          "body": "`b.middleware.fetchMetadata` recognizes the `webidentity` `Sec-Fetch-Dest` (a FedCM credentialed request) first-class and adds `deniedDest` — a list of destinations refused outright on the gated methods regardless of site, so a `webidentity` request hitting a route that is not an identity endpoint is refused. `allowStorageAccess` (default true) governs whether a request carrying `Sec-Fetch-Storage-Access: active` / `inactive` (the Storage Access API headers) is allowed, and `strictDest` throws at config time on an `allowedDest` / `deniedDest` value outside the known `Sec-Fetch-Dest` vocabulary, catching a typo at boot."
+        },
+        {
+          "title": "OpenTelemetry semantic-convention attributes",
+          "body": "The observability semantic-convention map gains a batch of current stable attributes: `peer.service`, the `faas.*` function attributes (`name` / `version` / `instance` / `trigger`), `deployment.environment.name`, `telemetry.distro.*`, `otel.scope.*`, and a Kubernetes subset (`k8s.cluster.name` and the node / container / cronjob / daemonset / job / replicaset / statefulset names), so a span or metric carrying these keys is recognized and emitted under the canonical name."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`b.auth.sdJwtVc.holder` signed the key-binding JWT with a non-key-derived algorithm",
+          "body": "The holder helper defaulted the key-binding JWT (KB-JWT) signing algorithm to a fixed `ES256` regardless of the holder key type, so a non-EC-P-256 holder key produced a presentation that either could not be built (an Ed25519 or P-384 key) or whose KB-JWT header advertised `ES256` while the signature used the actual key — a self-invalid token a verifier rejects. The algorithm is now derived from the holder key: ES256 / ES384 by EC curve, EdDSA for Ed25519 / Ed448, and ML-DSA-87 / ML-DSA-65 for an ML-DSA key. An RSA holder key, which has no supported KB-JWT algorithm, is refused at `holder.create` with a clear error instead of producing a broken presentation. An EC P-256 holder key, and any explicit `algorithm`, behave exactly as before."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Throttle a sealed-column decryption oracle (opt-in)",
+          "body": "`b.cryptoField.configureUnsealRateCap` lets an operator bound repeated unseal failures against sealed columns, so an attacker who can write crafted bytes into a sealed field cannot hammer the KEM / AEAD verify path indefinitely while only an off-band alert rule notices the burst (CWE-307). It is opt-in because a sensible threshold and window depend on a deployment's legitimate sealed-read volume; the always-on defense (null the field plus an audit event on every unseal failure) is unchanged."
+        },
+        {
+          "title": "Refuse a broadened OAuth grant",
+          "body": "With `verifyAuthorizationDetails` enabled, the OAuth client refuses a token response whose granted `authorization_details` exceed the requested set (RFC 9396 §7), so a compromised or misbehaving authorization server cannot silently widen a client's authorization beyond what the request asked for."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "No action required; additions are additive or opt-in",
+          "body": "The OAuth `authorizationDetails` request parameter, the granted-details cross-check, the client-attestation builders / verifier, the sealed-field unseal rate cap, the DMARC forensic-report parser, the monitor-mode and embedder browser headers, the fetch-metadata FedCM / Storage-Access options, and the new OpenTelemetry attribute keys are all additive or opt-in. A client that passes no `authorizationDetails`, an operator who calls no `configureUnsealRateCap`, and a security-headers / fetch-metadata configuration that sets none of the new options all see prior behavior byte-for-byte unchanged. The one behavior change is the SD-JWT VC holder fix: a `b.auth.sdJwtVc.holder` built with an RSA holder key is now refused at `holder.create` (RSA has no supported KB-JWT algorithm; it previously produced a self-invalid presentation) — switch such a holder to an EC P-256 / P-384, Ed25519, or ML-DSA key. EC P-256 holders and any explicit `algorithm` are unaffected."
+        }
+      ]
+    }
+  ]
+}

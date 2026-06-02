@@ -507,6 +507,11 @@ function testNoRawTimeLiterals() {
         .replace(/'(?:[^'\\]|\\.)*'/g, "")
         .replace(/`(?:[^`\\]|\\.)*`/g, "")
         .replace(/\/(?:[^/\\\n]|\\.)+\/[gimsuy]*/g, "")
+        // Strip a trailing `//` line comment AFTER string/regex removal so
+        // a `// RFC 7800` / `// draft §4.1` annotation can't seed a phantom
+        // time-shape literal. String literals are already gone, so any
+        // remaining `//` opens a real comment; everything to EOL is prose.
+        .replace(/\/\/.*$/, "")
         .replace(/0x[0-9a-fA-F]+/g, "");
       var hit = false;
       // Any `* 1000` that isn't part of `* 1000 * 1000` (already caught
@@ -2591,12 +2596,43 @@ async function testNoDuplicateCodeBlocks() {
       reason: "v0.14.18 — coincidental shingle of the import-public-key-then-wrap-failure idiom (try { keyObj = nodeCrypto.createPublicKey({ key, format }); } catch (e) { throw new AuthError(code, msg + ((e && e.message) || String(e))); }). The alg/key-type cross-check (CVE-2026-22817) is ALREADY routed through the shared jwtExternal._assertAlgKtyMatch helper; what repeats here is only the per-primitive createPublicKey + typed-catch shell. oid4vci._verifyProofJwt imports an OID4VCI proof-JWT holder key and throws auth-oid4vci/*; openid-federation.verifyEntityStatement imports an entity-statement JWS key and throws auth-openid-federation/*; saml._decryptEncryptedAssertion / verifyResponse import SAML XML-DSig / EncryptedAssertion keys (a different signature mechanism entirely) and throw auth-saml/*. Each carries a primitive-local error code namespace operators grep for; consolidating would couple three unrelated credential formats on the createPublicKey boilerplate.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/archive-adapters.js:fs",
+        "lib/archive-adapters.js:http",
+        "lib/archive-adapters.js:close",
+        "lib/crypto-field.js:declarePerRowKey",
+        "lib/crypto-field.js:assertColumnResidency",
+        "lib/network-smtp-policy.js:mtaStsFetch",
+        "lib/parsers/safe-env.js:readVar",
+        "lib/mail-crypto-pgp.js:sign",
+        "lib/metrics.js:shadowRegistry",
+        "lib/tracing.js:spanSync",
+      ],
+      reason: "v0.14.20 — generic validate/guard control-flow shingle that the crypto-field plain-Error → typed-CryptoFieldError(code, msg) conversion tipped over the 3-file threshold. The throw now normalizes to `throw new _ID ( _STR , _STR )` (two-arg framework-error contract) instead of the keyword-`Error` one-arg form, so the early-return + typed-throw prelude in crypto-field.declarePerRowKey / assertColumnResidency now exact-matches the same prelude shape in unrelated primitives: archive-adapters fs/http/close adapter methods, network-smtp-policy.mtaStsFetch (MTA-STS policy fetch), parsers/safe-env.readVar (env-var read), mail-crypto-pgp.sign (PGP detached signature), metrics.shadowRegistry (Prometheus shadow registry), tracing.spanSync (OTEL span helper). Members are unrelated subsystems with primitive-local error namespaces operators grep for; there is no shared behaviour to extract — consolidating would couple field-level encryption, archive I/O, SMTP policy, env parsing, PGP, metrics, and tracing on a trivial guard-then-throw shell.",
+    },
+    {
       files: ["lib/api-key.js:issue", "lib/db-query.js:<top>", "lib/session.js:create"],
       reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
     },
     {
-      files: ["lib/guard-filename.js:verifyExtractionPath", "lib/hal.js:resource", "lib/vault-aad.js:_canonicalize"],
-      reason: "v0.13.13 — coincidental token shingle of the generic split-then-walk-segments idiom (`x.split(sep); for (...) { var seg = ...; if (...) throw/continue }`). guard-filename verifyExtractionPath walks path components refusing per-segment Windows-extraction hazards (reserved names / NTFS-ADS / trailing-dot); hal.js:resource builds a HAL resource by walking link/embedded keys; vault-aad.js:_canonicalize canonicalizes AAD key-value segments. Three unrelated domains (path safety / hypermedia link assembly / crypto AAD canonicalization) — no shared behaviour to extract; the only commonality is the universal split-and-loop control-flow shape.",
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:buildClientAttestation",
+        "lib/guard-filename.js:verifyExtractionPath",
+        "lib/hal.js:resource",
+        "lib/vault-aad.js:_canonicalize",
+      ],
+      reason: "v0.13.13 — coincidental token shingle of the generic split-then-walk-segments / walk-own-keys idiom (`x.split(sep)` or `Object.keys(x)` then `for (...) { var seg = ...; if (...) throw/continue }`). guard-filename verifyExtractionPath walks path components refusing per-segment Windows-extraction hazards (reserved names / NTFS-ADS / trailing-dot); hal.js:resource builds a HAL resource by walking link/embedded keys; vault-aad.js:_canonicalize canonicalizes AAD key-value segments; oauth.js:buildClientAttestation merges operator extra-claims by walking Object.keys with a prototype-pollution + spec-field-collision guard before signing. Unrelated domains (path safety / hypermedia link assembly / crypto AAD canonicalization / attestation claim merge) — no shared behaviour to extract; the only commonality is the universal walk-and-loop control-flow shape.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:_validateAuthorizationDetailsArray",
+        "lib/auth/step-up.js:parseAuthorizationDetails",
+        "lib/middleware/speculation-rules.js:_validateRules",
+      ],
+      reason: "Coincidental shingle of the array-of-typed-objects validation loop (`if (!Array.isArray(value)) throw; for (...) { var entry = value[i]; if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw; if (typeof entry.type !== 'string' ...) throw; }`). oauth._validateAuthorizationDetailsArray and step-up.parseAuthorizationDetails both gate RFC 9396 authorization_details entries (one pre-parsed, one parsing a request string) and throw auth-oauth/* and auth-step-up/* respectively; speculation-rules._validateRules gates W3C Speculation-Rules prerender/prefetch rule objects and throws a speculation-rules error. The loop shape is the only commonality; each enforces a distinct spec grammar with its own per-entry field requirements and error-code namespace, so there is no shared validator to extract without coupling unrelated request grammars.",
     },
     {
       mode:  "family-subset",
@@ -3107,6 +3143,9 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/oauth.js:exchangeToken",
         "lib/auth/oauth.js:nativeSsoExchange",
         "lib/auth/oauth.js:pollDeviceCode",
+        "lib/auth/oauth.js:_signAttestationJws",
+        "lib/auth/oauth.js:_verifyAttestationJws",
+        "lib/auth/oauth.js:verifyClientAttestation",
         "lib/auth/oid4vci.js:_verifyProofJwt",
         "lib/auth/oid4vci.js:createCredentialOffer",
         "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
@@ -3122,6 +3161,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/ciba.js:_registerInitialInterval",
         "lib/backup/index.js:scheduleTest",
         "lib/dsr.js:submit",
+        "lib/fda-21cfr11.js:_validateSignatureInput",
         "lib/fedcm.js:accountsResponse",
         "lib/guard-saga-config.js:validate",
         "lib/guard-snapshot-envelope.js:validate",
@@ -3138,7 +3178,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/self-update.js:poll",
         "lib/self-update.js:verify",
       ],
-      reason: "v0.10.16 — JOSE / signature-verify / posture-check prelude across heterogeneous primitives: each verify/check pattern decomposes a token / envelope / posture set, asserts spec-required shape (header.alg in allowlist / kty in allowlist / iss CT-compare / aud match / time-window), and dispatches per-alg via shared helpers. The shingle similarity is the boilerplate header-parse + alg-allowlist + timing-safe compare; each primitive enforces a distinct spec (RFC 7519 JWT / RFC 7515 JWS / RFC 9449 DPoP / OASIS CSAF VEX / FIDO MDS / SAML 2.0 / RFC 9528 SD-JWT / W3C FedCM 2024 / RFC 8917 backchannel-logout / SBOM compliance / OIDC Federation / OID4VCI / CIBA / RFC 8460 TLS-RPT / restore-rollback). Consolidating would lose per-spec error code namespacing.",
+      reason: "v0.10.16 — JOSE / signature-verify / posture-check prelude across heterogeneous primitives: each verify/check pattern decomposes a token / envelope / posture set, asserts spec-required shape (header.alg in allowlist / kty in allowlist / iss CT-compare / aud match / time-window), and dispatches per-alg via shared helpers. The shingle similarity is the boilerplate header-parse + alg-allowlist + timing-safe compare; each primitive enforces a distinct spec (RFC 7519 JWT / RFC 7515 JWS / RFC 9449 DPoP / OAuth 2.0 Client Attestation draft / OASIS CSAF VEX / FIDO MDS / SAML 2.0 / RFC 9528 SD-JWT / W3C FedCM 2024 / RFC 8917 backchannel-logout / SBOM compliance / OIDC Federation / OID4VCI / CIBA / RFC 8460 TLS-RPT / restore-rollback). The OAuth client-attestation sign/verify path (_signAttestationJws / _verifyAttestationJws / verifyClientAttestation) shares the JWS header-parse + per-alg nodeCrypto.sign/verify + constant-time aud/jti compare shell while throwing its own auth-oauth/attestation-* code namespace. Consolidating would lose per-spec error code namespacing.",
     },
     {
       mode:  "family-subset",
@@ -5227,14 +5267,18 @@ async function testNoDuplicateCodeBlocks() {
       files: [
         "lib/ai-adverse-decision.js:wrap",
         "lib/audit-daily-review.js:create",
+        "lib/auth/oauth.js:buildClientAttestationPop",
+        "lib/auth/saml.js:create",
         "lib/cloud-events.js:wrap",
+        "lib/data-act.js:shareWithThirdParty",
         "lib/ddl-change-control.js:create",
         "lib/external-db-migrate.js:create",
         "lib/fda-21cfr11.js:posture",
         "lib/observability-tracer.js:create",
+        "lib/outbox.js:create",
         "lib/redact.js:installOutboundDlp",
       ],
-      reason: "Observability-emit + validateOpts prelude family — each primitive opens with the validateOpts cascade then attaches an observability.event call (tracer span / decision audit / DDL approval / migration / 21 CFR signature / DLP scan). Eight different domains; consolidating would force a single emit shape and lose per-primitive event-name conventions.",
+      reason: "Observability-emit + validateOpts prelude family — each primitive opens with the `validateOpts(opts, [keys], label)` key-set cascade then a sequence of validateOpts.requireX / optionalX field checks (and most attach an observability.event call: tracer span / decision audit / DDL approval / migration / 21 CFR signature / DLP scan / third-party data share). The OAuth buildClientAttestationPop opens with the same validateOpts key-set + requireNonEmptyString / optionalPositiveInt prelude before minting the PoP JWT. Different domains; consolidating would force a single emit shape and lose per-primitive event-name conventions and error-code namespaces.",
     },
     {
       mode:  "family-subset",
@@ -6110,6 +6154,7 @@ var KNOWN_ANTIPATTERNS = [
     regex: /var\s+\w+\s*=\s*\w+\.get\s*\([^;]+\)\s*;\s*\n\s*if\s*\(\s*!\s*\w+\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
     allowlist: [
       "lib/cache.js",                          // tagIndex (Map<tag, Set<key>>) — Set factory
+      "lib/crypto-field.js",                   // _rateFailWindows (Map<actor:table:column, ts[]>) in _rateNoteFailure — timestamp-array factory
       "lib/deprecate.js",                      // _seen (Map<name:since, entry>) — object-literal factory
       "lib/i18n-messageformat.js",             // _pluralRulesCache (Map<key, Intl.PluralRules>) — Intl factory
       "lib/i18n.js",                           // formatter cache (Map<key, formatter>) — closure factory
@@ -6600,6 +6645,12 @@ var KNOWN_ANTIPATTERNS = [
   { id: "bounded-chunk-collector-not-a-stream-consumer", primitive: "b.safeBuffer.boundedChunkCollector(opts) takes a SINGLE options object and returns a { push, result, bytesCollected } collector — it is not a stream consumer. To read a Readable (request body, upstream response) use b.safeBuffer.collectStream(stream, opts), which pumps the stream into a bounded collector and resolves a Buffer. A boundedChunkCollector(req, ...) call passes the stream as opts (maxBytes undefined → buffer/bad-arg throw) and then awaits / .then()s a non-Promise collector.", scanScope: "lib", skipCommentLines: true, regex: /boundedChunkCollector\s*\(\s*\w+\s*,/, allowlist: [], reason: "csp-report (413 on EVERY POST) and scim-server (every streamed body broke) both called safeBuffer.boundedChunkCollector(req, { maxBytes }) / (req, MAX, ErrClass, code): the request stream was passed as the opts argument (maxBytes undefined → synchronous buffer/bad-arg, surfaced as 413/500) and the returned push-collector was treated as a thenable. boundedChunkCollector has no (stream, opts) overload; b.safeBuffer.collectStream is the stream-reading sibling. The regex flags a call whose first argument is a bare identifier immediately followed by a comma (the multi-arg / stream-first misuse); single-object boundedChunkCollector({ ... }) and single-var boundedChunkCollector(opts) / boundedChunkCollector(opts || {}) calls do not match. Empty allowlist — there is no valid multi-arg form. This is the detector that would have caught both endpoints before smoke." },
 
   { id: "regex-polynomial-whitespace-in-repeated-group", primitive: "a regex literal must not place an optional-whitespace `\\s*` / `\\s+` at the END of a repeated group (the `(?:…\\s*)*` / `…\\s*)+` shape) — the same whitespace can be consumed either inside the group or by surrounding whitespace, so a crafted input backtracks polynomially (CWE-1333 ReDoS). Consume whitespace as a single disjoint alternative `(?:\\s|…)*` instead, and match block comments with the star-not-slash form, never a lazy `[\\s\\S]*?`.", scanScope: "lib", skipCommentLines: true, regex: /\\s[*+]\)[*+]/, allowlist: [], reason: "CodeQL js/polynomial-redos (alert 330) flagged lib/external-db.js's leading-keyword classifier `/^\\s*(?:\\/\\*…\\s*|--…\\s*)*([A-Za-z]+)/` — the `\\s*` both before AND at the tail of the repeated group gives two ways to consume the same whitespace run, so a SQL string of nested `/**/` or `*/--` comment runs backtracks polynomially; reused by the new OTel db.operation path it became a taint sink. Rewritten to `/^(?:\\s|\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/|--[^\\n]*\\n)*([A-Za-z]+)/` (disjoint single-char alternatives). codebase-patterns is a curated detector set, not a taint/ReDoS analyzer like CodeQL — this closes the specific shape locally so the next agent-authored comment-skip regex trips the gate before CI. Empty allowlist — a `\\s*)*` / `\\s+)+` tail in a lib regex is the ReDoS tell; allowlist a genuinely-anchored case with its structural reason." },
+
+  { id: "attestation-pop-replay-store-must-await-thenable", primitive: "verifyClientAttestation's jti replay check (vopts.seenJti) MUST handle an async (Promise-returning) store — its result is awaited when it is a thenable so a Redis/DB store's resolved `false` (a replayed jti) refuses, instead of comparing a never-`false` Promise object with `=== false` and silently accepting the replay", scanScope: "lib", skipCommentLines: true, regex: /vopts\.seenJti\s*\(/, requires: /typeof\s+unseen\.then\s*===\s*["']function["']|unseen\s*=\s*await\s+unseen/, allowlist: [], reason: "v0.14.20 Codex P1 on PR #300 (replay-defense bypass, CWE-294) — verifyClientAttestation read `unseen = vopts.seenJti(jti, iat)` then `if (unseen === false) throw replay`. With an async (Redis/DB) atomic check-and-insert the callback returns a Promise; a Promise is never `=== false`, so a replayed jti was ACCEPTED and the draft-ietf-oauth-attestation-based-client-auth §12.1 replay defense was disabled for every multi-instance AS deployment. The verifier is now async and awaits a thenable result (`if (unseen && typeof unseen.then === \"function\") unseen = await unseen;`). The other oauth replay sinks (refreshAccessToken's ropts.checkAndInsert / ropts.seen, _normalizeTokens' vopts.seen) already await at the call site; only this path deviated. Anchored on the vopts.seenJti( token unique to this verifier; the requires-companion fails if a future edit drops the thenable-await, re-opening the silent-accept window. Empty allowlist — a seenJti result that is neither awaited nor thenable-checked is the bug." },
+
+  { id: "jose-jws-builder-fixed-classical-alg-default", primitive: "a JWS builder that signs with an operator-supplied key MUST NOT default `opts.algorithm` to a fixed classical JOSE alg (ES256/384/512, RS/PS*) via `|| \"<alg>\"` — that signs a key of a different type (RSA / Ed25519 / non-matching EC curve) under a header alg that disagrees with the key (un-signable, or a self-invalid JWS the verifier's alg/kty check rejects). Derive the alg from the key type (mirroring oauth _resolveAttestationAlg / sd-jwt-vc-holder _resolveHolderAlg), or use a PQC pass-through default that works with any key", scanScope: "lib", skipCommentLines: true, regex: /\.algorithm\s*\|\|\s*["'](?:ES256|ES384|ES512|RS256|RS384|RS512|PS256|PS384|PS512)["']/, allowlist: [], reason: "v0.14.20 — the OAuth client-attestation builders (Codex P2 on PR #300) AND the sd-jwt-vc holder (`var algorithm = opts.algorithm || \"ES256\"`, found by the post-fix adversarial review) both hardcoded a fixed ES256 default that overrode any key-type reconciliation. ES256 is only self-consistent for an EC P-256 key; an RSA / Ed25519 / EC-P384 key signed under an ES256 header is un-signable or yields a JWS whose header alg disagrees with the signature, which every alg/kty-checking verifier rejects (self-invalid token; broken authentication / presentation). Both are now key-derived (_resolveAttestationAlg / _resolveHolderAlg). This detector flags any lib JWS builder reintroducing a fixed CLASSICAL JOSE alg as the `opts.algorithm ||` default — it deliberately does NOT match a PQC pass-through default (`|| \"ML-DSA-87\"` / `|| DEFAULT_ALG` / `|| \"SLH-DSA-...\"`, which sign with a null digest and work for the matching key) nor non-JOSE alg selectors (hash `\"sha384\"`, DKIM `\"rsa-sha256\"`, `\"token-bucket\"`). Empty allowlist — a fixed classical-alg default on a sign path is the self-invalid-JWS bug; a genuine EC-P256-only builder should still derive/validate the key, not assume." },
+
+  { id: "attestation-alg-must-derive-from-key", primitive: "the OAuth client-attestation / PoP JWS builders must resolve the signing alg from the key type via _resolveAttestationAlg (infer a key-compatible default; refuse an explicit alg incompatible with the key) — never a fixed `opts.algorithm || \"ES256\"` default, which signs a non-EC key (RSA / Ed25519) under an ES256 header that verifyClientAttestation's alg/kty cross-check then rejects (self-invalid attestation)", scanScope: "lib", skipCommentLines: true, regex: /oauth-client-attestation(?:-pop)?\+jwt/, requires: /_resolveAttestationAlg\s*\(/, allowlist: [], reason: "v0.14.20 Codex P2 on PR #300 — buildClientAttestation / buildClientAttestationPop defaulted `var alg = opts.algorithm || \"ES256\"`, so an RSA / Ed25519 attester or instance key produced a compact JWS whose header said ES256 but whose signature was made with the real key; verifyClientAttestation's alg⇄kty cross-check then rejected the builder's OWN output for any non-P-256 key. Both builders now resolve the alg through _resolveAttestationAlg(explicitAlg, key): it infers a key-matched default (ES256/384/512 by curve, RS256 for RSA, EdDSA for Ed25519/Ed448) and refuses an explicit alg incompatible with the key BEFORE signing (auth-oauth/attestation-alg-key-mismatch). Anchored on the attestation `+jwt` typ literals unique to these builders (does NOT touch the generic `.algorithm || \"<selector>\"` strings in rate-limit / crypto / dkim, nor the sd-jwt holder KB-JWT path); the requires-companion fails if a future edit reverts to a hardcoded alg default. Empty allowlist — a fixed alg default on the attestation signing path is the self-invalid-JWS bug." },
 
   {
     // ROTATION-EPOCH ACCEPT (v0.14.x): a vault-key rotation (b.vault.rotate)

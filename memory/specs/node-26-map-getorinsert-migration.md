@@ -94,6 +94,7 @@ shapes, no get-or-insert.)
 | `lib/mail-server-rate-limit.js`   | 209, 261, 291      | `connectionTimes` / `authFailureTimes` / `rcptFailureTimes` | `[]` (array)     |
 | `lib/middleware/rate-limit.js`    | 130                | `buckets`                                                  | object-literal   |
 | `lib/network-byte-quota.js`       | 82                 | `store`                                                    | `_newEntry()`    |
+| `lib/crypto-field.js`             | 592                | `_rateFailWindows` (in `_rateNoteFailure`)                 | `[]` (array)     |
 
 ### Pubsub / websocket-channels
 
@@ -111,8 +112,8 @@ shapes, no get-or-insert.)
 
 ### Totals
 
-- **Migratable call sites:** ~17 across 11 files (variants A + B; metrics + rate-limit + otel each have multiple sites per file).
-- **Files allowlisted (migratable):** 12 (`cache.js`, `deprecate.js`, `i18n-messageformat.js`, `i18n.js`, `mail-server-rate-limit.js`, `metrics.js`, `middleware/rate-limit.js`, `network-byte-quota.js`, `observability-otlp-exporter.js`, `otel-export.js`, `pubsub.js`, `websocket-channels.js`).
+- **Migratable call sites:** ~18 across 12 files (variants A + B; metrics + rate-limit + otel each have multiple sites per file).
+- **Files allowlisted (migratable):** 13 (`cache.js`, `crypto-field.js`, `deprecate.js`, `i18n-messageformat.js`, `i18n.js`, `mail-server-rate-limit.js`, `metrics.js`, `middleware/rate-limit.js`, `network-byte-quota.js`, `observability-otlp-exporter.js`, `otel-export.js`, `pubsub.js`, `websocket-channels.js`).
 - **Files allowlisted (do-not-migrate edge cases):** 2 (`mail-greylist.js`, `dsr.js`).
 
 The user-supplied "~137 sites across 80+ files" figure was an estimate
