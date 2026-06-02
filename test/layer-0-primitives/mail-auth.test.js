@@ -900,7 +900,7 @@ async function testSpfMechanismExists() {
     ip: "192.0.2.5", mailFrom: "alice@example.com", dnsLookup: dnsLookup,
   });
   check("spf.verify(exists:%{l}..., A present) -> pass + expanded qname",
-        rv.result === "pass" && queried.indexOf("alice.spf.example.com") !== -1);
+        rv.result === "pass" && queried.some(function (q) { return q === "alice.spf.example.com"; }));
 
   // No A record at the expanded target -> exists misses -> falls to -all.
   var dnsMiss = async function (host, type) {

@@ -182,6 +182,16 @@ async function _runBulkTests() {
   check("bulk: DELETE → 204",                resp.Operations[2].status === "204");
   check("bulk: DELETE has no response body", resp.Operations[2].response === undefined);
 
+  // A bulk POST whose resource body is missing its SCIM schema is rejected
+  // per-op (the same gate the singleton POST/PUT routes apply), not
+  // persisted through the adapter.
+  var badSchema = await _bulkBody(mw, [
+    { method: "POST", path: "/Users", data: { userName: "noschema" } },
+  ]);
+  var badSchemaResp = JSON.parse(badSchema.res._body());
+  check("bulk: POST with missing schema → per-op 400",
+        badSchemaResp.Operations.length === 1 && badSchemaResp.Operations[0].status === "400");
+
   // bulkId cross-reference: create a user, then a group whose member
   // references the just-created user by "bulkId:<id>" (RFC 7644 §3.7.2).
   var users2  = _mkUsers();

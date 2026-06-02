@@ -900,6 +900,14 @@ function run() {
   });
   check("openapi.parse: dangling security",      dangling.valid === false &&
                                                   dangling.errors.join(",").indexOf("undefined scheme") !== -1);
+  var danglingWebhook = b.openapi.parse({
+    openapi: "3.2.0", info: { title: "T", version: "1.0" },
+    webhooks: { e: { post: { responses: { "200": { description: "ok" } }, security: [{ missing: [] }] } } },
+    components: { securitySchemes: {} },
+  });
+  check("openapi.parse: dangling webhook-operation security",
+        danglingWebhook.valid === false &&
+        danglingWebhook.errors.join(",").indexOf("undefined scheme") !== -1);
 
   rejects("openapi.parse: bad JSON",
     function () { b.openapi.parse("{not valid json"); }, /invalid JSON/);
