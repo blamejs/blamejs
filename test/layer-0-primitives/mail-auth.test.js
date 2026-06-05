@@ -236,6 +236,47 @@ async function testInboundVerifyFromHeaderDiscipline() {
         twoAngle.from.count === 2 && twoAngle.dmarc.recommendedAction === "reject");
 }
 
+// RFC 7489 §6.6.2 — a fail verdict computed while SPF or DKIM returned
+// temperror must surface as temperror (the transiently-failed lookup
+// could have produced the aligned pass), so the MX gate defers with
+// 451 instead of permanently refusing a legitimate sender mid-DNS-blip.
+async function testInboundVerifyTemperrorPrecedence() {
+  // SPF TXT lookup fails transiently (SERVFAIL — no ENOTFOUND code);
+  // the DMARC policy lookup itself succeeds with p=reject.
+  var dnsLookup = async function (host, type) {
+    if (host === "_dmarc.blip.example" && type === "TXT") {
+      return [["v=DMARC1; p=reject"]];
+    }
+    throw new Error("SERVFAIL");
+  };
+  var v = await b.mail.inbound.verify({
+    ip:        "203.0.113.9",
+    helo:      "mail.blip.example",
+    mailFrom:  "news@blip.example",
+    message:   "From: news@blip.example\r\nSubject: hi\r\n\r\nhello\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: SPF temperror under p=reject → dmarc temperror, not fail",
+        v.spf.result === "temperror" && v.dmarc.result === "temperror" &&
+        v.dmarc.recommendedAction !== "reject");
+  // A pass stands regardless of the other authenticator's temperror:
+  // aligned DKIM pass + SPF temperror is still a DMARC pass.
+  var dnsLookup2 = async function (host, type) {
+    if (host === "_dmarc.blip.example" && type === "TXT") {
+      return [["v=DMARC1; p=reject"]];
+    }
+    throw new Error("SERVFAIL");
+  };
+  var v2 = await b.mail.dmarc.evaluate({
+    from:      "news@blip.example",
+    spf:       { result: "temperror", domain: "blip.example" },
+    dkim:      [{ result: "pass", domain: "blip.example" }],
+    dnsLookup: dnsLookup2,
+  });
+  check("dmarc.evaluate: aligned DKIM pass beats SPF temperror (pass stands)",
+        v2.result === "pass" && v2.recommendedAction === "deliver");
+}
+
 async function testInboundVerifyValidation() {
   var e1 = null;
   try { await b.mail.inbound.verify({ message: "x" }); } catch (e) { e1 = e; }
@@ -1360,6 +1401,7 @@ async function run() {
   await testInboundVerifyAlignedPass();
   await testInboundVerifySpoofRejected();
   await testInboundVerifyFromHeaderDiscipline();
+  await testInboundVerifyTemperrorPrecedence();
   await testInboundVerifyValidation();
   await testArcVerifyMissing();
   await testArcVerifyNone();

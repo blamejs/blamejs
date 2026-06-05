@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.14.23",
-  "createdAt": "2026-06-05T18:01:30.294Z",
+  "createdAt": "2026-06-05T18:32:42.512Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -39214,6 +39214,10 @@
               "valueType": "number"
             },
             "DKIM_MAX_SIGNATURES_PER_MESSAGE": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "DKIM_MAX_SIGNATURES_PER_MESSAGE_CEILING": {
               "type": "primitive",
               "valueType": "number"
             },

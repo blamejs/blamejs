@@ -474,6 +474,21 @@ async function testGuardEnvelopeGate() {
     b.mail.server.mx.create({ tlsContext: ctx, guardEnvelope: { mode: "loud" } });
   } catch (e) { eMode = e; }
   check("guardEnvelope: unknown mode refused at boot", eMode !== null);
+  // DKIM verifier ranges are mirrored at boot — a config the verifier
+  // would refuse per-message must fail startup, not break live SMTP.
+  var eSigs = null;
+  try {
+    b.mail.server.mx.create({ tlsContext: ctx, guardEnvelope: { maxSignatures: 100 } });
+  } catch (e) { eSigs = e; }
+  check("guardEnvelope: maxSignatures above the DKIM verifier ceiling refused at boot",
+        eSigs !== null && /bad-bound/.test(eSigs.code || ""));
+  var eSkew = null;
+  try {
+    b.mail.server.mx.create({ tlsContext: ctx,
+      guardEnvelope: { clockSkewMs: b.mail.dkim.DKIM_CLOCK_SKEW_MS_MAX + 1 } });
+  } catch (e) { eSkew = e; }
+  check("guardEnvelope: clockSkewMs above the DKIM verifier ceiling refused at boot",
+        eSkew !== null && /bad-bound/.test(eSkew.code || ""));
 
   // ---- enforce mode ----
   var handoffs = [];

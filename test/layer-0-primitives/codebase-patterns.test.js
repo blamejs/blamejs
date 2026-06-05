@@ -10890,11 +10890,14 @@ function testCompliancePostureCoverage() {
 // examples/wiki/Dockerfile, the workflow's `-p host:container` map +
 // curl host MUST also reference X.
 // Internal working notes (planning documents, scratch output, session
-// residue) live outside the repository — a tracked file under memory/,
-// notes/, or a .scratch* path ships internal planning narrative to
-// everyone who clones the repo. v0.14.22 removed the one such file that
-// had been committed (a migration planning note, added v0.11.2); this
-// gate refuses any recurrence at commit time instead of at code review.
+// residue) and editor/tool atomic-write temp artifacts
+// (<name>.tmp.<pid>.<hash>) live outside the repository — a tracked
+// file under memory/, notes/, a .scratch* path, or a *.tmp.* name
+// ships internal residue to everyone who clones the repo, and tmp
+// copies under lib/ ship in the npm tarball (`files` publishes lib/
+// wholesale). v0.14.22 removed a committed planning note; v0.14.23
+// caught four committed editor temp copies pre-merge. This gate
+// refuses any recurrence at commit time instead of at code review.
 function testNoTrackedInternalNotes() {
   var out;
   try {
@@ -10902,14 +10905,14 @@ function testNoTrackedInternalNotes() {
     // file — child_process is only touched on the two paths that talk
     // to the host (re-exec + this git query).
     out = require("node:child_process").execFileSync(
-      "git", ["ls-files", "memory", "notes", ".scratch", ".scratch-*"],
+      "git", ["ls-files", "memory", "notes", ".scratch", ".scratch-*", "*.tmp.*"],
       { stdio: ["ignore", "pipe", "ignore"] }
     ).toString().trim();
   } catch (_e) {
     // Not a git checkout (npm tarball / exported tree) — nothing to gate.
     return;
   }
-  check("no tracked internal-notes files (memory/ notes/ .scratch*)" +
+  check("no tracked internal-notes or temp-artifact files (memory/ notes/ .scratch* *.tmp.*)" +
         (out ? " — found: " + out.split("\n").join(", ") : ""),
         out === "");
 }
