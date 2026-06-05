@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.20",
-  "createdAt": "2026-06-02T21:40:19.656Z",
+  "frameworkVersion": "0.14.22",
+  "createdAt": "2026-06-05T15:43:38.105Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -3375,7 +3375,20 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "build": {
+              "type": "function",
+              "arity": 2
+            },
             "parse": {
+              "type": "function",
+              "arity": 2
+            }
+          }
+        },
+        "jws": {
+          "type": "object",
+          "members": {
+            "sign": {
               "type": "function",
               "arity": 2
             }

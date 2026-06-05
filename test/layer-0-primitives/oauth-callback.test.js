@@ -8,6 +8,8 @@
  *   - authorizationUrl / exchangeCode authorization_details (RFC 9396 RAR)
  *   - buildClientAttestation / buildClientAttestationPop /
  *     verifyClientAttestation (draft-ietf-oauth-attestation-based-client-auth)
+ *   - pushAuthorizationRequest signed-request-object opt (RFC 9101 +
+ *     RFC 9126 §3 — request= in the PAR body, params as JAR claims)
  */
 
 var http    = require("node:http");
@@ -36,6 +38,46 @@ function _spawnDiscoveryServer(methods) {
     res.end(body);
   });
   server._issuerHolder = issuerHolder;
+  return server;
+}
+
+// Mock authorization server with discovery + a PAR endpoint that records
+// the posted form body. Discovery advertises S256 so the PKCE-downgrade
+// gate passes; the PAR endpoint returns a fixed request_uri.
+function _spawnParServer() {
+  var captured = { body: null };
+  var holder = { value: null };
+  var server = http.createServer(function (req, res) {
+    var u = new URL(req.url, "http://localhost");
+    if (u.pathname === "/.well-known/openid-configuration") {
+      var doc = {
+        issuer:                              holder.value,
+        authorization_endpoint:              holder.value + "/auth",
+        token_endpoint:                      holder.value + "/token",
+        jwks_uri:                            holder.value + "/jwks",
+        pushed_authorization_request_endpoint: holder.value + "/par",
+        code_challenge_methods_supported:    ["S256"],
+      };
+      var body = JSON.stringify(doc);
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+      res.end(body);
+      return;
+    }
+    if (u.pathname === "/par" && req.method === "POST") {
+      var chunks = [];
+      req.on("data", function (c) { chunks.push(c); });
+      req.on("end", function () {
+        captured.body = Buffer.concat(chunks).toString("utf8");
+        var out = JSON.stringify({ request_uri: "urn:ietf:params:oauth:request_uri:abc123", expires_in: 90 });
+        res.writeHead(201, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) });
+        res.end(out);
+      });
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  server._holder = holder;
+  server._captured = captured;
   return server;
 }
 
@@ -409,6 +451,91 @@ async function run() {
   check("oauth.clientAttestationHeaders: emits both header fields",
         typeof hdrs.headers["OAuth-Client-Attestation"] === "string" &&
         typeof hdrs.headers["OAuth-Client-Attestation-PoP"] === "string");
+
+  // ---- RFC 9101 + RFC 9126 §3 — PAR with a signed request object ----
+  await _testParRequestObject();
+  await _testParPlainUnchanged();
+}
+
+// PAR carrying a signed request object: the form body MUST hold `request=`
+// + client auth ONLY, and the authorization parameters travel as request-
+// object claims, NOT as bare form params. The pushed JWT is verified
+// in-test against the client's public JWK via b.auth.jar.parse.
+async function _testParRequestObject() {
+  var server = _spawnParServer();
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var issuer = "http://127.0.0.1:" + server.address().port;
+  server._holder.value = issuer;
+  try {
+    var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+    var pubJwk = Object.assign(kp.publicKey.export({ format: "jwk" }), { kid: "c1", use: "sig", alg: "ES256" });
+    var oa = b.auth.oauth.create({
+      issuer:        issuer,
+      clientId:      "par-client",
+      clientSecret:  "par-secret",
+      redirectUri:   "https://rp.example/cb",
+      scope:         ["openid", "profile"],
+      isOidc:        true,
+      allowHttp:     true,
+      allowInternal: true,
+    });
+    var rv = await oa.pushAuthorizationRequest({
+      signedRequestObject: { key: kp.privateKey, kid: "c1" },
+    });
+    check("oauth.PAR+RO: returns a request_uri", rv.requestUri === "urn:ietf:params:oauth:request_uri:abc123");
+    check("oauth.PAR+RO: flags requestObjectSent", rv.requestObjectSent === true);
+
+    var posted = new URLSearchParams(server._captured.body);
+    check("oauth.PAR+RO: form body carries request=", typeof posted.get("request") === "string" && posted.get("request").length > 0);
+    check("oauth.PAR+RO: form body carries client_id (client auth)", posted.get("client_id") === "par-client");
+    check("oauth.PAR+RO: form body carries client_secret (client auth)", posted.get("client_secret") === "par-secret");
+    // RFC 9126 §3 — the authorization parameters MUST NOT appear as bare
+    // form params alongside the request object.
+    check("oauth.PAR+RO: response_type NOT a bare form param", posted.get("response_type") === null);
+    check("oauth.PAR+RO: redirect_uri NOT a bare form param", posted.get("redirect_uri") === null);
+    check("oauth.PAR+RO: scope NOT a bare form param", posted.get("scope") === null);
+    check("oauth.PAR+RO: code_challenge NOT a bare form param", posted.get("code_challenge") === null);
+
+    // The pushed request object verifies against the client's public key and
+    // carries the authorization parameters as claims (round-trip via jar.parse).
+    var parsed = await b.auth.jar.parse(posted.get("request"), {
+      clientId: "par-client", audience: issuer, algorithms: ["ES256"], jwks: [pubJwk],
+    });
+    check("oauth.PAR+RO: request object verifies + carries response_type claim", parsed.params.response_type === "code");
+    check("oauth.PAR+RO: request object carries redirect_uri + scope + S256 claims",
+      parsed.params.redirect_uri === "https://rp.example/cb" && parsed.params.scope === "openid profile" &&
+      parsed.params.code_challenge_method === "S256" && typeof parsed.params.code_challenge === "string");
+    check("oauth.PAR+RO: request object aud is the AS issuer", parsed.claims.aud === issuer);
+  } finally { server.close(); }
+}
+
+// PAR WITHOUT a signed request object: byte-for-byte the prior plain-form
+// behavior — authorization parameters are bare form params, no `request=`.
+async function _testParPlainUnchanged() {
+  var server = _spawnParServer();
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var issuer = "http://127.0.0.1:" + server.address().port;
+  server._holder.value = issuer;
+  try {
+    var oa = b.auth.oauth.create({
+      issuer:        issuer,
+      clientId:      "par-client",
+      clientSecret:  "par-secret",
+      redirectUri:   "https://rp.example/cb",
+      scope:         ["openid"],
+      isOidc:        true,
+      allowHttp:     true,
+      allowInternal: true,
+    });
+    var rv = await oa.pushAuthorizationRequest();
+    check("oauth.PAR plain: requestObjectSent is false", rv.requestObjectSent === false);
+    var posted = new URLSearchParams(server._captured.body);
+    check("oauth.PAR plain: NO request= param", posted.get("request") === null);
+    check("oauth.PAR plain: response_type bare form param present", posted.get("response_type") === "code");
+    check("oauth.PAR plain: redirect_uri bare form param present", posted.get("redirect_uri") === "https://rp.example/cb");
+    check("oauth.PAR plain: code_challenge_method S256 present", posted.get("code_challenge_method") === "S256");
+    check("oauth.PAR plain: client_secret present", posted.get("client_secret") === "par-secret");
+  } finally { server.close(); }
 }
 
 module.exports = { run: run };
