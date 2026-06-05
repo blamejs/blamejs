@@ -64,6 +64,27 @@ function testSurface() {
   check("breakGlass.BreakGlassError is class",     typeof b.breakGlass.BreakGlassError === "function");
 }
 
+// ---- init opts validation ----
+
+function testInitOptsValidation() {
+  // The `now` knob was documented as a Date.now override but nothing
+  // consumed it (every time read is a direct Date.now()). It is removed
+  // from the init allowlist, so passing it is now a config-time error.
+  var threwNow = false;
+  try { b.breakGlass.init({ now: 123 }); } catch (_e) { threwNow = true; }
+  check("init: removed `now` opt throws", threwNow);
+
+  // trustProxy is still honored — default behavior unchanged.
+  var threwTrustProxy = false;
+  try { b.breakGlass.init({ trustProxy: true }); } catch (_e) { threwTrustProxy = true; }
+  check("init: trustProxy still accepted", !threwTrustProxy);
+
+  // bare init() with no opts still works.
+  var threwBare = false;
+  try { b.breakGlass.init(); } catch (_e) { threwBare = true; }
+  check("init: no-opts init still works", !threwBare);
+}
+
 // ---- Policy CRUD ----
 
 async function testPolicyCRUD() {
@@ -825,6 +846,7 @@ async function testListActiveAllAndRevokeAll() {
 
 async function run() {
   testSurface();
+  testInitOptsValidation();
   await testPolicyCRUD();
   await testPolicyValidation();
   await testGrantHappyPath();

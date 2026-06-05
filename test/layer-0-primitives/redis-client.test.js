@@ -119,6 +119,66 @@ async function run() {
   check("frameToValue: error becomes _redisError marker",
         efv && efv._redisError === true && efv.message === "ERR boom");
 
+  // ---- create() config-time opt validation ----
+  // db / connectTimeoutMs / commandTimeoutMs / maxReconnectAttempts were
+  // coerced with bare Number() + falsy fallback: a bad type silently became
+  // the default (or, for a negative timeout, sailed into setTimeout; for a
+  // non-numeric maxReconnectAttempts, NaN made the `>= 0` reconnect cap
+  // false and disabled the bound entirely). They now throw at the entry
+  // point. db and maxReconnectAttempts must still allow 0.
+  function _createThrows(label, badOpts) {
+    var threw = false;
+    var msg = "";
+    try { redis.create(Object.assign({ url: "redis://127.0.0.1:1/0" }, badOpts)); }
+    catch (e) { threw = true; msg = (e && e.message) || ""; }
+    check("create rejects " + label, threw);
+    check("create rejects " + label + " with a clear message",
+          threw && msg.length > 0 && /must be/.test(msg));
+  }
+
+  _createThrows("connectTimeoutMs:\"abc\"", { connectTimeoutMs: "abc" });
+  _createThrows("connectTimeoutMs:-1", { connectTimeoutMs: -1 });
+  _createThrows("connectTimeoutMs:0", { connectTimeoutMs: 0 });
+  _createThrows("commandTimeoutMs:\"abc\"", { commandTimeoutMs: "abc" });
+  _createThrows("commandTimeoutMs:-5", { commandTimeoutMs: -5 });
+  _createThrows("db:\"3\"", { db: "3" });
+  _createThrows("db:-1", { db: -1 });
+  _createThrows("db:1.5", { db: 1.5 });
+  _createThrows("maxReconnectAttempts:\"abc\"", { maxReconnectAttempts: "abc" });
+  _createThrows("maxReconnectAttempts:-1", { maxReconnectAttempts: -1 });
+  _createThrows("maxReconnectAttempts:2.5", { maxReconnectAttempts: 2.5 });
+
+  // Absent opts keep the documented defaults.
+  var cDefaults = redis.create({ url: "redis://127.0.0.1:6379/0" });
+  var sDefaults = cDefaults._state();
+  check("create default connectTimeoutMs is 5000", sDefaults.connectTimeoutMs === 5000);
+  check("create default commandTimeoutMs is 10000", sDefaults.commandTimeoutMs === 10000);
+  check("create default maxReconnectAttempts is 10", sDefaults.maxReconnectAttempts === 10);
+  check("create default db comes from url (0)", sDefaults.db === 0);
+
+  // Valid values flow through unchanged.
+  var cValid = redis.create({
+    url: "redis://127.0.0.1:6379/0",
+    db: 7, connectTimeoutMs: 3000, commandTimeoutMs: 8000, maxReconnectAttempts: 3,
+  });
+  var sValid = cValid._state();
+  check("create accepts valid db", sValid.db === 7);
+  check("create accepts valid connectTimeoutMs", sValid.connectTimeoutMs === 3000);
+  check("create accepts valid commandTimeoutMs", sValid.commandTimeoutMs === 8000);
+  check("create accepts valid maxReconnectAttempts", sValid.maxReconnectAttempts === 3);
+
+  // 0 is a legitimate value for both db and maxReconnectAttempts and must
+  // NOT throw. db:0 = no SELECT on connect; maxReconnectAttempts:0 = give
+  // up immediately (the `reconnectAttempt >= maxReconnectAttempts` gate is
+  // true on the first reconnect call) — both preserved from prior behavior.
+  var cZero = redis.create({
+    url: "redis://127.0.0.1:6379/0", db: 0, maxReconnectAttempts: 0,
+  });
+  var sZero = cZero._state();
+  check("create accepts db:0", sZero.db === 0);
+  check("create accepts maxReconnectAttempts:0 (give-up-immediately bound)",
+        sZero.maxReconnectAttempts === 0);
+
   // ---- close()/reconnect leak guard (v0.13.40) ----
   // After close(), a reconnect timer scheduled during backoff must be
   // cancelled and _connect() must refuse to re-open — otherwise a post-

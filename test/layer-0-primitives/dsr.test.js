@@ -512,6 +512,35 @@ function testCreateValidation() {
     });
   } catch (_e) { threwNoIdentity = true; }
   check("dsr.create: missing identityResolver throws", threwNoIdentity);
+
+  // De-advertised create-time keys: `observability` was never read at
+  // create (the counter always fires through the module sink) and
+  // `verifyContext` is a per-call process() opt, not a create() opt.
+  // Both removed from the create allowlist → unknown-option throw.
+  function _validBase() {
+    return {
+      ticketStore:      b.dsr.memoryTicketStore(),
+      identityResolver: async function () { return { subjectId: "u" }; },
+      sources:          [{ name: "x", query: async function () { return []; } }],
+    };
+  }
+  var threwObs = false;
+  try {
+    var oObs = _validBase(); oObs.observability = true;
+    b.dsr.create(oObs);
+  } catch (e) { threwObs = /unknown option 'observability'/.test(e.message || ""); }
+  check("dsr.create: unknown 'observability' opt rejected", threwObs);
+
+  var threwVc = false;
+  try {
+    var oVc = _validBase(); oVc.verifyContext = { mfaVerified: true };
+    b.dsr.create(oVc);
+  } catch (e) { threwVc = /unknown option 'verifyContext'/.test(e.message || ""); }
+  check("dsr.create: unknown create-time 'verifyContext' opt rejected", threwVc);
+
+  // Sanity: the valid base still constructs.
+  check("dsr.create: valid base opts construct",
+        typeof b.dsr.create(_validBase()).submit === "function");
 }
 
 // ---- Memory store ----
