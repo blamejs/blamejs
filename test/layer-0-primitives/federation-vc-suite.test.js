@@ -6,7 +6,8 @@
  *   - b.auth.openidFederation (entity statement parse + verify, metadata-policy operators)
  *   - b.auth.oid4vp        (DCQL validator + matcher)
  *   - b.auth.oid4vci       (issuer config validation, metadata, offer creation shape,
- *                           kid-only proof resolution via resolveKid)
+ *                           kid-only proof resolution via resolveKid, x5c leaf-cert
+ *                           proof binding + validateX5c hook, expired-c_nonce typed refusal)
  *   - b.auth.ciba          (client.create validation + binding-message rules)
  *   - b.auth.sdJwtVc       (key_attestation header surfaces through present)
  *   - b.session.isAnonymous + b.session.create({ anonymous: true })
@@ -22,6 +23,7 @@ var check          = helpers.check;
 var setupTestDb    = helpers.setupTestDb;
 var teardownTestDb = helpers.teardownTestDb;
 var nodeCrypto     = require("node:crypto");
+var asn1           = require("../../lib/asn1-der");
 
 // ---- xmlC14n ----------------------------------------------------------
 
@@ -236,6 +238,41 @@ function testDcqlMatch() {
   check("DCQL null at leaf misses empty array",         !_dcqlValid(["tags", null], { tags: [] }));
   // nested null wildcards recurse to arbitrary depth
   check("DCQL nested null wildcards match",             _dcqlValid(["a", null, "b", null], { a: [{ b: [1, 2] }] }));
+
+  // ---- numeric path segment = non-negative integer array index ----
+  // OpenID4VP 1.0 §7.1.1: a numeric claim-path segment is an array
+  // index and MUST be a non-negative integer. Config-time / entry-point
+  // tier — _validateDcql throws AuthError on the bad shape (driven here
+  // through the public matchDcql, which calls _validateDcql first).
+  function _segThrows(segment) {
+    var q = { credentials: [{ id: "c", format: "vc+sd-jwt",
+      claims: [{ path: ["arr", segment] }] }] };
+    var threw = null;
+    try { b.auth.oid4vp.matchDcql([], q); } catch (e) { threw = e; }
+    return threw;
+  }
+  function _segAccepted(segment) {
+    var q = { credentials: [{ id: "c", format: "vc+sd-jwt",
+      claims: [{ path: ["arr", segment] }] }] };
+    var threw = null;
+    try { b.auth.oid4vp.matchDcql([{ id: "c", format: "vc+sd-jwt", claims: { arr: [1, 2, 3] } }], q); }
+    catch (e) { threw = e; }
+    return threw === null;
+  }
+  var segNeg = _segThrows(-1);
+  check("DCQL: negative index segment throws AuthError",
+        !!segNeg && segNeg.code === "auth-oid4vp/bad-claim-segment");
+  var segFrac = _segThrows(1.5);
+  check("DCQL: fractional index segment throws AuthError",
+        !!segFrac && segFrac.code === "auth-oid4vp/bad-claim-segment");
+  var segNaN = _segThrows(NaN);
+  check("DCQL: NaN index segment throws AuthError",
+        !!segNaN && segNaN.code === "auth-oid4vp/bad-claim-segment");
+  var segInf = _segThrows(Infinity);
+  check("DCQL: Infinity index segment throws AuthError",
+        !!segInf && segInf.code === "auth-oid4vp/bad-claim-segment");
+  check("DCQL: zero index segment accepted",     _segAccepted(0));
+  check("DCQL: positive index segment accepted", _segAccepted(2));
 }
 
 // ---- OID4VCI issuer config -------------------------------------------
@@ -400,6 +437,202 @@ async function testOid4vciKidResolver() {
   check("OID4VCI: resolveKid failure is a typed AuthError", isAuthErr);
 }
 
+// ---- OID4VCI x5c proof (RFC 7515 §4.1.6 / OID4VCI §8.2.1.1) -----------
+
+// Build a self-signed P-256 EC leaf certificate (the holder cert the
+// wallet ships in `x5c`). The cert's private key signs the proof JWT;
+// the leaf SPKI is the holder key the issuer binds cnf to. Returns the
+// raw DER + the EC private key. Mirrors content-credentials.test.js's
+// in-tree DER cert minting (no openssl dependency).
+function _makeEcLeafCert(cn) {
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var spki = kp.publicKey.export({ type: "spki", format: "der" });        // full EC SubjectPublicKeyInfo (alg id + curve + point)
+  var name = asn1.writeSequence([asn1.writeSet([asn1.writeSequence([
+    asn1.writeOid("2.5.4.3"), asn1.writeUtf8String(cn)])])]);             // CN=<cn>
+  var sigAlgId = asn1.writeSequence([asn1.writeOid("1.2.840.10045.4.3.2")]); // ecdsa-with-SHA256
+  var version  = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  var serial   = asn1.writeInteger(Buffer.from([0x2c]));
+  var now = Date.now();
+  function _utc(d) { var s = d.toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z"; return asn1.writeNode(0x17, Buffer.from(s, "ascii")); }
+  var validity = asn1.writeSequence([_utc(new Date(now - 86400000)), _utc(new Date(now + 86400000 * 3650))]);
+  var tbs = asn1.writeSequence([version, serial, sigAlgId, name, validity, name, spki]);
+  var tbsSig = nodeCrypto.sign("sha256", tbs, kp.privateKey);             // ECDSA sig is DER-encoded (X509 default)
+  var certDer = asn1.writeSequence([tbs, sigAlgId, asn1.writeBitString(tbsSig, 0)]);
+  return { certDer: certDer, privateKey: kp.privateKey };
+}
+
+// Build a holder-signed openid4vci-proof+jwt carrying an `x5c` chain
+// (standard base64, leaf first) and no inline jwk/kid. ES256 over the
+// leaf cert's EC private key.
+function _signX5cProof(leafPrivKey, x5cArray, aud, nonce) {
+  var header  = { typ: "openid4vci-proof+jwt", alg: "ES256", x5c: x5cArray };
+  var payload = { aud: aud, nonce: nonce, iat: Math.floor(Date.now() / 1000) };
+  var signingInput = _b64url(JSON.stringify(header)) + "." + _b64url(JSON.stringify(payload));
+  var sig = nodeCrypto.sign("sha256", Buffer.from(signingInput, "ascii"),
+    { key: leafPrivKey, dsaEncoding: "ieee-p1363" });
+  return signingInput + "." + _b64url(sig);
+}
+
+async function testOid4vciX5cProof() {
+  var aud  = "https://issuer.example";
+  var leaf = _makeEcLeafCert("Holder Wallet Leaf");
+  var leafB64 = leaf.certDer.toString("base64");                          // standard base64 (RFC 7515 §4.1.6)
+  var leafPubJwk = nodeCrypto.createPublicKey(leaf.privateKey).export({ format: "jwk" });
+
+  // SUCCESS PATH — x5c-only proof, no operator validateX5c hook. The
+  // leaf SPKI binds at the same self-asserted trust as inline jwk; the
+  // proof signature proves the holder controls the key. End-to-end:
+  // offer → token → credential issued, cnf bound to the leaf SPKI.
+  var ok = await _runIssuanceWithProof(
+    {},
+    function (nonce) { return _signX5cProof(leaf.privateKey, [leafB64], aud, nonce); });
+  check("OID4VCI: x5c-only proof issues credential (success path)",
+        ok.rv && ok.rv.credential === "fake-sd-jwt");
+  check("OID4VCI: x5c leaf SPKI bound to cnf",
+        ok.captured.holderKey && ok.captured.holderKey.kty === "EC" &&
+        ok.captured.holderKey.x === leafPubJwk.x);
+
+  // SUCCESS PATH — operator validateX5c hook receives the leaf DER + the
+  // header and may pass. Confirms the chain buffers + header reach the hook.
+  var seen = { chainLen: 0, headerAlg: null, leafIsBuffer: false };
+  var okHook = await _runIssuanceWithProof(
+    { validateX5c: function (chainDerBuffers, header) {
+        seen.chainLen     = chainDerBuffers.length;
+        seen.headerAlg    = header.alg;
+        seen.leafIsBuffer = Buffer.isBuffer(chainDerBuffers[0]);
+      } },
+    function (nonce) { return _signX5cProof(leaf.privateKey, [leafB64], aud, nonce); });
+  check("OID4VCI: validateX5c hook passing issues credential",
+        okHook.rv && okHook.rv.credential === "fake-sd-jwt");
+  check("OID4VCI: validateX5c hook receives leaf DER buffer + header.alg",
+        seen.chainLen === 1 && seen.headerAlg === "ES256" && seen.leafIsBuffer === true);
+
+  // REFUSAL — operator validateX5c throws → typed AuthError refusal, not
+  // an unhandled rejection.
+  var threw = false, isAuthErr = false;
+  try {
+    await _runIssuanceWithProof(
+      { validateX5c: function () { throw new Error("untrusted-attestation-ca"); } },
+      function (nonce) { return _signX5cProof(leaf.privateKey, [leafB64], aud, nonce); });
+  } catch (e) {
+    threw = /x5c-rejected/.test(e.code) && /untrusted-attestation-ca/.test(e.message);
+    isAuthErr = e instanceof b.frameworkError.AuthError;
+  }
+  check("OID4VCI: validateX5c throwing yields typed x5c-rejected", threw);
+  check("OID4VCI: validateX5c refusal is a typed AuthError", isAuthErr);
+
+  // REFUSAL — wrong leaf key (proof signed by a DIFFERENT EC key than the
+  // cert carries) → signature verification fails cleanly.
+  var otherLeaf = _makeEcLeafCert("Imposter Leaf");
+  threw = false;
+  try {
+    await _runIssuanceWithProof(
+      {},
+      function (nonce) { return _signX5cProof(otherLeaf.privateKey, [leafB64], aud, nonce); });
+  } catch (e) { threw = /proof-bad-signature/.test(e.code) || /signature verification failed/.test(e.message); }
+  check("OID4VCI: x5c proof signed by non-leaf key fails signature", threw);
+
+  // MALFORMED x5c — each shape refused with a typed code (not a crash).
+  function _refusedX5c(x5cVal, label) {
+    var t = false, typed = false;
+    return _runIssuanceWithProof(
+      {},
+      function (nonce) {
+        // Build a proof whose header carries the malformed x5c; the proof
+        // never reaches signature verification — it's refused at parse.
+        var header  = { typ: "openid4vci-proof+jwt", alg: "ES256", x5c: x5cVal };
+        var payload = { aud: aud, nonce: nonce, iat: Math.floor(Date.now() / 1000) };
+        var input = _b64url(JSON.stringify(header)) + "." + _b64url(JSON.stringify(payload));
+        var sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"),
+          { key: leaf.privateKey, dsaEncoding: "ieee-p1363" });
+        return input + "." + _b64url(sig);
+      }
+    ).then(
+      function () { check("OID4VCI: malformed x5c (" + label + ") refused", false); },
+      function (e) {
+        t = /bad-x5c/.test(e.code);
+        typed = e instanceof b.frameworkError.AuthError;
+        check("OID4VCI: malformed x5c (" + label + ") refused typed", t && typed);
+      });
+  }
+  await _refusedX5c([], "empty array");
+  await _refusedX5c([""], "empty string entry");
+  await _refusedX5c(["@@@not-base64@@@"], "non-base64 entry");
+  // base64url chars (- / _) are invalid for x5c (standard base64 only).
+  await _refusedX5c([leafB64.replace(/[+/]/, "-")], "base64url-charset entry");
+  // valid base64 but not a parseable DER certificate.
+  await _refusedX5c([Buffer.from("not a certificate").toString("base64")], "non-DER-cert entry");
+
+  // non-array x5c — header.x5c truthy-but-not-array. _parseX5cChain
+  // refuses. (header.jwk/kid absent so the x5c branch is taken.)
+  await _refusedX5c({ "0": leafB64 }, "object not array");
+}
+
+// ---- OID4VCI expired c_nonce (typed refusal, not TypeError) ----------
+
+async function testOid4vciCNonceExpired() {
+  var aud = "https://issuer.example";
+  var holderKp  = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var holderJwk = holderKp.publicKey.export({ format: "jwk" });
+
+  // A cNonceStore whose get() always returns undefined simulates the
+  // c_nonce TTL (5m) elapsing before /credential is called while the
+  // access token (15m) is still live — cNonceStore.get returns undefined
+  // on miss/expiry. set/del are accepted no-ops so issuance can proceed
+  // up to the proof check.
+  var expiredCNonceStore = {
+    set: async function () {},
+    get: async function () { return undefined; },
+    del: async function () {},
+  };
+
+  var iss = b.auth.oid4vci.issuer.create({
+    credentialIssuerUrl: aud,
+    credentialEndpoint:  aud + "/credential",
+    tokenEndpoint:       aud + "/token",
+    sdJwtIssuer:         { issue: async function () { return { token: "fake-sd-jwt" }; } },
+    supportedCredentials: {
+      "id-card-1": { format: "vc+sd-jwt", vct: "https://example.com/vct/identity",
+                     claims: { given_name: {} } },
+    },
+    cNonceStore: expiredCNonceStore,
+  });
+  var offer  = await iss.createCredentialOffer({ subject: "user-9", credentialIds: ["id-card-1"] });
+  var tokens = await iss.exchangePreAuthorizedCode({ preAuthCode: offer.preAuthCode });
+
+  // The proof carries SOME nonce (the wallet's last-seen c_nonce), but
+  // the store has expired the expected value → undefined. Pre-fix this
+  // crashed with a raw TypeError from timingSafeEqual(nonce, undefined);
+  // now it must refuse with the typed c-nonce-expired code. Use an
+  // inline-jwk proof so the key path succeeds and the ONLY failure is
+  // the expired c_nonce.
+  function _signJwkProof(priv, jwk, a, nonce) {
+    var header  = { typ: "openid4vci-proof+jwt", alg: "ES256", jwk: jwk };
+    var payload = { aud: a, nonce: nonce, iat: Math.floor(Date.now() / 1000) };
+    var input = _b64url(JSON.stringify(header)) + "." + _b64url(JSON.stringify(payload));
+    var sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"), { key: priv, dsaEncoding: "ieee-p1363" });
+    return input + "." + _b64url(sig);
+  }
+  var proof = _signJwkProof(holderKp.privateKey, holderJwk, aud, "stale-nonce");
+
+  var threw = false, isAuthErr = false, isTypeError = false;
+  try {
+    await iss.issueCredential({
+      accessToken:          tokens.access_token,
+      credentialIdentifier: "id-card-1",
+      proof:                proof,
+      claims:               { given_name: "Alice" },
+    });
+  } catch (e) {
+    threw = /c-nonce-expired/.test(e.code || "");
+    isAuthErr = e instanceof b.frameworkError.AuthError;
+    isTypeError = e instanceof TypeError;
+  }
+  check("OID4VCI: expired c_nonce (store miss) refused with c-nonce-expired", threw);
+  check("OID4VCI: expired c_nonce refusal is a typed AuthError", isAuthErr);
+  check("OID4VCI: expired c_nonce does NOT throw a raw TypeError", !isTypeError);
+}
+
 // ---- CIBA client config ----------------------------------------------
 
 function testCibaConfig() {
@@ -560,6 +793,8 @@ async function run() {
   testDcqlMatch();
   testOid4vciIssuerConfig();
   await testOid4vciKidResolver();
+  await testOid4vciX5cProof();
+  await testOid4vciCNonceExpired();
   testCibaConfig();
   await testSdJwtKeyAttestationStorage();
   await testAnonymousSessions();

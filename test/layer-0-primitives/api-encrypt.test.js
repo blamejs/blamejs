@@ -1144,6 +1144,192 @@ async function testApiEncryptObservabilityCounters() {
   check("observability emits apiEncrypt.session.created on bootstrap", hasCreated);
 }
 
+// _clusterStyleSessionStore — models a multi-replica session backend
+// where every get() deserialises a FRESH copy of the stored row (as a
+// real cluster store does — each call returns its own object, never a
+// shared reference) and get/set/delete are genuinely async (yield to the
+// microtask queue). This is the shape that exposes a non-atomic
+// read-modify-write counter guard: two concurrent requests both read the
+// same lastReqCtr from independent copies and both pass a copy-local
+// check. `gets` counts reads so the test can confirm both requests
+// actually raced through get() before either set() landed.
+function _clusterStyleSessionStore() {
+  var rows = Object.create(null);
+  var gets = 0;
+  return {
+    get: async function (sid) {
+      gets += 1;
+      await Promise.resolve();                 // force a microtask yield
+      var raw = rows[sid];
+      if (raw === undefined) return null;
+      return JSON.parse(raw);                  // fresh deserialised copy
+    },
+    set: async function (sid, row) {
+      await Promise.resolve();
+      rows[sid] = JSON.stringify(row);
+    },
+    delete: async function (sid) {
+      await Promise.resolve();
+      delete rows[sid];
+    },
+    _gets: function () { return gets; },
+  };
+}
+
+async function testApiEncryptCreateRejectsBadReplayWindow() {
+  var keypair = _serverKeypair();
+  var threw = null;
+  try {
+    b.middleware.apiEncrypt({ keypair: keypair, audit: false, replayWindowMs: "5m" });
+  } catch (e) { threw = e; }
+  check("apiEncrypt: create() rejects string replayWindowMs at boot",
+        threw && /replayWindowMs/.test(threw.message));
+  threw = null;
+  try {
+    b.middleware.apiEncrypt({ keypair: keypair, audit: false, replayWindowMs: 0 });
+  } catch (e) { threw = e; }
+  check("apiEncrypt: create() rejects replayWindowMs=0 (disables staleness defense)",
+        threw && /replayWindowMs/.test(threw.message));
+  threw = null;
+  try {
+    b.middleware.apiEncrypt({ keypair: keypair, audit: false, maxDecryptedBytes: "lots" });
+  } catch (e) { threw = e; }
+  check("apiEncrypt: create() rejects non-numeric maxDecryptedBytes",
+        threw && /maxDecryptedBytes/.test(threw.message));
+  threw = null;
+  try {
+    b.middleware.apiEncrypt({ keypair: keypair, audit: false, pruneIntervalMs: "soon" });
+  } catch (e) { threw = e; }
+  check("apiEncrypt: create() rejects non-numeric pruneIntervalMs",
+        threw && /pruneIntervalMs/.test(threw.message));
+  // Sanity: a valid numeric replayWindowMs still builds.
+  var ok = b.middleware.apiEncrypt({ keypair: keypair, audit: false, replayWindowMs: 30000 });
+  check("apiEncrypt: create() accepts numeric replayWindowMs", typeof ok === "function");
+}
+
+async function testApiEncryptClientRejectsBadMaxDecryptedBytes() {
+  var keypair = _serverKeypair();
+  var threw = null;
+  try {
+    b.middleware.apiEncrypt.client({ pubkey: keypair, maxDecryptedBytes: "5m" });
+  } catch (e) { threw = e; }
+  check("apiEncrypt.client: rejects string maxDecryptedBytes at boot",
+        threw && /maxDecryptedBytes/.test(threw.message));
+}
+
+async function testApiEncryptHttpClientRejectsBadMaxDecryptedBytes() {
+  var keypair = _serverKeypair();
+  var threw = null;
+  try {
+    b.middleware.apiEncrypt.httpClient({ pubkey: keypair, maxDecryptedBytes: "5m" });
+  } catch (e) { threw = e; }
+  check("apiEncrypt.httpClient: rejects string maxDecryptedBytes at boot",
+        threw && /maxDecryptedBytes/.test(threw.message));
+}
+
+async function testApiEncryptPerSessionConcurrentCtrExecutesOnce() {
+  var keypair = _serverKeypair();
+  var store = _clusterStyleSessionStore();
+  var mw = b.middleware.apiEncrypt({
+    keypair:      keypair,
+    audit:        false,
+    keying:       "per-session",
+    sessionStore: store,
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  // Bootstrap the session (ctr=1) so a row exists in the store.
+  var first = clientCtx.encryptRequest({ n: 1 });
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = first.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: 1 }); });
+  await fin1;
+  check("concurrent-ctr: bootstrap 200", res1._endedStatus === 200);
+
+  // Build ONE subsequent request (ctr=2), then submit two byte-identical
+  // copies of it concurrently — the double-execution replay an attacker
+  // (or a buggy retry) lands on a clustered store.
+  var second = clientCtx.encryptRequest({ n: 2 });
+  var execCount = 0;
+
+  function _submit() {
+    var req = _bodyReq("POST", { "content-type": "application/json" }, "");
+    req.body = JSON.parse(JSON.stringify(second.body));   // distinct copies
+    var res = _mkRes();
+    var fin = _newFinish(res);
+    var p = mw(req, res, function () {
+      execCount += 1;
+      res.json({ ok: 2 });
+    });
+    return { done: Promise.all([p, fin]), res: res };
+  }
+
+  // Fire both BEFORE awaiting either, so they interleave at the async
+  // get()/set() yield points.
+  var a = _submit();
+  var c = _submit();
+  await a.done;
+  await c.done;
+
+  await helpers.waitUntil(function () {
+    return a.res._endedStatus !== null && c.res._endedStatus !== null;
+  }, { timeoutMs: 5000, label: "concurrent-ctr: both responses finished" });
+
+  check("concurrent-ctr: both requests read a fresh copy (raced through get)",
+        store._gets() >= 2);
+  check("concurrent-ctr: handler executed EXACTLY once", execCount === 1);
+  var statuses = [a.res._endedStatus, c.res._endedStatus].sort();
+  check("concurrent-ctr: exactly one 200 and one 400",
+        statuses[0] === 200 && statuses[1] === 400);
+  var rejected = a.res._endedStatus === 400 ? a.res : c.res;
+  check("concurrent-ctr: the loser is refused with the replay shape",
+        /encrypted-payload-rejected/.test(rejected._captured));
+}
+
+async function testApiEncryptPerSessionSequentialCounterStillWorks() {
+  // Success path: the atomic gate must NOT break normal monotonic flow.
+  var keypair = _serverKeypair();
+  var store = _clusterStyleSessionStore();
+  var mw = b.middleware.apiEncrypt({
+    keypair:      keypair,
+    audit:        false,
+    keying:       "per-session",
+    sessionStore: store,
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  var reached = [];
+  // Three sequential requests, ctr 1 → 2 → 3, each must reach next() and 200.
+  for (var i = 1; i <= 3; i++) {
+    var call = clientCtx.encryptRequest({ n: i });
+    var req = _bodyReq("POST", { "content-type": "application/json" }, "");
+    req.body = call.body;
+    var res = _mkRes();
+    var fin = _newFinish(res);
+    await mw(req, res, (function (n, rq, r) {
+      return function () {
+        reached.push(n);
+        // middleware replaced rq.body in-place with the cleartext payload.
+        check("seq-ctr: req " + n + " body decrypted", rq.body && rq.body.n === n);
+        r.json({ ok: n });
+      };
+    })(i, req, res));
+    await fin;
+    check("seq-ctr: req " + i + " returns 200", res._endedStatus === 200);
+    var resp = JSON.parse(res._captured);
+    var plain = call.decryptResponse(resp);
+    check("seq-ctr: req " + i + " response decrypts", plain.ok === i);
+  }
+  check("seq-ctr: all three sequential requests reached the handler",
+        reached.length === 3 && reached[0] === 1 && reached[1] === 2 && reached[2] === 3);
+}
+
 async function run() {
   await testNonceStoreSurface();
   await testNonceStoreMemoryBasics();
@@ -1155,6 +1341,9 @@ async function run() {
   await testNonceStoreUnknownBackend();
 
   await testApiEncryptKeypairValidated();
+  await testApiEncryptCreateRejectsBadReplayWindow();
+  await testApiEncryptClientRejectsBadMaxDecryptedBytes();
+  await testApiEncryptHttpClientRejectsBadMaxDecryptedBytes();
   await testApiEncryptRoundTrip();
   await testApiEncryptRejectsMissingShape();
   await testApiEncryptRejectsStaleTimestamp();
@@ -1183,6 +1372,8 @@ async function run() {
   await testApiEncryptPerSessionBootstrapAndReuse();
   await testApiEncryptPerSessionUnknownSid();
   await testApiEncryptPerSessionCounterReplay();
+  await testApiEncryptPerSessionConcurrentCtrExecutesOnce();
+  await testApiEncryptPerSessionSequentialCounterStillWorks();
   await testApiEncryptPerSessionExpiry();
   await testApiEncryptPerSessionMaxResponses();
   await testApiEncryptPerSessionResponseCounterMonotonic();

@@ -5298,6 +5298,41 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Factory-create() opts-resolution scaffolding family — `var X = applyDefaults(opts, DEFAULTS); validateOpts.optionalY(...); validateOpts.optionalZ(...)` cascades. Eleven different domains (daily review / sanctions fetcher / migration / 21 CFR / FDX / db-role middleware / DPoP / TUS / outbox / static / sealed-PEM); each closure captures a different downstream binding. Same factory-prelude convention as the JSON-envelope cluster above; tracked separately because the file-set varies.",
     },
     {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oauth.js:buildClientAttestationPop",
+        "lib/auth/saml.js:create",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/data-act.js:shareWithThirdParty",
+        "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/http-client.js:_validateUploadOpts",
+        "lib/mail-send-deliver.js:create",
+        "lib/middleware/db-role-for.js:create",
+        "lib/middleware/no-cache.js:create",
+        "lib/middleware/tus-upload.js:create",
+        "lib/outbox.js:create",
+        "lib/pubsub-cluster.js:create",
+        "lib/queue-sqs.js:create",
+        "lib/storage.js:chunkScratch",
+        "lib/vault/seal-pem-file.js:sealPemFile",
+        "lib/watcher.js:_validateOpts",
+        "lib/web-push-vapid.js:buildVapidAuthHeader",
+      ],
+      reason: "Config-time numeric-validation prelude family — `validateOpts.optionalPositiveInt(opts.X, label, ErrClass, code); var x = opts.X !== undefined ? opts.X : DEFAULT;` cascades at factory entry points. pubsub-cluster / queue-sqs / mail-send-deliver joined when their coerce-or-default numerics were converted to config-time throws; the older members (saml / sanctions / 21 CFR / data-act / outbox / watcher / http-client / vapid / sealed-PEM / storage chunkScratch / no-cache / tus / db-role) carry the same prelude convention. Each domain emits its own error class, code namespace, and opts vocabulary — consolidating past the call boundary would surface the wrong error code for operator typos; the shared helper (validateOpts) IS the extraction.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/bot-challenge.js:_normaliseAllowlist",
+        "lib/auth/oid4vci.js:_parseX5cChain",
+        "lib/middleware/cors.js:create",
+        "lib/network-dns.js:setServers",
+      ],
+      reason: "Loop-over-string-array with per-entry shape refusal — bot-challenge normalises a provider allowlist, cors validates configured origins, network-dns validates resolver addresses, oid4vci validates RFC 7515 x5c base64-DER chain entries. Each refuses with its own domain error class and a per-entry indexed message (the message IS the operator diagnostic); the loop scaffold is the only shared shape.",
+    },
+    {
       files: [
         "lib/auth/sd-jwt-vc-holder.js:_emitAudit",
         "lib/auth/sd-jwt-vc-issuer.js:_emitAudit",
@@ -6213,6 +6248,50 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "Codex P2 on v0.10.15 PR #104 flagged Number(summary['total-successful-session-count']) || 0 — silently accepted Infinity / NaN / negative on an audit-emitted summed path. Detector forces explicit validation discipline on new code.",
+  },
+  {
+    // v0.14.21 — redis-client coerced entry-point numerics with bare
+    // `Number(opts.X) || DEFAULT`: connectTimeoutMs:"abc" → NaN
+    // silently became the default, a negative timeout sailed into
+    // setTimeout, and maxReconnectAttempts:"abc" → NaN made the
+    // `>= 0` reconnect-cap check false — silently DISABLING the
+    // reconnect bound. Config-time entry-point opts THROW on bad
+    // input; the coerce-or-default shape swallows exactly the typo
+    // that tier exists to surface. Same class found and fixed in
+    // pubsub-cluster + queue-sqs in the same release.
+    id: "number-opts-coerce-or-default",
+    primitive: "validateOpts.optionalPositiveInt / optionalPositiveFinite / optionalFiniteNonNegative (config-time throw) — never `Number(opts.X) || DEFAULT` coerce-or-default on an entry-point opt",
+    regex: /=\s*Number\s*\(\s*opts\.\w+\s*\)\s*\|\|/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.21 — `Number(opts.X) || DEFAULT` on a config-time entry-point opt silently converts an operator typo (string, NaN, negative-via-||-passthrough) into the default or into garbage downstream (negative setTimeout, NaN disabling a `>= 0` cap check). Entry-point numerics route through the validateOpts helpers so the typo throws at boot. A genuinely defensive request-shape reader (returns-defaults tier) reads from a request object, not `opts.`, and is out of this regex's scope by construction.",
+  },
+  {
+    // v0.14.21 — openapi-serve / asyncapi-serve admitted HEAD at the
+    // dispatcher (`method !== "GET" && method !== "HEAD"` → handle)
+    // but the body writer had no HEAD branch: it set Content-Length
+    // AND wrote the full payload body for HEAD, violating RFC 9110
+    // §9.3.2 (a HEAD response carries no body). The framework
+    // convention (assetlinks / web-app-manifest / security-txt /
+    // health / static / protected-resource-metadata) is per-middleware
+    // suppression: headers as for GET, then `if (req.method ===
+    // "HEAD") { res.end(); return; }`. Any file admitting HEAD
+    // alongside GET must carry that suppression somewhere.
+    id: "head-admitted-without-body-suppression",
+    primitive: "after writeHead: `if (req.method === \"HEAD\") { res.end(); return; }` — HEAD carries the GET headers (incl. Content-Length) with no body (RFC 9110 §9.3.2)",
+    regex: /!==\s*["']GET["']\s*&&\s*[\w.]+\s*!==\s*["']HEAD["']/,
+    requires: /===\s*["']HEAD["']/,
+    skipCommentLines: true,
+    allowlist: [
+      // CSRF-token method gate on the form BUILDER — decides whether a
+      // hidden token field is emitted; no HTTP response is written, so
+      // there is no body to suppress.
+      "lib/forms.js",
+      // CLIENT-side cache-eligibility check (RFC 9111 — only GET/HEAD
+      // responses are cacheable) — consumes responses, never writes one.
+      "lib/http-client-cache.js",
+    ],
+    reason: "v0.14.21 — openapi-serve/asyncapi-serve served the full JSON/YAML payload as a HEAD response body (RFC 9110 §9.3.2 violation; tests only drove GET). A dispatcher that admits HEAD promises HEAD semantics; the response writer must suppress the body. The `requires` companion is satisfied by the framework-standard `req.method === \"HEAD\"` end-without-body branch anywhere in the file.",
   },
   {
     // v0.10.15 — `zlib.gunzipSync` / `zlib.createGunzip` /
@@ -7718,8 +7797,12 @@ var KNOWN_ANTIPATTERNS = [
       // formatted message details that don't fit the helper's
       // (label + description) shape.
       "lib/protocol-dispatcher.js",
+      // problem-details throws ProblemDetailsError with the 3rd
+      // `permanent: true` arg (same class as external-db above) — the
+      // validateOpts._throw factory signature would silently drop it.
+      "lib/problem-details.js",
     ],
-    reason: "Extracted to validateOpts.optionalPlainObject. Replaces the recurring `if (X !== undefined && X !== null) { if (typeof X !== 'object' || Array.isArray(X)) throw }` shape used to validate optional plain-object opts. Two sites allowlisted: external-db needs the permanent-flag 3rd arg the helper drops; protocol-dispatcher uses multi-line formatted error messages that don't fit the helper's description slot.",
+    reason: "Extracted to validateOpts.optionalPlainObject. Replaces the recurring `if (X !== undefined && X !== null) { if (typeof X !== 'object' || Array.isArray(X)) throw }` shape used to validate optional plain-object opts. Three sites allowlisted: external-db + problem-details need the permanent-flag 3rd arg the helper drops; protocol-dispatcher uses multi-line formatted error messages that don't fit the helper's description slot.",
   },
   {
     id: "inline-redis-client-opts-forwarding",
@@ -10100,6 +10183,122 @@ function testMailStoreFtsInTransaction() {
     bad);
 }
 
+// ---- Pattern: validateOpts-accepted key never read ----
+//
+// class: validateopts-key-never-read
+//
+// v0.14.21 — csp-report's @opts documented `audit: boolean // default
+// true` and validateOpts accepted the key, but create() never read
+// opts.audit: the documented disable knob was a silent no-op (the
+// violation audit row fired unconditionally). A sweep found the same
+// shape in honeytoken (injectable audit sink ignored), config
+// ("reserved for future" knob), and others — all wired or
+// de-advertised in the same release. The validateOpts allowlist IS
+// the operator contract: a key it accepts that no code reads is
+// advertised surface with no implementation.
+//
+// The detector: every string key in a direct
+// `validateOpts(<ident>, [ ... ])` call's array literal must be read
+// as `<ident>.<key>` (dot) or `<ident>["<key>"]` (literal bracket)
+// somewhere in the same file. Keys consumed STRUCTURALLY — via a
+// computed `ident[k]` loop over a key table, or by forwarding the
+// whole opts object to a sub-factory in another file — can't be
+// verified file-locally and carry an ALLOW entry below citing where
+// the key is actually consumed.
+function testValidateOptsAcceptedKeysAreRead() {
+  // "<relative file>::<ident>.<key>" -> consumption cite (the reason
+  // the file-local read is absent). Adding an entry requires naming
+  // the real consumption site; "we'll wire it later" is not a reason.
+  var ALLOW = Object.create(null);
+  // jwt-external: the whole opts object is forwarded as `vopts` to
+  // _selectKey; consumed as vopts.allowKidlessJwks (jwt-external.js:281).
+  ALLOW["lib/auth/jwt-external.js::opts.allowKidlessJwks"] = true;
+  // step-up: the validated `requirement` IS buildChallenge's `req`;
+  // read as req.authorizationDetails (step-up.js:266 — emits the
+  // RFC 9396 authorization_details challenge param).
+  ALLOW["lib/auth/step-up.js::requirement.authorizationDetails"] = true;
+  // cache: redis* keys are prefix-mapped via
+  // redisClient.pickClientOpts(opts, "redis") (cache.js redis backend
+  // branch → the prefix table in redis-client.js).
+  ["redis", "redisPassword", "redisUsername", "redisTls", "redisCa",
+   "redisServername", "redisConnectTimeoutMs", "redisCommandTimeoutMs",
+   "redisMaxReconnectAttempts"].forEach(function (k) {
+    ALLOW["lib/cache.js::opts." + k] = true;
+  });
+  // flag-providers: passed-through spec metadata — the whole spec is
+  // stored (flags[key] = opts.flags[key]) and returned via
+  // provider.get()/evaluate(); operator tooling reads the fields.
+  ["description", "tags", "kind"].forEach(function (k) {
+    ALLOW["lib/flag-providers.js::spec." + k] = true;
+  });
+  // body-parser: per-parser sub-configs read via the computed
+  // `opts[name]` in _resolve(name) (body-parser.js _resolve loop).
+  ["json", "urlencoded", "text", "raw", "multipart"].forEach(function (k) {
+    ALLOW["lib/middleware/body-parser.js::opts." + k] = true;
+  });
+  // web-app-manifest: manifest fields read via the computed `opts[k]`
+  // manifest-build loop (web-app-manifest.js Object.keys(opts) filter).
+  ["short_name", "description", "scope", "display", "display_override",
+   "orientation", "theme_color", "background_color", "screenshots",
+   "shortcuts", "categories", "lang", "dir", "id",
+   "prefer_related_applications", "related_applications"].forEach(function (k) {
+    ALLOW["lib/middleware/web-app-manifest.js::opts." + k] = true;
+  });
+  // sigv4-bucket-ops: per-method opts forwarded to _actor(callerOpts) →
+  // requestHelpers.resolveActorWithOverride (callerOpts.req read in
+  // request-helpers.js; callerOpts.actor is the override seed at
+  // sigv4-bucket-ops.js _actor).
+  ALLOW["lib/object-store/sigv4-bucket-ops.js::opts.req"] = true;
+  ALLOW["lib/object-store/sigv4-bucket-ops.js::opts.actor"] = true;
+  // pubsub: the whole opts object is forwarded to
+  // pubsubCluster().create(opts) / pubsubRedis().create(opts)
+  // (pubsub.js _resolveBackend); keys consumed in those backends.
+  ["cluster", "pollIntervalMs", "retentionMs", "pruneEveryMs",
+   "redisUrl", "redisPassword", "redisUsername", "redisTls", "redisCa",
+   "redisServername"].forEach(function (k) {
+    ALLOW["lib/pubsub.js::opts." + k] = true;
+  });
+
+  var files = _libFiles();
+  var bad = [];
+  var callRe = /\bvalidateOpts\s*\(\s*(\w+)\s*,\s*\[([\s\S]*?)\]/g;
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    if (rel === "lib/validate-opts.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    callRe.lastIndex = 0;
+    var m;
+    while ((m = callRe.exec(content)) !== null) {
+      var ident = m[1];
+      var arr = m[2];
+      var keyRe = /["']([A-Za-z_$][\w$]*)["']/g;
+      var km;
+      while ((km = keyRe.exec(arr)) !== null) {
+        var key = km[1];
+        if (ALLOW[rel + "::" + ident + "." + key]) continue;
+        var readRe = new RegExp(
+          "\\b" + ident + "\\s*(?:\\.\\s*" + key + "\\b|\\[\\s*[\"']" + key + "[\"']\\s*\\])");
+        if (!readRe.test(content)) {
+          var lineNum = content.slice(0, m.index).split(/\r?\n/).length;
+          bad.push({
+            file: rel, line: lineNum,
+            content: "validateOpts accepts \"" + key + "\" on `" + ident +
+                     "` but the file never reads " + ident + "." + key +
+                     " — wire the knob, de-advertise it, or ALLOW with a consumption cite",
+          });
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "validateopts-key-never-read");
+  _report("every validateOpts-accepted key is read in the same file " +
+          "(v0.14.21 — an accepted-but-never-read key is an advertised knob " +
+          "with no implementation; csp-report opts.audit shipped as a no-op)",
+    bad);
+}
+
 // ---- Pattern: b.fsm.define freezes without cloning ----
 //
 // class: fsm-define-no-clone-before-freeze
@@ -11542,6 +11741,10 @@ async function run() {
   // v0.12.1 compliance posture coverage detector: KNOWN_POSTURES ⊇
   // POSTURE_DEFAULTS + REGIME_MAP ⊇ KNOWN_POSTURES.
   testCompliancePostureCoverage();
+  // v0.14.21 audit-fix detector: a validateOpts-accepted key that no
+  // code reads is an advertised knob with no implementation
+  // (csp-report opts.audit shipped as a silent no-op).
+  testValidateOptsAcceptedKeysAreRead();
   testKnownAntipatterns();
 
   // Final cumulative assertion — every detector is a hard gate.

@@ -198,6 +198,18 @@ function testFactoryValidation() {
   shouldThrow("rejects unsupported protocol",
     { protocol: "gcs", region: "us-east-1", accessKeyId: "x", secretAccessKey: "y" },
     /INVALID_CONFIG/);
+
+  // `ca` was an accepted-but-dead config knob — nothing in the request
+  // path (reqOpts → http-request → httpClient.request) threads a custom
+  // CA cert (the framework's PQC-only TLS posture lives solely in
+  // lib/pqc-agent.js; operators use NODE_EXTRA_CA_CERTS / opts.agent).
+  // De-advertised: passing it must now throw as an unknown option.
+  var threwCa = null;
+  try {
+    bucketOps.create(Object.assign({}, _baseConfig(9999), { ca: "-----BEGIN CERTIFICATE-----" }));
+  } catch (e) { threwCa = e; }
+  check("factory: de-advertised `ca` knob rejected as unknown option",
+        threwCa && /unknown option 'ca'/.test(threwCa.message || ""));
 }
 
 // ---- Bucket name validation ----
@@ -908,6 +920,55 @@ async function testAuditSuccessFalseDisablesSuccessAudit() {
   }
 }
 
+async function testPerCallActorOverrideHonored() {
+  // Per-method opts accept `req` (resolves IP / user-agent / userId from a
+  // live request) and `actor` (an explicit identity override for callers
+  // performing a compliance-sensitive change on behalf of an operator).
+  // Both must land on the emitted audit row's `actor` field; `actor`-set
+  // keys win over the request-derived ones.
+  var auditCap = _captureAudit();
+  var fake = _fakeS3();
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var ops = bucketOps.create(Object.assign({}, _baseConfig(port), {
+      audit: auditCap,
+    }));
+
+    var fakeReq = {
+      ip:      "203.0.113.9",
+      method:  "PUT",
+      headers: { "user-agent": "ops-cli/1.0" },
+    };
+    await ops.create("actor-bucket", {
+      req:   fakeReq,
+      actor: { userId: "ops-admin" },
+    });
+
+    var rows = auditCap.byAction("objectstore.bucket.create");
+    check("actor override: audit row emitted", rows.length === 1);
+    var actor = rows.length === 1 ? rows[0].actor : {};
+    check("actor override: explicit actor.userId lands on the audit row",
+          actor.userId === "ops-admin");
+    check("actor override: request-derived ip lands on the audit row",
+          actor.ip === "203.0.113.9");
+    check("actor override: request-derived userAgent lands on the audit row",
+          actor.userAgent === "ops-cli/1.0");
+
+    // Without actor/req, the resolved actor has the resolver's null
+    // defaults (no override) — default behavior unchanged.
+    var auditCap2 = _captureAudit();
+    var ops2 = bucketOps.create(Object.assign({}, _baseConfig(port), {
+      audit: auditCap2,
+    }));
+    await ops2.create("plain-bucket");
+    var rows2 = auditCap2.byAction("objectstore.bucket.create");
+    check("actor override: default behavior unchanged when actor/req absent",
+          rows2.length === 1 && rows2[0].actor && rows2[0].actor.userId === null);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
 async function run() {
   testSurface();
   testFactoryValidation();
@@ -940,6 +1001,7 @@ async function run() {
   // v0.6.53 — audit + observability emissions
   await testAuditObservabilityWiring();
   await testAuditSuccessFalseDisablesSuccessAudit();
+  await testPerCallActorOverrideHonored();
 }
 
 module.exports = { run: run };
