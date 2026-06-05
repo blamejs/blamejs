@@ -42,9 +42,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Backstop against a hung child no watchdog reaped (and against the
     # watchdog logic itself regressing): without this a stuck job rides
-    # GitHub's 6-hour default. The full suite finishes in well under
-    # 20 min even on the slow macOS runners; 30 leaves headroom.
-    timeout-minutes: 30
+    # GitHub's 6-hour default. The per-file watchdog allows the heavy
+    # pattern-catalog file up to 10 minutes on a contended runner, so
+    # the job budget is sized to the suite (~20-30 min on the slow
+    # runners) plus that allowance.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:

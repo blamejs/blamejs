@@ -83,10 +83,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # 30-min cap covers lint + smoke + wiki e2e + cold npx eslint
-    # pull + SBOM generation. v0.6.38 → v0.6.53 all timed out at the
-    # previous 15-min cap, leaving npm registry stuck at v0.6.37.
-    timeout-minutes: 30
+    # Cap covers lint + smoke + wiki e2e + cold npx eslint pull + SBOM
+    # generation, plus the per-file smoke watchdog's 10-minute
+    # allowance for the heavy pattern-catalog file on a contended
+    # runner. v0.6.38 → v0.6.53 all timed out at the original 15-min
+    # cap, leaving the npm registry stuck at v0.6.37.
+    timeout-minutes: 40
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_tag:  ${{ steps.version.outputs.is_tag }}
