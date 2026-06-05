@@ -1,0 +1,48 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.14.22",
+  "date": "2026-06-04",
+  "headline": "RFC 9101 signed request objects: a JAR request-object builder, a classical JWS signer for external interop, and pushed authorization requests that carry `request=`",
+  "summary": "The framework can now mint JWT-Secured Authorization Requests, completing the JAR surface whose verify side (`b.auth.jar.parse`) shipped in v0.12.31 with the builder documented as waiting on a classical signer. `b.auth.jws.sign` is that signer — a compact-JWS producer for RS / PS / ES / EdDSA keys that exists strictly for interop with external ecosystems (authorization servers and relying parties that require classical algorithms); the framework's own tokens stay on the PQC-first signer. `b.auth.jar.build` mints the RFC 9101 request object on top of it, and `pushAuthorizationRequest` composes both so a pushed authorization request can carry the signed `request=` parameter — the FAPI 2.0 message-signing client shape. The OAuth client-attestation builder now composes the same promoted signer internally, with identical wire output.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.auth.jar.build` — RFC 9101 request-object builder",
+          "body": "Mints the JWT-Secured Authorization Request: header `typ: oauth-authz-req+jwt` (RFC 9101 §10.8), `iss` = the client_id and `aud` = the authorization server (§5), `response_type` and `client_id` required as claims (§4), and every authorization parameter carried as a claim. A params object containing `request` or `request_uri` is refused (§4 forbids nesting), reserved-claim collisions are refused, and a `params.client_id` that disagrees with `opts.clientId` is refused. The JWT carries a short `exp` (default 5 minutes, `expiresInMs`-overridable), `nbf`, and a random `jti` for FAPI 2.0 message signing. The signing algorithm derives from the supplied key; `none` is impossible. Round-trips against the existing `b.auth.jar.parse` verifier."
+        },
+        {
+          "title": "`b.auth.jws.sign` — classical compact-JWS signer for external interop",
+          "body": "Signs a compact JWS with an RS / PS / ES (P-256/P-384/P-521) / EdDSA key, deriving the algorithm from the key per RFC 7518 §3.1 and refusing `none`, HMAC, and algorithm/key mismatches; a caller-supplied `header.alg` cannot override the derived algorithm (algorithm-substitution closed). This primitive exists for interop with external ecosystems that require classical JOSE — JAR request objects, attestation JWTs, and similar cross-vendor surfaces. It is never the framework-internal token default: `b.auth.jwt` remains the PQC-first signer for the framework's own tokens."
+        },
+        {
+          "title": "Pushed authorization requests can carry a signed request object (RFC 9126 §3)",
+          "body": "`pushAuthorizationRequest` accepts a `signedRequestObject` option (`{ key, alg?, kid?, audience?, expiresInMs? }`). When present, the authorization parameters are minted into a JAR request object and the PAR body carries `request=<jwt>` plus only the client-authentication material RFC 9126 allows alongside it; the bare authorization parameters are not duplicated in the form. Absent, the existing plain-form path sends the same key/value set as before."
+        },
+        {
+          "title": "`validateOpts.assignOwnEnumerable` — shared prototype-safe claim merge",
+          "body": "Consolidates the own-enumerable key merge with prototype-pollution and reserved-key guards that the request-object builder, the classical signer, and the client-attestation builder all need. Existing call sites compose it; behavior is unchanged."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "OAuth client-attestation signing composes the promoted classical signer",
+          "body": "The attestation builder's private JWS assembly moved to the shared `b.auth.jws.sign` internals. Wire output is identical — same headers, claim order, algorithm selection, and accepted-algorithm set — and the `auth-oauth/attestation-*` error codes are preserved, so operators routing alerts on those codes see no change."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "No action required; everything is additive",
+          "body": "The JAR builder, the classical signer, the PAR `signedRequestObject` option, and the shared merge helper are new surface. Existing `jar.parse` callers, attestation flows, and plain PAR requests behave exactly as before."
+        }
+      ]
+    }
+  ]
+}

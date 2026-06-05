@@ -32,7 +32,7 @@ _tls.DEFAULT_MIN_VERSION = "TLSv1.3";
  *                 error-handler, body-parser, csp-nonce, compression,
  *                 health, api-encrypt), httpClient, websocket,
  *                 websocketChannels, nonceStore
- *   Auth:         auth.{password,totp,passkey,jwt,oauth,lockout}, authHeader
+ *   Auth:         auth.{password,totp,passkey,jwt,jws,oauth,jar,lockout}, authHeader
  *   Render:       template, render, staticServe, forms, errorPage
  *   App:          createApp, jobs, mail, mailBounce, scheduler,
  *                 appShutdown
@@ -247,6 +247,10 @@ var auth = {
   jwt:      Object.assign({},
               require("./lib/auth/jwt"),
               { verifyExternal: require("./lib/auth/jwt-external").verifyExternal }),
+  // Classical-JOSE signer (RS/PS/ES/EdDSA) for external-ecosystem interop —
+  // OPs/RPs that require a classical-signed request object / assertion. Never
+  // the framework-internal token default; b.auth.jwt stays PQC-only.
+  jws:      { sign: require("./lib/auth/jwt-external").signExternal },
   oauth:    require("./lib/auth/oauth"),
   jar:      require("./lib/auth/jar"),
   lockout:  require("./lib/auth/lockout"),
