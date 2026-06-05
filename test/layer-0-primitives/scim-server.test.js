@@ -436,6 +436,64 @@ async function _runBulkRefOrderingTests() {
   check("bulk back-ref: adapter never saw token",
         !bwGroups._received.some(_containsBulkIdToken));
 
+  // --- PATH references (RFC 7644 §3.7.2) — a bulkId can appear as the
+  // resource id in an operation's path ("PATCH /Users/bulkId:u1"), not
+  // just in operation data. Forward path refs order like data refs and
+  // the path token is substituted with the real id before dispatch.
+  var pthUsers = _mkRecordingUsers();
+  var pthPatchedIds = [];
+  var pthPatchInner = pthUsers.patch.bind(pthUsers);
+  pthUsers.patch = async function (id, ops) { pthPatchedIds.push(id); return pthPatchInner(id, ops); };
+  var pthMw = b.middleware.scimServer({
+    basePath: "/scim/v2", users: pthUsers, bulk: { maxOperations: 10 },
+  });
+  var pth = await _bulkBody(pthMw, [
+    { method: "PATCH", path: "/Users/bulkId:newbie",
+      data: { Operations: [{ op: "replace", path: "active", value: true }] } },
+    { method: "POST", path: "/Users", bulkId: "newbie",
+      data: { schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"], userName: "newbie" } },
+  ]);
+  var pthResp = JSON.parse(pth.res._body());
+  check("bulk path-ref: 200 envelope",      pth.res._sc() === 200);
+  check("bulk path-ref: both succeed",
+        pthResp.Operations[0].status === "200" && pthResp.Operations[1].status === "201");
+  check("bulk path-ref: response in request order",
+        pthResp.Operations[1].bulkId === "newbie");
+  var pthUserId = Array.from(pthUsers._records.keys())[0];
+  check("bulk path-ref: patch received the real id, not the token",
+        pthPatchedIds.length === 1 && pthPatchedIds[0] === pthUserId);
+
+  // Backward path ref on DELETE: the created resource is removable via
+  // its bulkId path token in the same request.
+  var delUsers = _mkRecordingUsers();
+  var delMw = b.middleware.scimServer({
+    basePath: "/scim/v2", users: delUsers, bulk: { maxOperations: 10 },
+  });
+  var del = await _bulkBody(delMw, [
+    { method: "POST", path: "/Users", bulkId: "gone",
+      data: { schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"], userName: "gone" } },
+    { method: "DELETE", path: "/Users/bulkId:gone" },
+  ]);
+  var delResp = JSON.parse(del.res._body());
+  check("bulk path-ref delete: both succeed",
+        delResp.Operations[0].status === "201" && delResp.Operations[1].status === "204");
+  check("bulk path-ref delete: record removed", delUsers._records.size === 0);
+
+  // Undeclared path ref: fails per-op invalidValue, adapter never called.
+  var updUsers = _mkRecordingUsers();
+  var updMw = b.middleware.scimServer({
+    basePath: "/scim/v2", users: updUsers, bulk: { maxOperations: 10 },
+  });
+  var upd = await _bulkBody(updMw, [
+    { method: "DELETE", path: "/Users/bulkId:phantom" },
+  ]);
+  var updResp = JSON.parse(upd.res._body());
+  check("bulk path-ref undeclared: fails 400 invalidValue",
+        updResp.Operations[0].status === "400" &&
+        updResp.Operations[0].response.scimType === "invalidValue");
+  check("bulk path-ref undeclared: adapter untouched",
+        updUsers._received.length === 0 && updUsers._records.size === 0);
+
   // --- maxPageSize garbage throws at create() (entry-point tier).
   var threwPage = false;
   try { b.middleware.scimServer({ basePath: "/scim/v2", users: _mkUsers(), maxPageSize: "lots" }); }

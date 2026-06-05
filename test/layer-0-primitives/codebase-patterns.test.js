@@ -6294,6 +6294,62 @@ var KNOWN_ANTIPATTERNS = [
     reason: "v0.14.21 — openapi-serve/asyncapi-serve served the full JSON/YAML payload as a HEAD response body (RFC 9110 §9.3.2 violation; tests only drove GET). A dispatcher that admits HEAD promises HEAD semantics; the response writer must suppress the body. The `requires` companion is satisfied by the framework-standard `req.method === \"HEAD\"` end-without-body branch anywhere in the file.",
   },
   {
+    // v0.14.21 (Codex P2 on PR #301) — the apiEncrypt per-session
+    // (sid, ctr) replay claim expired with the staleness window
+    // (`now + replayWindowMs`). The post-handler session write is
+    // best-effort, so a failed write leaves lastReqCtr stale, and the
+    // envelope `_ts` is plaintext metadata not bound into the AEAD —
+    // an expired claim let the same captured (sid, ctr, _ct) replay
+    // later with a fresh _ts and execute twice. The claim must live
+    // until session.expiresAt.
+    id: "session-replay-claim-window-expiry",
+    primitive: "nonceStore.checkAndInsert(ctrKey, session.expiresAt) — a session-scoped replay claim lives as long as the session can accept requests, never just the staleness window",
+    regex: /checkAndInsert\s*\(\s*ctrKey\s*,\s*now\s*\+/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P2 on v0.14.21 PR #301 — a replay claim that expires with the staleness window re-opens late replay when the post-handler session write fails best-effort and the request timestamp is not authenticated with the ciphertext. The (sid, ctr) tuple stays burned until session.expiresAt; per-session claim count is bounded by sessionMaxResponses.",
+  },
+  {
+    // v0.14.21 — the api-encrypt envelope's plaintext metadata
+    // (_ts/_nonce/_sid/_ctr) rode OUTSIDE the AEAD: a captured
+    // bootstrap/per-request envelope could be replayed past the
+    // staleness window with a rewritten _ts, and a captured response
+    // could be replayed to the client under a bumped _ctr (the
+    // client's monotonic check reads the plaintext field). Every
+    // packed AEAD call in the envelope protocol now binds the
+    // canonical _requestAad/_responseAad string; a two-arg
+    // encryptPacked/decryptPacked on a protocol key is the regression.
+    id: "apienc-envelope-metadata-unbound",
+    primitive: "bCrypto.encryptPacked/decryptPacked with _requestAad(ts, nonce, sid, ctr) / _responseAad(sid, ctr) — the api-encrypt envelope's plaintext metadata is AEAD-bound on both protocol halves",
+    regex: /\b(?:encryptPacked|decryptPacked)\s*\(\s*\w+\s*,\s*(?:perSessionKey|sessionKey)\s*\)/,
+    skipCommentLines: true,
+    allowlist: [
+      // OpenPGP message session key (RFC 9580 vocabulary, same variable
+      // name by coincidence) — the PGP packet format carries no plaintext
+      // framework-envelope metadata; integrity is the OpenPGP MDC/AEAD
+      // packet's own concern.
+      "lib/mail-crypto-pgp.js",
+    ],
+    reason: "v0.14.21 — envelope freshness/routing fields (_ts/_nonce/_sid/_ctr) were not authenticated with the ciphertext, so capture-and-rewrite defeated the staleness gate (requests) and the monotonic counter check (responses). All six packed AEAD calls in lib/middleware/api-encrypt.js carry the canonical AAD; both protocol halves live in that one module and must stay byte-identical.",
+  },
+  {
+    // v0.14.21 (Codex P2 on PR #301) — the SCIM bulk dependency
+    // planner scanned only operation DATA for bulkId references;
+    // a reference in the operation PATH ("PATCH /Groups/bulkId:g1")
+    // was neither ordered nor substituted, so the adapter could
+    // receive the literal token as a resource id, or the operation
+    // failed despite the referenced POST succeeding. Planner and
+    // executor must scan/substitute path segments alongside data
+    // (RFC 7644 §3.7.2 — path references resolve like data references).
+    id: "bulk-ref-scan-misses-path",
+    primitive: "_pathBulkIdRefs(op) feeding the dependency plan + _resolvePathBulkIdRefs(path, bulkIdMap) before path parsing — every operator-visible bulkId reference surface resolves",
+    regex: /_collectBulkIdRefs\s*\(/,
+    requires: /_pathBulkIdRefs/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P2 on v0.14.21 PR #301 — bulkId cross-references appear in operation paths as well as operation data (RFC 7644 §3.7.2); a planner that scans only data leaves path-referencing operations unordered and lets the literal bulkId:<id> token reach the resource adapter. Any file collecting data refs must collect and substitute path refs too.",
+  },
+  {
     // v0.10.15 — `zlib.gunzipSync` / `zlib.createGunzip` /
     // `zlib.brotliDecompress` without an output-size cap is the
     // CVE-2025-0725 / CWE-409 decompression-amplification
