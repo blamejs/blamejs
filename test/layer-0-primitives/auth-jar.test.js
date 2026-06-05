@@ -345,6 +345,36 @@ async function testBuildValidation() {
   check("build: malformed args throw the right codes", ok);
 }
 
+// A verified-but-hostile request object carrying a `__proto__` claim
+// (JSON.parse materializes it as an own key; JSON.stringify round-trips
+// it) must not graft onto the returned params object's prototype chain
+// (CWE-1321). The signature is the client's own — signing hostile claim
+// names is exactly what a malicious-but-registered client would do.
+async function testProtoPollutionClaimInert() {
+  var payload = JSON.parse(JSON.stringify({
+    iss:           CLIENT,
+    aud:           AS,
+    client_id:     CLIENT,
+    response_type: "code",
+    iat:           _nowSec(),
+    exp:           _nowSec() + 120,
+  }).replace("\"response_type\"", "\"__proto__\":{\"polluted\":true},\"response_type\""));
+  check("fixture: payload carries __proto__ as an own key",
+        Object.prototype.hasOwnProperty.call(payload, "__proto__"));
+  var jar = _signRs256(KEYS.privateKey,
+    { alg: "RS256", typ: "oauth-authz-req+jwt", kid: "c1" }, payload);
+  var out = await b.auth.jar.parse(jar, _parseOpts());
+  check("parse: __proto__ claim does not graft onto params' prototype",
+        Object.getPrototypeOf(out.params) === Object.prototype &&
+        out.params.polluted === undefined);
+  check("parse: __proto__ not copied as an own params key",
+        !Object.prototype.hasOwnProperty.call(out.params, "__proto__"));
+  check("parse: Object.prototype untouched",
+        Object.prototype.polluted === undefined);
+  check("parse: legitimate params still returned",
+        out.params.response_type === "code");
+}
+
 async function run() {
   await testRoundTrip();
   await testAntiNesting();
@@ -359,6 +389,7 @@ async function run() {
   await testBuildAlgRefusals();
   await testBuildExpWindow();
   await testBuildValidation();
+  await testProtoPollutionClaimInert();
 }
 
 module.exports = { run: run };

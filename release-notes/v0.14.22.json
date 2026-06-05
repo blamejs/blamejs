@@ -32,6 +32,49 @@
         {
           "title": "OAuth client-attestation signing composes the promoted classical signer",
           "body": "The attestation builder's private JWS assembly moved to the shared `b.auth.jws.sign` internals. Wire output is identical — same headers, claim order, algorithm selection, and accepted-algorithm set — and the `auth-oauth/attestation-*` error codes are preserved, so operators routing alerts on those codes see no change."
+        },
+        {
+          "title": "Object key-copy sites compose the prototype-safe merge",
+          "body": "The long-running-operation status reader, the deny-path response-header merge, the HTTP client's cross-origin redirect header strip, and the trace-log logger wrapper now copy keys through `validateOpts.assignOwnEnumerable` instead of raw bracket-assign loops, so a `__proto__`/`constructor`/`prototype` key in the source object can never graft onto the copy. Behavior is otherwise unchanged."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "`jar.parse` returns prototype-safe authorization params (CWE-1321)",
+          "body": "A verified request object whose payload carried a `__proto__` claim (JSON.parse materializes it as an own key) previously grafted that claim's value onto the returned `params` object's prototype chain — a signature from a registered-but-malicious client was sufficient. The params object is now built through the prototype-safe merge; `__proto__`/`constructor`/`prototype` claim names are inert and are not copied."
+        },
+        {
+          "title": "`jws.sign` refuses `b64` and `crit` protected-header members",
+          "body": "RFC 7797 `b64: false` changes the JWS signing input (the payload is signed raw, not base64url-encoded) and RFC 7515 §4.1.11 `crit` promises the producer implements every extension it names. The signer always base64url-encodes the payload and implements no header extensions, so passing either member through minted a JWS whose header advertised semantics its signature was not computed under — a compliant verifier derives a different signing input or refuses the critical header. Both members are now refused with `auth-jwt-external/sign-unsupported-header`; unencoded-payload support would land as an explicit feature, not a header pass-through."
+        }
+      ]
+    },
+    {
+      "heading": "Removed",
+      "items": [
+        {
+          "title": "Maintainer planning note removed from the repository",
+          "body": "`memory/specs/node-26-map-getorinsert-migration.md` — a maintainer-local planning note that had been committed since v0.11.2 — is gone from the repository (it was never part of the npm package). The Node 26 detector allowlists in the pattern catalog now carry their per-site annotations standalone, and `SECURITY.md` / `.pinact.yaml` no longer reference maintainer-local note paths."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "raw-key-copy-loop-bypasses-assign-own-enumerable",
+          "body": "Refuses raw `out[keys[i]] = src[keys[i]]` bracket-assign copy loops in `lib/` — the shape behind the `jar.parse` finding. Key-copy sites compose `validateOpts.assignOwnEnumerable`; the two genuinely-different bodies (audit-chain hash canonicalization, schema-shape transforms) carry allowlist entries with structural reasons."
+        },
+        {
+          "title": "jose-header-passthrough-without-b64-crit-refusal",
+          "body": "Any caller-supplied JOSE protected-header pass-through must name-refuse `b64`/`crit` before signing."
+        },
+        {
+          "title": "no-tracked-internal-notes gate",
+          "body": "The pattern catalog now refuses any tracked file under `memory/`, `notes/`, or `.scratch*` paths at commit time."
         }
       ]
     },

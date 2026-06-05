@@ -6193,10 +6193,10 @@ var KNOWN_ANTIPATTERNS = [
     //      converts each call site, drops the allowlist entries, and
     //      flips the detector from "documentation" to "enforce".
     //
-    // The allowlist below is the survey ground truth from
-    // memory/specs/node-26-map-getorinsert-migration.md. Adding a new
-    // file here pre-floor-bump requires updating that spec in the same
-    // patch so the sweep stays mechanical.
+    // The allowlist below is the survey ground truth — each entry
+    // names the map and the on-miss factory it covers. Adding a new
+    // file here pre-floor-bump requires the same per-site annotation
+    // so the sweep stays mechanical.
     //
     // The catalog catches both variants via a pair of sibling entries:
     //   A. `var X = M.get(k); if (!X) { ... .set(k, ...) ... }` — this
@@ -6215,7 +6215,7 @@ var KNOWN_ANTIPATTERNS = [
     // where the `.get(...)` and `.set(...)` name DIFFERENT maps is
     // covered by the allowlist + reason.
     id: "map-get-or-insert-pre-node-26",
-    primitive: "Map.prototype.getOrInsertComputed(key, factory) (Node 26+); pre-floor-bump call sites are allowlisted with a documented migration target in memory/specs/node-26-map-getorinsert-migration.md",
+    primitive: "Map.prototype.getOrInsertComputed(key, factory) (Node 26+); pre-floor-bump call sites are allowlisted below with per-site map+factory annotations — the floor-bump sweep walks the allowlist",
     // Variant A only — `var X = M.get(k); if (!X) { ... M.set(k, ...) ... }`.
     // Variant B (`if (!M.has(k)) { ... M.set(k, ...) ... }`) is caught
     // by the sibling `map-has-then-set-pre-node-26` entry below; one
@@ -6240,16 +6240,15 @@ var KNOWN_ANTIPATTERNS = [
     ],
     // Strong-dup allowlists added with v0.12.7 archive substrate
     // — see KNOWN_CLUSTERS additions below for structural reasons.
-    reason: "Node 26 ships Map.prototype.getOrInsertComputed(key, factory) — a single-lookup get-or-insert that replaces the two-step `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` pattern. The sweep is deferred to the Node 26 floor-bump (eligible Oct 2026); engines.node is `>=24` today. Allowlist above is the survey ground truth from memory/specs/node-26-map-getorinsert-migration.md. New code post-this-patch trips the detector — either wait for the floor bump, or add the call site to BOTH the allowlist AND the migration spec in the same patch. When the floor moves, the bump commit walks the allowlist, rewrites each call site, drops the allowlist + flips the detector to enforce.",
+    reason: "Node 26 ships Map.prototype.getOrInsertComputed(key, factory) — a single-lookup get-or-insert that replaces the two-step `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` pattern. The sweep is deferred to the Node 26 floor-bump (eligible Oct 2026); engines.node is `>=24` today. Allowlist above is the survey ground truth (map + factory annotated per entry). New code post-this-patch trips the detector — either wait for the floor bump, or add the call site to the allowlist with the same per-site annotation in the same patch. When the floor moves, the bump commit walks the allowlist, rewrites each call site, drops the allowlist + flips the detector to enforce.",
   },
   {
     // Companion to `map-get-or-insert-pre-node-26` — same Node-26
     // migration target, different syntactic variant. Catches the
     // `if (!M.has(k)) { ... M.set(k, factory); ... }` shape (no
-    // intermediate `var X = M.get(k)` binding). See the sibling entry
-    // and memory/specs/node-26-map-getorinsert-migration.md.
+    // intermediate `var X = M.get(k)` binding). See the sibling entry.
     id: "map-has-then-set-pre-node-26",
-    primitive: "Map.prototype.getOrInsertComputed(key, factory) (Node 26+); pre-floor-bump call sites are allowlisted with a documented migration target in memory/specs/node-26-map-getorinsert-migration.md",
+    primitive: "Map.prototype.getOrInsertComputed(key, factory) (Node 26+); pre-floor-bump call sites are allowlisted below with per-site map+factory annotations — the floor-bump sweep walks the allowlist",
     regex: /if\s*\(\s*!\s*\w+\.has\s*\([^)]+\)\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
     allowlist: [
       "lib/websocket-channels.js",             // channelToConns (Map<channel, Set<conn>>) — Set factory; cluster-shared race window
@@ -6258,9 +6257,9 @@ var KNOWN_ANTIPATTERNS = [
       //
       //   - mail-greylist.js memoryStore.put runs `data.set(key, ...)`
       //     unconditionally (always overwrites the value); the if-block
-      //     manages an evict-oldest sidecar `insertionOrder`. The
-      //     migration spec marks it "manual review — does NOT replace
-      //     cleanly" (sidecar logic stays).
+      //     manages an evict-oldest sidecar `insertionOrder`.
+      //     getOrInsertComputed only runs the factory on miss — wrong
+      //     semantics for an always-write; the sidecar logic stays.
       //   - dsr.js memoryTicketStore.update is a presence assertion:
       //     `if (!byId.has(id)) throw new DsrError(...)` followed by
       //     `byId.set(id, ...)` outside the if-block (it's an UPDATE,
@@ -6384,6 +6383,53 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "Codex P2 on v0.14.21 PR #301 — bulkId cross-references appear in operation paths as well as operation data (RFC 7644 §3.7.2); a planner that scans only data leaves path-referencing operations unordered and lets the literal bulkId:<id> token reach the resource adapter. Any file collecting data refs must collect and substitute path refs too.",
+  },
+  {
+    // Copying keys from one object to another with a raw bracket-assign
+    // loop (`out[keys[i]] = src[keys[i]]`) writes attacker-chosen
+    // property names when the source is parsed input: an own
+    // `__proto__` key (JSON.parse materializes one) hits the
+    // Object.prototype setter and grafts onto the target's prototype
+    // chain (CWE-1321). validate-opts.assignOwnEnumerable is the
+    // composing primitive — it skips __proto__/constructor/prototype
+    // and takes a reserved-keys array, which also expresses the
+    // filtered-copy variants (build the skip list, then copy).
+    id: "raw-key-copy-loop-bypasses-assign-own-enumerable",
+    primitive: "validateOpts.assignOwnEnumerable(target, source, reservedKeys) — prototype-safe own-enumerable key copy",
+    regex: /\[\s*keys\[\w+\]\s*\]\s*=\s*[\w$.]+\[\s*keys\[\w+\]\s*\]/,
+    skipCommentLines: true,
+    allowlist: [
+      // canonicalize() builds the hash input for persisted rowHash
+      // chains — altering which keys are copied (sentinel skips) would
+      // change historical hash inputs and break verifyChain on existing
+      // rows. Row keys are schema-fixed audit columns, not parsed
+      // remote input.
+      "lib/audit-chain.js",
+      // omit()/partial() are schema-shape transforms that map values
+      // (`.optional()`) and track key arrays in the same pass; shapes
+      // are boot-time operator literals, not parsed input.
+      "lib/safe-schema.js",
+    ],
+    reason: "CodeQL js/remote-property-injection (high) on v0.14.22 PR #302 — jar.parse copied verified-JWT claim keys into the returned params object with a raw bracket-assign loop; a hostile request object carrying a `__proto__` claim grafts onto params' prototype chain. Every key-copy loop in lib/ composes assignOwnEnumerable; genuinely-different bodies carry an allowlist entry with the structural reason.",
+  },
+  {
+    // A JWS/JWT builder that accepts caller-supplied extra
+    // protected-header members must refuse the two members that change
+    // what the signature is computed over: `b64` (RFC 7797 — unencoded
+    // payload changes the signing input) and `crit` (RFC 7515 §4.1.11 —
+    // promises the producer implements every extension it names). A
+    // builder that copies them through while base64url-encoding the
+    // payload mints a self-inconsistent JWS: a compliant verifier
+    // derives a different signing input or refuses the critical header.
+    // The `requires` companion is satisfied by the refusal branch
+    // naming 'b64' somewhere in the same file.
+    id: "jose-header-passthrough-without-b64-crit-refusal",
+    primitive: "refuse own 'b64'/'crit' members on any caller-supplied JOSE protected-header object before signing",
+    regex: /assignOwnEnumerable\s*\(\s*\{\s*\}\s*,\s*opts\.header/,
+    requires: /["']b64["']/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P2 on v0.14.22 PR #302 — jws.sign reserved alg/typ/kid but passed every other caller header member into the protected header; `{ b64: false, crit: [\"b64\"] }` produced a compact JWS whose payload was base64url-encoded and signed as such while the header claimed RFC 7797 unencoded-payload semantics. Any caller-header pass-through must name-refuse b64/crit until those semantics are actually implemented.",
   },
   {
     // v0.10.15 — `zlib.gunzipSync` / `zlib.createGunzip` /
@@ -10828,6 +10874,31 @@ function testCompliancePostureCoverage() {
 // container-build smoke workflow: if WIKI_PORT is set to X in
 // examples/wiki/Dockerfile, the workflow's `-p host:container` map +
 // curl host MUST also reference X.
+// Internal working notes (planning documents, scratch output, session
+// residue) live outside the repository — a tracked file under memory/,
+// notes/, or a .scratch* path ships internal planning narrative to
+// everyone who clones the repo. v0.14.22 removed the one such file that
+// had been committed (a migration planning note, added v0.11.2); this
+// gate refuses any recurrence at commit time instead of at code review.
+function testNoTrackedInternalNotes() {
+  var out;
+  try {
+    // Local require mirrors the bootstrap wrapper at the top of this
+    // file — child_process is only touched on the two paths that talk
+    // to the host (re-exec + this git query).
+    out = require("node:child_process").execFileSync(
+      "git", ["ls-files", "memory", "notes", ".scratch", ".scratch-*"],
+      { stdio: ["ignore", "pipe", "ignore"] }
+    ).toString().trim();
+  } catch (_e) {
+    // Not a git checkout (npm tarball / exported tree) — nothing to gate.
+    return;
+  }
+  check("no tracked internal-notes files (memory/ notes/ .scratch*)" +
+        (out ? " — found: " + out.split("\n").join(", ") : ""),
+        out === "");
+}
+
 function testWikiPortAgreesAcrossArtifacts() {
   var bad = [];
   var dockerfile;
@@ -11823,6 +11894,7 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
+  testNoTrackedInternalNotes();
   testWikiStopGraceExceedsShutdownBudget();
   testOrchestratorRegistryReadsTenantScoped();
   testErrorCodesNamespacedKebab();

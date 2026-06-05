@@ -10,7 +10,9 @@
  *
  * Covers sign: ES256 / EdDSA / RS256 round-trip back through verifyExternal;
  * alg derived from the key; none/HMAC/alg-key-mismatch refused; a
- * caller-supplied header.alg cannot override the signer-derived alg.
+ * caller-supplied header.alg cannot override the signer-derived alg;
+ * header.b64 / header.crit refused (RFC 7797 / RFC 7515 §4.1.11 —
+ * semantics-changing members the signer does not implement).
  */
 
 var helpers = require("../helpers");
@@ -210,6 +212,31 @@ async function testJwsSignHeaderCannotOverrideAlg() {
   check("jws.sign: extra header members pass through", hdr.foo === "bar");
 }
 
+// `b64` (RFC 7797 unencoded payload) changes the signing input and `crit`
+// (RFC 7515 §4.1.11) promises extension semantics the signer does not
+// implement — passing either through would mint a JWS whose header claims
+// semantics its signature was not computed under. Both refused.
+async function testJwsSignB64CritRefused() {
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var e1 = null;
+  try { b.auth.jws.sign({ sub: "u" }, { privateKey: ec.privateKey, header: { b64: false } }); }
+  catch (e) { e1 = e; }
+  check("jws.sign: header.b64 refused (RFC 7797 not implemented)",
+        e1 && /sign-unsupported-header/.test(e1.code || ""));
+  var e2 = null;
+  try { b.auth.jws.sign({ sub: "u" }, { privateKey: ec.privateKey, header: { crit: ["exp"] } }); }
+  catch (e) { e2 = e; }
+  check("jws.sign: header.crit refused (no critical extensions implemented)",
+        e2 && /sign-unsupported-header/.test(e2.code || ""));
+  var e3 = null;
+  try {
+    b.auth.jws.sign({ sub: "u" }, {
+      privateKey: ec.privateKey, header: { b64: true, crit: ["b64"] } });
+  } catch (e) { e3 = e; }
+  check("jws.sign: b64:true + crit:['b64'] refused too (no silent pass on the 'harmless' spelling)",
+        e3 && /sign-unsupported-header/.test(e3.code || ""));
+}
+
 async function run() {
   testSurface();
   await testAlgorithmsRequired();
@@ -223,6 +250,7 @@ async function run() {
   await testJwsSignRoundTrip();
   await testJwsSignRefusals();
   await testJwsSignHeaderCannotOverrideAlg();
+  await testJwsSignB64CritRefused();
 }
 
 module.exports = { run: run };
