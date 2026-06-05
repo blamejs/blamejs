@@ -3174,6 +3174,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/auth/jwt.js:verify",
         "lib/auth/jwt-external.js:verifyExternal",
         "lib/auth/jwt-external.js:_fetchJwks",
+        "lib/auth/jwt-external.js:_signCompactJws",
+        "lib/mail-auth.js:inboundVerify",
         "lib/auth/oauth.js:verifyBackchannelLogoutToken",
         "lib/auth/oauth.js:verifyIdToken",
         "lib/auth/oauth.js:exchangeToken",
@@ -3214,7 +3216,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/self-update.js:poll",
         "lib/self-update.js:verify",
       ],
-      reason: "v0.10.16 — JOSE / signature-verify / posture-check prelude across heterogeneous primitives: each verify/check pattern decomposes a token / envelope / posture set, asserts spec-required shape (header.alg in allowlist / kty in allowlist / iss CT-compare / aud match / time-window), and dispatches per-alg via shared helpers. The shingle similarity is the boilerplate header-parse + alg-allowlist + timing-safe compare; each primitive enforces a distinct spec (RFC 7519 JWT / RFC 7515 JWS / RFC 9449 DPoP / OAuth 2.0 Client Attestation draft / OASIS CSAF VEX / FIDO MDS / SAML 2.0 / RFC 9528 SD-JWT / W3C FedCM 2024 / RFC 8917 backchannel-logout / SBOM compliance / OIDC Federation / OID4VCI / CIBA / RFC 8460 TLS-RPT / restore-rollback). The OAuth client-attestation sign/verify path (_signAttestationJws / _verifyAttestationJws / verifyClientAttestation) shares the JWS header-parse + per-alg nodeCrypto.sign/verify + constant-time aud/jti compare shell while throwing its own auth-oauth/attestation-* code namespace. Consolidating would lose per-spec error code namespacing.",
+      reason: "v0.10.16 — JOSE / signature-verify / posture-check prelude across heterogeneous primitives: each verify/check pattern decomposes a token / envelope / posture set, asserts spec-required shape (header.alg in allowlist / kty in allowlist / iss CT-compare / aud match / time-window), and dispatches per-alg via shared helpers. The shingle similarity is the boilerplate header-parse + alg-allowlist + timing-safe compare; each primitive enforces a distinct spec (RFC 7519 JWT / RFC 7515 JWS / RFC 9449 DPoP / OAuth 2.0 Client Attestation draft / OASIS CSAF VEX / FIDO MDS / SAML 2.0 / RFC 9528 SD-JWT / W3C FedCM 2024 / RFC 8917 backchannel-logout / SBOM compliance / OIDC Federation / OID4VCI / CIBA / RFC 8460 TLS-RPT / restore-rollback). The OAuth client-attestation sign/verify path (_signAttestationJws / _verifyAttestationJws / verifyClientAttestation) shares the JWS header-parse + per-alg nodeCrypto.sign/verify + constant-time aud/jti compare shell while throwing its own auth-oauth/attestation-* code namespace. mail-auth.js:inboundVerify shares only the validateOpts prelude + per-step result-shape assertions while composing spf.verify / dkim.verify / dmarc.evaluate — a mail-domain pipeline whose verdict vocabulary (RFC 7489/8601 result enums) has nothing to consolidate with the JOSE error namespaces. Consolidating would lose per-spec error code namespacing.",
     },
     {
       mode:  "family-subset",
@@ -6423,6 +6425,19 @@ var KNOWN_ANTIPATTERNS = [
     // derives a different signing input or refuses the critical header.
     // The `requires` companion is satisfied by the refusal branch
     // naming 'b64' somewhere in the same file.
+    id: "ar-header-prepend-without-forged-strip",
+    primitive: "_stripForgedAuthResults(messageBuf, authservId) before prepending a computed Authentication-Results header",
+    // A receiver that prepends its own Authentication-Results header
+    // without first deleting sender-attached instances claiming the
+    // same authserv-id lets a forged pre-attached verdict shadow the
+    // computed one for downstream consumers (RFC 8601 §5 MUST).
+    regex: /Buffer\.from\(\s*\w+\.authResults\s*\+/,
+    requires: /_stripForgedAuthResults/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.23 — a receiver that prepends its computed Authentication-Results header without stripping sender-forged instances carrying its own authserv-id lets a downstream consumer reading 'the receiver's A-R header' read the attacker's instead. RFC 8601 §5 requires deleting (or renaming) same-authserv-id instances before adding the new one. Any code path that prepends an emitted A-R header must compose the strip helper in the same file.",
+  },
+  {
     id: "jose-header-passthrough-without-b64-crit-refusal",
     primitive: "refuse own 'b64'/'crit' members on any caller-supplied JOSE protected-header object before signing",
     regex: /assignOwnEnumerable\s*\(\s*\{\s*\}\s*,\s*opts\.header/,
@@ -10875,11 +10890,14 @@ function testCompliancePostureCoverage() {
 // examples/wiki/Dockerfile, the workflow's `-p host:container` map +
 // curl host MUST also reference X.
 // Internal working notes (planning documents, scratch output, session
-// residue) live outside the repository — a tracked file under memory/,
-// notes/, or a .scratch* path ships internal planning narrative to
-// everyone who clones the repo. v0.14.22 removed the one such file that
-// had been committed (a migration planning note, added v0.11.2); this
-// gate refuses any recurrence at commit time instead of at code review.
+// residue) and editor/tool atomic-write temp artifacts
+// (<name>.tmp.<pid>.<hash>) live outside the repository — a tracked
+// file under memory/, notes/, a .scratch* path, or a *.tmp.* name
+// ships internal residue to everyone who clones the repo, and tmp
+// copies under lib/ ship in the npm tarball (`files` publishes lib/
+// wholesale). v0.14.22 removed a committed planning note; v0.14.23
+// caught four committed editor temp copies pre-merge. This gate
+// refuses any recurrence at commit time instead of at code review.
 function testNoTrackedInternalNotes() {
   var out;
   try {
@@ -10887,14 +10905,14 @@ function testNoTrackedInternalNotes() {
     // file — child_process is only touched on the two paths that talk
     // to the host (re-exec + this git query).
     out = require("node:child_process").execFileSync(
-      "git", ["ls-files", "memory", "notes", ".scratch", ".scratch-*"],
+      "git", ["ls-files", "memory", "notes", ".scratch", ".scratch-*", "*.tmp.*"],
       { stdio: ["ignore", "pipe", "ignore"] }
     ).toString().trim();
   } catch (_e) {
     // Not a git checkout (npm tarball / exported tree) — nothing to gate.
     return;
   }
-  check("no tracked internal-notes files (memory/ notes/ .scratch*)" +
+  check("no tracked internal-notes or temp-artifact files (memory/ notes/ .scratch* *.tmp.*)" +
         (out ? " — found: " + out.split("\n").join(", ") : ""),
         out === "");
 }

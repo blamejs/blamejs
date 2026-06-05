@@ -108,6 +108,190 @@ async function testDmarcEvaluateUnaligned() {
         rv.result === "fail" && rv.recommendedAction === "quarantine");
 }
 
+// ---- b.mail.inbound.verify — receiver pipeline (RFC 7489 §6.6) ----
+
+function _inboundDns(records) {
+  return async function (host, type) {
+    if (records[host + "/" + type]) return records[host + "/" + type];
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+}
+
+async function testInboundVerifyAlignedPass() {
+  var dnsLookup = _inboundDns({
+    "example.com/TXT":        [["v=spf1 ip4:192.0.2.0/24 -all"]],
+    "_dmarc.example.com/TXT": [["v=DMARC1; p=reject"]],
+  });
+  var msg = "From: Alice <alice@example.com>\r\nSubject: hi\r\n\r\nhello\r\n";
+  var v = await b.mail.inbound.verify({
+    ip:         "192.0.2.5",
+    helo:       "mail.example.com",
+    mailFrom:   "alice@example.com",
+    message:    Buffer.from(msg),
+    dnsLookup:  dnsLookup,
+    authservId: "mx.local.test",
+  });
+  check("inbound.verify: aligned SPF → dmarc pass + deliver",
+        v.spf.result === "pass" && v.dmarc.result === "pass" &&
+        v.dmarc.recommendedAction === "deliver");
+  check("inbound.verify: From extracted from Buffer message",
+        v.from.count === 1 && v.from.address === "alice@example.com" &&
+        v.from.domain === "example.com");
+  check("inbound.verify: A-R header emitted with authserv-id first",
+        typeof v.authResults === "string" &&
+        v.authResults.indexOf("Authentication-Results: mx.local.test") === 0 &&
+        /spf=pass/.test(v.authResults) && /dmarc=pass/.test(v.authResults));
+  check("inbound.verify: unsigned message verifies dkim none",
+        Array.isArray(v.dkim) && v.dkim[0] && v.dkim[0].result === "none");
+}
+
+async function testInboundVerifySpoofRejected() {
+  var dnsLookup = _inboundDns({
+    "spoofed.example/TXT":        [["v=spf1 -all"]],
+    "_dmarc.spoofed.example/TXT": [["v=DMARC1; p=reject"]],
+  });
+  var msg = "From: ceo@spoofed.example\r\nSubject: urgent\r\n\r\nwire money\r\n";
+  var v = await b.mail.inbound.verify({
+    ip:        "203.0.113.9",
+    helo:      "evil.host",
+    mailFrom:  "ceo@spoofed.example",
+    message:   msg,
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: spoofed sender → spf fail + dmarc fail + reject",
+        v.spf.result === "fail" && v.dmarc.result === "fail" &&
+        v.dmarc.recommendedAction === "reject");
+  check("inbound.verify: no authservId → no A-R header", v.authResults === null);
+}
+
+async function testInboundVerifyFromHeaderDiscipline() {
+  var dnsLookup = _inboundDns({});
+  // Two From fields — the header-duplication spoofing shape.
+  var dup = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "safe@aligned.example",
+    message: "From: safe@aligned.example\r\nFrom: ceo@victim.example\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: duplicated From → permerror + reject (RFC 7489 §6.6.1)",
+        dup.from.count === 2 && dup.dmarc.result === "permerror" &&
+        dup.dmarc.recommendedAction === "reject");
+  // Two angle-addr authors inside one field.
+  var multi = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "safe@aligned.example",
+    message: "From: <safe@aligned.example> <ceo@victim.example>\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: two angle-addrs in one From → permerror + reject",
+        multi.from.count === 2 && multi.dmarc.recommendedAction === "reject");
+  // Bare address list (no angle-addrs) — unparsable rather than
+  // picking one of the authors.
+  var bareList = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "safe@aligned.example",
+    message: "From: a@aligned.example, b@victim.example\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: bare From address-list → no author domain picked + reject",
+        bareList.from.domain === null && bareList.dmarc.recommendedAction === "reject");
+  // No From header at all.
+  var none = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "safe@aligned.example",
+    message: "Subject: headless\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: missing From → permerror + reject",
+        none.from.count === 0 && none.dmarc.result === "permerror" &&
+        none.dmarc.recommendedAction === "reject");
+  // Folded From header unfolds before extraction.
+  var folded = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "x@folded.example",
+    message: "From: Folded Name\r\n <x@folded.example>\r\nSubject: f\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: folded From unfolds (RFC 5322 §2.2.3)",
+        folded.from.count === 1 && folded.from.domain === "folded.example");
+  // Quoted display-names: a literal `<` or comma inside a
+  // quoted-string is display-name text, not a second author — valid
+  // single-author mail must not false-positive into permerror.
+  var quotedLt = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "h.example", mailFrom: "u@quoted.example",
+    message: "From: \"John <Jr.> Smith\" <u@quoted.example>\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: quoted display-name with literal < is one author",
+        quotedLt.from.count === 1 && quotedLt.from.domain === "quoted.example");
+  var quotedComma = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "h.example", mailFrom: "j@comma.example",
+    message: "From: \"Doe, John\" <j@comma.example>\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: quoted display-name with comma is one author",
+        quotedComma.from.count === 1 && quotedComma.from.domain === "comma.example");
+  // Comma-separated angle-addr list — multiple authors refused.
+  var twoAngle = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "safe@aligned.example",
+    message: "From: <safe@aligned.example>, Boss <ceo@victim.example>\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: comma-separated angle-addr list → multiple authors refused",
+        twoAngle.from.count === 2 && twoAngle.dmarc.recommendedAction === "reject");
+}
+
+// RFC 7489 §6.6.2 — a fail verdict computed while SPF or DKIM returned
+// temperror must surface as temperror (the transiently-failed lookup
+// could have produced the aligned pass), so the MX gate defers with
+// 451 instead of permanently refusing a legitimate sender mid-DNS-blip.
+async function testInboundVerifyTemperrorPrecedence() {
+  // SPF TXT lookup fails transiently (SERVFAIL — no ENOTFOUND code);
+  // the DMARC policy lookup itself succeeds with p=reject.
+  var dnsLookup = async function (host, type) {
+    if (host === "_dmarc.blip.example" && type === "TXT") {
+      return [["v=DMARC1; p=reject"]];
+    }
+    throw new Error("SERVFAIL");
+  };
+  var v = await b.mail.inbound.verify({
+    ip:        "203.0.113.9",
+    helo:      "mail.blip.example",
+    mailFrom:  "news@blip.example",
+    message:   "From: news@blip.example\r\nSubject: hi\r\n\r\nhello\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: SPF temperror under p=reject → dmarc temperror, not fail",
+        v.spf.result === "temperror" && v.dmarc.result === "temperror" &&
+        v.dmarc.recommendedAction !== "reject");
+  // A pass stands regardless of the other authenticator's temperror:
+  // aligned DKIM pass + SPF temperror is still a DMARC pass.
+  var dnsLookup2 = async function (host, type) {
+    if (host === "_dmarc.blip.example" && type === "TXT") {
+      return [["v=DMARC1; p=reject"]];
+    }
+    throw new Error("SERVFAIL");
+  };
+  var v2 = await b.mail.dmarc.evaluate({
+    from:      "news@blip.example",
+    spf:       { result: "temperror", domain: "blip.example" },
+    dkim:      [{ result: "pass", domain: "blip.example" }],
+    dnsLookup: dnsLookup2,
+  });
+  check("dmarc.evaluate: aligned DKIM pass beats SPF temperror (pass stands)",
+        v2.result === "pass" && v2.recommendedAction === "deliver");
+}
+
+async function testInboundVerifyValidation() {
+  var e1 = null;
+  try { await b.mail.inbound.verify({ message: "x" }); } catch (e) { e1 = e; }
+  check("inbound.verify: missing ip refused", e1 !== null);
+  var e2 = null;
+  try { await b.mail.inbound.verify({ ip: "203.0.113.9", message: "" }); } catch (e) { e2 = e; }
+  check("inbound.verify: empty message refused",
+        e2 && /inbound-bad-message/.test(e2.code || ""));
+  var e3 = null;
+  try {
+    await b.mail.inbound.verify({ ip: "203.0.113.9", message: "From: a@b.c\r\n\r\nx", bogus: 1 });
+  } catch (e) { e3 = e; }
+  check("inbound.verify: unknown opt refused (config-time)", e3 !== null);
+}
+
 async function testArcVerifyMissing() {
   var msg = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
             "From: alice@example.com\r\n\r\nbody\r\n";
@@ -1214,6 +1398,11 @@ async function run() {
   await testDmarcEvaluateUnaligned();
   await testDmarcEvaluateOrgDomainViaPsl();
   await testDmarcEvaluateNpPolicy();
+  await testInboundVerifyAlignedPass();
+  await testInboundVerifySpoofRejected();
+  await testInboundVerifyFromHeaderDiscipline();
+  await testInboundVerifyTemperrorPrecedence();
+  await testInboundVerifyValidation();
   await testArcVerifyMissing();
   await testArcVerifyNone();
   await testArcVerifyBadSignatures();

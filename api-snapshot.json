@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.22",
-  "createdAt": "2026-06-05T15:43:38.105Z",
+  "frameworkVersion": "0.14.23",
+  "createdAt": "2026-06-05T18:32:42.512Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -39217,6 +39217,10 @@
               "type": "primitive",
               "valueType": "number"
             },
+            "DKIM_MAX_SIGNATURES_PER_MESSAGE_CEILING": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "DkimError": {
               "type": "function",
               "arity": 2
@@ -39489,6 +39493,15 @@
             "evaluate": {
               "type": "function",
               "arity": 2
+            }
+          }
+        },
+        "inbound": {
+          "type": "object",
+          "members": {
+            "verify": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
