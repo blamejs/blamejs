@@ -95,6 +95,13 @@ jobs:
         # accumulator design.
         env:
           NODE_OPTIONS: --max-old-space-size=6144
+          # The pattern-catalog test runs ~2 minutes on a fast
+          # many-core machine; on a 4-core runner sharing CPU with
+          # sibling forks it can cross the default 300s per-file
+          # watchdog as the lib/ corpus grows. 600s keeps the watchdog
+          # (a leaked handle still fails the job) with realistic
+          # headroom for the heavy analytical files.
+          SMOKE_FILE_TIMEOUT_MS: "600000"
         run: node test/smoke.js
 
   wiki-e2e:

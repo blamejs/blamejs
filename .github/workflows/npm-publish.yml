@@ -153,6 +153,14 @@ jobs:
         env:
           SMOKE_PARALLEL: 8
           NODE_OPTIONS: --max-old-space-size=8192
+          # The pattern-catalog test runs ~2 minutes on a fast
+          # many-core machine; at SMOKE_PARALLEL=8 on a 4-core runner
+          # it deterministically crosses the default 300s per-file
+          # watchdog as the lib/ corpus grows (this is what blocked
+          # the v0.14.23 publish). 600s keeps the watchdog (a leaked
+          # handle still fails the job) with realistic headroom for
+          # the heavy analytical files.
+          SMOKE_FILE_TIMEOUT_MS: "600000"
         run: node test/smoke.js
 
       - name: Wiki e2e

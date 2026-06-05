@@ -2603,6 +2603,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/archive-adapters.js:close",
         "lib/crypto-field.js:declarePerRowKey",
         "lib/crypto-field.js:assertColumnResidency",
+        "lib/crypto-field.js:declarePerRowResidency",
+        "lib/crypto-field.js:getPerRowResidency",
         "lib/network-smtp-policy.js:mtaStsFetch",
         "lib/parsers/safe-env.js:readVar",
         "lib/mail-crypto-pgp.js:sign",
@@ -2612,8 +2614,14 @@ async function testNoDuplicateCodeBlocks() {
       reason: "v0.14.20 — generic validate/guard control-flow shingle that the crypto-field plain-Error → typed-CryptoFieldError(code, msg) conversion tipped over the 3-file threshold. The throw now normalizes to `throw new _ID ( _STR , _STR )` (two-arg framework-error contract) instead of the keyword-`Error` one-arg form, so the early-return + typed-throw prelude in crypto-field.declarePerRowKey / assertColumnResidency now exact-matches the same prelude shape in unrelated primitives: archive-adapters fs/http/close adapter methods, network-smtp-policy.mtaStsFetch (MTA-STS policy fetch), parsers/safe-env.readVar (env-var read), mail-crypto-pgp.sign (PGP detached signature), metrics.shadowRegistry (Prometheus shadow registry), tracing.spanSync (OTEL span helper). Members are unrelated subsystems with primitive-local error namespaces operators grep for; there is no shared behaviour to extract — consolidating would couple field-level encryption, archive I/O, SMTP policy, env parsing, PGP, metrics, and tracing on a trivial guard-then-throw shell.",
     },
     {
-      files: ["lib/api-key.js:issue", "lib/db-query.js:<top>", "lib/session.js:create"],
-      reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
+      mode:  "family-subset",
+      files: [
+        "lib/api-key.js:issue",
+        "lib/db-query.js:<top>",
+        "lib/db-query.js:_assertLocalResidency",
+        "lib/session.js:create",
+      ],
+      reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list; db-query._assertLocalResidency joins via its allowedTags.join diagnostics + safeEmit metadata-object assembly, unrelated to api-key issuance / session creation beyond the walk-and-format shell.",
     },
     {
       mode:  "family-subset",
@@ -4120,6 +4128,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/data-act.js:shareWithThirdParty",
         "lib/data-act.js:recordSwitchRequest",
         "lib/db.js:declareRequireDualControl",
+        // v0.14.24 — per-row residency declaration shares the same
+        // validateOpts.requireNonEmptyString cascade + registry-write
+        // + return-copy scaffold.
+        "lib/crypto-field.js:declarePerRowResidency",
         // v0.8.77 — OAuth resource-server / SCIM / protected-resource-metadata
         // additions share the standard primitive scaffolding
         "lib/auth/oauth.js:pollDeviceCode",
@@ -5529,13 +5541,15 @@ async function testNoDuplicateCodeBlocks() {
       reason: "_safeGlobalObs drop-silent observability helper — each primitive defines a local `function _safeGlobalObs(action, attrs) { try { observability.event({...}); } catch (_e) { /* drop-silent */ } }` because the global observability binding is module-load-time captured. Three auth-related primitives; the closure captures the per-primitive event-name namespace. Same observability-sink discipline noted in the cookies/gpc/headers _emitAudit cluster.",
     },
     {
+      mode:  "family-subset",
       files: [
         "lib/db-query.js:<top>",
+        "lib/db-query.js:_assertLocalResidency",
         "lib/db.js:init",
         "lib/db.js:stream",
         "lib/external-db.js:_connectAs",
       ],
-      reason: "node:sqlite + external-db wiring scaffold — `var statement = database.prepare('...'); var rows = statement.all(...); for (i in rows) { ... }`. db-query top-level statement-cache setup, db.init schema-bootstrap walk, db.stream readable-walk, external-db.js role connect-as walk. Four sites within the db / external-db domain; the SQL bodies and result shapes differ per call.",
+      reason: "node:sqlite + external-db wiring scaffold — `var statement = database.prepare('...'); var rows = statement.all(...); for (i in rows) { ... }` plus the posture/region lookup-then-branch shell. db-query top-level statement-cache setup, db.init schema-bootstrap walk, db.stream readable-walk, external-db.js role connect-as walk, db-query._assertLocalResidency region-set assembly. Sites within the db / external-db domain; the SQL bodies, result shapes, and refusal semantics differ per call.",
     },
     {
       files: [
@@ -6425,6 +6439,21 @@ var KNOWN_ANTIPATTERNS = [
     // derives a different signing input or refuses the critical header.
     // The `requires` companion is satisfied by the refusal branch
     // naming 'b64' somewhere in the same file.
+    id: "db-query-write-without-residency-gate",
+    primitive: "_assertLocalResidency(table, plaintextRow, op) before cryptoField.sealRow on every local write path",
+    // A local write method that seals a row without first running the
+    // residency gates can land a region-bound row (or region-bound
+    // column value) outside the deployment's declared region set —
+    // the cross-border transfer shape GDPR Art 44-46 / PIPL Art 38 /
+    // DPDP §16 regulate. The gate must see the PLAINTEXT row, so it
+    // runs before sealRow in the same method.
+    regex: /sealRow\(this\._cryptoFieldKey\(\)/,
+    requires: /_assertLocalResidency\(this\._cryptoFieldKey\(\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.24 — declareColumnResidency/assertColumnResidency shipped in v0.7.27 documenting a write-time gate that was never wired into any write path; rows and region-bound columns landed on any backend unchecked. Every db-query method that seals a row must run _assertLocalResidency on the plaintext first; a future write method (upsert, bulk path) inherits the requirement automatically.",
+  },
+  {
     id: "ar-header-prepend-without-forged-strip",
     primitive: "_stripForgedAuthResults(messageBuf, authservId) before prepending a computed Authentication-Results header",
     // A receiver that prepends its own Authentication-Results header
@@ -10917,6 +10946,29 @@ function testNoTrackedInternalNotes() {
         out === "");
 }
 
+// The residency write gates exist only if they're actually wired —
+// declareColumnResidency/assertColumnResidency shipped in v0.7.27
+// advertising a write-time gate that no write path called for 7 minor
+// versions. This gate pins the wiring: the local write methods run
+// _assertLocalResidency, the external query/transaction paths run
+// _assertRowResidency, and assertColumnResidency has a real lib/
+// caller outside its own definition file.
+function testResidencyGatesWired() {
+  var dbq, edb;
+  try {
+    dbq = fs.readFileSync("lib/db-query.js", "utf8");
+    edb = fs.readFileSync("lib/external-db.js", "utf8");
+  } catch (_e) { return; }
+  var localCalls = (dbq.match(/_assertLocalResidency\(this\._cryptoFieldKey\(\)/g) || []).length;
+  check("db-query wires the local residency gate on insert AND update", localCalls >= 2);
+  check("db-query wires the long-advertised assertColumnResidency",
+        dbq.indexOf("assertColumnResidency(") !== -1);
+  var extCalls = (edb.match(/_assertRowResidency\(sql,/g) || []).length;
+  check("external-db wires the row residency gate on query AND transaction", extCalls >= 2);
+  check("external-db replica reads honor the row tag",
+        edb.indexOf("REPLICA_RESIDENCY_INCOMPATIBLE") !== -1);
+}
+
 function testWikiPortAgreesAcrossArtifacts() {
   var bad = [];
   var dockerfile;
@@ -11913,6 +11965,7 @@ async function run() {
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
   testNoTrackedInternalNotes();
+  testResidencyGatesWired();
   testWikiStopGraceExceedsShutdownBudget();
   testOrchestratorRegistryReadsTenantScoped();
   testErrorCodesNamespacedKebab();
