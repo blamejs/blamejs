@@ -73,8 +73,6 @@
  *   - `mail.server.mx.rbl_refused`       — connecting IP on a DNS blocklist (zones)
  *   - `mail.server.mx.greylist_deferred` — (ip, from, rcpt) first-seen 450 deferral
  *   - `mail.server.mx.data_refused`      — refusal reason + SMTP code (5xx vs 4xx)
- *   - `mail.server.mx.envelope_verdict`  — DATA-phase SPF/DKIM/DMARC results + action (accept / quarantine / reject / defer) + gate mode
- *   - `mail.server.mx.envelope_error`    — DATA-phase authentication pipeline failure or timeout (disposition follows onTemperror)
  *   - `mail.server.mx.delivered`         — agent.handoff ack
  *   - `mail.server.mx.tls_handshake_failed` — handshake error
  *   - `mail.server.mx.smtp_smuggling_detected` — CRLF.CRLF injection class
@@ -117,14 +115,11 @@
  *   completion through `b.mail.inbound.verify` — SPF (RFC 7208) on the
  *   envelope identity, DKIM (RFC 6376) on the message bytes, DMARC
  *   (RFC 7489) policy + alignment on the From-header domain — and in
- *   enforce mode refuses before the agent handoff: 550 5.7.26
- *   (RFC 7372) when the sender's published policy says reject, 550
- *   5.7.1 on the RFC 7489 §6.6.1 multi-From spoofing shape, 451 4.7.0
- *   on DNS temperror or pipeline timeout (operator-tunable via
- *   `onTemperror` / `timeoutMs`). Accepted messages carry the verdict
- *   to the agent handoff as `auth` and gain the receiver's RFC 8601
- *   Authentication-Results header — any sender-attached header forging
- *   this receiver's authserv-id is stripped first (§5) — so downstream
+ *   enforce mode refuses with 550 5.7.1 before the agent handoff when
+ *   the sender's published policy says reject (451 4.7.5 on DNS
+ *   temperror, operator-tunable via `onTemperror`). Accepted messages
+ *   carry the verdict to the agent handoff as `auth` and gain the
+ *   receiver's RFC 8601 Authentication-Results header, so downstream
  *   consumers act on authenticated results instead of re-verifying;
  *   monitor mode annotates without refusing.
  *
@@ -276,7 +271,6 @@ function _stripForgedAuthResults(messageBuf, authservId) {
  *     maxSignatures?: number,                  // DKIM verify cap (1-16)
  *     clockSkewMs?:   number,                  // DKIM timestamp skew tolerance
  *     minRsaBits?:    number,                  // DKIM minimum RSA key size
- *     timeoutMs?:     number,                  // pipeline wall-clock ceiling; default 20s (timeout → temperror disposition)
  *   },
  *
  * @example
@@ -1037,30 +1031,22 @@ function create(opts) {
       if (envelopeGate) {
         var inboundVerdict = null;
         try {
-          // Wall-clock ceiling around the whole pipeline — a message
-          // stuffed with signatures pointing at slow resolvers must
-          // not pin the connection slot. Timeout surfaces as
-          // SafeAsyncError(async/timeout) into the catch below.
-          inboundVerdict = await safeAsync.withTimeout(
-            mailAuth().inbound.verify({
-              ip:            state.remoteAddress,
-              helo:          state.helo || undefined,
-              mailFrom:      state.mailFrom || undefined,
-              message:       dedotted,
-              dnsLookup:     envelopeGate.dnsLookup,
-              maxSignatures: envelopeGate.maxSignatures,
-              clockSkewMs:   envelopeGate.clockSkewMs,
-              minRsaBits:    envelopeGate.minRsaBits,
-              authservId:    envelopeGate.authservId || undefined,
-            }),
-            envelopeGate.timeoutMs,
-            { name: "mail.server.mx.guardEnvelope" });
+          inboundVerdict = await mailAuth().inbound.verify({
+            ip:            state.remoteAddress,
+            helo:          state.helo || undefined,
+            mailFrom:      state.mailFrom || undefined,
+            message:       dedotted,
+            dnsLookup:     envelopeGate.dnsLookup,
+            maxSignatures: envelopeGate.maxSignatures,
+            clockSkewMs:   envelopeGate.clockSkewMs,
+            minRsaBits:    envelopeGate.minRsaBits,
+            authservId:    envelopeGate.authservId || undefined,
+          });
         } catch (err) {
-          // Pipeline infrastructure failure or wall-clock timeout (not
-          // an authentication verdict). Same disposition as a DNS
-          // temperror: defer so the sender retries, or accept
-          // unauthenticated when the operator chose availability via
-          // onTemperror.
+          // Pipeline infrastructure failure (not an authentication
+          // verdict). Same disposition as a DNS temperror: defer so
+          // the sender retries, or accept unauthenticated when the
+          // operator chose availability via onTemperror.
           _emit("mail.server.mx.envelope_error", {
             connectionId: state.id,
             mailFrom:     state.mailFrom,
@@ -1068,7 +1054,7 @@ function create(opts) {
           }, "failure");
           if (envelopeGate.mode === "enforce" && envelopeGate.onTemperror === "defer") {
             _writeReply(socket, REPLY_451_LOCAL_ERROR,
-              "4.7.0 Message authentication could not be completed; try again later");
+              "4.7.5 Message authentication could not be completed; try again later");
             _resetTransaction(state);
             return;
           }
@@ -1089,14 +1075,8 @@ function create(opts) {
             mode:         envelopeGate.mode,
           }, (envAction === "reject" || envAction === "defer") ? "denied" : "success");
           if (envelopeGate.mode === "enforce" && envAction === "reject") {
-            // RFC 7372 §3.2 — 5.7.26 ("multiple authentication checks
-            // failed") for a DMARC evaluation that failed; the
-            // multi-From / unparsable-author permerror shape is a
-            // message-acceptability refusal and keeps the generic
-            // 5.7.1.
-            var enhanced = inboundVerdict.dmarc.result === "fail" ? "5.7.26" : "5.7.1";
             _writeReply(socket, REPLY_550_MAILBOX_UNAVAIL,
-              enhanced + " Message refused by sender authentication policy (DMARC " +
+              "5.7.1 Message refused by sender authentication policy (DMARC " +
               inboundVerdict.dmarc.result + "; SPF " + inboundVerdict.spf.result +
               ", DKIM " + dkimSummary + ")");
             _resetTransaction(state);
@@ -1104,7 +1084,7 @@ function create(opts) {
           }
           if (envelopeGate.mode === "enforce" && envAction === "defer") {
             _writeReply(socket, REPLY_451_LOCAL_ERROR,
-              "4.7.0 Sender authentication temporarily unavailable (DNS); try again later");
+              "4.7.5 Sender authentication temporarily unavailable (DNS); try again later");
             _resetTransaction(state);
             return;
           }
@@ -1114,10 +1094,6 @@ function create(opts) {
           // consumers (spam-foldering quarantined mail included) act
           // on authenticated results instead of re-verifying.
           if (inboundVerdict.authResults) {
-            // RFC 8601 §5 — strip any sender-attached A-R header
-            // claiming this receiver's authserv-id before prepending
-            // the computed one (forged-verdict shadowing defense).
-            dedotted = _stripForgedAuthResults(dedotted, envelopeGate.authservId);
             dedotted = Buffer.concat([
               Buffer.from(inboundVerdict.authResults + "\r\n", "utf8"),
               dedotted,

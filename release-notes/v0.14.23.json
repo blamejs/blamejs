@@ -1,0 +1,40 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.14.23",
+  "date": "2026-06-05",
+  "headline": "Inbound mail authentication: a DATA-phase SPF/DKIM/DMARC gate on the MX listener and the one-call receiver pipeline",
+  "summary": "The MX listener can now refuse policy-failing mail at the wire instead of asking operators to verify after delivery. `b.mail.inbound.verify` is the receiver pipeline — SPF on the envelope identity, DKIM on the message bytes, DMARC policy + alignment on the From-header domain, and the RFC 8601 Authentication-Results header — and the listener's new `guardEnvelope` opt runs it at DATA completion: when the sender's published DMARC policy says reject, the message is refused with 550 before it reaches the agent handoff; accepted mail carries the verdict to the agent and gains the receiver's Authentication-Results header, with any sender-forged header carrying the receiver's name stripped first. Monitor mode annotates without refusing, so operators can observe verdicts on live traffic before enforcing.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.mail.inbound.verify` — one-call receiver authentication pipeline",
+          "body": "Runs the inbound authentication set on a full RFC 5322 message (string or Buffer): SPF (RFC 7208) on the MAIL FROM identity with HELO fallback for the null reverse-path, DKIM (RFC 6376) on every signature, From-header extraction, DMARC (RFC 7489 / DMARCbis) policy discovery + alignment, and — when an `authservId` is supplied — the RFC 8601 Authentication-Results header. Returns `{ spf, dkim, from, dmarc, authResults }` with `dmarc.recommendedAction` carrying the policy disposition. From-header discipline per RFC 7489 §6.6.1: a message with zero From fields, several From fields, or several author addresses in one field returns `permerror` with a reject recommendation instead of picking one of the authors — the header-duplication shape behind the CVE-2024-7208 / CVE-2024-7209 hosted-relay spoofing class. The author parser is quote-aware: a literal `<` or comma inside a quoted display-name (`\"Doe, John\" <j@example.com>`) is one author, not two."
+        },
+        {
+          "title": "MX listener `guardEnvelope` — the DATA-phase authentication gate",
+          "body": "`b.mail.server.mx.create({ guardEnvelope: true })` (or a config object: `mode`, `onTemperror`, `authservId`, `dnsLookup`, `maxSignatures`, `clockSkewMs`, `minRsaBits`, `timeoutMs`) runs the pipeline after the SIZE check and before the agent handoff. Enforce mode refuses with 550 5.7.26 (RFC 7372 — multiple authentication checks failed) when DMARC evaluates to fail under a reject policy, 550 5.7.1 on the multi-From shape, and 451 4.7.0 on DNS temperror or pipeline timeout — `onTemperror: \"accept\"` admits unauthenticated mail instead when availability wins. The whole pipeline runs under a wall-clock ceiling (`timeoutMs`, default 20s) so a message stuffed with signatures pointing at slow resolvers cannot pin the connection slot. Accepted messages reach the agent handoff with the verdict as `auth` (including `quarantine: true` when the sender's policy says quarantine — the agent owns foldering) and gain the receiver's Authentication-Results header; any sender-attached header forging the receiver's authserv-id is stripped first (RFC 8601 §5). Monitor mode (the default under the permissive profile) annotates and audits without refusing. New audit events: `mail.server.mx.envelope_verdict` and `mail.server.mx.envelope_error`."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "ar-header-prepend-without-forged-strip",
+          "body": "Any code path that prepends an emitted Authentication-Results header must first strip sender-attached instances claiming the same authserv-id (RFC 8601 §5) — a forged pre-attached verdict would otherwise shadow the computed one for downstream consumers."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "No action required; the gate is opt-in",
+          "body": "`guardEnvelope` is off unless wired — an unwired gate is skipped like the sibling HELO / RBL / greylist gates, and existing listeners behave exactly as before. The agent handoff context gains an `auth` field (null when the gate is off). Start with `guardEnvelope: { mode: \"monitor\" }` to observe verdicts on live traffic before switching to enforce."
+        }
+      ]
+    }
+  ]
+}

@@ -6425,19 +6425,6 @@ var KNOWN_ANTIPATTERNS = [
     // derives a different signing input or refuses the critical header.
     // The `requires` companion is satisfied by the refusal branch
     // naming 'b64' somewhere in the same file.
-    id: "ar-header-prepend-without-forged-strip",
-    primitive: "_stripForgedAuthResults(messageBuf, authservId) before prepending a computed Authentication-Results header",
-    // A receiver that prepends its own Authentication-Results header
-    // without first deleting sender-attached instances claiming the
-    // same authserv-id lets a forged pre-attached verdict shadow the
-    // computed one for downstream consumers (RFC 8601 §5 MUST).
-    regex: /Buffer\.from\(\s*\w+\.authResults\s*\+/,
-    requires: /_stripForgedAuthResults/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "v0.14.23 — a receiver that prepends its computed Authentication-Results header without stripping sender-forged instances carrying its own authserv-id lets a downstream consumer reading 'the receiver's A-R header' read the attacker's instead. RFC 8601 §5 requires deleting (or renaming) same-authserv-id instances before adding the new one. Any code path that prepends an emitted A-R header must compose the strip helper in the same file.",
-  },
-  {
     id: "jose-header-passthrough-without-b64-crit-refusal",
     primitive: "refuse own 'b64'/'crit' members on any caller-supplied JOSE protected-header object before signing",
     regex: /assignOwnEnumerable\s*\(\s*\{\s*\}\s*,\s*opts\.header/,
