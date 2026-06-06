@@ -1,0 +1,69 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.14.24",
+  "date": "2026-06-05",
+  "headline": "Per-row data residency enforced at the write boundary, and the long-advertised column-residency gate is wired",
+  "summary": "Rows can now carry their own residency tag, and the database write paths enforce it: under a cross-border regulated posture (GDPR / UK-GDPR / DPDP / PIPL / LGPD / APPI / PDPA) a row tagged for one region is refused before it lands on a backend in another. `b.cryptoField.declarePerRowResidency` declares which column carries the tag; local SQLite writes check it against the deployment's `dataResidency` region set, and `b.externalDb.query` / `transaction` DML to a residency-tagged backend takes the tag per call via `rowResidencyTag`. The column-scoped gate (`assertColumnResidency`) — exported and documented since v0.7.27 but never composed into any write path — is now enforced on the same boundary. Unregulated deployments are unaffected: every gate passes with an advisory audit instead of a refusal, so operators can observe before adopting a posture. Note: v0.14.23 was tagged but not published to npm (its publish run timed out in validation); its changes — the MX DATA-phase SPF/DKIM/DMARC gate and the inbound mail authentication pipeline — are included in this package, and the publish-validation timeout is fixed here.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.cryptoField.declarePerRowResidency` / `getPerRowResidency` — row-scoped residency tags",
+          "body": "Declares the plaintext column carrying each row's residency tag plus the whitelist of valid tag values (`{ residencyColumn, allowedTags }`). On INSERT to a declared table the tag is required and must be in `allowedTags`; rows tagged `global` or `unrestricted` pass any backend. The declaration registry mirrors `declareColumnResidency`, and `clearResidencyForTest` now clears both. The tag comes from application logic (the user's declared region) — the framework never infers it from request metadata."
+        },
+        {
+          "title": "Local write gate on `b.db.from(...).insertOne` / `update`",
+          "body": "Runs on the plaintext row before sealing, so the tag column stays inspectable when sibling columns seal. Under a cross-border regulated posture, a row whose tag falls outside the deployment's region set (`dataResidency.region` plus `allowedStorageRegions`) is refused with `db-query/row-residency-local-mismatch`; a missing or out-of-whitelist tag refuses with `db-query/row-residency-tag-missing` / `-tag-invalid` regardless of posture. UPDATEs gate when the change set touches the residency column — an update that doesn't move residency is not a transfer. Refusals are typed `DbQueryError`s (new error class) and land in the audit chain (`db.residency.gate.rejected`); unregulated postures emit `db.residency.gate.advisory` and pass."
+        },
+        {
+          "title": "External write gate — `rowResidencyTag` on `b.externalDb.query` / `transaction`",
+          "body": "External-db takes raw SQL, not row objects, so the row's tag travels as `opts.rowResidencyTag` (validated at transaction entry too). Under a regulated posture, a write to a residency-tagged backend requires the tag (`RESIDENCY_GATE_REQUIRED`) and refuses a mismatch (`RESIDENCY_TAG_MISMATCH`) before the statement reaches the wire. The gate classifies by what a statement does, not its leading keyword: it resolves the effective verb behind a `WITH` (CTE) or `EXPLAIN ANALYZE` prefix and treats `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`REPLACE`, `CALL`/`EXECUTE`/`DO`, and `COPY ... FROM` as writes — only recognized pure reads (`SELECT`, `SHOW`/`DESCRIBE`/`PRAGMA`, a `COPY ... TO` export, plan-only `EXPLAIN`, and session/transaction statements) pass untagged. A statement whose class can't be resolved, or a multi-statement string that hides a trailing write behind a harmless prefix, is refused (`STATEMENT_UNRESOLVED_REFUSED` / `MULTI_STATEMENT_REFUSED`). Inside `transaction()`, the transaction-level tag applies to every statement and a per-call override on `tx.query(sql, params, opts)` wins for that statement; a refusal rolls the transaction back. Replica reads that carry a tag refuse routing to an incompatible replica (`REPLICA_RESIDENCY_INCOMPATIBLE`) unless the replica is configured `allowCrossBorder: true`, which is audited (`db.residency.replica.cross_border` at read time, `db.residency.replica.cross_border_allowed` at config time). Unrestricted backends are not gated, and the migration runner's own tracking writes are region-neutral so migrations run unaffected on a residency-tagged backend."
+        },
+        {
+          "title": "`b.compliance.isCrossBorderRegulated` — shared posture vocabulary",
+          "body": "The cross-border regulated posture set (gdpr, uk-gdpr, dpdp, pipl-cn, lgpd-br, appi-jp, pdpa-sg) now lives on `b.compliance` (`CROSS_BORDER_REGULATED_POSTURES` + the membership helper), one source of truth shared by the local gate, the external gate, and the existing replica-topology boot check."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`assertColumnResidency` is now actually enforced",
+          "body": "`b.cryptoField.declareColumnResidency` / `assertColumnResidency` shipped in v0.7.27 documenting a write-time gate, but no write path ever called the assertion — column tags were recorded and never checked. The local write paths now run it against the deployment region: a mismatch refuses with `db-query/column-residency-mismatch` under a regulated posture and emits an advisory otherwise. Operators tag columns with the region value their `dataResidency` declares."
+        },
+        {
+          "title": "Cross-border-allowed replica audit event is now recorded",
+          "body": "The config-time audit event for a consciously-permitted cross-border replica used a malformed action name that the audit validator silently dropped, so a compliance reviewer saw no record of the `allowCrossBorder` decision in the audit chain. It now emits as `db.residency.replica.cross_border_allowed` and lands like every other audit row."
+        },
+        {
+          "title": "Publish-validation timeout that blocked the v0.14.23 npm release",
+          "body": "The v0.14.23 publish run timed out in release validation — the pattern-catalog self-test crossed a per-file watchdog budget as the codebase grew, and the same self-test, which scans the whole library and runs far longer on the slower macOS CI runner, hit the same wall on this package's first CI run. The validation budgets are corrected so a genuinely stuck file still fails fast while the catalog completes. v0.14.23 exists as a signed tag; npm goes 0.14.22 → 0.14.24 carrying both releases' changes."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "db-query-write-without-residency-gate",
+          "body": "Every local write method that seals a row must run the residency gates on the plaintext first — a future write path (upsert, bulk) inherits the requirement automatically."
+        },
+        {
+          "title": "Residency-gates-wired catalog check",
+          "body": "The pattern catalog now pins the wiring itself: the local write methods call the gate, the external query/transaction paths call theirs, and `assertColumnResidency` has a real caller — the declared-but-never-enforced class cannot silently reappear."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "No action required unless you adopt the gates",
+          "body": "Tables without a residency declaration, deployments without a `dataResidency` region, and unregulated postures behave exactly as before (advisory audit events at most). Adopting: declare per-row residency on mixed-region tables, pass `rowResidencyTag` on external DML, and set a cross-border posture (`b.compliance.set(\"gdpr\")`) to turn refusals on."
+        }
+      ]
+    }
+  ]
+}

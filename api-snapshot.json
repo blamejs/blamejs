@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.23",
-  "createdAt": "2026-06-05T18:32:42.512Z",
+  "frameworkVersion": "0.14.24",
+  "createdAt": "2026-06-05T22:15:13.836Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6731,6 +6731,10 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "CROSS_BORDER_REGULATED_POSTURES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "ComplianceError": {
           "type": "function",
           "arity": 4
@@ -13246,6 +13250,10 @@
           "type": "function",
           "arity": 1
         },
+        "isCrossBorderRegulated": {
+          "type": "function",
+          "arity": 1
+        },
         "list": {
           "type": "function",
           "arity": 0
@@ -14404,6 +14412,10 @@
           "type": "function",
           "arity": 2
         },
+        "declarePerRowResidency": {
+          "type": "function",
+          "arity": 2
+        },
         "destroyPerRowKey": {
           "type": "function",
           "arity": 3
@@ -14417,6 +14429,10 @@
           "arity": 0
         },
         "getColumnResidency": {
+          "type": "function",
+          "arity": 1
+        },
+        "getPerRowResidency": {
           "type": "function",
           "arity": 1
         },
@@ -16170,6 +16186,10 @@
           "arity": 4
         },
         "DaemonError": {
+          "type": "function",
+          "arity": 4
+        },
+        "DbQueryError": {
           "type": "function",
           "arity": 4
         },

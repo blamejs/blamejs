@@ -83,10 +83,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # 30-min cap covers lint + smoke + wiki e2e + cold npx eslint
-    # pull + SBOM generation. v0.6.38 → v0.6.53 all timed out at the
-    # previous 15-min cap, leaving npm registry stuck at v0.6.37.
-    timeout-minutes: 30
+    # Cap covers lint + smoke + wiki e2e + cold npx eslint pull + SBOM
+    # generation, plus the per-file smoke watchdog's 10-minute
+    # allowance for the heavy pattern-catalog file on a contended
+    # runner. v0.6.38 → v0.6.53 all timed out at the original 15-min
+    # cap, leaving the npm registry stuck at v0.6.37.
+    timeout-minutes: 40
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_tag:  ${{ steps.version.outputs.is_tag }}
@@ -153,6 +155,21 @@ jobs:
         env:
           SMOKE_PARALLEL: 8
           NODE_OPTIONS: --max-old-space-size=8192
+          # The vault wrapped-keypair generation runs Argon2id through
+          # the async native binding (libuv threadpool, default 4); the
+          # audit-handler shutdown drain at the layer-0→1 transition can
+          # hold those threads and starve the async Argon2 indefinitely
+          # (the ~36-minute keygen hangs that blocked publishes). A
+          # larger pool removes the starvation; idle threads are free.
+          UV_THREADPOOL_SIZE: "16"
+          # The pattern-catalog test runs ~2 minutes on a fast
+          # many-core machine; at SMOKE_PARALLEL=8 on a 4-core runner
+          # it deterministically crosses the default 300s per-file
+          # watchdog as the lib/ corpus grows (this is what blocked
+          # the v0.14.23 publish). 600s keeps the watchdog (a leaked
+          # handle still fails the job) with realistic headroom for
+          # the heavy analytical files.
+          SMOKE_FILE_TIMEOUT_MS: "600000"
         run: node test/smoke.js
 
       - name: Wiki e2e

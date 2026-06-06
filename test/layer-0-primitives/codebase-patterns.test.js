@@ -1,5 +1,12 @@
 "use strict";
 
+// SMOKE_RUN_SOLO — the smoke runner (test/smoke.js) runs this file ALONE
+// with the whole machine instead of inside the parallel layer-0 pool.
+// The duplicate-block scan fans out across worker_threads and is CPU-
+// bound; sharing a low-core CI runner (macos-latest = 3 cores) with
+// sibling forks oversubscribes the CPU and the scan overruns its
+// per-file watchdog budget. Run alone, it finishes in its normal time.
+
 // Re-exec under a 6 GiB old-space ceiling when the parent process did
 // not already raise the heap cap. The test's cartesian fingerprint /
 // cluster index across ~300 lib/ files lands close to the v8 default
@@ -2562,6 +2569,23 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/external-db.js:_skipOpaqueSpan",
+        "lib/external-db.js:_cteMainKeyword",
+        "lib/external-db.js:_explainResolve",
+        "lib/external-db.js:_copyLoadsRows",
+        "lib/external-db.js:_emitMetric",
+        "lib/guard-imap-command.js:<top>",
+        "lib/guard-managesieve-command.js:<top>",
+        "lib/guard-pop3-command.js:<top>",
+        "lib/guard-smtp-command.js:<top>",
+        "lib/safe-ical.js:<top>",
+        "lib/safe-vcard.js:<top>",
+      ],
+      reason: "v0.14.24 — the char-by-char opaque-span / quoted-token skip loop recurs across distinct wire grammars and the external-db residency-gate write-classifier (WITH/EXPLAIN-prefix resolution) tipped it over the 3-file threshold. external-db.js scans SQL statements (dollar-quoted bodies $tag$...$tag$, bracket identifiers, doubled-quote re-entry, -- / /* */ comments) to resolve a statement's effective verb; the guard-imap/managesieve/pop3/smtp-command parsers scan line-oriented mail wire commands (IMAP {n} literals, SMTP CRLF tokens); safe-ical / safe-vcard scan RFC 5545 / 6350 folded content lines. Each grammar's span rules differ, so a single shared scanner would wrongly couple SQL classification, four mail-command parsers, and two calendar/contact parsers. Within external-db the three SQL walkers already share one primitive (_skipOpaqueSpan); the cross-grammar match is shape-only with no extractable shared behaviour.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/agent-idempotency.js:_checkArgs",
         "lib/agent-tenant.js:_sealField",
         "lib/archive-wrap.js:_tenantKeyWithRoot",
@@ -2603,6 +2627,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/archive-adapters.js:close",
         "lib/crypto-field.js:declarePerRowKey",
         "lib/crypto-field.js:assertColumnResidency",
+        "lib/crypto-field.js:declarePerRowResidency",
+        "lib/crypto-field.js:getPerRowResidency",
         "lib/network-smtp-policy.js:mtaStsFetch",
         "lib/parsers/safe-env.js:readVar",
         "lib/mail-crypto-pgp.js:sign",
@@ -2612,8 +2638,14 @@ async function testNoDuplicateCodeBlocks() {
       reason: "v0.14.20 — generic validate/guard control-flow shingle that the crypto-field plain-Error → typed-CryptoFieldError(code, msg) conversion tipped over the 3-file threshold. The throw now normalizes to `throw new _ID ( _STR , _STR )` (two-arg framework-error contract) instead of the keyword-`Error` one-arg form, so the early-return + typed-throw prelude in crypto-field.declarePerRowKey / assertColumnResidency now exact-matches the same prelude shape in unrelated primitives: archive-adapters fs/http/close adapter methods, network-smtp-policy.mtaStsFetch (MTA-STS policy fetch), parsers/safe-env.readVar (env-var read), mail-crypto-pgp.sign (PGP detached signature), metrics.shadowRegistry (Prometheus shadow registry), tracing.spanSync (OTEL span helper). Members are unrelated subsystems with primitive-local error namespaces operators grep for; there is no shared behaviour to extract — consolidating would couple field-level encryption, archive I/O, SMTP policy, env parsing, PGP, metrics, and tracing on a trivial guard-then-throw shell.",
     },
     {
-      files: ["lib/api-key.js:issue", "lib/db-query.js:<top>", "lib/session.js:create"],
-      reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list.",
+      mode:  "family-subset",
+      files: [
+        "lib/api-key.js:issue",
+        "lib/db-query.js:<top>",
+        "lib/db-query.js:_assertLocalResidency",
+        "lib/session.js:create",
+      ],
+      reason: "Generic JS array helper / lambda shape — Object.keys(...).map(fn) + similar functional idioms appearing in any code that walks a column-or-key list; db-query._assertLocalResidency joins via its allowedTags.join diagnostics + safeEmit metadata-object assembly, unrelated to api-key issuance / session creation beyond the walk-and-format shell.",
     },
     {
       mode:  "family-subset",
@@ -4120,6 +4152,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/data-act.js:shareWithThirdParty",
         "lib/data-act.js:recordSwitchRequest",
         "lib/db.js:declareRequireDualControl",
+        // v0.14.24 — per-row residency declaration shares the same
+        // validateOpts.requireNonEmptyString cascade + registry-write
+        // + return-copy scaffold.
+        "lib/crypto-field.js:declarePerRowResidency",
         // v0.8.77 — OAuth resource-server / SCIM / protected-resource-metadata
         // additions share the standard primitive scaffolding
         "lib/auth/oauth.js:pollDeviceCode",
@@ -5529,13 +5565,15 @@ async function testNoDuplicateCodeBlocks() {
       reason: "_safeGlobalObs drop-silent observability helper — each primitive defines a local `function _safeGlobalObs(action, attrs) { try { observability.event({...}); } catch (_e) { /* drop-silent */ } }` because the global observability binding is module-load-time captured. Three auth-related primitives; the closure captures the per-primitive event-name namespace. Same observability-sink discipline noted in the cookies/gpc/headers _emitAudit cluster.",
     },
     {
+      mode:  "family-subset",
       files: [
         "lib/db-query.js:<top>",
+        "lib/db-query.js:_assertLocalResidency",
         "lib/db.js:init",
         "lib/db.js:stream",
         "lib/external-db.js:_connectAs",
       ],
-      reason: "node:sqlite + external-db wiring scaffold — `var statement = database.prepare('...'); var rows = statement.all(...); for (i in rows) { ... }`. db-query top-level statement-cache setup, db.init schema-bootstrap walk, db.stream readable-walk, external-db.js role connect-as walk. Four sites within the db / external-db domain; the SQL bodies and result shapes differ per call.",
+      reason: "node:sqlite + external-db wiring scaffold — `var statement = database.prepare('...'); var rows = statement.all(...); for (i in rows) { ... }` plus the posture/region lookup-then-branch shell. db-query top-level statement-cache setup, db.init schema-bootstrap walk, db.stream readable-walk, external-db.js role connect-as walk, db-query._assertLocalResidency region-set assembly. Sites within the db / external-db domain; the SQL bodies, result shapes, and refusal semantics differ per call.",
     },
     {
       files: [
@@ -6177,6 +6215,28 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Hard quota / rate / budget ceilings must be enforced with an atomic conditional reserve (the limit test and the charge are one indivisible operation), never charge-then-refund (an unconditional increment plus a compensating `decrBy`). The refund shape transiently over-counts a shared counter and falsely denies concurrent calls that should fit (Codex P1 on PR #178, v0.12.27 — b.ai.quota originally shipped this shape and was reworked to store.reserve). A future store that genuinely needs a decrement for a non-ceiling gauge metric allowlists with a structural reason explaining why no limit decision reads the counter mid-refund.",
   },
   {
+    // The cross-border residency WRITE gate must classify writes by what
+    // a statement DOES, not by its leading keyword. A statement whose
+    // effective verb is hidden behind a prefix — `WITH ... INSERT`,
+    // `EXPLAIN ANALYZE INSERT` (Postgres EXECUTES the wrapped write),
+    // `CALL` / `EXECUTE` / `DO`, `COPY ... FROM`, `REPLACE` — reads as a
+    // harmless leading keyword and slips past a gate that enforces only
+    // on `class === "DML"`. lib/external-db.js resolves WITH / EXPLAIN
+    // prefixes to the effective verb in _classifyStatement and gates via
+    // a positive pure-read exempt set (_RESIDENCY_READ_CLASS), treating
+    // everything else — DML, ROUTINE, a COPY load, an unresolved or
+    // unmapped statement — as a write that requires a residency tag
+    // (Codex P1 on PR #304 flagged the WITH-wrapped-DML instance; the
+    // COPY / EXPLAIN-ANALYZE / CALL / REPLACE / DO siblings were
+    // confirmed in the same review). Comparing the statement class to
+    // the single string "DML" reintroduces the bypass.
+    id: "residency-gate-dml-equality",
+    primitive: "gate SQL writes by a positive pure-read exempt set that resolves WITH/EXPLAIN prefixes and fails closed on unknown (lib/external-db.js _RESIDENCY_READ_CLASS + _classifyStatement); never discriminate writes by leading-keyword equality to a single class string like \"DML\"",
+    regex: /[!=]==\s*["']DML["']/,
+    allowlist: [],
+    reason: "The cross-border residency write gate must enforce on what a statement DOES, not its leading keyword. `WITH ... INSERT`, `EXPLAIN ANALYZE INSERT` (Postgres EXECUTES the wrapped write), `CALL` / `EXECUTE` / `DO`, `COPY ... FROM`, and `REPLACE` all place rows while reading as a harmless prefix, so a gate enforcing only on `class === \"DML\"` waves them across a border untagged (Codex P1 on PR #304 flagged the WITH instance; the verifier confirmed the COPY / EXPLAIN-ANALYZE / CALL / REPLACE / DO siblings). lib/external-db.js resolves WITH / EXPLAIN to the effective verb in _classifyStatement and gates via the positive _RESIDENCY_READ_CLASS exempt set, treating every non-read (DML, ROUTINE, a COPY load, an unmapped or unresolved statement) as a write that needs a tag. A forensic-only comparison that does not gate a write may allowlist with a structural reason naming why no transfer decision rides on it.",
+  },
+  {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
     // (TC39 stage-4, lands in V8 13.x). It replaces the two-step
     // `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` (and
@@ -6425,6 +6485,21 @@ var KNOWN_ANTIPATTERNS = [
     // derives a different signing input or refuses the critical header.
     // The `requires` companion is satisfied by the refusal branch
     // naming 'b64' somewhere in the same file.
+    id: "db-query-write-without-residency-gate",
+    primitive: "_assertLocalResidency(table, plaintextRow, op) before cryptoField.sealRow on every local write path",
+    // A local write method that seals a row without first running the
+    // residency gates can land a region-bound row (or region-bound
+    // column value) outside the deployment's declared region set —
+    // the cross-border transfer shape GDPR Art 44-46 / PIPL Art 38 /
+    // DPDP §16 regulate. The gate must see the PLAINTEXT row, so it
+    // runs before sealRow in the same method.
+    regex: /sealRow\(this\._cryptoFieldKey\(\)/,
+    requires: /_assertLocalResidency\(this\._cryptoFieldKey\(\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.24 — declareColumnResidency/assertColumnResidency shipped in v0.7.27 documenting a write-time gate that was never wired into any write path; rows and region-bound columns landed on any backend unchecked. Every db-query method that seals a row must run _assertLocalResidency on the plaintext first; a future write method (upsert, bulk path) inherits the requirement automatically.",
+  },
+  {
     id: "ar-header-prepend-without-forged-strip",
     primitive: "_stripForgedAuthResults(messageBuf, authservId) before prepending a computed Authentication-Results header",
     // A receiver that prepends its own Authentication-Results header
@@ -10917,6 +10992,29 @@ function testNoTrackedInternalNotes() {
         out === "");
 }
 
+// The residency write gates exist only if they're actually wired —
+// declareColumnResidency/assertColumnResidency shipped in v0.7.27
+// advertising a write-time gate that no write path called for 7 minor
+// versions. This gate pins the wiring: the local write methods run
+// _assertLocalResidency, the external query/transaction paths run
+// _assertRowResidency, and assertColumnResidency has a real lib/
+// caller outside its own definition file.
+function testResidencyGatesWired() {
+  var dbq, edb;
+  try {
+    dbq = fs.readFileSync("lib/db-query.js", "utf8");
+    edb = fs.readFileSync("lib/external-db.js", "utf8");
+  } catch (_e) { return; }
+  var localCalls = (dbq.match(/_assertLocalResidency\(this\._cryptoFieldKey\(\)/g) || []).length;
+  check("db-query wires the local residency gate on insert AND update", localCalls >= 2);
+  check("db-query wires the long-advertised assertColumnResidency",
+        dbq.indexOf("assertColumnResidency(") !== -1);
+  var extCalls = (edb.match(/_assertRowResidency\(sql,/g) || []).length;
+  check("external-db wires the row residency gate on query AND transaction", extCalls >= 2);
+  check("external-db replica reads honor the row tag",
+        edb.indexOf("REPLICA_RESIDENCY_INCOMPATIBLE") !== -1);
+}
+
 function testWikiPortAgreesAcrossArtifacts() {
   var bad = [];
   var dockerfile;
@@ -11913,6 +12011,7 @@ async function run() {
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
   testNoTrackedInternalNotes();
+  testResidencyGatesWired();
   testWikiStopGraceExceedsShutdownBudget();
   testOrchestratorRegistryReadsTenantScoped();
   testErrorCodesNamespacedKebab();
