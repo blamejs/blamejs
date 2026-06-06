@@ -112,6 +112,16 @@ async function run() {
     check("read round-trips note", got.note === "patient note one");
     check("read surfaces residency tag verbatim", got.dataRegion === "eu");
 
+    // ---- Codex P1 regression: unsealRow with NO dbHandle (the
+    // break-glass / clusterStorage read path) still decrypts a keyed row.
+    // crypto-field resolves the local db itself for the wrapped-secret
+    // lookup, so a direct caller doesn't null every K_row cell. ----
+    var rawRow = b.db.prepare('SELECT * FROM "pr_keyed" WHERE _id = ?').get("row-1");
+    check("raw row carries a vault.row: cell pre-unseal", b.cryptoField.isRowSealed(rawRow.ssn));
+    var noHandle = b.cryptoField.unsealRow("pr_keyed", rawRow);   // 4th arg (dbHandle) omitted
+    check("unsealRow without a dbHandle still decrypts ssn", noHandle.ssn === "123-45-6789");
+    check("unsealRow without a dbHandle still decrypts note", noHandle.note === "patient note one");
+
     // all() path round-trips too.
     var all = b.db.from("pr_keyed").where({ subjectId: "subj-A" }).all();
     check("all() round-trips one keyed row", all.length === 1 && all[0].ssn === "123-45-6789");
