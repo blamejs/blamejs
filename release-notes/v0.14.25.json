@@ -1,0 +1,40 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.14.25",
+  "date": "2026-06-06",
+  "headline": "Per-row crypto-shred is real and AAD-bound, and the idempotency fingerprint key is sealed at rest",
+  "summary": "The per-row encryption-key feature that backs `b.subject.eraseHard` crypto-shred was both non-functional and, as documented, unsound: the per-row key (`K_row`) was derived deterministically from a salt that is stored in plaintext in the data directory, so an actor with disk access could re-derive it and decrypt 'shredded' residual ciphertext (WAL / replica / backup) — and the key was never actually materialized on insert, so no table ever used it. Per-row keys are now derived from a fresh 32-byte CSPRNG secret stored only in `_blamejs_per_row_keys`, wrapped under the vault with AEAD additional-data binding `(table, rowId)`, and materialized on insert for tables that declare them; destroying the wrapped secret now genuinely renders the row's residual ciphertext undecryptable. The same plaintext-salt class is fixed for the idempotency request-fingerprint HMAC, which now seeds off the sealed-at-rest `vault.getDerivedHashMacKey()`. There is no migration: the per-row-key table was empty in every deployment, so keyed tables are correct from their first write.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Per-row crypto-shred: random secret, AAD-bound wrap, materialized on insert",
+          "body": "`b.cryptoField.declarePerRowKey` tables now get a per-row key derived from a fresh `b.crypto.generateBytes(32)` secret — never from the plaintext per-deployment salt — so the key has no input recomputable from disk. The secret is stored in `_blamejs_per_row_keys` wrapped via `b.vault.aad.seal` with additional-data bound to `(table, rowId)`, so a wrapped key copied onto another row fails its Poly1305 tag. Sealed columns are encrypted under the per-row key and tagged with a `vault.row:` envelope (`b.cryptoField.isRowSealed`); the residency-tag column is never key-sealed so the write-boundary residency gate can still read it. The key is materialized on insert (it previously never was) and re-derived once per read; `b.subject.eraseHard` and the retention sweep destroy the wrapped secret, after which the row's residual ciphertext reads as absent and cannot be recovered even if the vault root is later compromised. Wrapped keys are re-sealed under the new root on vault keypair rotation, so rotation does not strand keyed rows."
+        },
+        {
+          "title": "Idempotency request-fingerprint HMAC seeds off the sealed MAC key",
+          "body": "The `fingerprintSeal` HMAC over the request fingerprint was keyed from the plaintext per-deployment salt, so a disk-access actor could recompute the key and brute-force the low-entropy preimage (method + URL + body) offline. It now seeds off `b.vault.getDerivedHashMacKey()`, which is sealed at rest. Fingerprints cached before the upgrade no longer match, so a replayed request re-executes once (the safe direction)."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "kdf-key-from-plaintext-derived-hash-salt",
+          "body": "The pattern catalog refuses a key-derivation (`kdf(... getDerivedHashSalt() ...)`) that seeds a per-row shred key or a vault-secret-promising keyed-MAC off the plaintext-on-disk derived-hash salt. Such a key is re-derivable by anyone with the data directory, defeating the shred / secrecy it advertises; the correct sources are a CSPRNG secret or the sealed `getDerivedHashMacKey()`. The deterministic salted-SHA3 equality index is a distinct shape and is unaffected."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "No action required",
+          "body": "No data migration: the per-row-key table was empty in every deployment, so tables that declare per-row keys are correct from their first write going forward. The only observable change is that the first request after upgrade matching a pre-upgrade idempotency fingerprint re-executes once."
+        }
+      ]
+    }
+  ]
+}

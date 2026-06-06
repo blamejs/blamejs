@@ -436,6 +436,18 @@ The framework's audit + consent chains are append-only at the application layer 
 - [ ] Enable `log_min_duration_statement` at the cluster level (typically `1000ms`) so slow queries land in the operator-managed log stream alongside the framework's `db.query.slow` observability events. The framework emits the `1s` / `5s` / `30s` buckets; the cluster log captures the SQL text the framework intentionally redacts from audit metadata
 - [ ] For roles that issue DDL (migration runner, framework boot): set `log_statement = ddl` so a forensic review can correlate the framework's `db.ddl.executed` audit row with the cluster log's verbatim DDL text — closes the trust gap between "framework says it ran X" and "cluster log shows X actually ran"
 
+## Per-row-key crypto-shred advisory (fixed in v0.14.25)
+
+Tables opted into per-row keying (`b.cryptoField.declarePerRowKey`) advertise crypto-erasure: `b.subject.eraseHard` / `b.retention` destroy a row's wrapped key so WAL / replica / backup residual ciphertext for that row becomes mathematically undecryptable. Before v0.14.25 that guarantee did not hold:
+
+- **The row key was re-derivable from disk.** `K_row` was derived deterministically from `vault.getDerivedHashSalt()` — a value stored in **plaintext** on disk — plus the table name and row id. An attacker with read access to the data directory could recompute `K_row` for any row, so deleting the wrapped-key entry shredded nothing.
+- **The wrapped key was sealed without AAD.** Despite the documented copy-row protection, the wrap carried no Additional Authenticated Data, so a database-write attacker could move a wrapped key (and the ciphertext it opens) between rows.
+- **The key was never materialized on write.** The materialize-on-INSERT path was never wired, so the feature was inert — no row ever actually carried a per-row key.
+
+v0.14.25 makes the guarantee real: each keyed row's secret is a fresh 32-byte CSPRNG value (never a function of any on-disk salt), stored AEAD-sealed and bound to `(table, rowId, column, schemaVersion)`; sealed columns on keyed rows are encrypted under the row key (`vault.row:` cells) and bound to the same tuple; and the key is materialized at the write boundary on every INSERT/UPDATE and destroyed by `eraseHard` / `retention`. A vault keypair rotation re-seals the wrapped secret old-root → new-root.
+
+**Operator action.** The per-row-key registry was empty in prior deployments (the path never ran), so there is no legacy ciphertext to migrate — keyed tables become correct from their first write under v0.14.25. If you scripted a parallel re-derivation of `K_row` from `getDerivedHashSalt()` outside the framework, remove it; the derivation input is now the sealed random secret. The same plaintext-salt class was corrected for the idempotency-middleware fingerprint HMAC (`b.middleware.idempotencyKey` with `fingerprintSeal`), which now seeds off the sealed `vault.getDerivedHashMacKey()`; cached fingerprints from before the upgrade are treated as a mismatch (replayed requests re-execute once), which is the safe behavior.
+
 ## Watch list
 
 CVE classes the framework tracks but does not currently ship a primitive for — operator awareness items:
