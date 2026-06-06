@@ -97,6 +97,18 @@ jobs:
         # accumulator design.
         env:
           NODE_OPTIONS: --max-old-space-size=6144
+          # Run layer-0 forked rather than as one long-lived in-process
+          # run. A forked file that hangs (e.g. a vault first-run keypair
+          # generation stalled on a starved runner) is SIGKILLed by the
+          # parent at SMOKE_FILE_TIMEOUT_MS and reported BY NAME, instead
+          # of freezing the single in-process run until the 40-minute job
+          # timeout — an unref'd in-process watchdog cannot fire while the
+          # event loop is blocked by a synchronous native call. Forking
+          # also hands each file a fresh process, so per-file memory does
+          # not accumulate toward the heap ceiling. 4 keeps the 3-core
+          # macOS runner from thrashing the pattern-catalog's own worker
+          # pool; the publish gate uses 8 on its ubuntu-only runner.
+          SMOKE_PARALLEL: "4"
           # Defensive libuv threadpool headroom: under parallel smoke
           # several async Argon2id key-stretch calls can queue onto the
           # pool (default 4) at once; a larger pool avoids contention
