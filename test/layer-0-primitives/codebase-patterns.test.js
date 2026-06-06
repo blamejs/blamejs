@@ -2562,6 +2562,23 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/external-db.js:_skipOpaqueSpan",
+        "lib/external-db.js:_cteMainKeyword",
+        "lib/external-db.js:_explainResolve",
+        "lib/external-db.js:_copyLoadsRows",
+        "lib/external-db.js:_emitMetric",
+        "lib/guard-imap-command.js:<top>",
+        "lib/guard-managesieve-command.js:<top>",
+        "lib/guard-pop3-command.js:<top>",
+        "lib/guard-smtp-command.js:<top>",
+        "lib/safe-ical.js:<top>",
+        "lib/safe-vcard.js:<top>",
+      ],
+      reason: "v0.14.24 — the char-by-char opaque-span / quoted-token skip loop recurs across distinct wire grammars and the external-db residency-gate write-classifier (WITH/EXPLAIN-prefix resolution) tipped it over the 3-file threshold. external-db.js scans SQL statements (dollar-quoted bodies $tag$...$tag$, bracket identifiers, doubled-quote re-entry, -- / /* */ comments) to resolve a statement's effective verb; the guard-imap/managesieve/pop3/smtp-command parsers scan line-oriented mail wire commands (IMAP {n} literals, SMTP CRLF tokens); safe-ical / safe-vcard scan RFC 5545 / 6350 folded content lines. Each grammar's span rules differ, so a single shared scanner would wrongly couple SQL classification, four mail-command parsers, and two calendar/contact parsers. Within external-db the three SQL walkers already share one primitive (_skipOpaqueSpan); the cross-grammar match is shape-only with no extractable shared behaviour.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/agent-idempotency.js:_checkArgs",
         "lib/agent-tenant.js:_sealField",
         "lib/archive-wrap.js:_tenantKeyWithRoot",
@@ -6189,6 +6206,28 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\bdecrBy\b/,
     allowlist: [],
     reason: "Hard quota / rate / budget ceilings must be enforced with an atomic conditional reserve (the limit test and the charge are one indivisible operation), never charge-then-refund (an unconditional increment plus a compensating `decrBy`). The refund shape transiently over-counts a shared counter and falsely denies concurrent calls that should fit (Codex P1 on PR #178, v0.12.27 — b.ai.quota originally shipped this shape and was reworked to store.reserve). A future store that genuinely needs a decrement for a non-ceiling gauge metric allowlists with a structural reason explaining why no limit decision reads the counter mid-refund.",
+  },
+  {
+    // The cross-border residency WRITE gate must classify writes by what
+    // a statement DOES, not by its leading keyword. A statement whose
+    // effective verb is hidden behind a prefix — `WITH ... INSERT`,
+    // `EXPLAIN ANALYZE INSERT` (Postgres EXECUTES the wrapped write),
+    // `CALL` / `EXECUTE` / `DO`, `COPY ... FROM`, `REPLACE` — reads as a
+    // harmless leading keyword and slips past a gate that enforces only
+    // on `class === "DML"`. lib/external-db.js resolves WITH / EXPLAIN
+    // prefixes to the effective verb in _classifyStatement and gates via
+    // a positive pure-read exempt set (_RESIDENCY_READ_CLASS), treating
+    // everything else — DML, ROUTINE, a COPY load, an unresolved or
+    // unmapped statement — as a write that requires a residency tag
+    // (Codex P1 on PR #304 flagged the WITH-wrapped-DML instance; the
+    // COPY / EXPLAIN-ANALYZE / CALL / REPLACE / DO siblings were
+    // confirmed in the same review). Comparing the statement class to
+    // the single string "DML" reintroduces the bypass.
+    id: "residency-gate-dml-equality",
+    primitive: "gate SQL writes by a positive pure-read exempt set that resolves WITH/EXPLAIN prefixes and fails closed on unknown (lib/external-db.js _RESIDENCY_READ_CLASS + _classifyStatement); never discriminate writes by leading-keyword equality to a single class string like \"DML\"",
+    regex: /[!=]==\s*["']DML["']/,
+    allowlist: [],
+    reason: "The cross-border residency write gate must enforce on what a statement DOES, not its leading keyword. `WITH ... INSERT`, `EXPLAIN ANALYZE INSERT` (Postgres EXECUTES the wrapped write), `CALL` / `EXECUTE` / `DO`, `COPY ... FROM`, and `REPLACE` all place rows while reading as a harmless prefix, so a gate enforcing only on `class === \"DML\"` waves them across a border untagged (Codex P1 on PR #304 flagged the WITH instance; the verifier confirmed the COPY / EXPLAIN-ANALYZE / CALL / REPLACE / DO siblings). lib/external-db.js resolves WITH / EXPLAIN to the effective verb in _classifyStatement and gates via the positive _RESIDENCY_READ_CLASS exempt set, treating every non-read (DML, ROUTINE, a COPY load, an unmapped or unresolved statement) as a write that needs a tag. A forensic-only comparison that does not gate a write may allowlist with a structural reason naming why no transfer decision rides on it.",
   },
   {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`

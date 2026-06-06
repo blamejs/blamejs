@@ -97,23 +97,23 @@ jobs:
         # accumulator design.
         env:
           NODE_OPTIONS: --max-old-space-size=6144
-          # The vault wrapped-keypair generation runs Argon2id through
-          # the async native binding, which queues onto the libuv
-          # threadpool (default 4). At the layer-0→1 transition the
-          # audit handler's shutdown drain can hold those threads, and
-          # the async Argon2 then starves indefinitely — the
-          # ~36-minute keygen hangs observed on CI runners. Sizing the
-          # pool well above the concurrent-async-work high-water mark
-          # removes the starvation (commodity runners have ≥2 cores; a
-          # larger pool only costs idle threads).
+          # Defensive libuv threadpool headroom: under parallel smoke
+          # several async Argon2id key-stretch calls can queue onto the
+          # pool (default 4) at once; a larger pool avoids contention
+          # when they overlap. This knob does NOT govern vault first-run
+          # keypair generation — that is a synchronous main-thread call;
+          # an occasional ubuntu runner stalls there on low entropy and
+          # is cleared by re-running the job, not by sizing the pool.
           UV_THREADPOOL_SIZE: "16"
-          # The pattern-catalog test runs ~2 minutes on a fast
-          # many-core machine; on a 4-core runner sharing CPU with
-          # sibling forks it can cross the default 300s per-file
-          # watchdog as the lib/ corpus grows. 600s keeps the watchdog
-          # (a leaked handle still fails the job) with realistic
-          # headroom for the heavy analytical files.
-          SMOKE_FILE_TIMEOUT_MS: "600000"
+          # Per-file watchdog budget. codebase-patterns scans the whole
+          # lib/ corpus across eight shingle sizes; on the 3-core
+          # macos-latest runner that legitimately takes 13-18 min (vs
+          # ~2.5 min on ubuntu), so the budget must clear the macOS
+          # worst case with headroom while still failing a genuinely
+          # stuck file. 25 min sits above the observed macOS high-water
+          # and below the 40-min job ceiling. (600s guillotined a
+          # slow-but-passing macOS run.)
+          SMOKE_FILE_TIMEOUT_MS: "1500000"
         run: node test/smoke.js
 
   wiki-e2e:

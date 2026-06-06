@@ -484,6 +484,107 @@ async function run() {
   check("allowCrossBorder replica read → replica wire reached",
         _saw(usReplicaOk, /SELECT id FROM orders/));
 
+  // ---- write verbs that wear a harmless leading keyword must still be
+  // gated: WITH (CTE) / COPY FROM / EXPLAIN ANALYZE / CALL / EXECUTE /
+  // REPLACE / DO all PLACE rows, so under gdpr + eu backend they require
+  // a tag; recognized pure reads (WITH...SELECT, COPY...TO, plain
+  // EXPLAIN) pass untagged. One driver, exercised across the matrix. ----
+  function _classDriver() { return _trackingDriver("class"); }
+
+  async function _refusedUntagged(label, sql, code) {
+    b.externalDb._resetForTest();
+    var d = _classDriver();
+    b.externalDb.init({ backends: { main: {
+      connect: d.connect, query: d.query, close: d.close, residencyTag: "eu",
+    } } });
+    await _underGdpr(async function () {
+      await _expectThrow(label, function () { return b.externalDb.query(sql, []); }, code);
+    });
+    check(label + " → wire NOT reached", d.seen.length === 0);
+  }
+
+  async function _passesUntagged(label, sql) {
+    b.externalDb._resetForTest();
+    var d = _classDriver();
+    b.externalDb.init({ backends: { main: {
+      connect: d.connect, query: d.query, close: d.close, residencyTag: "eu",
+    } } });
+    var err = null;
+    await _underGdpr(async function () {
+      try { await b.externalDb.query(sql, []); } catch (e) { err = e; }
+    });
+    check(label + " → passes untagged, wire reached", err === null && d.seen.length === 1);
+  }
+
+  async function _passesWithTag(label, sql) {
+    b.externalDb._resetForTest();
+    var d = _classDriver();
+    b.externalDb.init({ backends: { main: {
+      connect: d.connect, query: d.query, close: d.close, residencyTag: "eu",
+    } } });
+    var err = null;
+    await _underGdpr(async function () {
+      try { await b.externalDb.query(sql, [], { rowResidencyTag: "eu" }); }
+      catch (e) { err = e; }
+    });
+    check(label + " → matching tag reaches the wire", err === null && d.seen.length === 1);
+  }
+
+  // CTE-wrapped DML (the Codex P1 shape) — write, gated.
+  await _refusedUntagged("WITH ... INSERT (CTE write) untagged",
+    "WITH src AS (SELECT 1 AS id) INSERT INTO eu_users (id) SELECT id FROM src",
+    "RESIDENCY_GATE_REQUIRED");
+  await _passesWithTag("WITH ... INSERT (CTE write) tag 'eu'",
+    "WITH src AS (SELECT 1 AS id) INSERT INTO eu_users (id) SELECT id FROM src");
+  // CTE-wrapped SELECT — read, passes untagged.
+  await _passesUntagged("WITH ... SELECT (CTE read) untagged",
+    "WITH src AS (SELECT 1 AS id) SELECT id FROM src");
+  // RECURSIVE + MATERIALIZED keywords before the main verb don't confuse it.
+  await _refusedUntagged("WITH RECURSIVE ... UPDATE untagged",
+    "WITH RECURSIVE t AS (SELECT 1) UPDATE eu_users SET id = 2 WHERE id IN (SELECT * FROM t)",
+    "RESIDENCY_GATE_REQUIRED");
+
+  // COPY ... FROM loads rows (write); COPY ... TO exports (read).
+  await _refusedUntagged("COPY ... FROM (bulk load) untagged",
+    "COPY eu_users (id) FROM STDIN", "RESIDENCY_GATE_REQUIRED");
+  await _passesUntagged("COPY (query) TO (export) untagged",
+    "COPY (SELECT id FROM eu_users) TO STDOUT");
+
+  // EXPLAIN ANALYZE EXECUTES the wrapped statement; plain EXPLAIN does not.
+  await _refusedUntagged("EXPLAIN ANALYZE INSERT untagged",
+    "EXPLAIN ANALYZE INSERT INTO eu_users (id) VALUES (1)", "RESIDENCY_GATE_REQUIRED");
+  await _refusedUntagged("EXPLAIN (ANALYZE, FORMAT JSON) UPDATE untagged",
+    "EXPLAIN (ANALYZE, FORMAT JSON) UPDATE eu_users SET id = 2 WHERE id = 1",
+    "RESIDENCY_GATE_REQUIRED");
+  await _passesUntagged("EXPLAIN (plan-only) INSERT untagged",
+    "EXPLAIN INSERT INTO eu_users (id) VALUES (1)");
+  await _passesUntagged("EXPLAIN SELECT untagged",
+    "EXPLAIN SELECT id FROM eu_users");
+
+  // Opaque-write verbs — CALL / EXECUTE / DO — gated (fail-closed).
+  await _refusedUntagged("CALL stored-proc untagged",
+    "CALL load_eu_rows('x')", "RESIDENCY_GATE_REQUIRED");
+  await _refusedUntagged("EXECUTE prepared untagged",
+    "EXECUTE ins_eu (1)", "RESIDENCY_GATE_REQUIRED");
+  await _refusedUntagged("DO anonymous block untagged",
+    "DO $$ BEGIN INSERT INTO eu_users (id) VALUES (1); END $$",
+    "RESIDENCY_GATE_REQUIRED");
+
+  // REPLACE INTO (mysql/sqlite) — delete-then-insert, a write.
+  await _refusedUntagged("REPLACE INTO untagged",
+    "REPLACE INTO eu_users (id) VALUES (1)", "RESIDENCY_GATE_REQUIRED");
+
+  // A `;` inside a dollar-quoted body is DATA, not a statement
+  // separator — must not false-positive as MULTI_STATEMENT_REFUSED; the
+  // DO block is gated as the ROUTINE write it is.
+  await _refusedUntagged("DO body with inner ; is one statement",
+    "DO $$ BEGIN INSERT INTO eu_users (id) VALUES (1); INSERT INTO eu_users (id) VALUES (2); END $$",
+    "RESIDENCY_GATE_REQUIRED");
+
+  // An unresolvable WITH (no main verb past the CTE list) fails closed.
+  await _refusedUntagged("unresolvable WITH refused",
+    "WITH x AS (SELECT 1)", "STATEMENT_UNRESOLVED_REFUSED");
+
   // ---- Final clean ----
   b.externalDb._resetForTest();
   b.compliance.clear();
