@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.24",
-  "createdAt": "2026-06-05T22:15:13.836Z",
+  "frameworkVersion": "0.14.25",
+  "createdAt": "2026-06-06T16:25:20.097Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -13658,6 +13658,10 @@
             }
           }
         },
+        "ROW_PREFIX": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "TIME": {
           "type": "object",
           "members": {
@@ -14448,6 +14452,10 @@
           "type": "function",
           "arity": 1
         },
+        "isRowSealed": {
+          "type": "function",
+          "arity": 1
+        },
         "lookupHash": {
           "type": "function",
           "arity": 3
@@ -14462,19 +14470,19 @@
         },
         "sealDoc": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         },
         "sealRow": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         },
         "unsealDoc": {
           "type": "function",
-          "arity": 3
+          "arity": 4
         },
         "unsealRow": {
           "type": "function",
-          "arity": 3
+          "arity": 4
         }
       }
     },
@@ -50145,6 +50153,10 @@
               "arity": 1
             },
             "buildContextAad": {
+              "type": "function",
+              "arity": 1
+            },
+            "canonicalizeAad": {
               "type": "function",
               "arity": 1
             },

@@ -6237,6 +6237,28 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The cross-border residency write gate must enforce on what a statement DOES, not its leading keyword. `WITH ... INSERT`, `EXPLAIN ANALYZE INSERT` (Postgres EXECUTES the wrapped write), `CALL` / `EXECUTE` / `DO`, `COPY ... FROM`, and `REPLACE` all place rows while reading as a harmless prefix, so a gate enforcing only on `class === \"DML\"` waves them across a border untagged (Codex P1 on PR #304 flagged the WITH instance; the verifier confirmed the COPY / EXPLAIN-ANALYZE / CALL / REPLACE / DO siblings). lib/external-db.js resolves WITH / EXPLAIN to the effective verb in _classifyStatement and gates via the positive _RESIDENCY_READ_CLASS exempt set, treating every non-read (DML, ROUTINE, a COPY load, an unmapped or unresolved statement) as a write that needs a tag. A forensic-only comparison that does not gate a write may allowlist with a structural reason naming why no transfer decision rides on it.",
   },
   {
+    // A per-row / per-record crypto-shred key (K_row) — or a keyed-MAC
+    // that advertises vault-secret protection — must seed off a CSPRNG
+    // secret (b.crypto.generateBytes) or the SEALED-at-rest
+    // b.vault.getDerivedHashMacKey(), NEVER off kdf() over the
+    // PLAINTEXT-on-disk b.vault.getDerivedHashSalt(). A key whose entire
+    // input is recomputable from the data directory is re-derivable by a
+    // disk-access attacker, so destroying the wrapped form shreds nothing
+    // and a keyed-MAC over a low-entropy preimage is brute-forceable
+    // offline — defeating the exact secrecy/erasure the primitive
+    // advertises (v0.14.25: the per-row-key K_row and the idempotency
+    // fingerprint HMAC both shipped this shape and were reseeded).
+    // The salted-sha3 derived-hash INDEX (crypto-field.js:325) uses the
+    // plaintext salt via sha3Hash() — a deterministic equality index that
+    // disclaims MAC-grade secrecy, a DIFFERENT shape (not kdf) — so it
+    // does not match and is covered by its own detector.
+    id: "kdf-key-from-plaintext-derived-hash-salt",
+    primitive: "seed per-row crypto-shred keys / vault-secret keyed-MACs from a CSPRNG secret (b.crypto.generateBytes) or the sealed b.vault.getDerivedHashMacKey(); never kdf() over the plaintext-on-disk b.vault.getDerivedHashSalt()",
+    regex: /\bkdf\s*\([^\n]*getDerivedHashSalt\s*\(/,
+    allowlist: [],
+    reason: "v0.14.25 — the per-row-key K_row was kdf(...getDerivedHashSalt()...) over the PLAINTEXT-on-disk salt, so a disk-access attacker re-derived it and destroyPerRowKey/eraseHard shred NOTHING (advertised as crypto-shred since v0.7.27, false); the idempotency fingerprint HMAC seeded off the same plaintext salt despite promising the vault root was the trust root. Both reseeded — K_row onto a fresh b.crypto.generateBytes(32) row-secret AAD-wrapped via b.vault.aad.seal, the fingerprint HMAC onto the sealed b.vault.getDerivedHashMacKey() (since v0.14.7). This detector refuses the inline regression `kdf(...getDerivedHashSalt()...)`; the legitimate `kdf(getDerivedHashMacKey()...)` (the sealed key) and the `sha3Hash(getDerivedHashSalt()...)` deterministic equality index are different shapes and do not match. NOTE the historical bug assigned the salt to a var first (`saltHex = getDerivedHashSalt()...; kdf(...saltHex...)`) — a data-flow shape regex can't trace, so reviewers must also reject any kdf/HMAC key whose IKM transitively names getDerivedHashSalt.",
+  },
+  {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
     // (TC39 stage-4, lands in V8 13.x). It replaces the two-step
     // `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` (and
