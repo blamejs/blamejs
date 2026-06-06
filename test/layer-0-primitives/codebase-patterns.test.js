@@ -6374,6 +6374,156 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "v0.14.26 (Codex P2 on PR #306) — break-glass grant() read the highest accepted TOTP step, verified against it, then committed the new step in a separate cache write. Two concurrent grants for the same (actor, secret, code) both read the old floor before either committed, so both _verifyTotpFactor calls passed and the same in-window code was redeemed more than once. The fix reserves the step atomically in _reserveTotpStep (a single _factorLockoutCache.update that advances the floor only if the step is strictly above it, reporting whether THIS caller won), so the second concurrent grant is refused. This detector flags reintroduction of the read-then-commit helpers (_readLastTotpStep / _commitTotpStep) that carried the race.",
   },
+  // ---- v0.14.27 security-hardening sweep detectors ----
+  // CodeQL js/path-injection — the static file server must re-confine a
+  // request-derived path at the fs sink; the serve stream reads the confined
+  // streamTarget, not the raw request-derived absPath.
+  {
+    id: "static-serve-stream-path-not-confined",
+    primitive: "stream the static-served file from the root-confined streamTarget (lib/static.js _assertInsideRoot), never the request-derived absPath",
+    regex: /createReadStream\(\s*absPath\s*,\s*streamOpts/,
+    requires: /createReadStream\(\s*streamTarget\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-22 — the static file server resolves a request URL to a disk path; the path handed to fs.createReadStream must flow from the per-sink root-confinement barrier _assertInsideRoot (resolves under root, refuses anything outside via startsWith(root+sep)), not directly from the request-derived candidate. Streaming from the bare absPath re-opens the traversal-read class CodeQL flags.",
+  },
+  // CodeQL js/file-system-race + js/insecure-temporary-file — the content-safety
+  // gate read must open the confined path with O_NOFOLLOW and anchor to one fd.
+  {
+    id: "static-gate-open-not-nofollow",
+    primitive: "open the static content-safety gate read with O_RDONLY | O_NOFOLLOW on the confined path (lib/static.js) — refuse a final-component symlink swap, single-fd anchored",
+    regex: /fsp\.open\(\s*\w*[Aa]bsPath\s*,\s*["']r["']\s*\)/,
+    requires: /O_NOFOLLOW/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-367/CWE-59 — the pre-serve content-safety read must open the root-confined path with O_NOFOLLOW so a final-component symlink swap between the directory stat and the read cannot redirect it, and take size + bytes from that single descriptor. The bare fsp.open(absPath, \"r\") form drops both defenses.",
+  },
+  // CodeQL js/insecure-temporary-file — atomic-file stages every write into a
+  // sibling temp file before rename; that create must be exclusive + no-follow.
+  {
+    id: "atomic-file-temp-create-not-exclusive",
+    primitive: "create the atomic-file rename-staging temp via _openExclTemp (O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW) — never the truncating, symlink-following \"w\" flag",
+    regex: /openSync\(\s*tmpPath\s*,\s*"w"/,
+    requires: /_openExclTemp\s*\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-377/CWE-59 — atomic-file stages each write into a sibling temp before rename; that temp create must be O_EXCL (refuse a pre-planted file) + O_NOFOLLOW (refuse a planted symlink), not the truncating, symlink-following \"w\" flag.",
+  },
+  // CodeQL js/insecure-temporary-file — http-client download staging must be
+  // exclusive + no-follow.
+  {
+    id: "http-client-download-temp-stream-not-exclusive",
+    primitive: "stage the http-client download with O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW (numeric flag), not createWriteStream flags:\"w\"",
+    regex: /createWriteStream\([^\n]*flags:\s*"w"/,
+    requires: /O_EXCL/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-377/CWE-59 — downloadStream streams a remote body into a sibling temp before the hash-gated rename; that create must be O_EXCL + O_NOFOLLOW so an attacker can't pre-plant a file (truncated) or symlink (written through to a victim) at the staging path.",
+  },
+  // CodeQL js/remote-property-injection — body-parser must build maps from
+  // [key,value] pairs (Object.fromEntries), never a request-keyed computed write.
+  {
+    id: "body-parser-request-keyed-map-write",
+    primitive: "build body-parser header/param/field maps via Object.fromEntries (_mapFromPairs), never assign a request-derived key directly (target[bareKey|currentField|fieldName] = v)",
+    regex: /\b\w+\[\s*(?:bareKey|currentField|fieldName)\s*\]\s*=(?!=)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-915/CWE-1321 — body-parser's multipart Content-Disposition parser and field accumulator wrote attacker-controlled key names into a map; a part named __proto__/constructor/prototype reaches the Object.prototype setter. They now collect [key,value] pairs and materialize via _mapFromPairs (Object.fromEntries onto Object.create(null), poisoned keys dropped) / Object.assign(fields, Object.fromEntries([[fieldName,value]])). The bareKey/currentField/fieldName key vars are unique to these parsers.",
+  },
+  {
+    id: "websocket-extension-params-keyed-write",
+    primitive: "build the Sec-WebSocket-Extensions params map via Object.fromEntries onto Object.create(null) (lib/websocket.js _parseExtensionHeader), never ext.params[name] = v",
+    regex: /\bext\.params\[\s*\w+\s*\]\s*=(?!=)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-915/CWE-1321 — the RFC 7692 extension-parameter name comes from the client Sec-WebSocket-Extensions header; written as ext.params[k]=v a param named __proto__/constructor/prototype is the sink. The parser now collects paramPairs (poisoned names skipped) and builds via Object.assign(Object.create(null), Object.fromEntries(paramPairs)).",
+  },
+  {
+    id: "body-parser-header-maps-compose-mapFromPairs",
+    primitive: "lib/middleware/body-parser.js must compose _mapFromPairs to build its request-header/param maps — dropping the helper means a raw request-keyed computed write returned",
+    regex: /function _parseMultipartHeaders\s*\(/,
+    requires: /_mapFromPairs\s*\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-915/CWE-1321 — the generic-key parser sites (_contentType, _parseMultipartHeaders, _parseHeaderParams) build maps keyed by a request-controlled name; they're guarded structurally by the one composing primitive _mapFromPairs (Object.fromEntries onto Object.create(null), poisoned keys dropped). Anchored on _parseMultipartHeaders (unique to body-parser); fails if a future edit drops _mapFromPairs.",
+  },
+  // M10 — azure blob key must be percent-encoded before URL interpolation.
+  {
+    id: "azure-blob-key-unencoded-in-url",
+    primitive: "percent-encode each azure blob-key path segment via _encodeBlobKey (sigv4.awsUriEncode) before URL interpolation",
+    regex: /config\.container\s*\+\s*"\/"\s*\+\s*(?:opts\.)?key\b/,
+    requires: /_encodeBlobKey\s*\(/,
+    allowlist: [],
+    reason: "CWE-20 — an azure blob key with ?/#/space truncates the URL path or corrupts the request line; keys must route through _encodeBlobKey (per-segment RFC 3986 encoding, preserving / separators) before interpolation, the encoder GCS already uses.",
+  },
+  // M7 — every file-upload content-safety skip path must audit the bypass.
+  {
+    id: "file-upload-content-safety-skip-unaudited",
+    primitive: "every fileUpload content-safety skip path must emit a fileUpload.content_safety_skipped audit (_emitContentSafetySkipped) naming the reason, not just an obs counter",
+    regex: /content_safety_skipped_streamed/,
+    requires: /_emitContentSafetySkipped\s*\(/,
+    allowlist: [],
+    reason: "CWE-778 — an upload that bypasses the byte-level content scan (opt-out / no gate for the extension / over the reassembly cap) must be visible in the audit log, not just an observability counter, so a reviewer can tell a scanned upload from a bypassed one.",
+  },
+  // #63 — safe-xml must reject prototype-poisoning element/attribute names and
+  // build null-prototype accumulators.
+  {
+    id: "xml-parsename-no-prototype-key-rejection",
+    primitive: "reject element/attribute names __proto__/constructor/prototype in the XML name parser (lib/parsers/safe-xml.js parseName → FORBIDDEN_KEYS)",
+    regex: /xml\/bad-name[\s\S]{0,200}?return\s+input\.substring/,
+    requires: /FORBIDDEN_KEYS\.has/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-1321 — b.safeXml built its key accumulators from parser-controlled names with no poisoned-key rejection (unlike its toml/yaml/ini siblings); an attribute named constructor tripped the duplicate guard via an inherited member, and __proto__/constructor/prototype landed as result-tree keys. parseName (uniquely scoped by the xml/bad-name code) must reject FORBIDDEN_KEYS before returning the parsed name.",
+  },
+  {
+    id: "xml-make-wrapper-plain-object",
+    primitive: "build the XML element-name wrapper with Object.create(null) (lib/parsers/safe-xml.js _make), not a plain {} keyed by an attacker-influenced element name",
+    regex: /function _make\(name, value\)[\s\S]{0,600}?var out = \{\}/,
+    requires: /var out = Object\.create\(null\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-1321 — _make wrapped each parsed element as `var out = {}; out[name] = value` keyed by the element name; with a plain object, out[\"__proto__\"]=value reassigns the wrapper prototype and the returned tree exposes inherited Object members on absent keys. The accumulator must be Object.create(null).",
+  },
+  // #64 — router.use must branch on a string/array path prefix, not drop it.
+  {
+    id: "router-use-drops-path-argument",
+    primitive: "Router.use must classify its first argument (function = global; string/array = path-scoped) — never a single-arg use(fn){this.middleware.push(fn)} that drops the path",
+    regex: /\buse\s*\(\s*fn\s*\)\s*\{\s*this\.middleware\.push\s*\(\s*fn\s*\)\s*;?\s*\}/,
+    requires: /_usePrefixesFromFirstArg|typeof\s+first\s*===\s*["']function["']/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-670 — router.use(path, mw) is documented across ~11 security middleware but was unimplemented: use(fn) pushed the first arg and dropped the rest, so a path-scoped security gate either 500'd every request (the path string invoked as a function) or never ran where mounted (silent control-scoping bypass). The fix classifies the first argument before pushing.",
+  },
+  // M4 — JMAP must gate a client accountId against accountsFor before dispatch.
+  {
+    id: "jmap-accountid-forwarded-without-accountsfor-gate",
+    primitive: "gate a client-supplied JMAP accountId against accountsFor(actor)'s permitted set (lib/mail-server-jmap.js _permittedAccountIds → accountNotFound) before dispatching to a method/blob handler",
+    regex: /\b(?:uploadBlob|downloadBlob)\([^)]*accountId[^)]*\)/,
+    requires: /_permittedAccountIds|accountNotFound/,
+    allowlist: [],
+    reason: "RFC 8620 §3.6.1 — a client-supplied accountId must be checked against accountsFor(actor)'s permitted set and rejected with accountNotFound BEFORE reaching a method/blob handler. Forwarding it on format-validation alone lets one tenant reach another tenant's account.",
+  },
+  // #69 — OTLP attribute export must route every value through the redactor.
+  {
+    id: "otlp-attrs-exported-without-redactor",
+    primitive: "route every OTLP attribute value through observability.getRedactor() before export (lib/otel-export.js _attrsToOtlp), so telemetry egress is redacted like log-stream + audit.safeEmit",
+    regex: /function _attrsToOtlp\b/,
+    requires: /getRedactor\s*\(\s*\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-532 — span/metric attributes are a first-class egress sink; _attrsToOtlp serialized values verbatim to the OTLP collector with no scrubbing. Every attribute value must pass through observability.getRedactor() (default composes b.redact.redact) before the OTLP payload, fail-toward-dropping on a throwing redactor.",
+  },
+  // #71 — registerTable must honor the pinned posture's seal-envelope floor.
+  {
+    id: "crypto-field-register-without-seal-floor-gate",
+    primitive: "enforce the pinned posture's sealEnvelopeFloor at cryptoField.registerTable (_assertSealEnvelopeFloor) — a regulated posture must refuse a table sealing columns below its envelope floor",
+    regex: /function registerTable\b/,
+    requires: /_assertSealEnvelopeFloor/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "CWE-311/CWE-326 — POSTURE_DEFAULTS gained a sealEnvelopeFloor (hipaa/pci-dss → aad); registerTable must throw at config-time when a regulated posture is pinned and the table seals columns under a weaker envelope (plain below aad/per-row-key), or a HIPAA deployment can register a copy-paste-vulnerable plain-sealed table.",
+  },
   {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
     // (TC39 stage-4, lands in V8 13.x). It replaces the two-step

@@ -8,6 +8,9 @@
  *   - downloadStream hash-mismatch refuses, deletes tmp, throws
  *     httpclient/hash-mismatch, audits .refused
  *   - downloadStream HTTP error surfaces without dest write
+ *   - downloadStream stages into an exclusive, no-follow temp file: the
+ *     happy path round-trips and a symlink at the dest is replaced (not
+ *     followed) so the victim it pointed at is left untouched
  *   - uploadMultipartStream POSTs file body via multipart/form-data,
  *     server receives the bytes + the operator-supplied field
  *   - uploadMultipartStream missing-file refuses at config time
@@ -216,6 +219,69 @@ async function testStreamErrorBodyPreserved() {
   });
 }
 
+async function testDownloadTempCreateIsExclusiveNoFollow() {
+  // CWE-377 / CWE-59: downloadStream stages the body into a sibling temp
+  // file created with O_EXCL | O_NOFOLLOW before the atomic rename. Two
+  // properties to assert through the public API:
+  //   (a) the happy path still round-trips (the exclusive create didn't
+  //       break the streaming/rename contract);
+  //   (b) a symlink planted at the DESTINATION is replaced by the rename,
+  //       not followed — the victim the symlink pointed at stays untouched.
+  await _withServer(function (req, res) {
+    res.writeHead(200, { "Content-Type": "application/octet-stream" });
+    res.end(FIXTURE_BYTES);
+  }, async function (baseUrl) {
+    // (a) round-trip into a fresh dest, confirm exactly one final file and
+    //     no leaked temp.
+    var dir  = b.testing.tempDir("httpclient-stream-excl");
+    try {
+      var dest = path.join(dir.path, "release.bin");
+      var result = await b.httpClient.downloadStream({
+        url:              baseUrl + "/payload",
+        dest:             dest,
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        allowInternal:    true,
+      });
+      check("downloadStream(excl): round-trips bytes",
+            result.bytesWritten === FIXTURE_BYTES.length &&
+            fs.readFileSync(dest).equals(FIXTURE_BYTES));
+      var leftovers = fs.readdirSync(dir.path).filter(function (n) {
+        return n.indexOf("release.bin.tmp-") === 0;
+      });
+      check("downloadStream(excl): no temp file leaked on success",
+            leftovers.length === 0);
+
+      // (b) symlink-at-destination — replaced by the rename, victim safe.
+      var victim = path.join(dir.path, "victim.bin");
+      fs.writeFileSync(victim, "DO NOT OVERWRITE", { mode: 0o600 });
+      var linkDest = path.join(dir.path, "link-dest.bin");
+      var symlinkOk = true;
+      try { fs.symlinkSync(victim, linkDest); }
+      catch (_e) { symlinkOk = false; }  // Windows w/o symlink privilege
+
+      if (symlinkOk) {
+        await b.httpClient.downloadStream({
+          url:              baseUrl + "/payload",
+          dest:             linkDest,
+          allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+          allowInternal:    true,
+        });
+        var lst = fs.lstatSync(linkDest);
+        check("downloadStream(excl): symlink dest replaced by regular file",
+              lst.isFile() && !lst.isSymbolicLink());
+        check("downloadStream(excl): symlink dest holds downloaded bytes",
+              fs.readFileSync(linkDest).equals(FIXTURE_BYTES));
+        check("downloadStream(excl): symlink target (victim) untouched",
+              fs.readFileSync(victim, "utf8") === "DO NOT OVERWRITE");
+      } else {
+        check("downloadStream(excl): symlink-dest case skipped (no privilege)", true);
+      }
+    } finally {
+      dir.cleanup();
+    }
+  });
+}
+
 async function testDownloadBadOpts() {
   var thrown = null;
   try {
@@ -319,6 +385,7 @@ async function run() {
   await testDownloadHashMismatch();
   await testDownloadHttpError();
   await testStreamErrorBodyPreserved();
+  await testDownloadTempCreateIsExclusiveNoFollow();
   await testDownloadBadOpts();
   await testUploadHappyPath();
   await testUploadMissingFile();

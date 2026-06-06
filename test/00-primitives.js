@@ -12418,6 +12418,74 @@ function testErrorsPageHookOptsRejectNonFunction() {
   check("renderHtml non-function throws at config time", threwHtml);
 }
 
+async function testErrorsPageAuditRedactsSecretsInStackAndReason() {
+  // CWE-532: a secret embedded in an exception message/stack (e.g. a
+  // database connection string a driver dropped into Error.message) must
+  // NOT be persisted verbatim in the tamper-evident audit chain. The 5xx
+  // audit emission goes through audit.safeEmit, whose b.redact.redact()
+  // pass scrubs connection-string / JWT / PEM / AWS-key shapes — including
+  // nested metadata.stack — before the record reaches the chain.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-errpg-"));
+  try {
+    await setupTestDb(tmpDir);
+    // The default audit action is "request.error"; its namespace is not a
+    // framework namespace, so register it the way an operator would.
+    b.audit.registerNamespace("request");
+
+    var secret = "postgres://user:s3cr3t@db.internal/app";
+    var handler = b.errorPage.create({ mode: "prod" }); // audit on by default
+    var req = { method: "POST", url: "/api/widget", headers: { accept: "application/json" }, id: "req-redact-1" };
+    var res = _makeFakeRes();
+    // Generic Error → 500. Its message (and therefore its stack) carries
+    // the secret-shaped connection string.
+    handler(new Error("connect failed for " + secret), req, res);
+
+    // Response behavior is unchanged: 500 status, JSON body, and the
+    // generic message — the original (secret-bearing) message never
+    // reaches the client on an unclassified 500.
+    check("audit-redact: response is 500",            res.statusCode === 500);
+    check("audit-redact: response is JSON",           /application\/json/.test(res.headers["Content-Type"]));
+    var payload = JSON.parse(res.body);
+    check("audit-redact: response hides operator message", res.body.indexOf("s3cr3t") === -1);
+    check("audit-redact: response shows generic message",
+          payload.error.message === "Internal Server Error");
+
+    await b.audit.flush();
+    await helpers.waitUntil(async function () {
+      var rows = await b.audit.query({ action: "request.error" });
+      return rows.length >= 1;
+    }, { timeoutMs: 5000, label: "errors-page audit: request.error row persisted" });
+
+    var events = await b.audit.query({ action: "request.error" });
+    check("audit-redact: 5xx audit row persisted",    events.length === 1);
+
+    var row = events[0];
+    var meta = row.metadata;
+    if (typeof meta === "string") meta = JSON.parse(meta);
+
+    // The whole persisted row must be free of the secret — neither the
+    // nested metadata.stack nor the reason (original error message) may
+    // carry it verbatim.
+    var rowJson = JSON.stringify(row);
+    check("audit-redact: secret absent from full persisted row",
+          rowJson.indexOf("s3cr3t") === -1);
+    check("audit-redact: secret absent from metadata.stack",
+          !meta || typeof meta.stack !== "string" || meta.stack.indexOf("s3cr3t") === -1);
+    check("audit-redact: secret absent from reason",
+          typeof row.reason !== "string" || row.reason.indexOf("s3cr3t") === -1);
+    // The connection-string redactor leaves a marker so triage stays
+    // useful — confirm the field was scanned, not merely dropped.
+    check("audit-redact: stack carries the connection-string marker",
+          !!meta && typeof meta.stack === "string" &&
+          meta.stack.indexOf("[REDACTED-CONN-STRING]") !== -1);
+    // Non-secret triage fields survive redaction.
+    check("audit-redact: non-secret metadata preserved",
+          !!meta && meta.status === 500 && meta.method === "POST" && meta.url === "/api/widget");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- log ----
 //
 // Each test creates an instance with a captured-buffer destination so
@@ -18347,6 +18415,7 @@ async function run() {
   testErrorsPageJsonFormatterTakesOverBody();
   testErrorsPageRenderHtmlHook();
   testErrorsPageHookOptsRejectNonFunction();
+  await testErrorsPageAuditRedactsSecretsInStackAndReason();
   // log — structured JSON logging with request-id correlation
   testLogSurface();
   testLogEmitsJsonLineToStdout();
@@ -19048,6 +19117,7 @@ module.exports = {
   testErrorsPageJsonFormatterTakesOverBody:  testErrorsPageJsonFormatterTakesOverBody,
   testErrorsPageRenderHtmlHook:              testErrorsPageRenderHtmlHook,
   testErrorsPageHookOptsRejectNonFunction:   testErrorsPageHookOptsRejectNonFunction,
+  testErrorsPageAuditRedactsSecretsInStackAndReason: testErrorsPageAuditRedactsSecretsInStackAndReason,
   testLogSurface:                            testLogSurface,
   testLogEmitsJsonLineToStdout:              testLogEmitsJsonLineToStdout,
   testLogRoutesErrorAndFatalToStderr:        testLogRoutesErrorAndFatalToStderr,
