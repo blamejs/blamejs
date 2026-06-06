@@ -149,6 +149,11 @@ module.exports = { run: run };
 if (require.main === module) {
   run().then(
     function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
-    function (e) { console.error("FAIL:", e.message); process.exit(1); }
+    // Re-throw rather than logging e.message: the failure message can
+    // echo request-derived cookie names/values fed into the middleware,
+    // and writing that to the log unescaped would be log injection
+    // (CWE-117). The non-zero exit + thrown stack still surface the
+    // failure to the runner.
+    function (e) { process.exitCode = 1; throw e; }
   );
 }

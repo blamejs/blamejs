@@ -169,12 +169,29 @@ async function testSymlinkAtDestinationReplacedNotFollowed() {
     await b.atomicFile.write(dest, payload);
 
     // dest is now a regular file with the new bytes (the rename replaced
-    // the symlink entry) ...
-    var lst = fs.lstatSync(dest);
-    check("dest-symlink: destination is a regular file after write",
-          lst.isFile() && !lst.isSymbolicLink());
-    check("dest-symlink: destination holds the new bytes",
-          fs.readFileSync(dest).equals(payload));
+    // the symlink entry). Open ONE no-follow fd and take both the type
+    // check (fstat) and the byte read from that same descriptor — no
+    // lstat-then-read against the path, which would be a check-then-use
+    // file-system race (CWE-367). O_NOFOLLOW makes the open itself fail
+    // if dest were still a symlink, so a successful open already proves
+    // the rename replaced the link with a regular file.
+    var destFd = fs.openSync(dest, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    try {
+      var fst = fs.fstatSync(destFd);
+      check("dest-symlink: destination is a regular file after write",
+            fst.isFile() && !fst.isSymbolicLink());
+      var destBytes = Buffer.alloc(fst.size);
+      var got = 0;
+      while (got < fst.size) {
+        var n = fs.readSync(destFd, destBytes, got, fst.size - got, null);
+        if (n === 0) break;
+        got += n;
+      }
+      check("dest-symlink: destination holds the new bytes",
+            got === payload.length && destBytes.equals(payload));
+    } finally {
+      fs.closeSync(destFd);
+    }
     // ... and the victim the symlink pointed at was NOT written through.
     check("dest-symlink: symlink target (victim) untouched",
           fs.readFileSync(victim, "utf8") === "DO NOT OVERWRITE");

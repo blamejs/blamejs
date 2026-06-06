@@ -117,5 +117,10 @@ module.exports = { run: run };
 
 if (require.main === module) {
   run().then(function () { console.log("OK"); })
-       .catch(function (e) { console.error(e.stack || e); process.exit(1); });
+       // Re-throw rather than console.error the error object: a DB-setup
+       // failure can carry passphrase-derived material on the error, and
+       // logging it would be clear-text logging of sensitive data
+       // (CWE-312). The non-zero exit + thrown stack still surface the
+       // failure to the runner.
+       .catch(function (e) { process.exitCode = 1; throw e; });
 }

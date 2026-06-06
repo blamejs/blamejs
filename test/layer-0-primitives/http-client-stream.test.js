@@ -266,11 +266,29 @@ async function testDownloadTempCreateIsExclusiveNoFollow() {
           allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
           allowInternal:    true,
         });
-        var lst = fs.lstatSync(linkDest);
-        check("downloadStream(excl): symlink dest replaced by regular file",
-              lst.isFile() && !lst.isSymbolicLink());
-        check("downloadStream(excl): symlink dest holds downloaded bytes",
-              fs.readFileSync(linkDest).equals(FIXTURE_BYTES));
+        // Open ONE no-follow fd and take both the type check (fstat) and
+        // the byte read from that same descriptor — no lstat-then-read
+        // against the path, which would be a check-then-use file-system
+        // race (CWE-367). O_NOFOLLOW makes the open fail if linkDest were
+        // still a symlink, so a successful open already proves the rename
+        // replaced the link with a regular file.
+        var linkFd = fs.openSync(linkDest, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+        try {
+          var linkStat = fs.fstatSync(linkFd);
+          check("downloadStream(excl): symlink dest replaced by regular file",
+                linkStat.isFile() && !linkStat.isSymbolicLink());
+          var linkBytes = Buffer.alloc(linkStat.size);
+          var linkGot = 0;
+          while (linkGot < linkStat.size) {
+            var ln = fs.readSync(linkFd, linkBytes, linkGot, linkStat.size - linkGot, null);
+            if (ln === 0) break;
+            linkGot += ln;
+          }
+          check("downloadStream(excl): symlink dest holds downloaded bytes",
+                linkGot === FIXTURE_BYTES.length && linkBytes.equals(FIXTURE_BYTES));
+        } finally {
+          fs.closeSync(linkFd);
+        }
         check("downloadStream(excl): symlink target (victim) untouched",
               fs.readFileSync(victim, "utf8") === "DO NOT OVERWRITE");
       } else {
