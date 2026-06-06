@@ -273,6 +273,46 @@ async function testGrantRefusalPaths() {
   }
 }
 
+// ---- Grant — concurrent TOTP replay (atomic step reservation) ----
+
+async function testConcurrentTotpGrantReplay() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns: ["ssn"],
+      factors: ["totp"],
+    });
+    var totp = _validTotp();
+    var req  = _fakeReq();   // one req → one actor → one (actor, secret) replay key
+    function grantOpts() {
+      return {
+        req:    req,
+        table:  "patients",
+        reason: "concurrent replay regression test",
+        factor: { type: "totp", code: totp.code, secret: totp.secret },
+      };
+    }
+    // Two grants in flight at once presenting the SAME in-window code. The
+    // accepted TOTP step is reserved atomically as part of acceptance, so
+    // exactly one grant succeeds and the other is refused as a replay — a
+    // read-then-commit floor let both observe the old floor and both pass.
+    var results = await Promise.allSettled([
+      b.breakGlass.grant(grantOpts()),
+      b.breakGlass.grant(grantOpts()),
+    ]);
+    var ok  = results.filter(function (r) { return r.status === "fulfilled"; });
+    var bad = results.filter(function (r) { return r.status === "rejected"; });
+    check("concurrent totp grant: exactly one grant succeeds", ok.length === 1);
+    check("concurrent totp grant: the other is refused as a replay",
+          bad.length === 1 &&
+          /breakglass\/bad-factor/.test((bad[0].reason && bad[0].reason.code) || ""));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- Grant + unseal — full lifecycle on a real sealed table ----
 
 async function testUnsealRowLifecycle() {
@@ -1031,6 +1071,7 @@ async function run() {
   await testPolicyValidation();
   await testGrantHappyPath();
   await testGrantRefusalPaths();
+  await testConcurrentTotpGrantReplay();
   await testUnsealRowLifecycle();
   await testGrantExhaustion();
   await testGrantRevoke();

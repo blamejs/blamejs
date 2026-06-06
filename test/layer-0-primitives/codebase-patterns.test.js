@@ -6337,6 +6337,44 @@ var KNOWN_ANTIPATTERNS = [
     reason: "v0.14.26 — queue-local seals job rows with cryptoField.sealRow(SEAL_TABLE, ...), but cryptoField.sealRow writes PLAINTEXT (silent no-op) for a table that was never registered. A standalone redis/sqs queue node that never ran db.init would therefore persist job payloads in cleartext. The fix self-registers the seal table on queue.init via _ensureSealTable (idempotent). This detector fires if a future edit seals/unseals SEAL_TABLE rows while the _ensureSealTable self-register is removed — reopening the fail-open-to-plaintext window. The companion _ensureSealTable declaration satisfies the discipline once the self-register is present.",
   },
   {
+    // When the DSR ticket store adds the derived subject-hash lookup
+    // columns to an existing table, ensureSchema MUST backfill legacy /
+    // vault-less rows: compute the hashes from the plaintext subject + re-
+    // seal. Once a vault is present, list({ subject }) matches on the hash
+    // columns (the plaintext columns are sealed and unmatchable), so a
+    // pre-upgrade row with NULL hashes is never found for its subject — and
+    // the erasure-completion purge, which lists by subject, skips exactly
+    // the tickets it must remove (GDPR Art. 17). The regex matches the
+    // list-by-hash spec (always present in dsr.js); the companion `requires`
+    // is the backfill SELECT, so the file is skipped while the backfill is
+    // in place and flagged if it is removed. subject_email_hash is unique
+    // to lib/dsr.js, so this self-scopes.
+    id: "dsr-schema-upgrade-without-legacy-hash-backfill",
+    primitive: "when the DSR ticket store queries subject-hash lookup columns, ensureSchema must backfill legacy/vault-less rows (compute hashes from plaintext + re-seal) so list({ subject }) finds pre-upgrade tickets and the erasure purge does not skip them",
+    regex: /hashCol:\s*["']subject_email_hash["']/,
+    requires: /subject_email_hash IS NULL/,
+    allowlist: [],
+    reason: "v0.14.26 — the DSR dbTicketStore matches list({ subject }) on derived-hash columns once a vault is present. A row written before the sealed-store upgrade (or while vault-less) has plaintext subject columns with NULL hashes, so it is invisible to a subject lookup — and the erasure-completion purge that lists by subject silently skips it, leaving un-erased PII (GDPR Art. 17 / CWE-noted advertised-vs-actual). ensureSchema must backfill: SELECT rows with NULL subject_*_hash, computeDerived from the plaintext, sealRow, and write hashes + sealed columns back (idempotent; also makes the legacy plaintext erasable). This detector fires if the hash-lookup path remains but the `subject_email_hash IS NULL` backfill SELECT is removed.",
+  },
+  {
+    // The break-glass TOTP factor must reserve the accepted step ATOMICALLY
+    // as part of acceptance (_reserveTotpStep — one compare-and-advance
+    // cache update). The earlier shape read the replay floor
+    // (_readLastTotpStep), verified against it, then committed the step in a
+    // separate step (_commitTotpStep): two concurrent grant() calls with the
+    // same in-window code both observe the old floor before either commits,
+    // so both verify and the same code is redeemed twice (replay). Those two
+    // function names are unique to lib/break-glass.js; their reappearance is
+    // the racy read-then-commit pattern returning. skipCommentLines so the
+    // historical reference in this catalog / docstrings doesn't self-match.
+    id: "totp-step-read-then-commit-race",
+    primitive: "reserve the break-glass TOTP replay step atomically as part of acceptance (_reserveTotpStep — one compare-and-advance); never read the floor, verify, then commit in a separate step (the _readLastTotpStep + _commitTotpStep shape) — two concurrent grants observe the same floor and both pass (replay)",
+    regex: /\b_readLastTotpStep\b|\b_commitTotpStep\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.26 (Codex P2 on PR #306) — break-glass grant() read the highest accepted TOTP step, verified against it, then committed the new step in a separate cache write. Two concurrent grants for the same (actor, secret, code) both read the old floor before either committed, so both _verifyTotpFactor calls passed and the same in-window code was redeemed more than once. The fix reserves the step atomically in _reserveTotpStep (a single _factorLockoutCache.update that advances the floor only if the step is strictly above it, reporting whether THIS caller won), so the second concurrent grant is refused. This detector flags reintroduction of the read-then-commit helpers (_readLastTotpStep / _commitTotpStep) that carried the race.",
+  },
+  {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
     // (TC39 stage-4, lands in V8 13.x). It replaces the two-step
     // `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` (and

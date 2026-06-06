@@ -902,6 +902,22 @@ async function testDbStoreUpgradePath() {
           typeof ticket.id === "string");
     var got = await h.store.get(ticket.id);
     check("dbStore upgrade: round-trips the new ticket", got && got.subject.email === "alice@example.com");
+
+    // The legacy row was seeded with a plaintext subject and NULL hash. Once a
+    // vault is present, list({ subject }) matches on the hash column, so the
+    // upgrade MUST have backfilled the legacy row's hash — otherwise it is
+    // invisible to a subject lookup and the erasure-completion purge skips it.
+    var legacyFound = await h.store.list({ subject: { email: "legacy@example.com" } });
+    check("dbStore upgrade: legacy plaintext row backfilled + found by subject",
+          legacyFound.some(function (t) { return t.id === "DSR-LEGACY-1"; }));
+    var rawLegacy = b.db.prepare(
+      "SELECT subject_email, subject_email_hash FROM dsr_tickets WHERE id = $id")
+      .all({ $id: "DSR-LEGACY-1" })[0];
+    check("dbStore upgrade: legacy subject_email_hash populated by backfill",
+          rawLegacy && typeof rawLegacy.subject_email_hash === "string" &&
+          rawLegacy.subject_email_hash.length > 0);
+    check("dbStore upgrade: legacy subject_email sealed at rest by backfill (now erasable)",
+          rawLegacy && rawLegacy.subject_email !== "legacy@example.com");
   } finally {
     await teardownTestDb(tmpDir);
   }
