@@ -455,6 +455,9 @@ async function run() {
   // ---- RFC 9101 + RFC 9126 §3 — PAR with a signed request object ----
   await _testParRequestObject();
   await _testParPlainUnchanged();
+
+  // ---- OIDC Back-Channel Logout — bounded token + header parse ----
+  await _testBackchannelLogoutOversized();
 }
 
 // PAR carrying a signed request object: the form body MUST hold `request=`
@@ -481,6 +484,9 @@ async function _testParRequestObject() {
     });
     var rv = await oa.pushAuthorizationRequest({
       signedRequestObject: { key: kp.privateKey, kid: "c1" },
+      authorizationDetails: [
+        { type: "payment_initiation", actions: ["initiate"], locations: ["https://rs.example/pay"] },
+      ],
     });
     check("oauth.PAR+RO: returns a request_uri", rv.requestUri === "urn:ietf:params:oauth:request_uri:abc123");
     check("oauth.PAR+RO: flags requestObjectSent", rv.requestObjectSent === true);
@@ -506,7 +512,44 @@ async function _testParRequestObject() {
       parsed.params.redirect_uri === "https://rp.example/cb" && parsed.params.scope === "openid profile" &&
       parsed.params.code_challenge_method === "S256" && typeof parsed.params.code_challenge === "string");
     check("oauth.PAR+RO: request object aud is the AS issuer", parsed.claims.aud === issuer);
+    // RFC 9101/9396 — authorization_details travels as a JSON ARRAY claim,
+    // not a JSON string (a conforming AS rejects the string-valued claim).
+    check("oauth.PAR+RO: authorization_details is a native array claim",
+      Array.isArray(parsed.params.authorization_details) &&
+      parsed.params.authorization_details.length === 1 &&
+      parsed.params.authorization_details[0].type === "payment_initiation");
   } finally { server.close(); }
+}
+
+// RFC OIDC Back-Channel Logout — the pre-verify header parse + the token
+// split run on an attacker-reachable, not-yet-signature-checked token, so
+// the token must be length-bounded before either.
+async function _testBackchannelLogoutOversized() {
+  var oa = b.auth.oauth.create({
+    issuer:        "https://idp.example",
+    clientId:      "rp-bcl",
+    redirectUri:   "https://rp.example/cb",
+    isOidc:        true,
+    allowHttp:     true,
+    allowInternal: true,
+  });
+  // A logout_token far larger than the response-bytes cap must be refused
+  // BEFORE the split / base64url header decode.
+  var huge = "a".repeat(300000) + ".b.c";
+  var threw = null;
+  try { await oa.verifyBackchannelLogoutToken(huge); }
+  catch (e) { threw = e; }
+  check("oauth.backchannelLogout: oversized token refused before parse",
+    threw && threw.code === "auth-oauth/logout-token-too-large");
+
+  // A well-formed-shape but bogus header still parses through safeJson
+  // (size-bounded) and fails downstream, not with an unbounded-parse crash.
+  var bogusHeader = Buffer.from("{not json", "utf8").toString("base64url");
+  var threw2 = null;
+  try { await oa.verifyBackchannelLogoutToken(bogusHeader + ".payload.sig"); }
+  catch (e) { threw2 = e; }
+  check("oauth.backchannelLogout: malformed header refused (bounded parse)",
+    threw2 && threw2.code === "auth-oauth/bad-logout-header");
 }
 
 // PAR WITHOUT a signed request object: byte-for-byte the prior plain-form

@@ -6259,6 +6259,122 @@ var KNOWN_ANTIPATTERNS = [
     reason: "v0.14.25 — the per-row-key K_row was kdf(...getDerivedHashSalt()...) over the PLAINTEXT-on-disk salt, so a disk-access attacker re-derived it and destroyPerRowKey/eraseHard shred NOTHING (advertised as crypto-shred since v0.7.27, false); the idempotency fingerprint HMAC seeded off the same plaintext salt despite promising the vault root was the trust root. Both reseeded — K_row onto a fresh b.crypto.generateBytes(32) row-secret AAD-wrapped via b.vault.aad.seal, the fingerprint HMAC onto the sealed b.vault.getDerivedHashMacKey() (since v0.14.7). This detector refuses the inline regression `kdf(...getDerivedHashSalt()...)`; the legitimate `kdf(getDerivedHashMacKey()...)` (the sealed key) and the `sha3Hash(getDerivedHashSalt()...)` deterministic equality index are different shapes and do not match. NOTE the historical bug assigned the salt to a var first (`saltHex = getDerivedHashSalt()...; kdf(...saltHex...)`) — a data-flow shape regex can't trace, so reviewers must also reject any kdf/HMAC key whose IKM transitively names getDerivedHashSalt.",
   },
   {
+    // A break-glass grant pin (pinIp / sessionPin — both documented
+    // default-ON) binds redemption to the IP / session captured when the
+    // grant was minted. The enforcement MUST fail closed when the
+    // captured binding is absent: a grant that recorded no IP (or no
+    // session) is refused, never waved through. The historical fail-open
+    // was a `grantRow.ip != null &&` short-circuit around the comparison
+    // — "no binding recorded, so there is nothing to check, so allow" —
+    // which lets a grant minted without a binding be redeemed from any
+    // origin, defeating the pin exactly when it is the only control left.
+    // The fixed shape is `if (grantRow.ip == null) throw ...` BEFORE the
+    // `redeemIp !== grantRow.ip` comparison (see _enforceGrantPins). The
+    // `grantRow.` receiver is unique to lib/break-glass.js, so this
+    // bad-shape regex needs no companion; skipCommentLines keeps the
+    // narrative comment that quotes the bad form from self-matching.
+    id: "break-glass-pin-fails-open-on-null-binding",
+    primitive: "fail closed in break-glass pin enforcement — refuse a grant whose pinIp/sessionPin binding was never captured (if grantRow.ip == null throw); never short-circuit the comparison with a `grantRow.ip != null &&` guard that treats an absent binding as 'nothing to check, allow'",
+    regex: /grantRow\.(?:ip|sessionId)\s*!=\s*null\s*&&/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "pinIp / sessionPin are documented default-ON; redemption binds to the IP / session captured at mint time. A `grantRow.ip != null &&` (or sessionId) guard around the pin comparison fails OPEN: a grant minted without a captured binding skips the check and is redeemable from any origin — the pin's whole point is lost in the one case it must hold. Enforce by refusing the unbound grant first (`if (grantRow.ip == null) throw`), then comparing. Resolve the redeeming client IP from the redemption request (falling back to req.ip), not from a value the redeemer can omit.",
+  },
+  {
+    // The b.dsr database-backed ticket store holds the data subject's
+    // identifiers and the raw request payload — PII under GDPR Art. 15 /
+    // 17 that an erasure request must be able to destroy. Those columns
+    // MUST be sealed via cryptoField.registerTable(DSR_SEAL_TABLE, { aad:
+    // true, ... }) so the row's plaintext is encrypted at rest and goes
+    // with the shredded row key; storing them plaintext leaves
+    // un-erasable PII and defeats b.subject.eraseHard for DSR tickets.
+    // DSR_SEAL_TABLE is unique to lib/dsr.js; the companion `requires`
+    // exempts the file once the registerTable call is present (the fix),
+    // so this fires only if a future edit drops the registration while
+    // keeping the table.
+    id: "dsr-ticket-store-pii-must-be-sealed",
+    primitive: "seal the b.dsr database ticket store's subject identifiers + request payload via cryptoField.registerTable(DSR_SEAL_TABLE, { aad: true, columns: [...] }); plaintext PII in the ticket store is un-erasable and defeats DSR erasure",
+    regex: /\bDSR_SEAL_TABLE\b/,
+    requires: /registerTable\s*\(\s*DSR_SEAL_TABLE/,
+    allowlist: [],
+    reason: "The DSR dbTicketStore persists the data subject's identifiers and the raw request body — the exact PII an Art. 17 erasure must destroy. Those columns must be sealed via cryptoField.registerTable(DSR_SEAL_TABLE, { aad: true }) so they are encrypted at rest under a per-row key bound to (table, rowId) and shredded with the row; leaving them plaintext means an erasure request cannot delete the data it is processing. The companion registerTable(DSR_SEAL_TABLE call satisfies the discipline; this entry fires only if the registration is removed while the table remains.",
+  },
+  {
+    // Vault keypair rotation stages every output file (the re-encrypted
+    // db, resealed vault/db keys, additional sealed files, derived-hash
+    // material, and the transient PLAINTEXT db) inside opts.stagingDir.
+    // Those writes must go through _writeStagedFileExclusive — O_CREAT |
+    // O_EXCL | O_NOFOLLOW, owner-only 0o600 — so a same-user pre-planted
+    // file or symlink swap in the staging dir is a hard failure rather
+    // than a followed write (CWE-377 / CWE-379 / CWE-59). A raw
+    // nodeFs.writeFileSync into the staging dir (or to the tmpDbPath /
+    // verifyTmp markers) follows whatever is already at the path. The
+    // identifiers tmpDbPath / verifyTmp / stagingDir are unique to
+    // lib/vault/rotate.js, so this bad-shape regex self-scopes there and
+    // needs no companion; the exclusive helper's own write targets an fd,
+    // not these names, so it does not match.
+    id: "vault-rotate-staged-write-not-exclusive",
+    primitive: "write vault-rotation staging files via lib/vault/rotate.js _writeStagedFileExclusive (O_CREAT|O_EXCL|O_NOFOLLOW, 0o600); never raw nodeFs.writeFileSync into opts.stagingDir or the tmpDbPath/verifyTmp markers — a non-exclusive create follows a pre-planted file/symlink in the staging dir (CWE-377/379/59)",
+    regex: /writeFileSync\s*\(\s*(?:tmpDbPath\b|verifyTmp\b|nodePath\.join\(\s*stagingDir)/,
+    allowlist: [],
+    reason: "vault rotation re-encrypts the database and reseals keys through framework-named files in opts.stagingDir, including a transient PLAINTEXT copy of the whole database. A raw nodeFs.writeFileSync to those paths follows a pre-planted regular file or symlink (CWE-59) and inherits a umask-wide mode (CWE-377/379). Every staged write must go through _writeStagedFileExclusive, which unlinks any stale entry then creates with O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW at 0o600 and fsyncs; the exclusive create turns a pre-plant into a hard error and O_NOFOLLOW refuses a symlinked target. This detector encodes the CodeQL js/insecure-temporary-file finding fixed in v0.14.26 so the raw-write shape cannot return to the rotation path.",
+  },
+  {
+    // The local queue seals job rows via cryptoField.sealRow(SEAL_TABLE,
+    // ...), but cryptoField.sealRow silently passes the row through as
+    // PLAINTEXT for a table that was never registerTable'd. The queue
+    // therefore MUST self-register its seal table on init via
+    // _ensureSealTable (an idempotent getSchema-probe + registerTable),
+    // or a queue node that never ran db.init writes job payloads to the
+    // backend in cleartext (fail-open). SEAL_TABLE and _ensureSealTable
+    // are queue-local identifiers, so the bad-shape regex self-scopes;
+    // the companion `requires` (the helper's presence) is the fix marker.
+    id: "queue-seal-table-not-self-registered",
+    primitive: "the local queue must self-register its seal table on init via _ensureSealTable (cryptoField.registerTable(SEAL_TABLE)) so job payloads seal at rest from the first write; cryptoField.sealRow/unsealRow is a silent no-op against an unregistered table, leaving jobs in plaintext (fail-open)",
+    regex: /cryptoField\.(?:sealRow|unsealRow)\s*\(\s*SEAL_TABLE\b/,
+    requires: /function _ensureSealTable\b/,
+    allowlist: [],
+    reason: "v0.14.26 — queue-local seals job rows with cryptoField.sealRow(SEAL_TABLE, ...), but cryptoField.sealRow writes PLAINTEXT (silent no-op) for a table that was never registered. A standalone redis/sqs queue node that never ran db.init would therefore persist job payloads in cleartext. The fix self-registers the seal table on queue.init via _ensureSealTable (idempotent). This detector fires if a future edit seals/unseals SEAL_TABLE rows while the _ensureSealTable self-register is removed — reopening the fail-open-to-plaintext window. The companion _ensureSealTable declaration satisfies the discipline once the self-register is present.",
+  },
+  {
+    // When the DSR ticket store adds the derived subject-hash lookup
+    // columns to an existing table, ensureSchema MUST backfill legacy /
+    // vault-less rows: compute the hashes from the plaintext subject + re-
+    // seal. Once a vault is present, list({ subject }) matches on the hash
+    // columns (the plaintext columns are sealed and unmatchable), so a
+    // pre-upgrade row with NULL hashes is never found for its subject — and
+    // the erasure-completion purge, which lists by subject, skips exactly
+    // the tickets it must remove (GDPR Art. 17). The regex matches the
+    // list-by-hash spec (always present in dsr.js); the companion `requires`
+    // is the backfill SELECT, so the file is skipped while the backfill is
+    // in place and flagged if it is removed. subject_email_hash is unique
+    // to lib/dsr.js, so this self-scopes.
+    id: "dsr-schema-upgrade-without-legacy-hash-backfill",
+    primitive: "when the DSR ticket store queries subject-hash lookup columns, ensureSchema must backfill legacy/vault-less rows (compute hashes from plaintext + re-seal) so list({ subject }) finds pre-upgrade tickets and the erasure purge does not skip them",
+    regex: /hashCol:\s*["']subject_email_hash["']/,
+    requires: /subject_email_hash IS NULL/,
+    allowlist: [],
+    reason: "v0.14.26 — the DSR dbTicketStore matches list({ subject }) on derived-hash columns once a vault is present. A row written before the sealed-store upgrade (or while vault-less) has plaintext subject columns with NULL hashes, so it is invisible to a subject lookup — and the erasure-completion purge that lists by subject silently skips it, leaving un-erased PII (GDPR Art. 17 / CWE-noted advertised-vs-actual). ensureSchema must backfill: SELECT rows with NULL subject_*_hash, computeDerived from the plaintext, sealRow, and write hashes + sealed columns back (idempotent; also makes the legacy plaintext erasable). This detector fires if the hash-lookup path remains but the `subject_email_hash IS NULL` backfill SELECT is removed.",
+  },
+  {
+    // The break-glass TOTP factor must reserve the accepted step ATOMICALLY
+    // as part of acceptance (_reserveTotpStep — one compare-and-advance
+    // cache update). The earlier shape read the replay floor
+    // (_readLastTotpStep), verified against it, then committed the step in a
+    // separate step (_commitTotpStep): two concurrent grant() calls with the
+    // same in-window code both observe the old floor before either commits,
+    // so both verify and the same code is redeemed twice (replay). Those two
+    // function names are unique to lib/break-glass.js; their reappearance is
+    // the racy read-then-commit pattern returning. skipCommentLines so the
+    // historical reference in this catalog / docstrings doesn't self-match.
+    id: "totp-step-read-then-commit-race",
+    primitive: "reserve the break-glass TOTP replay step atomically as part of acceptance (_reserveTotpStep — one compare-and-advance); never read the floor, verify, then commit in a separate step (the _readLastTotpStep + _commitTotpStep shape) — two concurrent grants observe the same floor and both pass (replay)",
+    regex: /\b_readLastTotpStep\b|\b_commitTotpStep\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.14.26 (Codex P2 on PR #306) — break-glass grant() read the highest accepted TOTP step, verified against it, then committed the new step in a separate cache write. Two concurrent grants for the same (actor, secret, code) both read the old floor before either committed, so both _verifyTotpFactor calls passed and the same in-window code was redeemed more than once. The fix reserves the step atomically in _reserveTotpStep (a single _factorLockoutCache.update that advances the floor only if the step is strictly above it, reporting whether THIS caller won), so the second concurrent grant is refused. This detector flags reintroduction of the read-then-commit helpers (_readLastTotpStep / _commitTotpStep) that carried the race.",
+  },
+  {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
     // (TC39 stage-4, lands in V8 13.x). It replaces the two-step
     // `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` (and
