@@ -116,11 +116,7 @@ function _layerDirFor(layerNum) {
   return dir;
 }
 
-// Run a single test file. Backward compat with the legacy
-// run() / groups[] export shapes; new files only need run().
-async function _runTestModule(modulePath, displayName) {
-  var mod = require(modulePath);
-  var fileStart = Date.now();
+async function _runModuleBody(mod, displayName) {
   if (typeof mod.run === "function") {
     try { await mod.run(); }
     catch (err) {
@@ -149,6 +145,37 @@ async function _runTestModule(modulePath, displayName) {
         }
       }
     }
+  }
+}
+
+// Run a single test file. Backward compat with the legacy
+// run() / groups[] export shapes; new files only need run().
+//
+// The sequential layers (1-5) run in-process, so unlike the forked
+// layer-0 children they have no per-fork watchdog. A hung async op here
+// (a blocking native call starved on the libuv threadpool, a leaked
+// handle, an awaited promise that never settles) would otherwise ride
+// to the CI job's wall-clock limit as an unattributable multi-hour
+// hang. This in-process watchdog races the file body against the same
+// FILE_TIMEOUT_MS budget: the main loop stays responsive while a
+// threadpool thread is stuck, so the timer fires, names the file, and
+// fails fast and diagnosably.
+async function _runTestModule(modulePath, displayName) {
+  var mod = require(modulePath);
+  var fileStart = Date.now();
+  var watchdog = null;
+  var timed = new Promise(function (_resolve, reject) {
+    watchdog = setTimeout(function () {
+      reject(new Error(displayName + ": sequential-layer watchdog — exceeded " +
+        FILE_TIMEOUT_MS + "ms with no completion (likely a hung async op: " +
+        "libuv-threadpool starvation, a leaked handle, or a blocking native call)"));
+    }, FILE_TIMEOUT_MS);
+    if (typeof watchdog.unref === "function") watchdog.unref();
+  });
+  try {
+    await Promise.race([_runModuleBody(mod, displayName), timed]);
+  } finally {
+    if (watchdog !== null) clearTimeout(watchdog);
   }
   return Date.now() - fileStart;
 }

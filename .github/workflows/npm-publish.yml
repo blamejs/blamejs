@@ -155,6 +155,13 @@ jobs:
         env:
           SMOKE_PARALLEL: 8
           NODE_OPTIONS: --max-old-space-size=8192
+          # The vault wrapped-keypair generation runs Argon2id through
+          # the async native binding (libuv threadpool, default 4); the
+          # audit-handler shutdown drain at the layer-0→1 transition can
+          # hold those threads and starve the async Argon2 indefinitely
+          # (the ~36-minute keygen hangs that blocked publishes). A
+          # larger pool removes the starvation; idle threads are free.
+          UV_THREADPOOL_SIZE: "16"
           # The pattern-catalog test runs ~2 minutes on a fast
           # many-core machine; at SMOKE_PARALLEL=8 on a 4-core runner
           # it deterministically crosses the default 300s per-file

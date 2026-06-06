@@ -97,6 +97,16 @@ jobs:
         # accumulator design.
         env:
           NODE_OPTIONS: --max-old-space-size=6144
+          # The vault wrapped-keypair generation runs Argon2id through
+          # the async native binding, which queues onto the libuv
+          # threadpool (default 4). At the layer-0→1 transition the
+          # audit handler's shutdown drain can hold those threads, and
+          # the async Argon2 then starves indefinitely — the
+          # ~36-minute keygen hangs observed on CI runners. Sizing the
+          # pool well above the concurrent-async-work high-water mark
+          # removes the starvation (commodity runners have ≥2 cores; a
+          # larger pool only costs idle threads).
+          UV_THREADPOOL_SIZE: "16"
           # The pattern-catalog test runs ~2 minutes on a fast
           # many-core machine; on a 4-core runner sharing CPU with
           # sibling forks it can cross the default 300s per-file
