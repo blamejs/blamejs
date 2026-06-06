@@ -457,6 +457,56 @@ function cmdPush() {
   console.log("\nnext: node scripts/release.js watch");
 }
 
+// Fetch every UNRESOLVED review thread on the PR with enough context to act on
+// it: the file:line, the reviewer that raised it (CodeQL = github-advanced-
+// security, Codex = chatgpt-codex-connector, lint = github-code-quality), the
+// first line of the finding, the thread id, and the resolve mutation. Bot
+// reviews post ASYNCHRONOUSLY — often a minute or two AFTER the status checks
+// finish — so this is the authoritative check at merge time, not just watch.
+function _unresolvedThreads(prNum) {
+  var rv = _capture("gh", ["api", "graphql",
+    "-f", "query=query { repository(owner:\"blamejs\",name:\"blamejs\") { pullRequest(number:" + prNum +
+      ") { reviewThreads(first:100) { nodes { id isResolved path line " +
+      "comments(first:1) { nodes { author{login} body } } } } } } }",
+    "--jq", ".data.repository.pullRequest.reviewThreads.nodes"]);
+  var nodes;
+  try { nodes = JSON.parse(rv.stdout || "[]"); } catch (_e) { nodes = []; }
+  return (nodes || []).filter(function (t) { return t && t.isResolved === false; })
+    .map(function (t) {
+      var c = t.comments && t.comments.nodes && t.comments.nodes[0];
+      return {
+        id:     t.id,
+        path:   t.path || "(pr-level)",
+        line:   t.line,
+        author: (c && c.author && c.author.login) || "(unknown)",
+        body:   (c && c.body) || "",
+      };
+    });
+}
+
+// Surface each unresolved thread with the exact finding it raises + how to
+// clear it, so a BLOCKED merge names its cause instead of "state=BLOCKED".
+function _printUnresolvedThreads(unresolved) {
+  console.log("\n" + unresolved.length + " unresolved review thread(s) block the merge " +
+              "(main-protection requires every thread resolved):\n");
+  unresolved.forEach(function (t, i) {
+    var lines = (t.body || "").split("\n");
+    var firstLine = "(no text)";
+    for (var li = 0; li < lines.length; li++) {
+      if (lines[li].trim().length > 0) { firstLine = lines[li]; break; }
+    }
+    // Strip markdown badge images / formatting noise from Codex P1/P2 headers.
+    firstLine = firstLine.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/[*_`#>]/g, "").trim();
+    console.log("  " + (i + 1) + ". [" + t.author + "] " + t.path +
+                (t.line != null ? ":" + t.line : ""));
+    console.log("     " + firstLine.slice(0, 160));
+    console.log("     resolve: gh api graphql -f query='mutation { resolveReviewThread(" +
+                "input:{threadId:\"" + t.id + "\"}){ thread { isResolved } } }'");
+  });
+  console.log("\nFix each finding in a NEW commit on the branch (never dismiss), then run the");
+  console.log("resolve command above for its thread. Re-run: node scripts/release.js merge");
+}
+
 function cmdWatch() {
   _section("watch");
   var prNum = _capture("gh", ["pr", "list",
@@ -472,24 +522,16 @@ function cmdWatch() {
 
   _run("gh", ["pr", "checks", prNum, "--watch"], { allowFail: true });
 
-  var threadRv = _capture("gh", ["api", "graphql",
-                                  "-f", "query=query { repository(owner:\"blamejs\",name:\"blamejs\") { pullRequest(number:" + prNum +
-                                       ") { reviewThreads(first:50) { nodes { isResolved comments(first:1) { nodes { author{login} body } } } } } } }",
-                                  "--jq", ".data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved==false))"]);
-  var unresolved = JSON.parse(threadRv.stdout || "[]");
+  var unresolved = _unresolvedThreads(prNum);
   if (unresolved.length > 0) {
-    console.log("\nunresolved review threads (" + unresolved.length + "):");
-    unresolved.forEach(function (t) {
-      var c = t.comments && t.comments.nodes && t.comments.nodes[0];
-      if (c) {
-        console.log("  - by " + c.author.login + ": " + c.body.split("\n")[0]);
-      }
-    });
-    console.log("");
-    console.log("Resolve threads + push fixes, then re-run: node scripts/release.js watch");
+    _printUnresolvedThreads(unresolved);
     process.exit(3);
   }
-  _ok("zero unresolved threads");
+  // Zero here is NOT conclusive: bot reviews (CodeQL / Codex / code-quality)
+  // can post a minute or two after the checks finish. `merge` re-pulls and is
+  // the authoritative gate; treat a clean watch as "checks done", not "no
+  // findings".
+  _ok("zero unresolved threads at watch time (merge re-checks — bot reviews may still be posting)");
 
   console.log("\nnext: node scripts/release.js merge");
 }
@@ -505,27 +547,29 @@ function cmdMerge() {
   }
   var state = JSON.parse(_capture("gh", ["pr", "view", prNum,
     "--json", "mergeStateStatus,mergeable"]).stdout || "{}");
+  // Pull unresolved review threads FIRST, at merge time. A BLOCKED state is
+  // most often unresolved threads — the bot reviews (CodeQL = github-advanced-
+  // security, Codex = chatgpt-codex-connector, lint = github-code-quality) post
+  // asynchronously, AFTER the status checks finish, so `watch` can have seen
+  // zero while they were still landing. Surface exactly which findings block
+  // the merge instead of an opaque "state=BLOCKED", so the operator knows what
+  // to fix + resolve. (main-protection's require_review_thread_resolution makes
+  // any open thread BLOCK; this is the recovery path.)
+  var unresolved = _unresolvedThreads(prNum);
   if (state.mergeStateStatus !== "CLEAN" || state.mergeable !== "MERGEABLE") {
+    if (unresolved.length > 0) _printUnresolvedThreads(unresolved);
     throw new Error("release: PR #" + prNum + " not mergeable (state=" +
-                    state.mergeStateStatus + " mergeable=" + state.mergeable + ")");
+                    state.mergeStateStatus + " mergeable=" + state.mergeable + ")" +
+                    (unresolved.length > 0
+                      ? " — " + unresolved.length + " unresolved review thread(s); see above"
+                      : " — no unresolved threads; check required status checks / signatures"));
   }
-  // Re-check unresolved review threads RIGHT BEFORE the merge call.
-  // `watch` enforces zero unresolved at watch time, but a reviewer
-  // can open a new thread between watch + merge, or main-protection
-  // may not enforce `require_review_thread_resolution` on every repo
-  // — the merge gate stays robust either way.
-  var threadRv = _capture("gh", ["api", "graphql",
-                                  "-f", "query=query { repository(owner:\"blamejs\",name:\"blamejs\") { pullRequest(number:" + prNum +
-                                       ") { reviewThreads(first:50) { nodes { isResolved comments(first:1) { nodes { author{login} body } } } } } } }",
-                                  "--jq", ".data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved==false))"]);
-  var unresolved = JSON.parse(threadRv.stdout || "[]");
+  // Belt-and-suspenders: even if the API reports CLEAN, refuse on any open
+  // thread (a thread can open in the window between the state read and merge).
   if (unresolved.length > 0) {
-    console.log("\nunresolved review threads opened since watch (" + unresolved.length + "):");
-    unresolved.forEach(function (t) {
-      var c = t.comments && t.comments.nodes && t.comments.nodes[0];
-      if (c) console.log("  - by " + c.author.login + ": " + c.body.split("\n")[0]);
-    });
-    throw new Error("release: refusing to merge PR #" + prNum + " — unresolved review threads");
+    _printUnresolvedThreads(unresolved);
+    throw new Error("release: refusing to merge PR #" + prNum + " — " +
+                    unresolved.length + " unresolved review thread(s)");
   }
   _run("gh", ["pr", "merge", prNum, "--squash", "--delete-branch"]);
   _ok("PR #" + prNum + " squash-merged");
