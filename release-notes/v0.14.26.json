@@ -1,0 +1,56 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.14.26",
+  "date": "2026-06-06",
+  "headline": "Break-glass IP and session pins fail closed, DSR ticket PII is sealed and erasable, and queue jobs are sealed at rest from the first write",
+  "summary": "Break-glass grant pins (`pinIp` / `sessionPin`, documented default-ON) were enforced only when the grant had captured a binding at mint time; a grant minted without an IP or session was redeemable from anywhere, so the pin failed open exactly when it mattered. Pins now fail closed: a grant carrying no binding is refused at redemption, and the redeeming client IP falls back to `req.ip` when not threaded explicitly. The Data Subject Request ticket store kept the subject's identifiers and the raw request body in plaintext, so an erasure request could not destroy the very PII it was processing; those columns are now sealed under the vault with `(table, rowId)` additional-data binding, erasure purges the ticket on completion, and an in-place schema upgrade seals existing stores. Queue jobs were sealed at rest only after a table had been registered, which did not happen until the first explicit registration — the queue now self-registers its job table on `init`, so jobs are sealed from the first write. Rounding out the bundle: the OAuth back-channel-logout `logout_token` is parsed under a byte ceiling, the SD-JWT-VC holder key-binding JWT signs with an algorithm asserted against the holder key's type (an RSA or OKP holder no longer mints a self-invalid token), and a pushed authorization request carrying a signed request object emits `authorization_details` as a native array.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Break-glass IP and session pins fail closed",
+          "body": "`b.breakGlass` grants document `pinIp` and `sessionPin` as default-ON, and grant minting captures the issuing IP and session at that time. Redemption now refuses a grant whose binding was never captured (`pinIp` on but no IP recorded, or `sessionPin` on but no session) instead of treating the absent binding as 'nothing to check' and allowing the redemption from any origin. The redeeming client IP is resolved from the redemption request and falls back to `req.ip` when the caller does not thread an explicit address. The one-time-code replay floor is keyed per `(actor, secret)` so a code consumed under one actor cannot be replayed under another."
+        },
+        {
+          "title": "DSR ticket store seals subject identifiers and request payload, and erasure purges the ticket",
+          "body": "`b.dsr` with the database-backed ticket store now seals the data subject's identifiers and the raw request payload via `b.cryptoField.registerTable` with `(table, rowId)` additional-data binding, so the PII a request processes is encrypted at rest and is destroyed when the ticket's row key is shredded. An erasure request purges its own ticket on completion rather than leaving the subject's identifiers behind. Existing ticket stores are upgraded in place on the next `init` — sealed columns are added via `ALTER TABLE ADD COLUMN` and the legacy `payload NOT NULL` constraint relaxes to `DEFAULT ''` so the add succeeds without data loss. Wrapped ticket keys are re-sealed under the new root on vault keypair rotation (`b.dsr.reseal`), so rotation does not strand tickets."
+        },
+        {
+          "title": "Queue jobs are sealed at rest from the first write",
+          "body": "The local queue backend self-registers its job table for sealing on `init` rather than on first explicit registration, so a job persisted before any other code touched the seal table is encrypted at rest instead of written in plaintext. `b.cryptoField.sealRow` is a silent no-op against an unregistered table; the self-register on `init` closes that fail-open window for the queue's own rows."
+        },
+        {
+          "title": "OAuth back-channel logout is bounded; SD-JWT-VC holder binding matches the holder key type",
+          "body": "The OAuth back-channel-logout endpoint parses the `logout_token` under an explicit byte ceiling, so an unauthenticated caller cannot exhaust memory with an oversized body. The SD-JWT-VC holder key-binding JWT now signs with an algorithm asserted against the holder key's type, so a holder presenting an RSA or OKP key no longer mints a key-binding JWT that fails its own verification. A pushed authorization request (PAR) that carries a signed request object emits `authorization_details` as a native JSON array per RFC 9396, not a JSON-encoded string."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "break-glass-pin-fails-open-on-null-binding",
+          "body": "The pattern catalog refuses a break-glass pin comparison guarded by a `grantRow.ip != null &&` (or `sessionId`) short-circuit — a guard that skips enforcement when the captured binding is absent, which is precisely the fail-open. Pin enforcement must refuse a grant with no captured binding, not wave it through."
+        },
+        {
+          "title": "dsr-ticket-store-pii-must-be-sealed",
+          "body": "The catalog requires the DSR database ticket store to register its seal table, so the subject identifiers and request payload it holds cannot regress to plaintext-at-rest and remain un-erasable. The queue self-register, the bounded logout parse, and the holder key-type parity are covered by their expanded request-driven tests and the existing fixed-classical-algorithm-default guard."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "Break-glass grants now require a resolvable binding to redeem under default pins",
+          "body": "With `pinIp` left at its default (on), a grant is now refused at redemption unless the issuing IP was captured and the redeeming client IP can be resolved. In-tree redemption paths thread the request and resolve the IP automatically. If your redemption path does not surface a client address and you do not intend to bind to IP, set `pinIp: false` (and `sessionPin: false`) explicitly on the grant; the previous behavior silently accepted such grants from any origin."
+        },
+        {
+          "title": "DSR ticket stores are sealed in place on next init",
+          "body": "An existing database-backed DSR ticket store gains sealed columns via `ALTER TABLE ADD COLUMN` on the next `init`, and the legacy `payload NOT NULL` constraint relaxes to `DEFAULT ''` to permit the in-place add. No data is lost; tickets written before the upgrade remain readable and become sealed as they are rewritten."
+        }
+      ]
+    }
+  ]
+}

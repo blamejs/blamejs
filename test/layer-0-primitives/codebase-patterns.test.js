@@ -6259,6 +6259,47 @@ var KNOWN_ANTIPATTERNS = [
     reason: "v0.14.25 — the per-row-key K_row was kdf(...getDerivedHashSalt()...) over the PLAINTEXT-on-disk salt, so a disk-access attacker re-derived it and destroyPerRowKey/eraseHard shred NOTHING (advertised as crypto-shred since v0.7.27, false); the idempotency fingerprint HMAC seeded off the same plaintext salt despite promising the vault root was the trust root. Both reseeded — K_row onto a fresh b.crypto.generateBytes(32) row-secret AAD-wrapped via b.vault.aad.seal, the fingerprint HMAC onto the sealed b.vault.getDerivedHashMacKey() (since v0.14.7). This detector refuses the inline regression `kdf(...getDerivedHashSalt()...)`; the legitimate `kdf(getDerivedHashMacKey()...)` (the sealed key) and the `sha3Hash(getDerivedHashSalt()...)` deterministic equality index are different shapes and do not match. NOTE the historical bug assigned the salt to a var first (`saltHex = getDerivedHashSalt()...; kdf(...saltHex...)`) — a data-flow shape regex can't trace, so reviewers must also reject any kdf/HMAC key whose IKM transitively names getDerivedHashSalt.",
   },
   {
+    // A break-glass grant pin (pinIp / sessionPin — both documented
+    // default-ON) binds redemption to the IP / session captured when the
+    // grant was minted. The enforcement MUST fail closed when the
+    // captured binding is absent: a grant that recorded no IP (or no
+    // session) is refused, never waved through. The historical fail-open
+    // was a `grantRow.ip != null &&` short-circuit around the comparison
+    // — "no binding recorded, so there is nothing to check, so allow" —
+    // which lets a grant minted without a binding be redeemed from any
+    // origin, defeating the pin exactly when it is the only control left.
+    // The fixed shape is `if (grantRow.ip == null) throw ...` BEFORE the
+    // `redeemIp !== grantRow.ip` comparison (see _enforceGrantPins). The
+    // `grantRow.` receiver is unique to lib/break-glass.js, so this
+    // bad-shape regex needs no companion; skipCommentLines keeps the
+    // narrative comment that quotes the bad form from self-matching.
+    id: "break-glass-pin-fails-open-on-null-binding",
+    primitive: "fail closed in break-glass pin enforcement — refuse a grant whose pinIp/sessionPin binding was never captured (if grantRow.ip == null throw); never short-circuit the comparison with a `grantRow.ip != null &&` guard that treats an absent binding as 'nothing to check, allow'",
+    regex: /grantRow\.(?:ip|sessionId)\s*!=\s*null\s*&&/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "pinIp / sessionPin are documented default-ON; redemption binds to the IP / session captured at mint time. A `grantRow.ip != null &&` (or sessionId) guard around the pin comparison fails OPEN: a grant minted without a captured binding skips the check and is redeemable from any origin — the pin's whole point is lost in the one case it must hold. Enforce by refusing the unbound grant first (`if (grantRow.ip == null) throw`), then comparing. Resolve the redeeming client IP from the redemption request (falling back to req.ip), not from a value the redeemer can omit.",
+  },
+  {
+    // The b.dsr database-backed ticket store holds the data subject's
+    // identifiers and the raw request payload — PII under GDPR Art. 15 /
+    // 17 that an erasure request must be able to destroy. Those columns
+    // MUST be sealed via cryptoField.registerTable(DSR_SEAL_TABLE, { aad:
+    // true, ... }) so the row's plaintext is encrypted at rest and goes
+    // with the shredded row key; storing them plaintext leaves
+    // un-erasable PII and defeats b.subject.eraseHard for DSR tickets.
+    // DSR_SEAL_TABLE is unique to lib/dsr.js; the companion `requires`
+    // exempts the file once the registerTable call is present (the fix),
+    // so this fires only if a future edit drops the registration while
+    // keeping the table.
+    id: "dsr-ticket-store-pii-must-be-sealed",
+    primitive: "seal the b.dsr database ticket store's subject identifiers + request payload via cryptoField.registerTable(DSR_SEAL_TABLE, { aad: true, columns: [...] }); plaintext PII in the ticket store is un-erasable and defeats DSR erasure",
+    regex: /\bDSR_SEAL_TABLE\b/,
+    requires: /registerTable\s*\(\s*DSR_SEAL_TABLE/,
+    allowlist: [],
+    reason: "The DSR dbTicketStore persists the data subject's identifiers and the raw request body — the exact PII an Art. 17 erasure must destroy. Those columns must be sealed via cryptoField.registerTable(DSR_SEAL_TABLE, { aad: true }) so they are encrypted at rest under a per-row key bound to (table, rowId) and shredded with the row; leaving them plaintext means an erasure request cannot delete the data it is processing. The companion registerTable(DSR_SEAL_TABLE call satisfies the discipline; this entry fires only if the registration is removed while the table remains.",
+  },
+  {
     // Node 26 ships `Map.prototype.getOrInsertComputed(key, factory)`
     // (TC39 stage-4, lands in V8 13.x). It replaces the two-step
     // `var v = m.get(k); if (!v) { v = factory(); m.set(k, v); }` (and

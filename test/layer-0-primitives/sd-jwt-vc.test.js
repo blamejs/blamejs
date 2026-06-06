@@ -695,6 +695,55 @@ async function testHolderAlgFromKeyType() {
         rsaThrew && rsaThrew.code === "auth-sd-jwt-vc/holder-key-unsupported");
 }
 
+// ---- FIX 4B: holder KB-JWT alg/kty cross-check ----
+
+// The KB-JWT header alg is attacker-controllable (the holder mints the
+// KB-JWT). The verifier must cross-check it against the holder's cnf.jwk
+// key type BEFORE handing bytes to node:crypto.verify — the same
+// CVE-2026-22817 defense the issuer path applies. An EC cnf key with a
+// KB-JWT header claiming EdDSA (which requires kty=OKP) must be refused
+// with the precise alg-mismatch error.
+async function testKbAlgKtyCrossCheck() {
+  var issuer = _newKeyPair();
+  var holder = _newKeyPair();   // EC P-256
+  var sd = sdJwtVc.issue({
+    issuer:   "https://issuer", vct: "x",
+    claims:   { given_name: "Alice" },
+    selectivelyDisclosed: ["given_name"],
+    issuerKey: issuer.privateKey,
+    holderKey: _jwk(holder.publicKey),
+  });
+  // Build a valid presentation, then replace its real KB-JWT with a forged
+  // one whose header declares EdDSA against the EC holder key.
+  var pres = sdJwtVc.present({
+    sdJwt:               sd.token,
+    disclosedClaimNames: ["given_name"],
+    audience:            "https://verifier",
+    nonce:               "n-1",
+    holderKey:           holder.privateKey,
+    algorithm:           "ES256",
+  });
+  var segs = pres.presentation.split("~");
+  // Forge a KB-JWT segment: EdDSA header (OKP), EC holder key → mismatch.
+  function b64u(obj) { return Buffer.from(JSON.stringify(obj), "utf8").toString("base64url"); }
+  var forgedHeader = b64u({ typ: "kb+jwt", alg: "EdDSA" });
+  var forgedPayload = b64u({ aud: "https://verifier", nonce: "n-1", iat: Math.floor(Date.now() / 1000), sd_hash: "x" });
+  segs[segs.length - 1] = forgedHeader + "." + forgedPayload + ".AAAA";
+  var forgedPres = segs.join("~");
+
+  var threw = null;
+  try {
+    await sdJwtVc.verify(forgedPres, {
+      issuerKeyResolver: async function () { return issuer.publicKey; },
+      audience:          "https://verifier",
+      nonce:             "n-1",
+      requireKeyBinding: true,
+    });
+  } catch (e) { threw = e; }
+  check("KB alg/kty: mismatched KB-JWT alg refused with precise error",
+        threw && threw.code === "auth-jwt-external/alg-kty-mismatch");
+}
+
 // ---- Module exports ----
 
 function testExports() {
@@ -742,5 +791,6 @@ function testExports() {
   await testHolderPresentNonexistent();
   testHolderValidation();
   await testHolderAlgFromKeyType();
+  await testKbAlgKtyCrossCheck();
   testExports();
 })().catch(function (e) { console.error(e); process.exit(1); });

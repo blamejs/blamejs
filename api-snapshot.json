@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.25",
-  "createdAt": "2026-06-06T16:25:20.097Z",
+  "frameworkVersion": "0.14.26",
+  "createdAt": "2026-06-06T18:44:27.330Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -15319,6 +15319,31 @@
     "dsr": {
       "type": "object",
       "members": {
+        "AAD_ROTATION": {
+          "type": "object",
+          "members": {
+            "backend": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "reseal": {
+              "type": "function",
+              "arity": 1
+            },
+            "rowIdField": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "schemaVersion": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "table": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
         "DsrError": {
           "type": "function",
           "arity": 4
@@ -15424,6 +15449,10 @@
         "memoryTicketStore": {
           "type": "function",
           "arity": 0
+        },
+        "reseal": {
+          "type": "function",
+          "arity": 1
         },
         "stateRules": {
           "type": "function",
