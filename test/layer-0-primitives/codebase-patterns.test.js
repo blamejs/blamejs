@@ -1,5 +1,12 @@
 "use strict";
 
+// SMOKE_RUN_SOLO — the smoke runner (test/smoke.js) runs this file ALONE
+// with the whole machine instead of inside the parallel layer-0 pool.
+// The duplicate-block scan fans out across worker_threads and is CPU-
+// bound; sharing a low-core CI runner (macos-latest = 3 cores) with
+// sibling forks oversubscribes the CPU and the scan overruns its
+// per-file watchdog budget. Run alone, it finishes in its normal time.
+
 // Re-exec under a 6 GiB old-space ceiling when the parent process did
 // not already raise the heap cap. The test's cartesian fingerprint /
 // cluster index across ~300 lib/ files lands close to the v8 default
