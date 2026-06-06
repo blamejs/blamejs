@@ -23,6 +23,10 @@
         {
           "title": "OAuth back-channel logout is bounded; SD-JWT-VC holder binding matches the holder key type",
           "body": "The OAuth back-channel-logout endpoint parses the `logout_token` under an explicit byte ceiling, so an unauthenticated caller cannot exhaust memory with an oversized body. The SD-JWT-VC holder key-binding JWT now signs with an algorithm asserted against the holder key's type, so a holder presenting an RSA or OKP key no longer mints a key-binding JWT that fails its own verification. A pushed authorization request (PAR) that carries a signed request object emits `authorization_details` as a native JSON array per RFC 9396, not a JSON-encoded string."
+        },
+        {
+          "title": "Vault keypair rotation writes its staging files with exclusive, no-follow create",
+          "body": "Every file the rotation pipeline writes into its staging directory — the re-encrypted database, the resealed vault and database keys, additional sealed files, the derived-hash material, and the transient plaintext database — is now created with exclusive, symlink-refusing semantics (`O_CREAT | O_EXCL | O_NOFOLLOW`, owner-only `0o600`), and the fsync-by-path step refuses to follow a symlink. A same-user pre-planted file or symlink swap in the staging directory is now a hard failure rather than a followed write, closing a local tamper window during rotation (CWE-377 / CWE-379 / CWE-59) on top of the directory's existing `0o700` owner-only permissions."
         }
       ]
     },
