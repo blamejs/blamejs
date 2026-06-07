@@ -146,10 +146,14 @@ function testFederationParseAndPolicy() {
   check("federation: parse returns header.typ",       parsed.header.typ === "entity-statement+jwt");
   check("federation: parse returns claims.iss",       parsed.claims.iss === "https://leaf.example");
 
-  // metadata_policy operators — value/default/one_of/subset_of/superset_of
+  // metadata_policy operators — value/default/one_of/subset_of/superset_of.
+  // Per OIDF §6.2 the policy comes from the SUPERIOR-SIGNED subordinate
+  // statement about the entity (`chain[i].subordinate.metadata_policy`),
+  // NOT the entity's own self-config — so each chain node carries the
+  // policy under `.subordinate`.
   var meta = { application_type: "web", redirect_uris: ["https://leaf/cb"] };
   var chain = [
-    { claims: { metadata_policy: { openid_relying_party: {
+    { subordinate: { metadata_policy: { openid_relying_party: {
       application_type: { one_of: ["web", "native"] },
       grant_types: { default: ["authorization_code"] },
     } } } },
@@ -162,7 +166,7 @@ function testFederationParseAndPolicy() {
   var threw = false;
   try {
     b.auth.openidFederation.applyMetadataPolicy({ application_type: "bad" }, [
-      { claims: { metadata_policy: { openid_relying_party: { application_type: { one_of: ["web", "native"] } } } } },
+      { subordinate: { metadata_policy: { openid_relying_party: { application_type: { one_of: ["web", "native"] } } } } },
     ], "openid_relying_party");
   } catch (e) { threw = /not in/.test(e.message); }
   check("federation: one_of rejects out-of-set value", threw);
@@ -171,10 +175,230 @@ function testFederationParseAndPolicy() {
   threw = false;
   try {
     b.auth.openidFederation.applyMetadataPolicy({ x: 1 }, [
-      { claims: { metadata_policy: { openid_relying_party: { x: { bogus: 1 } } } } },
+      { subordinate: { metadata_policy: { openid_relying_party: { x: { bogus: 1 } } } } },
     ], "openid_relying_party");
   } catch (e) { threw = /unknown operator/.test(e.message); }
   check("federation: unknown policy op refused",      threw);
+
+  // M2: a leaf's OWN self-config metadata_policy is IGNORED — only the
+  // superior-signed subordinate statement constrains the entity. A leaf
+  // that self-declares a widening policy can't drop the anchor's rules.
+  var ignored = b.auth.openidFederation.applyMetadataPolicy(
+    { application_type: "web" },
+    [{ claims: { metadata_policy: { openid_relying_party: {
+        application_type: { value: "native" } } } } }],
+    "openid_relying_party");
+  check("federation M2: leaf self-config metadata_policy ignored",
+        ignored.application_type === "web");
+}
+
+// ---- OpenID Federation trust-chain (multi-element, real signatures) ---
+
+// Mint an EC P-256 entity: keypair + a single-key JWKS carrying `kid`.
+function _fedEntity(kid) {
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var jwk = kp.publicKey.export({ format: "jwk" });
+  jwk.kid = kid;
+  jwk.use = "sig";
+  jwk.alg = "ES256";
+  return { kp: kp, kid: kid, jwks: { keys: [jwk] } };
+}
+
+// Sign an entity-statement+jwt (ES256) with the given signing entity.
+function _signEntityStatement(signer, claims) {
+  var header = { typ: "entity-statement+jwt", alg: "ES256", kid: signer.kid };
+  var iat = Math.floor(Date.now() / 1000);
+  var full = Object.assign({ iat: iat, exp: iat + 3600 }, claims);
+  var input = _b64url(JSON.stringify(header)) + "." + _b64url(JSON.stringify(full));
+  var sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"),
+    { key: signer.kp.privateKey, dsaEncoding: "ieee-p1363" });
+  return input + "." + _b64url(sig);
+}
+
+async function testFederationTrustChainMultiElement() {
+  var ANCHOR = "https://anchor.example";
+  var INT    = "https://intermediate.example";
+  var LEAF   = "https://leaf.example";
+
+  var anchor = _fedEntity("anchor-1");
+  var inter  = _fedEntity("inter-1");
+  var leaf   = _fedEntity("leaf-1");
+
+  // Self-configs (each self-signed over its own jwks).
+  var anchorCfg = _signEntityStatement(anchor, { iss: ANCHOR, sub: ANCHOR, jwks: anchor.jwks });
+  var interCfg  = _signEntityStatement(inter,  { iss: INT,  sub: INT,  jwks: inter.jwks, authority_hints: [ANCHOR] });
+  // Leaf self-declares a wide scope ("openid profile email") + a single
+  // redirect_uri; the superior policy will force the scope down and
+  // confirm the redirect_uri is within the allowed subset.
+  var leafMeta  = { openid_relying_party: { redirect_uris: ["https://leaf.example/cb"],
+                                            scope: "openid profile email" } };
+  var leafCfg   = _signEntityStatement(leaf, { iss: LEAF, sub: LEAF, jwks: leaf.jwks,
+                                               authority_hints: [INT], metadata: leafMeta });
+
+  // Superior-signed subordinate statements.
+  //   anchor → about intermediate  (pins intermediate's real jwks)
+  var subAboutInter = _signEntityStatement(anchor, { iss: ANCHOR, sub: INT, jwks: inter.jwks });
+  //   intermediate → about leaf  (pins leaf's jwks + constrains the leaf
+  //   via metadata_policy: subset_of on redirect_uris + value on scope)
+  var leafPolicy = { openid_relying_party: {
+    redirect_uris: { subset_of: ["https://leaf.example/cb", "https://leaf.example/cb2"] },
+    scope:         { value: "openid" },
+  } };
+  var subAboutLeaf = _signEntityStatement(inter, { iss: INT, sub: LEAF, jwks: leaf.jwks,
+                                                   metadata_policy: leafPolicy });
+
+  function _fetcher(url) {
+    if (url === ANCHOR + "/.well-known/openid-federation") return Promise.resolve(anchorCfg);
+    if (url === INT + "/.well-known/openid-federation")    return Promise.resolve(interCfg);
+    if (url === LEAF + "/.well-known/openid-federation")   return Promise.resolve(leafCfg);
+    return Promise.reject(new Error("404 " + url));
+  }
+  function _fetchSubordinate(authority, sub) {
+    if (authority === ANCHOR && sub === INT)  return Promise.resolve(subAboutInter);
+    if (authority === INT    && sub === LEAF) return Promise.resolve(subAboutLeaf);
+    return Promise.reject(new Error("no subordinate " + authority + "→" + sub));
+  }
+
+  var opts = {
+    leafEntityId: LEAF,
+    trustAnchors: { "https://anchor.example": anchor.jwks },
+    fetcher: _fetcher,
+    fetchSubordinate: _fetchSubordinate,
+  };
+
+  // Success path: chain builds leaf→anchor, roles assigned, attested
+  // jwks flowed down from the pinned anchor.
+  var chain = await b.auth.openidFederation.buildTrustChain(opts);
+  check("federation chain: leaf-first, anchor-last",
+        chain.length === 3 && chain[0].role === "leaf" &&
+        chain[1].role === "intermediate" && chain[2].role === "trust_anchor");
+  check("federation chain: leaf carries superior-signed subordinate statement",
+        chain[0].subordinate && chain[0].subordinate.iss === INT && chain[0].subordinate.sub === LEAF);
+
+  // M2: the SUPERIOR-SIGNED metadata_policy is enforced (anchor→leaf,
+  // narrow-only). `value` forces scope down to "openid"; subset_of
+  // confirms the leaf's lone redirect_uri is within the allowed set.
+  var resolved = await b.auth.openidFederation.resolveLeaf(Object.assign({ kind: "openid_relying_party" }, opts));
+  check("federation M2: superior-signed value narrows leaf scope",
+        resolved.effectiveMetadata.scope === "openid");
+  check("federation M2: leaf redirect_uri within superior subset_of accepted",
+        Array.isArray(resolved.effectiveMetadata.redirect_uris) &&
+        resolved.effectiveMetadata.redirect_uris.length === 1 &&
+        resolved.effectiveMetadata.redirect_uris[0] === "https://leaf.example/cb");
+}
+
+async function testFederationSubsetOfRefusesWidening() {
+  // M2 refutation: a leaf that declares a redirect_uri OUTSIDE the
+  // superior-signed subset_of must be REFUSED — the leaf cannot widen
+  // past the anchor/intermediate constraint by self-declaration.
+  var threw = null;
+  try {
+    b.auth.openidFederation.applyMetadataPolicy(
+      { redirect_uris: ["https://leaf.example/cb", "https://leaf.example/evil"] },
+      [{ subordinate: { metadata_policy: { openid_relying_party: {
+          redirect_uris: { subset_of: ["https://leaf.example/cb"] } } } } }],
+      "openid_relying_party");
+  } catch (e) { threw = e; }
+  check("federation M2: leaf redirect_uri outside superior subset_of refused",
+        threw && threw.code === "auth-openid-federation/policy-subset-of-failed");
+
+  // And the leaf's OWN self-config can't relax that subset — self-config
+  // policy is never read, so a self-declared wide subset is ignored while
+  // the superior subset still binds.
+  var eff = b.auth.openidFederation.applyMetadataPolicy(
+    { scope: "openid" },
+    [{ claims:      { metadata_policy: { openid_relying_party: { scope: { value: "admin" } } } },
+      subordinate: { metadata_policy: { openid_relying_party: { scope: { value: "openid" } } } } }],
+    "openid_relying_party");
+  check("federation M2: superior value wins over leaf self-config",
+        eff.scope === "openid");
+}
+
+async function testFederationSubordinateVerifiedAgainstAttestedKeys() {
+  // M5: the intermediate's SELF-PUBLISHED config jwks differ from the
+  // jwks the anchor ATTESTS for it. An attacker controlling the
+  // intermediate endpoint serves attacker keys in the self-config AND
+  // signs the leaf's subordinate statement with those attacker keys.
+  // The verifier MUST verify the leaf statement against the
+  // anchor-attested (genuine) intermediate keys, so the attacker-signed
+  // statement is rejected.
+  var ANCHOR = "https://anchor.example";
+  var INT    = "https://intermediate.example";
+  var LEAF   = "https://leaf.example";
+
+  var anchor    = _fedEntity("anchor-1");
+  var interReal = _fedEntity("inter-1");        // anchor attests THESE keys
+  // The attacker self-publishes a DIFFERENT keypair under the SAME kid so
+  // the kid lookup matches the attested key slot — the only thing that
+  // can stop it is verifying against the attested key bytes (signature
+  // mismatch), which is exactly what the fix does.
+  var interEvil = _fedEntity("inter-1");        // same kid, different key
+  var leaf      = _fedEntity("leaf-1");
+
+  var anchorCfg = _signEntityStatement(anchor, { iss: ANCHOR, sub: ANCHOR, jwks: anchor.jwks });
+  // Intermediate self-config: ATTACKER keys (TOCTOU — served at the
+  // self-config fetch). Self-signed with the attacker key so the
+  // self-statement integrity check passes.
+  var interCfg  = _signEntityStatement(interEvil, { iss: INT, sub: INT, jwks: interEvil.jwks, authority_hints: [ANCHOR] });
+  var leafCfg   = _signEntityStatement(leaf, { iss: LEAF, sub: LEAF, jwks: leaf.jwks, authority_hints: [INT] });
+
+  // Anchor attests the REAL intermediate keys.
+  var subAboutInter = _signEntityStatement(anchor, { iss: ANCHOR, sub: INT, jwks: interReal.jwks });
+  // The leaf's subordinate statement is signed with the ATTACKER key
+  // (interEvil) — it verifies against interEvil's self-published jwks
+  // (the pre-fix path) but NOT against the anchor-attested interReal keys.
+  var subAboutLeaf = _signEntityStatement(interEvil, { iss: INT, sub: LEAF, jwks: leaf.jwks });
+
+  function _fetcher(url) {
+    if (url === ANCHOR + "/.well-known/openid-federation") return Promise.resolve(anchorCfg);
+    if (url === INT + "/.well-known/openid-federation")    return Promise.resolve(interCfg);
+    if (url === LEAF + "/.well-known/openid-federation")   return Promise.resolve(leafCfg);
+    return Promise.reject(new Error("404 " + url));
+  }
+  function _fetchSubordinate(authority, sub) {
+    if (authority === ANCHOR && sub === INT)  return Promise.resolve(subAboutInter);
+    if (authority === INT    && sub === LEAF) return Promise.resolve(subAboutLeaf);
+    return Promise.reject(new Error("no subordinate " + authority + "→" + sub));
+  }
+
+  var threw = null;
+  try {
+    await b.auth.openidFederation.buildTrustChain({
+      leafEntityId: LEAF,
+      trustAnchors: { "https://anchor.example": anchor.jwks },
+      fetcher: _fetcher,
+      fetchSubordinate: _fetchSubordinate,
+    });
+  } catch (e) { threw = e; }
+  // A cryptographic refusal proves the attested-key gate held: the
+  // attacker-signed statement fails against the anchor-attested key bytes.
+  check("federation M5: leaf statement signed by attacker self-jwks is refused",
+        threw && (threw.code === "auth-openid-federation/bad-signature" ||
+                  threw.code === "auth-openid-federation/no-matching-kid"));
+
+  // Positive control: when the leaf statement is signed by the REAL
+  // (anchor-attested) intermediate key, the chain builds.
+  var subAboutLeafGood = _signEntityStatement(interReal, { iss: INT, sub: LEAF, jwks: leaf.jwks });
+  function _fetchSubordinateGood(authority, sub) {
+    if (authority === ANCHOR && sub === INT)  return Promise.resolve(subAboutInter);
+    if (authority === INT    && sub === LEAF) return Promise.resolve(subAboutLeafGood);
+    return Promise.reject(new Error("no subordinate " + authority + "→" + sub));
+  }
+  var built = await b.auth.openidFederation.buildTrustChain({
+    leafEntityId: LEAF,
+    trustAnchors: { "https://anchor.example": anchor.jwks },
+    fetcher: _fetcher,
+    fetchSubordinate: _fetchSubordinateGood,
+  });
+  check("federation M5: leaf statement signed by anchor-attested key builds",
+        built.length === 3 && built[2].role === "trust_anchor");
+  // The attested intermediate key bytes (interReal), not the self-
+  // published attacker key bytes (interEvil), are reflected on the
+  // intermediate node — same kid, so compare the EC x-coordinate.
+  check("federation M5: intermediate node carries anchor-attested key bytes",
+        built[1].claims.jwks &&
+        built[1].claims.jwks.keys[0].x === interReal.jwks.keys[0].x &&
+        built[1].claims.jwks.keys[0].x !== interEvil.jwks.keys[0].x);
 }
 
 // ---- OID4VP DCQL ------------------------------------------------------
@@ -790,6 +1014,9 @@ async function run() {
   testSamlSpAuthnRequest();
   testSamlSpRefusesUnsigned();
   testFederationParseAndPolicy();
+  await testFederationTrustChainMultiElement();
+  await testFederationSubsetOfRefusesWidening();
+  await testFederationSubordinateVerifiedAgainstAttestedKeys();
   testDcqlMatch();
   testOid4vciIssuerConfig();
   await testOid4vciKidResolver();

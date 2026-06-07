@@ -5,11 +5,25 @@
  * coverage lives in queue-redis.test.js (which skips cleanly when
  * BLAMEJS_TEST_REDIS_URL is not set).
  */
+var net = require("node:net");
 var helpers = require("../helpers");
 var check = helpers.check;
 var redis = require("../../lib/redis-client");
 
 function _bytes(s) { return Buffer.from(s, "utf8"); }
+
+function _listen(onConn) {
+  return new Promise(function (resolve) {
+    var server = net.createServer(function (sock) {
+      sock.on("error", function () { /* absorb server-side socket errors */ });
+      if (onConn) onConn(sock);
+    });
+    server.listen(0, "127.0.0.1", function () {
+      resolve({ port: server.address().port, server: server,
+                close: function () { return new Promise(function (r) { server.close(r); }); } });
+    });
+  });
+}
 
 async function run() {
   // ---- _parseRedisUrl ----
@@ -192,6 +206,105 @@ async function run() {
   try { await client.connect(); } catch (_e) { /* closing guard should prevent any connect attempt */ }
   check("redis: connect() after close is a no-op (closing guard — no socket opened)",
         client._state().connected === false);
+
+  // ---- connect-failure does not wedge subsequent callers ----
+  // A connect that errors before the connection is fully ready (the socket
+  // drops mid-AUTH) must (a) reject the connect promise, (b) clear the
+  // shared connect promise so the next connect() starts fresh, and (c)
+  // NOT leave connected=true on a torn-down socket. A command issued after
+  // the give-up must settle (reject) rather than wedge in the backlog
+  // forever.
+  {
+    var dropMidAuth = await _listen(function (sock) {
+      sock.once("data", function () { sock.destroy(); });  // got AUTH → drop
+    });
+    var c2 = redis.create({
+      url: "redis://127.0.0.1:" + dropMidAuth.port + "/0",
+      password: "secret", connectTimeoutMs: 1000, commandTimeoutMs: 500,
+      maxReconnectAttempts: 0,   // give up immediately on disconnect
+    });
+    var connErr = null;
+    try { await c2.connect(); } catch (e) { connErr = e; }
+    check("redis: failed connect (drop mid-AUTH) rejects", connErr !== null);
+    var st2 = c2._state();
+    check("redis: failed connect leaves connected=false", st2.connected === false);
+    check("redis: failed connect clears the shared connect promise (connecting=false)",
+          st2.connecting === false);
+
+    // A command after give-up must settle, not hang. Bound the await so a
+    // regression surfaces as a timeout instead of a stuck test.
+    var cmdSettled = false;
+    var cmdErr = null;
+    await helpers.withTestTimeout("redis: post-give-up command settles", async function () {
+      try { await c2.command("PING"); } catch (e) { cmdErr = e; }
+      cmdSettled = true;
+    }, { timeoutMs: 4000 });
+    check("redis: command after give-up settles (does not wedge)", cmdSettled === true);
+    check("redis: command after give-up rejects with RECONNECT_GAVE_UP",
+          cmdErr !== null && cmdErr.code === "RECONNECT_GAVE_UP");
+    await c2.close();
+    await dropMidAuth.close();
+  }
+
+  // ---- a backlogged command times out if connect never completes ----
+  // Queued-while-disconnected commands must NOT outlive commandTimeoutMs —
+  // a backend that never comes up settles the caller with a clear error.
+  {
+    var c3 = redis.create({
+      url: "redis://127.0.0.1:1/0",   // nothing listens; reconnect stays pending
+      connectTimeoutMs: 200, commandTimeoutMs: 150, maxReconnectAttempts: 5,
+    });
+    c3.connect().catch(function () { /* will keep retrying in the background */ });
+    var c3Err = null, c3Settled = false;
+    await helpers.withTestTimeout("redis: backlogged command times out", async function () {
+      try { await c3.command("GET", "k"); } catch (e) { c3Err = e; }
+      c3Settled = true;
+    }, { timeoutMs: 4000 });
+    check("redis: backlogged command settles (does not wedge)", c3Settled === true);
+    check("redis: backlogged command rejects with COMMAND_TIMEOUT",
+          c3Err !== null && c3Err.code === "COMMAND_TIMEOUT");
+    await c3.close();
+  }
+
+  // ---- single-flight reconnect: error+close schedule ONE reconnect ----
+  // A lost socket surfaces as both an `error` and a `close` event (and the
+  // error handler destroys the socket, re-firing close). Each must NOT
+  // schedule its own reconnect timer — that doubles the backoff rate and
+  // opens redundant sockets. We count distinct inbound connections: after
+  // one induced drop, the first reconnect lands as connection #2 (not #3).
+  {
+    var conns = 0;
+    var firstSock = null;
+    var reconnectSrv = await _listen(function (sock) {
+      conns += 1;
+      if (conns === 1) {
+        firstSock = sock;
+        // Reset the first connection so the client sees error AND close.
+        if (sock.resetAndDestroy) sock.resetAndDestroy(); else sock.destroy();
+      }
+      // Reconnect (conns >= 2): hold open — no further failures.
+    });
+    var c4 = redis.create({
+      url: "redis://127.0.0.1:" + reconnectSrv.port + "/0",
+      connectTimeoutMs: 1000, commandTimeoutMs: 500, maxReconnectAttempts: 10,
+    });
+    await c4.connect().catch(function () {});
+    // The first backoff is 100ms; wait until exactly one reconnect lands
+    // (connection #2). If error AND close had each scheduled, the budget
+    // would have produced a SECOND reconnect (#3) at the bumped delay.
+    await helpers.waitUntil(function () { return conns >= 2; },
+      { timeoutMs: 3000, label: "redis single-flight: first reconnect connects" });
+    var stallObserved = await helpers.passiveObserve(350,
+      "redis single-flight: no second reconnect from the same failure")
+      .then(function () { return conns; });
+    check("redis: single failure schedules exactly one reconnect (no double-schedule)",
+          stallObserved === 2);
+    check("redis: reconnect count reset toward stable after one successful reconnect",
+          c4._state().reconnectPending === false);
+    void firstSock;
+    await c4.close();
+    await reconnectSrv.close();
+  }
 }
 
 module.exports = { run: run };

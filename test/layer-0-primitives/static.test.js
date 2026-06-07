@@ -299,6 +299,122 @@ function testOnErrorRejectsNonFunction() {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// Send a raw (un-normalized-by-node) request path. http.request normalizes
+// "/../" on the client side, so build the request line by hand over a raw
+// socket to deliver the traversal bytes verbatim to the server.
+function _getRaw(port, rawPath) {
+  var net = require("node:net");
+  return new Promise(function (resolve, reject) {
+    var sock = net.connect(port, "127.0.0.1", function () {
+      sock.write("GET " + rawPath + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    });
+    var chunks = [];
+    sock.on("data", function (c) { chunks.push(c); });
+    sock.on("end", function () {
+      var raw = Buffer.concat(chunks).toString("utf8");
+      var statusLine = raw.split("\r\n")[0] || "";
+      var m = /^HTTP\/1\.\d (\d{3})/.exec(statusLine);
+      var sep = raw.indexOf("\r\n\r\n");
+      var body = sep === -1 ? "" : raw.slice(sep + 4);
+      resolve({ statusCode: m ? parseInt(m[1], 10) : 0, body: body, raw: raw });
+    });
+    sock.on("error", reject);
+  });
+}
+
+// Path-traversal refusal — a file OUTSIDE the served root must never be
+// reachable via `../` escapes, percent-encoded escapes, or NUL injection.
+// The secret is written to the parent of `root` so any successful escape
+// would disclose it.
+async function testPathTraversalRefused() {
+  var ctx = await _server();
+  // Sibling secret one level above the served root.
+  var parent = path.dirname(ctx.dir);
+  var secretName = "blamejs-static-secret-" + process.pid + ".txt";
+  var secretAbs = path.join(parent, secretName);
+  var secretBody = "TOP-SECRET-" + Date.now();
+  fs.writeFileSync(secretAbs, secretBody);
+  // A legit in-root file to prove the server is otherwise functional.
+  _writeFile(ctx.dir, "ok.txt", "in-root");
+  var srv = await ctx.start({ contentSafety: null });
+  try {
+    // Raw `../` traversal (delivered verbatim over a raw socket).
+    var rawTrav = await _getRaw(srv.port, "/../" + secretName);
+    check("traversal: raw ../ does not disclose the sibling secret",
+          rawTrav.body.indexOf(secretBody) === -1);
+    check("traversal: raw ../ refused (not 200-with-secret)",
+          rawTrav.statusCode !== 200 || rawTrav.body.indexOf(secretBody) === -1);
+
+    // Deeper raw traversal.
+    var rawDeep = await _getRaw(srv.port, "/sub/../../" + secretName);
+    check("traversal: nested raw ../../ does not disclose the secret",
+          rawDeep.body.indexOf(secretBody) === -1);
+
+    // Percent-encoded `..%2f` traversal (the server decodes, then must
+    // still refuse).
+    var encTrav = await _get(srv.port, "/%2e%2e%2f" + secretName);
+    check("traversal: percent-encoded %2e%2e%2f refused (404/next)",
+          encTrav.statusCode === 404);
+    check("traversal: percent-encoded escape does not disclose the secret",
+          encTrav.body.toString("utf8").indexOf(secretBody) === -1);
+
+    // Double percent-encoded dot-dot.
+    var encTrav2 = await _get(srv.port, "/%2e%2e/%2e%2e/" + secretName);
+    check("traversal: %2e%2e/%2e%2e/ does not disclose the secret",
+          encTrav2.body.toString("utf8").indexOf(secretBody) === -1);
+
+    // NUL-byte injection — refused before any fs op.
+    var nul = await _get(srv.port, "/ok.txt%00.png");
+    check("traversal: NUL-byte path refused (404/next)",
+          nul.statusCode === 404);
+
+    // Sanity: the legit in-root file still serves.
+    var ok = await _get(srv.port, "/ok.txt");
+    check("traversal: in-root file still serves after refusals",
+          ok.statusCode === 200 && ok.body.toString("utf8") === "in-root");
+  } finally {
+    srv.close();
+    fs.rmSync(secretAbs, { force: true });
+    ctx.cleanup();
+  }
+}
+
+// Success path — a legitimately nested file under root is served with its
+// bytes intact. Confirms the confinement barrier does not over-refuse.
+async function testNestedFileServed() {
+  var ctx = await _server();
+  _writeFile(ctx.dir, "assets/css/site.css", "body{color:#000}");
+  var srv = await ctx.start({ contentSafety: null });
+  try {
+    var r = await _get(srv.port, "/assets/css/site.css");
+    check("nested: deep in-root file serves 200",
+          r.statusCode === 200);
+    check("nested: bytes intact",
+          r.body.toString("utf8") === "body{color:#000}");
+    check("nested: correct content-type",
+          /text\/css/.test(r.headers["content-type"] || ""));
+  } finally {
+    srv.close();
+    ctx.cleanup();
+  }
+}
+
+// A directory-index request resolves to the index file inside root and
+// serves it — exercises the re-confinement after the index-file join.
+async function testDirectoryIndexServed() {
+  var ctx = await _server();
+  _writeFile(ctx.dir, "docs/index.html", "<h1>docs</h1>");
+  var srv = await ctx.start({ contentSafety: null });
+  try {
+    var r = await _get(srv.port, "/docs/");
+    check("dir-index: index.html served for a directory request",
+          r.statusCode === 200 && /docs/.test(r.body.toString("utf8")));
+  } finally {
+    srv.close();
+    ctx.cleanup();
+  }
+}
+
 async function run() {
   await testForceAttachmentDefaultOff();
   await testForceAttachmentOnHtml();
@@ -313,6 +429,9 @@ async function run() {
   await testOnErrorFiresOnRefusal();
   await testOnErrorThrowDoesNotCorruptResponse();
   testOnErrorRejectsNonFunction();
+  await testPathTraversalRefused();
+  await testNestedFileServed();
+  await testDirectoryIndexServed();
 }
 
 module.exports = { run: run };

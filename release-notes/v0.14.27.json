@@ -1,0 +1,80 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.14.27",
+  "date": "2026-06-06",
+  "headline": "Security-hardening sweep: exclusive temp creation, request path confinement, prototype-safe parsing, cross-tenant authentication, telemetry and error redaction, and posture enforcement floors",
+  "summary": "A broad security-hardening release closing classes of bug across the request, storage, identity, and data-governance surfaces. Files that stage data before an atomic rename (the atomic-write substrate, the HTTP client's downloads, the static file server's cache) now create those files exclusively and refuse to follow a symlink, so a same-user pre-planted file or symlink can no longer be truncated or written through. The static file server re-confines every request-derived path to its served root at the filesystem call, and its content-safety read is anchored to a single no-follow descriptor. The request body parser, the WebSocket extension parser, and the cookie parser build their maps from key/value pairs instead of attacker-named computed writes, so a field named after an Object prototype member can neither pollute the prototype nor surface inherited members. The SSRF guard compares cloud-metadata addresses canonically; OIDC federation derives a subordinate's policy and keys from the superior-signed statement rather than self-published config; the JMAP listener rejects a cross-tenant account id with accountNotFound before dispatch; the agent event bus authenticates each envelope's tenant and posture with a vault-keyed MAC; and the audit query no longer under-logs concurrent reads. Telemetry attributes exported over OTLP and the 5xx error record written to the signed audit chain are now redacted, closing two egress paths that previously shipped secrets in plaintext. Regulated compliance postures enforce a minimum seal-envelope strength at table registration, warn when a pinned posture has no content-safety overlay or no outbound DLP wired, and expose region-tag normalization helpers. The local queue's Redis backend no longer wedges a caller on a failed connect or double-schedules reconnects, file uploads audit every content-safety skip, the Azure blob backend percent-encodes object keys, the XML parser rejects prototype-poisoning names, and router path-scoped middleware (`use(path, mw)`) works as documented instead of dropping the gate.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Staged writes are created exclusively and refuse symlinks",
+          "body": "The atomic-write substrate (`b.atomicFile`), the HTTP client's download staging, and the static file server's pre-serve read now open files with `O_CREAT | O_EXCL | O_NOFOLLOW` at owner-only `0o600` (the vault-rotation pipeline adopted the same in v0.14.26). A pre-planted file or a symlink at a staging path is now a hard failure rather than a truncated or followed write (CWE-377 / CWE-379 / CWE-59). The temp+rename atomicity and download streaming semantics are unchanged."
+        },
+        {
+          "title": "Static file server re-confines request paths and reads through one no-follow descriptor",
+          "body": "Every request-derived path is re-resolved under the served root and refused if it escapes (`startsWith(root + sep)`) at the filesystem call, not only upstream, and the content-safety gate reads size and bytes from a single `O_NOFOLLOW` descriptor so a final-component symlink swap between stat and read cannot redirect it (CWE-22 / CWE-367). Percent-encoded traversal, NUL bytes, and absolute/drive-letter paths are refused before any filesystem access."
+        },
+        {
+          "title": "Body, WebSocket, and cookie parsers build maps without attacker-named writes",
+          "body": "The request body parser (Content-Type/Content-Disposition params, multipart headers and fields), the WebSocket `Sec-WebSocket-Extensions` parser, and the CSRF cookie parser now collect key/value pairs and materialize them via `Object.fromEntries` onto a null-prototype accumulator with prototype-poisoning keys dropped, instead of a request-keyed computed write. A field or parameter named `__proto__` / `constructor` / `prototype` can no longer pollute the prototype or surface inherited members (CWE-915 / CWE-1321). Parsed object shapes are unchanged for all legitimate input."
+        },
+        {
+          "title": "Prototype-safe XML parsing",
+          "body": "`b.safeXml` builds its element, attribute, and grouping accumulators with `Object.create(null)` and rejects element/attribute names `__proto__` / `constructor` / `prototype` with `xml/forbidden-name` (CWE-1321), matching the TOML/YAML/INI parsers. The returned tree has a null prototype; consumers using bracket/dot access, `Object.keys`, or `JSON.stringify` are unaffected."
+        },
+        {
+          "title": "SSRF guard compares cloud-metadata addresses canonically",
+          "body": "The SSRF guard now canonicalizes addresses before comparing against the cloud metadata endpoints, so a non-canonical encoding of a link-local / metadata address can no longer slip past the block to reach an instance metadata service (CWE-918)."
+        },
+        {
+          "title": "OIDC federation trusts the superior-signed statement, not self-config",
+          "body": "A subordinate entity's `metadata_policy` is now read from the superior's signed entity statement, and trust-chain building verifies each subordinate against attested keys in a two-phase walk rather than the subordinate's self-published JWKS, closing a trust-substitution gap (RFC 9068 / OpenID Federation). A subordinate that publishes no attested keys is refused."
+        },
+        {
+          "title": "Cross-tenant authentication on the JMAP listener and agent event bus",
+          "body": "The JMAP listener rejects a client-supplied `accountId` outside the actor's permitted set with `accountNotFound` before any method or blob handler runs (RFC 8620 §3.6.1). The agent event bus authenticates each envelope's tenant id and posture with a vault-keyed HMAC and drops a forged or tampered envelope before routing. The audit query no longer suppresses its own `audit.read` self-log under concurrency, so concurrent reads are each recorded (PCI-DSS 10.2)."
+        },
+        {
+          "title": "Telemetry and error records are redacted before egress",
+          "body": "Span and metric attributes exported over OTLP now pass through a redactor (`b.observability.setRedactor`, defaulting to `b.redact`) before leaving the process, and the 5xx error record written to the durable, signed audit chain now uses the redacting `audit.safeEmit` rather than the raw `audit.emit` — closing two egress paths that previously shipped a secret embedded in a span attribute or an exception message/stack in plaintext (CWE-532). The error response itself is byte-identical."
+        },
+        {
+          "title": "Regulated postures enforce a seal-envelope floor",
+          "body": "Compliance postures now carry a `sealEnvelopeFloor`; `hipaa` and `pci-dss` require at least AEAD additional-data binding. Registering a table that seals columns under a weaker envelope while such a posture is pinned is refused at configuration time, so a regulated deployment can no longer register a copy-paste-vulnerable plain-sealed table (CWE-311 / CWE-326; 45 CFR 164.312, PCI-DSS v4 Req. 3.5)."
+        },
+        {
+          "title": "Redis backend connect/reconnect robustness",
+          "body": "The local queue's Redis backend always settles its connect promise (resolve on ready, reject on error/timeout) so a caller can no longer wedge on a failed connect, schedules at most one reconnect per failure (a lost socket fires both error and close), and gives up idempotently — fixing a caller hang and a reconnect storm on a flapping backend (CWE-833 / CWE-400)."
+        },
+        {
+          "title": "File-upload skip auditing and Azure object-key encoding",
+          "body": "Every content-safety skip path in `b.fileUpload` now emits a `content_safety_skipped` audit naming why the scan was bypassed (opt-out / no gate for the extension / over the reassembly cap), so an unscanned upload is visible in the audit log (CWE-778). The Azure blob backend percent-encodes each object-key path segment before URL interpolation, so a key containing `?` / `#` / spaces can no longer corrupt the request or escape its container path (CWE-20)."
+        },
+        {
+          "title": "Router path-scoped middleware works as documented",
+          "body": "`router.use(pathPrefix, middleware)` — documented across the security middleware but previously unimplemented (the path string was pushed as the middleware, 500-ing every request, or the gate silently never ran) — now mounts the middleware scoped to a segment-boundary path prefix, preserving registration order and refusing a non-string prefix or non-function middleware at configuration time (CWE-670)."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Recurrence guards for the fixed shapes",
+          "body": "The pattern catalog gains detectors for the exclusive-temp-create (atomic-file, http-client, static), request-path confinement (static serve + gate), request-keyed map writes (body-parser, WebSocket), prototype-safe XML accumulators, Azure object-key encoding, file-upload skip auditing, OTLP attribute redaction, JMAP account gating, the seal-envelope floor, and the router path-scoped mount. The data-flow and timing shapes (SSRF canonicalization, federation trust-chain, audit self-log concurrency, event-bus envelope MAC, Redis reconnect scheduling, error-record redaction, posture-overlay warnings) are guarded by request-driven tests where a precise regex would false-positive."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "Behavior changes to review",
+          "body": "Several hardening changes alter behavior, all fail-closed: (1) the agent event bus now requires a shared vault to authenticate envelopes and refuses to publish/deliver without one — single-process callers without a vault must pass `requireMac: false`; (2) OIDC federation subordinates must publish attested keys (a subordinate relying on self-published JWKS is refused); (3) `b.safeXml` throws `xml/forbidden-name` on element/attribute names `__proto__`/`constructor`/`prototype`; (4) registering a table that seals columns below the pinned regulated posture's seal-envelope floor throws at configuration time — add `{ aad: true }` or a per-row key; (5) OTLP telemetry attributes are now redacted by default — install a domain redactor via `b.observability.setRedactor` if you need different handling (it cannot be disabled outright); (6) `router.use(path, mw)` now path-scopes instead of applying globally or 500-ing. New advisory audit rows appear when a pinned posture has no content-safety overlay or no outbound DLP wired; `b.compliance.set` does not auto-install outbound DLP (call `b.redact.installForPosture` with your client/mail/webhook handles)."
+        }
+      ]
+    }
+  ]
+}

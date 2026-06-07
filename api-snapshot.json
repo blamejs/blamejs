@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.26",
-  "createdAt": "2026-06-06T20:35:07.601Z",
+  "frameworkVersion": "0.14.27",
+  "createdAt": "2026-06-06T22:07:45.376Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7714,6 +7714,10 @@
                   "type": "primitive",
                   "valueType": "boolean"
                 },
+                "sealEnvelopeFloor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "tlsMinVersion": {
                   "type": "primitive",
                   "valueType": "string"
@@ -8767,6 +8771,10 @@
                 "requireVacuumAfterErase": {
                   "type": "primitive",
                   "valueType": "boolean"
+                },
+                "sealEnvelopeFloor": {
+                  "type": "primitive",
+                  "valueType": "string"
                 },
                 "tlsMinVersion": {
                   "type": "primitive",
@@ -13254,9 +13262,17 @@
           "type": "function",
           "arity": 1
         },
+        "isRegionCompatible": {
+          "type": "function",
+          "arity": 2
+        },
         "list": {
           "type": "function",
           "arity": 0
+        },
+        "normalizeRegionTag": {
+          "type": "function",
+          "arity": 1
         },
         "postureDefault": {
           "type": "function",
@@ -43921,6 +43937,10 @@
           "type": "function",
           "arity": 3
         },
+        "getRedactor": {
+          "type": "function",
+          "arity": 0
+        },
         "otlpExporter": {
           "type": "object",
           "members": {
@@ -43933,6 +43953,10 @@
         "safeEvent": {
           "type": "function",
           "arity": 3
+        },
+        "setRedactor": {
+          "type": "function",
+          "arity": 1
         },
         "setTap": {
           "type": "function",
@@ -46382,6 +46406,10 @@
         "installOutboundDlp": {
           "type": "function",
           "arity": 1
+        },
+        "isOutboundDlpInstalled": {
+          "type": "function",
+          "arity": 0
         },
         "redact": {
           "type": "function",
