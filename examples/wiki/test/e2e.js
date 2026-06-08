@@ -713,7 +713,7 @@ async function run() {
         // after `b.<ns>.` and followed by `(` or whitespace / `<`.
         var sig = "b." + nsKey + "." + method;
         var headingRe = new RegExp(
-          "<h[23][^>]*>\\s*" + sig.replace(/[.$]/g, "\\$&") + "\\s*(?:\\(|<|\\s)");  // allow:dynamic-regex — nsKey/method come from runtime export keys (identifier chars), no operator input
+          "<h[23][^>]*>\\s*" + sig.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*(?:\\(|<|\\s)");  // allow:dynamic-regex — nsKey/method come from runtime export keys (identifier chars); the full metacharacter escape (incl. backslash) keeps the constructed RegExp injection-safe regardless
         if (!headingRe.test(pageBody)) {
           abiFailures.push(sig + " — not rendered as a section on /" + slug);
         }
