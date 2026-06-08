@@ -131,18 +131,24 @@ var MLKEM1024_KAT = {
 // cross-impl legs; the frozen KAT runs regardless.
 // ---------------------------------------------------------------------------
 
-function nativeMlKemAvailable() {
-  try { nodeCrypto.generateKeyPairSync("ml-kem-1024"); return true; }
-  catch (_e) { return false; }
+// Whether this runtime can import an AKP (post-quantum) private key from a JWK
+// for the given keygen alg — the exact operation each cross-implementation
+// oracle leg performs. The AKP JWK *import* path is Node 26+ for ML-KEM and
+// SLH-DSA; only ML-DSA JWK import is wired on the Node 24.14 floor. Probing the
+// full generate -> export-to-JWK -> import-from-JWK round-trip (rather than just
+// keygen, which exists for every alg on Node 24) lets a leg be SKIPPED — not
+// FAILED — on a runtime that cannot perform the import the oracle relies on.
+function nativeJwkImportWorks(keygenAlg) {
+  try {
+    var kp = nodeCrypto.generateKeyPairSync(keygenAlg);
+    var jwk = kp.privateKey.export({ format: "jwk" });
+    nodeCrypto.createPrivateKey({ key: jwk, format: "jwk" });
+    return true;
+  } catch (_e) { return false; }
 }
-function nativeMlDsaAvailable() {
-  try { nodeCrypto.generateKeyPairSync("ml-dsa-87"); return true; }
-  catch (_e) { return false; }
-}
-function nativeSlhDsaAvailable() {
-  try { nodeCrypto.generateKeyPairSync("slh-dsa-shake-256f"); return true; }
-  catch (_e) { return false; }
-}
+function nativeMlKemAvailable() { return nativeJwkImportWorks("ml-kem-1024"); }
+function nativeMlDsaAvailable() { return nativeJwkImportWorks("ml-dsa-87"); }
+function nativeSlhDsaAvailable() { return nativeJwkImportWorks("slh-dsa-shake-256f"); }
 
 function b64u(buf) { return Buffer.from(buf).toString("base64url"); }
 

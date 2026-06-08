@@ -9257,6 +9257,29 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // v0.15.0 — an encrypted-at-rest b.db.init refuses a tmpDir that is not a
+    // recognized tmpfs mount (/dev/shm, /run/shm, /run/user, /tmp): a decrypted
+    // working copy on persistent disk leaks into backup snapshots, replicas,
+    // and forensic images. That gate is a NO-OP on win32, so a test that builds
+    // its scratch dir under the repo-local test/.test-output and passes it to a
+    // BESPOKE db.init PASSES on the author's Windows host and FAILS on the
+    // Linux/macOS CI floor with db/tmpdir-not-tmpfs (audit-checkpoint-false-
+    // rollback shipped this exact bug). The shared setupTestDb / setupTestDbForMW
+    // helpers already pass allowNonTmpfsTmpDir:true; a bespoke db.init must opt in
+    // the same way, OR base its scratch on os.tmpdir() (/tmp on Linux is a
+    // recognized tmpfs), OR run atRest:"plain" (no decrypted working copy, so the
+    // gate does not apply). The companion `requires` is satisfied by any one.
+    id: "test-bespoke-db-init-nontmpfs-tmpdir",
+    primitive: "a bespoke b.db.init with a tmpDir must pass allowNonTmpfsTmpDir:true (as setupTestDb does), base the scratch on os.tmpdir(), or run atRest:\"plain\" — so the encrypted-at-rest non-tmpfs gate does not fail it on the Linux/macOS CI floor",
+    scanScope: "test",
+    skipCommentLines: true,
+    regex: /\bb\.db\.init\s*\([\s\S]{0,400}?\btmpDir\s*:/,
+    requires: /allowNonTmpfsTmpDir|atRest\s*:\s*["']plain["']|os\.tmpdir\s*\(/,
+    allowlist: [],
+    reason: "v0.15.0 — the encrypted-at-rest db.init disk-residency gate refuses a non-tmpfs tmpDir on Linux/macOS but is a no-op on win32, so a bespoke db.init with a repo-local (.test-output) scratch dir passes on Windows and fails on CI. setupTestDb / setupTestDbForMW already pass allowNonTmpfsTmpDir:true; a bespoke db.init must do the same, base its scratch on os.tmpdir() (/tmp = recognized tmpfs), or run atRest:\"plain\". The requires-marker confirms one mitigation is present in the file.",
+  },
+
+  {
     // N3 (v0.10.14) — tests creating a real DB handle without an
     // isolation primitive. Any test file calling `b.db.create(` MUST
     // also name one of: `setupTestDb` / `setupVaultOnly` (framework

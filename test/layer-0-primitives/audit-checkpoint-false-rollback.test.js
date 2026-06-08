@@ -101,7 +101,17 @@ async function reinitDbOnly(tmpDir) {
   // reset minus the vault reset (the boot-recovery path).
   setTestPassphraseEnv();
   b.audit._resetForTest();
-  await b.db.init({ dataDir: tmpDir, tmpDir: path.join(tmpDir, "tmpfs"), schema: SCHEMA });
+  // Same disk-residency posture as setupTestDb: the fixture's scratch dir is
+  // the repo-local .test-output (not a real tmpfs mount), so the v0.15.0
+  // non-tmpfs tmpDir gate must be opted past explicitly here too — otherwise
+  // db.init refuses with db/tmpdir-not-tmpfs on Linux (the gate is
+  // platform-specific, so this only surfaces off Windows).
+  await b.db.init({
+    dataDir:             tmpDir,
+    tmpDir:              path.join(tmpDir, "tmpfs"),
+    schema:              SCHEMA,
+    allowNonTmpfsTmpDir: true,
+  });
 }
 
 async function run() {
