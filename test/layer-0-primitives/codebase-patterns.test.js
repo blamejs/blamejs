@@ -307,6 +307,7 @@ var VALID_ALLOW_CLASSES = {
   "dynamic-regex": 1,
   "dynamic-require": 1,
   "from-base64url-untrapped": 1,
+  "hand-rolled-sql": 1,
   "fs-path-from-operator-identifier-without-traversal-refusal": 1,
   "gitleaks-entropy": 1,
   "handrolled-buffer-collect": 1,
@@ -857,6 +858,178 @@ function testNoTierTerminologyInLib() {
   var matches = _scan(/\bTier[- ]?(A|B|C|1|2|3)\b/i, { skipComments: false });
   matches = _filterMarkers(matches, "tier-terminology");
   _report("no Tier-A / Tier-B / Tier-C terminology in lib/", matches);
+}
+
+// ---- No hand-rolled SQL — compose b.sql / b.guardSql ----
+//
+// String-built SQL is the surface that breaks on Postgres (unquoted
+// identifiers fold to lowercase) and that the b.sql builder eliminates
+// by construction: it quotes every identifier through b.safeSql, binds
+// every value as a placeholder, resolves table names + the configurable
+// prefix, and routes raw fragments through b.guardSql. So no lib/ module
+// should compose SQL by hand — it should build it through b.sql, and it
+// should never hardcode a `_blamejs_*` table literal (that bypasses the
+// configurable-prefix resolution). This detector flags both: a string
+// literal that STARTS a SQL statement, and a hardcoded `_blamejs_*`
+// literal, in any DB-touching lib file outside the migration backlog.
+//
+// Files still carrying hand-rolled SQL live on HAND_ROLLED_SQL_BACKLOG
+// until migrated onto b.sql; remove a file from the backlog as it is
+// migrated, and any residual hand-rolled SQL in it then fails the gate
+// (so the migration runs to completion and can't silently stall). A new
+// DB file that hand-rolls SQL without being on the backlog fails
+// immediately. Only DB-touching files (a SQL execution sink or a
+// `_blamejs_` literal) are scanned, so non-SQL `SELECT`/`WITH` text in
+// guard-html / forms / i18n etc. never false-positives.
+//
+// PERMANENT exceptions: the builder/guard/primitive that legitimately
+// produce or inspect SQL text.
+var HAND_ROLLED_SQL_PERMANENT = {
+  "lib/sql.js":             1,   // the b.sql builder itself
+  "lib/guard-sql.js":       1,   // the b.guardSql guard inspects SQL text
+  "lib/safe-sql.js":        1,   // identifier primitive (docstring examples)
+  "lib/framework-schema.js": 1,  // declarative DDL + the canonical LOCAL_TO_EXTERNAL name source
+};
+// Migration backlog — every DB file still hand-rolling SQL. Shrinks to
+// empty as the everything-sweep migrates each onto b.sql.
+//
+// db-declare-row-policy / outbox / inbox now compose b.sql: the builder
+// grew the constructs they needed — Postgres RLS (enableRowLevelSecurity /
+// createPolicy / dropPolicy), `FOR UPDATE SKIP LOCKED` (forUpdate), the
+// single-bind `col = ANY(?)` array form (whereInArray), an allowlisted
+// value-position SQL function (fn -> NOW() / CURRENT_TIMESTAMP) and cast
+// (cast -> `?::jsonb` / `?::interval`), `ON CONFLICT DO NOTHING RETURNING`
+// (doNothing().returning()), the sqlite `SELECT changes()` probe
+// (catalog.changes), a partial index (createIndex { where }), and the
+// driver-final `$1..$N` translation for code that hands SQL to an
+// operator-supplied driver directly (toExternalSql).
+//
+// vault/rotate now composes b.sql end to end: the at-rest key-rotation
+// pipeline walks its standalone node:sqlite handle through the catalog /
+// pragma sub-API (`sqlite_master` list / `tableExists` / `PRAGMA
+// table_info` / `journal_mode` / `synchronous` / `wal_checkpoint` /
+// `ORDER BY RANDOM()`), and the per-column re-seal SELECT/UPDATE + drift
+// sample + verification COUNT through b.sql.select / b.sql.update.
+//
+// mail-store now composes b.sql end to end: the sqlite-only sealed full-
+// text mail store builds every cached prepared statement + the schema
+// bootstrap through b.sql with { dialect: "sqlite", quoteName: true } (the
+// store targets a concrete sqlite handle, never clusterStorage, so each
+// prefixed table name emits as a quoted identifier). The FTS5 search runs
+// through whereMatch (the `<fts> MATCH ?` IN-subquery), the hard-expunge
+// candidate set through whereInJsonEach (json_each), and the FTS5 virtual-
+// table DDL through createVirtualTable; the composite-PK flags table, the
+// ON-DELETE-CASCADE FK back to messages, and the per-folder quota
+// accumulator (`col = col + EXCLUDED.col`) compose createTable /
+// upsert.doUpdate. The backlog is now empty.
+var HAND_ROLLED_SQL_BACKLOG = {
+};
+function testNoHandRolledSql() {
+  // A DB-touching file: composes a SQL execution sink or hardcodes a
+  // framework table name. Only these are scanned (no non-SQL FPs).
+  var SINK = /clusterStorage\.(?:execute|executeOne|executeAll)|externalDb\.query|\bdb\(\)\.(?:prepare|exec|run)|\b_q\(|\b_psql\(|tx\.query|runSqlOnHandle/;
+  // A hardcoded framework TABLE-name literal - `_blamejs_<words>` whose
+  // token does NOT continue into a `.` (which would make it a file name
+  // like `_blamejs_rotate.tmp.db`, not a table reference). The trailing
+  // `(?![a-z_.])` asserts the whole token ended (no further word char) and
+  // is not immediately followed by `.`, keeping the rule on hardcoded table
+  // names and off staging-file path literals.
+  var LIT  = /_blamejs_[a-z_]+(?![a-z_.])/;
+  // A string literal that STARTS a SQL statement.
+  // TRUNCATE requires a following TABLE keyword or a table-name token - a
+  // bare quoted "TRUNCATE" (e.g. a PRAGMA wal_checkpoint mode arg, or an
+  // FTS5 token) is not the TRUNCATE statement and must not false-positive.
+  var START = /(["'`])\s*(SELECT\b|INSERT\s+(?:INTO|OR)\b|REPLACE\s+INTO\b|UPDATE\s+["'`]?[A-Za-z_]|DELETE\s+FROM\b|CREATE\s+(?:TABLE|UNIQUE\s+INDEX|INDEX|TRIGGER|VIRTUAL\s+TABLE|OR\s+REPLACE)\b|ALTER\s+TABLE\b|DROP\s+(?:TABLE|TRIGGER|INDEX)\b|WITH\s+[A-Za-z_]|MERGE\s+INTO\b|TRUNCATE\s+(?:TABLE\s+)?["'`]?[A-Za-z_])/i;
+  // A SQL CLAUSE fragment assembled by string concatenation (mid-statement
+  // construction a START-only check misses): `... + " WHERE " + ...`,
+  // `" SET " +`, `" VALUES (" +`, `" FROM " +`, `" ORDER BY " +`, the JOIN
+  // family, ON CONFLICT / RETURNING / LIMIT / OFFSET / HAVING / GROUP BY.
+  // The leading/trailing `+` (or the unclosed `(` for VALUES) is the
+  // build-by-concat tell that separates it from a fragment passed whole to
+  // b.sql's whereRaw / setRaw (which carry their own allow marker).
+  var FRAG = /(?:\+\s*(["'`])\s*(?:SET|FROM|WHERE|VALUES|ORDER\s+BY|GROUP\s+BY|HAVING|RETURNING|LIMIT|OFFSET|ON\s+CONFLICT|(?:INNER\s+|LEFT\s+|RIGHT\s+|CROSS\s+)?JOIN)\b|(["'`])\s*(?:SET|FROM|WHERE|VALUES\s*\(|ORDER\s+BY|GROUP\s+BY|HAVING|RETURNING|ON\s+CONFLICT|(?:INNER\s+|LEFT\s+|RIGHT\s+|CROSS\s+)?JOIN)\b[^"'`]*\2\s*\+)/i;
+  var matches = [];
+  var files = _libFiles();
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    if (HAND_ROLLED_SQL_PERMANENT[rel] || HAND_ROLLED_SQL_BACKLOG[rel]) continue;
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    if (!SINK.test(content) && !LIT.test(content)) continue;   // not a DB file
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;   // comment line
+      if (START.test(line)) {
+        matches.push({ file: rel, line: j + 1, content: "hand-rolled SQL — use b.sql: " + line.trim().slice(0, 90) });
+        continue;
+      }
+      if (FRAG.test(line)) {
+        matches.push({ file: rel, line: j + 1, content: "hand-rolled SQL clause built by concatenation — use b.sql: " + line.trim().slice(0, 80) });
+        continue;
+      }
+      if (/_blamejs_[a-z_]+(?!\.)/.test(line)) {
+        matches.push({ file: rel, line: j + 1, content: "hardcoded _blamejs_* literal — use frameworkSchema.tableName / b.sql: " + line.trim().slice(0, 70) });
+      }
+    }
+  }
+  matches = _filterMarkers(matches, "hand-rolled-sql");
+  _report("no hand-rolled SQL outside the b.sql builder (compose b.sql / b.guardSql; no hardcoded _blamejs_* literals)", matches);
+}
+
+// ---- Pattern 9b: no hardcoded framework state file names ----
+//
+// The framework's on-disk state file names (db.enc, db.key.enc, vault.key,
+// audit.tip, ...) are centralized in lib/framework-files.js so a rename /
+// relocation is one edit and operators can override them. Every owner should
+// resolve its file name via frameworkFiles.fileName(<logical>) instead of
+// hardcoding the literal. This is the inverse detector that drives that
+// migration in reverse (mirrors testNoHandRolledSql for table names): files
+// still hardcoding a registered name live on FRAMEWORK_FILE_NAME_BACKLOG
+// until migrated; remove a file as it migrates and any residual literal then
+// fails the gate. A NEW lib file hardcoding a registered state-file name
+// without being on the backlog fails immediately.
+var FRAMEWORK_FILE_PERMANENT = {
+  "lib/framework-files.js": 1,   // the registry that DEFINES the canonical names
+};
+var FRAMEWORK_FILE_NAME_BACKLOG = {
+};
+// Registered state-file names — kept in sync with framework-files.js
+// DEFAULT_FILE_NAMES. A quoted literal of any of these outside the registry
+// or the backlog is a hardcoded name that should resolve via frameworkFiles.
+var FRAMEWORK_STATE_FILE_NAMES = [
+  "db.enc", "db.key.enc", "vault.key", "audit.tip", "audit-sign.key",
+  "rows.enc", "checkpoint.enc",
+];
+function testNoHardcodedFrameworkFileNames() {
+  var rx = new RegExp("[\"'`](" + FRAMEWORK_STATE_FILE_NAMES.map(function (n) {
+    return n.replace(/\./g, "\\.");
+  }).join("|") + ")[\"'`]");
+  var matches = [];
+  var files = _libFiles();
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    if (FRAMEWORK_FILE_PERMANENT[rel] || FRAMEWORK_FILE_NAME_BACKLOG[rel]) continue;
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    if (!rx.test(content)) continue;
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;   // comment line
+      var m = line.match(rx);
+      if (m) {
+        matches.push({ file: rel, line: j + 1,
+          content: "hardcoded framework state file name " + m[0] +
+            " - resolve via frameworkFiles.fileName(<logical>): " + line.trim().slice(0, 60) });
+      }
+    }
+  }
+  matches = _filterMarkers(matches, "hardcoded-framework-file-name");
+  _report("no hardcoded framework state file names outside lib/framework-files.js " +
+    "(resolve via frameworkFiles.fileName)", matches);
 }
 
 // ---- Pattern 10: inline require() (should be top-of-file) ----
@@ -2567,6 +2740,142 @@ async function testNoDuplicateCodeBlocks() {
   // shape.
   var KNOWN_CLUSTERS = [
     {
+      // v0.15.0 #103 guard-family consolidation — the genuine re-implementations
+      // are EXTRACTED into gate-contract primitives (profile resolution ->
+      // gateContract.makeProfileResolver, 24 guards; the sanitize/parse refuse-on-
+      // severity throw -> gateContract.throwOnRefusalSeverity, 18 guards) and reused.
+      // The residual STRONG-DUP across the guard validate/sanitize/parse entry
+      // points is the guards uniformly + CORRECTLY COMPOSING those primitives
+      // (resolveOpts -> _detectIssues -> throwOnRefusalSeverity / aggregateIssues /
+      // numericBounds) — correct usage, not duplication. The only per-guard parts
+      // (the _detectIssues body + the transform) are interleaved + distinct;
+      // templating them would couple unrelated detection grammars. Re-hand-rolling
+      // either primitive is caught by the use-makeProfileResolver-not-handrolled +
+      // use-throwOnRefusalSeverity-not-handrolled inverse detectors. The structural /
+      // primitive-aware detector (#102, v0.15.4) will recognise correct usage + retire
+      // this entry (task #104).
+      mode:  "family-subset",
+      files: [
+        "lib/guard-agent-registry.js:validate",
+        "lib/guard-auth.js:sanitize",
+        "lib/guard-auth.js:validate",
+        "lib/guard-cidr.js:sanitize",
+        "lib/guard-cidr.js:validate",
+        "lib/guard-domain.js:sanitize",
+        "lib/guard-domain.js:validate",
+        "lib/guard-email.js:sanitize",
+        "lib/guard-email.js:validate",
+        "lib/guard-event-bus-payload.js:validate",
+        "lib/guard-event-bus-topic.js:validate",
+        "lib/guard-filename.js:sanitize",
+        "lib/guard-graphql.js:sanitize",
+        "lib/guard-html.js:sanitize",
+        "lib/guard-idempotency-key.js:validate",
+        "lib/guard-image.js:sanitize",
+        "lib/guard-image.js:validate",
+        "lib/guard-imap-command.js:validate",
+        "lib/guard-jmap.js:validate",
+        "lib/guard-json.js:validate",
+        "lib/guard-jsonpath.js:sanitize",
+        "lib/guard-jsonpath.js:validate",
+        "lib/guard-jwt.js:sanitize",
+        "lib/guard-jwt.js:validate",
+        "lib/guard-list-unsubscribe.js:validate",
+        "lib/guard-mail-compose.js:validate",
+        "lib/guard-mail-move.js:validate",
+        "lib/guard-mail-reply.js:validate",
+        "lib/guard-mail-sieve.js:validate",
+        "lib/guard-managesieve-command.js:validate",
+        "lib/guard-markdown.js:sanitize",
+        "lib/guard-markdown.js:validate",
+        "lib/guard-message-id.js:validate",
+        "lib/guard-mime.js:sanitize",
+        "lib/guard-mime.js:validate",
+        "lib/guard-oauth.js:sanitize",
+        "lib/guard-pdf.js:sanitize",
+        "lib/guard-pdf.js:validate",
+        "lib/guard-pop3-command.js:validate",
+        "lib/guard-posture-chain.js:validate",
+        "lib/guard-regex.js:gate",
+        "lib/guard-regex.js:sanitize",
+        "lib/guard-regex.js:validate",
+        "lib/guard-saga-config.js:validate",
+        "lib/guard-shell.js:sanitize",
+        "lib/guard-shell.js:validate",
+        "lib/guard-smtp-command.js:detectBodySmuggling",
+        "lib/guard-smtp-command.js:validate",
+        "lib/guard-snapshot-envelope.js:validate",
+        "lib/guard-stream-args.js:validate",
+        "lib/guard-svg.js:sanitize",
+        "lib/guard-template.js:sanitize",
+        "lib/guard-template.js:validate",
+        "lib/guard-tenant-id.js:validate",
+        "lib/guard-time.js:sanitize",
+        "lib/guard-time.js:validate",
+        "lib/guard-trace-context.js:validate",
+        "lib/guard-uuid.js:sanitize",
+        "lib/guard-uuid.js:validate",
+        "lib/guard-xml.js:sanitize",
+        "lib/guard-xml.js:validate",
+        "lib/guard-yaml.js:parse",
+        "lib/guard-yaml.js:validate",
+      ],
+      reason: "v0.15.0 #103 — guard-family consolidation CONTRACT SHAPE. The genuine re-implementations are extracted into gate-contract primitives and reused (gateContract.makeProfileResolver — profile resolution, 24 guards; gateContract.throwOnRefusalSeverity — sanitize/parse refuse-on-critical|high throw, 18 guards), so the residual cross-guard STRONG-DUP at the validate/sanitize/parse entry points is the guards uniformly + CORRECTLY composing those primitives plus aggregateIssues / numericBounds — correct usage, not duplication. The per-guard _detectIssues body + transform are distinct and interleaved; templating would couple unrelated detection grammars. Re-hand-rolling either primitive is a hard fail via the use-makeProfileResolver-not-handrolled + use-throwOnRefusalSeverity-not-handrolled inverse detectors. The structural + primitive-aware detector (task #102, v0.15.4) recognises correct primitive usage and retires this allowlist (task #104).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/oid4vp.js:matchDcql",
+        "lib/gate-contract.js:_ctxValueForKind",
+        "lib/http-message-signature.js:_parseUrl",
+      ],
+      reason: "v0.15.0 — coincidental 50-tok window across unrelated domains: a DCQL query matcher (auth/oid4vp.matchDcql), the guard ctx-field picker (gate-contract._ctxValueForKind — pick first present ctx field), and an HTTP-message-signature URL parser (http-message-signature._parseUrl). Three unrelated loops; no shared behaviour. Surfaced when the v0.15.0 ctxFields work reshaped _ctxValueForKind's window.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/audit.js:_queryCluster",
+        "lib/auth/ciba.js:startAuthentication",
+        "lib/auth/oauth.js:endSessionUrl",
+        "lib/auth/oauth.js:exchangeToken",
+      ],
+      reason: "v0.14.30 — guarded accumulator-fill idiom (`if (input.X) acc.method(\"name\", input.X)` repeated per optional field). audit._queryCluster builds a b.sql WHERE chain (`if (criteria.X) qb.where(...)`) after the hand-rolled cluster query migrated onto b.sql; auth/ciba.startAuthentication + auth/oauth.endSessionUrl/exchangeToken build URLSearchParams request bodies (`if (opts.X) body.set(...)`). The 50-tok shingle is the chain-of-guarded-single-statement-calls shell, not behaviour: one composes a SQL predicate set, the others compose form-encoded OAuth/CIBA bodies — different accumulators (b.sql builder vs URLSearchParams), different vocabularies, no shared body. Same cross-domain false-match class the SQL char-walk cluster documents.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/cluster-storage.js:placeholderize",
+        "lib/db-query.js:_assertRawNoStringLiteral",
+        "lib/guard-sql.js:_hasEmbeddedStringLiteral",
+        "lib/safe-sql.js:countPlaceholders",
+        "lib/sql.js:_assertEmittable",
+        "lib/sql.js:_assertRawNoStringLiteral",
+        "lib/sql.js:_assertNoRawJsonbKeyOp",
+        "lib/sql.js:_toPositional",
+        "lib/sql.js:_assertCatalogEmittable",
+      ],
+      reason: "v0.14.29 — the canonical quote- and comment-aware SQL char-walk (`while (i<len) { skip '...' / \"...\" doubled-quote literals; skip -- and /* */ comments; act on the target char }`). The single genuinely-shared instance, safeSql.countPlaceholders, IS extracted and composed by both db-query and the b.sql builder. The remaining members run the SAME scan shape for DIFFERENT purposes that cannot share a body: db-query._assertRawNoStringLiteral / sql._assertRawNoStringLiteral refuse a `'...'` literal in an operator raw fragment (each throwing its own typed error — SafeSqlError vs SqlBuilderError), guard-sql._hasEmbeddedStringLiteral is the tokenizer's literal-mask step, sql._assertEmittable is the builder's final-output validator (balanced quotes / parens / single-statement / placeholder parity), and sql._toPositional translates the builder's `?` placeholders to `$1..$N` for a direct-driver caller (the toExternalSql terminal — the same scan as clusterStorage.placeholderize, deliberately kept at the builder layer rather than reaching into clusterStorage, which transitively requires the builder). sql._assertCatalogEmittable is the catalog/PRAGMA sub-API's output gate (the same boundary-escape refusals as _assertEmittable on the catalog statement shape). Same shape-only family the external-db opaque-span cluster documents; consolidating would couple a raw-fragment gate, a guard tokenizer, an output validator, and a placeholder translator on the trivial scan shell.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/auth/fido-mds3.js:_validateChain",
+        "lib/middleware/require-methods.js:create",
+        "lib/network-dns.js:useDesignatedResolvers",
+        "lib/safe-sql.js:quoteList",
+      ],
+      reason: "v0.14.29 — non-empty-array validation prelude (`if (!Array.isArray(x) || x.length === 0) throw; for (i) { if (typeof x[i] !== \"string\" || ...) throw }`). safeSql.quoteList validates a names array before quoting each identifier; fido-mds3._validateChain walks an x5c cert chain; require-methods.create validates an HTTP-verb allowlist; network-dns.useDesignatedResolvers validates a resolver-IP list. Each throws a primitive-local typed error; the shingle is the array-walk-then-throw idiom, not behaviour. Same family as the non-empty-array opt-validation cluster below.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
+        "lib/audit-sign.js:init",
+        "lib/framework-schema.js:ensureSchema",
+        "lib/vault/index.js:init",
+      ],
+      reason: "v0.14.29 — schema/keystore bootstrap prelude (open-or-create the backing table(s), run idempotent CREATE-IF-NOT-EXISTS DDL, then read the current tip / key row). framework-schema.ensureSchema gained the quote-by-construction DDL emit (the Postgres identifier-casing fix), tipping its setup prelude past the shingle threshold against audit-sign.init (audit hash-chain table bootstrap) and vault.init (sealed-keystore bootstrap). Each bootstraps a different durable store with a primitive-local error class; the shared shape is the create-then-read setup idiom, not behaviour.",
+    },
+    {
       mode:  "family-subset",
       files: [
         "lib/external-db.js:_skipOpaqueSpan",
@@ -2574,14 +2883,8 @@ async function testNoDuplicateCodeBlocks() {
         "lib/external-db.js:_explainResolve",
         "lib/external-db.js:_copyLoadsRows",
         "lib/external-db.js:_emitMetric",
-        "lib/guard-imap-command.js:<top>",
-        "lib/guard-managesieve-command.js:<top>",
-        "lib/guard-pop3-command.js:<top>",
-        "lib/guard-smtp-command.js:<top>",
-        "lib/safe-ical.js:<top>",
-        "lib/safe-vcard.js:<top>",
       ],
-      reason: "v0.14.24 — the char-by-char opaque-span / quoted-token skip loop recurs across distinct wire grammars and the external-db residency-gate write-classifier (WITH/EXPLAIN-prefix resolution) tipped it over the 3-file threshold. external-db.js scans SQL statements (dollar-quoted bodies $tag$...$tag$, bracket identifiers, doubled-quote re-entry, -- / /* */ comments) to resolve a statement's effective verb; the guard-imap/managesieve/pop3/smtp-command parsers scan line-oriented mail wire commands (IMAP {n} literals, SMTP CRLF tokens); safe-ical / safe-vcard scan RFC 5545 / 6350 folded content lines. Each grammar's span rules differ, so a single shared scanner would wrongly couple SQL classification, four mail-command parsers, and two calendar/contact parsers. Within external-db the three SQL walkers already share one primitive (_skipOpaqueSpan); the cross-grammar match is shape-only with no extractable shared behaviour.",
+      reason: "v0.14.24, expanded v0.15.0 — the residency-gate write-classifier in external-db.js walks SQL statements char-by-char to resolve a statement's effective verb (WITH/EXPLAIN-prefix resolution, dollar-quoted bodies $tag$...$tag$, bracket identifiers, doubled-quote re-entry, -- / /* */ comments). Its five span-walking helpers (_skipOpaqueSpan / _cteMainKeyword / _explainResolve / _copyLoadsRows / _emitMetric) share the opaque-span / quoted-token skip-loop shape, so the dup detector groups them. They already compose the single _skipOpaqueSpan primitive; the residual match across the four classifier helpers is the same skip-loop applied at different resolution stages (CTE main keyword, EXPLAIN unwrap, COPY row-load detection, metric emit), each with stage-specific keyword tables. No further extractable behaviour — splitting them would not remove the shared loop shape.",
     },
     {
       mode:  "family-subset",
@@ -4562,6 +4865,16 @@ async function testNoDuplicateCodeBlocks() {
         "lib/cache-status.js:_parseParamValue",
         "lib/client-hints.js:acceptList",
         "lib/daemon.js:_safeAuditEmit",
+        // v0.15.0 SQL sweep — the data-layer's frozen SQL-keyword tables
+        // (`Object.freeze({ SELECT: true, INSERT: true, ... })`) and the
+        // residency write-classifier's verb-table walk share the same
+        // Object.freeze token-table declaration cadence as the command
+        // guards' verb tables, but over the SQL grammar. external-db's
+        // _cteMainKeyword centroids on its _CTE_MAIN_VERBS table; sql.js's
+        // dropPolicy centroids on the adjacent CATALOG_PRAGMA_VERBS table;
+        // guard-sql's <top> centroids on STATEMENT_VERBS / LEADING_VERB_
+        // FLOOR / MIGRATION_DDL_VERBS. Different tokens, different grammar.
+        "lib/external-db.js:_cteMainKeyword",
         "lib/guard-dsn.js:<top>",
         "lib/guard-dsn.js:_resolveProfile",
         "lib/guard-envelope.js:check",
@@ -4581,6 +4894,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-mail-move.js:<top>",
         "lib/guard-mail-move.js:_checkFolderName",
         "lib/guard-mail-query.js:<top>",
+        "lib/guard-mail-reply.js:<top>",
         "lib/guard-mail-sieve.js:<top>",
         "lib/guard-managesieve-command.js:<top>",
         "lib/guard-managesieve-command.js:validate",
@@ -4593,6 +4907,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-smtp-command.js:_parseAuthCommandSyntax",
         "lib/guard-smtp-command.js:_resolveProfile",
         "lib/guard-smtp-command.js:validate",
+        "lib/guard-sql.js:<top>",
         "lib/guard-stream-args.js:<top>",
         "lib/keychain.js:_drain",
         "lib/mail-dav.js:_emit",
@@ -4648,11 +4963,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/safe-vcard.js:_parseContentLine",
         "lib/safe-vcard.js:_stripDoubleQuotes",
         "lib/sandbox.js:_validateAllowed",
+        "lib/sql.js:dropPolicy",
         "lib/self-update.js:<top>",
         "lib/self-update.js:_safeAuditEmit",
         "lib/watcher.js:_compileIgnore",
       ],
-      reason: "v0.9.58 mail-stack bundle (multi-agent parallel ship: ManageSieve + ICAP + PGP/SMIME + DAV) — every new lib/ file written by the 4 sub-agents joins one or more existing family-subset clusters (guard-* validate / <top> banner shapes; mail-server-* listener scaffolds; safe-* line-folded parsers; emit-audit wrappers; resolveProfile dispatchers). Each underlying domain stays distinct (different RFCs, different wire grammars); the shared shingle is the framework's family-contract scaffolding (`b.gateContract` / listener template / safeBuffer.boundedChunkCollector / lazyRequire-audit / drop-silent emit). Consolidation into a single base module would couple unrelated wire-protocol grammars under one abstraction. Documented as one cluster rather than 49 individual family-subset entries because each cluster fingerprint is a subset of this union.",
+      reason: "v0.9.58 mail-stack bundle (multi-agent parallel ship: ManageSieve + ICAP + PGP/SMIME + DAV), expanded v0.15.0 SQL sweep — every new lib/ file written by the sub-agents joins one or more existing family-subset clusters (guard-* validate / <top> banner shapes; mail-server-* listener scaffolds; safe-* line-folded parsers; emit-audit wrappers; resolveProfile dispatchers). Each underlying domain stays distinct (different RFCs, different wire grammars); the shared shingle is the framework's family-contract scaffolding (`b.gateContract` / listener template / safeBuffer.boundedChunkCollector / lazyRequire-audit / drop-silent emit). Consolidation into a single base module would couple unrelated wire-protocol grammars under one abstraction. Documented as one cluster rather than 49 individual family-subset entries because each cluster fingerprint is a subset of this union. The v0.15.0 data-layer additions (guard-sql <top>, external-db _cteMainKeyword, sql.js dropPolicy) match on the module-level `Object.freeze({ KEY: true, ... })` token-table declaration cadence the command guards also use, but over the SQL grammar — guard-sql's STATEMENT_VERBS/LEADING_VERB_FLOOR/MIGRATION_DDL_VERBS (SELECT/INSERT/CREATE/ALTER/DROP) and external-db's _CTE_MAIN_VERBS (SELECT/VALUES/MERGE/UPSERT/REPLACE) and sql.js's CATALOG_PRAGMA_VERBS (table_info/journal_mode/wal_checkpoint) carry SQL-keyword tokens, where POP3 carries USER/PASS/RETR, IMAP carries CAPABILITY/SELECT/FETCH, and safe-ical/vcard carry RFC 5545/6350 property names — different keys, different grammars, no shared values. The single genuinely-shared declaration (`var COMPLIANCE_POSTURES = gateContract.ALL_STRICT_POSTURES`) is already extracted-by-reference and guarded by the inline-all-strict-postures-map inverse detector; guard-sql keeps its own overlay posture map (PROFILES.strict + gdprRedact) which is not the strict-all literal.",
     },
     {
       files: [
@@ -4921,13 +5237,21 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-auth.js:gate",
         "lib/guard-auth.js:sanitize",
         "lib/guard-auth.js:validate",
+        "lib/guard-sql.js:gate",
+        "lib/guard-sql.js:sanitize",
+        "lib/guard-sql.js:validate",
+        "lib/guard-sql.js:compliancePosture",
+        "lib/guard-sql.js:_truncateForAudit",
+        "lib/guard-sql.js:_firstRefusal",
         "lib/guard-smtp-command.js:<top>",
         "lib/guard-smtp-command.js:gate",
         "lib/guard-smtp-command.js:validate",
         "lib/guard-envelope.js:<top>",
         "lib/guard-envelope.js:check",
+        "lib/gate-contract.js:defaultGate",
+        "lib/gate-contract.js:_ctxValueForKind",
       ],
-      reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). Further extraction would either pull body decision logic that's genuinely per-guard into a shared place, or extract a one-line factory that hides the family contract from anyone reading the guard source.",
+      reason: "guard-* family ABI — every member's gate() factory header (function gate(opts) { opts = _resolveOpts(opts); return gateContract.buildGuardGate(...); }), bottom-of-file helper triplet (buildProfile = gateContract.makeProfileBuilder(PROFILES); function compliancePosture(name) { return gateContract.lookupCompliancePosture(...); }; var _xRulePacks = gateContract.makeRulePackLoader(...); var loadRulePack = _xRulePacks.load), and PROFILES literal block all share the family-shared vocabulary by design. The keys ARE the family contract; the values diverge per guard (csv handles operatorRules + sanitize re-emit; html has sanitize-eligibility branching; svg refuses SVGZ; filename operates on strings; archive on entries; json on parsed trees + source scan). gateContract.defineGuard + its defaultGate / _ctxValueForKind ARE the canonical extraction of that header + triplet + serve->audit-only->refuse decision shape: the four kinds (content/filename/identifier/command) that ship a guard onto the factory delegate their wiring to it, while guards with a bespoke gate (csv/filename/jwt) pass their own gate body and the rest converge on defaultGate as they migrate. The remaining per-guard gate bodies still carry the literal shape until the family fan-out lands; consolidating them eagerly would either pull body decision logic that's genuinely per-guard into a shared place, or hide the family contract from anyone reading the guard source.",
     },
     {
       // v0.9.37 — guard-dsn / guard-mail-move / guard-smtp-command
@@ -4955,6 +5279,35 @@ async function testNoDuplicateCodeBlocks() {
         "lib/middleware/compose-pipeline.js:composePipeline",
       ],
       reason: "Three independently-domain'd entry points share an array-walk + per-item validation cascade. Each emits a domain-distinct error class (SdJwtVcIssuerError / GuardSagaConfigError / ComposePipelineError) and validates a different field tuple. Consolidating would couple unrelated specs.",
+    },
+    {
+      // v0.15.0 — three unrelated functions share only a
+      // walk-the-string / loop-over-a-small-list token shell.
+      // gateContract._pascalCase rewrites a guard's short name to its
+      // PascalCase audit prefix; oid4vp.matchDcql walks a DCQL
+      // credential-query claim set; http-message-signature._parseUrl
+      // walks URL components. Shape-only. (The factory consolidation
+      // moved the matching 50-tok window off _ctxValueForKind onto
+      // _pascalCase — same shape-only family, different gate-contract fn.)
+      mode:  "family-subset",
+      files: [
+        "lib/gate-contract.js:_pascalCase",
+        "lib/auth/oid4vp.js:matchDcql",
+        "lib/http-message-signature.js:_parseUrl",
+      ],
+      reason: "coincidental 50-tok window across unrelated domains; no shared behaviour. gateContract._pascalCase is a regex-driven name caser (\"smtp-command\" -> \"SmtpCommand\") that builds the default gate's audit/metric prefix; oid4vp.matchDcql evaluates a DCQL credential-query against a presented credential set; http-message-signature._parseUrl decomposes a request URL into the @authority / @path / @query derived-component pieces. Three different domains, three different return types — nothing extractable beyond the trivial walk shell.",
+    },
+    {
+      // v0.15.0 — coincidental cross-domain 50-tok window: a regex
+      // pascal-caser, a create-opts validator, and a UUID generator
+      // happen to share the local-var / return-shape token sequence.
+      mode:  "family-subset",
+      files: [
+        "lib/api-key.js:_validateCreateOpts",
+        "lib/cloud-events.js:_genId",
+        "lib/gate-contract.js:_pascalCase",
+      ],
+      reason: "coincidental 50-tok window across unrelated domains (pascal-case helper / create-opts validator / UUID gen); no shared behaviour. api-key._validateCreateOpts type-checks the create() opts cascade; cloud-events._genId mints a random CloudEvents id; gateContract._pascalCase rewrites a guard short-name to its PascalCase audit prefix. Nothing extractable beyond the shared token shell.",
     },
     {
       // v0.9.40 — RFC 5322 header-injection control-char scans
@@ -6196,6 +6549,24 @@ function testStateStampScanningDeferred() {
 //   4. The catalog scans whole-file content (multiline regex) so
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
+  {
+    id: "use-makeProfileResolver-not-handrolled",
+    primitive: "b.gateContract.makeProfileResolver",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /function\s+_resolveProfile\s*\(/,
+    allowlist: ["lib/safe-sieve.js"],
+    reason: "v0.15.0 #103 — profile resolution (posture->profile map, profile||default, validate-or-throw on unknown) is owned by gateContract.makeProfileResolver; 24 guards reuse it. A hand-rolled `function _resolveProfile(opts)` re-implements the solved primitive and drifts downstream — this exact dup was previously ALLOWLISTED in KNOWN_CLUSTERS before extraction (feedback_codebase_patterns_is_a_drift_signal). lib/safe-sieve.js is the one genuine holdout (reads the public opts.compliancePosture not opts.posture, returns opts.profile unvalidated, never throws) pending its contract decision in task #104. Any other lib file declaring _resolveProfile must call gateContract.makeProfileResolver instead.",
+  },
+  {
+    id: "use-throwOnRefusalSeverity-not-handrolled",
+    primitive: "b.gateContract.throwOnRefusalSeverity",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /ruleId\s*\|\|\s*['"][a-zA-Z0-9_-]+\.refused['"]/,
+    allowlist: ["lib/guard-auth.js"],
+    reason: "v0.15.0 #103 — the guard sanitize/parse refuse-on-critical|high throw (err(issue.ruleId || '<x>.refused', 'guard<Name>.<op>: ' + issue.snippet)) is owned by gateContract.throwOnRefusalSeverity; 18 guards reuse it (this was the failing STRONG-DUP fp:f349a8d1f51b before extraction). A hand-rolled `issues[i].ruleId || '<x>.refused'` throw re-implements it. lib/guard-auth.js is the one genuine holdout (its message embeds issues[i].source: 'guardAuth.sanitize [<source>]:') pending task #104; the primitive itself uses a `fallback` variable (no .refused literal) so it does not match. Any other lib file with this shape must call gateContract.throwOnRefusalSeverity (the severities / op options cover the critical-only + parse variants).",
+  },
   {
     // A hard quota / rate / budget ceiling must be enforced with an
     // atomic conditional reserve — the limit test and the charge are
@@ -7847,6 +8218,30 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Extracted across guard-csv / guard-html / guard-svg compliancePosture(name) entry points. Identical 5-line `if (!COMPLIANCE_POSTURES[name]) throw; return Object.assign({}, COMPLIANCE_POSTURES[name])` shape consolidated.",
   },
   {
+    // Every command / protocol / pipeline guard whose four baseline
+    // postures (hipaa / pci-dss / gdpr / soc2) all map to the bare string
+    // "strict" composes the single frozen gateContract.ALL_STRICT_POSTURES
+    // map instead of re-declaring the literal. The literal was byte-
+    // identical across ~36 guard/safe/mail files (the POP3 / IMAP / SMTP /
+    // ManageSieve command validators, mail-compose / query / sieve / move /
+    // reply, the envelope + event-bus shapes, the mail-pipeline scorers,
+    // the safe-* line-protocol parsers, and mail-crypto-smime) — a genuine
+    // duplicate, not a shape-only coincidence — so it was extracted to a
+    // shared constant in lib/gate-contract.js and the call sites rewritten
+    // to `var COMPLIANCE_POSTURES = gateContract.ALL_STRICT_POSTURES`. The
+    // STRONG-DUP block detector only fires at 3+ files, so a single future
+    // file re-inlining the literal would slip past it; this n=1 inverse
+    // detector catches the re-introduction the moment it lands. The
+    // negative lookaheads exclude the content-guard overlay shape
+    // (`Object.assign({}, PROFILES["strict"], { ... })`), which is a
+    // genuinely per-guard posture map and is NOT centralized.
+    id: "inline-all-strict-postures-map",
+    primitive: "gateContract.ALL_STRICT_POSTURES — the canonical frozen strict-all posture map (hipaa/pci-dss/gdpr/soc2 → \"strict\"); compose it (`var COMPLIANCE_POSTURES = gateContract.ALL_STRICT_POSTURES`) instead of re-declaring the strict-all posture map inline",
+    regex: /COMPLIANCE_POSTURES\s*=\s*Object\.freeze\(\s*\{(?=(?:(?!PROFILES|Object\.assign|COMPLIANCE_POSTURES\s*=)[\s\S]){0,400}?["']?hipaa["']?\s*:\s*["']strict["'])(?=(?:(?!PROFILES|Object\.assign|COMPLIANCE_POSTURES\s*=)[\s\S]){0,400}?["']pci-dss["']\s*:\s*["']strict["'])(?=(?:(?!PROFILES|Object\.assign|COMPLIANCE_POSTURES\s*=)[\s\S]){0,400}?["']?gdpr["']?\s*:\s*["']strict["'])(?=(?:(?!PROFILES|Object\.assign|COMPLIANCE_POSTURES\s*=)[\s\S]){0,400}?["']?soc2["']?\s*:\s*["']strict["'])(?:(?!PROFILES|Object\.assign|COMPLIANCE_POSTURES\s*=)[\s\S]){0,400}?\}\s*\)/,
+    allowlist: ["lib/gate-contract.js"],
+    reason: "The strict-all COMPLIANCE_POSTURES map (hipaa/pci-dss/gdpr/soc2 all → \"strict\") was a byte-identical duplicate across ~36 command/protocol/pipeline guards (guard-pop3/imap/smtp/managesieve-command, guard-mail-compose/query/sieve/move/reply, guard-list-id/list-unsubscribe, guard-event-bus-topic/payload, guard-dsn/envelope/message-id/idempotency-key/jmap/tenant-id/trace-context/saga-config/snapshot-envelope/agent-registry/posture-chain/stream-args, safe-ical/vcard/sieve/icap/dns, mail-helo/scan/rbl/greylist/spam-score, ai-content-detect's posture overlay, and mail-crypto-smime). Extracted to the single frozen gateContract.ALL_STRICT_POSTURES and every call site rewritten to read it by reference — the object is frozen once and shared, never mutated. This inverse detector refuses any re-inlined strict-all literal outside lib/gate-contract.js (the primitive home, allowlisted); the STRONG-DUP block detector would only catch a re-introduction once it reached 3+ files, so the n=1 gate is what makes the extraction durable. Content guards that overlay per-posture byte-limits or redaction flags (CSV / HTML / JSON / XML / YAML / JWT / OAuth / template / ... use `Object.assign({}, PROFILES[\"strict\"], { ... })`) keep their own posture map and are excluded by the negative lookaheads.",
+  },
+  {
     id: "inline-rule-pack-loader",
     primitive: "gateContract.makeRulePackLoader(errorClass, codePrefix)",
     regex: /var\s+_\w*[Rr]ulePacks?\s*=\s*\{\}[\s\S]{0,80}function\s+loadRulePack\s*\(\s*pack\s*\)\s*\{[\s\S]{0,200}?validateOpts\.requireObject[\s\S]{0,200}?validateOpts\.requireNonEmptyString[\s\S]{0,100}?_\w*[Rr]ulePacks?\[pack\.id\]\s*=\s*pack/,
@@ -8290,8 +8685,48 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\b(FROM|INTO|UPDATE|TABLE|INDEX|TRIGGER|VIEW|JOIN)\s+["']\s*\+\s*(?![qQ][A-Za-z0-9_]|quoted)\w+\s*\+/,
     allowlist: [
       "lib/safe-sql.js",   // the helper itself emits quote chars
+      // lib/sql.js IS the b.sql query builder — the canonical composer
+      // that assembles SQL from safeSql-quoted identifiers + bound
+      // placeholders. Its CREATE TABLE / INDEX assembly interpolates a
+      // resolved table reference (ref.ref(dialect), which validates +
+      // quotes via the table() contract) after the keyword-string `ifNot`
+      // ("IF NOT EXISTS "), which the keyword+next-token regex misreads as
+      // a raw identifier. The builder is the thing every other module must
+      // route through, so it's exempt like safe-sql.js itself.
+      "lib/sql.js",
     ],
-    reason: "Identifier ALWAYS reaches SQL through safeSql.quoteIdentifier(name, dialect). Validates shape + quotes for the dialect; a future shape-regex bypass can't reach raw concatenation. Local variables holding quoted identifiers use a `q`/`Q`/`quoted` prefix so the detector can skip them.",
+    reason: "Identifier ALWAYS reaches SQL through safeSql.quoteIdentifier(name, dialect). Validates shape + quotes for the dialect; a future shape-regex bypass can't reach raw concatenation. Local variables holding quoted identifiers use a `q`/`Q`/`quoted` prefix so the detector can skip them. lib/sql.js (the b.sql builder) is exempt — it is the composer that assembles SQL from safeSql-quoted parts, so the must-compose rule is satisfied by construction there.",
+  },
+  {
+    id: "framework-table-sql-without-dialect",
+    primitive: "thread the configured backend dialect into every framework-table b.sql call — { dialect: clusterStorage.dialect() }, the module's _sqlOpts() helper, or dbSchema.handleDialect/sqlOpts",
+    skipCommentLines: true,
+    // Inverse detector for the tri-dialect data layer. A framework table —
+    // a "_blamejs_..." literal, a FOO_TABLE constant, or a _fooTable()
+    // table-name helper — addressed through the b.sql builder MUST carry the
+    // configured backend dialect. Omit it and the builder emits the sqlite
+    // default, so the statement parses locally and in the test backend
+    // (both sqlite) but breaks on a Postgres / MySQL deployment — a silent
+    // dialect-default footgun. Every framework module threads the dialect:
+    // inline `{ dialect: ... }`, a module-local `_sqlOpts()` returning
+    // `{ dialect: clusterStorage.dialect() }`, or dbSchema.handleDialect /
+    // dbSchema.sqlOpts. The regex marks the framework-table builder call;
+    // the companion `requires` is satisfied by any threading marker anywhere
+    // in the file.
+    //
+    // Anchors are framework-internal: a "_blamejs_" table literal, an
+    // UPPER_SNAKE *_TABLE constant, or an underscore-prefixed _fooTable()
+    // helper. Operator-supplied names (cli.js `safeTable` on the local
+    // single-node b.db handle) are deliberately NOT matched.
+    //
+    // Per-FILE durability guard: a framework-table b.sql module that threads
+    // NO dialect at all is the drift this catches. Per-CALL precision (one
+    // missed dialect in a file that threads elsewhere) belongs to the
+    // structural/primitive-aware detector tracked for a later cycle.
+    regex: /\bsql(?:\(\))?\.(?:select|insert|insertMany|update|upsert|del|delete|create|createTable|alter|drop|truncate)\s*\(\s*(?:["']_blamejs_|[A-Z][A-Z0-9_]*_TABLE\b|_[a-z][A-Za-z0-9]*Table\s*\()/,
+    requires: /dialect\s*:|sqlOpts\s*\(|handleDialect/,
+    allowlist: [],
+    reason: "v0.15.0 — the data layer is tri-dialect (sqlite / postgres / mysql). A framework-table b.sql call that omits the dialect emits the sqlite default and breaks on a Postgres/MySQL backend, silently, because the local default and the test backend are both sqlite. Every framework module threads it (inline `{ dialect: clusterStorage.dialect() }`, a `_sqlOpts()` helper, or dbSchema.handleDialect / dbSchema.sqlOpts); the requires-marker confirms the threading is present. Locks in the tri-dialect data layer so a newly-added framework table cannot silently default to sqlite.",
   },
   {
     id: "inline-optional-plain-object-validation",
@@ -12177,6 +12612,8 @@ async function run() {
   testSafeGuardWiredInIndex();
   testSafeGuardHasMustComposeDetector();
   testNoTierTerminologyInLib();
+  testNoHandRolledSql();
+  testNoHardcodedFrameworkFileNames();
   testNoInlineRequires();
   testRequireBindingConsistency();
   testRequireBlockAlignment();

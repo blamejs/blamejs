@@ -5,10 +5,11 @@
  * (minio-tls:9443) so the framework's sigv4 signer + S3 client are
  * exercised end-to-end against real AWS-compatible servers.
  *
- * No security bypass: the TLS leg pins the test CA via opts.ca on
- * the request layer (rejectUnauthorized stays on by default).
+ * No security bypass: the TLS leg trusts the test CA via the runner's
+ * NODE_EXTRA_CA_CERTS (scripts/test-integration.js), so the framework's
+ * own TLS verification stays fully on with no rejectUnauthorized override
+ * and no per-request CA threading.
  */
-var fs = require("node:fs");
 var helpers = require("../helpers");
 var check = helpers.check;
 var services = require("../helpers/services");
@@ -359,20 +360,17 @@ async function run() {
   var svcTls = await services.requireService("minioTls");
   if (!svcTls.ok) throw new Error("minio-tls unreachable: " + svcTls.reason);
 
-  var caPath = await services.exportCaCert();
-  var caPem = fs.readFileSync(caPath, "utf8");
-
   // ---- plain HTTP variant ----
   await _runOnEndpoint("http", "http://127.0.0.1:9000", {
     allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
   });
 
-  // ---- TLS variant — strict CA pinning, no rejectUnauthorized override ----
+  // ---- TLS variant — full verification, no rejectUnauthorized override ----
+  // Trust for the test CA comes from the runner's NODE_EXTRA_CA_CERTS.
   // Endpoint uses "localhost" so SNI works (cert SAN covers localhost +
-  // 127.0.0.1; node:tls forbids IP literals as servername).
-  await _runOnEndpoint("tls", "https://localhost:9443", {
-    ca: caPem,
-  });
+  // 127.0.0.1; node:tls forbids IP literals as servername). https is in
+  // the default allowedProtocols so no extra config is needed.
+  await _runOnEndpoint("tls", "https://localhost:9443", {});
 
   // ---- Object Lock variant (HTTP only — no benefit from doing it twice
   //      and the WORM cleanup adds 2s of sleep which we don't want
@@ -383,14 +381,12 @@ async function run() {
   });
 
   // ---- Presigned response-header overrides (v0.8.53). HTTP first;
-  //      TLS second to confirm signing math + Object.assign(ca) on
-  //      the framework's httpClient request path. ----
+  //      TLS second to confirm the signing math + the live presigned GET
+  //      stay valid over a fully-verified TLS handshake. ----
   await _runPresignResponseHeadersOnEndpoint("http", "http://127.0.0.1:9000", {
     allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
   });
-  await _runPresignResponseHeadersOnEndpoint("tls", "https://localhost:9443", {
-    ca: caPem,
-  });
+  await _runPresignResponseHeadersOnEndpoint("tls", "https://localhost:9443", {});
 }
 
 module.exports = { run: run };
