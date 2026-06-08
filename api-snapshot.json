@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.14.27",
-  "createdAt": "2026-06-06T22:07:45.376Z",
+  "frameworkVersion": "0.15.0",
+  "createdAt": "2026-06-08T18:39:29.648Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2541,6 +2541,10 @@
         "getPublicKey": {
           "type": "function",
           "arity": 0
+        },
+        "getPublicKeyByFingerprint": {
+          "type": "function",
+          "arity": 1
         },
         "getPublicKeyFingerprint": {
           "type": "function",
@@ -6584,6 +6588,10 @@
           "type": "function",
           "arity": 2
         },
+        "dialect": {
+          "type": "function",
+          "arity": 0
+        },
         "execute": {
           "type": "function",
           "arity": 2
@@ -6768,6 +6776,27 @@
               }
             },
             "ai-act": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "appi-jp": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -8782,6 +8811,27 @@
                 }
               }
             },
+            "pdpa-sg": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "pipa-kr": {
               "type": "object",
               "members": {
@@ -9077,6 +9127,27 @@
               }
             },
             "uk-duaa": {
+              "type": "object",
+              "members": {
+                "auditChainSignedRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "backupEncryptionRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "requireVacuumAfterErase": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "tlsMinVersion": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "uk-gdpr": {
               "type": "object",
               "members": {
                 "auditChainSignedRequired": {
@@ -14476,6 +14547,10 @@
           "type": "function",
           "arity": 3
         },
+        "lookupHashCandidates": {
+          "type": "function",
+          "arity": 3
+        },
         "materializePerRowKey": {
           "type": "function",
           "arity": 3
@@ -16366,6 +16441,10 @@
           "type": "function",
           "arity": 4
         },
+        "GuardSqlError": {
+          "type": "function",
+          "arity": 4
+        },
         "GuardSvgError": {
           "type": "function",
           "arity": 4
@@ -16575,6 +16654,503 @@
     "frameworkSchema": {
       "type": "object",
       "members": {
+        "CANONICAL_COLUMNS": {
+          "type": "instance",
+          "ctorName": "Set"
+        },
+        "COLUMN_TYPES": {
+          "type": "object",
+          "members": {
+            "action": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "actorIp": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "actorSessionId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "actorUserAgent": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "actorUserId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "actorUserIdHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "appliedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "archiveBundleId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "atMonotonicCounter": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "atRowHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "attempts": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "auditReasonStorage": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "availableAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "cacheKey": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "channel": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "claimedAtUnix": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "claimedBy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "classification": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "columnsJson": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "count": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "createdAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "cryptographic": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "data": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dekSealed": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dependsOn": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "description": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "enqueuedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "env": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "evidenceRef": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "expireAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "expiresAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "factorType": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "factorsJson": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "fencingToken": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "finishedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "flowChildName": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "flowId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "grantTtlMs": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "id": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ip": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "issuedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "issuedToActorHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "issuedToActorId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "key": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kwGrantHalf": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lastActivity": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lastError": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lastPurgedCounter": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lastPurgedRowHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lastUsedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lawfulBasis": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "leaseExpiresAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "leasedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lockedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lockedBy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxAttempts": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxRowsPerGrant": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "metadata": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "monotonicCounter": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "name": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "namespace": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nonce": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nonceHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "onLockedAccess": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "outcome": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ownerId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ownerIdHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "payload": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pinIp": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "prefix": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "prevHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "priority": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "publicKeyFingerprint": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "publishedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "publishedBy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "purgedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "purpose": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "queueName": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "reason": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "reasonMinLength": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "reasonRequired": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "reasonSealed": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "recordedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "repeatCron": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "repeatTimezone": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "requestId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "requireScope": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rerunnable": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "resourceId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "resourceIdHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "resourceKind": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "revokedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rowHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rowsConsumed": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "scheduledAtUnix": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "scope": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "scopeColumnsJson": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "scopeTable": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "scopes": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "secondaryExpiresAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "secondarySecretHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "secretHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "serviceAccountBypassJson": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "sessionId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "sessionPin": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "sidHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "signature": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "signedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "status": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "subjectId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "subjectIdHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "tableName": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "tag": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "tickKey": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "topic": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "traceId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "updatedAt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "userId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "userIdHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "valueJson": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "windowStart": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "DEFAULT_TABLE_PREFIX": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "FrameworkSchemaError": {
           "type": "function",
           "arity": 2
@@ -16596,7 +17172,23 @@
             }
           }
         },
+        "coerceRow": {
+          "type": "function",
+          "arity": 1
+        },
+        "coerceRows": {
+          "type": "function",
+          "arity": 1
+        },
         "ensureSchema": {
+          "type": "function",
+          "arity": 1
+        },
+        "getTablePrefix": {
+          "type": "function",
+          "arity": 0
+        },
+        "setTablePrefix": {
           "type": "function",
           "arity": 1
         },
@@ -16625,6 +17217,27 @@
         "ACTIONS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "ALL_STRICT_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hipaa": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "pci-dss": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "soc2": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
         },
         "GateContractError": {
           "type": "function",
@@ -16690,6 +17303,14 @@
           "type": "function",
           "arity": 1
         },
+        "defineGuard": {
+          "type": "function",
+          "arity": 1
+        },
+        "defineParser": {
+          "type": "function",
+          "arity": 1
+        },
         "extractBytesAsText": {
           "type": "function",
           "arity": 1
@@ -16699,6 +17320,10 @@
           "arity": 4
         },
         "makeProfileBuilder": {
+          "type": "function",
+          "arity": 1
+        },
+        "makeProfileResolver": {
           "type": "function",
           "arity": 1
         },
@@ -16729,6 +17354,10 @@
         "summarizeIssues": {
           "type": "function",
           "arity": 1
+        },
+        "throwOnRefusalSeverity": {
+          "type": "function",
+          "arity": 2
         },
         "validateGateShape": {
           "type": "function",
@@ -32799,6 +33428,570 @@
         }
       }
     },
+    "guardSql": {
+      "type": "object",
+      "members": {
+        "COMPLIANCE_POSTURES": {
+          "type": "object",
+          "members": {
+            "gdpr": {
+              "type": "object",
+              "members": {
+                "allowComments": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowMultiStatement": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "comment": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fdw": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "floor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "gdprRedact": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "literal": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "privPivot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rceFile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "recon": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "setop": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "stacked": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "timing": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "hipaa": {
+              "type": "object",
+              "members": {
+                "allowComments": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowMultiStatement": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "comment": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fdw": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "floor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "literal": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "privPivot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rceFile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "recon": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "setop": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "stacked": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "timing": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "pci-dss": {
+              "type": "object",
+              "members": {
+                "allowComments": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowMultiStatement": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "comment": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fdw": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "floor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "literal": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "privPivot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rceFile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "recon": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "setop": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "stacked": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "timing": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "soc2": {
+              "type": "object",
+              "members": {
+                "allowComments": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowMultiStatement": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "comment": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fdw": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "floor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "literal": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "privPivot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rceFile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "recon": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "setop": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "stacked": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "timing": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "CONTEXT_MODES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DEFAULTS": {
+          "type": "object",
+          "members": {
+            "allowComments": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "allowMultiStatement": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "comment": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "contextMode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "encoding": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "fdw": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "floor": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "gdprRedact": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "literal": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "maxBytes": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "maxRuntimeMs": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "mode": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "privPivot": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rceFile": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "recon": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "setop": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "stacked": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "timing": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "DETECTORS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "EXTENSIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "GuardSqlError": {
+          "type": "function",
+          "arity": 4
+        },
+        "INTEGRATION_FIXTURES": {
+          "type": "object",
+          "members": {
+            "benignSql": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hostileSql": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "kind": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
+        "KIND": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MIME_TYPES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NAME": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "PROFILES": {
+          "type": "object",
+          "members": {
+            "balanced": {
+              "type": "object",
+              "members": {
+                "allowComments": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowMultiStatement": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "comment": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fdw": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "floor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "literal": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "privPivot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rceFile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "recon": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "setop": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "stacked": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "timing": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "permissive": {
+              "type": "object",
+              "members": {
+                "allowComments": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowMultiStatement": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "comment": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fdw": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "floor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "literal": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "privPivot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rceFile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "recon": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "setop": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "stacked": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "timing": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "strict": {
+              "type": "object",
+              "members": {
+                "allowComments": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "allowMultiStatement": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                },
+                "comment": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "encoding": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "fdw": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "floor": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "literal": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "privPivot": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "rceFile": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "recon": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "setop": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "stacked": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "timing": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            }
+          }
+        },
+        "buildProfile": {
+          "type": "function",
+          "arity": 1
+        },
+        "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "gate": {
+          "type": "function",
+          "arity": 1
+        },
+        "loadRulePack": {
+          "type": "function",
+          "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
+        },
+        "validate": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "guardStreamArgs": {
       "type": "object",
       "members": {
@@ -48589,9 +49782,17 @@
           "type": "function",
           "arity": 2
         },
+        "countPlaceholders": {
+          "type": "function",
+          "arity": 1
+        },
         "quoteIdentifier": {
           "type": "function",
-          "arity": 2
+          "arity": 3
+        },
+        "quoteList": {
+          "type": "function",
+          "arity": 3
         },
         "quoteQualified": {
           "type": "function",
@@ -49492,6 +50693,205 @@
     "slug": {
       "type": "function",
       "arity": 2
+    },
+    "sql": {
+      "type": "object",
+      "members": {
+        "ALLOWED_OPS": {
+          "type": "object",
+          "members": {
+            "!=": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "<": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "<=": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "<>": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "=": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            ">": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            ">=": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "?": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "?&": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "?|": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "@>": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "BETWEEN": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "IN": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "IS": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "IS NOT": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "LIKE": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "MATCH": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "NOT IN": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "NOT LIKE": {
+              "type": "primitive",
+              "valueType": "boolean"
+            }
+          }
+        },
+        "Builder": {
+          "type": "function",
+          "arity": 3
+        },
+        "SqlBuilderError": {
+          "type": "function",
+          "arity": 2
+        },
+        "alterTable": {
+          "type": "function",
+          "arity": 3
+        },
+        "cast": {
+          "type": "function",
+          "arity": 2
+        },
+        "catalog": {
+          "type": "object",
+          "members": {
+            "changes": {
+              "type": "function",
+              "arity": 0
+            },
+            "listTables": {
+              "type": "function",
+              "arity": 0
+            },
+            "sampleRandom": {
+              "type": "function",
+              "arity": 3
+            },
+            "tableExists": {
+              "type": "function",
+              "arity": 1
+            },
+            "tableInfo": {
+              "type": "function",
+              "arity": 1
+            }
+          }
+        },
+        "createIndex": {
+          "type": "function",
+          "arity": 4
+        },
+        "createPolicy": {
+          "type": "function",
+          "arity": 4
+        },
+        "createTable": {
+          "type": "function",
+          "arity": 3
+        },
+        "createVirtualTable": {
+          "type": "function",
+          "arity": 2
+        },
+        "defineTable": {
+          "type": "function",
+          "arity": 3
+        },
+        "delete": {
+          "type": "function",
+          "arity": 2
+        },
+        "disableRowLevelSecurity": {
+          "type": "function",
+          "arity": 2
+        },
+        "dropPolicy": {
+          "type": "function",
+          "arity": 3
+        },
+        "dropTable": {
+          "type": "function",
+          "arity": 2
+        },
+        "enableRowLevelSecurity": {
+          "type": "function",
+          "arity": 2
+        },
+        "fn": {
+          "type": "function",
+          "arity": 1
+        },
+        "insert": {
+          "type": "function",
+          "arity": 2
+        },
+        "pragma": {
+          "type": "function",
+          "arity": 2
+        },
+        "select": {
+          "type": "function",
+          "arity": 2
+        },
+        "table": {
+          "type": "function",
+          "arity": 2
+        },
+        "toExternalSql": {
+          "type": "function",
+          "arity": 2
+        },
+        "update": {
+          "type": "function",
+          "arity": 2
+        },
+        "upsert": {
+          "type": "function",
+          "arity": 2
+        }
+      }
     },
     "sse": {
       "type": "object",

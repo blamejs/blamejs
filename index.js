@@ -120,6 +120,7 @@ var clusterStorage = require("./lib/cluster-storage");
 var safeAsync = require("./lib/safe-async");
 var handlers = require("./lib/handlers");
 var safeSql = require("./lib/safe-sql");
+var sql = require("./lib/sql");
 var chainWriter = require("./lib/chain-writer");
 var safeBuffer = require("./lib/safe-buffer");
 var safeDecompress = require("./lib/safe-decompress").safeDecompress;
@@ -181,6 +182,7 @@ var guardSvg = require("./lib/guard-svg");
 var guardFilename = require("./lib/guard-filename");
 var guardMessageId = require("./lib/guard-message-id");
 var guardSmtpCommand = require("./lib/guard-smtp-command");
+var guardSql = require("./lib/guard-sql");
 var guardImapCommand = require("./lib/guard-imap-command");
 var guardPop3Command = require("./lib/guard-pop3-command");
 var guardManageSieveCommand = require("./lib/guard-managesieve-command");
@@ -520,6 +522,7 @@ module.exports = {
   safeAsync:        safeAsync,
   handlers:         handlers,
   safeSql:          safeSql,
+  sql:              sql,
   chainWriter:      chainWriter,
   safeBuffer:       safeBuffer,
   safeDecompress:   safeDecompress,
@@ -569,6 +572,7 @@ module.exports = {
   guardFilename:    guardFilename,
   guardMessageId:   guardMessageId,
   guardSmtpCommand: guardSmtpCommand,
+  guardSql:         guardSql,
   guardImapCommand: guardImapCommand,
   guardPop3Command: guardPop3Command,
   guardManageSieveCommand: guardManageSieveCommand,

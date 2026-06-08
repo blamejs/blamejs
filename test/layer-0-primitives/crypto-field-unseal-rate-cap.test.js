@@ -5,12 +5,14 @@
  * A DB-write attacker who can write `vault:<crafted>` / `vault.aad:<…>`
  * payloads to sealed columns can force KEM-decapsulation / AEAD-verify on
  * attacker-controlled bytes on every read. unsealRow already nulls the
- * field + emits system.crypto.unseal_failed, but absent a cap the oracle
- * can be hammered indefinitely. configureUnsealRateCap adds an opt-in
- * per-(actor, table, column) sliding-window failure cap: past `threshold`
+ * field + emits system.crypto.unseal_failed; the per-(actor, table,
+ * column) sliding-window failure cap bounds the oracle: past `threshold`
  * failures inside `windowMs`, further unseal attempts for that tuple are
  * refused for `cooldownMs` with a typed CryptoFieldRateError + a distinct
- * system.crypto.unseal_rate_exceeded audit.
+ * system.crypto.unseal_rate_exceeded audit. The cap is ON BY DEFAULT
+ * (v0.15.0) — armed at module load — so the oracle is bounded out of the
+ * box; configureUnsealRateCap tunes the thresholds, and
+ * configureUnsealRateCap(null) is the documented opt-out to audit-only.
  *
  * Every window / cooldown assertion drives an INJECTED clock — no real
  * sleeps — so the test is deterministic on contended runners.
@@ -57,14 +59,30 @@ async function run() {
     throws(/unknown|allowed|cryptoField.configureUnsealRateCap/i,
       function () { b.cryptoField.configureUnsealRateCap({ threshold: 3, bogus: 1 }); }));
 
-  // ---- default OFF: unconfigured unsealRow is audit-only, never throws ----
-  b.cryptoField.clearRateCapForTest();
-  var offThrew = false;
+  // ---- default ON (v0.15.0): the cap is armed at module load, so a
+  // forged-ciphertext oracle is bounded with no operator action. The
+  // default threshold (10) trips well before 50 hammered unseals. ----
+  b.cryptoField.clearRateCapForTest();   // restores the secure DEFAULT cap
+  var defaultThrew = false;
   for (var k = 0; k < 50; k++) {
-    try { b.cryptoField.unsealRow("cf_ratecap", { id: "r1", secret: FORGED }, "attacker"); }
+    try { b.cryptoField.unsealRow("cf_ratecap", { id: "r1", secret: FORGED }, "default-attacker"); }
+    catch (e) {
+      if (e.code === "crypto-field/unseal-rate-exceeded") defaultThrew = true;
+    }
+  }
+  check("cap default-ON: forged-unseal oracle is bounded out of the box",
+    defaultThrew === true);
+
+  // ---- documented opt-out: configureUnsealRateCap(null) restores the
+  // pre-v0.15.0 audit-only behaviour (no throw on a forged read). ----
+  b.cryptoField.configureUnsealRateCap(null);
+  var offThrew = false;
+  for (var k2 = 0; k2 < 50; k2++) {
+    try { b.cryptoField.unsealRow("cf_ratecap", { id: "r1", secret: FORGED }, "optout-attacker"); }
     catch (_e) { offThrew = true; }
   }
-  check("cap default-off: 50 forged unseals never throw (back-compat)", offThrew === false);
+  check("opt-out (configureUnsealRateCap(null)): 50 forged unseals never throw",
+    offThrew === false);
 
   // ---- injected clock + audit sink ----
   var nowMs = 1000000;

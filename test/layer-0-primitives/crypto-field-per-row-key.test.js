@@ -169,6 +169,76 @@ async function run() {
     var shredded = b.db.from("pr_keyed").where({ _id: "row-3" }).first();
     check("shredded cell reads as absent (null), no crash", shredded.ssn === null && shredded.note === null);
 
+    // ---- FORENSIC RESIDUAL PROOF (the crypto-shred guarantee) ----
+    // Advertised (crypto-field.js destroyPerRowKey): destroying the wrapped
+    // row-secret makes residual ciphertext (WAL / replica / backup)
+    // undecryptable EVEN WITH THE VAULT ROOT, because the random row-secret —
+    // the only seed for K_row — is gone everywhere it lived. A read returning
+    // null after shred proves only the read path; this proves the CIPHERTEXT
+    // itself is unrecoverable while the vault root + machinery stay fully
+    // functional (a sibling keyed row keeps decrypting throughout).
+    var FNEEDLE = "SECRET-SSN-FORENSIC-7Q2";
+    b.db.from("pr_keyed").insertOne({
+      _id: "row-F", subjectId: "subj-F", dataRegion: "eu", ssn: FNEEDLE, note: "forensic note",
+    });
+    var residualCipher = _rawCell("row-F", "ssn");
+    check("forensic: captured cell is a vault.row: residual envelope",
+      b.cryptoField.isRowSealed(residualCipher));
+    check("forensic: control — residual cell decrypts before shred",
+      b.db.from("pr_keyed").where({ _id: "row-F" }).first().ssn === FNEEDLE);
+
+    // Seal the working copy to durable db.enc, then scan every on-disk db
+    // file (durable sealed copy + tmpfs working copy + WAL): the plaintext must
+    // appear in NONE of them, while the sealed envelope DOES persist (a real
+    // residual an attacker could lift from WAL / a replica / a backup).
+    await b.db.flushToDisk();
+    var plainNeedle = Buffer.from(FNEEDLE, "utf8");
+    var envNeedle   = Buffer.from(residualCipher, "utf8");
+    var scanned = 0, plaintextHits = 0, envelopeOnDisk = false;
+    [dir, path.join(dir, "tmpfs")].forEach(function (d) {
+      var entries;
+      try { entries = fs.readdirSync(d); } catch (_e) { return; }
+      entries.forEach(function (f) {
+        var p = path.join(d, f), st;
+        try { st = fs.statSync(p); } catch (_e) { return; }
+        if (!st.isFile()) return;
+        var buf;
+        try { buf = fs.readFileSync(p); } catch (_e) { return; }
+        scanned += 1;
+        if (buf.indexOf(plainNeedle) !== -1) plaintextHits += 1;
+        if (buf.indexOf(envNeedle)   !== -1) envelopeOnDisk = true;
+      });
+    });
+    check("forensic: scanned on-disk db files (db.enc + working + wal)", scanned > 0);
+    check("forensic: plaintext ssn appears in NO on-disk file (sealed at rest)", plaintextHits === 0);
+    check("forensic: the sealed vault.row: envelope DOES persist on disk (real residual)", envelopeOnDisk);
+
+    // Shred the wrapped secret ONLY — the row + its residual cell stay put.
+    var fdestroy = b.cryptoField.destroyPerRowKey("pr_keyed", "row-F", b.db);
+    check("forensic: destroyPerRowKey removed exactly the row-F wrap", fdestroy.destroyed === 1);
+    check("forensic: wrapped secret gone from registry", _perRowKeyCount("row-F") === 0);
+    check("forensic: residual cipher still physically on the row post-shred",
+      _rawCell("row-F", "ssn") === residualCipher);
+    // The vault root + crypto-field machinery are STILL fully functional: a
+    // sibling keyed row (row-2, never shredded) decrypts normally.
+    check("forensic: vault root intact — sibling keyed row still decrypts",
+      b.db.from("pr_keyed").where({ _id: "row-2" }).first().ssn === "999-88-7777");
+    // Yet the residual cell yields NO plaintext: the random row-secret that
+    // seeded K_row is gone, and the vault root alone cannot reconstruct it.
+    check("forensic: residual cell undecryptable after shred (root intact)",
+      b.db.from("pr_keyed").where({ _id: "row-F" }).first().ssn === null);
+
+    // Re-materializing the SAME _id mints a NEW random secret -> a DIFFERENT
+    // K_row, so the captured residual (sealed under the destroyed K_row) is
+    // STILL undecryptable. The shred is irreversible, not a key-reuse window.
+    b.cryptoField.materializePerRowKey("pr_keyed", "row-F", b.db);
+    check("forensic: a fresh wrap exists again for row-F", _perRowKeyCount("row-F") === 1);
+    b.db.prepare('UPDATE "pr_keyed" SET "ssn" = ? WHERE _id = ?').run(residualCipher, "row-F");
+    check("forensic: residual STILL undecryptable under a freshly-minted K_row",
+      b.db.from("pr_keyed").where({ _id: "row-F" }).first().ssn === null);
+    b.db.prepare('DELETE FROM "pr_keyed" WHERE _id = ?').run("row-F");
+    b.cryptoField.destroyPerRowKey("pr_keyed", "row-F", b.db);
+
     await teardownTestDb(dir);
 
     // ---- ROTATION ROUND-TRIP ----

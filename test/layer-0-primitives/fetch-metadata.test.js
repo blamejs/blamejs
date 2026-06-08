@@ -8,9 +8,9 @@
  *   - default behavior unchanged when the new opts are unset;
  *   - deniedDest refuses a "webidentity" (FedCM) Sec-Fetch-Dest on a
  *     non-identity route, regardless of Sec-Fetch-Site;
- *   - allowStorageAccess:false refuses the cross-site
- *     Sec-Fetch-Storage-Access: active|inactive escalation, and "none"
- *     passes through;
+ *   - the cross-site Sec-Fetch-Storage-Access: active|inactive escalation
+ *     is REFUSED BY DEFAULT (v0.15.0), "none" passes through, and
+ *     allowStorageAccess:true opts back in for Storage-Access-flow routes;
  *   - strictDest throws at config time on an unknown destination value;
  *   - membership tests are exact (no substring / prototype-pollution
  *     bypass).
@@ -92,9 +92,9 @@ async function testDeniedDestWebIdentity() {
         allowed.next === true);
 }
 
-// Storage Access API escalation: active|inactive refused when
-// allowStorageAccess:false; none passes through; default (unset) lets it
-// through.
+// Storage Access API escalation: active|inactive REFUSED BY DEFAULT
+// (v0.15.0); none passes through; allowStorageAccess:true opts back in for
+// Storage-Access-flow routes.
 async function testStorageAccessGate() {
   var strict = b.middleware.fetchMetadata({ allowStorageAccess: false });
 
@@ -117,12 +117,23 @@ async function testStorageAccessGate() {
   check("storage-access none on same-origin passes through",
         none.next === true);
 
-  // Default (opt unset) does not refuse the escalation.
+  // Default (opt unset) REFUSES the escalation (v0.15.0) — checked before
+  // the allowCrossSite shortcut, so even a cross-site-permitting mount
+  // refuses the storage-access escalation by default.
   var dflt = b.middleware.fetchMetadata({ allowCrossSite: true });
-  var permitted = await _run(dflt, _post({
+  var refusedByDefault = await _run(dflt, _post({
     "sec-fetch-site": "cross-site", "sec-fetch-storage-access": "active",
   }), _bodyRes());
-  check("storage-access escalation permitted by default",
+  check("storage-access escalation refused by default (opt unset)",
+        refusedByDefault.next === false && refusedByDefault.status === 403);
+
+  // Documented opt-in: allowStorageAccess:true lets the Storage-Access-flow
+  // route through.
+  var optedIn = b.middleware.fetchMetadata({ allowCrossSite: true, allowStorageAccess: true });
+  var permitted = await _run(optedIn, _post({
+    "sec-fetch-site": "cross-site", "sec-fetch-storage-access": "active",
+  }), _bodyRes());
+  check("allowStorageAccess:true opts back in (escalation permitted)",
         permitted.next === true);
 }
 

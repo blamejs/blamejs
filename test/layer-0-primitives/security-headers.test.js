@@ -168,8 +168,9 @@ function testReportOnlyHeadersEmittedWhenOptedIn() {
 
 function testReportOnlyDoesNotTouchEnforcingHeaders() {
   // Monitor-mode opt-ins must not alter the enforcing COOP / COEP /
-  // Document-Policy headers: COOP stays same-origin, COEP stays off by
-  // default, Document-Policy keeps its enforcing default.
+  // Document-Policy headers: COOP stays same-origin, the enforcing COEP
+  // keeps its default-on `credentialless` value (the report-only opt is a
+  // separate header), Document-Policy keeps its enforcing default.
   var mw = b.middleware.securityHeaders({
     coopReportOnly: "same-origin",
     coepReportOnly: "require-corp",
@@ -178,8 +179,8 @@ function testReportOnlyDoesNotTouchEnforcingHeaders() {
   mw({ headers: {} }, res, function () {});
   check("enforcing COOP unchanged by coopReportOnly",
     res._hdrs["Cross-Origin-Opener-Policy"] === "same-origin");
-  check("COEP stays off by default despite coepReportOnly",
-    res._hdrs["Cross-Origin-Embedder-Policy"] === undefined);
+  check("enforcing COEP keeps its default-on value despite coepReportOnly",
+    res._hdrs["Cross-Origin-Embedder-Policy"] === "credentialless");
   check("enforcing Document-Policy unchanged by report-only opts",
     res._hdrs["Document-Policy"] === b.middleware._modules.securityHeaders.DEFAULT_DOCUMENT_POLICY);
 }
@@ -254,6 +255,31 @@ function testUnknownOptStillRefused() {
   check("typo'd report-only opt refused at config-time", threw);
 }
 
+function testCoepDefaultOnAndOptOut() {
+  // Default-on (v0.15.0): the enforcing Cross-Origin-Embedder-Policy is
+  // emitted as `credentialless` with no operator action, so COOP+COEP
+  // together yield cross-origin isolation out of the box.
+  var resDefault = _mkRes();
+  b.middleware.securityHeaders()({ headers: {} }, resDefault, function () {});
+  check("COEP default-on: Cross-Origin-Embedder-Policy is credentialless",
+    resDefault._hdrs["Cross-Origin-Embedder-Policy"] === "credentialless");
+  check("COOP stays same-origin alongside the default COEP",
+    resDefault._hdrs["Cross-Origin-Opener-Policy"] === "same-origin");
+
+  // Tighten: operators serving only same-origin / CORP-marked subresources
+  // pass coep: "require-corp" for the strict enforcing mode.
+  var resStrict = _mkRes();
+  b.middleware.securityHeaders({ coep: "require-corp" })({ headers: {} }, resStrict, function () {});
+  check("COEP tighten: coep:'require-corp' overrides the default",
+    resStrict._hdrs["Cross-Origin-Embedder-Policy"] === "require-corp");
+
+  // Documented opt-out: coep:false disables COEP entirely (no header).
+  var resOff = _mkRes();
+  b.middleware.securityHeaders({ coep: false })({ headers: {} }, resOff, function () {});
+  check("COEP opt-out: coep:false emits no Cross-Origin-Embedder-Policy header",
+    resOff._hdrs["Cross-Origin-Embedder-Policy"] === undefined);
+}
+
 async function run() {
   testFencedFrameSrcInDefaultCsp();
   testDocumentPolicyDefault();
@@ -276,6 +302,7 @@ async function run() {
   testServiceWorkerAllowedDefaultOff();
   testNewOptsNonStringIgnored();
   testUnknownOptStillRefused();
+  testCoepDefaultOnAndOptOut();
 }
 
 module.exports = { run: run };

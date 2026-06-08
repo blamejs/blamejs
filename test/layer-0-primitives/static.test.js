@@ -1,7 +1,9 @@
 "use strict";
 /**
- * static — forceAttachmentForNonText opt-in defense for stored-XSS via
- * user-upload directories.
+ * static — forceAttachmentForNonText defense for stored-XSS via
+ * user-upload directories, plus the mountType typing that drives its
+ * default (v0.15.0: "user-content" mounts force-download by default;
+ * "curated" mounts keep inline render).
  *
  * Run standalone: `node test/layer-0-primitives/static.test.js`
  * Or via smoke:   `node test/smoke.js`
@@ -233,6 +235,73 @@ async function testForceAttachmentPdfOptInInline() {
   }
 }
 
+// mountType drives the forceAttachmentForNonText default (v0.15.0).
+// A mount TYPED "user-content" forces risky inline MIMEs to download with
+// NO explicit forceAttachmentForNonText (the new default-on behavior); a
+// "curated" mount (or unset) keeps inline render (the opt-out preserved).
+async function testMountTypeUserContentForcesDownloadByDefault() {
+  var ctx = await _server();
+  _writeFile(ctx.dir, "evil.html", "<script>alert(1)</script>");
+  // No forceAttachmentForNonText passed — the default comes from mountType.
+  var srv = await ctx.start({ contentSafety: null, mountType: "user-content" });
+  try {
+    var r = await _get(srv.port, "/evil.html");
+    check("mountType user-content: html forced to attachment by default",
+          r.statusCode === 200 &&
+          /^attachment;/.test(r.headers["content-disposition"] || ""));
+    check("mountType user-content: nosniff added by default",
+          r.headers["x-content-type-options"] === "nosniff");
+  } finally {
+    srv.close();
+    ctx.cleanup();
+  }
+}
+
+async function testMountTypeCuratedKeepsInline() {
+  var ctx = await _server();
+  _writeFile(ctx.dir, "evil.html", "<script>alert(1)</script>");
+  // Explicit "curated" is the documented opt-out — inline render preserved.
+  var srv = await ctx.start({ contentSafety: null, mountType: "curated" });
+  try {
+    var r = await _get(srv.port, "/evil.html");
+    check("mountType curated: html served inline (opt-out preserved)",
+          r.statusCode === 200 && !r.headers["content-disposition"]);
+  } finally {
+    srv.close();
+    ctx.cleanup();
+  }
+}
+
+async function testMountTypeExplicitOverrideWins() {
+  var ctx = await _server();
+  _writeFile(ctx.dir, "evil.html", "<script>alert(1)</script>");
+  // An explicit forceAttachmentForNonText:false overrides the
+  // user-content-derived default either way.
+  var srv = await ctx.start({
+    contentSafety: null, mountType: "user-content",
+    forceAttachmentForNonText: false,
+  });
+  try {
+    var r = await _get(srv.port, "/evil.html");
+    check("explicit forceAttachmentForNonText:false overrides user-content default",
+          r.statusCode === 200 && !r.headers["content-disposition"]);
+  } finally {
+    srv.close();
+    ctx.cleanup();
+  }
+}
+
+function testMountTypeBadValueThrows() {
+  var threw = null;
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-mt-"));
+  try {
+    b.staticServe.create({ root: dir, mountType: "uploads" });
+  } catch (e) { threw = e; }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  check("bad mountType value throws at config time",
+        threw && /mountType must be 'curated'/.test(threw.message));
+}
+
 function testRejectsUnknownOpts() {
   var threw = null;
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-fa-"));
@@ -425,6 +494,10 @@ async function run() {
   await testForceAttachmentSvgWithSanitizerInlineAllowed();
   await testForceAttachmentPdfDefaultDownload();
   await testForceAttachmentPdfOptInInline();
+  await testMountTypeUserContentForcesDownloadByDefault();
+  await testMountTypeCuratedKeepsInline();
+  await testMountTypeExplicitOverrideWins();
+  testMountTypeBadValueThrows();
   testRejectsUnknownOpts();
   await testOnErrorFiresOnRefusal();
   await testOnErrorThrowDoesNotCorruptResponse();
