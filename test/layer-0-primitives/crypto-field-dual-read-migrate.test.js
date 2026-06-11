@@ -129,6 +129,29 @@ async function run() {
     check("no-handle unseal still durably upgrades via the resolved framework db",
       disk3.h === keyed.value);
 
+    // ---- 6. THE REAL CONSUMER PATH: b.db.from().where on a sealed field ----
+    // Operators — and the framework's own api-key / session / audit / mail
+    // stores — find a row by a sealed field through the equality rewrite,
+    // which MUST dual-read across the keyed-MAC flip or it silently drops
+    // un-migrated rows (the keyed-only lookup misses the legacy digest).
+    // Forge a FRESH legacy row (not yet upgraded) and find it via the real
+    // query path — this is the path the primitive-only test above never
+    // exercised.
+    var sealed6 = b.cryptoField.sealRow("users", { _id: "u-legacy-q", email: email, name: "Dave" });
+    sealed6.emailHash = legacyHash;
+    b.db.prepare(
+      'INSERT INTO "users" ("_id","email","emailHash","name") VALUES (?,?,?,?)'
+    ).run(sealed6._id, sealed6.email, sealed6.emailHash, sealed6.name);
+    var viaQuery = await b.db.from("users").where("email", email).all();
+    check("real consumer path (b.db.from().where on a sealed field) finds the un-migrated legacy row",
+      Array.isArray(viaQuery) && viaQuery.some(function (r) { return r._id === "u-legacy-q"; }));
+
+    // b.db.hashCandidatesFor — the db-level dual-read helper the framework's
+    // bespoke stores (consent/subject) compose for whereIn lookups.
+    var dbCands = b.db.hashCandidatesFor("users", "email", email);
+    check("b.db.hashCandidatesFor returns both the keyed and legacy digests",
+      dbCands && dbCands.field === "emailHash" && dbCands.values.length === 2);
+
     console.log("OK — crypto-field dual-read + auto-migrate tests");
   } finally {
     await teardownTestDb(dir);

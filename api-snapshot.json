@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.0",
-  "createdAt": "2026-06-08T18:39:29.648Z",
+  "frameworkVersion": "0.15.1",
+  "createdAt": "2026-06-11T14:00:50.430Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14912,6 +14912,10 @@
         "getTableMetadata": {
           "type": "function",
           "arity": 1
+        },
+        "hashCandidatesFor": {
+          "type": "function",
+          "arity": 3
         },
         "hashFor": {
           "type": "function",
