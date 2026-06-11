@@ -259,6 +259,40 @@ async function testHashAlgoOptArgon2id() {
   check("argon2id: wrong secret returns null", wrong === null);
 }
 
+async function testRotateOnVerifyUpgradesHashAlgo() {
+  // A row stored under a non-active hash algorithm is transparently
+  // re-hashed to the active algorithm on the next successful (leader)
+  // verify — the rotate-on-next-verify that credentialHash documents.
+  var ns = "rehash-mig";
+  // A store configured for argon2id issues the key (the "legacy" shape).
+  var legacy = b.apiKey.create({ namespace: ns, hashAlgo: "argon2id" });
+  var issued = await legacy.issue({ ownerId: "u1" });
+  var pre = await b.clusterStorage.executeOne(
+    "SELECT secretHash FROM _blamejs_api_keys WHERE id = ?", [ns + ":" + issued.id]);
+  check("rotate-on-verify: stored under argon2id before verify",
+        b.credentialHash.inspect(pre.secretHash).algoName === "argon2id");
+
+  // A default (shake256) store verifies the SAME key on the same table.
+  var active = b.apiKey.create({ namespace: ns });   // hashAlgo defaults to shake256
+  var record = await active.verify(issued.key);
+  check("rotate-on-verify: credential still verifies under the legacy hash",
+        record !== null && record.id === issued.id);
+
+  // The at-rest hash is now the active shake256 envelope — upgraded in place,
+  // with no API/return-value change for the caller.
+  var post = await b.clusterStorage.executeOne(
+    "SELECT secretHash FROM _blamejs_api_keys WHERE id = ?", [ns + ":" + issued.id]);
+  var info = b.credentialHash.inspect(post.secretHash);
+  check("rotate-on-verify: stored hash upgraded to shake256", info.algoName === "shake256");
+  check("rotate-on-verify: upgraded envelope no longer needs rehash",
+        b.credentialHash.needsRehash(post.secretHash, { algo: "shake256" }) === false);
+
+  // The original secret still verifies under the upgraded hash.
+  var again = await active.verify(issued.key);
+  check("rotate-on-verify: re-verify under the upgraded hash succeeds",
+        again !== null && again.id === issued.id);
+}
+
 async function testGetById() {
   var keys = b.apiKey.create({ namespace: "get-test" });
   var issued = await keys.issue({ ownerId: "u1" });
@@ -690,6 +724,7 @@ async function run() {
     await testHardRotateClearsSecondary();
     await testEnvelopeFormatPersisted();
     await testHashAlgoOptArgon2id();
+    await testRotateOnVerifyUpgradesHashAlgo();
     await testListForOwner();
     await testGetById();
     await testTrackLastUsedAt();
