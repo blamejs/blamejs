@@ -293,6 +293,54 @@ async function testRotateOnVerifyUpgradesHashAlgo() {
         again !== null && again.id === issued.id);
 }
 
+async function testRehashOnVerifyDoesNotClobberConcurrentRotate() {
+  // Rotate-on-verify reads the stored hash, then writes the upgraded hash in a
+  // later UPDATE. If a rotate() lands between the read and the write, a
+  // row-id-only UPDATE would overwrite the freshly rotated secret with the OLD
+  // secret's re-hash — invalidating the new token while the old one keeps
+  // working. The upgrade write carries a compare-and-swap on the exact hash
+  // that was verified, so a row whose secretHash changed under it is untouched.
+  var credentialHashMod = require("../../lib/credential-hash");
+  var ns = "rehash-race";
+  var legacy = b.apiKey.create({ namespace: ns, hashAlgo: "argon2id" });
+  var issued = await legacy.issue({ ownerId: "u1" });
+  var rowId  = ns + ":" + issued.id;
+
+  // The hash a concurrent rotate() would install mid-flight (a distinct envelope).
+  var rotatedHash = await credentialHashMod.hash("ab".repeat(32), { algo: "shake256" });
+
+  var active   = b.apiKey.create({ namespace: ns });   // active algo shake256 → triggers the re-hash
+  var realHash = credentialHashMod.hash;
+  var injected = false;
+  // Land a concurrent rotation inside the re-hash's async window: overwrite the
+  // stored secretHash after the OLD value was read but before the upgrade UPDATE.
+  // api-key reads credentialHash.hash off this module object at call time, so the
+  // patch intercepts exactly the rotate-on-verify re-hash (issue() above ran
+  // before the patch and is unaffected).
+  credentialHashMod.hash = async function (secretHex, opts) {
+    var out = await realHash.call(credentialHashMod, secretHex, opts);
+    if (!injected) {
+      injected = true;
+      await b.clusterStorage.execute(
+        "UPDATE _blamejs_api_keys SET secretHash = ? WHERE id = ?", [rotatedHash, rowId]);
+    }
+    return out;
+  };
+  var record;
+  try {
+    record = await active.verify(issued.key);
+  } finally {
+    credentialHashMod.hash = realHash;
+  }
+  check("rehash-race: the credential still verifies under the legacy hash",
+        record !== null && record.id === issued.id);
+
+  var post = await b.clusterStorage.executeOne(
+    "SELECT secretHash FROM _blamejs_api_keys WHERE id = ?", [rowId]);
+  check("rehash-race: the concurrent rotation's hash survives — re-hash did NOT clobber it",
+        post.secretHash === rotatedHash);
+}
+
 async function testGetById() {
   var keys = b.apiKey.create({ namespace: "get-test" });
   var issued = await keys.issue({ ownerId: "u1" });
@@ -725,6 +773,7 @@ async function run() {
     await testEnvelopeFormatPersisted();
     await testHashAlgoOptArgon2id();
     await testRotateOnVerifyUpgradesHashAlgo();
+    await testRehashOnVerifyDoesNotClobberConcurrentRotate();
     await testListForOwner();
     await testGetById();
     await testTrackLastUsedAt();

@@ -6836,6 +6836,15 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "CWE-778 — an upload that bypasses the byte-level content scan (opt-out / no gate for the extension / over the reassembly cap) must be visible in the audit log, not just an observability counter, so a reviewer can tell a scanned upload from a bypassed one.",
   },
+  // api-key rotate-on-verify re-hash must compare-and-swap on the value it read.
+  {
+    id: "apikey-rehash-on-verify-without-cas",
+    primitive: "guard the rotate-on-verify secret re-hash UPDATE with a compare-and-swap on the read hash (.where(\"secretHash\", row.secretHash)) so a concurrent rotate() is not clobbered",
+    regex: /touchFields\.secretHash\s*=\s*freshSecretHash/,
+    requires: /\.where\(\s*"secretHash"\s*,\s*row\.secretHash\s*\)/,
+    allowlist: [],
+    reason: "CWE-362 (lost update) — verify() reads the stored secretHash, computes the upgraded hash, then writes it in a later UPDATE. Without a compare-and-swap on the exact hash that was read, a rotate()/hardRotate() landing between the read and the write is overwritten with the OLD secret's re-hash: the rotated token is invalidated and the old token keeps verifying. The re-hash UPDATE must carry `.where(\"secretHash\", row.secretHash)` so it no-ops when the row changed underneath it.",
+  },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.
   {
