@@ -93,7 +93,10 @@ function _runOnEndpoint(label, endpoint, extraConfig) {
     // carried → SignatureDoesNotMatch (403). Every prior test used ASCII keys,
     // so the bug shipped green; this drives a real special-char key end-to-end.
     // put() throws on a non-2xx, so reaching the asserts proves no 403. ----
-    var specialKey = "obj report (v2)+final & draft-" + Math.floor(Math.random() * 1e6) + ".txt";
+    // Includes a non-BMP code point (emoji) so the round-trip also proves the
+    // encoder iterates by code point — a UTF-16-unit split would throw URIError
+    // before signing.
+    var specialKey = "obj report (v2)+final & draft \u{1F600}-" + Math.floor(Math.random() * 1e6) + ".txt";
     var specialPayload = Buffer.from("special-char-key payload", "utf8");
     await backend.put(specialKey, specialPayload, { contentType: "text/plain" });
     check("[" + label + "] special-char key put: signed + accepted (no 403)", true);

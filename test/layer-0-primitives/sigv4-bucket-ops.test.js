@@ -1008,6 +1008,13 @@ function testCanonicalPathSingleEncodeForS3() {
   // leaves alone, so the bucket-ops wire path matches the bytes S3 signs over.
   check("awsUriEncode escapes !*'() that encodeURIComponent leaves raw",
         sigv4.awsUriEncode("a!b*c'd(e)", true) === "a%21b%2Ac%27d%28e%29");
+
+  // A key with a non-BMP code point (emoji, CJK extension B, ...) must encode
+  // by code point, not UTF-16 unit — otherwise the surrogate pair is split and
+  // encodeURIComponent throws "URIError: URI malformed" before the request is
+  // even signed.
+  check("awsUriEncode encodes a non-BMP code point as one UTF-8 sequence (no URIError)",
+        sigv4.awsUriEncode("photo-\u{1F600}.jpg", true) === "photo-%F0%9F%98%80.jpg");
 }
 
 async function run() {
