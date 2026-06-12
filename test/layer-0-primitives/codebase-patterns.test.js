@@ -6863,6 +6863,15 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "Object-store correctness — encodeURIComponent on a lone surrogate throws 'URIError: URI malformed', so iterating awsUriEncode by str.charAt(i) and escaping each UTF-16 unit breaks any object key containing a non-BMP character (emoji, CJK Extension B, ...) before the request is signed. The encoder must walk Unicode code points (Array.from(str) keeps surrogate pairs together) so the whole character reaches encodeURIComponent as one UTF-8 sequence.",
   },
+  // sql.js _ddlType verbatim fallthrough must keep its config-time shape guard.
+  {
+    id: "sql-ddltype-verbatim-no-shape-guard",
+    primitive: "shape-guard the _ddlType verbatim fallthrough (refuse a type carrying ; / quote / comment marker) so an unrecognised column type cannot smuggle a stacked statement into createTable / alterTable DDL",
+    regex: /function _ddlType\([\s\S]{0,2400}?return logical;/,
+    requires: /logical\.indexOf\(";"\)/,
+    allowlist: [],
+    reason: "SQL injection (defence-in-depth) — _ddlType returns an unrecognised column type verbatim into the emitted DDL. It is the one raw-emission position in an otherwise quote-by-construction builder (constraints route through _checkRawFragment, names through _quoteId). Without a config-time refusal of ; / quote / comment-marker, a type like 'text); DROP TABLE x; --' emits a stacked statement. The verbatim fallthrough must keep the indexOf guard; createTable also routes the finished statement through _assertCatalogEmittable as the backstop.",
+  },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.
   {
