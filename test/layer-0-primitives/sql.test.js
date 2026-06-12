@@ -524,6 +524,57 @@ async function run() {
         /MATCH \?\) ORDER BY "modseq" ASC LIMIT 50$/.test(search.sql) &&
           search.params.length === 3 &&
           search.params[0] === 1 && search.params[1] === 5 && search.params[2] === "tok1 tok2");
+
+  // ---- v0.15.3 DDL hardening ----
+  // #105 verbatim column type: the one raw-emission position in the builder.
+  // Injection safety is enforced at the statement level — createTable routes the
+  // finished DDL through the quote-aware _assertCatalogEmittable, which refuses a
+  // top-level ';' / comment / unbalanced quote / unbalanced paren while allowing
+  // those characters INSIDE a balanced quoted label (so MySQL ENUM/SET pass).
+  rejects("createTable refuses a verbatim type that stacks a statement", function () {
+    return sql.createTable("t", [{ name: "id", type: "int" },
+      { name: "evil", type: "text); DROP TABLE secrets; --" }], { dialect: "postgres" });
+  }, "sql-builder/stacked-statement");
+  rejects("createTable refuses a verbatim type with an unbalanced quote (catalog gate)", function () {
+    return sql.createTable("t", [{ name: "c", type: "text'" }], { dialect: "postgres" });
+  }, "sql-builder/unterminated-quote");
+  check("createTable allows a MySQL ENUM type (balanced quotes, the verbatim fallthrough)",
+        sql.createTable("t", [{ name: "id", type: "int" }, { name: "status", type: "ENUM('active','inactive')" }],
+          { dialect: "mysql" }).sql.indexOf("ENUM('active','inactive')") !== -1);
+  check("createTable allows a marker (;/--) INSIDE a balanced ENUM label (quote-aware gate, not over-rejected)",
+        sql.createTable("t", [{ name: "id", type: "int" }, { name: "status", type: "ENUM('needs;review','a--b')" }],
+          { dialect: "mysql" }).sql.indexOf("ENUM('needs;review','a--b')") !== -1);
+  check("createTable allows a legit multi-word verbatim type (DOUBLE PRECISION)",
+        sql.createTable("t", [{ name: "id", type: "int" }, { name: "p", type: "DOUBLE PRECISION" }],
+          { dialect: "postgres" }).sql.indexOf("DOUBLE PRECISION") !== -1);
+  check("createTable allows a parameterised verbatim type (VARCHAR(255))",
+        sql.createTable("t", [{ name: "s", type: "VARCHAR(255)" }], { dialect: "postgres" })
+          .sql.indexOf("VARCHAR(255)") !== -1);
+
+  // #118 a column-level primary key and a composite opts.primaryKey are exclusive.
+  rejects("createTable refuses a column PK plus a composite opts.primaryKey", function () {
+    return sql.createTable("t", [{ name: "id", autoIncrement: true }, { name: "k", type: "text" }],
+      { dialect: "sqlite", primaryKey: ["id", "k"] });
+  }, "sql-builder/bad-column");
+  check("createTable allows a composite opts.primaryKey with no column-level PK",
+        sql.createTable("t", [{ name: "a", type: "int" }, { name: "b", type: "int" }],
+          { dialect: "sqlite", primaryKey: ["a", "b"] }).sql.indexOf('PRIMARY KEY ("a", "b")') !== -1);
+
+  // #119 upsert readback resolves the conflict-key cell instead of binding a wrapper.
+  rejects("upsert readback refuses a server-evaluated function conflict key", function () {
+    return sql.upsert("t", { dialect: "mysql" }).values({ id: sql.fn("CURRENT_TIMESTAMP"), c: 1 })
+      .onConflict(["id"]).doUpdateFromExcluded(["c"]).returning(["c"]).toSql();
+  }, "sql-builder/bad-conflict");
+  var rbScalar = sql.upsert("t", { dialect: "mysql" }).values({ id: 5, c: 1 })
+    .onConflict(["id"]).doUpdateFromExcluded(["c"]).returning(["c"]).toSql();
+  check("upsert readback binds a plain scalar conflict key unchanged",
+        rbScalar.readbackSql && rbScalar.readbackSql.params.length === 1 &&
+          rbScalar.readbackSql.params[0] === 5);
+  var rbCast = sql.upsert("t", { dialect: "mysql" }).values({ id: sql.cast("42", "int"), c: 1 })
+    .onConflict(["id"]).doUpdateFromExcluded(["c"]).returning(["c"]).toSql();
+  check("upsert readback renders a cast conflict key (CAST) binding the inner value, not the wrapper",
+        rbCast.readbackSql && rbCast.readbackSql.sql.indexOf("CAST(") !== -1 &&
+          rbCast.readbackSql.params.length === 1 && rbCast.readbackSql.params[0] === "42");
 }
 
 module.exports = { run: run };

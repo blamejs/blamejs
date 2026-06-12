@@ -6863,6 +6863,14 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "Object-store correctness — encodeURIComponent on a lone surrogate throws 'URIError: URI malformed', so iterating awsUriEncode by str.charAt(i) and escaping each UTF-16 unit breaks any object key containing a non-BMP character (emoji, CJK Extension B, ...) before the request is signed. The encoder must walk Unicode code points (Array.from(str) keeps surrogate pairs together) so the whole character reaches encodeURIComponent as one UTF-8 sequence.",
   },
+  // sql.js createTable must route its emitted DDL through the quote-aware catalog gate.
+  {
+    id: "sql-createtable-ddl-not-catalog-gated",
+    primitive: "route createTable's emitted CREATE TABLE through _assertCatalogEmittable (its quote-aware single-statement scan is the injection backstop for the one raw-emission position — the verbatim column type) — never return a bare { sql, params }",
+    regex: /var sql = "CREATE TABLE " \+ ifNot[\s\S]{0,420}?return \{ sql:/,
+    allowlist: [],
+    reason: "SQL injection — _ddlType returns an unrecognised column type verbatim into the DDL; it is the one raw-emission position in an otherwise quote-by-construction builder (constraints route through _checkRawFragment, names through _quoteId). The injection backstop is the quote-aware _assertCatalogEmittable scan, which refuses a top-level ';' / comment / unbalanced quote / unbalanced paren while CORRECTLY allowing those characters inside a balanced quoted label (ENUM('needs;review')). createTable must therefore return _assertCatalogEmittable(sql, []) — a bare { sql, params } would let a type like 'text); DROP TABLE x; --' emit a stacked statement. A non-quote-aware pre-scan on the type was removed precisely because it over-rejected valid quoted labels.",
+  },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.
   {
@@ -9245,6 +9253,22 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\.listen\s*\(\s*(?:\{[^}]*port\s*:\s*)?(?!0\b)\d{2,5}\b/,
     allowlist: [],
     reason: "Hardcoded bind ports race under SMOKE_PARALLEL=64 when two parallel tests pick the same value. Convention: .listen(0) + server.address().port. Read-only protocol-constant references (autoconfig XML port: 993 / 587, mock-server config port: 1025) don't trip this detector — only .listen() with a literal non-zero port does.",
+  },
+
+  {
+    // Constructing a "malformed" base64url test input by replacing only the
+    // FIRST standard-base64-only character ('+' or '/') of a freshly generated
+    // certificate/key is non-deterministic: the per-run base64 carries no such
+    // character ~0.4% of the time (a 400-char cert), so the replace is a no-op
+    // and the input stays a VALID value that is correctly accepted — flaking
+    // any assertion that expects refusal. Inject a base64url-only char
+    // unconditionally (prepend one) so the malformed entry is guaranteed.
+    id: "test-malformed-base64url-via-noop-replace",
+    primitive: "prepend a base64url-only char ('-' / '_') unconditionally to build a guaranteed-malformed x5c / JOSE base64 test input — never a single non-global replace of the first '+' / '/', which is a no-op when the input carries neither",
+    scanScope: "test",
+    regex: /\.replace\(\s*\/\[\+\/\]\/\s*,\s*["'][-_]["']\s*\)/,
+    allowlist: [],
+    reason: "A single non-global replace of the first standard-base64-only character to forge a base64url-charset string is a no-op whenever that run's base64 happens to carry no such character, leaving a still-valid input that is correctly accepted — so the refusal assertion flakes (measured ~0.4% per run on a 400-char certificate; surfaced as the OID4VCI base64url-x5c refusal flake). Build the malformed entry deterministically by prepending a base64url-only char.",
   },
 
   {
