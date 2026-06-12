@@ -87,6 +87,26 @@ function _runOnEndpoint(label, endpoint, extraConfig) {
     check("[" + label + "] list after delete: object gone",
           !afterDelete.items.some(function (it) { return it.key === key; }));
 
+    // ---- special-character key round-trip (the v0.15.2 SigV4 single-encode
+    // fix). A key with a space / + / & / () previously double-encoded the
+    // canonical path → the signature was computed over a path the wire never
+    // carried → SignatureDoesNotMatch (403). Every prior test used ASCII keys,
+    // so the bug shipped green; this drives a real special-char key end-to-end.
+    // put() throws on a non-2xx, so reaching the asserts proves no 403. ----
+    var specialKey = "obj report (v2)+final & draft-" + Math.floor(Math.random() * 1e6) + ".txt";
+    var specialPayload = Buffer.from("special-char-key payload", "utf8");
+    await backend.put(specialKey, specialPayload, { contentType: "text/plain" });
+    check("[" + label + "] special-char key put: signed + accepted (no 403)", true);
+    var specialGot = await backend.get(specialKey);
+    var specialBuf = Buffer.isBuffer(specialGot) ? specialGot : (specialGot && specialGot.body);
+    check("[" + label + "] special-char key get: bytes round-trip exactly",
+          Buffer.isBuffer(specialBuf) && Buffer.compare(specialBuf, specialPayload) === 0);
+    var specialListing = await backend.list("obj report");
+    check("[" + label + "] special-char key list: surfaces the object",
+          specialListing.items.some(function (it) { return it.key === specialKey; }));
+    await backend.delete(specialKey);
+    check("[" + label + "] special-char key delete: returned (no throw)", true);
+
     // ---- multipart upload + round-trip (covers the v0.6.50 ?uploads
     // wire-form fix; until now multipart had only mock-server coverage). ----
     var bigBackendCfg = Object.assign({}, beCfg, {
