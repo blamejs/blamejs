@@ -2848,13 +2848,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/db-query.js:_assertRawNoStringLiteral",
         "lib/guard-sql.js:_hasEmbeddedStringLiteral",
         "lib/safe-sql.js:countPlaceholders",
-        "lib/sql.js:_assertEmittable",
+        "lib/safe-sql.js:assertSingleStatement",
         "lib/sql.js:_assertRawNoStringLiteral",
         "lib/sql.js:_assertNoRawJsonbKeyOp",
         "lib/sql.js:_toPositional",
-        "lib/sql.js:_assertCatalogEmittable",
       ],
-      reason: "v0.14.29 — the canonical quote- and comment-aware SQL char-walk (`while (i<len) { skip '...' / \"...\" doubled-quote literals; skip -- and /* */ comments; act on the target char }`). The single genuinely-shared instance, safeSql.countPlaceholders, IS extracted and composed by both db-query and the b.sql builder. The remaining members run the SAME scan shape for DIFFERENT purposes that cannot share a body: db-query._assertRawNoStringLiteral / sql._assertRawNoStringLiteral refuse a `'...'` literal in an operator raw fragment (each throwing its own typed error — SafeSqlError vs SqlBuilderError), guard-sql._hasEmbeddedStringLiteral is the tokenizer's literal-mask step, sql._assertEmittable is the builder's final-output validator (balanced quotes / parens / single-statement / placeholder parity), and sql._toPositional translates the builder's `?` placeholders to `$1..$N` for a direct-driver caller (the toExternalSql terminal — the same scan as clusterStorage.placeholderize, deliberately kept at the builder layer rather than reaching into clusterStorage, which transitively requires the builder). sql._assertCatalogEmittable is the catalog/PRAGMA sub-API's output gate (the same boundary-escape refusals as _assertEmittable on the catalog statement shape). Same shape-only family the external-db opaque-span cluster documents; consolidating would couple a raw-fragment gate, a guard tokenizer, an output validator, and a placeholder translator on the trivial scan shell.",
+      reason: "v0.14.29 / v0.15.4 - the canonical quote- and comment-aware SQL char-walk shell. The ONE consolidatable instance, the single-statement OUTPUT gate, was extracted to safeSql.assertSingleStatement (v0.15.4): sql._assertEmittable + sql._assertCatalogEmittable now DELEGATE to it (a makeError preserves their sql-builder/* codes), and the raw-DDL paths (db-schema.reconcileTable, the DSR store) route through the same primitive instead of hand-rolling DDL - so a verbatim column type can no longer smuggle a stacked statement. safeSql.countPlaceholders was already the other extracted instance. What REMAINS shares only the char-walk SHELL for genuinely different purposes that cannot share a body: db-query._assertRawNoStringLiteral / sql._assertRawNoStringLiteral refuse a literal in an operator raw fragment (each its own typed error), guard-sql._hasEmbeddedStringLiteral is the tokenizer literal-mask step, sql._toPositional / clusterStorage.placeholderize translate ? placeholders to positional $N, sql._assertNoRawJsonbKeyOp guards a raw JSONB key op, and safeSql.assertSingleStatement is the extracted gate itself. Same shape-only family the external-db opaque-span cluster documents.",
     },
     {
       mode:  "family-subset",
@@ -6870,6 +6869,21 @@ var KNOWN_ANTIPATTERNS = [
     regex: /var sql = "CREATE TABLE " \+ ifNot[\s\S]{0,420}?return \{ sql:/,
     allowlist: [],
     reason: "SQL injection — _ddlType returns an unrecognised column type verbatim into the DDL; it is the one raw-emission position in an otherwise quote-by-construction builder (constraints route through _checkRawFragment, names through _quoteId). The injection backstop is the quote-aware _assertCatalogEmittable scan, which refuses a top-level ';' / comment / unbalanced quote / unbalanced paren while CORRECTLY allowing those characters inside a balanced quoted label (ENUM('needs;review')). createTable must therefore return _assertCatalogEmittable(sql, []) — a bare { sql, params } would let a type like 'text); DROP TABLE x; --' emit a stacked statement. A non-quote-aware pre-scan on the type was removed precisely because it over-rejected valid quoted labels.",
+  },
+  {
+    // v0.15.4 R2 — every hand-rolled DDL (CREATE/ALTER TABLE, CREATE INDEX)
+    // concatenated and handed to runSql/exec must route through
+    // safeSql.assertSingleStatement first, the same quote-aware single-statement
+    // gate the b.sql builder enforces. db-schema.reconcileTable shipped a
+    // verbatim-column-type injection (a type "TEXT); DROP TABLE x; --" smuggled a
+    // stacked statement) until this gate; this enforces the invariant across the
+    // whole raw-DDL family (schema reconcile, DSR store, migrations), not one site.
+    id: "ddl-concat-to-runsql-without-single-statement-gate",
+    primitive: "wrap a hand-rolled CREATE TABLE / ALTER TABLE / CREATE INDEX string in safeSql.assertSingleStatement(sql, { label }) before runSql/exec — the raw-DDL paths use the same single-statement gate the b.sql builder does",
+    regex: /\b(?:runSql|exec)\(\s*(?:\w+,\s*)?"(?:CREATE TABLE|ALTER TABLE|CREATE INDEX|DROP TABLE)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A finished DDL string built by concatenating a (possibly operator-controlled) value and passed straight to runSql/exec bypasses the quote-aware single-statement scan the b.sql builder enforces on its own DDL — a verbatim column type like 'TEXT); DROP TABLE x; --' smuggles a stacked statement (lib/db-schema.js reconcileTable shipped exactly this until v0.15.4). Route the finished string through safeSql.assertSingleStatement(sql, { label }); the gated form does not match because the string literal no longer sits directly after the runSql/exec open-paren + optional db arg.",
   },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.
