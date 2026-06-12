@@ -14,6 +14,7 @@
 var helpers = require("../helpers");
 var http               = require("http");
 var bucketOps          = require("../../lib/object-store/sigv4-bucket-ops");
+var sigv4              = require("../../lib/object-store/sigv4");
 var b                  = helpers.b;
 var check              = helpers.check;
 var listenOnRandomPort = helpers.listenOnRandomPort;
@@ -969,8 +970,56 @@ async function testPerCallActorOverrideHonored() {
   }
 }
 
+function testCanonicalPathSingleEncodeForS3() {
+  // Regression: S3 (and S3-compatible stores + GCS's V4) URI-encode the
+  // canonical path ONCE; the older code double-encoded it, so any object key
+  // with a space / + / & / unicode signed a path the wire never carried →
+  // SignatureDoesNotMatch (403). Drive the real signRequest path with a
+  // special-char key and assert the canonical path line equals the wire
+  // pathname byte-for-byte. (Pre-fix this matched only for ASCII keys, which
+  // is why every shipped test passed while real keys 403'd.)
+  var key = "my report (v2)+final & draft.txt";
+  var encodedKey = key.split("/").map(function (s) { return sigv4.awsUriEncode(s, true); }).join("/");
+  var url = new URL("https://bucket.s3.example.com");
+  url.pathname = "/" + encodedKey;
+
+  var s3 = sigv4.signRequest({
+    method: "GET", url: url, headers: {}, payloadHash: "UNSIGNED-PAYLOAD",
+    region: "us-east-1", accessKeyId: "AK", secretAccessKey: "sk", date: new Date(0),
+  });
+  var s3CanonPath = s3.canonicalRequest.split("\n")[1];
+  check("S3 canonical path single-encodes — equals the wire pathname (no double-encode)",
+        s3CanonPath === url.pathname);
+  check("S3 canonical path has no double-encoded %25 sequence",
+        s3CanonPath.indexOf("%25") === -1 && url.pathname.indexOf("%25") === -1);
+
+  // The non-S3 services (sqs/logs/sns) MUST keep the double-encode (AWS spec).
+  var u2 = new URL("https://sqs.us-east-1.amazonaws.com");
+  u2.pathname = "/a%20b";
+  var sqs = sigv4.signRequest({
+    method: "GET", url: u2, headers: {}, payloadHash: sigv4.sha256Hex(""),
+    region: "us-east-1", service: "sqs", accessKeyId: "AK", secretAccessKey: "sk", date: new Date(0),
+  });
+  var sqsCanonPath = sqs.canonicalRequest.split("\n")[1];
+  check("non-S3 service still double-encodes the canonical path (spec-correct, unchanged)",
+        sqsCanonPath === "/a%2520b");
+
+  // awsUriEncode escapes the AWS reserved set (!*'()) that encodeURIComponent
+  // leaves alone, so the bucket-ops wire path matches the bytes S3 signs over.
+  check("awsUriEncode escapes !*'() that encodeURIComponent leaves raw",
+        sigv4.awsUriEncode("a!b*c'd(e)", true) === "a%21b%2Ac%27d%28e%29");
+
+  // A key with a non-BMP code point (emoji, CJK extension B, ...) must encode
+  // by code point, not UTF-16 unit — otherwise the surrogate pair is split and
+  // encodeURIComponent throws "URIError: URI malformed" before the request is
+  // even signed.
+  check("awsUriEncode encodes a non-BMP code point as one UTF-8 sequence (no URIError)",
+        sigv4.awsUriEncode("photo-\u{1F600}.jpg", true) === "photo-%F0%9F%98%80.jpg");
+}
+
 async function run() {
   testSurface();
+  testCanonicalPathSingleEncodeForS3();
   testFactoryValidation();
   testBucketNameValidation();
   testLifecycleXml();

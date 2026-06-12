@@ -6845,6 +6845,24 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "CWE-362 (lost update) — verify() reads the stored secretHash, computes the upgraded hash, then writes it in a later UPDATE. Without a compare-and-swap on the exact hash that was read, a rotate()/hardRotate() landing between the read and the write is overwritten with the OLD secret's re-hash: the rotated token is invalidated and the old token keeps verifying. The re-hash UPDATE must carry `.where(\"secretHash\", row.secretHash)` so it no-ops when the row changed underneath it.",
   },
+  // SigV4 canonical path must be service-aware (S3 single-encodes, others double).
+  {
+    id: "sigv4-canonical-path-unconditional-double-encode",
+    primitive: "branch the SigV4 canonical path on doubleEncodePath (S3/GCS single-encode the already-encoded pathname; only sqs/logs/sns double-encode) — never unconditionally awsUriEncode the path",
+    regex: /awsUriEncode\(\s*path\b/,
+    requires: /doubleEncodePath\s*\?/,
+    allowlist: [],
+    reason: "Object-store correctness — a WHATWG URL pathname is ALREADY the single-encoded wire form, and S3/S3-compatible/GCS sign the canonical path with exactly that one encoding. A second awsUriEncode(path) signs '/a%2520b' for a key the wire carries as '/a%20b' → SignatureDoesNotMatch (403) on any key with a space/+/&/unicode. canonicalRequest must single-encode for S3 (doubleEncodePath=false, the default) and keep the second pass only for the genuinely double-encoding AWS services. Shipped green because every test key was plain ASCII (awsUriEncode is a no-op there).",
+  },
+  // awsUriEncode must iterate by Unicode code point, not UTF-16 code unit.
+  {
+    id: "sigv4-awsuriencode-utf16-unit-iteration",
+    primitive: "iterate awsUriEncode by code point (Array.from / codePointAt), not by UTF-16 index + charAt — a per-unit encodeURIComponent throws URIError on a non-BMP key's split surrogate pair",
+    regex: /function awsUriEncode\([\s\S]{0,400}?encodeURIComponent/,
+    requires: /Array\.from|codePointAt/,
+    allowlist: [],
+    reason: "Object-store correctness — encodeURIComponent on a lone surrogate throws 'URIError: URI malformed', so iterating awsUriEncode by str.charAt(i) and escaping each UTF-16 unit breaks any object key containing a non-BMP character (emoji, CJK Extension B, ...) before the request is signed. The encoder must walk Unicode code points (Array.from(str) keeps surrogate pairs together) so the whole character reaches encodeURIComponent as one UTF-8 sequence.",
+  },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.
   {
