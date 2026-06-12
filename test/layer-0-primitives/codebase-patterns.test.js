@@ -6863,14 +6863,13 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "Object-store correctness — encodeURIComponent on a lone surrogate throws 'URIError: URI malformed', so iterating awsUriEncode by str.charAt(i) and escaping each UTF-16 unit breaks any object key containing a non-BMP character (emoji, CJK Extension B, ...) before the request is signed. The encoder must walk Unicode code points (Array.from(str) keeps surrogate pairs together) so the whole character reaches encodeURIComponent as one UTF-8 sequence.",
   },
-  // sql.js _ddlType verbatim fallthrough must keep its config-time shape guard.
+  // sql.js createTable must route its emitted DDL through the quote-aware catalog gate.
   {
-    id: "sql-ddltype-verbatim-no-shape-guard",
-    primitive: "shape-guard the _ddlType verbatim fallthrough (refuse a type carrying ; / quote / comment marker) so an unrecognised column type cannot smuggle a stacked statement into createTable / alterTable DDL",
-    regex: /function _ddlType\([\s\S]{0,2400}?return logical;/,
-    requires: /logical\.indexOf\(";"\)/,
+    id: "sql-createtable-ddl-not-catalog-gated",
+    primitive: "route createTable's emitted CREATE TABLE through _assertCatalogEmittable (its quote-aware single-statement scan is the injection backstop for the one raw-emission position — the verbatim column type) — never return a bare { sql, params }",
+    regex: /var sql = "CREATE TABLE " \+ ifNot[\s\S]{0,420}?return \{ sql:/,
     allowlist: [],
-    reason: "SQL injection (defence-in-depth) — _ddlType returns an unrecognised column type verbatim into the emitted DDL. It is the one raw-emission position in an otherwise quote-by-construction builder (constraints route through _checkRawFragment, names through _quoteId). Without a config-time refusal of ; / quote / comment-marker, a type like 'text); DROP TABLE x; --' emits a stacked statement. The verbatim fallthrough must keep the indexOf guard; createTable also routes the finished statement through _assertCatalogEmittable as the backstop.",
+    reason: "SQL injection — _ddlType returns an unrecognised column type verbatim into the DDL; it is the one raw-emission position in an otherwise quote-by-construction builder (constraints route through _checkRawFragment, names through _quoteId). The injection backstop is the quote-aware _assertCatalogEmittable scan, which refuses a top-level ';' / comment / unbalanced quote / unbalanced paren while CORRECTLY allowing those characters inside a balanced quoted label (ENUM('needs;review')). createTable must therefore return _assertCatalogEmittable(sql, []) — a bare { sql, params } would let a type like 'text); DROP TABLE x; --' emit a stacked statement. A non-quote-aware pre-scan on the type was removed precisely because it over-rejected valid quoted labels.",
   },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.

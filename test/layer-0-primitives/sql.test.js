@@ -526,21 +526,24 @@ async function run() {
           search.params[0] === 1 && search.params[1] === 5 && search.params[2] === "tok1 tok2");
 
   // ---- v0.15.3 DDL hardening ----
-  // #105 verbatim-type guard: the column type was the one unguarded raw-emission
-  // position. A type carrying a statement terminator or comment marker is refused
-  // at build; an unbalanced quote is caught by the catalog gate (createTable
-  // routes through _assertCatalogEmittable). Legit multi-word / parameterised
-  // types - and MySQL ENUM/SET, which need balanced quotes - still pass.
-  rejects("createTable refuses a verbatim type carrying a stacked statement", function () {
+  // #105 verbatim column type: the one raw-emission position in the builder.
+  // Injection safety is enforced at the statement level — createTable routes the
+  // finished DDL through the quote-aware _assertCatalogEmittable, which refuses a
+  // top-level ';' / comment / unbalanced quote / unbalanced paren while allowing
+  // those characters INSIDE a balanced quoted label (so MySQL ENUM/SET pass).
+  rejects("createTable refuses a verbatim type that stacks a statement", function () {
     return sql.createTable("t", [{ name: "id", type: "int" },
       { name: "evil", type: "text); DROP TABLE secrets; --" }], { dialect: "postgres" });
-  }, "sql-builder/bad-type");
+  }, "sql-builder/stacked-statement");
   rejects("createTable refuses a verbatim type with an unbalanced quote (catalog gate)", function () {
     return sql.createTable("t", [{ name: "c", type: "text'" }], { dialect: "postgres" });
   }, "sql-builder/unterminated-quote");
   check("createTable allows a MySQL ENUM type (balanced quotes, the verbatim fallthrough)",
         sql.createTable("t", [{ name: "id", type: "int" }, { name: "status", type: "ENUM('active','inactive')" }],
           { dialect: "mysql" }).sql.indexOf("ENUM('active','inactive')") !== -1);
+  check("createTable allows a marker (;/--) INSIDE a balanced ENUM label (quote-aware gate, not over-rejected)",
+        sql.createTable("t", [{ name: "id", type: "int" }, { name: "status", type: "ENUM('needs;review','a--b')" }],
+          { dialect: "mysql" }).sql.indexOf("ENUM('needs;review','a--b')") !== -1);
   check("createTable allows a legit multi-word verbatim type (DOUBLE PRECISION)",
         sql.createTable("t", [{ name: "id", type: "int" }, { name: "p", type: "DOUBLE PRECISION" }],
           { dialect: "postgres" }).sql.indexOf("DOUBLE PRECISION") !== -1);
