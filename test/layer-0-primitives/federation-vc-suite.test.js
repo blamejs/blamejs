@@ -783,7 +783,12 @@ async function testOid4vciX5cProof() {
   await _refusedX5c([""], "empty string entry");
   await _refusedX5c(["@@@not-base64@@@"], "non-base64 entry");
   // base64url chars (- / _) are invalid for x5c (standard base64 only).
-  await _refusedX5c([leafB64.replace(/[+/]/, "-")], "base64url-charset entry");
+  // Inject them unconditionally: leafB64's '+' / '/' population varies per
+  // generated cert, so replacing only the first such char is a no-op on the
+  // ~0.4% of certs that carry neither — which would leave a still-valid cert
+  // that is correctly accepted, making this refusal assertion flake. Prepend
+  // the base64url-only chars so the malformed entry is guaranteed every run.
+  await _refusedX5c(["-_" + leafB64.slice(2)], "base64url-charset entry");
   // valid base64 but not a parseable DER certificate.
   await _refusedX5c([Buffer.from("not a certificate").toString("base64")], "non-DER-cert entry");
 

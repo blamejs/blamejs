@@ -9256,6 +9256,22 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    // Constructing a "malformed" base64url test input by replacing only the
+    // FIRST standard-base64-only character ('+' or '/') of a freshly generated
+    // certificate/key is non-deterministic: the per-run base64 carries no such
+    // character ~0.4% of the time (a 400-char cert), so the replace is a no-op
+    // and the input stays a VALID value that is correctly accepted — flaking
+    // any assertion that expects refusal. Inject a base64url-only char
+    // unconditionally (prepend one) so the malformed entry is guaranteed.
+    id: "test-malformed-base64url-via-noop-replace",
+    primitive: "prepend a base64url-only char ('-' / '_') unconditionally to build a guaranteed-malformed x5c / JOSE base64 test input — never a single non-global replace of the first '+' / '/', which is a no-op when the input carries neither",
+    scanScope: "test",
+    regex: /\.replace\(\s*\/\[\+\/\]\/\s*,\s*["'][-_]["']\s*\)/,
+    allowlist: [],
+    reason: "A single non-global replace of the first standard-base64-only character to forge a base64url-charset string is a no-op whenever that run's base64 happens to carry no such character, leaving a still-valid input that is correctly accepted — so the refusal assertion flakes (measured ~0.4% per run on a 400-char certificate; surfaced as the OID4VCI base64url-x5c refusal flake). Build the malformed entry deterministically by prepending a base64url-only char.",
+  },
+
+  {
     // v0.11.13 — `fs.watchFile` / `fs.watch` MUST NOT be called
     // directly from tests. The framework exposes `b.watcher`
     // (kernel-event based) and `b.vault.sealPemFile` (poll-based) as
