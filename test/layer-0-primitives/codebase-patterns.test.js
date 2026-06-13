@@ -2834,6 +2834,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/archive-adapters.js:close",
+        "lib/crypto-field.js:listPerRowResidency",
+        "lib/tracing.js:spanSync",
+      ],
+      reason: "v0.15.4 — coincidental 50-tok normalized window across three unrelated domains: an archive adapter's close() (destroy a readable / closeSync an fd), the crypto-field per-row-residency enumerator (listPerRowResidency — map declared tables to {table, residencyColumn, allowedTags}), and the tracing spanSync delegator (type-check fn, delegate to span()). The shingle is the short-function / object-literal-return shell, not behaviour — one releases a handle, one projects a config map, one delegates a call. archive-adapters:close + tracing:spanSync were already a sub-threshold pair; listPerRowResidency (added so backup.create can see per-row cross-border regions a deployment-level check is blind to) became the third member tipping it over the 3-file STRONG-DUP floor.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/audit.js:_queryCluster",
         "lib/auth/ciba.js:startAuthentication",
         "lib/auth/oauth.js:endSessionUrl",
@@ -6887,6 +6896,23 @@ var KNOWN_ANTIPATTERNS = [
   },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.
+  {
+    // v0.15.4 R1 — the raw write entry points (execRaw / prepare) must route a
+    // write to a per-row-residency table through the residency gate, like the
+    // structured builder's insert/update. Without it a raw INSERT/UPDATE lands a
+    // cross-border row past the gate. The function body must reference the gate:
+    // _assertRawWriteResidency (execRaw) or _isRawWriteToResidencyTable (prepare).
+    id: "db-raw-write-entry-skips-residency-gate",
+    primitive: "execRaw / prepare must call the residency gate (_assertRawWriteResidency / _isRawWriteToResidencyTable) so a raw INSERT/UPDATE to a per-row-residency table is validated like b.db.from().insertOne/updateOne",
+    regex: /function (?:execRaw|prepare)\s*\([^)]*\)\s*\{(?:(?!_assertRawWriteResidency|_isRawWriteToResidencyTable|\n\})[\s\S]){0,12000}?\n\}/,
+    allowlist: [
+      // localDb.thin is an isolated lightweight node:sqlite wrapper with no
+      // cryptoField / residency policy and a separate DB file - its prepare
+      // cannot write a per-row-residency row, so the residency gate is N/A.
+      "lib/local-db-thin.js",
+    ],
+    reason: "The structured builder runs every insert/update through _assertLocalResidency, but the raw paths b.db.runSql (execRaw) and b.db.prepare(sql).run(...) bypass it, so under a regulated posture a cross-border row lands straight on disk (shipped this way until v0.15.4). execRaw must call _assertRawWriteResidency(sql); prepare must wrap a write to a residency table via _isRawWriteToResidencyTable. This detector fires if either function reaches its closing brace without referencing the gate.",
+  },
   {
     id: "xml-parsename-no-prototype-key-rejection",
     primitive: "reject element/attribute names __proto__/constructor/prototype in the XML name parser (lib/parsers/safe-xml.js parseName → FORBIDDEN_KEYS)",
