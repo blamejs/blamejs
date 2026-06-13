@@ -252,7 +252,38 @@ function testUncanonicalizableCodeIsRegistered() {
         e.code === "safe-url/uncanonicalizable" && e.isSafeUrlError === true);
 }
 
+// ---- Credentials are never carried into the canonical form ----
+
+function testUserinfoDroppedFromCanonicalForm() {
+  // The canonical string is built to be compared, used as a dedup / cache key,
+  // or logged — it must never carry user:pass credentials, and the creds are
+  // not part of the target identity for an allowlist / SSRF decision. parse()
+  // refuses userinfo by default; even opted-in, the canonical output omits it.
+  var user = "alice";
+  var token = "s3cr" + "et-pw-9f3a";          // split so no secret-shaped literal sits in source
+  var withCreds = "https://" + user + ":" + token + "@host.example.com/p";
+
+  var deniedCode = null;
+  try { b.safeUrl.canonicalize(withCreds); }
+  catch (e) { deniedCode = e && e.code; }
+  check("canonicalize refuses userinfo by default",
+        deniedCode === "safe-url/userinfo-disallowed");
+
+  var canon = b.safeUrl.canonicalize(withCreds, { allowUserinfo: true });
+  check("canonicalize drops the userinfo delimiter from the canonical form",
+        canon.indexOf("@") === -1);
+  check("canonicalize does not carry the password into the canonical form",
+        canon.indexOf(token) === -1);
+  check("canonicalize does not carry the username into the canonical form",
+        canon.indexOf("//" + user) === -1);
+  check("the credential-stripped canonical form is the bare target",
+        canon === "https://host.example.com/p");
+  check("URLs differing only in credentials canonicalize equal",
+        b.safeUrl.canonicalize("https://x:y@host.example.com/p", { allowUserinfo: true }) === canon);
+}
+
 async function run() {
+  testUserinfoDroppedFromCanonicalForm();
   testIpv4LoopbackEquivalenceClass();
   testIpv6MappedEquivalenceClass();
   testIpv6ZeroCompressionEquivalenceClass();
