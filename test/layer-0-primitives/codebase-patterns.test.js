@@ -7079,6 +7079,26 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "canonicalizeHost's IPv6 branch emitted the RFC 5952 hex string for every IPv6 input, including IPv4-mapped (::ffff:a.b.c.d). But an IPv4-mapped address IS the IPv4 address a.b.c.d for routing/access — classify() already re-classifies it by the embedded v4, and a dual-stack listener reaching ::ffff:1.2.3.4 is the same host as 1.2.3.4. Without folding, canonicalize(::ffff:1.2.3.4) !== canonicalize(1.2.3.4), so an allowlist/dedup/SSRF comparison built on the canonical form is bypassed by presenting the dual-stack spelling. The fix folds the ::ffff:0:0/96 block to dotted IPv4 (only that block — 6to4/NAT64 are translation mechanisms, and a v4 suffix in any other prefix is a distinct address). The tempered span fires while the family-6 branch reaches _ipv6BytesToString with no IPV6_V4_MAPPED_PREFIX check first; the behavioral guard is safe-url-canonicalize.test.js.",
   },
+  // compliance.clear must cascade the posture-clear to the primitives.
+  {
+    id: "compliance-clear-no-cascade",
+    primitive: "compliance.clear() must cascade the posture reset to the primitives (_applyPostureCascade(null)) just as set() cascades the posture — otherwise a primitive that inherits the active posture (retention.complianceFloor) keeps applying the stale floor after b.compliance.clear()",
+    scanScope: "lib",
+    regex: /_emitAudit\("compliance\.posture\.cleared"/,
+    requires: /_applyPostureCascade\(null\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P2 — b.compliance.set(posture) calls _applyPostureCascade(posture), which walks retention/audit/db/cryptoField calling applyPosture(posture); retention records it so complianceFloor() inherits it. b.compliance.clear() nulled only compliance's own STATE.posture and never cascaded, so after set(\"hipaa\") then clear(), compliance.current() is null but retention still inherits the stale HIPAA floor. clear() must call _applyPostureCascade(null) so each primitive's applyPosture(null) resets it (retention.applyPosture(null) clears its active posture). The detector fires while clear() exists with no _applyPostureCascade(null) call anywhere in the file (set() passes the posture, not null) and goes silent once clear() cascades the reset; the behavioral guard is retention-floor.test.js.",
+  },
+  // canonicalizeHost must NOT fold NAT64/6to4 (would flip an SSRF classify verdict).
+  {
+    id: "ssrf-canonicalizehost-folds-nat64",
+    primitive: "ssrfGuard.canonicalizeHost must fold ONLY the IPv4-mapped block (::ffff:0:0/96) to IPv4 — NOT NAT64 (64:ff9b::/96). classify() treats a NAT64 literal as `classify(v4) || \"reserved\"`, so folding a public NAT64 address to its embedded IPv4 turns a blocked verdict into an allowed one (canonicalize-then-classify must agree with classify alone)",
+    scanScope: "lib",
+    regex: /_ipv6PrefixMatch\(\s*IPV6_NAT64_PREFIX\s*,\s*C\.BYTES\.bytes\(96\)\s*,\s*v6bytes\s*\)/,
+    allowlist: [],
+    reason: "canonicalizeHost folds an IPv4-mapped IPv6 host to its embedded IPv4 because classify(::ffff:x) === classify(x) (that branch has no reserved fallback), so the fold can't change an SSRF verdict. NAT64 is different: classify('64:ff9b::8.8.8.8') is `classify('8.8.8.8') || 'reserved'` = 'reserved' (blocked) while classify('8.8.8.8') is null (allowed) — so folding a public NAT64 literal to 8.8.8.8 before an allowlist/classify check flips a blocked address to an allowed public IPv4 (Codex P2). canonicalizeHost must leave NAT64 / 6to4 as IPv6; classify still reaches the embedded v4 for the deny side. The detector anchors on canonicalizeHost's NAT64 prefix-match (it uses the local `v6bytes`, so classify()'s own legitimate NAT64 extraction — which uses `bytes` — is not matched) and goes silent once canonicalizeHost no longer folds NAT64. The behavioral guard is the classify-agreement invariant in safe-url-canonicalize.test.js.",
+  },
   // #134 — verifyIdToken must check azp on multi-audience ID tokens.
   {
     id: "oauth-verifyidtoken-no-azp-check",

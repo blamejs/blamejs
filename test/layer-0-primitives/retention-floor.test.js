@@ -83,6 +83,31 @@ function testOptionalPostureInheritance() {
   }
 }
 
+function testComplianceClearCascadesToRetention() {
+  // b.compliance.set cascades the posture into retention (via applyPosture), so
+  // b.compliance.clear must cascade the clear too — otherwise complianceFloor
+  // keeps inheriting the stale posture after the global posture was cleared.
+  if (!b.compliance || typeof b.compliance.set !== "function") return;
+  var r = b.retention;
+  try {
+    if (b.compliance.current()) b.compliance.clear();
+    r.applyPosture(null);
+    b.compliance.set("hipaa");
+    check("compliance.set cascades the posture into retention",
+          r.activePosture() === "hipaa");
+    b.compliance.clear();
+    check("compliance.clear cascades the clear into retention (no stale inheritance)",
+          r.activePosture() === null);
+    var threw = null;
+    try { r.complianceFloor(b.constants.TIME.days(30)); } catch (e) { threw = e; }
+    check("after clear, complianceFloor with no explicit posture throws (not the stale floor)",
+          threw !== null);
+  } finally {
+    try { if (b.compliance.current()) b.compliance.clear(); } catch (_e) { /* best-effort restore */ }
+    try { r.applyPosture(null); } catch (_e) { /* best-effort restore */ }
+  }
+}
+
 async function run() {
   testSurface();
   testKnownPostures();
@@ -90,6 +115,7 @@ async function run() {
   testCandidateShorterThanFloor();
   testUnknownPostureThrows();
   testOptionalPostureInheritance();
+  testComplianceClearCascadesToRetention();
 }
 
 module.exports = { run: run };

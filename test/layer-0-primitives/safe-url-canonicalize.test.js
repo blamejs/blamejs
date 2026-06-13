@@ -86,14 +86,27 @@ function testIpv6MappedEquivalenceClass() {
 }
 
 function testEmbeddedV4AndTrailingDotUnification() {
-  // NAT64 (64:ff9b::/96) is the well-known prefix whose low 32 bits ARE the
-  // IPv4 target being reached — classify() folds it to the embedded v4, so the
-  // canonical form must too, or a NAT64-encoded internal target slips past a
-  // dotted-IPv4 allowlist/denylist.
-  check("NAT64 64:ff9b::1.2.3.4 folds to the embedded IPv4",
-        b.ssrfGuard.canonicalizeHost("64:ff9b::1.2.3.4") === "1.2.3.4");
-  check("NAT64 (hex spelling) folds identically",
-        b.ssrfGuard.canonicalizeHost("64:ff9b::102:304") === "1.2.3.4");
+  // The canonical form must never flip an SSRF classify() verdict from blocked
+  // to allowed. Only the IPv4-mapped block (::ffff:0:0/96) folds, because
+  // classify(::ffff:x) === classify(x) — its branch returns classify(mappedV4)
+  // with NO reserved fallback. NAT64 (64:ff9b::/96) and 6to4 (2002::/16) are
+  // NOT folded: classify treats a NAT64 literal as `classify(v4) || "reserved"`,
+  // so classify("64:ff9b::8.8.8.8") is "reserved" while classify("8.8.8.8") is
+  // null — folding would turn a blocked NAT64 address into an allowed public
+  // IPv4 verdict. The invariant below pins that: canonicalizing then classifying
+  // must agree with classifying the original.
+  var classify = b.ssrfGuard.classify;
+  function classifyAgrees(host) {
+    return classify(b.ssrfGuard.canonicalizeHost(host)) === classify(host);
+  }
+  check("NAT64 stays IPv6 (a public NAT64 literal must not become an allowed IPv4)",
+        b.ssrfGuard.canonicalizeHost("64:ff9b::8.8.8.8").indexOf(".") === -1);
+  check("canonicalize agrees with classify on a public NAT64 literal",
+        classifyAgrees("64:ff9b::8.8.8.8"));
+  check("canonicalize agrees with classify on a NAT64 loopback literal",
+        classifyAgrees("64:ff9b::127.0.0.1"));
+  check("canonicalize agrees with classify on a public IPv4-mapped literal",
+        classifyAgrees("::ffff:8.8.8.8"));
   // 6to4 (2002::/16) is a /48 PREFIX, not a 1:1 alias — it must stay IPv6
   // (folding it would collapse a whole subnet onto one IPv4).
   check("6to4 2002:7f00:1:: stays IPv6 (not a 1:1 v4 alias)",

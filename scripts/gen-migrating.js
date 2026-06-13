@@ -287,10 +287,10 @@ var OUT_OF_BAND_BREAKS = [
   },
   {
     release:  "v0.15.7",
-    surface:  "b.safeUrl.canonicalize — IPv4-mapped and NAT64 hosts fold to IPv4",
-    summary:  "b.safeUrl.canonicalize / b.ssrfGuard.canonicalizeHost now fold an IPv4-mapped IPv6 host (::ffff:1.2.3.4) and a NAT64 host (64:ff9b::1.2.3.4) to their embedded IPv4 dotted form, and strip every trailing dot from a host. In 0.15.6 these canonicalized to an IPv6 string and only one trailing dot was stripped.",
+    surface:  "b.safeUrl.canonicalize — IPv4-mapped hosts fold to IPv4",
+    summary:  "b.safeUrl.canonicalize / b.ssrfGuard.canonicalizeHost now fold an IPv4-mapped IPv6 host (::ffff:1.2.3.4) to its embedded IPv4 dotted form, and strip every trailing dot from a host. In 0.15.6 it canonicalized to an IPv6 string and only one trailing dot was stripped. NAT64 / 6to4 hosts stay IPv6.",
     migration: [
-      "No code change is needed — this makes a dual-stack / NAT64 peer unify with a dotted-IPv4 allow/deny entry as intended. If you persisted canonical host strings produced by 0.15.6 (e.g. as cache or dedup keys) and compare them against freshly-canonicalized hosts, recompute them: an IPv4-mapped/NAT64 host now yields the dotted IPv4 instead of the bracketed IPv6, and a multi-trailing-dot host yields the bare name.",
+      "No code change is needed — this makes a dual-stack / NAT64 peer unify with a dotted-IPv4 allow/deny entry as intended. If you persisted canonical host strings produced by 0.15.6 (e.g. as cache or dedup keys) and compare them against freshly-canonicalized hosts, recompute them: an IPv4-mapped host now yields the dotted IPv4 instead of the bracketed IPv6, and a multi-trailing-dot host yields the bare name.",
     ].join("\n"),
   },
   {
