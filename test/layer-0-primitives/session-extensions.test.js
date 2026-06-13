@@ -273,6 +273,50 @@ async function testUpdateDataPreservesFingerprint() {
   }
 }
 
+async function testRotateRekeysFingerprint() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-rotate-fp-"));
+  try {
+    await setupTestDb(tmpDir);
+    var req = _makeReq({ "user-agent": "ua-rot-1", "x-forwarded-for": "203.0.113.10" });
+    var s = await b.session.create({
+      userId:            "u-rot",
+      data:              { roles: ["user"] },
+      req:               req,
+      fingerprintFields: ["clientIp", "userAgent"],
+    });
+    var pre = await b.session.verify(s.token, { req: req, fingerprintFields: ["clientIp", "userAgent"] });
+    check("rotate-fp: pre-rotation no drift", pre && pre.fingerprintDrift === false);
+
+    // Rotation (login transition / role escalation) moves the sid. __bj_fingerprint
+    // is sid-keyed, so the new session must RE-KEY the binding to the new sid from
+    // the live request — otherwise verify(newToken, sameReq) recomputes against the
+    // new sid and falsely reports drift (logout under strict operators), or the
+    // binding silently breaks.
+    var rotated = await b.session.rotate(s.token, {
+      req: req, fingerprintFields: ["clientIp", "userAgent"],
+    });
+    check("rotate-fp: rotation returns a new token", rotated && typeof rotated.token === "string");
+
+    var sameDevice = await b.session.verify(rotated.token, {
+      req: req, fingerprintFields: ["clientIp", "userAgent"],
+    });
+    check("rotate-fp: same device → no drift after rotation (binding re-keyed)",
+          sameDevice && sameDevice.fingerprintDrift === false);
+    check("rotate-fp: operator data carried across rotation",
+          sameDevice && sameDevice.data && sameDevice.data.roles && sameDevice.data.roles[0] === "user");
+
+    // A different device must still drift — proves the binding is live, not dropped.
+    var otherReq = _makeReq({ "user-agent": "ua-OTHER", "x-forwarded-for": "198.51.100.7" });
+    var otherDevice = await b.session.verify(rotated.token, {
+      req: otherReq, fingerprintFields: ["clientIp", "userAgent"],
+    });
+    check("rotate-fp: different device → drift after rotation (binding still enforced)",
+          otherDevice && otherDevice.fingerprintDrift === true);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   await testSealedCookieDefault();
   await testSealedCookieRotateAndDestroy();
@@ -283,6 +327,7 @@ async function run() {
   await testPluggableStoreValidation();
   await testUpdateDataReplaceAndMerge();
   await testUpdateDataPreservesFingerprint();
+  await testRotateRekeysFingerprint();
 }
 
 module.exports = { run: run };

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.15.4",
-  "createdAt": "2026-06-13T00:08:54.524Z",
+  "createdAt": "2026-06-13T01:00:58.898Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -45150,6 +45150,10 @@
               "arity": 1
             }
           }
+        },
+        "redactAttrs": {
+          "type": "function",
+          "arity": 1
         },
         "safeEvent": {
           "type": "function",
