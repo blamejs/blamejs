@@ -484,6 +484,42 @@ async function run() {
   check("allowCrossBorder replica read → replica wire reached",
         _saw(usReplicaOk, /SELECT id FROM orders/));
 
+  // ---- read-replica residency gate: OMITTED rowResidencyTag must fail closed ----
+  // Symmetric with the WRITE gate's RESIDENCY_GATE_REQUIRED. When the read gate
+  // is skipped on an absent tag, a SELECT of EU-resident rows silently lands on
+  // a tagged US replica — the fan-out drops the per-row residency tag. Under a
+  // cross-border-regulated posture a tagged, non-cross-border replica must
+  // refuse the untagged read rather than route it.
+  b.externalDb._resetForTest();
+  var roPrimaryOmit = _trackingDriver("ro-primary-omit");
+  var usReplicaOmit  = _trackingDriver("us-replica-omit");
+  b.externalDb.init({
+    backends: {
+      main: {
+        connect: roPrimaryOmit.connect, query: roPrimaryOmit.query,
+        close: roPrimaryOmit.close,   // primary unrestricted
+        replicas: [
+          {
+            connect: usReplicaOmit.connect, query: usReplicaOmit.query,
+            close: usReplicaOmit.close, residencyTag: "us",
+            allowCrossBorder: false,
+          },
+        ],
+        replicaFallbackToPrimary: false,
+      },
+    },
+  });
+  await _underGdpr(async function () {
+    // No rowResidencyTag opt → the read gate must NOT silently pass.
+    await _expectThrow("read with OMITTED rowResidencyTag under gdpr to a tagged replica fails closed",
+      function () {
+        return b.externalDb.read.query("SELECT id FROM orders WHERE id = $1", ["o-1"]);
+      },
+      "REPLICA_RESIDENCY_TAG_REQUIRED");
+  });
+  check("omitted-tag read → us-replica wire NOT reached (gate fail-closed)",
+        usReplicaOmit.seen.every(function (s) { return !/SELECT id FROM orders/.test(s); }));
+
   // ---- write verbs that wear a harmless leading keyword must still be
   // gated: WITH (CTE) / COPY FROM / EXPLAIN ANALYZE / CALL / EXECUTE /
   // REPLACE / DO all PLACE rows, so under gdpr + eu backend they require

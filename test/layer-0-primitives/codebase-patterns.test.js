@@ -2834,6 +2834,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/archive-adapters.js:close",
+        "lib/crypto-field.js:listPerRowResidency",
+        "lib/tracing.js:spanSync",
+      ],
+      reason: "v0.15.4 — coincidental 50-tok normalized window across three unrelated domains: an archive adapter's close() (destroy a readable / closeSync an fd), the crypto-field per-row-residency enumerator (listPerRowResidency — map declared tables to {table, residencyColumn, allowedTags}), and the tracing spanSync delegator (type-check fn, delegate to span()). The shingle is the short-function / object-literal-return shell, not behaviour — one releases a handle, one projects a config map, one delegates a call. archive-adapters:close + tracing:spanSync were already a sub-threshold pair; listPerRowResidency (added so backup.create can see per-row cross-border regions a deployment-level check is blind to) became the third member tipping it over the 3-file STRONG-DUP floor.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/audit.js:_queryCluster",
         "lib/auth/ciba.js:startAuthentication",
         "lib/auth/oauth.js:endSessionUrl",
@@ -2848,13 +2857,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/db-query.js:_assertRawNoStringLiteral",
         "lib/guard-sql.js:_hasEmbeddedStringLiteral",
         "lib/safe-sql.js:countPlaceholders",
-        "lib/sql.js:_assertEmittable",
+        "lib/safe-sql.js:assertSingleStatement",
         "lib/sql.js:_assertRawNoStringLiteral",
         "lib/sql.js:_assertNoRawJsonbKeyOp",
         "lib/sql.js:_toPositional",
-        "lib/sql.js:_assertCatalogEmittable",
       ],
-      reason: "v0.14.29 — the canonical quote- and comment-aware SQL char-walk (`while (i<len) { skip '...' / \"...\" doubled-quote literals; skip -- and /* */ comments; act on the target char }`). The single genuinely-shared instance, safeSql.countPlaceholders, IS extracted and composed by both db-query and the b.sql builder. The remaining members run the SAME scan shape for DIFFERENT purposes that cannot share a body: db-query._assertRawNoStringLiteral / sql._assertRawNoStringLiteral refuse a `'...'` literal in an operator raw fragment (each throwing its own typed error — SafeSqlError vs SqlBuilderError), guard-sql._hasEmbeddedStringLiteral is the tokenizer's literal-mask step, sql._assertEmittable is the builder's final-output validator (balanced quotes / parens / single-statement / placeholder parity), and sql._toPositional translates the builder's `?` placeholders to `$1..$N` for a direct-driver caller (the toExternalSql terminal — the same scan as clusterStorage.placeholderize, deliberately kept at the builder layer rather than reaching into clusterStorage, which transitively requires the builder). sql._assertCatalogEmittable is the catalog/PRAGMA sub-API's output gate (the same boundary-escape refusals as _assertEmittable on the catalog statement shape). Same shape-only family the external-db opaque-span cluster documents; consolidating would couple a raw-fragment gate, a guard tokenizer, an output validator, and a placeholder translator on the trivial scan shell.",
+      reason: "v0.14.29 / v0.15.4 - the canonical quote- and comment-aware SQL char-walk shell. The ONE consolidatable instance, the single-statement OUTPUT gate, was extracted to safeSql.assertSingleStatement (v0.15.4): sql._assertEmittable + sql._assertCatalogEmittable now DELEGATE to it (a makeError preserves their sql-builder/* codes), and the raw-DDL paths (db-schema.reconcileTable, the DSR store) route through the same primitive instead of hand-rolling DDL - so a verbatim column type can no longer smuggle a stacked statement. safeSql.countPlaceholders was already the other extracted instance. What REMAINS shares only the char-walk SHELL for genuinely different purposes that cannot share a body: db-query._assertRawNoStringLiteral / sql._assertRawNoStringLiteral refuse a literal in an operator raw fragment (each its own typed error), guard-sql._hasEmbeddedStringLiteral is the tokenizer literal-mask step, sql._toPositional / clusterStorage.placeholderize translate ? placeholders to positional $N, sql._assertNoRawJsonbKeyOp guards a raw JSONB key op, and safeSql.assertSingleStatement is the extracted gate itself. Same shape-only family the external-db opaque-span cluster documents.",
     },
     {
       mode:  "family-subset",
@@ -6871,8 +6879,40 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "SQL injection — _ddlType returns an unrecognised column type verbatim into the DDL; it is the one raw-emission position in an otherwise quote-by-construction builder (constraints route through _checkRawFragment, names through _quoteId). The injection backstop is the quote-aware _assertCatalogEmittable scan, which refuses a top-level ';' / comment / unbalanced quote / unbalanced paren while CORRECTLY allowing those characters inside a balanced quoted label (ENUM('needs;review')). createTable must therefore return _assertCatalogEmittable(sql, []) — a bare { sql, params } would let a type like 'text); DROP TABLE x; --' emit a stacked statement. A non-quote-aware pre-scan on the type was removed precisely because it over-rejected valid quoted labels.",
   },
+  {
+    // v0.15.4 R2 — every hand-rolled DDL (CREATE/ALTER TABLE, CREATE INDEX)
+    // concatenated and handed to runSql/exec must route through
+    // safeSql.assertSingleStatement first, the same quote-aware single-statement
+    // gate the b.sql builder enforces. db-schema.reconcileTable shipped a
+    // verbatim-column-type injection (a type "TEXT); DROP TABLE x; --" smuggled a
+    // stacked statement) until this gate; this enforces the invariant across the
+    // whole raw-DDL family (schema reconcile, DSR store, migrations), not one site.
+    id: "ddl-concat-to-runsql-without-single-statement-gate",
+    primitive: "wrap a hand-rolled CREATE TABLE / ALTER TABLE / CREATE INDEX string in safeSql.assertSingleStatement(sql, { label }) before runSql/exec — the raw-DDL paths use the same single-statement gate the b.sql builder does",
+    regex: /\b(?:runSql|exec)\(\s*(?:\w+,\s*)?"(?:CREATE TABLE|ALTER TABLE|CREATE INDEX|DROP TABLE)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A finished DDL string built by concatenating a (possibly operator-controlled) value and passed straight to runSql/exec bypasses the quote-aware single-statement scan the b.sql builder enforces on its own DDL — a verbatim column type like 'TEXT); DROP TABLE x; --' smuggles a stacked statement (lib/db-schema.js reconcileTable shipped exactly this until v0.15.4). Route the finished string through safeSql.assertSingleStatement(sql, { label }); the gated form does not match because the string literal no longer sits directly after the runSql/exec open-paren + optional db arg.",
+  },
   // #63 — safe-xml must reject prototype-poisoning element/attribute names and
   // build null-prototype accumulators.
+  {
+    // v0.15.4 R1 — the raw write entry points (execRaw / prepare) must route a
+    // write to a per-row-residency table through the residency gate, like the
+    // structured builder's insert/update. Without it a raw INSERT/UPDATE lands a
+    // cross-border row past the gate. The function body must reference the gate:
+    // _assertRawWriteResidency (execRaw) or _isRawWriteToResidencyTable (prepare).
+    id: "db-raw-write-entry-skips-residency-gate",
+    primitive: "execRaw / prepare must call the residency gate (_assertRawWriteResidency / _isRawWriteToResidencyTable) so a raw INSERT/UPDATE to a per-row-residency table is validated like b.db.from().insertOne/updateOne",
+    regex: /function (?:execRaw|prepare)\s*\([^)]*\)\s*\{(?:(?!_assertRawWriteResidency|_isRawWriteToResidencyTable|\n\})[\s\S]){0,12000}?\n\}/,
+    allowlist: [
+      // localDb.thin is an isolated lightweight node:sqlite wrapper with no
+      // cryptoField / residency policy and a separate DB file - its prepare
+      // cannot write a per-row-residency row, so the residency gate is N/A.
+      "lib/local-db-thin.js",
+    ],
+    reason: "The structured builder runs every insert/update through _assertLocalResidency, but the raw paths b.db.runSql (execRaw) and b.db.prepare(sql).run(...) bypass it, so under a regulated posture a cross-border row lands straight on disk (shipped this way until v0.15.4). execRaw must call _assertRawWriteResidency(sql); prepare must wrap a write to a residency table via _isRawWriteToResidencyTable. This detector fires if either function reaches its closing brace without referencing the gate.",
+  },
   {
     id: "xml-parsename-no-prototype-key-rejection",
     primitive: "reject element/attribute names __proto__/constructor/prototype in the XML name parser (lib/parsers/safe-xml.js parseName → FORBIDDEN_KEYS)",
@@ -6910,15 +6950,49 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "RFC 8620 §3.6.1 — a client-supplied accountId must be checked against accountsFor(actor)'s permitted set and rejected with accountNotFound BEFORE reaching a method/blob handler. Forwarding it on format-validation alone lets one tenant reach another tenant's account.",
   },
-  // #69 — OTLP attribute export must route every value through the redactor.
+  // #69 / #125 — EVERY OTLP attribute-map encoder must route its values
+  // through the telemetry redactor. The class is "a function that turns a raw
+  // { key: value } attribute map into OTLP KeyValues": _attrsToOtlp (metric /
+  // event JSON, lib/otel-export.js), _attrToOtlp (span / event / resource JSON,
+  // lib/observability-otlp-exporter.js), _attrsToProto (span / event / resource
+  // protobuf, same file). Each must call observability.redactAttrs() (or the
+  // legacy per-value _redactAttrValue) before emitting; the value type-encoders
+  // (_valueToOtlp / _anyValueToProto / _encodeValue) run AFTER redaction and
+  // are deliberately NOT anchored. Span-anchored so a body that reaches its
+  // column-0 close without a redactor reference fires.
   {
-    id: "otlp-attrs-exported-without-redactor",
-    primitive: "route every OTLP attribute value through observability.getRedactor() before export (lib/otel-export.js _attrsToOtlp), so telemetry egress is redacted like log-stream + audit.safeEmit",
-    regex: /function _attrsToOtlp\b/,
-    requires: /getRedactor\s*\(\s*\)/,
+    id: "otlp-attr-encoder-skips-telemetry-redactor",
+    primitive: "route every OTLP attribute-map encoder (_attrsToOtlp / _attrToOtlp / _attrsToProto) through observability.redactAttrs() before serialization — telemetry is a first-class EGRESS sink and an unredacted attribute value ships secrets/PII onto the OTLP wire (CWE-532)",
+    scanScope: "lib",
+    regex: /function (?:_attrToOtlp|_attrsToProto|_attrsToOtlp)\s*\([^)]*\)\s*\{(?:(?!redactAttrs|_redactAttrValue|\n\})[\s\S]){0,4000}?\n\}/,
+    allowlist: [],
+    reason: "CWE-532 — span/metric/resource attributes are a first-class egress sink. #69 fixed lib/otel-export.js _attrsToOtlp but pinned its detector to that one function name, leaving the SPAN exporter's two sibling encoders (lib/observability-otlp-exporter.js _attrToOtlp JSON + _attrsToProto protobuf) shipping attribute values verbatim to the collector (#125). The shared root is 'an attribute-map encoder that serializes without scrubbing'; every such encoder must pass each value through observability.redactAttrs() (default composes b.redact.redact, fail-toward-dropping on a throwing redactor) before the wire payload. The negative lookahead exempts the per-value type-encoders (_valueToOtlp/_anyValueToProto) which run after redaction; the {0,4000} bound is a ReDoS backstop well above the real encoder bodies (<2000 chars).",
+  },
+  // #131 — the b.middleware.dpop factory must REQUIRE its replayStore at config
+  // time. The store is DPoP's jti-replay defense (RFC 9449 §11.1); reading it
+  // optionally and gating the check behind `if (replayStore)` silently mounts a
+  // proof-of-possession middleware that performs no replay check when the
+  // operator omits the store. The middleware (operator security default) must
+  // enforce presence + the checkAndInsert shape with validateOpts.requireMethods;
+  // the low-level verify() primitive keeps its documented optional replayStore.
+  {
+    id: "dpop-middleware-replaystore-not-required",
+    primitive: "enforce opts.replayStore presence + checkAndInsert shape at b.middleware.dpop create() via validateOpts.requireMethods(opts.replayStore, [\"checkAndInsert\"], ...) — a missing store silently disables DPoP jti-replay defense (RFC 9449)",
+    scanScope: "lib",
+    regex: /var replayStore\s*=\s*opts\.replayStore/,
+    requires: /requireMethods\(\s*opts\.replayStore/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "CWE-532 — span/metric attributes are a first-class egress sink; _attrsToOtlp serialized values verbatim to the OTLP collector with no scrubbing. Every attribute value must pass through observability.getRedactor() (default composes b.redact.redact) before the OTLP payload, fail-toward-dropping on a throwing redactor.",
+    reason: "#131 — b.middleware.dpop documented replayStore as required but create() read it optionally (`var replayStore = opts.replayStore`) and gated the replay check behind `if (replayStore)`, so omitting it mounted a DPoP gate with NO jti-replay defense — a captured proof replays indefinitely (RFC 9449 §11.1). The operator-facing middleware must fail closed at config time: validateOpts.requireMethods(opts.replayStore, [\"checkAndInsert\"], ...) throws on both a missing store and a store lacking checkAndInsert. The unique `var replayStore = opts.replayStore` token is the middleware's optional read (the low-level lib/auth/dpop.js verify() primitive uses opts.replayStore inline and keeps it deliberately optional, so it is not matched). This entry fires only if the create-time requireMethods enforcement is removed while the optional read remains.",
+  },
+  // #129 — session.rotate must re-key the sid-bound device fingerprint.
+  {
+    id: "session-rotate-skips-fingerprint-rekey",
+    primitive: "session.rotate must re-key the sid-bound __bj_fingerprint to the NEW sid via _hashFingerprint(newSid, ...) — a rotated session that carries the old-sid hash makes verify() falsely report fingerprintDrift (logout under strict operators) or silently breaks the device binding",
+    scanScope: "lib",
+    regex: /async function rotate\s*\([^)]*\)\s*\{(?=[\s\S]*?newSidHash)(?:(?!_hashFingerprint|\n\})[\s\S]){0,3000}?\n\}/,
+    allowlist: [],
+    reason: "#129 — __bj_fingerprint is sid-keyed (_hashFingerprint(sid, inputs), so a stolen DB can't replay the binding). rotate() moves the sid but left the stored fingerprint bound to the OLD sid; verify(newToken, sameReq) then recomputes _hashFingerprint(newSid, inputs) and mismatches → a false fingerprintDrift (strict operators destroy the session = self-DoS on every rotation) or a silently-broken binding. rotate must re-key the fingerprint to the new sid from the live request: _hashFingerprint(newSid, _buildFingerprintInputs(req, fpFields)). The span anchors on the single async rotate() in lib/session.js and fires if its body reaches the column-0 close with no _hashFingerprint re-key; the {0,3000} bound is a ReDoS backstop above the ~2KB body. updateData legitimately PRESERVES the old hash (sid unchanged) so it is a different function and not matched.",
   },
   // #71 — registerTable must honor the pinned posture's seal-envelope floor.
   {

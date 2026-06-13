@@ -51,6 +51,21 @@ async function run() {
   // ---- b.safeSql surface (countPlaceholders + quoteList) ----
   check("b.safeSql.countPlaceholders", b.safeSql.countPlaceholders("a = ? AND b = ?") === 2);
   check("b.safeSql.quoteList", b.safeSql.quoteList(["a", "b"], "postgres") === '"a", "b"');
+  // assertSingleStatement — the one quote-aware single-statement gate the raw-DDL
+  // paths (schema reconcile, DSR store) + the b.sql output validators all route through.
+  check("b.safeSql.assertSingleStatement returns valid single-statement SQL",
+        b.safeSql.assertSingleStatement("CREATE TABLE t (id INTEGER)") === "CREATE TABLE t (id INTEGER)");
+  check("b.safeSql.assertSingleStatement allows ';' inside a balanced quoted label",
+        b.safeSql.assertSingleStatement("INSERT INTO t VALUES ('a;b')") === "INSERT INTO t VALUES ('a;b')");
+  rejects("b.safeSql.assertSingleStatement refuses a stacked top-level ';'", function () {
+    b.safeSql.assertSingleStatement("CREATE TABLE t (id INTEGER); DROP TABLE x");
+  }, "sql/stacked-statement");
+  rejects("b.safeSql.assertSingleStatement refuses an unterminated quote", function () {
+    b.safeSql.assertSingleStatement("INSERT INTO t VALUES ('unclosed)");
+  }, "sql/unterminated-quote");
+  rejects("b.safeSql.assertSingleStatement refuses unbalanced parens", function () {
+    b.safeSql.assertSingleStatement("CREATE TABLE t (id INTEGER");
+  }, "sql/unbalanced");
 
   // ---- b.guardSql surface (the SQL guard composed by b.sql for raw frags) ----
   check("b.guardSql.validate", b.guardSql.validate("id = ? AND x = ?").ok === true);

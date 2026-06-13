@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.3",
-  "createdAt": "2026-06-12T05:00:50.897Z",
+  "frameworkVersion": "0.15.4",
+  "createdAt": "2026-06-13T01:00:58.898Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14542,6 +14542,10 @@
         "isRowSealed": {
           "type": "function",
           "arity": 1
+        },
+        "listPerRowResidency": {
+          "type": "function",
+          "arity": 0
         },
         "lookupHash": {
           "type": "function",
@@ -45147,6 +45151,10 @@
             }
           }
         },
+        "redactAttrs": {
+          "type": "function",
+          "arity": 1
+        },
         "safeEvent": {
           "type": "function",
           "arity": 3
@@ -49783,6 +49791,10 @@
           "arity": 2
         },
         "assertOneOf": {
+          "type": "function",
+          "arity": 2
+        },
+        "assertSingleStatement": {
           "type": "function",
           "arity": 2
         },
