@@ -18,8 +18,8 @@
       "heading": "Security",
       "items": [
         {
-          "title": "SQLite parse-time resource caps (statement size + ATTACH denial)",
-          "body": "Every node:sqlite database the framework opens — the main db handle and the CLI's handle — now constructs with SQLITE_LIMIT_* caps: `sqlLength` rejects a SQL statement over 1 MiB at parse time, and ATTACH DATABASE is denied. Because the query builder parameterizes every value, the size cap guards the raw-SQL surface (`b.db.runSql`) against an attacker-influenced megaquery the parser would otherwise process (SQLite's default is 1 GB); it is a parse-time DoS floor complementary to the existing row-count gate. ATTACH is denied because the framework never uses it and it is an exfiltration / shadow-schema vector. Legitimate framework and operator statements are far under the cap."
+          "title": "SQLite parse-time statement-size cap",
+          "body": "Every node:sqlite database the framework opens — the main db handle and the CLI's handle — now constructs with a SQLITE_LIMIT_LENGTH cap: a SQL statement over 1 MiB is rejected at parse time. Because the query builder parameterizes every value, the size cap guards the raw-SQL surface (`b.db.runSql`) against an attacker-influenced megaquery the parser would otherwise process (SQLite's default is 1 GB); it is a parse-time DoS floor complementary to the existing row-count gate. Legitimate framework and operator statements are far under the cap."
         },
         {
           "title": "Windows rename-lock retry on every atomic rename and download",

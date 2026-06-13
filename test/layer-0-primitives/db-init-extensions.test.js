@@ -174,13 +174,6 @@ async function testSqliteResourceLimits() {
   check("sqlite limits: a normal statement is unaffected",
     b.db.from("t").where({ _id: "normal" }).first()._id === "normal");
 
-  // ATTACH DATABASE is denied (attach: 0). Reach the raw handle to prove it —
-  // the framework never emits ATTACH on the builder path.
-  var attachThrew = null;
-  try { b.db.runSql("ATTACH DATABASE '" + path.join(tmpDir, "x.db") + "' AS x"); }
-  catch (e) { attachThrew = e; }
-  check("sqlite limits: ATTACH DATABASE is denied", attachThrew !== null);
-
   await b.db.close();
 }
 

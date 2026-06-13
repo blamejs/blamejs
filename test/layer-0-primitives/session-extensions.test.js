@@ -352,10 +352,18 @@ async function testLogoutEmitsClearSiteData() {
     await b.session.logout(res2, s2.token, { cookieName: "__Host-sid" });
     check("logout honors custom cookieName", h2["Set-Cookie"].indexOf("__Host-sid=;") === 0);
 
+    // An unknown directive throws BEFORE any side effect — the session is NOT
+    // destroyed and no client-wipe headers are queued (validate-before-revoke).
+    var s3 = await b.session.create({ userId: "u-logout-3" });
+    var h3 = {}; var res3 = { setHeader: function (k, v) { h3[k] = v; } };
     var threw = null;
-    try { await b.session.logout({ setHeader: function () {} }, "x", { types: ["bogus"] }); }
+    try { await b.session.logout(res3, s3.token, { types: ["bogus"] }); }
     catch (e) { threw = e; }
     check("logout rejects an unknown Clear-Site-Data directive", threw !== null);
+    check("logout did NOT queue headers on the bad-directive throw",
+      h3["Clear-Site-Data"] === undefined && h3["Set-Cookie"] === undefined);
+    check("logout did NOT destroy the session on the bad-directive throw",
+      (await b.session.verify(s3.token)) !== null);
 
     var badRes = null;
     try { await b.session.logout({}, "x"); } catch (e) { badRes = e; }

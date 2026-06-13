@@ -7121,19 +7121,19 @@ var KNOWN_ANTIPATTERNS = [
     reason: "#146 (user-surfaced). atomicFile.writeSync retries its final rename on a Windows-transient destination lock; httpClient.downloadStream's final rename was a bare nodeFs.renameSync, so a download into a cloud-synced / AV-scanned directory surfaced the transient lock as a hard failure. The retry was also hand-rolled and un-reusable. The fix exports atomic-file's _renameWithRetry as atomicFile.renameWithRetry and routes EVERY final temp->dest rename through it (downloadStream + vault/passphrase-ops + mtls-ca + log-stream-local + self-update + config-drift + archive-read + archive-tar-read + local-db-thin + restore-rollback). Fires on any bare nodeFs.renameSync/fs.renameSync; the only allowlisted use is atomic-file.js where the primitive's retry loop lives.",
   },
   // v0.15.9 — db.init() must construct its DatabaseSync with the SQLITE_LIMIT_*
-  // resource caps (sqlLength + attach=0): a parse-time DoS floor that rejects a
-  // megaquery on the raw-SQL surface and denies ATTACH. The ephemeral storage
-  // headroom probe (new DatabaseSync(p)) is a different construction and is not
-  // anchored. Fires if the main db handle is built without the limits shape.
+  // sqlLength cap: a parse-time DoS floor that rejects a megaquery on the
+  // raw-SQL surface. The ephemeral storage headroom probe (new DatabaseSync(p))
+  // is a different construction and is not anchored. Fires if the main db handle
+  // is built without the limits shape.
   {
     id: "db-databasesync-without-sqlite-limits",
-    primitive: "construct the main db.init DatabaseSync(dbPath, ...) with the node:sqlite limits option (sqlLength + attach=0) — a parse-time DoS floor complementary to streamLimit",
+    primitive: "construct the main db.init DatabaseSync(dbPath, ...) with the node:sqlite limits option (sqlLength) — a parse-time DoS floor complementary to streamLimit",
     scanScope: "lib",
     regex: /new DatabaseSync\(dbPath\b/,
     requires: /limits:\s*\{[\s\S]{0,200}?sqlLength/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "v0.15.9 Node-24.16 adoption. The framework parameterizes every builder value, so SQLITE_LIMIT_LENGTH (sqlLength) guards the raw-SQL surface (b.db.runSql) against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB); attach=0 denies ATTACH DATABASE (the framework never uses it — an exfil / shadow-schema vector). Fires when the main db handle `new DatabaseSync(dbPath` is constructed without the `limits: { ... sqlLength` shape; the headroom probe `new DatabaseSync(p)` is intentionally not matched (ephemeral, no attacker input).",
+    reason: "v0.15.9 Node-24.16 adoption. The framework parameterizes every builder value, so SQLITE_LIMIT_LENGTH (sqlLength) guards the raw-SQL surface (b.db.runSql) against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB). Fires when the main db handle `new DatabaseSync(dbPath` is constructed without the `limits: { ... sqlLength` shape; the headroom probe `new DatabaseSync(p)` is intentionally not matched (ephemeral, no attacker input). (SQLITE_LIMIT_ATTACHED is left at the SQLite default — the snapshot/backup path uses ATTACH.)",
   },
   // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
   // shared middleware/clear-site-data headerValue() helper (which validates
