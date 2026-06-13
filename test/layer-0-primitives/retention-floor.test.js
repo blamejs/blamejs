@@ -51,12 +51,45 @@ function testUnknownPostureThrows() {
         threw && /unknown-posture/.test(threw.code || threw.message || ""));
 }
 
+function testOptionalPostureInheritance() {
+  // #121 — applyPosture(posture) records an active posture that
+  // complianceFloor() callers without an explicit posture inherit (the
+  // advertised cascade behavior). complianceFloor hard-required a string and
+  // never read STATE.activePosture, so the inheritance was unimplemented dead
+  // state; applyPosture(null) now also clears it (was a no-op).
+  var r = b.retention;
+  var prior = r.activePosture();
+  try {
+    r.applyPosture(null);
+    check("#121 applyPosture(null) clears the active posture",
+          r.activePosture() === null);
+    var threwNoActive = null;
+    try { r.complianceFloor(b.constants.TIME.days(30)); } catch (e) { threwNoActive = e; }
+    check("#121 no active posture + omitted posture → throws clearly",
+          threwNoActive !== null);
+
+    r.applyPosture("hipaa");
+    check("#121 activePosture reflects the set value", r.activePosture() === "hipaa");
+    check("#121 complianceFloor(ttl) inherits the active posture (single numeric arg)",
+          r.complianceFloor(b.constants.TIME.days(30)) === b.constants.TIME.days(365 * 6));
+    check("#121 complianceFloor(undefined, ttl) inherits the active posture",
+          r.complianceFloor(undefined, b.constants.TIME.days(30)) === b.constants.TIME.days(365 * 6));
+    check("#121 a candidate longer than the inherited floor still wins",
+          r.complianceFloor(b.constants.TIME.days(365 * 10)) === b.constants.TIME.days(365 * 10));
+    check("#121 an explicit posture still overrides the active one",
+          r.complianceFloor("pci-dss", 0) === b.constants.TIME.days(365));
+  } finally {
+    if (typeof prior === "string") r.applyPosture(prior); else r.applyPosture(null);
+  }
+}
+
 async function run() {
   testSurface();
   testKnownPostures();
   testCandidateGreaterThanFloor();
   testCandidateShorterThanFloor();
   testUnknownPostureThrows();
+  testOptionalPostureInheritance();
 }
 
 module.exports = { run: run };

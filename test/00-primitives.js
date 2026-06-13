@@ -7557,6 +7557,57 @@ async function testOAuthVerifyIdTokenRoundTrip() {
     var agedOk = await oa.verifyIdToken(agedLogout, { skipExpCheck: true, skipNonceCheck: true, maxAgeSec: 1200 });
     check("#137 verifyIdToken: the configured maxAgeSec widens the iat freshness window",
           agedOk && agedOk.claims && agedOk.claims.sub === "user-1");
+
+    // #134 — OIDC Core §3.1.3.7: an ID token minted for a DIFFERENT authorized
+    // party that merely lists this RP in a multi-audience array must be
+    // rejected. verifyIdToken checked only that aud contains clientId; without
+    // the azp check that is a confused-deputy hole.
+    var multiAudWrongAzp = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: [clientId, "other-client"],
+      azp: "other-client", exp: nowSec + 3600, iat: nowSec,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(multiAudWrongAzp, { skipNonceCheck: true }); } catch (e) { threw = e; }
+    check("#134 verifyIdToken: multi-aud token with azp for a different client is rejected",
+          threw && threw.code === "auth-oauth/azp-mismatch");
+
+    // Multi-aud token with NO azp at all — §3.1.3.7 requires azp present.
+    var multiAudNoAzp = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: [clientId, "other-client"],
+      exp: nowSec + 3600, iat: nowSec,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(multiAudNoAzp, { skipNonceCheck: true }); } catch (e) { threw = e; }
+    check("#134 verifyIdToken: multi-aud token with no azp is rejected",
+          threw && threw.code === "auth-oauth/azp-required");
+
+    // A correct multi-aud token (azp === our clientId) still verifies.
+    var multiAudOk = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: [clientId, "other-client"],
+      azp: clientId, exp: nowSec + 3600, iat: nowSec,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    var okMulti = await oa.verifyIdToken(multiAudOk, { skipNonceCheck: true });
+    check("#134 verifyIdToken: multi-aud token with azp = clientId verifies",
+          okMulti && okMulti.claims && okMulti.claims.sub === "user-1");
+
+    // Single-aud with a mismatched azp present is also rejected (azp, when
+    // present, must equal clientId regardless of aud cardinality).
+    var singleAudWrongAzp = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: clientId, azp: "other-client",
+      exp: nowSec + 3600, iat: nowSec,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(singleAudWrongAzp, { skipNonceCheck: true }); } catch (e) { threw = e; }
+    check("#134 verifyIdToken: single-aud token with a foreign azp is rejected",
+          threw && threw.code === "auth-oauth/azp-mismatch");
+
+    // The common single-aud, no-azp token is unaffected.
+    var plainSingle = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: clientId, exp: nowSec + 3600, iat: nowSec,
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    var okPlain = await oa.verifyIdToken(plainSingle, { skipNonceCheck: true });
+    check("#134 verifyIdToken: single-aud token with no azp still verifies",
+          okPlain && okPlain.claims && okPlain.claims.sub === "user-1");
   } finally { server.close(); }
 }
 
