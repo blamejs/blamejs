@@ -468,7 +468,7 @@ CVE classes the framework tracks but does not currently ship a primitive for —
 
 ## Node 26 compatibility
 
-Today's `engines.node` floor is `>=24.14.1` and the release container pins `node:24-alpine`. Node 26 satisfies the floor and the framework's test suite runs cleanly on Node 26 today. When Node 26 promotes to Active LTS (target Oct 2026), the framework will bump the floor to `>=26.x` in a dedicated release that ships the queued refactors (Map.getOrInsertComputed sweep, Ed25519 context-parameter adoption, PKCS8 reverse-direction roundtrip test) as one PR.
+Today's `engines.node` floor is `>=24.16.0` and the release container pins `node:24-alpine`. Node 26 satisfies the floor and the framework's test suite runs cleanly on Node 26 today. When Node 26 promotes to Active LTS (target Oct 2026), the framework will bump the floor to `>=26.x` in a dedicated release that ships the queued refactors (Map.getOrInsertComputed sweep, Ed25519 context-parameter adoption, PKCS8 reverse-direction roundtrip test) as one PR.
 
 Two Node 26 platform-level changes operators integrating with blamejs should be aware of now:
 

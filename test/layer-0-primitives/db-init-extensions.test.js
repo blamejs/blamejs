@@ -146,6 +146,44 @@ async function testSnapshotPlainMode() {
   await b.db.close();
 }
 
+async function testSqliteResourceLimits() {
+  // The node:sqlite `limits` option caps SQLITE_LIMIT_* at construction: a
+  // parse-time DoS floor. A statement over 1 MiB is rejected before SQLite's
+  // parser processes it, and ATTACH DATABASE is denied (the framework never
+  // uses it). RED on a tree without the limits option: the megaquery parses.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sqlim-"));
+  await _resetState();
+  await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+  await b.db.init({
+    dataDir: tmpDir,
+    atRest:  "plain",
+    schema:  [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+  });
+
+  // A raw statement whose SQL TEXT exceeds 1 MiB is rejected at parse
+  // (sqlLength caps statement text, not bound-parameter values — the builder
+  // path always parameterizes, so this cap guards the raw-SQL surface).
+  var hugeSql = "SELECT '" + "x".repeat(1100000) + "' AS big";
+  var threw = null;
+  try { b.db.runSql(hugeSql); }
+  catch (e) { threw = e; }
+  check("sqlite limits: a >1 MiB raw statement is rejected at parse", threw !== null);
+
+  // A normal statement under the cap is unaffected.
+  b.db.from("t").insertOne({ _id: "normal" });
+  check("sqlite limits: a normal statement is unaffected",
+    b.db.from("t").where({ _id: "normal" }).first()._id === "normal");
+
+  // ATTACH DATABASE is denied (attach: 0). Reach the raw handle to prove it —
+  // the framework never emits ATTACH on the builder path.
+  var attachThrew = null;
+  try { b.db.runSql("ATTACH DATABASE '" + path.join(tmpDir, "x.db") + "' AS x"); }
+  catch (e) { attachThrew = e; }
+  check("sqlite limits: ATTACH DATABASE is denied", attachThrew !== null);
+
+  await b.db.close();
+}
+
 async function run() {
   await testFrameworkTablesOff();
   await testAuditSigningOff();
@@ -153,6 +191,7 @@ async function run() {
   await testDbKeyPathOverride();
   await testSnapshot();
   await testSnapshotPlainMode();
+  await testSqliteResourceLimits();
 }
 
 module.exports = { run: run };
