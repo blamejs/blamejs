@@ -37,11 +37,20 @@
       ]
     },
     {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.watcher canonicalizes its root on Windows",
+          "body": "`b.watcher.create` now resolves its `root` to the real long path before watching. On Windows a root with an 8.3 short-name component (the system temp directory commonly resolves to one) made the native recursive backend deliver long-name event paths that no longer prefix-matched the watched root, which could abort the process under a strict libuv fs-event assertion. The watcher now canonicalizes the root (expanding short names and resolving symlinks), so events match the watched directory on Windows."
+        }
+      ]
+    },
+    {
       "heading": "Detectors",
       "items": [
         {
           "title": "Rename-retry, SQLite-limits, and Clear-Site-Data guards",
-          "body": "Three recurrence detectors ship with the fixes: a bare `nodeFs.renameSync` final rename that doesn't route through `atomicFile.renameWithRetry`; a main `DatabaseSync` handle constructed without the SQLITE_LIMIT_* `limits`; and a hand-rolled Clear-Site-Data header value that skips the shared RFC 9527 builder."
+          "body": "Three recurrence detectors ship with the fixes: a bare `nodeFs.renameSync` final rename that doesn't route through `atomicFile.renameWithRetry`; a main `DatabaseSync` handle constructed without the SQLITE_LIMIT_LENGTH `limits`; and a hand-rolled Clear-Site-Data header value that skips the shared RFC 9527 builder."
         }
       ]
     }
