@@ -7542,6 +7542,21 @@ async function testOAuthVerifyIdTokenRoundTrip() {
     try { await oa.verifyIdToken(staleLogout, { skipExpCheck: true, skipNonceCheck: true }); } catch (e) { threw = e; }
     check("#137 verifyIdToken: a stale logout token is rejected on iat floor",
           threw && threw.code === "auth-oauth/logout-token-stale");
+
+    // The iat floor must honor a configured maxAgeSec (back-channel-logout
+    // deployments can widen the replay window). A 10-min-old logout token is
+    // rejected under the 5-min default but accepted under maxAgeSec: 20 min.
+    var agedLogout = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: clientId, iat: nowSec - 600,
+      events: (function () { var e = {}; e[LOGOUT_EVENT] = {}; return e; })(),
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(agedLogout, { skipExpCheck: true, skipNonceCheck: true }); } catch (e) { threw = e; }
+    check("#137 verifyIdToken: a 10-min-old logout token is stale under the 5-min default",
+          threw && threw.code === "auth-oauth/logout-token-stale");
+    var agedOk = await oa.verifyIdToken(agedLogout, { skipExpCheck: true, skipNonceCheck: true, maxAgeSec: 1200 });
+    check("#137 verifyIdToken: the configured maxAgeSec widens the iat freshness window",
+          agedOk && agedOk.claims && agedOk.claims.sub === "user-1");
   } finally { server.close(); }
 }
 
