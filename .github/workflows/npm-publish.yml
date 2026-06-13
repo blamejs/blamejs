@@ -232,10 +232,35 @@ jobs:
             -r lib/vendor/
 
       - name: Pack tarball (the exact bytes that will be published)
+        # Reproducible build: npm respects SOURCE_DATE_EPOCH for the mtime
+        # stamped into every tar header. Deriving it from the tagged commit's
+        # author date makes `npm pack` byte-identical when re-run from the same
+        # commit, so an operator can rebuild the tarball from source and match
+        # the published sha256.
         run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH ($(date -u -d "@$SOURCE_DATE_EPOCH" 2>/dev/null || true))"
           mkdir -p dist
           npm pack --pack-destination ./dist
           ls -lh dist/
+
+      - name: Generate SSDF producer self-attestation (NIST SP 800-218 / OMB M-22-18)
+        # Generated HERE, in the validate job, BEFORE SLSA subject computation,
+        # so ssdf-attestation.json is covered by the SLSA L3 provenance (a
+        # subject hash) — a consumer who verifies the provenance also verifies
+        # the attestation. Deterministic from version + commit + the tagged
+        # commit's author date (SOURCE_DATE_EPOCH).
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct "$COMMIT")"
+          export SOURCE_DATE_EPOCH
+          node scripts/generate-ssdf-attestation.js \
+            --commit "$COMMIT" \
+            --out    ssdf-attestation.json
+          echo "[ssdf-attestation] generated (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 
       - name: Compute SLSA subjects (base64-encoded sha256 of every release artifact)
         # SLSA "subjects" = the artifacts the attestation describes.
@@ -254,7 +279,7 @@ jobs:
           TARBALL=$(basename "$(find dist -maxdepth 1 -name '*.tgz' | head -1)")
           HASHES=$(
             (cd dist && sha256sum "$TARBALL") && \
-            sha256sum sbom.cdx.json sbom.vendored.cdx.json
+            sha256sum sbom.cdx.json sbom.vendored.cdx.json ssdf-attestation.json
           )
           echo "[slsa-subjects] subjects:"
           echo "$HASHES"
@@ -269,6 +294,7 @@ jobs:
             dist/*.tgz
             sbom.cdx.json
             sbom.vendored.cdx.json
+            ssdf-attestation.json
             package.json
             CHANGELOG.md
           if-no-files-found: error
@@ -523,6 +549,11 @@ jobs:
           head -20 release-notes.md
           echo "---"
 
+      # ssdf-attestation.json is generated in the validate job (covered by the
+      # SLSA subjects + carried in the publish-bundle artifact downloaded above),
+      # so it is already present in the working directory for the asset bundle
+      # below — no separate generate step here.
+
       - name: Create signed release with ALL assets atomically
         # The workflow is authoritative for release creation as of
         # v0.11.7. We refuse to overwrite an existing release —
@@ -562,6 +593,7 @@ jobs:
             sbom.cdx.json sbom.cdx.json.sigstore
             sbom.vendored.cdx.json sbom.vendored.cdx.json.sigstore
             "blamejs-${VERSION}.intoto.jsonl"
+            ssdf-attestation.json
           )
           if [ "${{ steps.pqc-sig.outputs.available }}" = "true" ]; then
             ASSETS+=("${TARBALL}.mldsa.sig")

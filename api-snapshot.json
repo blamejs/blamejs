@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.7",
-  "createdAt": "2026-06-13T15:59:24.245Z",
+  "frameworkVersion": "0.15.8",
+  "createdAt": "2026-06-13T18:53:11.258Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -15415,6 +15415,100 @@
         }
       }
     },
+    "dsa": {
+      "type": "object",
+      "members": {
+        "DECISIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "DsaError": {
+          "type": "function",
+          "arity": 4
+        },
+        "METRIC_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "NOTICE_TYPES": {
+          "type": "object",
+          "members": {
+            "illegal-content": {
+              "type": "object",
+              "members": {
+                "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statementOfReasonsRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "ip-infringement": {
+              "type": "object",
+              "members": {
+                "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statementOfReasonsRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "other": {
+              "type": "object",
+              "members": {
+                "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statementOfReasonsRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            },
+            "terms-violation": {
+              "type": "object",
+              "members": {
+                "description": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "statementOfReasonsRequired": {
+                  "type": "primitive",
+                  "valueType": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "REDRESS_OPTIONS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "listTransparencyMetrics": {
+          "type": "function",
+          "arity": 0
+        },
+        "noticeAndAction": {
+          "type": "function",
+          "arity": 1
+        },
+        "statementOfReasons": {
+          "type": "function",
+          "arity": 1
+        },
+        "transparencyReport": {
+          "type": "function",
+          "arity": 1
+        }
+      }
+    },
     "dsr": {
       "type": "object",
       "members": {
@@ -16341,6 +16435,10 @@
           "type": "function",
           "arity": 4
         },
+        "DsaError": {
+          "type": "function",
+          "arity": 4
+        },
         "ExternalDbError": {
           "type": "function",
           "arity": 4
@@ -16558,6 +16656,10 @@
           "arity": 4
         },
         "PermissionsError": {
+          "type": "function",
+          "arity": 4
+        },
+        "PiplError": {
           "type": "function",
           "arity": 4
         },
@@ -45529,6 +45631,31 @@
     "pick": {
       "type": "function",
       "arity": 3
+    },
+    "pipl": {
+      "type": "object",
+      "members": {
+        "LEGAL_BASES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "PiplError": {
+          "type": "function",
+          "arity": 4
+        },
+        "RISK_RATINGS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "sccFilingAssessment": {
+          "type": "function",
+          "arity": 1
+        },
+        "securityAssessmentCertificate": {
+          "type": "function",
+          "arity": 1
+        }
+      }
     },
     "pqcAgent": {
       "type": "object",

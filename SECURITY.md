@@ -109,6 +109,8 @@ Re-running `scripts/generate-release-signing-key.js` rotates the key. Rotation u
 
 The four trust roots — SLSA L3 npm provenance, Sigstore-keyless SBOM signing, SSH-signed tags (v0.9.7+), ML-DSA-65 release-signing sidecar (v0.11.18+) — are independently verifiable. Tampering with any single root is detected by the others.
 
+Every release also ships `ssdf-attestation.json` (v0.15.8+) — a machine-readable NIST SP 800-218 (SSDF v1.1) / OMB M-22-18 producer self-attestation mapping each secure-development practice to its implementing control in this tree. Its sha256 is a subject of the SLSA L3 provenance (the `.intoto.jsonl`), so verifying the provenance verifies the attestation has not been tampered with. The published tarball is packed with `SOURCE_DATE_EPOCH` set to the tagged commit's author date, so re-packing from the release commit reproduces the published sha256 byte-for-byte.
+
 ### Verifying SLSA L3 provenance with `slsa-verifier`
 
 `gh attestation verify` walks the provenance chain via the GitHub API. For an offline / API-independent verification path, pin `slsa-verifier` v2.7.1 ([slsa-framework/slsa-verifier releases](https://github.com/slsa-framework/slsa-verifier/releases/tag/v2.7.1)):

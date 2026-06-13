@@ -89,6 +89,8 @@ audit.export = function (opts) {
 var auditChain = require("./lib/audit-chain");
 var consent = require("./lib/consent");
 var privacy = require("./lib/privacy");
+var dsa = require("./lib/dsa");
+var pipl = require("./lib/pipl-cn");
 var subject = require("./lib/subject");
 var session = require("./lib/session");
 var storage = require("./lib/storage");
@@ -467,6 +469,8 @@ module.exports = {
   events:           events,
   consent:          consent,
   privacy:          privacy,
+  dsa:              dsa,
+  pipl:             pipl,
   subject:          subject,
   session:          session,
   storage:          storage,

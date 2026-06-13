@@ -53,6 +53,7 @@ var KNOWN_POSTURES = {
   "sox-404": 1, "sec-cyber": 1, ferpa: 1, glba: 1, ccpa: 1, "modpa": 1,
   "ca-sopipa": 1, coppa: 1, "coppa-2025": 1,
   "nydfs-500": 1, "eu-data-act": 1, "eu-ai-act": 1,
+  dsa: 1, "pipl-cn": 1,
   // v0.10.8 — EU AI Act Art. 50 + Art. 11 + AB-853 + CAC + AI governance
   "eu-ai-act-art-50": 1, "eu-ai-act-art-11": 1,
   "ca-ab-853": 1, "ca-sb-942": 1,

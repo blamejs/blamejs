@@ -2601,10 +2601,22 @@ async function testNoDuplicateCodeBlocks() {
       var w = new Worker(WORKER_PATH, {
         workerData: Object.assign({ files: shardFiles }, SHINGLE_OPTS_FOR_WORKER),
       });
-      w.once("message", function (msg) { resolve(msg); w.terminate(); });
-      w.once("error", reject);
+      // Reap the worker on EVERY settle path (#123). Previously the error and
+      // exit handlers rejected without terminate(), so an errored worker thread
+      // stayed alive holding its event-loop handles — the parent could not exit
+      // and the smoke run ran to the 25-min watchdog on memory-starved
+      // macOS-arm64 runners. settle() terminates first, idempotently.
+      var settled = false;
+      function settle(fn, arg) {
+        if (settled) return;
+        settled = true;
+        try { w.terminate(); } catch (_e) { /* already terminating */ }
+        fn(arg);
+      }
+      w.once("message", function (msg) { settle(resolve, msg); });
+      w.once("error", function (e) { settle(reject, e); });
       w.once("exit", function (code) {
-        if (code !== 0 && code !== null) reject(new Error("shingle worker exited " + code));
+        if (code !== 0 && code !== null) settle(reject, new Error("shingle worker exited " + code));
       });
     });
   }
@@ -2990,6 +3002,79 @@ async function testNoDuplicateCodeBlocks() {
         "lib/web-push-vapid.js:buildVapidAuthHeader",
       ],
       reason: "Config-time validateOpts cascade family — `validateOpts(opts, KEYS, label)` followed by per-field requireNonEmptyString / optionalPositiveInt / optionalFunction checks at a factory or builder entry point. jar.js:build joined in v0.14.22 (the RFC 9101 request-object builder validates clientId / audience / key / expiresInMs before minting). Each member emits its own error class and code namespace over a different opts vocabulary; the shared helper (validateOpts) is the extraction, and consolidating the cascades past the call boundary would surface the wrong error code for operator typos.",
+    },
+    {
+      // The b.dsa (EU DSA) + b.pipl (China PIPL) compliance record-builders
+      // are a fresh pair of validateOpts-cascade + Object.freeze-record +
+      // audit.safeEmit functions. Each validates a DIFFERENT opts vocabulary
+      // (notice / statement-of-reasons / transparency-report; cross-border
+      // assessment / security-assessment certificate), builds a DIFFERENT
+      // frozen record, and emits a DIFFERENT audit action — so their 50/60-tok
+      // shingles coincide with the large existing compliance/builder family
+      // (validateOpts cascade + audit-emit), bridging the config-validation
+      // and audit-emit clusters. Shape-only: the shared primitives
+      // (validateOpts, audit.safeEmit, Object.freeze) ARE the extraction;
+      // collapsing the per-builder bodies would surface the wrong error code
+      // and the wrong audit action for each regulation. Union of the clusters
+      // the two new files participate in.
+      mode:  "family-subset",
+      files: [
+        "lib/ai-adverse-decision.js:wrap",
+        "lib/ai-dp.js:budget",
+        "lib/api-key.js:_validateIssueOpts",
+        "lib/audit-daily-review.js:create",
+        "lib/auth/jar.js:build",
+        "lib/auth/oauth.js:buildClientAttestationPop",
+        "lib/auth/oid4vci.js:create",
+        "lib/auth/saml.js:create",
+        "lib/auth/sd-jwt-vc-issuer.js:create",
+        "lib/break-glass.js:_validatePolicySet",
+        "lib/budr.js:declare",
+        "lib/calendar.js:validate",
+        "lib/cloud-events.js:wrap",
+        "lib/compliance-eaa.js:create",
+        "lib/compliance-sanctions-fetcher.js:create",
+        "lib/cose.js:macVerify0",
+        "lib/cose.js:verify",
+        "lib/crypto-field.js:declarePerRowResidency",
+        "lib/daemon.js:_validateStartOpts",
+        "lib/daemon.js:_validateStopOpts",
+        "lib/data-act.js:recordSwitchRequest",
+        "lib/data-act.js:shareWithThirdParty",
+        "lib/db.js:declareRequireDualControl",
+        "lib/ddl-change-control.js:create",
+        "lib/dsa.js:noticeAndAction",
+        "lib/dsa.js:statementOfReasons",
+        "lib/dsr.js:create",
+        "lib/external-db-migrate.js:create",
+        "lib/fda-21cfr11.js:posture",
+        "lib/fdx.js:consentReceipt",
+        "lib/fedcm.js:wellKnown",
+        "lib/file-upload.js:_validateCreateOpts",
+        "lib/http-client-cache.js:create",
+        "lib/http-client.js:_validateDownloadOpts",
+        "lib/mcp-tool-registry.js:verifyCall",
+        "lib/middleware/assetlinks.js:create",
+        "lib/middleware/protected-resource-metadata.js:create",
+        "lib/middleware/span-http-server.js:create",
+        "lib/network-heartbeat.js:start",
+        "lib/network-tls.js:_emitAuditAdd",
+        "lib/network-tls.js:_emitAuditRemove",
+        "lib/observability-tracer.js:create",
+        "lib/outbox.js:create",
+        "lib/pipl-cn.js:sccFilingAssessment",
+        "lib/pipl-cn.js:securityAssessmentCertificate",
+        "lib/privacy.js:vendorReview",
+        "lib/redact.js:installOutboundDlp",
+        "lib/sec-cyber.js:eightKArtifact",
+        "lib/self-update.js:_validatePollOpts",
+        "lib/self-update.js:_validateVerifyOpts",
+        "lib/static.js:_validateCreateOpts",
+        "lib/tcpa-10dlc.js:recordConsent",
+        "lib/vex.js:document",
+        "lib/watcher.js:_validateOpts",
+      ],
+      reason: "v0.15.8 — b.dsa (EU Digital Services Act) + b.pipl (China PIPL) cross-border record-builders join the config-time validateOpts-cascade + Object.freeze-record + audit.safeEmit family. Each validates a distinct opts vocabulary, builds a distinct frozen record, and emits a distinct audit action; the shared primitives (validateOpts / audit.safeEmit / Object.freeze) are the extraction. Shape-only — collapsing the per-builder bodies would emit the wrong error code and audit action per regulation. Union of the 50/60-tok clusters the two new files participate in.",
     },
     {
       mode:  "family-subset",
@@ -6997,6 +7082,24 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "CWE-532 — span/metric/resource attributes are a first-class egress sink. #69 fixed lib/otel-export.js _attrsToOtlp but pinned its detector to that one function name, leaving the SPAN exporter's two sibling encoders (lib/observability-otlp-exporter.js _attrToOtlp JSON + _attrsToProto protobuf) shipping attribute values verbatim to the collector (#125). The shared root is 'an attribute-map encoder that serializes without scrubbing'; every such encoder must pass each value through observability.redactAttrs() (default composes b.redact.redact, fail-toward-dropping on a throwing redactor) before the wire payload. The negative lookahead exempts the per-value type-encoders (_valueToOtlp/_anyValueToProto) which run after redaction; the {0,4000} bound is a ReDoS backstop well above the real encoder bodies (<2000 chars).",
   },
+  // Same CWE-532 class, the OTHER OTLP egress family the span/metric detector
+  // above could not see: the LOG sinks (lib/log-stream-otlp.js HTTP-JSON +
+  // lib/log-stream-otlp-grpc.js gRPC). Their encoders are named per the OTLP
+  // logs schema (_toLogRecord / _serializeBatch / _encodeLogRecord /
+  // _encodeResourceLogs), not _attr*, so the function-name-anchored detector
+  // never matched them — the #125 span fix left the log record-meta + resource
+  // attributes shipping verbatim. Anchor on the buggy SHAPE instead: a raw
+  // `record.meta` / `resourceAttrs` / `_resourceAttrs(cfg)` handed straight to an
+  // _encode* call. The fix wraps the arg in observability().redactAttrs(...), so
+  // the first token inside the paren becomes `observability` and the match dies.
+  {
+    id: "otlp-log-sink-encodes-attrs-without-redactor",
+    primitive: "the OTLP LOG sinks (log-stream-otlp / log-stream-otlp-grpc) must run record.meta and resource attributes through observability.redactAttrs() before encoding — a log line's meta or a resource attribute holding a bearer token / password / API key ships to the collector verbatim otherwise (CWE-532), the same egress class as the span/metric exporters",
+    scanScope: "lib",
+    regex: /_encode(?:Attrs|Attributes|Resource)\(\s*(?:record\.meta\b|resourceAttrs\b|_resourceAttrs\(cfg\))/,
+    allowlist: [],
+    reason: "CWE-532 secret/PII egress. v0.15.4 (#125) baked observability.redactAttrs() into every SPAN + METRIC attribute encoder but the detector was anchored on the _attr* function names, so it was blind to the LOG sinks whose encoders carry the OTLP-logs schema names. lib/log-stream-otlp.js (_toLogRecord meta + _serializeBatch resource) and lib/log-stream-otlp-grpc.js (_encodeLogRecord meta + _encodeResourceLogs resource) handed record.meta and resourceAttrs straight to _encodeAttrs/_encodeAttributes/_encodeResource — a log record's meta or a resource attribute holding a credential reached the collector unscrubbed. Root: 'every OTLP egress encoder redacts'; the span detector saw spans/metrics, this one sees logs. Fires on the raw `_encode*(record.meta` / `_encode*(resourceAttrs` / `_encodeResource(_resourceAttrs(cfg)` shape; the fix wraps the arg in observability().redactAttrs(...) (the span/metric contract), making the first paren token `observability` so the match goes silent.",
+  },
   // #131 — the b.middleware.dpop factory must REQUIRE its replayStore at config
   // time. The store is DPoP's jti-replay defense (RFC 9449 §11.1); reading it
   // optionally and gating the check behind `if (replayStore)` silently mounts a
@@ -9374,6 +9477,24 @@ var KNOWN_ANTIPATTERNS = [
   // detector encoded. These 5 are the highest-priority subset (P1 +
   // P2 by audit ranking). The remaining 8 are scoped for follow-up.
 
+  {
+    // #123 — a worker_threads Worker whose error/exit handler rejects WITHOUT
+    // terminating leaves the thread alive holding its event-loop handles, so the
+    // parent process can't exit and the smoke run hangs under the watchdog on
+    // memory-starved CI runners (macOS-arm64). Every Promise-settle path
+    // (message / error / exit) must reap the worker via w.terminate() first; the
+    // fix funnels all three through a settle() guard that terminates before
+    // resolve/reject. Structural resource-hygiene drift a behavioral test can't
+    // assert — the harness closure isn't exported and the hang is a slow-runner
+    // race — so the detector is the guard.
+    id: "test-worker-reject-without-terminate",
+    primitive: "a worker_threads Worker error/exit handler must terminate() the worker before rejecting (route message/error/exit through a settle() helper) — a bare reject leaks the thread's handles and hangs process exit on slow CI runners",
+    scanScope: "test",
+    regex: /\bw\.once\("error",\s*reject\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "#123 macOS codebase-patterns watchdog hang. _scanShardInWorker rejected on worker error/exit without w.terminate(), so an errored worker thread stayed alive holding open handles; the parent then could not exit and the smoke run ran to the 25-min watchdog on memory-starved macOS-arm64 runners (it hung this very release's CI). Every settle path must reap the worker via w.terminate() first; the fix funnels message/error/exit through a settle() guard that terminates before resolve/reject. Fires on the bare `w.once(\"error\", reject)` shape; silent once error/exit route through settle().",
+  },
   {
     // `Promise + setTimeout` direct sleep in tests is forbidden;
     // tests waiting on an asynchronous condition MUST use
