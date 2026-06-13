@@ -245,6 +245,23 @@ jobs:
           npm pack --pack-destination ./dist
           ls -lh dist/
 
+      - name: Generate SSDF producer self-attestation (NIST SP 800-218 / OMB M-22-18)
+        # Generated HERE, in the validate job, BEFORE SLSA subject computation,
+        # so ssdf-attestation.json is covered by the SLSA L3 provenance (a
+        # subject hash) — a consumer who verifies the provenance also verifies
+        # the attestation. Deterministic from version + commit + the tagged
+        # commit's author date (SOURCE_DATE_EPOCH).
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct "$COMMIT")"
+          export SOURCE_DATE_EPOCH
+          node scripts/generate-ssdf-attestation.js \
+            --commit "$COMMIT" \
+            --out    ssdf-attestation.json
+          echo "[ssdf-attestation] generated (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
+
       - name: Compute SLSA subjects (base64-encoded sha256 of every release artifact)
         # SLSA "subjects" = the artifacts the attestation describes.
         # We include the tarball + both SBOMs. The cosign sigstore
@@ -262,7 +279,7 @@ jobs:
           TARBALL=$(basename "$(find dist -maxdepth 1 -name '*.tgz' | head -1)")
           HASHES=$(
             (cd dist && sha256sum "$TARBALL") && \
-            sha256sum sbom.cdx.json sbom.vendored.cdx.json
+            sha256sum sbom.cdx.json sbom.vendored.cdx.json ssdf-attestation.json
           )
           echo "[slsa-subjects] subjects:"
           echo "$HASHES"
@@ -277,6 +294,7 @@ jobs:
             dist/*.tgz
             sbom.cdx.json
             sbom.vendored.cdx.json
+            ssdf-attestation.json
             package.json
             CHANGELOG.md
           if-no-files-found: error
@@ -531,27 +549,10 @@ jobs:
           head -20 release-notes.md
           echo "---"
 
-      - name: Generate SSDF producer self-attestation (NIST SP 800-218 / OMB M-22-18)
-        # Machine-readable Secure Software Development self-attestation for
-        # downstream consumers who require SSDF supplier-compliance evidence.
-        # Deterministic: version + commit + a SOURCE_DATE_EPOCH-derived
-        # timestamp (the tagged commit's author date) make the artifact
-        # reproducible from the release inputs. Trust is carried by the
-        # release boundary that signs this file — the same four trust roots
-        # (SSH-signed tag, SLSA L3 provenance, Sigstore SBOM sigs, ML-DSA-65
-        # sidecar) documented in SECURITY.md.
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-          COMMIT:  ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          SOURCE_DATE_EPOCH="$(git -C src log -1 --pretty=%ct "$COMMIT")"
-          export SOURCE_DATE_EPOCH
-          node src/scripts/generate-ssdf-attestation.js \
-            --version "$VERSION" \
-            --commit  "$COMMIT" \
-            --out     ssdf-attestation.json
-          echo "[ssdf-attestation] generated ssdf-attestation.json for v$VERSION (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
+      # ssdf-attestation.json is generated in the validate job (covered by the
+      # SLSA subjects + carried in the publish-bundle artifact downloaded above),
+      # so it is already present in the working directory for the asset bundle
+      # below — no separate generate step here.
 
       - name: Create signed release with ALL assets atomically
         # The workflow is authoritative for release creation as of

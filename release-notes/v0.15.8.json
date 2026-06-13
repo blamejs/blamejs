@@ -18,7 +18,7 @@
         },
         {
           "title": "SSDF producer self-attestation shipped with every release",
-          "body": "Every release now attaches `ssdf-attestation.json` — a machine-readable NIST SP 800-218 (SSDF v1.1) / OMB M-22-18 producer self-attestation. It maps each secure-software-development practice to its implementing control in the tree (SLSA L3 provenance, SSH-signed tags, vendored zero-runtime-dep supply chain, OSV-Scanner gating, coordinated disclosure) and is deterministic from the release commit. It is not independently signed; it is covered by the four release trust roots that sign the release containing it. Downstream consumers who require SSDF supplier-compliance evidence can download it from the release page."
+          "body": "Every release now attaches `ssdf-attestation.json` — a machine-readable NIST SP 800-218 (SSDF v1.1) / OMB M-22-18 producer self-attestation. It maps each secure-software-development practice to its implementing control in the tree (SLSA L3 provenance, SSH-signed tags, vendored zero-runtime-dep supply chain, OSV-Scanner gating, coordinated disclosure) and is deterministic from the release commit. Its sha256 is a subject of the SLSA L3 provenance, so verifying the provenance verifies the attestation has not been tampered with. Downstream consumers who require SSDF supplier-compliance evidence can download it from the release page."
         }
       ]
     },

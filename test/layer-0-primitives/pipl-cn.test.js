@@ -73,17 +73,41 @@ function run() {
   check("scc: mandated assessment carries 3-year clock",
     ciio.nextReviewDueBy === recordedAt + b.constants.TIME.days(365 * 3));
 
-  // ---- >1M PI volume forces it ----
+  // ---- >1M non-sensitive PI forces it ----
   var bigVol = b.pipl.sccFilingAssessment({
     assessmentId: "xfer-3", transferType: "processor", recipientJurisdiction: "SG",
     dataCategories: ["contact"], legalBasis: "certification",
     volume: 1000001, sensitivePI: false, recordedAt: recordedAt,
   });
-  check("scc: >1M volume forces security-assessment",
+  check("scc: >1M non-sensitive volume forces security-assessment",
     bigVol.mechanismRequired === "security-assessment" &&
-    bigVol.securityAssessmentTriggers.indexOf("pi-volume") !== -1);
+    bigVol.securityAssessmentTriggers.indexOf("non-sensitive-pi-volume") !== -1);
 
-  // ---- cumulative sensitive-PI threshold ----
+  // ---- 100k-1M non-sensitive band is SCC, NOT security-assessment (the
+  //      100k cumulative threshold is the standard-contract tier per the CAC
+  //      2024 Provisions; a 200k non-sensitive transfer must not over-classify) ----
+  var midBand = b.pipl.sccFilingAssessment({
+    assessmentId: "xfer-3b", transferType: "processor", recipientJurisdiction: "US",
+    dataCategories: ["contact"], legalBasis: "standard-contract",
+    volume: 200000, sensitivePI: false, recordedAt: recordedAt,
+  });
+  check("scc: 200k non-sensitive stays standard-contract (no over-classify)",
+    midBand.mechanismRequired === "standard-contract" &&
+    midBand.securityAssessmentRequired === false);
+
+  // ---- THIS transfer's volume counts toward the cumulative sensitive
+  //      threshold: a first transfer of 10,001 sensitive subjects forces it
+  //      even with cumulativeSensitivePI omitted (defaults 0) ----
+  var firstSens = b.pipl.sccFilingAssessment({
+    assessmentId: "xfer-3c", transferType: "processor", recipientJurisdiction: "US",
+    dataCategories: ["biometric"], legalBasis: "standard-contract",
+    volume: 10001, sensitivePI: true, recordedAt: recordedAt,
+  });
+  check("scc: first 10,001 sensitive-PI transfer forces it (own volume counts)",
+    firstSens.securityAssessmentRequired === true &&
+    firstSens.securityAssessmentTriggers.indexOf("sensitive-pi-volume") !== -1);
+
+  // ---- cumulative sensitive-PI threshold (this transfer + prior cumulative) ----
   var cumSens = b.pipl.sccFilingAssessment({
     assessmentId: "xfer-4", transferType: "processor", recipientJurisdiction: "US",
     dataCategories: ["biometric"], legalBasis: "standard-contract",
@@ -91,7 +115,7 @@ function run() {
   });
   check("scc: >10k cumulative sensitive-PI forces it",
     cumSens.securityAssessmentRequired === true &&
-    cumSens.securityAssessmentTriggers.indexOf("cumulative-sensitive-pi") !== -1);
+    cumSens.securityAssessmentTriggers.indexOf("sensitive-pi-volume") !== -1);
 
   // ---- securityAssessmentCertificate: happy path ----
   var sink3 = _captureAudit();
