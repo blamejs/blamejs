@@ -6678,6 +6678,25 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "The DSR dbTicketStore persists the data subject's identifiers and the raw request body — the exact PII an Art. 17 erasure must destroy. Those columns must be sealed via cryptoField.registerTable(DSR_SEAL_TABLE, { aad: true }) so they are encrypted at rest under a per-row key bound to (table, rowId) and shredded with the row; leaving them plaintext means an erasure request cannot delete the data it is processing. The companion registerTable(DSR_SEAL_TABLE call satisfies the discipline; this entry fires only if the registration is removed while the table remains.",
   },
+  // #114 — legal-hold + subject-restriction local tables seal their PII columns.
+  {
+    id: "legal-hold-store-pii-must-be-sealed",
+    primitive: "seal the b.legalHold _blamejs_legal_hold PII columns (reason/placedBy/custodian/citation) via cryptoField.sealRow(HOLD_TABLE, ...) on insert + unseal on read — the legal-basis / custodian / citation free text links a data subject to a legal matter and must not be stored plaintext",
+    regex: /sql\.insert\(HOLD_TABLE/,
+    requires: /\bsealRow\(HOLD_TABLE/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "#114 — _blamejs_legal_hold stored legal-basis / custodian / ticket-citation free text in clear via the raw sql.insert + db.prepare().run() path, which bypasses the structured builder's auto-seal. db.js declares sealedFields on the table; legal-hold.js must seal on write (cryptoField.sealRow(HOLD_TABLE, ...)) and unseal on read (get/list/release). Fires if an insert into HOLD_TABLE lands without the seal.",
+  },
+  {
+    id: "subject-restriction-store-pii-must-be-sealed",
+    primitive: "seal the b.subject restriction reason (a PII ticket reference) via cryptoField.sealRow(RESTRICTIONS_TABLE, ...) on insert into _blamejs_subject_restrictions",
+    regex: /sql\.insert\(RESTRICTIONS_TABLE/,
+    requires: /\bsealRow\(RESTRICTIONS_TABLE/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "#114 — _blamejs_subject_restrictions declares sealedFields:[\"reason\"] but subject.js wrote the reason in clear via the raw sql.insert path. Seal on write (cryptoField.sealRow(RESTRICTIONS_TABLE, ...)); the reason is write-only (isRestricted reads only the PK) so there is no unseal site. Fires if the restriction insert lands without the seal.",
+  },
   {
     // Vault keypair rotation stages every output file (the re-encrypted
     // db, resealed vault/db keys, additional sealed files, derived-hash
@@ -6984,6 +7003,15 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "#131 — b.middleware.dpop documented replayStore as required but create() read it optionally (`var replayStore = opts.replayStore`) and gated the replay check behind `if (replayStore)`, so omitting it mounted a DPoP gate with NO jti-replay defense — a captured proof replays indefinitely (RFC 9449 §11.1). The operator-facing middleware must fail closed at config time: validateOpts.requireMethods(opts.replayStore, [\"checkAndInsert\"], ...) throws on both a missing store and a store lacking checkAndInsert. The unique `var replayStore = opts.replayStore` token is the middleware's optional read (the low-level lib/auth/dpop.js verify() primitive uses opts.replayStore inline and keeps it deliberately optional, so it is not matched). This entry fires only if the create-time requireMethods enforcement is removed while the optional read remains.",
+  },
+  // #109 — defineGuard's default gate must resolve profile + posture.
+  {
+    id: "defineguard-defaultgate-skips-profile-posture-resolution",
+    primitive: "defineGuard's defaultGate must resolve profile + posture (resolveProfileAndPosture) before passing opts to buildGuardGate — otherwise the gate reads forensicSnippetBytes / maxRuntimeMs from RAW opts, dropping the profile's runtime cap and the posture's forensic-snippet cap",
+    scanScope: "lib",
+    regex: /function defaultGate\s*\([^)]*\)\s*\{(?:(?!resolveProfileAndPosture)[\s\S]){0,2000}?return buildGuardGate/,
+    allowlist: [],
+    reason: "#109 — defineGuard's defaultGate passed RAW opts straight to buildGuardGate, which reads opts.forensicSnippetBytes / opts.maxRuntimeMs directly. Those caps live in the resolved PROFILE (maxRuntimeMs) and POSTURE (forensicSnippetBytes), not the raw caller opts — so gate({ compliancePosture: \"hipaa\" }) dropped the 128-byte forensic cap to 0 (forensic snapshots disabled on a regulated-posture refusal) and dropped the profile's runtime cap to uncapped. The hand-written gates call resolveProfileAndPosture(opts, ...) first; the default gate must too. The span anchors on the single defaultGate and fires if its body reaches `return buildGuardGate` without a resolveProfileAndPosture call; the {0,2000} bound is a ReDoS backstop above the ~700-char body.",
   },
   // #129 — session.rotate must re-key the sid-bound device fingerprint.
   {
