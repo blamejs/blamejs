@@ -7510,6 +7510,53 @@ async function testOAuthVerifyIdTokenRoundTrip() {
     threw = null;
     try { await oa.verifyIdToken(wrongIss, {}); } catch (e) { threw = e; }
     check("verifyIdToken: wrong iss rejected",       threw && threw.code === "auth-oauth/iss-mismatch");
+
+    // #137 — skipExpCheck is ONLY valid for OIDC Back-Channel-Logout tokens
+    // (no exp claim per §2.4). A caller must NOT be able to disable exp
+    // validation on a regular ID token — that verifies an expired/replayed
+    // credential clean. The option is gated to tokens carrying the logout
+    // event claim, and even then bounded by an iat freshness floor.
+    var LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout";
+    threw = null;
+    try { await oa.verifyIdToken(expired, { skipExpCheck: true }); } catch (e) { threw = e; }
+    check("#137 verifyIdToken: skipExpCheck on a non-logout token is rejected",
+          threw && threw.code === "auth-oauth/skip-exp-check-not-allowed");
+
+    // A genuine logout token (events claim, recent iat, no exp) still verifies
+    // under skipExpCheck — the internal back-channel-logout path relies on it.
+    var freshLogout = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: clientId, iat: nowSec,
+      events: (function () { var e = {}; e[LOGOUT_EVENT] = {}; return e; })(),
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    var logoutOk = await oa.verifyIdToken(freshLogout, { skipExpCheck: true, skipNonceCheck: true });
+    check("#137 verifyIdToken: a fresh logout token verifies under skipExpCheck",
+          logoutOk && logoutOk.claims && logoutOk.claims.sub === "user-1");
+
+    // A stale logout token (iat older than the freshness floor) is rejected —
+    // skipExpCheck removes exp, so iat is the only freshness bound.
+    var staleLogout = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: clientId, iat: nowSec - 86400,
+      events: (function () { var e = {}; e[LOGOUT_EVENT] = {}; return e; })(),
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(staleLogout, { skipExpCheck: true, skipNonceCheck: true }); } catch (e) { threw = e; }
+    check("#137 verifyIdToken: a stale logout token is rejected on iat floor",
+          threw && threw.code === "auth-oauth/logout-token-stale");
+
+    // The iat floor must honor a configured maxAgeSec (back-channel-logout
+    // deployments can widen the replay window). A 10-min-old logout token is
+    // rejected under the 5-min default but accepted under maxAgeSec: 20 min.
+    var agedLogout = _signRs256({
+      iss: issuerUrl, sub: "user-1", aud: clientId, iat: nowSec - 600,
+      events: (function () { var e = {}; e[LOGOUT_EVENT] = {}; return e; })(),
+    }, { kid: "test-kid-1" }, kp.privateKey);
+    threw = null;
+    try { await oa.verifyIdToken(agedLogout, { skipExpCheck: true, skipNonceCheck: true }); } catch (e) { threw = e; }
+    check("#137 verifyIdToken: a 10-min-old logout token is stale under the 5-min default",
+          threw && threw.code === "auth-oauth/logout-token-stale");
+    var agedOk = await oa.verifyIdToken(agedLogout, { skipExpCheck: true, skipNonceCheck: true, maxAgeSec: 1200 });
+    check("#137 verifyIdToken: the configured maxAgeSec widens the iat freshness window",
+          agedOk && agedOk.claims && agedOk.claims.sub === "user-1");
   } finally { server.close(); }
 }
 

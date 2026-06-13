@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.5",
-  "createdAt": "2026-06-13T04:15:22.952Z",
+  "frameworkVersion": "0.15.6",
+  "createdAt": "2026-06-13T07:00:22.197Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49847,6 +49847,10 @@
           "type": "function",
           "arity": 2
         },
+        "canonicalize": {
+          "type": "function",
+          "arity": 2
+        },
         "format": {
           "type": "function",
           "arity": 1
@@ -50940,6 +50944,10 @@
         "SsrfError": {
           "type": "function",
           "arity": 3
+        },
+        "canonicalizeHost": {
+          "type": "function",
+          "arity": 1
         },
         "checkUrl": {
           "type": "function",
