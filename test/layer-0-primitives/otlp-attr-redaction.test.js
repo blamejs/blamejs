@@ -15,7 +15,9 @@ var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
 
-var otlp = require("../../lib/observability-otlp-exporter");
+var otlp        = require("../../lib/observability-otlp-exporter");
+var otlpLog     = require("../../lib/log-stream-otlp");
+var otlpLogGrpc = require("../../lib/log-stream-otlp-grpc");
 
 var SECRET_TOKEN = "Bearer eyJSECRETtokenABCdef.ghi.jkl";
 var SECRET_PW    = "hunter2-PLAINTEXT-PASSWORD";
@@ -88,6 +90,43 @@ async function run() {
   check("protobuf: password redacted on the OTLP wire",     protoWire.indexOf(SECRET_PW) === -1);
   check("protobuf: api key redacted on the OTLP wire",      protoWire.indexOf(SECRET_API) === -1);
   check("protobuf: non-sensitive control attribute survives", protoWire.indexOf(CONTROL_VAL) !== -1);
+
+  // ---- OTLP LOG sinks are EGRESS too: record-meta + resource attrs must redact ----
+  // The span/metric exporters redact; the log sinks (HTTP-JSON + gRPC) shipped
+  // the same attribute maps to the collector UNREDACTED — a log line carrying a
+  // bearer token / password in its meta or a credential in a resource attribute
+  // reached the wire verbatim (CWE-532). Drive the serialization seam of both.
+  var logRec = otlpLog._toLogRecord({
+    ts: 1700000000000, level: "error", message: "boom",
+    meta: { "http.method": CONTROL_VAL, authorization: SECRET_TOKEN, password: SECRET_PW },
+  });
+  var logRecWire = JSON.stringify(logRec);
+  check("otlp-log json: record-meta bearer token redacted", logRecWire.indexOf(SECRET_TOKEN) === -1);
+  check("otlp-log json: record-meta password redacted",     logRecWire.indexOf(SECRET_PW) === -1);
+  check("otlp-log json: non-sensitive record-meta survives", logRecWire.indexOf(CONTROL_VAL) !== -1);
+
+  var logBatchWire = otlpLog._serializeBatch(
+    [{ ts: 1700000000000, level: "info", message: "m", meta: { api_key: SECRET_API } }],
+    { serviceName: "svc", resourceAttributes: { authorization: SECRET_TOKEN, region: CONTROL_VAL } },
+    "1.0.0"
+  ).toString("utf8");
+  check("otlp-log json: resource-attr bearer token redacted", logBatchWire.indexOf(SECRET_TOKEN) === -1);
+  check("otlp-log json: record-meta api key redacted",        logBatchWire.indexOf(SECRET_API) === -1);
+  check("otlp-log json: non-sensitive resource attr survives", logBatchWire.indexOf(CONTROL_VAL) !== -1);
+
+  var grpcRec = otlpLogGrpc._encodeLogRecord({
+    ts: 1700000000000, level: "error", message: "boom",
+    meta: { authorization: SECRET_TOKEN, password: SECRET_PW },
+  }).toString("latin1");
+  check("otlp-log grpc: record-meta bearer token redacted", grpcRec.indexOf(SECRET_TOKEN) === -1);
+  check("otlp-log grpc: record-meta password redacted",     grpcRec.indexOf(SECRET_PW) === -1);
+
+  var grpcReq = otlpLogGrpc._encodeExportRequest(
+    [{ ts: 1700000000000, level: "info", message: "m", meta: { api_key: SECRET_API } }],
+    { serviceName: "svc", resourceAttributes: { authorization: SECRET_TOKEN } }
+  ).toString("latin1");
+  check("otlp-log grpc: resource-attr bearer token redacted", grpcReq.indexOf(SECRET_TOKEN) === -1);
+  check("otlp-log grpc: record-meta api key redacted",        grpcReq.indexOf(SECRET_API) === -1);
 
   b.observability.setRedactor(null);   // restore default for other tests
   process.stdout.write("OK — otlp attribute redaction tests\n");
