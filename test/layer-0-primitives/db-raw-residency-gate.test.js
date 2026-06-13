@@ -84,6 +84,30 @@ async function run() {
       "INSERT INTO \"residents\" (_id, name, dataRegion) VALUES ('raw-eu', 'y', 'eu-west-1')");
     check("an in-region raw write still persists (gate does not over-reject)",
       (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).dataRegion === "eu-west-1");
+
+    // RAW PATH 3: a SCHEMA-QUALIFIED table name must resolve to the table and
+    // still gate. SQLite accepts INSERT INTO main.residents; capturing only the
+    // "main" qualifier would skip the gate for the real target table.
+    var qualifiedRefusedCode = codeOf(function () {
+      b.db.runSql(
+        "INSERT INTO main.residents (_id, name, dataRegion) VALUES ('raw-q', 'x', 'us-east-1')");
+    });
+    check("qualified-name raw write is refused (main.residents resolves to residents)",
+      qualifiedRefusedCode === "db-query/row-residency-local-mismatch");
+    check("qualified-name cross-border row did not persist",
+      b.db.from("residents").where({ _id: "raw-q" }).first() === null);
+
+    // RAW PATH 4: an UPDATE whose SET value contains the word WHERE inside a
+    // quoted string must be parsed quote-aware, so the residency-column
+    // assignment after it is still seen and gated.
+    var quotedWhereRefusedCode = codeOf(function () {
+      b.db.runSql(
+        "UPDATE residents SET name='x WHERE y', dataRegion='us-east-1' WHERE _id='raw-eu'");
+    });
+    check("update with a quoted WHERE in a SET value is parsed quote-aware + refused",
+      quotedWhereRefusedCode === "db-query/row-residency-local-mismatch");
+    check("the quoted-WHERE update did not move the row cross-border",
+      (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).dataRegion === "eu-west-1");
   } finally {
     b.compliance.clear();
     b.cryptoField.clearResidencyForTest();

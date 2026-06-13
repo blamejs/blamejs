@@ -16,7 +16,7 @@ function expectThrow(label, fn, codeNeedle) {
   check(label + " — throws at create()", threw !== null);
   if (threw && codeNeedle) {
     check(label + " — error names the replay store",
-          String((threw && (threw.code || threw.message)) || "").toLowerCase().indexOf(codeNeedle) !== -1);
+          String((threw.code || threw.message) || "").toLowerCase().indexOf(codeNeedle) !== -1);
   }
 }
 
