@@ -114,6 +114,29 @@ async function run() {
 
   runPerRowResidencyUnit();
 
+  // ---- #114: legal-hold + subject-restriction PII must be SEALED at rest ----
+  // These local tables hold legal-basis / custodian / ticket-reference free
+  // text that links a data subject to a legal matter — PII at rest. The raw
+  // write path (sql.insert + db.prepare().run()) bypassed the structured
+  // builder's auto-seal, so the values landed in clear despite the schema.
+  var LH_SECRET    = "TOPSECRET-legal-reason-9f3a";
+  var LH_CUSTODIAN = "custodian-secret-7b2c@example.com";
+  holds.place("seal-subj-1", { reason: LH_SECRET, custodian: LH_CUSTODIAN, citation: "SEC-Rule-17a-4" });
+  var lhRaw = JSON.stringify(b.db.prepare("SELECT reason, custodian, citation FROM \"_blamejs_legal_hold\"").all());
+  check("#114 legal-hold reason is sealed at rest (not plaintext)",    lhRaw.indexOf(LH_SECRET) === -1);
+  check("#114 legal-hold custodian is sealed at rest (not plaintext)", lhRaw.indexOf(LH_CUSTODIAN) === -1);
+  var lhGet = holds.get("seal-subj-1");
+  check("#114 legal-hold get() unseals on the consumer path",
+        !!(lhGet && lhGet.reason === LH_SECRET && lhGet.custodian === LH_CUSTODIAN));
+  var lhList = holds.list();
+  check("#114 legal-hold list() unseals on the consumer path",
+        lhList.some(function (h) { return h.reason === LH_SECRET; }));
+
+  var RES_SECRET = "TOPSECRET-restrict-reason-4e1d";
+  b.subject.restrict("seal-subj-2", { on: true, reason: RES_SECRET });
+  var resRaw = JSON.stringify(b.db.prepare("SELECT reason FROM \"_blamejs_subject_restrictions\"").all());
+  check("#114 subject-restriction reason is sealed at rest (not plaintext)", resRaw.indexOf(RES_SECRET) === -1);
+
   await dbHelper.teardownTestDb(tmpDir);
 }
 
