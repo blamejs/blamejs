@@ -234,6 +234,57 @@ var OUT_OF_BAND_BREAKS = [
       "Cached records in the existing table are not recoverable across the schema break — operators who care about replay continuity warm the new table by retrying the in-flight requests under the new dbStore.",
     ].join("\n"),
   },
+  {
+    release:  "v0.15.4",
+    surface:  "b.middleware.dpop — replayStore now required at mount",
+    summary:  "`b.middleware.dpop` now REQUIRES a `replayStore` at mount time and throws (`auth-dpop/replay-store-required`) if it is omitted or lacks `checkAndInsert`. Previously the jti-replay check was gated behind store presence, so omitting it silently mounted a DPoP gate with NO replay defense — a captured proof could be replayed indefinitely (RFC 9449 §11.1).",
+    migration: [
+      "Operators mounting `b.middleware.dpop` without a `replayStore`:",
+      "",
+      "```js",
+      "b.middleware.dpop({",
+      "  replayStore: b.nonceStore.create({ backend: \"memory\" }), // shared backend on multi-process",
+      "  // ...other opts",
+      "});",
+      "```",
+      "",
+      "Use a process-shared `replayStore` backend (not `\"memory\"`) on a multi-process / multi-node deployment so a proof replayed against a different worker is still caught. The low-level `b.auth.dpop.verify` primitive keeps `replayStore` optional for advanced callers that track `jti` themselves.",
+    ].join("\n"),
+  },
+  {
+    release:  "v0.15.4",
+    surface:  "b.session.rotate — { req } required for a fingerprint-bound session",
+    summary:  "Rotating a session created with a device fingerprint (`{ req, fingerprintFields }`) now requires the same `{ req, fingerprintFields }` at `b.session.rotate()`; a bound session rotated without `req` throws (`ROTATE_FINGERPRINT_REQ_REQUIRED`). The fingerprint is keyed to the session id, so rotation must re-key it to the new id from the live request — previously rotation left the old-id-keyed hash in place, which made the next `verify` false-drift (logging the user out under strict operators) or silently break the binding. Unbound sessions are unaffected.",
+    migration: [
+      "Operators who rotate fingerprint-bound sessions (login / MFA / role-change transitions):",
+      "",
+      "```js",
+      "// Pass the same { req, fingerprintFields } used at create():",
+      "await b.session.rotate(oldToken, { req, fingerprintFields: [\"clientIp\", \"userAgent\"], reason: \"mfa\" });",
+      "```",
+      "",
+      "If you rotate a bound session from a context without the request, you must supply `req` so the binding can follow to the new session id. Sessions created WITHOUT a fingerprint need no change.",
+    ].join("\n"),
+  },
+  {
+    release:  "v0.15.6",
+    surface:  "b.auth.sdJwtVc — ES256 / ES384 signatures are now JOSE raw r||s, not DER",
+    summary:  "`b.auth.sdJwtVc` now signs and verifies ES256 / ES384 with `dsaEncoding: \"ieee-p1363\"` (raw r||s), the encoding JOSE / JWS and EUDI wallets require. Previously it used node:crypto's default DER ECDSA encoding, so a credential this issuer signed was rejected by conformant verifiers and the library rejected conformant holders' key-binding JWTs. The signature bytes change shape (64 bytes for ES256, 96 for ES384, no leading `0x30` SEQUENCE tag).",
+    migration: [
+      "No code change is needed — interop with conformant JOSE / wallet verifiers now works where it previously failed. Two things to re-check if you integrated with the OLD output:",
+      "",
+      "- A previously-issued ES256 / ES384 SD-JWT-VC signed by an earlier version is DER-encoded; re-issue it (signatures are not portable across the encodings). Tokens are short-lived, so this clears on the next issuance cycle.",
+      "- If you pinned, cached, or asserted on the raw signature bytes of this library's ES256 / ES384 output, update the fixture — the bytes are now `ieee-p1363`. EdDSA / ML-DSA signatures are unchanged.",
+    ].join("\n"),
+  },
+  {
+    release:  "v0.15.6",
+    surface:  "b.auth.oauth verifyIdToken — skipExpCheck is restricted to logout tokens",
+    summary:  "`verifyIdToken`'s `skipExpCheck` option now throws (`auth-oauth/skip-exp-check-not-allowed`) on any token that is not an OIDC Back-Channel-Logout token (no `http://schemas.openid.net/event/backchannel-logout` event claim), and enforces an `iat` freshness floor on logout tokens (`auth-oauth/logout-token-stale`). Previously any caller could pass `skipExpCheck: true` to verify an expired — or replayed — ID token. The option was undocumented and only used internally by the back-channel-logout path, which is unaffected.",
+    migration: [
+      "No change for normal ID-token verification or for the framework's back-channel-logout handling. If you called `verifyIdToken(token, { skipExpCheck: true })` directly on a non-logout token (an undocumented use), it now throws: drop the option so expiry is validated, or verify the token through the back-channel-logout path if it really is a logout token.",
+    ].join("\n"),
+  },
 ];
 
 function _appendOutOfBand(lines) {

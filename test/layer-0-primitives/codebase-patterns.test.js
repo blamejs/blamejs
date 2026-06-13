@@ -3858,6 +3858,16 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/mail-server-imap.js:create",
+        "lib/mail-server-pop3.js:create",
+        "lib/observability-otlp-exporter.js:create",
+        "lib/outbox.js:create",
+      ],
+      reason: "Domain-specific create() opts-validation boilerplate — each runs a sequence of validateOpts.optionalPositiveFinite(opts.X, ...) presence/type checks followed by `var X = opts.X || DEFAULT_X` default assignment. b.outbox.create joined this 50-token shingle when the in-flight reaper added the claimReclaimMs lease opt, lengthening its validation block to the threshold. The four create()s validate entirely different option sets (IMAP / POP3 listener bind opts, OTLP exporter socket opts, outbox poll / batch / backoff / lease opts) with different defaults and semantics; the shared shape IS the validateOpts call sequence, which is already the extracted primitive — the per-domain opt list can't be factored further without a domain-specific wrapper per call site. Shape-only, not an extractable dup.",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/mail-server-imap.js:_handleConnection",
         "lib/mail-server-mx.js:_handleConnection",
         "lib/mail-server-pop3.js:_handleConnection",
@@ -7004,6 +7014,75 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "#131 — b.middleware.dpop documented replayStore as required but create() read it optionally (`var replayStore = opts.replayStore`) and gated the replay check behind `if (replayStore)`, so omitting it mounted a DPoP gate with NO jti-replay defense — a captured proof replays indefinitely (RFC 9449 §11.1). The operator-facing middleware must fail closed at config time: validateOpts.requireMethods(opts.replayStore, [\"checkAndInsert\"], ...) throws on both a missing store and a store lacking checkAndInsert. The unique `var replayStore = opts.replayStore` token is the middleware's optional read (the low-level lib/auth/dpop.js verify() primitive uses opts.replayStore inline and keeps it deliberately optional, so it is not matched). This entry fires only if the create-time requireMethods enforcement is removed while the optional read remains.",
   },
+  // #135 — SD-JWT-VC ES256/ES384 must sign/verify with JOSE encoding (raw r||s).
+  {
+    id: "sd-jwt-vc-ecdsa-der-not-ieee-p1363",
+    primitive: "sd-jwt-vc _signJwt / _verifyJwt must wrap the EC key with dsaEncoding: \"ieee-p1363\" for ES256/ES384 — node:crypto defaults to DER, which every conformant JOSE / EUDI-wallet verifier rejects (and the library would reject their raw-r||s signatures)",
+    scanScope: "lib",
+    regex: /nodeCrypto\.sign\(\s*sigAlgo\s*,\s*Buffer\.from\([^)]*\)\s*,\s*privateKey\s*\)|nodeCrypto\.verify\(\s*sigAlgo\s*,\s*Buffer\.from\([^)]*\)\s*,\s*publicKey\s*,/,
+    allowlist: [],
+    reason: "#135 — _signJwt/_verifyJwt passed the bare EC key (`, privateKey)` / `, publicKey,`) to nodeCrypto.sign/verify, so ES256/ES384 ECDSA signatures were DER-encoded (ASN.1 SEQUENCE, leading 0x30, ~70-72 bytes for P-256). JOSE/JWS — and EUDI wallets — require raw r||s (\"ieee-p1363\", 64 bytes for ES256, 96 for ES384), so tokens this issuer signed were rejected by conformant verifiers and the library rejected conformant wallets' KB-JWTs. The fix routes both calls through _ecKeyParam(algorithm, key), which returns { key, dsaEncoding: \"ieee-p1363\" } for ES256/ES384 — matching oauth.js / dpop.js / jwt-external.js _verifyParamsForAlg. The anchor is the bare-key call shape (3rd arg is the literal `privateKey` / `publicKey` identifier); once wrapped in _ecKeyParam the shape no longer matches. The KB-JWT (holder) and issuer JWT both sign through this single _signJwt, so the one fix closes both.",
+  },
+  // #137 — verifyIdToken's skipExpCheck must be gated to logout tokens.
+  {
+    id: "oauth-verifyidtoken-skipexpcheck-ungated",
+    primitive: "verifyIdToken must NOT honor a caller-passable skipExpCheck on a regular ID token — the exp bypass is only valid for OIDC Back-Channel-Logout tokens (events claim), and even then bounded by an iat freshness floor; a bare `if (!vopts.skipExpCheck)` gate lets any caller verify an expired/replayed credential clean",
+    scanScope: "lib",
+    regex: /if \(!vopts\.skipExpCheck\)/,
+    requires: /skip-exp-check-not-allowed/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "#137 — verifyIdToken wrapped its exp validation in `if (!vopts.skipExpCheck) { ... }` so any external caller (verifyIdToken is a public API) could pass skipExpCheck: true and verify an EXPIRED id_token clean — token-replay of expired-but-once-valid credentials. skipExpCheck exists only because OIDC Back-Channel Logout 1.0 §2.4 logout tokens carry no exp; the internal verifyBackchannelLogoutToken passes it. The fix flips the branch to `if (vopts.skipExpCheck) { <require the backchannel-logout events claim> + <iat freshness floor> } else { <exp check> }`, so skipExpCheck is refused (auth-oauth/skip-exp-check-not-allowed) on any token lacking the logout event claim and a stale logout token is refused (auth-oauth/logout-token-stale). The detector anchors on the bare negative gate and requires the new refusal code in-file; after the fix the bare gate is gone and the code is present, so it stays silent.",
+  },
+  // #116 — crypto-field upgrade-on-read rewrite must honor the handle's dialect.
+  {
+    id: "cryptofield-upgrade-on-read-hardcodes-sqlite-dialect",
+    primitive: "_upgradeDerivedHashesOnRead must build its durable re-hash UPDATE with the resolved dialect of the writable handle, not a hardcoded dialect: \"sqlite\" — unsealRow accepts a caller-supplied Postgres/MySQL handle, and a sqlite-quoted UPDATE (double quotes) is rejected by MySQL (backticks), so the advertised keyed-MAC migration silently no-ops off sqlite",
+    scanScope: "lib",
+    regex: /function _upgradeDerivedHashesOnRead(?:(?!\nfunction )[\s\S]){0,4000}?sql\.update\(\s*table\s*,\s*\{\s*dialect:\s*"sqlite"/,
+    allowlist: [],
+    reason: "#116 — the upgrade-on-read durable rewrite (re-hash a legacy salted-sha3 derived-hash column to the keyed MAC) hardcoded sql.update(table, { dialect: \"sqlite\", quoteName: true }). unsealRow's 4th arg is a caller-supplied dbHandle that db-query threads from an external Postgres/MySQL connection; on a MySQL handle the sqlite-dialected UPDATE emits double-quoted identifiers (\"users\"), which MySQL parses as a string literal and rejects, so the rewrite throws into the best-effort try/catch and the legacy digest stays on disk — keyed-MAC migration never happens off sqlite. The fix resolves the dialect from handle.dialect (validated to postgres|mysql|sqlite, default sqlite — db-query._dialect()'s contract). The detector anchors INSIDE _upgradeDerivedHashesOnRead (the function-scoped span) so the legitimately-sqlite-only _PER_ROW_SQL_OPTS literal at module scope is not flagged; it fires while the literal dialect: \"sqlite\" remains and goes silent once it reads the handle's dialect.",
+  },
+  // #126 — SSE _writeRaw must bound its outbound buffer (slow-consumer DoS).
+  {
+    id: "sse-writeraw-no-bounded-buffer",
+    primitive: "sse _writeRaw must bound the per-channel outbound buffer (res.writableLength vs a maxBufferedBytes cap) and evict a slow consumer — res.write() returning false is unbounded backpressure; a stalled client otherwise grows the server heap without limit (memory-exhaustion DoS)",
+    scanScope: "lib",
+    regex: /function _writeRaw\b/,
+    requires: /writableLength/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "#126 — _writeRaw called res.write(s) and discarded the boolean return (the backpressure signal) with no bound on res.writableLength (Node's count of buffered-but-unflushed bytes). SSE is server-push: when a client stalls, the app keeps calling send() and the writable buffer grows without limit until the heap is exhausted — one slow connection is a memory-exhaustion DoS. The fix reads res.writableLength after each write and, when it exceeds the per-channel maxBufferedBytes cap (default 1 MiB), closes the channel and throws sse/backpressure — evicting the slow consumer instead of buffering forever (the bounded-write discipline lib/archive.js already follows). The detector fires while _writeRaw never consults writableLength and goes silent once the cap lands; a healthy client (writableLength ~0) is never evicted.",
+  },
+  // #141 — sealed-field membership (IN) must hash each candidate element.
+  {
+    id: "db-query-sealed-in-hashes-whole-array",
+    primitive: "db-query's sealed-field → derived-hash rewrite must map EACH element of an IN candidate list through cryptoField.lookupHash (and include each one's legacy digest for dual-read) — passing the whole array to lookupHash as a single value produces one bogus hash and makes whereIn/$in on a sealed column throw or silently miss",
+    scanScope: "lib",
+    regex: /if \(this\._isSealedField\(field\)\)\s*\{(?:(?!op === "IN")[\s\S]){0,200}?cryptoField\.lookupHash/,
+    allowlist: [],
+    reason: "#141 — _resolvePredicate's sealed-field branch called cryptoField.lookupHash(this._cryptoFieldKey(), field, value) once with the raw value. For op \"=\"/\"!=\" that value is a scalar, but for op \"IN\" (b.db.from().whereIn(sealedCol, [...]) / b.db.collection().find({ sealedCol: { $in: [...] } })) it is the candidate ARRAY — lookupHash then hashes the array-as-one-value, and the later `where IN requires a non-empty array` shape check throws, so membership queries on a sealed column were unusable (the documented derived-hash query path supported equality but not membership). The fix branches on op === \"IN\" inside the sealed block and maps each element through lookupHash, building the combined IN-list with each element's keyed + legacy digest (the same dual-read the \"=\" path does across the v0.15.0 keyed-MAC flip). The tempered span fires while the sealed block reaches lookupHash with no `op === \"IN\"` branch first and goes silent once that branch precedes the per-element lookup; the {0,200} bound is a ReDoS backstop above the ~60-char buggy span.",
+  },
+  // #127 — worker-pool must mark a slot recycling BEFORE _finishTask drains the queue.
+  {
+    id: "workerpool-finishtask-before-recycling-mark",
+    primitive: "_onTaskTimeout / _onWorkerError must set slot.recycling = true BEFORE calling _finishTask — _finishTask sets slot.busy = false and drains the queue, so a freshly-queued task would be dispatched to the slot whose worker is about to be terminated (the task dies with workerpool/worker-exit instead of running on the replacement worker)",
+    scanScope: "lib",
+    regex: /function _onTaskTimeout\s*\([^)]*\)\s*\{(?:(?!slot\.recycling = true)[\s\S]){0,600}?_finishTask\(slot|function _onWorkerError\s*\([^)]*\)\s*\{(?:(?!slot\.recycling = true)[\s\S]){0,600}?_finishTask\(slot/,
+    allowlist: [],
+    reason: "#127 — _finishTask() sets slot.busy = false and ends with _drainQueue(); _findIdleSlot() returns any slot that is `!busy && !recycling`. _onTaskTimeout/_onWorkerError called _finishTask FIRST and only marked the slot recycling afterward (in _recycleWorker), so the synchronous drain inside _finishTask handed a just-queued task to the dying slot — its message went to a worker about to be terminate()d and came back as workerpool/worker-exit (or hung), even though a healthy replacement was about to spawn. The fix sets slot.recycling = true before _finishTask in both handlers so the drain skips the dying slot and the queued task waits for the replacement. The tempered span fires while _finishTask(slot is reached before the recycling mark in either handler and goes silent once the mark precedes it; the {0,600} bound is a ReDoS backstop above the ~15-line handler bodies.",
+  },
+  // #128 — outbox must reap stale in-flight claims before claiming new work.
+  {
+    id: "outbox-processonce-claims-without-reaping",
+    primitive: "outbox._processOnce must call _reapStaleInflight() BEFORE _claimBatch() — a claim flips a row to in-flight (status), and the claim path only selects status='pending', so a crash between claim and mark-published strands the row in-flight forever (at-least-once violated). The poll must reclaim stale in-flight rows each cycle",
+    scanScope: "lib",
+    regex: /async function _processOnce\s*\([^)]*\)\s*\{(?:(?!_reapStaleInflight)[\s\S]){0,400}?_claimBatch/,
+    allowlist: [],
+    reason: "#128 — the outbox claims jobs by flipping status pending → in-flight, but _claimBatch only SELECTs status='pending'. With no reaper, a publisher that claims a row then crashes before _markPublished/_markRetry/_markDead leaves the row in-flight forever — the event is silently dropped and the advertised at-least-once delivery is violated (b.queue has sweepExpired; outbox had nothing). The fix stamps claimed_at on claim and reaps any in-flight row older than claimReclaimMs (or NULL claimed_at, a legacy/crashed claim) back to pending at the top of every poll, before _claimBatch. The tempered span fires while _processOnce reaches _claimBatch without a preceding _reapStaleInflight call and goes silent once the reap precedes the claim; the {0,400} bound is a ReDoS backstop above the short body. The behavioral guard is test/layer-0-primitives/outbox-inflight-reaper.test.js.",
+  },
+  // #133 — SAML Bearer/HoK SubjectConfirmation NotOnOrAfter must fail closed.
+  { id: "saml-subjectconfirmation-notonorafter-must-fail-closed", primitive: "verifyResponse's Bearer SubjectConfirmationData NotOnOrAfter check must fail closed: `var notOnOrAfter = _attr(scd, \"NotOnOrAfter\"); if (!notOnOrAfter) continue;` followed by a parseability+expiry check — never the optional `if (notOnOrAfter) { ... }` shape, which accepts a confirmation with NO NotOnOrAfter as fresh-forever", scanScope: "lib", regex: /var notOnOrAfter\s*=\s*_attr\([^)]*\);\s*if \(notOnOrAfter\)/, allowlist: [], reason: "SAML 2.0 Web Browser SSO Profile §4.1.4.2 requires every Bearer SubjectConfirmationData to carry a NotOnOrAfter that bounds the assertion's freshness window. lib/auth/saml.js verifyResponse once read `var notOnOrAfter = _attr(scd, \"NotOnOrAfter\"); if (notOnOrAfter) { ... }` — a MISSING NotOnOrAfter skipped the whole block, so a confirmation with no time bound was accepted as fresh-forever (an unbounded, replay-forever assertion; CWE-613 insufficient session expiration / CWE-294 replay). The Holder-of-Key sibling (Profile §3.1, which incorporates §3 time-bounding) had the same missing-attribute hole PLUS a second latent one: `if (noaHok && isFinite(...) && Date.parse(noaHok)/1000 < ...)` short-circuited on `&&`, so an UNPARSEABLE NotOnOrAfter was also accepted. Both sites now require presence + parseability + not-expired before the confirmation is honored (`if (!notOnOrAfter) continue;` then the isFinite/expiry continue). This detector fires while the Bearer check is the optional `if (notOnOrAfter)` shape and goes silent once it is the fail-closed `if (!notOnOrAfter) continue;` shape; the behavioral guard is test/layer-0-primitives/saml-subjectconfirmation-notonorafter.test.js (RED on the optional shape for the missing-attr case, GREEN on the fix). Empty allowlist — an optional NotOnOrAfter on a Bearer confirmation is the unbounded-freshness bug." },
   // #109 — defineGuard's default gate must resolve profile + posture.
   {
     id: "defineguard-defaultgate-skips-profile-posture-resolution",
@@ -7021,6 +7100,15 @@ var KNOWN_ANTIPATTERNS = [
     regex: /async function rotate\s*\([^)]*\)\s*\{(?=[\s\S]*?newSidHash)(?:(?!_hashFingerprint|\n\})[\s\S]){0,3000}?\n\}/,
     allowlist: [],
     reason: "#129 — __bj_fingerprint is sid-keyed (_hashFingerprint(sid, inputs), so a stolen DB can't replay the binding). rotate() moves the sid but left the stored fingerprint bound to the OLD sid; verify(newToken, sameReq) then recomputes _hashFingerprint(newSid, inputs) and mismatches → a false fingerprintDrift (strict operators destroy the session = self-DoS on every rotation) or a silently-broken binding. rotate must re-key the fingerprint to the new sid from the live request: _hashFingerprint(newSid, _buildFingerprintInputs(req, fpFields)). The span anchors on the single async rotate() in lib/session.js and fires if its body reaches the column-0 close with no _hashFingerprint re-key; the {0,3000} bound is a ReDoS backstop above the ~2KB body. updateData legitimately PRESERVES the old hash (sid unchanged) so it is a different function and not matched.",
+  },
+  // #120 — a retention dry-run / preview must not VACUUM the database.
+  {
+    id: "retention-erase-vacuums-before-dryrun-gate",
+    primitive: "retention._erase must compute its sealed/hash field set and pass the `if (dryRun) return` gate BEFORE calling cryptoField.eraseRow — eraseRow schedules a full DB VACUUM and emits db.vacuum_after_erase under a regulated posture, so calling it before the dry-run gate makes a preview rewrite the whole database file per candidate row",
+    scanScope: "lib",
+    regex: /function _erase\s*\([^)]*\)\s*\{(?:(?!if \(dryRun\) return)[\s\S]){0,1500}?cryptoField\.eraseRow/,
+    allowlist: [],
+    reason: "#120 — cryptoField.eraseRow, under a posture whose POSTURE_DEFAULTS sets requireVacuumAfterErase (gdpr/hipaa/dpdp/pipl-cn/lgpd-br), calls db().vacuumAfterErase({ mode: \"full\" }) → VACUUM; → db.vacuum_after_erase. retention._erase called eraseRow at the top of the function, before the `if (dryRun) return { wouldErase: 1 }` gate, so b.retention.run(name, { dryRun: true }) (and the CLI `retention preview`) ran a full-table VACUUM per past-TTL row — a preview that locks the DB and rewrites the file, the opposite of a dry-run. eraseRow's return value is discarded (void erased), so it only ran for that side effect; the fix computes sealedFields/hashFields (no side effect) and returns on dryRun BEFORE eraseRow. The tempered span anchors on the single _erase and the `if (dryRun) return` structural boundary: it fires while eraseRow is reachable before the gate and goes silent once eraseRow moves after it; the {0,1500} bound is a ReDoS backstop above the ~400-char body.",
   },
   // #71 — registerTable must honor the pinned posture's seal-envelope floor.
   {
