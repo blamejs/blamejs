@@ -51,23 +51,75 @@ function testIpv4LoopbackEquivalenceClass() {
 }
 
 function testIpv6MappedEquivalenceClass() {
-  // IPv4-mapped IPv6 in dotted, hex, and fully-expanded spellings — all the
-  // same 16 bytes, all collapse to one bracketed RFC 5952 form.
-  var forms = [
+  // An IPv4-mapped IPv6 address (::ffff:a.b.c.d, the ::ffff:0:0/96 block) IS
+  // the IPv4 address a.b.c.d for routing / access-control: a dual-stack peer
+  // arriving on ::ffff:1.2.3.4 reaches the same host as 1.2.3.4, and the SSRF
+  // classifier already re-classifies it by the embedded v4. So the canonical
+  // form must FOLD it to the IPv4 dotted form — otherwise a dual-stack peer
+  // never unifies with an operator's IPv4 allowlist entry (the exact bypass).
+  var mappedForms = [
     "http://[::ffff:127.0.0.1]/",
     "http://[::ffff:7f00:1]/",
     "http://[0:0:0:0:0:ffff:7f00:1]/",
     "http://[0:0:0:0:0:FFFF:7F00:1]/",   // mixed-case hex
   ];
-  var first = b.safeUrl.canonicalize(forms[0]);
-  check("ipv4-mapped IPv6 canonical is bracketed RFC 5952",
-        first === "http://[::ffff:7f00:1]/");
-  for (var i = 1; i < forms.length; i += 1) {
-    check("ipv4-mapped form '" + forms[i] + "' === first canonical",
-          b.safeUrl.canonicalize(forms[i]) === first);
-    check("raw '" + forms[i] + "' !== raw '" + forms[0] + "' (old-world unequal)",
-          forms[i] !== forms[0]);
+  var bareV4 = b.safeUrl.canonicalize("http://127.0.0.1/");
+  check("plain IPv4 canonical is the dotted form", bareV4 === "http://127.0.0.1/");
+  for (var i = 0; i < mappedForms.length; i += 1) {
+    check("ipv4-mapped '" + mappedForms[i] + "' folds to the bare IPv4 form",
+          b.safeUrl.canonicalize(mappedForms[i]) === bareV4);
+    check("raw '" + mappedForms[i] + "' !== 'http://127.0.0.1/' (old-world unequal)",
+          mappedForms[i] !== "http://127.0.0.1/");
   }
+  // canonicalizeHost folds the host-only form too (used for host allowlists).
+  check("canonicalizeHost folds ::ffff:1.2.3.4 to 1.2.3.4",
+        b.ssrfGuard.canonicalizeHost("::ffff:1.2.3.4") === "1.2.3.4");
+  check("canonicalizeHost folds the all-hex mapped spelling too",
+        b.ssrfGuard.canonicalizeHost("::ffff:102:304") === "1.2.3.4");
+  // A non-mapped IPv6 (no ::ffff:0:0/96 prefix) stays IPv6 — only the
+  // v4-mapped block is an IPv4 alias; an embedded-v4 in a documentation
+  // prefix is a distinct address.
+  check("a non-mapped IPv6 stays IPv6 (::1)",
+        b.ssrfGuard.canonicalizeHost("::1") === "::1");
+  check("2001:db8::1.2.3.4 (v4 suffix, NOT v4-mapped) stays IPv6",
+        b.ssrfGuard.canonicalizeHost("2001:db8::1.2.3.4").indexOf(".") === -1);
+}
+
+function testEmbeddedV4AndTrailingDotUnification() {
+  // The canonical form must never flip an SSRF classify() verdict from blocked
+  // to allowed. Only the IPv4-mapped block (::ffff:0:0/96) folds, because
+  // classify(::ffff:x) === classify(x) — its branch returns classify(mappedV4)
+  // with NO reserved fallback. NAT64 (64:ff9b::/96) and 6to4 (2002::/16) are
+  // NOT folded: classify treats a NAT64 literal as `classify(v4) || "reserved"`,
+  // so classify("64:ff9b::8.8.8.8") is "reserved" while classify("8.8.8.8") is
+  // null — folding would turn a blocked NAT64 address into an allowed public
+  // IPv4 verdict. The invariant below pins that: canonicalizing then classifying
+  // must agree with classifying the original.
+  var classify = b.ssrfGuard.classify;
+  function classifyAgrees(host) {
+    return classify(b.ssrfGuard.canonicalizeHost(host)) === classify(host);
+  }
+  check("NAT64 stays IPv6 (a public NAT64 literal must not become an allowed IPv4)",
+        b.ssrfGuard.canonicalizeHost("64:ff9b::8.8.8.8").indexOf(".") === -1);
+  check("canonicalize agrees with classify on a public NAT64 literal",
+        classifyAgrees("64:ff9b::8.8.8.8"));
+  check("canonicalize agrees with classify on a NAT64 loopback literal",
+        classifyAgrees("64:ff9b::127.0.0.1"));
+  check("canonicalize agrees with classify on a public IPv4-mapped literal",
+        classifyAgrees("::ffff:8.8.8.8"));
+  // 6to4 (2002::/16) is a /48 PREFIX, not a 1:1 alias — it must stay IPv6
+  // (folding it would collapse a whole subnet onto one IPv4).
+  check("6to4 2002:7f00:1:: stays IPv6 (not a 1:1 v4 alias)",
+        b.ssrfGuard.canonicalizeHost("2002:7f00:1::").indexOf(".") === -1);
+
+  // Trailing dots are not significant for host identity — every count must
+  // collapse to the bare name so host / host. / host.. all unify.
+  check("single trailing dot strips to the bare name",
+        b.ssrfGuard.canonicalizeHost("example.com.") === "example.com");
+  check("multiple trailing dots all strip to the bare name",
+        b.ssrfGuard.canonicalizeHost("example.com..") === "example.com");
+  check("canonicalize unifies a trailing-dot URL host with the bare host",
+        b.safeUrl.canonicalize("http://example.com./p") === b.safeUrl.canonicalize("http://example.com/p"));
 }
 
 function testIpv6ZeroCompressionEquivalenceClass() {
@@ -284,6 +336,7 @@ function testUserinfoDroppedFromCanonicalForm() {
 
 async function run() {
   testUserinfoDroppedFromCanonicalForm();
+  testEmbeddedV4AndTrailingDotUnification();
   testIpv4LoopbackEquivalenceClass();
   testIpv6MappedEquivalenceClass();
   testIpv6ZeroCompressionEquivalenceClass();

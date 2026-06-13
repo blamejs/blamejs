@@ -14,6 +14,18 @@ The framework has no `deprecate()`-marked surface awaiting removal.
 
 Listed newest-first.
 
+### v0.15.7 — `b.auth.oauth verifyIdToken — azp (authorized party) is now enforced`
+
+verifyIdToken now applies OIDC Core 3.1.3.7: a multi-audience ID token (aud is an array with more than one entry) MUST carry an azp claim, and a present azp MUST equal the configured client_id. A token whose azp is a different client, or a multi-audience token with no azp, now throws (auth-oauth/azp-mismatch / auth-oauth/azp-required). Previously only `aud contains client_id` was checked, so a token authorized for a different party but also listing this RP verified clean.
+
+No change for the common single-audience ID token with no azp. If your IdP issues multi-audience ID tokens, ensure it sets azp to your client_id (it should, per the spec) — otherwise verifyIdToken will now reject them. This is a security fix; a token that fails the new check was authorized for a different client.
+
+### v0.15.7 — `b.safeUrl.canonicalize — IPv4-mapped hosts fold to IPv4`
+
+b.safeUrl.canonicalize / b.ssrfGuard.canonicalizeHost now fold an IPv4-mapped IPv6 host (::ffff:1.2.3.4) to its embedded IPv4 dotted form, and strip every trailing dot from a host. In 0.15.6 it canonicalized to an IPv6 string and only one trailing dot was stripped. NAT64 / 6to4 hosts stay IPv6.
+
+No code change is needed — this makes a dual-stack / NAT64 peer unify with a dotted-IPv4 allow/deny entry as intended. If you persisted canonical host strings produced by 0.15.6 (e.g. as cache or dedup keys) and compare them against freshly-canonicalized hosts, recompute them: an IPv4-mapped host now yields the dotted IPv4 instead of the bracketed IPv6, and a multi-trailing-dot host yields the bare name.
+
 ### v0.15.6 — `b.auth.sdJwtVc — ES256 / ES384 signatures are now JOSE raw r||s, not DER`
 
 `b.auth.sdJwtVc` now signs and verifies ES256 / ES384 with `dsaEncoding: "ieee-p1363"` (raw r||s), the encoding JOSE / JWS and EUDI wallets require. Previously it used node:crypto's default DER ECDSA encoding, so a credential this issuer signed was rejected by conformant verifiers and the library rejected conformant holders' key-binding JWTs. The signature bytes change shape (64 bytes for ES256, 96 for ES384, no leading `0x30` SEQUENCE tag).

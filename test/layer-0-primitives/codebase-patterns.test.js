@@ -7034,6 +7034,82 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "#137 — verifyIdToken wrapped its exp validation in `if (!vopts.skipExpCheck) { ... }` so any external caller (verifyIdToken is a public API) could pass skipExpCheck: true and verify an EXPIRED id_token clean — token-replay of expired-but-once-valid credentials. skipExpCheck exists only because OIDC Back-Channel Logout 1.0 §2.4 logout tokens carry no exp; the internal verifyBackchannelLogoutToken passes it. The fix flips the branch to `if (vopts.skipExpCheck) { <require the backchannel-logout events claim> + <iat freshness floor> } else { <exp check> }`, so skipExpCheck is refused (auth-oauth/skip-exp-check-not-allowed) on any token lacking the logout event claim and a stale logout token is refused (auth-oauth/logout-token-stale). The detector anchors on the bare negative gate and requires the new refusal code in-file; after the fix the bare gate is gone and the code is present, so it stays silent.",
   },
+  // #130 — scheduler _runFire settle handlers must guard on the run generation.
+  {
+    id: "scheduler-runfire-settle-no-generation-guard",
+    primitive: "scheduler._runFire's promise settle handlers must ignore a stale settle (if task.runGeneration !== gen return) before writing task state / emitting success|failure — the watchdog force-clears running and re-fires, so an abandoned run's late resolve otherwise clobbers the current run's state and double-emits",
+    scanScope: "lib",
+    regex: /Promise\.resolve\(promise\)\.then\(function \([^)]*\)\s*\{\s*task\.running = false/,
+    allowlist: [],
+    reason: "#130 — _runFire attaches success/failure settle handlers that unconditionally wrote task.running=false / runningSince=0 / lastFinish / lastError and emitted system.scheduler.task.success|failure. But the watchdog (maxJobMs) force-clears task.running on a hung run and _fireOnce re-fires, so the original slow promise settles LATE and clobbers the new run's running flag (disabling the watchdog for it / allowing a third concurrent fire) and emits a stale success for a run the watchdog already reported as a watchdog failure. The fix tags each run (task.runGeneration, bumped by _runFire AND the watchdog) and the settle handlers `return` early when the tag is stale. The detector fires while the success handler sets task.running=false with no intervening generation guard and goes silent once the `if (task.runGeneration !== gen) return;` guard precedes it; behavioral guard is scheduler-watchdog-stale-settle.test.js.",
+  },
+  // #121 — retention.complianceFloor must inherit the active posture.
+  {
+    id: "retention-compliancefloor-ignores-active-posture",
+    primitive: "retention.complianceFloor must fall back to STATE.activePosture (set by applyPosture / the b.compliance.set cascade) when no explicit posture is passed — it hard-required a string posture and never read the active value, so the advertised optional-posture inheritance was unimplemented dead state",
+    scanScope: "lib",
+    regex: /function complianceFloor\s*\([^)]*\)\s*\{(?:(?!STATE\.activePosture)[\s\S]){0,300}?must be a string/,
+    allowlist: [],
+    reason: "#121 — applyPosture() records STATE.activePosture + STATE.activeFloorMs and both its docstring and the STATE comment advertise that complianceFloor callers without an explicit posture inherit the active value. But complianceFloor threw `posture must be a string` immediately and never consulted STATE.activePosture, so the inheritance never worked and activeFloorMs was a dead write. The fix inherits STATE.activePosture when posture is omitted (a numeric first arg is taken as candidateTtlMs so complianceFloor(ttl) works), and applyPosture(null) now clears the state (was a silent no-op, so b.compliance.clear couldn't reset it). The tempered span fires while complianceFloor reaches its `must be a string` throw without first reading STATE.activePosture; the behavioral guard is retention-floor.test.js.",
+  },
+  // #111 — credential-hash needsRehash must drive SHAKE256 length-rotation.
+  {
+    id: "credentialhash-needsrehash-ignores-shake256-length",
+    primitive: "credentialHash.needsRehash must compare the stored SHAKE256 digest length against the configured/default length — without it, raising the SHAKE256 output length never triggers a rehash and the advertised length-rotation is a silent no-op",
+    scanScope: "lib",
+    regex: /function needsRehash\s*\([^)]*\)\s*\{(?=[\s\S]*?CRED_HASH_IDS\.ARGON2ID)(?:(?!CRED_HASH_IDS\.SHAKE256)(?!\n\})[\s\S]){0,1200}\n\}/,
+    allowlist: [],
+    reason: "#111 — needsRehash short-circuited the SHAKE256 case to `return false`: it checked the algorithm id and (for Argon2id) deferred to the password module's parameter-lag check, but never compared decoded.payload.length against the configured target length. So once an operator raised the SHAKE256 output length, every existing shorter digest reported needsRehash === false and the length-rotation the primitive advertises never fired (b.apiKey.verify's rehash-on-verify silently kept the old length). The fix adds, for the SHAKE256 branch, a compare of decoded.payload.length to (opts.params.length || SHAKE256_DEFAULT_LENGTH) → rehash when they differ. The tempered span anchors on needsRehash and fires while its body never references SHAKE256_DEFAULT_LENGTH (the length-target constant); the behavioral guard is credential-hash.test.js.",
+  },
+  // #136 — SD-JWT KB-JWT aud / nonce must compare constant-time.
+  {
+    id: "sdjwt-kbjwt-aud-nonce-non-consttime-compare",
+    primitive: "the SD-JWT KB-JWT audience + nonce checks must compare with the constant-time _timingSafeEqStr helper (as the sd_hash check already does), not a bare !== — the nonce is a verifier-issued replay-defense value and a timing channel leaks a guess oracle; constant-time-ness cannot be asserted behaviorally, so this structural detector is the guard",
+    scanScope: "lib",
+    regex: /kbParsed\.payload\.(?:aud|nonce)\s*!==\s*opts\.(?:audience|nonce)/,
+    allowlist: [],
+    reason: "#136 — verify()'s KB-JWT binding checks compared `kbParsed.payload.aud !== opts.audience` and `kbParsed.payload.nonce !== opts.nonce` with a short-circuiting !==, while the adjacent sd_hash check already used the constant-time _timingSafeEqStr. The nonce is a per-presentation replay-defense value the verifier issued; a non-constant-time compare leaks a matching-prefix timing oracle. The fix routes both through _timingSafeEqStr (the framework's hash/token-compare discipline). A behavioral test can prove the accept/reject correctness but NOT the timing property, so this detector is the primary guard per the test-with-fix rule's structural-drift exception; it fires on the bare !== shape and goes silent once both use _timingSafeEqStr.",
+  },
+  // canonicalizeHost must fold an IPv4-mapped IPv6 address to its IPv4 form.
+  {
+    id: "ssrf-canonicalizehost-v4mapped-not-folded",
+    primitive: "ssrfGuard.canonicalizeHost must fold an IPv4-mapped IPv6 address (::ffff:0:0/96) to its dotted IPv4 form — leaving it as IPv6 means a dual-stack peer on ::ffff:1.2.3.4 never unifies with an operator's 1.2.3.4 allowlist entry (an SSRF allowlist bypass the canonicalizer exists to defend)",
+    scanScope: "lib",
+    regex: /if \(family === 6\)\s*\{(?:(?!IPV6_V4_MAPPED_PREFIX)[\s\S]){0,400}?_ipv6BytesToString/,
+    allowlist: [],
+    reason: "canonicalizeHost's IPv6 branch emitted the RFC 5952 hex string for every IPv6 input, including IPv4-mapped (::ffff:a.b.c.d). But an IPv4-mapped address IS the IPv4 address a.b.c.d for routing/access — classify() already re-classifies it by the embedded v4, and a dual-stack listener reaching ::ffff:1.2.3.4 is the same host as 1.2.3.4. Without folding, canonicalize(::ffff:1.2.3.4) !== canonicalize(1.2.3.4), so an allowlist/dedup/SSRF comparison built on the canonical form is bypassed by presenting the dual-stack spelling. The fix folds the ::ffff:0:0/96 block to dotted IPv4 (only that block — 6to4/NAT64 are translation mechanisms, and a v4 suffix in any other prefix is a distinct address). The tempered span fires while the family-6 branch reaches _ipv6BytesToString with no IPV6_V4_MAPPED_PREFIX check first; the behavioral guard is safe-url-canonicalize.test.js.",
+  },
+  // compliance.clear must cascade the posture-clear to the primitives.
+  {
+    id: "compliance-clear-no-cascade",
+    primitive: "compliance.clear() must cascade the posture reset to the primitives (_applyPostureCascade(null)) just as set() cascades the posture — otherwise a primitive that inherits the active posture (retention.complianceFloor) keeps applying the stale floor after b.compliance.clear()",
+    scanScope: "lib",
+    regex: /_emitAudit\("compliance\.posture\.cleared"/,
+    requires: /_applyPostureCascade\(null\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Codex P2 — b.compliance.set(posture) calls _applyPostureCascade(posture), which walks retention/audit/db/cryptoField calling applyPosture(posture); retention records it so complianceFloor() inherits it. b.compliance.clear() nulled only compliance's own STATE.posture and never cascaded, so after set(\"hipaa\") then clear(), compliance.current() is null but retention still inherits the stale HIPAA floor. clear() must call _applyPostureCascade(null) so each primitive's applyPosture(null) resets it (retention.applyPosture(null) clears its active posture). The detector fires while clear() exists with no _applyPostureCascade(null) call anywhere in the file (set() passes the posture, not null) and goes silent once clear() cascades the reset; the behavioral guard is retention-floor.test.js.",
+  },
+  // canonicalizeHost must NOT fold NAT64/6to4 (would flip an SSRF classify verdict).
+  {
+    id: "ssrf-canonicalizehost-folds-nat64",
+    primitive: "ssrfGuard.canonicalizeHost must fold ONLY the IPv4-mapped block (::ffff:0:0/96) to IPv4 — NOT NAT64 (64:ff9b::/96). classify() treats a NAT64 literal as `classify(v4) || \"reserved\"`, so folding a public NAT64 address to its embedded IPv4 turns a blocked verdict into an allowed one (canonicalize-then-classify must agree with classify alone)",
+    scanScope: "lib",
+    regex: /_ipv6PrefixMatch\(\s*IPV6_NAT64_PREFIX\s*,\s*C\.BYTES\.bytes\(96\)\s*,\s*v6bytes\s*\)/,
+    allowlist: [],
+    reason: "canonicalizeHost folds an IPv4-mapped IPv6 host to its embedded IPv4 because classify(::ffff:x) === classify(x) (that branch has no reserved fallback), so the fold can't change an SSRF verdict. NAT64 is different: classify('64:ff9b::8.8.8.8') is `classify('8.8.8.8') || 'reserved'` = 'reserved' (blocked) while classify('8.8.8.8') is null (allowed) — so folding a public NAT64 literal to 8.8.8.8 before an allowlist/classify check flips a blocked address to an allowed public IPv4 (Codex P2). canonicalizeHost must leave NAT64 / 6to4 as IPv6; classify still reaches the embedded v4 for the deny side. The detector anchors on canonicalizeHost's NAT64 prefix-match (it uses the local `v6bytes`, so classify()'s own legitimate NAT64 extraction — which uses `bytes` — is not matched) and goes silent once canonicalizeHost no longer folds NAT64. The behavioral guard is the classify-agreement invariant in safe-url-canonicalize.test.js.",
+  },
+  // #134 — verifyIdToken must check azp on multi-audience ID tokens.
+  {
+    id: "oauth-verifyidtoken-no-azp-check",
+    primitive: "verifyIdToken must verify the azp (authorized party) claim — OIDC Core §3.1.3.7: a multi-audience ID token requires an azp, and a present azp MUST equal the RP's client_id. Checking only that aud contains clientId lets a token minted for a DIFFERENT authorized party (that merely lists this RP in a multi-aud array) verify clean (confused deputy)",
+    scanScope: "lib",
+    regex: /throw new OAuthError\("auth-oauth\/aud-mismatch"/,
+    requires: /auth-oauth\/azp-mismatch/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "#134 — verifyIdToken validated only `aud.indexOf(clientId) !== -1` (throwing auth-oauth/aud-mismatch) and ignored azp. OIDC Core §3.1.3.7 requires: if the ID token carries multiple audiences the Client must verify an azp is present, and if azp is present its value must be the Client's client_id. Without it, an IdP-issued token whose authorized party is a DIFFERENT client but whose aud array also lists this RP verifies clean — a confused-deputy / token-substitution hole. The fix adds, right after the aud check: reject when aud.length > 1 and no azp (auth-oauth/azp-required), and reject when azp is present and !== clientId (auth-oauth/azp-mismatch). The detector anchors on verifyIdToken's unique aud-mismatch throw and requires the azp-mismatch code in-file; the single-aud no-azp token (the common case) is unaffected.",
+  },
   // #116 — crypto-field upgrade-on-read rewrite must honor the handle's dialect.
   {
     id: "cryptofield-upgrade-on-read-hardcodes-sqlite-dialect",
