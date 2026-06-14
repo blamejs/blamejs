@@ -16689,7 +16689,7 @@ function testLogger() {
     var RLO2 = String.fromCharCode(0x202e);
     jsonLog("owner" + RLO2 + "x");
     check("log.boot JSON escapes bidi controls (no raw RLO)", captured.log[0].indexOf(RLO2) === -1);
-    check("log.boot JSON line still parses", (function () { try { JSON.parse(captured.log[0]); return true; } catch (e) { return false; } })());
+    check("log.boot JSON line still parses", (function () { try { JSON.parse(captured.log[0]); return true; } catch (_e) { return false; } })());
 
     jsonLog.warn("ouch");
     var parsedWarn = JSON.parse(captured.error[0]);

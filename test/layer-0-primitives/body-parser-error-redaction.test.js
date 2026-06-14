@@ -48,16 +48,17 @@ async function _run(opts, body, headers) {
 }
 
 async function run() {
-  // (1) parse-hook throws a secret-bearing error — not echoed to the client.
-  var SECRET = "postgres://u:hunter2@10.0.0.5:5432/app";
+  // (1) parse-hook throws a detail-bearing error — not echoed to the client.
+  // Use a non-credential sentinel so the test itself carries no secret shape.
+  var SENTINEL = "do-not-echo-sentinel-9f8e7d6c";
   var r1 = await _run(
-    { json: { parseHook: function () { throw new Error("dsn " + SECRET + " failed"); } } },
+    { json: { parseHook: function () { throw new Error("internal detail " + SENTINEL + " host:5432"); } } },
     "{}",
     { "content-type": "application/json" }
   );
   var b1 = String(r1._captured || "");
-  check("#84 parse-hook secret is NOT echoed to the client",
-        b1.indexOf("hunter2") === -1 && b1.indexOf("10.0.0.5") === -1 && b1.indexOf("postgres://") === -1);
+  check("#84 parse-hook internal detail is NOT echoed to the client",
+        b1.indexOf(SENTINEL) === -1 && b1.indexOf("host:5432") === -1);
   check("#84 parse-hook client message is the curated fixed reason",
         b1.length === 0 || b1.indexOf("parse hook") !== -1);
 
