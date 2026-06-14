@@ -45,6 +45,20 @@ async function run() {
   var loc = _local();
   check("local facade reports no listVersions (feature-detect → null)", loc.listVersions === null);
 
+  // http-put is the fifth backend (a bare PUT/DELETE target, no version
+  // surface) — it must refuse a versioned delete loudly too, not forward a
+  // dropped versionId to a plain DELETE (the gap Codex P2 caught on PR #319).
+  var httpPut = os.buildBackend({
+    name: "h", protocol: "http-put", baseUrl: "https://up.invalid/bucket",
+    classifications: ["operational"], residencyTag: "unrestricted",
+  });
+  check("http-put facade reports no listVersions (feature-detect → null)", httpPut.listVersions === null);
+  var hpThrew = null;
+  try { await httpPut.delete("some-key", { versionId: "v1" }); }
+  catch (e) { hpThrew = e; }
+  check("http-put versioned delete REFUSES loudly (VERSIONID_UNSUPPORTED)",
+    hpThrew && hpThrew.code === "VERSIONID_UNSUPPORTED");
+
   // A versioned delete on a backend with no version surface must THROW, not
   // silently unlink the single on-disk file and report a version erased.
   var threw = null;

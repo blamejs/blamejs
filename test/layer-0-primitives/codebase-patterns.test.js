@@ -7837,6 +7837,15 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    id: "object-store-backend-deletekey-ignores-versionid-contract",
+    primitive: "every object-store backend deleteKey MUST accept (key, opts) and handle opts.versionId — sigv4 threads it to the versioned delete, every other backend throws VERSIONID_UNSUPPORTED. A single-param deleteKey(key) silently ignores a versionId an erasure workflow passed and issues a plain delete, the WORM-blind footgun #88 closed.",
+    scanScope: "lib",
+    regex: /function deleteKey\s*\(\s*key\s*\)/,
+    allowlist: [],
+    reason: "v0.15.10 #88 — the b.storage.deleteFile -> backend.delete({ versionId }) contract reaches whichever backend is routed (sigv4 / azure-blob / gcs / local / http-put). A backend that defines deleteKey(key) with no opts param drops the versionId silently (the original http-put miss Codex P2 caught: it forwarded versionId to a deleteKey that ignored it, issuing a plain DELETE while an erasure workflow believed it targeted a version). All five backends now take (key, opts); the single-param shape is the regression. Empty allowlist — a new object-store backend must take (key, opts) and either thread versionId (S3 versioned delete) or throw VERSIONID_UNSUPPORTED.",
+  },
+
+  {
     // Codex P1A on v0.12.12 PR #163 — "on-request" placement
     // semantics collapsed into "always" when shouldEmit didn't
     // gate on an explicit `opts.requested` signal. Detector locks
