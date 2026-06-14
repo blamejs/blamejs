@@ -11,6 +11,10 @@
         {
           "title": "Versioned object delete + listVersions for S3 Object-Lock erasure",
           "body": "b.storage.deleteFile and the b.objectStore sigv4 backend now accept opts.versionId to erase a specific object version, and opts.bypassGovernanceRetention to lift a GOVERNANCE-mode retention for callers with the permission (COMPLIANCE stays immutable to everyone). b.storage.saveRaw and the backend put now return the versionId they created on a versioning-enabled bucket, and a new b.storage.listVersions(prefix) / backend listVersions enumerates every version and delete-marker (key, versionId, isLatest, deleteMarker, size, lastModified, etag) so a right-to-erasure or crypto-shred workflow can target prior versions. On a backend with no version surface, listVersions throws VERSIONS_UNSUPPORTED and a versioned delete throws VERSIONID_UNSUPPORTED rather than silently acting on the current object."
+        },
+        {
+          "title": "b.localDb.thin reaches SQLite resource-limit parity (limits option)",
+          "body": "b.localDb.thin now opens its node:sqlite handle with the same parse-time statement-size cap as b.db and the CLI — a SQL statement over 1 MiB is rejected at parse time, the SQLITE_LIMIT_LENGTH floor that guards prepare()/exec() of raw SQL against an attacker-influenced megaquery (SQLite's default is 1 GB). The cap is on by default; a new limits option (e.g. { sqlLength: 2 * 1024 * 1024 } or other SQLITE_LIMIT_* keys) lets an operator raise or extend it. Previously the thin opener had no limits plumbing, so a consumer on that path could not reach parity with the rest of the framework's SQLite surface."
         }
       ]
     },
@@ -20,6 +24,10 @@
         {
           "title": "S3 Object-Lock version erasure is reachable through the framework delete path",
           "body": "On a versioning-enabled (Object-Lock) bucket, an unversioned DELETE only writes a delete-marker — the protected data version survives untouched — yet the framework's delete had no versionId surface, so it issued the unversioned form and reported success while the bytes the lock protects remained. A retention or legal hold could therefore look enforced to the framework caller while the operation WORM actually blocks was unreachable. The delete path now targets the exact version: deleting a version under a COMPLIANCE retention is refused (it throws, even with bypassGovernanceRetention), a no-retention version erases cleanly, and the enforcement is proven end-to-end against MinIO through the framework's own API."
+        },
+        {
+          "title": "b.configDrift.verifyVendorIntegrity is now working-directory-independent",
+          "body": "The vendored-dependency integrity check resolved each manifest file path against process.cwd(), so it only worked when run from the application root. Run from anywhere else it read-failed every entry (reporting ok:false), and under a crafted working directory that happened to contain a clean vendor tree it could hash a different tree than the one actually loaded. It now resolves each file under the framework's own vendor directory by default — the tree loaded at runtime — and honors an explicit libVendorDir for verifying a deployed tree elsewhere, so the result no longer depends on where the process was started."
         }
       ]
     },

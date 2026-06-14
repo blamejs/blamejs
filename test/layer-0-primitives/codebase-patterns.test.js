@@ -7127,13 +7127,13 @@ var KNOWN_ANTIPATTERNS = [
   // is built without the limits shape.
   {
     id: "db-databasesync-without-sqlite-limits",
-    primitive: "construct the main db.init DatabaseSync(dbPath, ...) with the node:sqlite limits option (sqlLength) — a parse-time DoS floor complementary to streamLimit",
+    primitive: "construct every raw-SQL-exposing DatabaseSync opener (db.init's dbPath, the CLI's dbPath, localDb.thin's file) with the node:sqlite limits option (sqlLength) — a parse-time DoS floor complementary to streamLimit",
     scanScope: "lib",
-    regex: /new DatabaseSync\(dbPath\b/,
-    requires: /limits:\s*\{[\s\S]{0,200}?sqlLength/,
+    regex: /new DatabaseSync\(\s*(?:dbPath|file)\b/,
+    requires: /sqlLength\s*:/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "v0.15.9 Node-24.16 adoption. The framework parameterizes every builder value, so SQLITE_LIMIT_LENGTH (sqlLength) guards the raw-SQL surface (b.db.runSql) against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB). Fires when the main db handle `new DatabaseSync(dbPath` is constructed without the `limits: { ... sqlLength` shape; the headroom probe `new DatabaseSync(p)` is intentionally not matched (ephemeral, no attacker input). (SQLITE_LIMIT_ATTACHED is left at the SQLite default — the snapshot/backup path uses ATTACH.)",
+    reason: "v0.15.9 Node-24.16 adoption, widened v0.15.10 (#320). The framework parameterizes builder values, so SQLITE_LIMIT_LENGTH (sqlLength) guards the surfaces that parse operator/application raw SQL — b.db.runSql, the CLI, and b.localDb.thin's prepare()/exec() — against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB). Fires when a raw-SQL opener (`new DatabaseSync(dbPath` / `new DatabaseSync(file`) is constructed without the `limits: { ... sqlLength` shape. v0.15.9 anchored only on `dbPath` and so missed localDb.thin's `file` handle (#320); the var set now covers all three. The ephemeral headroom probe `new DatabaseSync(p)` and the vault-rotation temp handles are intentionally not matched — they run fixed PRAGMAs / parameterized re-seals, no attacker statement text. (SQLITE_LIMIT_ATTACHED is left at the SQLite default — the snapshot/backup path uses ATTACH.)",
   },
   // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
   // shared middleware/clear-site-data headerValue() helper (which validates
