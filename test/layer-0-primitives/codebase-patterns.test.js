@@ -5742,16 +5742,12 @@ async function testNoDuplicateCodeBlocks() {
       reason: "Same nested-shape cluster as above with notify removed. Same justification.",
     },
     {
-      files: [
-        "lib/network-proxy.js:_emitObs",
-        "lib/network-tls.js:_emitObs",
-        "lib/network.js:_emitObs",
-      ],
-      reason: "Network listener teardown shape — `function reset() { state.X = null; state.Y = null; state.Z = []; ...}`. Each network primitive has a different reset surface; consolidating would force unrelated state into a base contract.",
-    },
-    {
       files: ["lib/notify.js:<unknown>", "lib/seeders.js:<unknown>", "lib/webhook.js:<unknown>"],
       reason: "Same nested-shape cluster as middleware/db-role-for+notify+seeders+webhook (see above) with db-role-for removed.",
+    },
+    {
+      files: ["lib/api-key.js:create", "lib/file-upload.js:create", "lib/seeders.js:create"],
+      reason: "Conventional create() entry prelude — a run of per-primitive `var X = cfg.X;` opts-to-cfg field unpacking followed by the standard `var audit = opts.audit || null; var clock = opts.clock || function () { return Date.now(); }; var _emitAudit = validateOpts.makeAuditEmitter(audit);` trio. The reusable part (the audit emitter) is already centralized in validateOpts.makeAuditEmitter; the remaining shared run is per-primitive opts unpacking (api-key: prefix/idBytes/secretBytes; file-upload: maxChunkBytes/maxStagingBytes/...; seeders: auditFailures/lockStaleAfterMs) that cannot become one primitive without forcing unrelated config surfaces into a single base contract.",
     },
     {
       files: [
@@ -9139,6 +9135,20 @@ var KNOWN_ANTIPATTERNS = [
     regex: /try\s*\{(?:(?!\}\s*catch|observability\.event)[\s\S]){0,800}?observability\.event\s*\([^)]*\)\s*;?\s*\}\s*catch/,
     allowlist: [],
     reason: "Extracted to observability.safeEvent — drop-silent semantics for hot-path event emission. Any module wrapping observability.event in try/catch should call observability.safeEvent instead.",
+  },
+  {
+    id: "observability-emit-nonexistent-method",
+    scanScope: "lib",
+    primitive: "observability.safeEvent(name, value, labels) / observability.event(...) — there is no observability.emit",
+    // The observability module exposes event / safeEvent / tap / setTap — it
+    // has NO `emit`. A call to observability().emit(...) throws TypeError and,
+    // because every call site wraps the emit in a drop-silent try/catch, the
+    // metric silently never fires. The whole network-* family carried 11 such
+    // dead calls. Any reintroduction is a dead telemetry emit, never a working
+    // one — route through safeEvent(name, value, labels) instead.
+    regex: /observability\s*\(\s*\)\s*\.\s*emit\s*\(/,
+    allowlist: [],
+    reason: "observability has no emit() method; observability().emit(...) is a dead drop-silent call. Use observability.safeEvent(name, value, labels).",
   },
   {
     id: "inline-hex-string-validator",

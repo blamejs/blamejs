@@ -16647,6 +16647,21 @@ function testLogger() {
 
     check("log.boot: .prefix exposes the namespace", log.prefix === "[blamejs:testmod] ");
 
+    // v0.15.12 (#182) — the TTY branch must escape BOTH the bidi (re-ordering)
+    // and C0/newline (line-forging) control classes the create() path
+    // neutralizes (Trojan-Source CVE-2021-42574 / log-injection CWE-117). The
+    // old boot() TTY branch wrote the raw message.
+    captured.log.length = 0;
+    var RLO = String.fromCharCode(0x202e);
+    log.info("admin" + RLO + "gnp");
+    check("log.boot TTY escapes bidi controls (no raw RLO)",
+          captured.log[captured.log.length - 1].indexOf(RLO) === -1);
+    check("log.boot TTY escapes bidi to \\u202e",
+          captured.log[captured.log.length - 1].indexOf("\\u202e") !== -1);
+    log.info("line1\nFAKE level=error injected");
+    check("log.boot TTY does not forge lines via a raw newline",
+          captured.log[captured.log.length - 1].indexOf("\n") === -1);
+
     var threw = false;
     try { b.log.boot(""); } catch (_e) { threw = true; }
     check("log.boot: rejects empty name", threw);
@@ -16666,6 +16681,15 @@ function testLogger() {
     check("log.boot JSON carries component",  parsed.component === "piped");
     check("log.boot JSON marks boot:true",    parsed.boot === true);
     check("log.boot JSON carries level",      parsed.level === "info");
+
+    // v0.15.12 (#182) — JSON.stringify escapes C0/newlines but leaves bidi
+    // controls raw; the boot JSON branch must apply the same bidi escape the
+    // create() path does so a piped aggregator can't be re-ordered.
+    captured.log.length = 0;
+    var RLO2 = String.fromCharCode(0x202e);
+    jsonLog("owner" + RLO2 + "x");
+    check("log.boot JSON escapes bidi controls (no raw RLO)", captured.log[0].indexOf(RLO2) === -1);
+    check("log.boot JSON line still parses", (function () { try { JSON.parse(captured.log[0]); return true; } catch (_e) { return false; } })());
 
     jsonLog.warn("ouch");
     var parsedWarn = JSON.parse(captured.error[0]);

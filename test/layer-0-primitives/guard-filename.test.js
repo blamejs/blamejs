@@ -239,6 +239,17 @@ function testGuardFilenameSanitize() {
   check("sanitize strips leading/trailing whitespace + trailing dot",
         clean === "weird name.txt");
 
+  // v0.15.12 (#78) — reservedCharPolicy:"strip" (set by the permissive profile)
+  // must strip EVERY reserved char, not just the first. The old non-global
+  // RESERVED_CHARS_RE left the 2nd/3rd path separators in place.
+  var multiSep = b.guardFilename.sanitize("a/b/c/d", { profile: "permissive" });
+  check("sanitize permissive strips ALL path separators (#78)",
+        multiSep.indexOf("/") === -1 && multiSep === "a_b_c_d");
+  var multiBack = b.guardFilename.sanitize("x\\y\\z", { profile: "permissive" });
+  check("sanitize permissive strips ALL backslashes (#78)", multiBack.indexOf("\\") === -1);
+  check("sanitize permissive leaves a clean name unchanged (#78)",
+        b.guardFilename.sanitize("clean.txt", { profile: "permissive" }) === "clean.txt");
+
   var threwTraversal = null;
   try { b.guardFilename.sanitize("../etc/passwd", { profile: "balanced" }); }
   catch (e) { threwTraversal = e; }
