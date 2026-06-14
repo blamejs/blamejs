@@ -1,0 +1,45 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.10",
+  "date": "2026-06-13",
+  "headline": "Makes S3 Object-Lock version erasure reachable through the object store, and pins the build toolchain's native binary to a reviewed hash",
+  "summary": "The object store gains the versioned-delete surface its S3 Object Lock support always needed for real erasure. An unversioned delete on a versioning-enabled (Object-Lock) bucket only writes a delete-marker — the data version survives — so the framework's own delete could report success while a record protected for compliance, or one a data subject asked to erase, stayed on disk. b.objectStore / b.storage now carry a versionId: put and saveRaw return the version they created, deleteFile(key, { versionId, bypassGovernanceRetention }) targets a specific version (refused — not silently delete-markered — when it is under an active retention), and listVersions enumerates versions and delete-markers so an erasure workflow can find them. Backends with no version surface (the filesystem backend, and the current Azure and GCS adapters) refuse a versioned delete loudly rather than silently dropping the current object. Separately, the build toolchain's native bundler binary is now verified against a reviewed SHA-256 pin so a tampered or drifted binary is caught before it bundles the framework.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "Versioned object delete + listVersions for S3 Object-Lock erasure",
+          "body": "b.storage.deleteFile and the b.objectStore sigv4 backend now accept opts.versionId to erase a specific object version, and opts.bypassGovernanceRetention to lift a GOVERNANCE-mode retention for callers with the permission (COMPLIANCE stays immutable to everyone). b.storage.saveRaw and the backend put now return the versionId they created on a versioning-enabled bucket, and a new b.storage.listVersions(prefix) / backend listVersions enumerates every version and delete-marker (key, versionId, isLatest, deleteMarker, size, lastModified, etag) so a right-to-erasure or crypto-shred workflow can target prior versions. On a backend with no version surface, listVersions throws VERSIONS_UNSUPPORTED and a versioned delete throws VERSIONID_UNSUPPORTED rather than silently acting on the current object."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "S3 Object-Lock version erasure is reachable through the framework delete path",
+          "body": "On a versioning-enabled (Object-Lock) bucket, an unversioned DELETE only writes a delete-marker — the protected data version survives untouched — yet the framework's delete had no versionId surface, so it issued the unversioned form and reported success while the bytes the lock protects remained. A retention or legal hold could therefore look enforced to the framework caller while the operation WORM actually blocks was unreachable. The delete path now targets the exact version: deleting a version under a COMPLIANCE retention is refused (it throws, even with bypassGovernanceRetention), a no-retention version erases cleanly, and the enforcement is proven end-to-end against MinIO through the framework's own API."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Build toolchain native binary pinned to a reviewed hash",
+          "body": "The native bundler binary the build toolchain runs (esbuild's per-platform compiler, a development dependency that never ships in the runtime) is now verified against a SHA-256 pin captured by diffing the published package tarballs and hashing the binary. The build gate fails if the binary on disk does not match the reviewed hash for the platform, and if the toolchain version drifts from the reviewed pin — so a tampered or silently-updated binary is caught before it bundles the framework. The pinned version's diff is benign: version strings plus an installer size-bound and error-message hardening, no new install hooks, files, or network paths, and no runtime-dependency impact."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Object-store erasure guard + structural re-anchoring of the lint detectors",
+          "body": "A new guard locks the object-store delete path to the versioned-erasure contract: b.storage.deleteFile must thread versionId to the backend, so it can never silently revert to the WORM-blind unversioned delete. Separately, the framework's internal codebase-pattern lint detectors were re-anchored from fixed character spans to structural code boundaries, so they keep matching the code they guard as those functions grow rather than aging out of range; reviving them surfaced a few internal validation and transaction sites that now route through shared helpers (a required positive-integer-with-range validator and an async transaction wrapper) instead of hand-rolling the check. No public API change."
+        }
+      ]
+    }
+  ]
+}

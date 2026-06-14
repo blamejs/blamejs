@@ -18,24 +18,32 @@
  * has its version deleted successfully, proving the refusal is the lock
  * and not a blanket failure.
  *
- * Why the versioned delete matters — and what it exposes about the
- * framework: WORM protects a specific object VERSION. An unversioned
- * `DELETE /key` on a versioned bucket always succeeds (it writes a
- * delete-marker; the protected version survives untouched). The
- * framework's object-store delete (`backend.delete(key)` /
- * `bucketOps.delete`) issues ONLY the unversioned form — there is no
- * versionId surface anywhere in lib/object-store. So:
+ * Why the versioned delete matters: WORM protects a specific object
+ * VERSION. An unversioned `DELETE /key` on a versioned bucket always
+ * succeeds (it writes a delete-marker; the protected version survives
+ * untouched). To actually erase — or be refused on — a protected version
+ * the request must carry `?versionId=<v>`.
  *
- *   (a) the framework's own delete() on a retained object SUCCEEDS and
- *       returns a clean result, masking the fact that the data version
- *       is still there — the framework delete path is not WORM-aware;
- *   (b) the operation WORM actually blocks (delete the protected version)
- *       can only be issued by hand-signing `DELETE /key?versionId=<v>`.
+ * The framework now exposes that surface: `backend.put()` returns the
+ * `versionId` it created, `backend.delete(key, { versionId })` targets a
+ * specific version (with `bypassGovernanceRetention` for GOVERNANCE mode),
+ * and `backend.listVersions(prefix)` enumerates versions + delete-markers
+ * so an erasure workflow can find them. This test proves WORM enforcement
+ * two ways:
  *
- * This test hand-signs that versioned delete with the framework's OWN
- * SigV4 signer (lib/object-store/sigv4.signRequest) so the proof is that
- * MinIO enforces the lock under a request the framework signed correctly
- * — no security bypass, real handshake, real signature.
+ *   (a) the SHIPPED consumer path — `backend.put` / `backend.delete({
+ *       versionId })` / `backend.listVersions` — reaches the lock: a
+ *       versioned delete of a COMPLIANCE version THROWS (refused), even
+ *       with bypassGovernanceRetention, while a no-retention version
+ *       erases cleanly;
+ *   (b) an independent hand-signed control with the framework's OWN SigV4
+ *       signer (lib/object-store/sigv4.signRequest), establishing MinIO's
+ *       ground-truth refusal under a correctly-signed request — no bypass,
+ *       real handshake, real signature.
+ *
+ * An unversioned `backend.delete(key)` still writes a delete-marker (the
+ * data version survives); that remains asserted so the delete-marker vs
+ * version-erasure distinction is not silently lost.
  *
  * Observed MinIO behaviour (ground truth, captured live): the versioned
  * delete of a COMPLIANCE-retained version is refused with HTTP 400
@@ -223,6 +231,72 @@ async function _runWormOnEndpoint(label, endpoint, extraConfig) {
   check("[" + label + "] retained version still present after the refused deletes",
         afterRefuse.statusCode === 200 &&
         Buffer.compare(Buffer.from(afterRefuse.body || []), payload) === 0);
+
+  // ============================================================
+  // FRAMEWORK API — the shipped versionId surface reaches the lock
+  // ============================================================
+  // Everything above is hand-signed ground truth. This block drives the
+  // SHIPPED consumer path (backend.put / backend.delete({versionId}) /
+  // backend.listVersions) to prove the framework itself now reaches WORM
+  // enforcement — no hand-signing.
+  var fwKey = "fw-worm-" + Math.floor(Math.random() * 1e6) + ".txt";
+  var fwPayload = Buffer.from("framework-immutable " + new Date().toISOString(), "utf8");
+
+  // put() now RETURNS the versionId it used to discard.
+  var fwPut = await backend.put(fwKey, fwPayload, { multipart: false });
+  check("[" + label + "] framework put() returns a versionId (was discarded before this fix)",
+        typeof fwPut.versionId === "string" && fwPut.versionId.length > 0);
+
+  await ops.setObjectRetention(bucket, fwKey, {
+    mode:        "COMPLIANCE",
+    retainUntil: new Date(Date.now() + b.constants.TIME.hours(1)),
+  });
+
+  // listVersions() enumerates the version so an erasure workflow can find it.
+  var listed = await backend.listVersions(fwKey);
+  var foundFw = listed.items.filter(function (it) {
+    return it.key === fwKey && it.versionId === fwPut.versionId;
+  });
+  check("[" + label + "] framework listVersions() enumerates the protected version " +
+        "(isLatest, not a delete-marker)",
+        foundFw.length === 1 && foundFw[0].isLatest === true && foundFw[0].deleteMarker === false);
+
+  // An UNVERSIONED framework delete still writes a delete-marker — the data
+  // version survives. Asserted so the delete-marker vs version-erasure
+  // distinction is never silently lost.
+  var fwMarkerDel = await backend.delete(fwKey);
+  check("[" + label + "] framework delete(key) without versionId still succeeds (delete-marker)",
+        fwMarkerDel === true);
+  var fwSurvived = await backend.get(fwKey, { versionId: fwPut.versionId });
+  check("[" + label + "] protected version survives the unversioned framework delete",
+        Buffer.compare(Buffer.from(fwSurvived || []), fwPayload) === 0);
+
+  // delete({ versionId }) targets the protected version → WORM refuses → the
+  // framework call THROWS (no longer a silent delete-marker success).
+  var fwRefused = false;
+  try {
+    await backend.delete(fwKey, { versionId: fwPut.versionId });
+  } catch (_e) { fwRefused = true; }
+  check("[" + label + "] framework delete({versionId}) on a COMPLIANCE version is REFUSED (throws)",
+        fwRefused === true);
+
+  // bypassGovernanceRetention via the framework does NOT defeat COMPLIANCE.
+  var fwBypassRefused = false;
+  try {
+    await backend.delete(fwKey, { versionId: fwPut.versionId, bypassGovernanceRetention: true });
+  } catch (_e) { fwBypassRefused = true; }
+  check("[" + label + "] framework delete({versionId, bypassGovernanceRetention}) STILL refused — " +
+        "COMPLIANCE is immutable to everyone",
+        fwBypassRefused === true);
+
+  // Control via the framework: a no-retention version erases through
+  // delete({ versionId }) → true. Proves the refusal above is the lock, not
+  // a blanket failure of the framework versioned-delete path.
+  var fwCtlKey = "fw-control-" + Math.floor(Math.random() * 1e6) + ".txt";
+  var fwCtlPut = await backend.put(fwCtlKey, Buffer.from("fw-disposable"), { multipart: false });
+  var fwCtlErased = await backend.delete(fwCtlKey, { versionId: fwCtlPut.versionId });
+  check("[" + label + "] framework delete({versionId}) erases a no-retention version (true)",
+        fwCtlErased === true);
 
   // ============================================================
   // CONTROL — no retention: the version deletes fine

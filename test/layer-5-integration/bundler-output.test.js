@@ -143,6 +143,52 @@ function _esbuildBinaryMatchesPlatform() {
   catch (_e) { return false; }
 }
 
+// ---- esbuild binary supply-chain pin ----
+//
+// esbuild ships its native compiler as a per-platform binary fetched at
+// install time (@esbuild/<platform>-<arch>). The bundle test below runs that
+// binary; this pin verifies the binary on disk is the EXACT one we reviewed,
+// so a tampered / drifted binary is caught before it gets to bundle the
+// framework. The hashes were captured by diffing the published 0.28.0 -> 0.28.1
+// tarballs and sha256-ing the binaries (the dependency-review discipline: diff
+// + verify the binary, never rubber-stamp a version bump). Update on every
+// esbuild bump, after re-reviewing the diff.
+var ESBUILD_PINNED_VERSION = "0.28.1";
+var ESBUILD_BINARY_SHA256 = {
+  // CI floor (ubuntu) — authoritative
+  "linux-x64": "0c6588b092a2c291a72bab90659f3c9e0e25e0fe59c9ac12b4dae4d945e5548c",
+  // maintainer host (win32)
+  "win32-x64": "ec02ee9b14ab332416fedd10614dfb80eed5304d94f67745067c011934a8c3c3",
+};
+
+function testEsbuildBinaryHashPinned() {
+  // Version must match the reviewed pin — a drift means an un-reviewed bump.
+  check("esbuild version matches the reviewed pin (" + ESBUILD_PINNED_VERSION + ")",
+    require("esbuild/package.json").version === ESBUILD_PINNED_VERSION);
+
+  var platKey = process.platform + "-" + process.arch;
+  if (!_esbuildBinaryMatchesPlatform()) {
+    check("esbuild binary pin: skipped — node_modules binary mismatched for " +
+          platKey + " (host vs container deps)", true);
+    return;
+  }
+  var pinned = ESBUILD_BINARY_SHA256[platKey];
+  if (!pinned) {
+    // An unpinned platform (e.g. darwin-arm64) — note it loudly rather than
+    // silently pass, so coverage gaps are visible, but don't fail (we can't
+    // verify a hash we never reviewed).
+    check("esbuild binary pin: " + platKey + " not in the reviewed pin set — " +
+          "verification skipped on this platform (CI linux-x64 is authoritative)", true);
+    return;
+  }
+  var binPkg = path.dirname(require.resolve("@esbuild/" + platKey + "/package.json"));
+  var binName = process.platform === "win32" ? "esbuild.exe" : path.join("bin", "esbuild");
+  var binPath = path.join(binPkg, binName);
+  var actual = nodeCrypto.createHash("sha256").update(fs.readFileSync(binPath)).digest("hex");
+  check("esbuild native binary on disk matches the reviewed SHA-256 pin (" + platKey + ")",
+    actual === pinned);
+}
+
 function testEsbuildBundlePreservesVendorData() {
   if (!_esbuildBinaryMatchesPlatform()) {
     check("esbuild bundle: skipped — node_modules esbuild binary mismatched for " +
@@ -427,6 +473,7 @@ function testSeaBundlePreservesVendorData() {
 
 async function run() {
   try {
+    testEsbuildBinaryHashPinned();
     testEsbuildBundlePreservesVendorData();
     testEsbuildMinifiedBundlePreservesVendorData();
     testBundleHasNoMissingModuleRuntimePath();
