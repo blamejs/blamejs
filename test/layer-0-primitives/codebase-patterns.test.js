@@ -6980,7 +6980,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "sigv4-awsuriencode-utf16-unit-iteration",
     primitive: "iterate awsUriEncode by code point (Array.from / codePointAt), not by UTF-16 index + charAt — a per-unit encodeURIComponent throws URIError on a non-BMP key's split surrogate pair",
-    regex: /function awsUriEncode\([\s\S]{0,400}?encodeURIComponent/,
+    regex: /function awsUriEncode\((?:(?!\n\}|encodeURIComponent)[\s\S]){0,4000}?encodeURIComponent/,
     requires: /Array\.from|codePointAt/,
     allowlist: [],
     reason: "Object-store correctness — encodeURIComponent on a lone surrogate throws 'URIError: URI malformed', so iterating awsUriEncode by str.charAt(i) and escaping each UTF-16 unit breaks any object key containing a non-BMP character (emoji, CJK Extension B, ...) before the request is signed. The encoder must walk Unicode code points (Array.from(str) keeps surrogate pairs together) so the whole character reaches encodeURIComponent as one UTF-8 sequence.",
@@ -6989,7 +6989,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "sql-createtable-ddl-not-catalog-gated",
     primitive: "route createTable's emitted CREATE TABLE through _assertCatalogEmittable (its quote-aware single-statement scan is the injection backstop for the one raw-emission position — the verbatim column type) — never return a bare { sql, params }",
-    regex: /var sql = "CREATE TABLE " \+ ifNot[\s\S]{0,420}?return \{ sql:/,
+    regex: /var sql = "CREATE TABLE " \+ ifNot(?:(?!\n\}|return \{ sql:)[\s\S]){0,8000}?return \{ sql:/,
     allowlist: [],
     reason: "SQL injection — _ddlType returns an unrecognised column type verbatim into the DDL; it is the one raw-emission position in an otherwise quote-by-construction builder (constraints route through _checkRawFragment, names through _quoteId). The injection backstop is the quote-aware _assertCatalogEmittable scan, which refuses a top-level ';' / comment / unbalanced quote / unbalanced paren while CORRECTLY allowing those characters inside a balanced quoted label (ENUM('needs;review')). createTable must therefore return _assertCatalogEmittable(sql, []) — a bare { sql, params } would let a type like 'text); DROP TABLE x; --' emit a stacked statement. A non-quote-aware pre-scan on the type was removed precisely because it over-rejected valid quoted labels.",
   },
@@ -7030,7 +7030,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "xml-parsename-no-prototype-key-rejection",
     primitive: "reject element/attribute names __proto__/constructor/prototype in the XML name parser (lib/parsers/safe-xml.js parseName → FORBIDDEN_KEYS)",
-    regex: /xml\/bad-name[\s\S]{0,200}?return\s+input\.substring/,
+    regex: /xml\/bad-name(?:(?!\n {2}\}|return\s+input\.substring)[\s\S]){0,3000}?return\s+input\.substring/,
     requires: /FORBIDDEN_KEYS\.has/,
     skipCommentLines: true,
     allowlist: [],
@@ -7039,7 +7039,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "xml-make-wrapper-plain-object",
     primitive: "build the XML element-name wrapper with Object.create(null) (lib/parsers/safe-xml.js _make), not a plain {} keyed by an attacker-influenced element name",
-    regex: /function _make\(name, value\)[\s\S]{0,600}?var out = \{\}/,
+    regex: /function _make\(name, value\)(?:(?!\n {2}\}|var out = \{\})[\s\S]){0,4000}?var out = \{\}/,
     requires: /var out = Object\.create\(null\)/,
     skipCommentLines: true,
     allowlist: [],
@@ -7127,13 +7127,13 @@ var KNOWN_ANTIPATTERNS = [
   // is built without the limits shape.
   {
     id: "db-databasesync-without-sqlite-limits",
-    primitive: "construct the main db.init DatabaseSync(dbPath, ...) with the node:sqlite limits option (sqlLength) — a parse-time DoS floor complementary to streamLimit",
+    primitive: "construct every raw-SQL-exposing DatabaseSync opener (db.init's dbPath, the CLI's dbPath, localDb.thin's file) with the node:sqlite limits option (sqlLength) — a parse-time DoS floor complementary to streamLimit",
     scanScope: "lib",
-    regex: /new DatabaseSync\(dbPath\b/,
-    requires: /limits:\s*\{[\s\S]{0,200}?sqlLength/,
+    regex: /new DatabaseSync\(\s*(?:dbPath|file)\b/,
+    requires: /sqlLength\s*:/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "v0.15.9 Node-24.16 adoption. The framework parameterizes every builder value, so SQLITE_LIMIT_LENGTH (sqlLength) guards the raw-SQL surface (b.db.runSql) against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB). Fires when the main db handle `new DatabaseSync(dbPath` is constructed without the `limits: { ... sqlLength` shape; the headroom probe `new DatabaseSync(p)` is intentionally not matched (ephemeral, no attacker input). (SQLITE_LIMIT_ATTACHED is left at the SQLite default — the snapshot/backup path uses ATTACH.)",
+    reason: "v0.15.9 Node-24.16 adoption, widened v0.15.10 (#320). The framework parameterizes builder values, so SQLITE_LIMIT_LENGTH (sqlLength) guards the surfaces that parse operator/application raw SQL — b.db.runSql, the CLI, and b.localDb.thin's prepare()/exec() — against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB). Fires when a raw-SQL opener (`new DatabaseSync(dbPath` / `new DatabaseSync(file`) is constructed without the `limits: { ... sqlLength` shape. v0.15.9 anchored only on `dbPath` and so missed localDb.thin's `file` handle (#320); the var set now covers all three. The ephemeral headroom probe `new DatabaseSync(p)` and the vault-rotation temp handles are intentionally not matched — they run fixed PRAGMAs / parameterized re-seals, no attacker statement text. (SQLITE_LIMIT_ATTACHED is left at the SQLite default — the snapshot/backup path uses ATTACH.)",
   },
   // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
   // shared middleware/clear-site-data headerValue() helper (which validates
@@ -7397,7 +7397,7 @@ var KNOWN_ANTIPATTERNS = [
     // regex per shape keeps V8's backtracking engine happy on large
     // files (an alternation `(?:A)|(?:B)` with backrefs + `[\s\S]{0,N}?`
     // triggered an OOM on the first attempt).
-    regex: /var\s+\w+\s*=\s*\w+\.get\s*\([^;]+\)\s*;\s*\n\s*if\s*\(\s*!\s*\w+\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
+    regex: /var\s+\w+\s*=\s*\w+\.get\s*\([^;]+\)\s*;\s*\n\s*if\s*\(\s*!\s*\w+\s*\)\s*\{(?:(?!\n\s{0,4}\}\s*\n|\.set\s*\()[\s\S]){0,4000}?\.set\s*\(/,
     allowlist: [
       "lib/cache.js",                          // tagIndex (Map<tag, Set<key>>) — Set factory
       "lib/crypto-field.js",                   // _rateFailWindows (Map<actor:table:column, ts[]>) in _rateNoteFailure — timestamp-array factory
@@ -7424,7 +7424,7 @@ var KNOWN_ANTIPATTERNS = [
     // intermediate `var X = M.get(k)` binding). See the sibling entry.
     id: "map-has-then-set-pre-node-26",
     primitive: "Map.prototype.getOrInsertComputed(key, factory) (Node 26+); pre-floor-bump call sites are allowlisted below with per-site map+factory annotations — the floor-bump sweep walks the allowlist",
-    regex: /if\s*\(\s*!\s*\w+\.has\s*\([^)]+\)\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
+    regex: /if\s*\(\s*!\s*\w+\.has\s*\([^)]+\)\s*\)\s*\{(?:(?!\n\s{0,4}\}\s*\n|\.set\s*\()[\s\S]){0,4000}?\.set\s*\(/,
     allowlist: [
       "lib/websocket-channels.js",             // channelToConns (Map<channel, Set<conn>>) — Set factory; cluster-shared race window
       // Edge cases — flagged structurally but do NOT migrate cleanly
@@ -7661,7 +7661,7 @@ var KNOWN_ANTIPATTERNS = [
     // parsers added to lib/ inherit the discipline automatically.
     id: "slice1-optional-parseint-silent-default",
     primitive: "after `var X = Y.slice(1)`, refuse empty-digit segment with an explicit throw BEFORE parseInt; never silently default to the no-suffix mask",
-    regex: /\.slice\s*\(\s*1\s*\)\s*;[\s\S]{0,80}?if\s*\(\s*\w+\.length\s*>\s*0\s*\)\s*\{[\s\S]{0,160}?\bparseInt\s*\(/,
+    regex: /\.slice\s*\(\s*1\s*\)\s*;(?:(?!\n\s{0,2}\}|\bparseInt\s*\()[\s\S]){0,400}?if\s*\(\s*\w+\.length\s*>\s*0\s*\)\s*\{(?:(?!\n\s{0,2}\})[\s\S]){0,800}?\bparseInt\s*\(/,
     requires: /(?:cidr-length is empty|prefix-length is empty|grammar requires 1\*DIGIT)/,
     skipCommentLines: true,
     allowlist: [],
@@ -7828,6 +7828,24 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    id: "storage-deletefile-drops-versionid-threading",
+    primitive: "b.storage.deleteFile MUST thread { versionId, bypassGovernanceRetention } to backend.delete — a bare picked.backend.delete(key) reverts to the WORM-blind unversioned delete that only writes a delete-marker on an S3 Object-Lock bucket, masking that the data version survives (a fake erasure for GDPR Art. 17 / crypto-shred).",
+    scanScope: "lib",
+    regex: /function deleteFile\s*\(\s*key\s*,\s*opts\s*\)(?:(?!\n\})[\s\S]){0,800}?\.backend\.delete\s*\(\s*key\s*\)/,
+    allowlist: [],
+    reason: "v0.15.10 #88 — deleteFile threads versionId + bypassGovernanceRetention to backend.delete so b.storage.deleteFile(key, { versionId }) reaches the S3 versioned-delete (real erasure on an Object-Lock bucket); a versioned delete of a retained version is refused (throws), never a silent delete-marker success. A bare picked.backend.delete(key) is the pre-fix WORM-blind shape. Anchored on deleteFile(key, opts) + tempered on \\n} (deleteFile's own close) so it can't bleed into a sibling function; storage.js is the only deleteFile(key, opts) site. Empty allowlist — the bare form is the regression. The behavioral guard is test/integration/object-store-worm-lock.test.js (framework-API WORM proof on live MinIO); this is the cheap always-on structural backstop.",
+  },
+
+  {
+    id: "object-store-backend-deletekey-ignores-versionid-contract",
+    primitive: "every object-store backend deleteKey MUST accept (key, opts) and handle opts.versionId — sigv4 threads it to the versioned delete, every other backend throws VERSIONID_UNSUPPORTED. A single-param deleteKey(key) silently ignores a versionId an erasure workflow passed and issues a plain delete, the WORM-blind footgun #88 closed.",
+    scanScope: "lib",
+    regex: /function deleteKey\s*\(\s*key\s*\)/,
+    allowlist: [],
+    reason: "v0.15.10 #88 — the b.storage.deleteFile -> backend.delete({ versionId }) contract reaches whichever backend is routed (sigv4 / azure-blob / gcs / local / http-put). A backend that defines deleteKey(key) with no opts param drops the versionId silently (the original http-put miss Codex P2 caught: it forwarded versionId to a deleteKey that ignored it, issuing a plain DELETE while an erasure workflow believed it targeted a version). All five backends now take (key, opts); the single-param shape is the regression. Empty allowlist — a new object-store backend must take (key, opts) and either thread versionId (S3 versioned delete) or throw VERSIONID_UNSUPPORTED.",
+  },
+
+  {
     // Codex P1A on v0.12.12 PR #163 — "on-request" placement
     // semantics collapsed into "always" when shouldEmit didn't
     // gate on an explicit `opts.requested` signal. Detector locks
@@ -7897,7 +7915,7 @@ var KNOWN_ANTIPATTERNS = [
     // happens to follow an unrelated .map() in the same file.
     id: "rag-source-classify-without-classifywithsources",
     primitive: "to classify retrieval-augmented (RAG) sources alongside a prompt, compose b.ai.input.classifyWithSources — do NOT map b.ai.input.classify over a sources array by hand. classifyWithSources applies a tier-relative threshold (untrusted / internal sources escalate on a single severity-2 / any severity-3, vs classify's 2-severity-2 baseline) and computes the worst-of aggregate + tainted-source set. Mapping classify directly loses the stricter retrieved-data threshold (OWASP LLM01:2025 indirect prompt injection; CVE-2025-32711 EchoLeak).",
-    regex: /\.map\(\s*(?:function\s*\([^)]*\)\s*\{|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)[\s\S]{0,60}?(?<!function\s)\bclassify\s*\(/,
+    regex: /\.map\(\s*(?:function\s*\([^)]*\)\s*\{|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)(?:(?!\n\s{0,2}\})[\s\S]){0,600}?(?<!function\s)\bclassify\s*\(/,
     requires: /classifyWithSources|allow:rag-source-classify-without-classifywithsources/,
     skipCommentLines: true,
     allowlist: [],
@@ -7947,7 +7965,7 @@ var KNOWN_ANTIPATTERNS = [
     // is not flagged.
     id: "c2pa-timestamp-bespoke-chain-check",
     primitive: "verify a C2PA sigTst2 timestamp countersignature through b.tsa.verifyToken (full RFC 3161 CMS-signature + messageDigest + critical-sole-EKU check) — never a bespoke cert-chain-only walk on the timestamp token",
-    regex: /(?:sigTst2|tstToken|tstContainer|CounterSignature)[\s\S]{0,400}?(?:\.checkIssued\s*\(|new\s+(?:nodeCrypto\.)?X509Certificate[\s\S]{0,120}?\.verify\s*\()/,
+    regex: /(?:sigTst2|tstToken|tstContainer|CounterSignature)(?:(?!\n\}|\bverifyToken\s*\()[\s\S]){0,2000}?(?:\.checkIssued\s*\(|new\s+(?:nodeCrypto\.)?X509Certificate(?:(?!\n\})[\s\S]){0,400}?\.verify\s*\()/,
     skipCommentLines: true,
     allowlist: [],
     reason: "CVE-2025-52556 (RFC 3161 timestamp-validation bypass) / CWE-347 (improper signature verification). The C2PA sigTst2 (RFC 9921) timestamp countersignature in lib/content-credentials.js MUST be verified through b.tsa.verifyToken, which performs the full RFC 3161 §2.4.2/§2.3 check (CMS signature over the signed attributes, messageDigest recompute, critical + sole id-kp-timeStamping EKU). A bespoke cert-chain-only check (checkIssued / X509Certificate(...).verify) on the timestamp token accepts a token whose CMS signature was never verified — a backdating / key-compromise forgery. The detector fires when a chain-walk appears near a timestamp token; route through tsa.verifyToken instead. Scoped to the timestamp context so the CAWG identity x509 chain (_verifyIdentityX509Chain) is not affected.",
@@ -8621,7 +8639,7 @@ var KNOWN_ANTIPATTERNS = [
     // Match `switch (alg) { ... default: return ... }` /
     // `default: break` — the specific permissive shape. Throwing
     // defaults pattern as `default:\s*throw` and are NOT matched.
-    regex: /switch\s*\(\s*\w*[Aa]lg\w*\s*\)\s*\{[\s\S]{0,1500}?default:\s*(?:return|break|\/\/[^\n]*\n\s*\})/,
+    regex: /switch\s*\(\s*\w*[Aa]lg\w*\s*\)\s*\{(?:(?!\n\s{0,2}\}|\bdefault:)[\s\S]){0,6000}?default:\s*(?:return|break|\/\/[^\n]*\n\s*\})/,
     allowlist: [
       // sd-jwt-vc.js's _resolveSigAlgo DOES throw in the default
       // branch, so it doesn't match. Other auth files use
@@ -8632,28 +8650,28 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "inline-codepoint-class-table",
     primitive: "codepointClass.BIDI_RE / C0_CTRL_RE / ZERO_WIDTH_RE / NULL_RE_G / hex4 / charClass / fromCp",
-    regex: /var\s+BIDI_RANGES\s*=\s*\[\s*0x200E[\s\S]{0,500}?function\s+_charClass/,
+    regex: /var\s+BIDI_RANGES\s*=\s*\[\s*0x200E(?:(?!\n\})[\s\S]){0,2000}?new RegExp\(\s*["']\[["']\s*\+\s*charClass\(/,
     allowlist: ["lib/codepoint-class.js"],
     reason: "Extracted across guard-csv / guard-html / guard-svg. The BIDI_RANGES + C0_CTRL_RANGES + ZERO_WIDTH_RANGES literal tables plus the _hex4 / _charClass / _fromCp helpers plus the `new RegExp(\"[\" + _charClass(...) + \"]\")` regex compilations were identical across 3 guard primitives by design. Centralized so the codepoint catalog has a single source of truth and future guards (filename / archive / mime / ...) consume the shared module instead of re-defining the tables.",
   },
   {
     id: "inline-resolve-profile-and-posture",
     primitive: "gateContract.resolveProfileAndPosture(opts, { profiles, compliancePostures, defaults, errorClass, errCodePrefix })",
-    regex: /typeof\s+opts\.profile\s*===\s*["']string["'][\s\S]{0,300}?compliancePosture[\s\S]{0,300}?Object\.assign\(\{\}\s*,\s*[A-Z]+/,
+    regex: /typeof\s+opts\.profile\s*===\s*["']string["'](?:(?!\n\})[\s\S]){0,1600}?compliancePosture(?:(?!\n\})[\s\S]){0,1600}?Object\.assign\(\{\}\s*,\s*[A-Z]+/,
     allowlist: ["lib/gate-contract.js"],
     reason: "Extracted across guard-csv / guard-html / guard-svg. Every guard primitive's _resolveOpts opens with the identical `if (opts.profile) overlay = PROFILES[opts.profile]; if (opts.compliancePosture) overlay = Object.assign(overlay, COMPLIANCE_POSTURES[...]); return Object.assign({}, DEFAULTS, overlay, opts);` cascade. Centralized in gateContract so future guards consume the shared resolver — keeps the family resolution shape identical across members.",
   },
   {
     id: "inline-char-strip-policy-cascade",
     primitive: "codepointClass.applyCharStripPolicies(text, opts)",
-    regex: /opts\.bidiPolicy\s*===\s*["']strip["'][\s\S]{0,200}?opts\.controlPolicy\s*===\s*["']strip["'][\s\S]{0,200}?opts\.nullBytePolicy/,
+    regex: /opts\.bidiPolicy\s*===\s*["']strip["'](?:(?!\n\})[\s\S]){0,800}?opts\.controlPolicy\s*===\s*["']strip["'](?:(?!\n\})[\s\S]){0,800}?opts\.nullBytePolicy/,
     allowlist: ["lib/codepoint-class.js"],
     reason: "Extracted across guard-html / guard-svg sanitize paths — the 4-line `if (opts.bidiPolicy === 'strip') s = s.replace(BIDI_RE_G, '')` cascade was identical. guard-csv uses different opt-name vocabulary (bidiCharPolicy / nullByteHandling) so it keeps its inline strip block; that's a single-vendor occurrence, below the duplicate-detector floor.",
   },
   {
     id: "inline-detect-char-threats",
     primitive: "codepointClass.detectCharThreats(text, opts, codePrefix)",
-    regex: /var\s+bidiMatch\s*=\s*\w+\.match\(BIDI_RE\)[\s\S]{0,200}?bidi-override[\s\S]{0,300}?nullBytePolicy[\s\S]{0,200}?null-byte/,
+    regex: /var\s+bidiMatch\s*=\s*\w+\.match\(BIDI_RE\)(?:(?!\n\})[\s\S]){0,1200}?bidi-override(?:(?!\n\})[\s\S]){0,1600}?nullBytePolicy(?:(?!\n\})[\s\S]){0,1200}?null-byte/,
     allowlist: ["lib/codepoint-class.js"],
     reason: "Extracted across guard-html / guard-svg detection passes — the bidi/null-byte/control-char issue-emit cascade was identical at the head of every _detectIssues. guard-csv keeps its inline form because it uses different opt-name vocabulary (bidiCharPolicy / nullByteHandling) and additionally classifies homoglyphs as a CSV-specific threat.",
   },
@@ -8698,7 +8716,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "inline-rule-pack-loader",
     primitive: "gateContract.makeRulePackLoader(errorClass, codePrefix)",
-    regex: /var\s+_\w*[Rr]ulePacks?\s*=\s*\{\}[\s\S]{0,80}function\s+loadRulePack\s*\(\s*pack\s*\)\s*\{[\s\S]{0,200}?validateOpts\.requireObject[\s\S]{0,200}?validateOpts\.requireNonEmptyString[\s\S]{0,100}?_\w*[Rr]ulePacks?\[pack\.id\]\s*=\s*pack/,
+    regex: /var\s+_\w*[Rr]ulePacks?\s*=\s*\{\}[\s\S]{0,80}function\s+loadRulePack\s*\(\s*pack\s*\)\s*\{(?:(?!\n\})[\s\S]){0,1200}?validateOpts\.requireObject(?:(?!\n\})[\s\S]){0,1200}?validateOpts\.requireNonEmptyString(?:(?!\n\})[\s\S]){0,1200}?_\w*[Rr]ulePacks?\[pack\.id\]\s*=\s*pack/,
     allowlist: ["lib/gate-contract.js"],
     reason: "Extracted across guard-csv / guard-html / guard-svg loadRulePack(pack) entry. Identical scaffolding (closed-over store + validateOpts cascade + pack.id keyed insert) consolidated into a closure factory.",
   },
@@ -8712,9 +8730,9 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "inline-build-guard-gate-forwarder",
     primitive: "gateContract.buildGuardGate(name, opts, check)",
-    regex: /forensicEvidenceStore:\s*opts\.forensicEvidenceStore[\s\S]{0,400}?onAudit:\s*opts\.onAudit/,
-    allowlist: ["lib/gate-contract.js"],
-    reason: "Extracted across guard-csv / guard-html / guard-svg gate(opts) factories. Every guard's gate() body forwarded the same ~16-key opts bag (mode / audit / observability / forensicEvidenceStore / cache / hooks / runtime cap / ...) to gateContract.defineGate; centralized so each guard's gate() body is just the check function plus a label.",
+    regex: /forensicEvidenceStore:\s*opts\.forensicEvidenceStore(?:(?!\n\s*\}|\bonAudit:)[\s\S]){0,2000}?onAudit:\s*opts\.onAudit/,
+    allowlist: ["lib/gate-contract.js", "lib/guard-all.js"],
+    reason: "Extracted across guard-csv / guard-html / guard-svg gate(opts) factories. Every guard's gate() body forwarded the same ~16-key opts bag (mode / audit / observability / forensicEvidenceStore / cache / hooks / runtime cap / ...) to gateContract.defineGate; centralized so each guard's gate() body is just the check function plus a label. guard-all.js is allowlisted on a different axis: _resolveActiveGuards assembles this same opts bag as the BASE that is then merged with per-guard overrides and fanned out to every member guard's already-built gate — it is the aggregate dispatcher's base-opts, not a single guard's gate forwarder, so buildGuardGate (which builds one gate) does not apply.",
   },
   {
     id: "inline-bad-input-issue-result",
@@ -8733,7 +8751,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "inline-issue-validator-entry",
     primitive: "gateContract.runIssueValidator(input, opts, detector)",
-    regex: /typeof\s+input\s*===\s*["']string["'][\s\S]{0,80}?Buffer\.isBuffer\(input\)[\s\S]{0,200}?bad-input[\s\S]{0,300}?return\s*\{[\s\S]{0,80}?ok:\s*!issues\.some/,
+    regex: /typeof\s+input\s*===\s*["']string["'](?:(?!\n\})[\s\S]){0,400}?Buffer\.isBuffer\(input\)(?:(?!\n\})[\s\S]){0,600}?bad-input(?:(?!\n\})[\s\S]){0,800}?return\s*\{(?:(?!\n\})[\s\S]){0,400}?ok:\s*!issues\.some/,
     allowlist: ["lib/gate-contract.js"],
     reason: "Extracted across guard-csv / guard-html validate() entry points. The string|Buffer normalization + bad-input fallback + issue-aggregation return shape was identical across guards; centralized into gate-contract. guard-svg keeps its inline form because SVGZ magic-byte detection needs the raw Buffer (utf8 conversion would lose the gzip header).",
   },
@@ -8747,7 +8765,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "inline-assert-no-char-threats",
     primitive: "codepointClass.assertNoCharThreats(text, opts, errorFactory, codePrefix)",
-    regex: /opts\.bidiPolicy\s*===\s*["']reject["'][\s\S]{0,150}?BIDI_RE\.test[\s\S]{0,200}?opts\.nullBytePolicy\s*===\s*["']reject["']/,
+    regex: /opts\.bidiPolicy\s*===\s*["']reject["'](?:(?!\n\})[\s\S]){0,800}?BIDI_RE\.test(?:(?!\n\})[\s\S]){0,800}?opts\.nullBytePolicy\s*===\s*["']reject["']/,
     allowlist: ["lib/codepoint-class.js"],
     reason: "Extracted across guard-html / guard-svg sanitize entry — every guard's reject-on-character-class threats opens with the same `if (opts.bidiPolicy === 'reject' && BIDI_RE.test(s)) throw; if (opts.nullBytePolicy === 'reject' && s.indexOf(NULL_BYTE) !== -1) throw; if (opts.controlPolicy === 'reject' && C0_CTRL_RE.test(s)) throw;` cascade. Centralized so the reject-policy contract is identical across the family. guard-csv keeps its own inline cell-level reject for opt-name vocabulary reasons (bidiCharPolicy etc.).",
   },
@@ -8761,7 +8779,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "inline-observability-shape-validation",
     primitive: "validateOpts.observabilityShape(observability, label, ErrorClass)",
-    regex: /opts\.observability\s*!==\s*undefined\s*&&\s*opts\.observability\s*!==\s*null[\s\S]{0,200}?event\s*!==\s*["']function["']/,
+    regex: /opts\.observability\s*!==\s*undefined\s*&&\s*opts\.observability\s*!==\s*null(?:(?!\n\s*\})[\s\S]){0,1500}?event\s*!==\s*["']function["']/,
     allowlist: [],
     reason: "Extracted parallel to auditShape — opts.observability shape validation across i18n / cache / auth.lockout.",
   },
@@ -8878,7 +8896,7 @@ var KNOWN_ANTIPATTERNS = [
     // !== "string" || opts.X[i].length === 0) throw }` — recurring across
     // api-key (scopes), file-upload (allowedFileTypes), seeders (dependsOn),
     // i18n (rtlLanguages / eagerLocales), and others.
-    regex: /!\s*Array\.isArray\s*\(\s*\w+\.\w+\s*\)[\s\S]{0,400}?typeof\s+\w+\.\w+\s*\[\s*\w+\s*\]\s*!==\s*["']string["']\s*\|\|\s*\w+\.\w+\s*\[\s*\w+\s*\]\.length\s*===\s*0/,
+    regex: /!\s*Array\.isArray\s*\(\s*\w+\.\w+\s*\)(?:(?!\n\}|!\s*Array\.isArray)[\s\S]){0,3000}?typeof\s+\w+\.\w+\s*\[\s*\w+\s*\]\s*!==\s*["']string["']\s*\|\|\s*\w+\.\w+\s*\[\s*\w+\s*\]\.length\s*===\s*0/,
     allowlist: ["lib/validate-opts.js"],
     reason: "Extracted to validateOpts.optionalNonEmptyStringArray. Replaces the per-file `if (X !== undefined) { if (!Array.isArray) throw; for (i) if (typeof !== string || === '') throw }` cascade with one call.",
   },
@@ -8954,7 +8972,7 @@ var KNOWN_ANTIPATTERNS = [
     primitive: "safeAsync.safeInvoke(callback, payload, onError?)",
     // Detect the literal `onDrop({...})` call wrapped in try/catch — the
     // shape every log-stream sink previously rolled by hand.
-    regex: /try\s*\{\s*onDrop\s*\(\s*\{[\s\S]{0,200}?\}\s*\)\s*;?\s*\}\s*catch/,
+    regex: /try\s*\{\s*onDrop\s*\(\s*\{(?:(?!onDrop\s*\(|\}\s*\)\s*;?\s*\}\s*catch)[\s\S]){0,2000}?\}\s*\)\s*;?\s*\}\s*catch/,
     allowlist: [],
     reason: "Extracted to safeAsync.safeInvoke — operator-supplied callbacks must invoke through the framework wrapper so throws can't cascade into the sink's flush loop.",
   },
@@ -8978,7 +8996,7 @@ var KNOWN_ANTIPATTERNS = [
     // Hard to match _STR contents post-tokenization; match the
     // surrounding shape instead: a `try { ... "BEGIN" ... "COMMIT" ...
     // } catch ... "ROLLBACK"` shape.
-    regex: /"BEGIN"[\s\S]{0,400}?"COMMIT"[\s\S]{0,200}?\}\s*catch[\s\S]{0,300}?"ROLLBACK"/,
+    regex: /"BEGIN"(?:(?!"BEGIN"|"ROLLBACK"|"COMMIT")[\s\S]){0,4000}?"COMMIT"(?:(?!"BEGIN"|"ROLLBACK")[\s\S]){0,1200}?\}\s*catch(?:(?!"BEGIN")[\s\S]){0,1200}?"ROLLBACK"/,
     allowlist: [
       "lib/db-schema.js",   // definition site (runInTransaction itself)
       // db.js's `transaction(fn)` is the framework's PUBLIC transaction
@@ -9006,7 +9024,7 @@ var KNOWN_ANTIPATTERNS = [
     // shape that every primitive's create() rolled by hand. Tokenized:
     // `! _ID . _ID ( _ID . _ID ) ) { throw new _ID ( _STR , _STR + _ID . _ID ( _ID . _ID )`
     // — the distinctive `+ nb.shape(opts.X)` tail fingerprints it.
-    regex: /!\s*\w+\.is\w*FiniteInt\s*\(\s*\w+\.\w+\s*\)[\s\S]{0,200}?\w+\.shape\s*\(\s*\w+\.\w+\s*\)/,
+    regex: /!\s*\w+\.is\w*FiniteInt\s*\(\s*\w+\.\w+\s*\)(?:(?!\n {2}\}|\.shape\s*\()[\s\S]){0,800}?\w+\.shape\s*\(\s*\w+\.\w+\s*\)/,
     allowlist: [
       "lib/numeric-bounds.js",   // definition site
       // The helper signature is `new errorClass(code, message)`. Sites
@@ -9057,7 +9075,7 @@ var KNOWN_ANTIPATTERNS = [
     primitive: "safeAsync.makeScheduledFlush(delayMs, flushFn)",
     // The literal `var flushTimer = null;` followed by setTimeout idempotent-schedule shape
     // every batched-write sink previously rolled by hand.
-    regex: /var\s+flushTimer\s*=\s*null\s*;[\s\S]{0,300}?if\s*\(\s*flushTimer/,
+    regex: /var\s+flushTimer\s*=\s*null\s*;(?:(?!\n\}|if\s*\(\s*flushTimer)[\s\S]){0,1200}?if\s*\(\s*flushTimer/,
     allowlist: ["lib/safe-async.js"],
     reason: "Extracted to safeAsync.makeScheduledFlush — idempotent setTimeout coalesce-and-flush helper used by every log-stream sink.",
   },
@@ -9068,7 +9086,7 @@ var KNOWN_ANTIPATTERNS = [
     // instead of calling the framework helper. The shape is symmetric
     // across every consumer module that needs hot-path emission with
     // drop-silent semantics — extraction was complete, no allowlist.
-    regex: /try\s*\{[\s\S]{0,150}?observability\.event\s*\([^)]*\)\s*;?\s*\}\s*catch/,
+    regex: /try\s*\{(?:(?!\}\s*catch|observability\.event)[\s\S]){0,800}?observability\.event\s*\([^)]*\)\s*;?\s*\}\s*catch/,
     allowlist: [],
     reason: "Extracted to observability.safeEvent — drop-silent semantics for hot-path event emission. Any module wrapping observability.event in try/catch should call observability.safeEvent instead.",
   },
@@ -9286,7 +9304,7 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "mountinfo-options-bind-check",
     primitive: "parse /proc/self/mountinfo field 4 (root within source FS) and check != \"/\" for bind detection",
-    regex: /mountinfo[\s\S]{0,800}?options[\s\S]{0,80}?indexOf\(["']bind["']\)/,
+    regex: /mountinfo(?:(?!\n\})[\s\S]){0,6000}?\boptions\b(?:(?!\n\})[\s\S]){0,400}?indexOf\(["']bind["']\)/,
     allowlist: [],
     reason: "Per Documentation/filesystems/proc.rst §3.5, /proc/self/mountinfo field 6 (mount options) does NOT carry a 'bind' tag — the kernel exposes bind-mount provenance via field 4 ('root within source filesystem'), which is '/' for a regular mount and the bound source path for a bind mount. Checking the options field for 'bind' never fires for actual bind mounts and silently misses the failure mode it claims to defend. Detector catches the mis-parse shape at n=1.",
   },
@@ -9468,7 +9486,7 @@ var KNOWN_ANTIPATTERNS = [
     // entry point (function called with `({` opts-object first arg).
     // The fix in mail-crypto-smime extracted `_verifySignerInfo(si, ...)`
     // which takes the item positionally — that doesn't match the regex.
-    regex: /for\s*\(\s*var\s+\w+\s*=\s*0[^)]*\.(?:signerInfos|signers|recipients|items|entries)\.length[^)]*\)\s*\{[\s\S]{0,600}?\bverify\s*\(\s*\{/,
+    regex: /(?:^|\n)([ \t]*)for\s*\(\s*var\s+\w+\s*=\s*0[^)]*\.(?:signerInfos|signers|recipients|items|entries)\.length[^)]*\)\s*\{(?:(?!\n\1\}|\bverify\s*\()[\s\S]){0,4000}?\bverify\s*\(\s*\{/,
     allowlist: [
       // mail-crypto-smime.js verifyAll was fixed v0.11.0 to call
       // _verifySignerInfo(si, ...) (positional `si`), not
@@ -9631,7 +9649,7 @@ var KNOWN_ANTIPATTERNS = [
     id: "test-microtask-drain-loop-sleep",
     primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) — poll the observable condition; never drain a fixed count of microtasks/ticks by reassigning a promise to its own .then() in a loop",
     scanScope: "test",
-    regex: /\b(\w+)\s*=\s*\1\.then\([\s\S]{0,80}?set(?:Immediate|Timeout)\s*\(/,
+    regex: /\b(\w+)\s*=\s*\1\.then\((?:(?!\.then\(|set(?:Immediate|Timeout)\s*\()[\s\S]){0,400}?set(?:Immediate|Timeout)\s*\(/,
     skipCommentLines: true,
     allowlist: [
       // The catalog itself carries this pattern as a regex literal +
@@ -9761,7 +9779,7 @@ var KNOWN_ANTIPATTERNS = [
     primitive: "a bespoke b.db.init with a tmpDir must pass allowNonTmpfsTmpDir:true (as setupTestDb does), base the scratch on os.tmpdir(), or run atRest:\"plain\" — so the encrypted-at-rest non-tmpfs gate does not fail it on the Linux/macOS CI floor",
     scanScope: "test",
     skipCommentLines: true,
-    regex: /\bb\.db\.init\s*\([\s\S]{0,400}?\btmpDir\s*:/,
+    regex: /\bb\.db\.init\s*\(\s*\{(?:(?!\}\s*\)|\bb\.db\.init\s*\()[\s\S]){0,4000}?\btmpDir\s*:/,
     requires: /allowNonTmpfsTmpDir|atRest\s*:\s*["']plain["']|os\.tmpdir\s*\(/,
     allowlist: [],
     reason: "v0.15.0 — the encrypted-at-rest db.init disk-residency gate refuses a non-tmpfs tmpDir on Linux/macOS but is a no-op on win32, so a bespoke db.init with a repo-local (.test-output) scratch dir passes on Windows and fails on CI. setupTestDb / setupTestDbForMW already pass allowNonTmpfsTmpDir:true; a bespoke db.init must do the same, base its scratch on os.tmpdir() (/tmp = recognized tmpfs), or run atRest:\"plain\". The requires-marker confirms one mitigation is present in the file.",
@@ -9811,7 +9829,7 @@ var KNOWN_ANTIPATTERNS = [
     // closes those variants.
     id: "map-get-falsy-then-set-pre-node-26",
     primitive: "Node 26 `Map.prototype.getOrInsertComputed(key, factory)` collapses falsy-check + insert into one atomic call",
-    regex: /if\s*\(\s*(?:!\s*\w+\.get\s*\([^)]+\)|\w+\.get\s*\([^)]+\)\s*===\s*(?:undefined|null))\s*\)\s*\{[\s\S]{0,300}?\.set\s*\(/,
+    regex: /(?:^|\n)([ \t]*)if\s*\(\s*(?:!\s*\w+\.get\s*\([^)]+\)|\w+\.get\s*\([^)]+\)\s*===\s*(?:undefined|null))\s*\)\s*\{(?:(?!\n\1\}|\.set\s*\()[\s\S]){0,3000}?\.set\s*\(/,
     skipCommentLines: true,
     allowlist: [],
     reason: "Companion to map-has-then-set-pre-node-26 — same Node 26 getOrInsertComputed migration target, captures the `!M.get(k)` / `M.get(k) === undefined|null` syntactic variants. v0.11.3 audit identified the original map-has-then-set detector as bypassable by switching `.has(k)` to `.get(k)` falsy-check; this entry closes that gap.",
@@ -9827,7 +9845,7 @@ var KNOWN_ANTIPATTERNS = [
     // `lib/atomic-file.js` opens-by-fd as the canonical safe-read.
     id: "fs-existssync-then-read-toctou",
     primitive: "open-by-fd first, then operate on the fd; never check-then-read against the same path (CodeQL js/file-system-race)",
-    regex: /\bfs\.(?:existsSync|statSync|lstatSync)\s*\(\s*(\w+)\s*\)[\s\S]{0,400}?\bfs\.(?:readFile|readFileSync|open|openSync|createReadStream|writeFile|writeFileSync)\s*\(\s*\1\b/,
+    regex: /\bfs\.(?:existsSync|statSync|lstatSync)\s*\(\s*(\w+)\s*\)(?:(?!\n\}|\bfs\.(?:readFile|readFileSync|open|openSync|createReadStream|writeFile|writeFileSync)\s*\(\s*\1\b)[\s\S]){0,4000}?\bfs\.(?:readFile|readFileSync|open|openSync|createReadStream|writeFile|writeFileSync)\s*\(\s*\1\b/,
     skipCommentLines: true,
     allowlist: [
       // The canonical safe-read primitive — its job IS the existsSync-
@@ -10027,7 +10045,7 @@ var KNOWN_ANTIPATTERNS = [
     // allowlist with a documented reason.
     id: "safedecompress-omits-max-compressed-bytes",
     primitive: "safeDecompress({ maxOutputBytes, maxCompressedBytes: <operator bound>, ... }) — align both caps with the caller's intent; never rely on the 4 MiB default when maxOutputBytes is operator-configurable",
-    regex: /safeDecompress\s*\([\s\S]{0,300}?maxOutputBytes\s*:/,
+    regex: /safeDecompress\s*\((?:(?!;|maxOutputBytes\s*:)[\s\S]){0,3000}?maxOutputBytes\s*:/,
     requires: /\bmaxCompressedBytes\b/,
     skipCommentLines: true,
     allowlist: [],
@@ -10135,7 +10153,7 @@ var KNOWN_ANTIPATTERNS = [
     // NOT this bug and does not match — neither shape names `sha3Hash`.
     id: "derived-hash-handrolled-outside-crypto-field",
     primitive: "cryptoField derived/lookup hashes — compute via _computeDerivedHash / b.cryptoField.computeNamespacedHash (honours salted-sha3 vs hmac-shake256 mode + vault.getDerivedHashMacKey); do not hand-roll sha3Hash(getDerivedHashSalt() + ns + value) at call sites",
-    regex: /getDerivedHashSalt\s*\(\s*\)\s*\.toString\s*\(\s*["']hex["']\s*\)\s*\+|var\s+(\w+)\s*=\s*[\w.]*getDerivedHashSalt\s*\(\s*\)\s*;[\s\S]{0,200}?\b(\w+)\s*=\s*\1\s*\.toString\s*\(\s*["']hex["']\s*\)\s*;[\s\S]{0,200}?sha3Hash\s*\(\s*\2\s*\+/,
+    regex: /getDerivedHashSalt\s*\(\s*\)\s*\.toString\s*\(\s*["']hex["']\s*\)\s*\+|var\s+(\w+)\s*=\s*[\w.]*getDerivedHashSalt\s*\(\s*\)\s*;(?:(?!\n\})[\s\S]){0,2000}?\b(\w+)\s*=\s*\1\s*\.toString\s*\(\s*["']hex["']\s*\)\s*;(?:(?!\n\})[\s\S]){0,2000}?sha3Hash\s*\(\s*\2\s*\+/,
     skipCommentLines: true,
     allowlist: [
       // The canonical helper — _computeDerivedHash branches on mode here.
@@ -12286,6 +12304,48 @@ function testWikiPortAgreesAcrossArtifacts() {
     bad);
 }
 
+// The esbuild dev-tool version is pinned in THREE artifacts that carry no
+// lockfile to keep them in sync: package.json devDependencies (the
+// source-of-truth), ci.yml's exact `npm install esbuild@<v>` for the
+// bundler-output gate, and bundler-output.test.js's ESBUILD_BINARY_SHA256
+// map (the reviewed binary hashes, keyed by version). A bump that updates
+// one and not the others is the v0.11.40 silent-drift class: ci.yml tested
+// 0.28.0 while package.json declared 0.28.1, so CI verified an unreviewed
+// version. This check enforces 3-way agreement so the drift can't recur.
+function testEsbuildPinAgreesAcrossArtifacts() {
+  var bad = [];
+  var pkg;
+  try { pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); }
+  catch (_e) { return; }
+  var pkgVer = pkg.devDependencies && pkg.devDependencies.esbuild;
+  if (!pkgVer) return;
+
+  var ci;
+  try { ci = fs.readFileSync(".github/workflows/ci.yml", "utf8"); }
+  catch (_e) { return; }
+  var ciMatch = /esbuild@([0-9][^\s'"]*)/.exec(ci);
+  if (ciMatch && ciMatch[1] !== pkgVer) {
+    bad.push({ file: ".github/workflows/ci.yml", line: 0,
+      content: "ci.yml installs esbuild@" + ciMatch[1] +
+               " but package.json devDependencies pins esbuild " + pkgVer +
+               " — CI would test an unreviewed version" });
+  }
+
+  var bundlerTest;
+  try { bundlerTest = fs.readFileSync("test/layer-5-integration/bundler-output.test.js", "utf8"); }
+  catch (_e) { return; }
+  if (bundlerTest.indexOf('"' + pkgVer + '":') === -1 && bundlerTest.indexOf("'" + pkgVer + "':") === -1) {
+    bad.push({ file: "test/layer-5-integration/bundler-output.test.js", line: 0,
+      content: "ESBUILD_BINARY_SHA256 has no reviewed-hash entry for esbuild " + pkgVer +
+               " (package.json devDep) — re-review the published-tarball diff + add the binary hashes on bump" });
+  }
+
+  bad = _filterMarkers(bad, "esbuild-pin-cross-artifact-drift");
+  _report("esbuild pin agrees across package.json devDep + ci.yml install + bundler-output.test.js " +
+          "binary-hash map (prevent a workflow / test pin silently drifting from the reviewed version)",
+    bad);
+}
+
 // v1 — error codes are the operator-grep contract and must be
 // `namespace/kebab-case`. The first string argument to `new XError(...)`
 // and `XError.factory(...)` IS the code (defineClass constructor signature
@@ -13246,6 +13306,7 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
+  testEsbuildPinAgreesAcrossArtifacts();
   testNoTrackedInternalNotes();
   testResidencyGatesWired();
   testWikiStopGraceExceedsShutdownBudget();
