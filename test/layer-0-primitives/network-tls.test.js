@@ -422,7 +422,37 @@ function testPkixHostShape() {
         err2 && err2.code === "tls/pkix-hostname-mismatch");
 }
 
+// v0.15.12 (#143) — an outbound TLS connection that honors rejectUnauthorized:
+// false (operator opt-in to disable peer-cert validation) must emit an audit +
+// observability event so the degraded posture is observable. Drive the shared
+// helper through a spied observability sink (the live connect path is covered
+// in the integration suite alongside tls.classical_downgrade).
+function testInsecureTlsAudit() {
+  var nt = b.network.tls;
+  check("auditInsecureTls is exported", typeof nt.auditInsecureTls === "function");
+
+  var observability = require("../../lib/observability");
+  var captured = [];
+  var origEmit = observability.emit;
+  try {
+    observability.emit = function (name, meta) { captured.push({ name: name, meta: meta }); };
+    nt.auditInsecureTls({ host: "peer.example", port: 8443, source: "network.tls.connectWithEch" });
+  } finally {
+    observability.emit = origEmit;
+  }
+  var ev = captured.filter(function (c) { return c.name === "tls.insecure_skip_verify"; });
+  check("auditInsecureTls emits tls.insecure_skip_verify", ev.length >= 1);
+  check("audit event carries host/port/source",
+        ev.length >= 1 && ev[0].meta.host === "peer.example" &&
+        ev[0].meta.port === 8443 && ev[0].meta.source === "network.tls.connectWithEch");
+
+  var threw = false;
+  try { nt.auditInsecureTls(null); } catch (_e) { threw = true; }
+  check("auditInsecureTls is drop-silent on bad input (never throws into a connect)", threw === false);
+}
+
 async function run() {
+  testInsecureTlsAudit();
   testEchSurface();
   testEchParseDraft22();
   testEchParseAcceptsBase64();

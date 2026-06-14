@@ -156,6 +156,20 @@ function testUnquoteSfString() {
         b.structuredFields.unquoteSfString("bare-token") === "bare-token");
   check("unquoteSfString: unterminated quote returns null",
         b.structuredFields.unquoteSfString('"oops') === null);
+  // v0.15.12 (#77) — adjacent / repeated escapes the old two-pass .replace()
+  // decode mangled. unquoteSfString routes through the single-pass
+  // unescapeSfStringBody; the two-pass form returned a DOUBLED backslash for a
+  // lone escaped backslash.
+  check("unquoteSfString: lone escaped backslash decodes to a single backslash",
+        b.structuredFields.unquoteSfString('"\\\\"') === "\\");
+  check("unquoteSfString: escaped backslash adjacent to escaped quote",
+        b.structuredFields.unquoteSfString('"\\\\\\""') === "\\\"");
+  check("unescapeSfStringBody: lone escaped backslash -> single",
+        b.structuredFields.unescapeSfStringBody("\\\\") === "\\");
+  check("unescapeSfStringBody: two escaped backslashes -> two",
+        b.structuredFields.unescapeSfStringBody("\\\\\\\\") === "\\\\");
+  check("unescapeSfStringBody: non-string passthrough",
+        b.structuredFields.unescapeSfStringBody(42) === 42);
   check("unquoteSfString: empty returns empty",
         b.structuredFields.unquoteSfString("") === "");
   check("unquoteSfString: whitespace-only returns empty",

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.11",
-  "createdAt": "2026-06-14T05:18:13.280Z",
+  "frameworkVersion": "0.15.12",
+  "createdAt": "2026-06-14T14:11:42.465Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44422,6 +44422,10 @@
               "type": "function",
               "arity": 1
             },
+            "auditInsecureTls": {
+              "type": "function",
+              "arity": 1
+            },
             "buildOptions": {
               "type": "function",
               "arity": 1
@@ -51296,6 +51300,10 @@
         "splitTopLevel": {
           "type": "function",
           "arity": 2
+        },
+        "unescapeSfStringBody": {
+          "type": "function",
+          "arity": 1
         },
         "unquoteSfString": {
           "type": "function",
