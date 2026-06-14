@@ -424,27 +424,28 @@ function testPkixHostShape() {
 
 // v0.15.12 (#143) — an outbound TLS connection that honors rejectUnauthorized:
 // false (operator opt-in to disable peer-cert validation) must emit an audit +
-// observability event so the degraded posture is observable. Drive the shared
-// helper through a spied observability sink (the live connect path is covered
-// in the integration suite alongside tls.classical_downgrade).
+// observability event so the degraded posture is observable. Capture the event
+// through the real operator tap (observability.setTap) — observability has no
+// `emit`, so the emit must land on the safeEvent → tap path that an operator
+// actually wires (the live connect path is covered in the integration suite
+// alongside tls.classical_downgrade).
 function testInsecureTlsAudit() {
   var nt = b.network.tls;
   check("auditInsecureTls is exported", typeof nt.auditInsecureTls === "function");
 
   var observability = require("../../lib/observability");
   var captured = [];
-  var origEmit = observability.emit;
+  observability.setTap(function (name, value, labels) { captured.push({ name: name, labels: labels }); });
   try {
-    observability.emit = function (name, meta) { captured.push({ name: name, meta: meta }); };
     nt.auditInsecureTls({ host: "peer.example", port: 8443, source: "network.tls.connectWithEch" });
   } finally {
-    observability.emit = origEmit;
+    observability.setTap(null);
   }
   var ev = captured.filter(function (c) { return c.name === "tls.insecure_skip_verify"; });
   check("auditInsecureTls emits tls.insecure_skip_verify", ev.length >= 1);
   check("audit event carries host/port/source",
-        ev.length >= 1 && ev[0].meta.host === "peer.example" &&
-        ev[0].meta.port === 8443 && ev[0].meta.source === "network.tls.connectWithEch");
+        ev.length >= 1 && ev[0].labels.host === "peer.example" &&
+        ev[0].labels.port === 8443 && ev[0].labels.source === "network.tls.connectWithEch");
 
   var threw = false;
   try { nt.auditInsecureTls(null); } catch (_e) { threw = true; }
