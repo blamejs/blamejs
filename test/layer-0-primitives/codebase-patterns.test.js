@@ -2855,6 +2855,15 @@ async function testNoDuplicateCodeBlocks() {
     {
       mode:  "family-subset",
       files: [
+        "lib/db.js:init",
+        "lib/eat.js:verify",
+        "lib/http-client-cookie-jar.js:getAll",
+      ],
+      reason: "v0.15.11 — coincidental 50-tok normalized window across three unrelated domains: db.init's declarative schema -> cryptoField.registerTable forwarding (a fixed list of `key: t.key` property copies inside the per-table loop), eat.verify's EAT claim extraction, and the cookie jar's getAll iteration. The shingle is the property-copy / loop-body shell, not behaviour — one registers crypto-field schema, one verifies an attestation token, one collects cookies. db.init became the third member, tipping it over the 3-file STRONG-DUP floor, when `allowPlainMigration: t.allowPlainMigration` was added to the registerTable forward (Codex P2: the read-side pre-AAD migration opt-in must survive the db.init consumer path, not just direct registerTable callers).",
+    },
+    {
+      mode:  "family-subset",
+      files: [
         "lib/audit.js:_queryCluster",
         "lib/auth/ciba.js:startAuthentication",
         "lib/auth/oauth.js:endSessionUrl",
@@ -7159,6 +7168,22 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "v0.15.11 (CodeQL js/polynomial-redos, the #168/#170 response-injection shape). `body.match(/<body[^>]*>/i)` is the WORM-the-body-tag find both bot-disclose and speculation-rules used to splice content after <body>; the greedy `[^>]*`-then-`>` retries from every `<body` offset, O(n^2) on a body with many `<body` and no `>` (an app rendering user content into its HTML reaches it). safeBuffer.indexAfterOpenTag is a single forward indexOf walk, linear, and stricter (requires a real tag boundary so `<bodyfoo>` isn't a false <body>). Fires on the str.match(/<tag[^>]*>/) form; the WCAG checker's `/<body\\b[^>]*>/i.exec(html)` is the regex.exec(str) form on operator-rendered audit input (dev/CI, not a request hot path) and is a different shape, so it stays silent. Empty allowlist.",
+  },
+  // v0.15.11 (Codex P2) — mcp sanitize-mode redaction must remove EVERY
+  // dangerous token, not just the leftmost. A non-global String.replace on a
+  // multi-alternation regex strips only the first match, so
+  // `data:text/html,<script>...` would keep the executable <script> and
+  // sanitize mode would return runnable HTML. The fix routes both the
+  // dangerous-HTML and prompt-injection redactions through _redactAll(t,
+  // <RE>_G) — a global replace looped to a fixpoint.
+  {
+    id: "mcp-sanitize-redact-must-be-global",
+    primitive: "redact dangerous-HTML / injection tokens in mcp sanitize mode via _redactAll(t, DANGEROUS_HTML_RE_G / INJECTION_RE_G) — NOT t.replace(DANGEROUS_HTML_RE / INJECTION_RE, ...) (non-global leaves every match after the first)",
+    scanScope: "lib",
+    regex: /\.replace\(\s*(?:DANGEROUS_HTML_RE|INJECTION_RE)\s*,/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.15.11 (Codex P2). A non-global String.replace removes only the LEFTMOST match; on `data:text/html,<script>alert(1)</script>` it strips `data:text/html` and leaves the executable <script>, so sanitize mode returns runnable HTML for the exact vector the vbscript:/data:text/html alternation was added to neutralize. The fix is _redactAll(t, <RE>_G): a global replace repeated to a fixpoint so every dangerous token is removed. The _G global variants do NOT match this regex (`RE_G,` has no `\\s*,` right after `RE`), so the fixed call stays silent; a reverted non-global `.replace(DANGEROUS_HTML_RE,` / `.replace(INJECTION_RE,` fires. Empty allowlist.",
   },
   // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
   // shared middleware/clear-site-data headerValue() helper (which validates

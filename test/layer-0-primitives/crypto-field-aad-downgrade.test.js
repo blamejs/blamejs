@@ -61,6 +61,32 @@ async function run() {
     migrated.secret === "legacy-pre-aad-value");
 
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+
+  // ---- the REAL consumer path: db.init({ schema }) must forward allowPlainMigration ----
+  // Applications register AAD tables declaratively through db.init, not a
+  // direct cryptoField.registerTable call. The migration opt-in has to survive
+  // that path — otherwise a schema declaring { aad: true, allowPlainMigration:
+  // true } registers with the default (false) and legacy plain cells are nulled
+  // despite the operator opting in.
+  var tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cf-apm-dbinit-"));
+  helpers.setTestPassphraseEnv();
+  await helpers.setupTestDb(tmp2, [{
+    name:    "apm_via_schema",
+    columns: { id: "TEXT PRIMARY KEY", secret: "TEXT" },
+    aad:     true,
+    sealedFields: ["secret"],
+    rowIdField:   "id",
+    allowPlainMigration: true,
+  }]);
+  var sch = b.cryptoField.getSchema("apm_via_schema");
+  check("db.init schema path forwards allowPlainMigration to registerTable",
+    !!sch && sch.allowPlainMigration === true);
+  var viaSchema = b.cryptoField.unsealRow("apm_via_schema",
+    { id: "row1", secret: b.vault.seal("legacy-via-db-init") }, { type: "system" });
+  check("allowPlainMigration honored through the db.init schema consumer path",
+    viaSchema.secret === "legacy-via-db-init");
+
+  await helpers.teardownTestDb(tmp2);
 }
 
 module.exports = { run: run };
