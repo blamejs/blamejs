@@ -317,7 +317,64 @@ async function testRotateRekeysFingerprint() {
   }
 }
 
+async function testLogoutEmitsClearSiteData() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-logout-"));
+  try {
+    await setupTestDb(tmpDir);
+    var s = await b.session.create({ userId: "u-logout" });
+    check("session created", typeof s.token === "string");
+
+    var headers = {};
+    var res = {
+      setHeader: function (k, v) { headers[k] = v; },
+    };
+    var destroyed = await b.session.logout(res, s.token);
+
+    check("logout returns true (session destroyed)", destroyed === true);
+    check("logout emits Clear-Site-Data header",
+      typeof headers["Clear-Site-Data"] === "string" &&
+      headers["Clear-Site-Data"].indexOf('"cookies"') !== -1 &&
+      headers["Clear-Site-Data"].indexOf('"storage"') !== -1);
+    check("logout expires the session cookie",
+      typeof headers["Set-Cookie"] === "string" &&
+      /(^|;)\s*Max-Age=0/.test(headers["Set-Cookie"]) &&
+      headers["Set-Cookie"].indexOf("sid=;") === 0);
+    check("logout cookie is Secure + HttpOnly",
+      /HttpOnly/.test(headers["Set-Cookie"]) && /Secure/.test(headers["Set-Cookie"]));
+
+    // The session is gone cluster-wide.
+    var after = await b.session.verify(s.token);
+    check("logout destroyed the session (verify returns null)", after === null);
+
+    // Custom cookie name + an unknown Clear-Site-Data directive throws.
+    var s2 = await b.session.create({ userId: "u-logout-2" });
+    var h2 = {}; var res2 = { setHeader: function (k, v) { h2[k] = v; } };
+    await b.session.logout(res2, s2.token, { cookieName: "__Host-sid" });
+    check("logout honors custom cookieName", h2["Set-Cookie"].indexOf("__Host-sid=;") === 0);
+
+    // An unknown directive throws BEFORE any side effect — the session is NOT
+    // destroyed and no client-wipe headers are queued (validate-before-revoke).
+    var s3 = await b.session.create({ userId: "u-logout-3" });
+    var h3 = {}; var res3 = { setHeader: function (k, v) { h3[k] = v; } };
+    var threw = null;
+    try { await b.session.logout(res3, s3.token, { types: ["bogus"] }); }
+    catch (e) { threw = e; }
+    check("logout rejects an unknown Clear-Site-Data directive", threw !== null);
+    check("logout did NOT queue headers on the bad-directive throw",
+      h3["Clear-Site-Data"] === undefined && h3["Set-Cookie"] === undefined);
+    check("logout did NOT destroy the session on the bad-directive throw",
+      (await b.session.verify(s3.token)) !== null);
+
+    var badRes = null;
+    try { await b.session.logout({}, "x"); } catch (e) { badRes = e; }
+    check("logout rejects a res without setHeader", badRes && badRes.code === "session/bad-res");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
+  await testLogoutEmitsClearSiteData();
   await testSealedCookieDefault();
   await testSealedCookieRotateAndDestroy();
   await testClientIpPrefixV4();

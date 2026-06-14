@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.8",
-  "createdAt": "2026-06-13T18:53:11.258Z",
+  "frameworkVersion": "0.15.9",
+  "createdAt": "2026-06-13T22:58:01.805Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2355,6 +2355,10 @@
           "arity": 2
         },
         "readSync": {
+          "type": "function",
+          "arity": 2
+        },
+        "renameWithRetry": {
           "type": "function",
           "arity": 2
         },
@@ -50767,6 +50771,10 @@
         "isAnonymous": {
           "type": "function",
           "arity": 1
+        },
+        "logout": {
+          "type": "function",
+          "arity": 3
         },
         "purgeExpired": {
           "type": "function",

@@ -52,7 +52,7 @@ var b = require("@blamejs/core");
 })();
 ```
 
-**Requirements:** Node.js 24.14+ (current active LTS, fixes CVE-2026-21713 non-constant-time HMAC compare). Node 26 satisfies the floor and the framework test suite runs cleanly on it today; the floor itself will bump to `>=26.x` when Node 26 promotes to Active LTS. Two Node 26 platform changes operators integrating with blamejs should know about: the new `localStorage` global (the framework's storage backend is `b.backup.diskStorage`; the legacy `b.backup.localStorage` alias was removed in v0.11.20 — update call sites accordingly), and the seed-only ML-KEM / ML-DSA PKCS8 export shape (sealed material from Node 24 re-imports cleanly on Node 26; new material from Node 26 in the seed-only shape). See [SECURITY.md](SECURITY.md#node-26-compatibility) for the details.
+**Requirements:** Node.js 24.16+ (current active LTS line; 24.14.1 fixed CVE-2026-21713 non-constant-time HMAC compare, 24.16 is the current patch level). Node 26 satisfies the floor and the framework test suite runs cleanly on it today; the floor itself will bump to `>=26.x` when Node 26 promotes to Active LTS. Two Node 26 platform changes operators integrating with blamejs should know about: the new `localStorage` global (the framework's storage backend is `b.backup.diskStorage`; the legacy `b.backup.localStorage` alias was removed in v0.11.20 — update call sites accordingly), and the seed-only ML-KEM / ML-DSA PKCS8 export shape (sealed material from Node 24 re-imports cleanly on Node 26; new material from Node 26 in the seed-only shape). See [SECURITY.md](SECURITY.md#node-26-compatibility) for the details.
 
 ## What ships in the box
 
@@ -60,7 +60,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 
 ### Data layer
 
-- **SQLite with sealed-by-default columns** — `b.db`, migrations, seeders, atomic-file writes
+- **SQLite with sealed-by-default columns** — `b.db`, migrations, seeders, atomic-file writes; the db handle constructs with a SQLITE_LIMIT_LENGTH parse-time cap (a >1 MiB statement is rejected) as a DoS floor on the raw-SQL surface
 - **Chainable query builder** — atomic `.increment(col, delta)`, closure-form `.whereGroup` / top-level `.orWhere` OR composition, `.search(fields, term)` LIKE-OR with safe `%`/`_` ESCAPE handling, `.paginate(opts)` returning `{ items, total, page, totalPages }`; a column-membership gate (`db.init({ columnGate })`, default reject) fails a query closed when it names a column the table never declared, and `whereRaw` refuses an embedded string literal so values bind through placeholders
 - **Mongo-style document-store facade** — `b.db.collection(name, opts?)` with `$set` / `$inc` / `$unset` / `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$like`; schemaless-document opts via `overflow: "<col>"` (folds unknown fields into a JSON-text column; rewrites `WHERE` on virtual fields to `JSON_EXTRACT`), `jsonColumns: [...]` (auto-stringify on write + parse via `b.safeJson` on read), `sealedFields: { email: "emailHash" }` (co-locates a `b.cryptoField` sealed-column / derived-hash declaration so plaintext lookups auto-rewrite to hash-column lookups)
 - **DB lifecycle** — in-memory encrypted snapshot via `b.db.snapshot()`; standalone encrypted-DB-file lifecycle (`b.db.fileLifecycle({ dataDir, vault })` — decrypt-to-tmpfs, periodic re-encrypt flush, graceful shutdown — same envelope as `b.db`, no schema/audit-chain coupling); `db.init` opt-outs `frameworkTables: false` / `auditSigning: false` and path overrides `encryptedDbPath` / `encryptedDbName` / `dbKeyPath`
@@ -86,6 +86,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
   - Opaque-userId anonymous sessions via `create({ anonymous: true })`
   - Idle / absolute timeouts, fingerprint drift detection + anomaly scoring, brute-force lockout
   - Session-fixation rotation (`b.session.rotate`) re-keys the sid-bound device fingerprint to the new id — pass the same `{ req, fingerprintFields }` used at `create` (a fingerprint-bound session rotated without `req` is refused, so the binding can never silently break or false-drift)
+  - One-call secure logout (`b.session.logout(res, token)`) destroys the session AND wipes client-side state — emits an RFC 9527 Clear-Site-Data header (cookies + storage + cache) and expires the session cookie before deleting the row
 - **Authorization** — RBAC + per-role DB binding + role-spec `requireMfa` + per-route MFA freshness window + ABAC predicate registry (`b.permissions`); API keys with rotation (`b.apiKey`)
 - **Workflow gates** — break-glass column gates with second-factor + audit (`b.breakGlass`); two-person-rule m-of-n approval with cooling-off lock + cancellation (`b.dualControl`)
 - **Financial / Open Banking** — FAPI 2.0 Final composite posture (PAR + PKCE-S256 + DPoP-or-mTLS + RFC 9207); runtime enforcement helpers `b.fapi2.assertCallback` (refuses missing iss + bare-param under message-signing) and `b.fapi2.assertAuthzRequest` (refuses non-JAR); CFPB §1033 / FDX 6.0 consumer-financial-data-sharing wrapper (`b.fdx`)

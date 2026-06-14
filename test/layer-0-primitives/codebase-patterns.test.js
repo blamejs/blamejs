@@ -7100,6 +7100,56 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "CWE-532 secret/PII egress. v0.15.4 (#125) baked observability.redactAttrs() into every SPAN + METRIC attribute encoder but the detector was anchored on the _attr* function names, so it was blind to the LOG sinks whose encoders carry the OTLP-logs schema names. lib/log-stream-otlp.js (_toLogRecord meta + _serializeBatch resource) and lib/log-stream-otlp-grpc.js (_encodeLogRecord meta + _encodeResourceLogs resource) handed record.meta and resourceAttrs straight to _encodeAttrs/_encodeAttributes/_encodeResource — a log record's meta or a resource attribute holding a credential reached the collector unscrubbed. Root: 'every OTLP egress encoder redacts'; the span detector saw spans/metrics, this one sees logs. Fires on the raw `_encode*(record.meta` / `_encode*(resourceAttrs` / `_encodeResource(_resourceAttrs(cfg)` shape; the fix wraps the arg in observability().redactAttrs(...) (the span/metric contract), making the first paren token `observability` so the match goes silent.",
   },
+  // #146 — every FINAL temp->dest rename must route through
+  // atomicFile.renameWithRetry, the bounded retry on a Windows-transient
+  // destination lock (EPERM/EACCES/EBUSY from AV / the search indexer /
+  // Dropbox / OneDrive briefly holding the target). A bare nodeFs.renameSync
+  // surfaces a transient lock as a hard failure (httpClient.downloadStream
+  // shipped exactly that) and re-hand-rolls a retry the framework already owns
+  // as a primitive. The ONLY legitimate bare renameSync is inside the
+  // primitive itself (atomic-file.js _renameWithRetry).
+  {
+    id: "bare-renamesync-not-via-renamewithretry",
+    primitive: "route every final temp->dest rename through atomicFile.renameWithRetry (the Windows rename-lock retry) instead of a bare nodeFs.renameSync / fs.renameSync — a transient AV / indexer / cloud-sync lock on the destination must be retried, not surfaced as a hard failure",
+    scanScope: "lib",
+    regex: /\b(?:nodeFs|fs)\.renameSync\(/,
+    allowlist: [
+      // atomic-file.js IS the primitive — _renameWithRetry wraps the one real
+      // nodeFs.renameSync with the bounded transient-lock retry loop.
+      "lib/atomic-file.js",
+    ],
+    reason: "#146 (user-surfaced). atomicFile.writeSync retries its final rename on a Windows-transient destination lock; httpClient.downloadStream's final rename was a bare nodeFs.renameSync, so a download into a cloud-synced / AV-scanned directory surfaced the transient lock as a hard failure. The retry was also hand-rolled and un-reusable. The fix exports atomic-file's _renameWithRetry as atomicFile.renameWithRetry and routes EVERY final temp->dest rename through it (downloadStream + vault/passphrase-ops + mtls-ca + log-stream-local + self-update + config-drift + archive-read + archive-tar-read + local-db-thin + restore-rollback). Fires on any bare nodeFs.renameSync/fs.renameSync; the only allowlisted use is atomic-file.js where the primitive's retry loop lives.",
+  },
+  // v0.15.9 — db.init() must construct its DatabaseSync with the SQLITE_LIMIT_*
+  // sqlLength cap: a parse-time DoS floor that rejects a megaquery on the
+  // raw-SQL surface. The ephemeral storage headroom probe (new DatabaseSync(p))
+  // is a different construction and is not anchored. Fires if the main db handle
+  // is built without the limits shape.
+  {
+    id: "db-databasesync-without-sqlite-limits",
+    primitive: "construct the main db.init DatabaseSync(dbPath, ...) with the node:sqlite limits option (sqlLength) — a parse-time DoS floor complementary to streamLimit",
+    scanScope: "lib",
+    regex: /new DatabaseSync\(dbPath\b/,
+    requires: /limits:\s*\{[\s\S]{0,200}?sqlLength/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.15.9 Node-24.16 adoption. The framework parameterizes every builder value, so SQLITE_LIMIT_LENGTH (sqlLength) guards the raw-SQL surface (b.db.runSql) against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB). Fires when the main db handle `new DatabaseSync(dbPath` is constructed without the `limits: { ... sqlLength` shape; the headroom probe `new DatabaseSync(p)` is intentionally not matched (ephemeral, no attacker input). (SQLITE_LIMIT_ATTACHED is left at the SQLite default — the snapshot/backup path uses ATTACH.)",
+  },
+  // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
+  // shared middleware/clear-site-data headerValue() helper (which validates
+  // each directive against the known set), not a hand-rolled quoted-token
+  // string. A literal `setHeader("Clear-Site-Data", '"cookies", ...')` skips
+  // the directive validation and re-hand-rolls the RFC 9527 quoting the
+  // primitive owns (the b.session.logout extraction lesson).
+  {
+    id: "clear-site-data-header-hand-rolled",
+    primitive: "build the Clear-Site-Data response header via clearSiteData.headerValue(types) (validated RFC 9527 quoting) — do not hand-roll the quoted-directive string literal in setHeader",
+    scanScope: "lib",
+    regex: /setHeader\(\s*["']Clear-Site-Data["']\s*,\s*["']/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.15.9 (Clear-Site-Data logout wiring). The middleware/clear-site-data headerValue() helper is the single builder of the RFC 9527 §3 quoted-token list and validates every directive against KNOWN_TYPES; both emitters (the middleware's create() and b.session.logout) route through it. A literal `setHeader(\"Clear-Site-Data\", '\"cookies\", ...')` hand-rolls the quoting and skips the validation. Fires when the second setHeader arg is a string literal; the live emitters pass a var/call so they stay silent.",
+  },
   // #131 — the b.middleware.dpop factory must REQUIRE its replayStore at config
   // time. The store is DPoP's jti-replay defense (RFC 9449 §11.1); reading it
   // optionally and gating the check behind `if (replayStore)` silently mounts a
