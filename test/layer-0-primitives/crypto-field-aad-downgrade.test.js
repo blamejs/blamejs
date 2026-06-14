@@ -89,11 +89,8 @@ async function run() {
   await helpers.teardownTestDb(tmp2);
 }
 
+// No standalone CLI runner: this test drives db.init with a test passphrase,
+// and a `console.error(e.stack)` failure footer is a clear-text-logging sink
+// CodeQL flags on the (test-fixture) passphrase. The smoke runner invokes
+// run() directly — matching db-key-aad.test.js and the other db.init tests.
 module.exports = { run: run };
-
-if (require.main === module) {
-  run().then(
-    function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
-    function (e) { console.error("FAIL:", e.stack || e); process.exit(1); }
-  );
-}
