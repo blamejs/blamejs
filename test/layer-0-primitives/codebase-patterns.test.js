@@ -12295,6 +12295,48 @@ function testWikiPortAgreesAcrossArtifacts() {
     bad);
 }
 
+// The esbuild dev-tool version is pinned in THREE artifacts that carry no
+// lockfile to keep them in sync: package.json devDependencies (the
+// source-of-truth), ci.yml's exact `npm install esbuild@<v>` for the
+// bundler-output gate, and bundler-output.test.js's ESBUILD_BINARY_SHA256
+// map (the reviewed binary hashes, keyed by version). A bump that updates
+// one and not the others is the v0.11.40 silent-drift class: ci.yml tested
+// 0.28.0 while package.json declared 0.28.1, so CI verified an unreviewed
+// version. This check enforces 3-way agreement so the drift can't recur.
+function testEsbuildPinAgreesAcrossArtifacts() {
+  var bad = [];
+  var pkg;
+  try { pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); }
+  catch (_e) { return; }
+  var pkgVer = pkg.devDependencies && pkg.devDependencies.esbuild;
+  if (!pkgVer) return;
+
+  var ci;
+  try { ci = fs.readFileSync(".github/workflows/ci.yml", "utf8"); }
+  catch (_e) { return; }
+  var ciMatch = /esbuild@([0-9][^\s'"]*)/.exec(ci);
+  if (ciMatch && ciMatch[1] !== pkgVer) {
+    bad.push({ file: ".github/workflows/ci.yml", line: 0,
+      content: "ci.yml installs esbuild@" + ciMatch[1] +
+               " but package.json devDependencies pins esbuild " + pkgVer +
+               " — CI would test an unreviewed version" });
+  }
+
+  var bundlerTest;
+  try { bundlerTest = fs.readFileSync("test/layer-5-integration/bundler-output.test.js", "utf8"); }
+  catch (_e) { return; }
+  if (bundlerTest.indexOf('"' + pkgVer + '":') === -1 && bundlerTest.indexOf("'" + pkgVer + "':") === -1) {
+    bad.push({ file: "test/layer-5-integration/bundler-output.test.js", line: 0,
+      content: "ESBUILD_BINARY_SHA256 has no reviewed-hash entry for esbuild " + pkgVer +
+               " (package.json devDep) — re-review the published-tarball diff + add the binary hashes on bump" });
+  }
+
+  bad = _filterMarkers(bad, "esbuild-pin-cross-artifact-drift");
+  _report("esbuild pin agrees across package.json devDep + ci.yml install + bundler-output.test.js " +
+          "binary-hash map (prevent a workflow / test pin silently drifting from the reviewed version)",
+    bad);
+}
+
 // v1 — error codes are the operator-grep contract and must be
 // `namespace/kebab-case`. The first string argument to `new XError(...)`
 // and `XError.factory(...)` IS the code (defineClass constructor signature
@@ -13255,6 +13297,7 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
+  testEsbuildPinAgreesAcrossArtifacts();
   testNoTrackedInternalNotes();
   testResidencyGatesWired();
   testWikiStopGraceExceedsShutdownBudget();

@@ -82,7 +82,7 @@ jobs:
         # runtime deps (everything vendored under lib/vendor/) and each
         # transpilation step is a supply-chain hop. The explicit
         # name@version specifiers are the source-of-truth pin.
-        run: npm install --no-audit --no-fund --no-save esbuild@0.28.0 postject@1.0.0-alpha.6
+        run: npm install --no-audit --no-fund --no-save esbuild@0.28.1 postject@1.0.0-alpha.6
 
       - name: Run framework smoke
         # NODE_OPTIONS heap bump — codebase-patterns duplicate-block
