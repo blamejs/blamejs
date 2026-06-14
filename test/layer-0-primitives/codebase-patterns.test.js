@@ -7135,6 +7135,15 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "v0.15.9 Node-24.16 adoption, widened v0.15.10 (#320). The framework parameterizes builder values, so SQLITE_LIMIT_LENGTH (sqlLength) guards the surfaces that parse operator/application raw SQL — b.db.runSql, the CLI, and b.localDb.thin's prepare()/exec() — against an attacker-influenced megaquery the parser would otherwise chew (SQLite default is 1 GB). Fires when a raw-SQL opener (`new DatabaseSync(dbPath` / `new DatabaseSync(file`) is constructed without the `limits: { ... sqlLength` shape. v0.15.9 anchored only on `dbPath` and so missed localDb.thin's `file` handle (#320); the var set now covers all three. The ephemeral headroom probe `new DatabaseSync(p)` and the vault-rotation temp handles are intentionally not matched — they run fixed PRAGMAs / parameterized re-seals, no attacker statement text. (SQLITE_LIMIT_ATTACHED is left at the SQLite default — the snapshot/backup path uses ATTACH.)",
   },
+  {
+    id: "trailing-hspace-regex-replace-is-quadratic",
+    primitive: "strip trailing horizontal whitespace via safeBuffer.stripTrailingHspace(s) — NOT s.replace(TRAILING_HSPACE_RE) / .replace(/[ \\t]+$/)",
+    scanScope: "lib",
+    regex: /\.replace\(\s*(?:safeBuffer\.)?TRAILING_HSPACE_RE\b|\.replace\(\s*\/\[ \\t\]\+\$\/|(?:\/\[ \\t\]\+\$\/[gimsuy]*|\bTRAILING_HSPACE_RE)\.test\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.15.11 (CodeQL js/polynomial-redos). `/[ \\t]+$/` (TRAILING_HSPACE_RE) used with .replace() is O(n^2) in V8 on adversarial input — a long run of spaces/tabs then a non-space makes the engine retry the greedy match from every offset (200K spaces ~12s; the env/yaml parsers cap TOTAL bytes, not per-line, so one huge-whitespace line hangs). safeBuffer.stripTrailingHspace is a linear backward char-scan, byte-identical to the regex. Every internal trailing-whitespace strip (safe-buffer/safe-env x3/safe-yaml x7) routes through it; TRAILING_HSPACE_RE stays exported for `.test()`-style existence checks (linear) but a `.replace(...TRAILING_HSPACE_RE)` is the regression. Empty allowlist.",
+  },
   // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
   // shared middleware/clear-site-data headerValue() helper (which validates
   // each directive against the known set), not a hand-rolled quoted-token
