@@ -7144,6 +7144,22 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "v0.15.11 (CodeQL js/polynomial-redos). `/[ \\t]+$/` (TRAILING_HSPACE_RE) used with .replace() is O(n^2) in V8 on adversarial input — a long run of spaces/tabs then a non-space makes the engine retry the greedy match from every offset (200K spaces ~12s; the env/yaml parsers cap TOTAL bytes, not per-line, so one huge-whitespace line hangs). safeBuffer.stripTrailingHspace is a linear backward char-scan, byte-identical to the regex. Every internal trailing-whitespace strip (safe-buffer/safe-env x3/safe-yaml x7) routes through it; TRAILING_HSPACE_RE stays exported for `.test()`-style existence checks (linear) but a `.replace(...TRAILING_HSPACE_RE)` is the regression. Empty allowlist.",
   },
+  // v0.15.11 — locating a document-structural tag (<body>/<html>/<head>) in a
+  // response body via `str.match(/<tag[^>]*>/)` is O(n^2) in V8: a body
+  // carrying many `<tag` starts with no closing `>` (rendered user content
+  // can produce exactly that) makes the engine retry the greedy `[^>]*` from
+  // every offset. A `<body`-repeated 200K body benchmarks in seconds. The
+  // response-injection middleware (bot-disclose, speculation-rules) must use
+  // the linear safeBuffer.indexAfterOpenTag(html, tag) instead.
+  {
+    id: "html-tag-find-via-greedy-bracket-match-is-quadratic",
+    primitive: "find a <tag>'s insertion point via safeBuffer.indexAfterOpenTag(html, tag) (linear indexOf walk) — NOT str.match(/<tag[^>]*>/)",
+    scanScope: "lib",
+    regex: /\.(?:match|search)\(\s*\/<\w+\[\^>\]\*>/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "v0.15.11 (CodeQL js/polynomial-redos, the #168/#170 response-injection shape). `body.match(/<body[^>]*>/i)` is the WORM-the-body-tag find both bot-disclose and speculation-rules used to splice content after <body>; the greedy `[^>]*`-then-`>` retries from every `<body` offset, O(n^2) on a body with many `<body` and no `>` (an app rendering user content into its HTML reaches it). safeBuffer.indexAfterOpenTag is a single forward indexOf walk, linear, and stricter (requires a real tag boundary so `<bodyfoo>` isn't a false <body>). Fires on the str.match(/<tag[^>]*>/) form; the WCAG checker's `/<body\\b[^>]*>/i.exec(html)` is the regex.exec(str) form on operator-rendered audit input (dev/CI, not a request hot path) and is a different shape, so it stays silent. Empty allowlist.",
+  },
   // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
   // shared middleware/clear-site-data headerValue() helper (which validates
   // each directive against the known set), not a hand-rolled quoted-token
