@@ -103,6 +103,9 @@ async function _runAll() {
   await testDispatchFanOutAndSignature();
   await testEventTypeAndWildcardMatching();
   await testTransientFailureBacksOff();
+  await testThrownTransportErrorBacksOff();
+  await testMysqlSchemaNoPartialIndex();
+  await testInlineDeliveryNotDoubleClaimed();
   await testMaxAttemptsDeadLetters();
   await testDlqReplay();
   await testDeliveriesRetry();
@@ -239,6 +242,60 @@ async function testTransientFailureBacksOff() {
   check("failed delivery stays pending for retry", rows.length === 1 && rows[0].status === "pending");
   check("attempts incremented to 1",           rows[0].attempts === 1);
   check("last_error recorded",                  /HTTP 503/.test(rows[0].lastError || ""));
+}
+
+async function testThrownTransportErrorBacksOff() {
+  // A THROWN transport error (timeout / network / TLS) — httpClient throws it
+  // as an alwaysPermanent WebhookDispatcherError (err.permanent === true). It
+  // must still be treated as TRANSIENT (rescheduled), NOT dead-lettered on the
+  // first attempt. (Regression: reading err.permanent dead-lettered it.)
+  var xdb = _sqliteExternalDb();
+  var transport = function () { var e = new Error("ETIMEDOUT connect"); e.permanent = true; throw e; };
+  var wd = _newDispatcher(xdb, transport);
+  await wd.declareSchema();
+  await wd.registerEndpoint({ endpointId: "to", url: PUBLIC_URL, eventTypes: ["e"], secret: "s" });
+  var res = await wd.dispatch("e", { n: 1 });
+  check("thrown transport error not delivered",   res.delivered === 0 && res.failed === 1);
+  var rows = await wd.deliveries.list({ endpointId: "to" });
+  check("thrown transport error stays pending (transient, not dead)",
+        rows.length === 1 && rows[0].status === "pending");
+  check("thrown transport error not dead-lettered", res.deliveries[0].dead !== true);
+}
+
+async function testMysqlSchemaNoPartialIndex() {
+  // MySQL has no partial indexes; sql.createIndex refuses `where` on mysql, so
+  // declareSchema must emit a NON-partial index there or it throws on boot.
+  var sqls = [];
+  var mysqlXdb = {
+    dialect: "mysql",
+    query: async function (s) { sqls.push(s); return { rows: [] }; },
+    transaction: async function (fn) { return fn(this); },
+  };
+  var wd = _newDispatcher(mysqlXdb, _stubTransport());
+  var threw = null;
+  try { await wd.declareSchema(); } catch (e) { threw = e; }
+  check("declareSchema(mysql) does not throw on the pending index", threw === null);
+  var idxSql = sqls.filter(function (s) { return /_pending_idx/i.test(s); }).join(" || ");
+  check("mysql pending index is emitted",       idxSql.length > 0);
+  check("mysql pending index is non-partial (no WHERE)", !/\bwhere\b/i.test(idxSql));
+}
+
+async function testInlineDeliveryNotDoubleClaimed() {
+  // The inline first attempt must claim its row (status 'in-flight') BEFORE the
+  // POST, so a retry poller firing during a slow inline POST can't grab the
+  // same row and double-deliver. Simulate the poller from inside the transport.
+  var xdb = _sqliteExternalDb();
+  var calls = 0;
+  var wd;
+  var transport = function () {
+    calls += 1;
+    return wd.processRetries().then(function () { return { status: 200 }; });
+  };
+  wd = _newDispatcher(xdb, transport);
+  await wd.declareSchema();
+  await wd.registerEndpoint({ endpointId: "once", url: PUBLIC_URL, eventTypes: ["e"], secret: "s" });
+  await wd.dispatch("e", { n: 1 });
+  check("inline delivery not double-claimed by a concurrent poller", calls === 1);
 }
 
 async function testMaxAttemptsDeadLetters() {

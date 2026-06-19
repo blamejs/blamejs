@@ -45,6 +45,31 @@
         {
           "title": "One hardening point for untrusted public-JWK import",
           "body": "The createPublicKey-from-JWK call that imports attacker-controlled key material (DID publicKeyJwk, DNSKEY, COSE_Key, DPoP / OAuth / OIDC / DBSC proof JWKs) is centralized in b.crypto.importPublicJwk, so the untrusted-key import has a single audited home; each caller keeps its own kty/crv pre-validation and typed error."
+        },
+        {
+          "title": "Linear-time Content-Security-Policy header parsing",
+          "body": "The CSP response-header parser split directives on a `/\\s*,\\s*/` regex that ran in O(n^2) on a long comma-less run of whitespace, letting a crafted header stall a worker (js/polynomial-redos). It now splits on the literal comma and trims each item, which is linear and byte-for-byte equivalent."
+        },
+        {
+          "title": "Parsed INI and OpenAPI path maps can't reach Object.prototype",
+          "body": "The INI parser already refuses a `__proto__` / `constructor` / `prototype` section or key (it throws before any write); as defense-in-depth, every parsed node — and the OpenAPI paths map keyed by URL pattern — is now a null-prototype object, so even a future gap could only ever set an own property, never mutate Object.prototype (CWE-1321)."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Webhook deliveries retry transient transport failures instead of dead-lettering them",
+          "body": "A delivery that failed with a transient transport error (connection reset, timeout, 5xx) was recorded as permanently failed and dead-lettered rather than retried. The destination-safety check (SSRF / blocked-host guard) now runs in its own step and is the only permanent failure; a transport failure backs off and retries up to the configured limit."
+        },
+        {
+          "title": "Webhook deliveries table creates on MySQL",
+          "body": "The pending-delivery index used a partial-index (WHERE) clause that MySQL does not support, so the deliveries table failed to create on a MySQL backend. The index is now dialect-aware — partial on PostgreSQL / SQLite, plain on MySQL."
+        },
+        {
+          "title": "Inline webhook delivery can't be double-sent by concurrent retry processing",
+          "body": "An inline delivery is now claimed (status set to in-flight with a claim timestamp) before the POST, so a concurrent retry pass can't pick up and re-send the same delivery; a row left in-flight by a crash is reclaimed after the stale-claim window."
         }
       ]
     }

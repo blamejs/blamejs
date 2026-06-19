@@ -1004,7 +1004,9 @@ var FRAMEWORK_STATE_FILE_NAMES = [
 ];
 function testNoHardcodedFrameworkFileNames() {
   var rx = new RegExp("[\"'`](" + FRAMEWORK_STATE_FILE_NAMES.map(function (n) {
-    return n.replace(/\./g, "\\.");
+    // Escape every regex metacharacter (not just "."), backslash first so a
+    // name containing one can't smuggle an escape into the alternation.
+    return n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }).join("|") + ")[\"'`]");
   var matches = [];
   var files = _libFiles();
