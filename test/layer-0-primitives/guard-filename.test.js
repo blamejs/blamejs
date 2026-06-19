@@ -344,6 +344,28 @@ function testGuardFilenameSanitizeStripMode() {
         captured[0].outcome === "success");
 }
 
+function testGdprPostureMatchesBalancedTier() {
+  // gdpr is the balanced tier for a filename guard: it allows non-ASCII
+  // (data-minimization keeps the value usable) rather than inheriting the
+  // strict tier's requireAscii:true. The drift was a partial gdpr posture
+  // object that omitted requireAscii, so resolved opts silently backfilled
+  // it from the strict-derived defaults — making gdpr a strict/balanced
+  // hybrid. Drive the real consumer path: a non-ASCII leaf must NOT raise
+  // a non-ascii issue under gdpr.
+  var rv = b.guardFilename.validate("café.txt", { compliancePosture: "gdpr" });
+  check("gdpr (balanced tier) does not flag non-ascii on a filename leaf",
+        !rv.issues.some(function (issue) { return issue.kind === "non-ascii"; }));
+
+  // The deliberate per-posture overlay survives the routing: gdpr strips
+  // bidi / control on leaf names (data-minimization) where the balanced
+  // profile would reject them. Both together prove balanced-tier base +
+  // intended overlay.
+  check("gdpr posture overlay keeps bidiPolicy=strip",
+        b.guardFilename.COMPLIANCE_POSTURES.gdpr.bidiPolicy === "strip");
+  check("gdpr posture overlay keeps controlPolicy=strip",
+        b.guardFilename.COMPLIANCE_POSTURES.gdpr.controlPolicy === "strip");
+}
+
 function testGuardFilenameCompliancePosture() {
   var hipaa = b.guardFilename.compliancePosture("hipaa");
   check("compliancePosture('hipaa') sets reject policies",
@@ -386,6 +408,7 @@ async function run() {
   testGuardFilenameDoubleExtension();
   testGuardFilenameOverlongUtf8();
   testGuardFilenameAsciiOnlyStrict();
+  testGdprPostureMatchesBalancedTier();
   testGuardFilenameClean();
   testGuardFilenameSanitize();
   testGuardFilenameSanitizeStripMode();
