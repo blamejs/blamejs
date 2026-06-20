@@ -124,6 +124,14 @@ function testGuardHtmlUrlSchemes() {
   check("entity-encoded javascript: detected after entity decode",
         rvEnc.issues.some(function (issue) { return issue.kind === "dangerous-url-scheme"; }));
 
+  // #B7 — NO-semicolon decimal entity `&#106avascript:` (106='j', terminates at
+  // the non-digit 'a') is browser-decoded to javascript:. A semicolon-required
+  // decoder let this bypass the scheme allowlist as clean.
+  var rvNoSemi = b.guardHtml.validate(
+    '<a href="&#106avascript:alert(1)">x</a>', { profile: "balanced" });
+  check("no-semicolon entity javascript: detected",
+        rvNoSemi.issues.some(function (issue) { return issue.kind === "dangerous-url-scheme"; }));
+
   // Image-context data URL allowed under balanced when allowImageData true.
   var rvImg = b.guardHtml.validate(
     '<img src="data:image/png;base64,iVBORw0KG" alt="x">',
