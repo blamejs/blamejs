@@ -251,6 +251,13 @@ async function buildApp(opts) {
   // deny rules.
   var adminDeniedCidrs = (b.safeEnv.readVar("WIKI_ADMIN_DENIED_CIDRS") || "")
     .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+  // Reverse-proxy CIDRs for the /admin gate. X-Forwarded-For is honored
+  // only when the request's immediate peer is one of these (peer-gating) —
+  // without it the gate uses the socket address and ignores the forgeable
+  // header, so a direct caller can't spoof an allowed IP. Distinct from
+  // WIKI_TRUST_PROXY (x-forwarded-proto for cookie Secure detection).
+  var adminTrustedProxies = (b.safeEnv.readVar("WIKI_ADMIN_TRUSTED_PROXIES") || "")
+    .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
 
   // Network configurability — read NTP / DNS / proxy / DPI-trust / socket
   // env vars and apply them before the framework's outbound code paths
@@ -397,11 +404,11 @@ async function buildApp(opts) {
       // unset — operators using a reverse proxy / NACL leave this off.
       if (adminAllowedCidrs.length > 0) {
         router.use(b.middleware.networkAllowlist({
-          paths:        ["/admin", "/admin/", "/healthz/internal"],
-          allowedCidrs: adminAllowedCidrs,
-          deniedCidrs:  adminDeniedCidrs,
-          trustProxy:   trustProxy,
-          audit:        b.audit,
+          paths:          ["/admin", "/admin/", "/healthz/internal"],
+          allowedCidrs:   adminAllowedCidrs,
+          deniedCidrs:    adminDeniedCidrs,
+          trustedProxies: adminTrustedProxies,
+          audit:          b.audit,
         }));
       }
       // bodyParser + cspNonce are wired by createApp (see the middleware

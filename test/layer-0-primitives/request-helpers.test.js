@@ -298,9 +298,58 @@ function testExtractBearerLeadingTrailingSpaces() {
   check("extractBearer: trims leading + trailing whitespace from token", t === "abc");
 }
 
+function testClientIpDefaultIgnoresXff() {
+  // Default: socket address only — X-Forwarded-For is attacker-forgeable.
+  var req = { socket: { remoteAddress: "10.0.0.1" },
+    headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.5" } };
+  check("clientIp default → socket addr", b.requestHelpers.clientIp(req) === "10.0.0.1");
+}
+
+function testClientIpPeerGatedTrustedPeer() {
+  // Predicate form: peer 10.0.0.1 is a trusted proxy → first untrusted hop
+  // walking right-to-left is the real client.
+  var trust = function (a) { return a.indexOf("10.") === 0; };
+  var req = { socket: { remoteAddress: "10.0.0.1" },
+    headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.5" } };
+  check("clientIp peer-gated (trusted peer) → first untrusted hop",
+    b.requestHelpers.clientIp(req, { trustProxy: trust }) === "203.0.113.7");
+}
+
+function testClientIpPeerGatedUntrustedPeerIgnoresXff() {
+  // The bypass: a direct attacker (socket peer NOT a trusted proxy) forging
+  // an XFF must NOT be believed — fall through to the socket address.
+  var trust = function (a) { return a.indexOf("10.") === 0; };
+  var forged = { socket: { remoteAddress: "198.51.100.66" },
+    headers: { "x-forwarded-for": "203.0.113.7" } };
+  check("clientIp peer-gated (untrusted peer) → ignores forged XFF",
+    b.requestHelpers.clientIp(forged, { trustProxy: trust }) === "198.51.100.66");
+}
+
+function testClientIpPeerGatedAllHopsTrusted() {
+  // Whole chain trusted (no untrusted hop) → earliest claimed client.
+  var trust = function (a) { return a.indexOf("10.") === 0; };
+  var req = { socket: { remoteAddress: "10.0.0.1" },
+    headers: { "x-forwarded-for": "10.0.0.9, 10.0.0.5" } };
+  check("clientIp peer-gated (all trusted) → leftmost",
+    b.requestHelpers.clientIp(req, { trustProxy: trust }) === "10.0.0.9");
+}
+
+function testClientIpLegacyFormsStillWork() {
+  // Legacy spoofable forms preserved for edge-terminated deployments.
+  var req = { socket: { remoteAddress: "10.0.0.1" },
+    headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.5" } };
+  check("clientIp legacy true → leftmost", b.requestHelpers.clientIp(req, { trustProxy: true }) === "203.0.113.7");
+  check("clientIp legacy N=1 → Nth-from-right", b.requestHelpers.clientIp(req, { trustProxy: 1 }) === "10.0.0.5");
+}
+
 async function run() {
   testSurface();
   testSafeHeadersDistinct();
+  testClientIpDefaultIgnoresXff();
+  testClientIpPeerGatedTrustedPeer();
+  testClientIpPeerGatedUntrustedPeerIgnoresXff();
+  testClientIpPeerGatedAllHopsTrusted();
+  testClientIpLegacyFormsStillWork();
   testResolveRoutePrefersRoutePattern();
   testResolveRouteFallsBackToUrl();
   testResolveRouteEmptyOrMissingUrl();
