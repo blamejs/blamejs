@@ -26,8 +26,11 @@ function _stripAnchorMarkup(s) {
   // double-decodes &amp;lt; -> <).
   var stripped = String(s)
     .replace(/<a\s+class="anchor"[^>]*>[\s\S]*?<\/a>/g, "")
-    .replace(/<\/?code>/g, "")
-    .replace(/<[^>]+>/g, "");
+    .replace(/<\/?code>/g, "");
+  // Re-run the generic tag strip until stable so nested-bracket residue
+  // can't survive a single pass (incomplete-multi-character-sanitization).
+  var prev;
+  do { prev = stripped; stripped = stripped.replace(/<[^>]+>/g, ""); } while (stripped !== prev);
   return htmlEntities.unescapeBuiltinEntities(stripped)
     .replace(/\s+/g, " ")
     .replace(/^\s+|\s+$/g, "");
