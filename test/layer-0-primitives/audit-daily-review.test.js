@@ -124,6 +124,23 @@ async function testNotifyFailure() {
         }));
 }
 
+async function testCustomClassifyUnknownSeverityIncluded() {
+  // A custom classify() returning an UNKNOWN severity must not silently drop
+  // the event from the review — it is surfaced (fail safe) so a buggy classify
+  // can't hide flagged events. (Was: _severityAtLeast returned false on an
+  // unrecognized severity, dropping the hit.)
+  var rows = [{ action: "weird.event", outcome: "denied", recordedAt: Date.now() }];
+  var fakeAudit = _fakeAudit(rows);
+  var review = b.auditDailyReview.create({
+    audit:             fakeAudit,
+    severityThreshold: "warning",
+    notify:            null,
+    classify:          function () { return "totally-unknown-severity"; },
+  });
+  var summary = await review.run();
+  check("unknown-severity event surfaced, not silently dropped", summary.hitCount >= 1);
+}
+
 async function run() {
   testSurface();
   await testRunSummary();
@@ -131,6 +148,7 @@ async function run() {
   testPostureRequiresNotify();
   testBadSeverity();
   await testNotifyFailure();
+  await testCustomClassifyUnknownSeverityIncluded();
 }
 
 module.exports = { run: run };
