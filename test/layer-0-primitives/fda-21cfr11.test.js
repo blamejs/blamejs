@@ -136,11 +136,33 @@ function testNonModificationBypassesShape() {
   check("read-shape audit bypasses before/after requirement", ok === true);
 }
 
+function testSignatureStrippedRefusedWhenVerifierWired() {
+  // #B0 — with verifyWith wired, a record whose signature is null/empty must
+  // NOT verify on recordHash alone (recordHash is self-consistency, not
+  // authentication). Accepting it is alg:none-style signature stripping.
+  var nc  = require("node:crypto");
+  var key = nc.randomBytes(32);
+  var sign   = function (buf) { return nc.createHmac("sha256", key).update(buf).digest(); };
+  var verify = function (buf, sig) { try { return nc.timingSafeEqual(sign(buf), sig); } catch (_e) { return false; } };
+  var fda = b.fda21cfr11.posture({ audit: _fakeAudit(), interceptAudit: false, signWith: sign, verifyWith: verify });
+  var rec = fda.electronicSignature.create({
+    printedName: "Jane Doe, M.D.", signatureMeaning: "approval",
+    predicateRule: "21 CFR 312.62", boundRecord: Buffer.from("trial-data"),
+  });
+  check("FDA properly-signed record verifies",
+    fda.electronicSignature.verify(rec, Buffer.from("trial-data")).ok === true);
+  var stripped = Object.assign({}, rec, { signature: null });
+  var v = fda.electronicSignature.verify(stripped, Buffer.from("trial-data"));
+  check("FDA signature-stripped record refused when verifier wired",
+    v.ok === false && v.reason === "signature-required");
+}
+
 async function run() {
   testSurface();
   testSignatureCreate();
   testSignatureBadMeaning();
   testSignatureMissingPredicate();
+  testSignatureStrippedRefusedWhenVerifierWired();
   testAssertGxpAuditOk();
   testAssertGxpAuditMissingBefore();
   testAssertGxpAuditMetadataAsString();
