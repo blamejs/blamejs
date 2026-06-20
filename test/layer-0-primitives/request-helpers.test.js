@@ -342,6 +342,39 @@ function testClientIpLegacyFormsStillWork() {
   check("clientIp legacy N=1 → Nth-from-right", b.requestHelpers.clientIp(req, { trustProxy: 1 }) === "10.0.0.5");
 }
 
+function testTrustedClientIpPeerGatedFlag() {
+  check("trustedClientIp default → not peerGated",
+    b.requestHelpers.trustedClientIp().peerGated === false);
+  check("trustedClientIp trustedProxies → peerGated",
+    b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"] }).peerGated === true);
+  check("trustedClientIp clientIpResolver → peerGated",
+    b.requestHelpers.trustedClientIp({ clientIpResolver: function () { return "1.2.3.4"; } }).peerGated === true);
+}
+
+function testTrustedClientIpResolves() {
+  var pg = b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"] });
+  var forged = { socket: { remoteAddress: "198.51.100.66" },
+    headers: { "x-forwarded-for": "203.0.113.7" } };
+  check("trustedClientIp peer-gated ignores forged XFF (untrusted peer)",
+    pg.resolve(forged) === "198.51.100.66");
+  var viaProxy = { socket: { remoteAddress: "10.0.0.9" },
+    headers: { "x-forwarded-for": "203.0.113.7" } };
+  check("trustedClientIp peer-gated honors XFF behind trusted proxy",
+    pg.resolve(viaProxy) === "203.0.113.7");
+  var owned = b.requestHelpers.trustedClientIp({ clientIpResolver: function (rq) { return rq.headers["true-client-ip"]; } });
+  check("trustedClientIp clientIpResolver wins",
+    owned.resolve({ headers: { "true-client-ip": "9.9.9.9" } }) === "9.9.9.9");
+}
+
+function testTrustedClientIpValidates() {
+  var threwResolver = false;
+  try { b.requestHelpers.trustedClientIp({ clientIpResolver: 123 }); } catch (_e) { threwResolver = true; }
+  check("trustedClientIp rejects non-function resolver", threwResolver === true);
+  var threwCidr = false;
+  try { b.requestHelpers.trustedClientIp({ trustedProxies: ["not-a-cidr"] }); } catch (_e) { threwCidr = true; }
+  check("trustedClientIp rejects malformed CIDR", threwCidr === true);
+}
+
 async function run() {
   testSurface();
   testSafeHeadersDistinct();
@@ -350,6 +383,9 @@ async function run() {
   testClientIpPeerGatedUntrustedPeerIgnoresXff();
   testClientIpPeerGatedAllHopsTrusted();
   testClientIpLegacyFormsStillWork();
+  testTrustedClientIpPeerGatedFlag();
+  testTrustedClientIpResolves();
+  testTrustedClientIpValidates();
   testResolveRoutePrefersRoutePattern();
   testResolveRouteFallsBackToUrl();
   testResolveRouteEmptyOrMissingUrl();
