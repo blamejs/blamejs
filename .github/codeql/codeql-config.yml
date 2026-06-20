@@ -1,0 +1,20 @@
+name: "blamejs CodeQL config"
+
+# Scope security analysis to the SHIPPED product — exactly the npm package
+# "files" whitelist (lib/, index.js, bin/). Test fixtures, build/CI scripts,
+# and the examples/wiki app are never deployed and are not the operator-facing
+# attack surface, so they are out of scope for the security scanner; their
+# quality is enforced separately by eslint and the framework's own
+# codebase-patterns detectors (which DO walk test/ and scripts/). Vendored
+# third-party code under lib/vendor/ is excluded — it is reviewed at vendor
+# time, not re-analyzed here.
+queries:
+  - uses: security-extended
+
+paths:
+  - lib
+  - index.js
+  - bin
+
+paths-ignore:
+  - lib/vendor
