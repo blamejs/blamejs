@@ -11,7 +11,15 @@ function _fakeAudit(rows) {
   var emitted = [];
   return {
     safeEmit: function (event) { emitted.push(event); },
-    query:    async function () { return rows.slice(); },
+    // Honor order + limit like the real audit.query so order/limit behavior is
+    // testable: sort by recordedAt (asc), flip on order:"desc", then slice.
+    query:    async function (criteria) {
+      criteria = criteria || {};
+      var out = rows.slice().sort(function (a, b) { return (a.recordedAt || 0) - (b.recordedAt || 0); });
+      if (criteria.order === "desc") out.reverse();
+      if (criteria.limit != null) out = out.slice(0, criteria.limit);
+      return out;
+    },
     _emitted: emitted,
   };
 }
@@ -141,6 +149,26 @@ async function testCustomClassifyUnknownSeverityIncluded() {
   check("unknown-severity event surfaced, not silently dropped", summary.hitCount >= 1);
 }
 
+async function testQueryLimitKeepsNewest() {
+  // B5a: under a queryLimit cap the review must keep the NEWEST events (the
+  // actionable ones), not the oldest. An ascending+limit query would keep the
+  // oldest and silently drop the newest threshold-exceeding events.
+  var nowMs = Date.now();
+  var rows = [
+    { action: "test.old1",          outcome: "success", recordedAt: nowMs - 3000 },  // info (below warning)
+    { action: "test.old2",          outcome: "success", recordedAt: nowMs - 2000 },  // info
+    { action: "honeytoken.tripped", outcome: "denied",  recordedAt: nowMs - 100 },   // NEWEST → alert (>= warning)
+  ];
+  var fakeAudit = _fakeAudit(rows);
+  var review = b.auditDailyReview.create({
+    audit: fakeAudit, severityThreshold: "warning", notify: null, queryLimit: 2,
+  });
+  var summary = await review.run();
+  // Newest-2 kept (honeytoken alert + old2) → the alert is surfaced. With the
+  // old asc+limit behavior the oldest-2 (both info) survive → alert dropped → 0.
+  check("queryLimit keeps newest events (alert not dropped by cap)", summary.hitCount >= 1);
+}
+
 async function run() {
   testSurface();
   await testRunSummary();
@@ -149,6 +177,7 @@ async function run() {
   testBadSeverity();
   await testNotifyFailure();
   await testCustomClassifyUnknownSeverityIncluded();
+  await testQueryLimitKeepsNewest();
 }
 
 module.exports = { run: run };
