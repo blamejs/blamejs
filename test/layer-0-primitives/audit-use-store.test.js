@@ -288,5 +288,13 @@ module.exports = { run: run };
 
 if (require.main === module) {
   run().then(function () { console.log("OK"); })
-       .catch(function (e) { console.error(e.stack || e); process.exit(1); });
+       .catch(function (e) {
+         // Log a fixed-shape summary (class + message), not the raw e.stack:
+         // the crypto/db setup path puts passphrase-length-derived values into
+         // the stack, and emitting the whole stack is a clear-text-logging
+         // sink. The class + message keep the failure diagnosable.
+         var msg = e instanceof Error ? (e.name + ": " + e.message) : String(e);
+         console.error("FAIL: " + msg);
+         process.exit(1);
+       });
 }

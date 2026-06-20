@@ -70,6 +70,10 @@
         {
           "title": "Inline webhook delivery can't be double-sent by concurrent retry processing",
           "body": "An inline delivery is now claimed (status set to in-flight with a claim timestamp) before the POST, so a concurrent retry pass can't pick up and re-send the same delivery; a row left in-flight by a crash is reclaimed after the stale-claim window."
+        },
+        {
+          "title": "Audit checkpoint can never be anchored against a replaced database",
+          "body": "close() fires a best-effort final checkpoint as the database shuts down. In a narrow close-then-reopen window that checkpoint's write could resume after a fresh database had opened and anchor the prior database's chain tip into it. checkpoint() now binds to the database it read the tip from and refuses to write (returns null, fail-closed) if that handle has since been closed or replaced — so a checkpoint is only ever written against the database it measured."
         }
       ]
     }

@@ -7146,7 +7146,10 @@ function _spawnFakeIdpServer(routes) {
       req.body = Buffer.concat(bodyChunks).toString("utf8");
       try { handler(req, res, u); }
       catch (e) {
-        res.writeHead(500); res.end(String(e));
+        // Fixed-shape, bounded diagnostic — never surface the raw exception
+        // (its message/stack) verbatim into the response body.
+        var emsg = (e && typeof e.message === "string") ? e.message : "error";
+        res.writeHead(500); res.end("fake-idp handler error: " + emsg.slice(0, 120));
       }
     });
   });
@@ -15098,8 +15101,13 @@ async function testHttpClientRedirectFollow() {
 
 async function testHttpClientRedirectMaxHops() {
   var http = require("http");
+  // Each hop redirects to a fresh, fixed-shape path (a per-request counter),
+  // never one derived from the incoming request URL — so the location never
+  // repeats and the client keeps following until it hits maxRedirects.
+  var hop = 0;
   var server = http.createServer(function (req, res) {
-    res.writeHead(302, { "Location": req.url + "x" });
+    hop += 1;
+    res.writeHead(302, { "Location": "/loop-" + hop });
     res.end();
   });
   var port = await listenOnRandomPort(server);
@@ -16481,14 +16489,15 @@ async function testWebSocketConnection() {
       // Parse HTTP headers (very crude — enough for tests).
       var headerLines = headerBuffer.substring(0, idx).split("\r\n");
       var requestLine = headerLines[0].split(" ");
-      var headers = {};
+      var headerPairs = [];
       for (var i = 1; i < headerLines.length; i++) {
         var p = headerLines[i].indexOf(":");
         if (p === -1) continue;
         var k = headerLines[i].substring(0, p).trim().toLowerCase();
         var v = headerLines[i].substring(p + 1).trim();
-        headers[k] = v; // lgtm[js/remote-property-injection] test fixture; not a runtime path
+        headerPairs.push([k, v]);
       }
+      var headers = Object.fromEntries(headerPairs);
       var req = { method: requestLine[0], url: requestLine[1], headers: headers };
       var head = Buffer.from(headerBuffer.substring(idx + 4), "binary");
       var conn = ws.handleUpgrade(req, socket, head, { closeGraceMs: 50 });
