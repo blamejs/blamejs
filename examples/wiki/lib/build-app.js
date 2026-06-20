@@ -231,13 +231,6 @@ async function buildApp(opts) {
     audit:     b.audit,
   });
 
-  // Trust-proxy posture: when WIKI_TRUST_PROXY is set (the operator is
-  // behind a TLS terminator that injects x-forwarded-proto), the wiki
-  // honours that header for cookie Secure-flag detection. Default off
-  // so a misconfigured deployment doesn't accept attacker-supplied
-  // x-forwarded-proto: https as proof the request was over TLS.
-  var trustProxy = b.safeEnv.readVar("WIKI_TRUST_PROXY", { type: "boolean", default: false });
-
   // Network allowlist for /admin paths — when WIKI_ADMIN_ALLOWED_CIDRS
   // is set (comma-separated CIDR list), the wiki mounts
   // b.middleware.networkAllowlist as the in-process CIDR fence above
@@ -251,13 +244,19 @@ async function buildApp(opts) {
   // deny rules.
   var adminDeniedCidrs = (b.safeEnv.readVar("WIKI_ADMIN_DENIED_CIDRS") || "")
     .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
-  // Reverse-proxy CIDRs for the /admin gate. X-Forwarded-For is honored
-  // only when the request's immediate peer is one of these (peer-gating) —
-  // without it the gate uses the socket address and ignores the forgeable
-  // header, so a direct caller can't spoof an allowed IP. Distinct from
-  // WIKI_TRUST_PROXY (x-forwarded-proto for cookie Secure detection).
+  // Reverse-proxy CIDRs for the deployment. X-Forwarded-For / -Proto are
+  // honored only when the request's immediate peer is one of these
+  // (peer-gating) — without it the framework uses the socket address /
+  // real TLS state and ignores the forgeable headers, so a direct caller
+  // can't spoof an allowed IP or claim https. Drives both the /admin CIDR
+  // gate and the admin Secure-cookie HTTPS detection.
   var adminTrustedProxies = (b.safeEnv.readVar("WIKI_ADMIN_TRUSTED_PROXIES") || "")
     .split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+  // Peer-gated HTTPS detector for the admin Secure-cookie flag — resolves
+  // "https" only when X-Forwarded-Proto arrives via a trusted proxy, else
+  // from the real TLS socket. Replaces a bare trust-proxy boolean a direct
+  // caller could forge to suppress the Secure attribute.
+  var secureProtocol = b.requestHelpers.trustedProtocol({ trustedProxies: adminTrustedProxies }).resolve;
 
   // Network configurability — read NTP / DNS / proxy / DPI-trust / socket
   // env vars and apply them before the framework's outbound code paths
@@ -468,7 +467,7 @@ async function buildApp(opts) {
         notify:       notify,
         apiKeys:      apiKeys,
         loginLockout: loginLockout,
-        trustProxy:   trustProxy,
+        secureProtocol: secureProtocol,
         assets:       assets,
         nonceMw:      nonceMw,
         siteUrl:      opts.siteUrl || "https://blamejs.com",

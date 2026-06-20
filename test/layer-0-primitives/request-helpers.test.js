@@ -366,6 +366,23 @@ function testTrustedClientIpResolves() {
     owned.resolve({ headers: { "true-client-ip": "9.9.9.9" } }) === "9.9.9.9");
 }
 
+function testTrustedProtocol() {
+  var tp = b.requestHelpers.trustedProtocol({ trustedProxies: ["10.0.0.0/8"] });
+  check("trustedProtocol trustedProxies → peerGated", tp.peerGated === true);
+  check("trustedProtocol default → not peerGated", b.requestHelpers.trustedProtocol().peerGated === false);
+  var forged = { socket: { encrypted: false, remoteAddress: "198.51.100.66" }, headers: { "x-forwarded-proto": "https" } };
+  check("trustedProtocol: forged XFP from untrusted peer → http", tp.resolve(forged) === "http");
+  var viaProxy = { socket: { encrypted: false, remoteAddress: "10.0.0.9" }, headers: { "x-forwarded-proto": "https" } };
+  check("trustedProtocol: XFP via trusted proxy → https", tp.resolve(viaProxy) === "https");
+  var realTls = { socket: { encrypted: true, remoteAddress: "203.0.113.1" }, headers: {} };
+  check("trustedProtocol: real TLS socket → https", tp.resolve(realTls) === "https");
+  var owned = b.requestHelpers.trustedProtocol({ protocolResolver: function () { return "https"; } });
+  check("trustedProtocol: protocolResolver wins", owned.resolve({}) === "https");
+  var threwBadCidr = false;
+  try { b.requestHelpers.trustedProtocol({ trustedProxies: ["nope"] }); } catch (_e) { threwBadCidr = true; }
+  check("trustedProtocol: malformed CIDR refused", threwBadCidr === true);
+}
+
 function testTrustedClientIpValidates() {
   var threwResolver = false;
   try { b.requestHelpers.trustedClientIp({ clientIpResolver: 123 }); } catch (_e) { threwResolver = true; }
@@ -385,6 +402,7 @@ async function run() {
   testClientIpLegacyFormsStillWork();
   testTrustedClientIpPeerGatedFlag();
   testTrustedClientIpResolves();
+  testTrustedProtocol();
   testTrustedClientIpValidates();
   testResolveRoutePrefersRoutePattern();
   testResolveRouteFallsBackToUrl();
