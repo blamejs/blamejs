@@ -289,12 +289,12 @@ module.exports = { run: run };
 if (require.main === module) {
   run().then(function () { console.log("OK"); })
        .catch(function (e) {
-         // Log a fixed-shape summary (class + message), not the raw e.stack:
-         // the crypto/db setup path puts passphrase-length-derived values into
-         // the stack, and emitting the whole stack is a clear-text-logging
-         // sink. The class + message keep the failure diagnosable.
-         var msg = e instanceof Error ? (e.name + ": " + e.message) : String(e);
-         console.error("FAIL: " + msg);
+         // Log only the error class (not its message/stack): the crypto/db
+         // setup path is flagged as carrying passphrase-length-derived data,
+         // and logging error content derived from it is a clear-text-logging
+         // sink. The class name signals the failure; the non-zero exit makes
+         // it loud, and the smoke runner surfaces full detail via check().
+         console.error("FAIL: " + (e && e.name ? e.name : "error"));
          process.exit(1);
        });
 }
