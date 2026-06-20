@@ -292,6 +292,18 @@ async function testStripeVerifyReplayAtomic() {
         threw2 && threw2.code === "webhook/bad-nonce-store");
 }
 
+async function testSignerSendRefusesSsrf() {
+  // signer.send refuses a private / cloud-metadata destination (SSRF) up front,
+  // before the retry loop and any network — webhook-layer gate + the transport's.
+  var s = b.webhook.signer({ algo: "hmac-sha3-512", keys: { v1: "secret" } });
+  var threw = null;
+  try { await s.send({ url: "https://169.254.169.254/hook", body: "{}", kid: "v1" }); }
+  catch (e) { threw = e; }
+  check("signer.send refuses cloud-metadata IP (SSRF)",
+        threw && (threw.code === "SSRF_REFUSED" ||
+                  /ssrf|metadata|blocked|internal|private/i.test((threw.code || "") + " " + (threw.message || ""))));
+}
+
 // ---- Middleware ----
 
 async function testMiddlewareSuccess() {
@@ -741,6 +753,7 @@ async function run() {
   await testNonceStoreReplay();
   await testNonceStoreErrorPropagates();
   await testStripeVerifyReplayAtomic();
+  await testSignerSendRefusesSsrf();
   await testMiddlewareSuccess();
   await testMiddlewareMissingRawBody();
   await testMiddlewareBadSignature();
