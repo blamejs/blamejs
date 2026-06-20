@@ -256,6 +256,42 @@ async function testNonceStoreErrorPropagates() {
         threw && /redis down/.test(threw.message));
 }
 
+async function testStripeVerifyReplayAtomic() {
+  // #328: b.webhook.verify (Stripe HMAC-SHA-256) speaks the SAME atomic
+  // checkAndInsert nonce contract as b.webhook.verifier / b.nonceStore — so the
+  // framework's own replay store drops in, and concurrent redeliveries can't
+  // race a non-atomic check-then-set.
+  var secret = "whsec_test_328";
+  var body = '{"id":"evt_328"}';
+  var header = b.webhook.sign({ alg: "hmac-sha256-stripe", secret: secret, body: body });
+  var seen = new Map();
+  var ns = { checkAndInsert: function (nonce, expireAt) { if (seen.has(nonce)) return false; seen.set(nonce, expireAt); return true; } };
+  var base = { alg: "hmac-sha256-stripe", secret: secret, body: body, header: header, nonceStore: ns };
+
+  var first = await b.webhook.verify(base);
+  check("Stripe verify: first delivery accepted", first && first.ok === true);
+
+  var threw = null;
+  try { await b.webhook.verify(base); } catch (e) { threw = e; }
+  check("Stripe verify: replay → webhook/replay", threw && threw.code === "webhook/replay");
+
+  // The framework's own b.nonceStore plugs in directly, no adapter.
+  var fwStore = b.nonceStore.create({ backend: "memory" });
+  var body2 = '{"id":"evt_328b"}';
+  var header2 = b.webhook.sign({ alg: "hmac-sha256-stripe", secret: secret, body: body2 });
+  var okFw = await b.webhook.verify({ alg: "hmac-sha256-stripe", secret: secret, body: body2, header: header2, nonceStore: fwStore });
+  check("Stripe verify: b.nonceStore drops in (no adapter)", okFw && okFw.ok === true);
+
+  // A legacy { has, set } store (no checkAndInsert) is refused at construction.
+  var threw2 = null;
+  try {
+    await b.webhook.verify({ alg: "hmac-sha256-stripe", secret: secret, body: body, header: header,
+      nonceStore: { has: function () {}, set: function () {} } });
+  } catch (e) { threw2 = e; }
+  check("Stripe verify: non-checkAndInsert store → bad-nonce-store",
+        threw2 && threw2.code === "webhook/bad-nonce-store");
+}
+
 // ---- Middleware ----
 
 async function testMiddlewareSuccess() {
@@ -704,6 +740,7 @@ async function run() {
   await testHeaderCaseInsensitive();
   await testNonceStoreReplay();
   await testNonceStoreErrorPropagates();
+  await testStripeVerifyReplayAtomic();
   await testMiddlewareSuccess();
   await testMiddlewareMissingRawBody();
   await testMiddlewareBadSignature();
