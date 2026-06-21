@@ -7363,6 +7363,37 @@ async function testOAuthExchangeCodeRequiresVerifier() {
   check("exchangeCode: empty opts rejected",       threw && threw.code === "auth-oauth/no-code");
 }
 
+async function testOAuthExchangeCodeRejectsFalsyNonce() {
+  // OIDC nonce enforcement must require a NON-EMPTY nonce, not merely a defined
+  // one. A falsy nonce (null / "") would slip a `=== undefined` guard and the
+  // downstream ID-token nonce check is truthiness-gated, so the check would be
+  // silently skipped and a token captured from another session replayed. The
+  // guard fires before the token endpoint, so no network is needed.
+  var oa = b.auth.oauth.create({
+    clientId: "x", redirectUri: "https://app/cb",
+    authorizationEndpoint: "https://example.com/auth",
+    tokenEndpoint:         "https://example.com/token",
+    issuer:                "https://example.com",
+    isOidc: true,
+  });
+  var args = { code: "abc", state: "s", verifier: "v" };
+  var threwEmpty = null;
+  try { await oa.exchangeCode(Object.assign({ nonce: "" }, args)); } catch (e) { threwEmpty = e; }
+  check("exchangeCode: empty-string nonce rejected on OIDC",
+        threwEmpty && threwEmpty.code === "auth-oauth/no-nonce");
+  var threwNull = null;
+  try { await oa.exchangeCode(Object.assign({ nonce: null }, args)); } catch (e) { threwNull = e; }
+  check("exchangeCode: null nonce rejected on OIDC",
+        threwNull && threwNull.code === "auth-oauth/no-nonce");
+  // A non-empty nonce passes the guard (then fails later on the unreachable
+  // endpoint — NOT with no-nonce), confirming the guard isn't over-broad.
+  var threwValid = null;
+  try { await oa.exchangeCode(Object.assign({ nonce: "real-nonce-value" }, args)); }
+  catch (e) { threwValid = e; }
+  check("exchangeCode: non-empty nonce passes the nonce guard",
+        threwValid && threwValid.code !== "auth-oauth/no-nonce");
+}
+
 async function testOAuthExchangeCodeRoundTrip() {
   // Spin a fake IdP that accepts a code + verifier and returns tokens.
   var receivedBody = null;
@@ -18441,6 +18472,7 @@ async function run() {
   await testOAuthAuthorizationUrlGenericPreset();
   await testOAuthAuthorizationUrlExtraParams();
   await testOAuthExchangeCodeRequiresVerifier();
+  await testOAuthExchangeCodeRejectsFalsyNonce();
   await testOAuthExchangeCodeRoundTrip();
   await testOAuthRefreshAccessToken();
   await testOAuthFetchUserInfo();
@@ -19169,6 +19201,7 @@ module.exports = {
   testOAuthAuthorizationUrlGenericPreset:    testOAuthAuthorizationUrlGenericPreset,
   testOAuthAuthorizationUrlExtraParams:      testOAuthAuthorizationUrlExtraParams,
   testOAuthExchangeCodeRequiresVerifier:     testOAuthExchangeCodeRequiresVerifier,
+  testOAuthExchangeCodeRejectsFalsyNonce:    testOAuthExchangeCodeRejectsFalsyNonce,
   testOAuthExchangeCodeRoundTrip:            testOAuthExchangeCodeRoundTrip,
   testOAuthRefreshAccessToken:               testOAuthRefreshAccessToken,
   testOAuthFetchUserInfo:                    testOAuthFetchUserInfo,
