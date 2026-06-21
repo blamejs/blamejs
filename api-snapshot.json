@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.15.14",
-  "createdAt": "2026-06-21T06:07:03.428Z",
+  "createdAt": "2026-06-21T19:36:15.615Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -50654,6 +50654,10 @@
             }
           }
         },
+        "isJsonObject": {
+          "type": "function",
+          "arity": 1
+        },
         "parse": {
           "type": "function",
           "arity": 2
@@ -54046,6 +54050,19 @@
           "arity": 4
         },
         "connect": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
+    "x509Chain": {
+      "type": "object",
+      "members": {
+        "isCaCert": {
+          "type": "function",
+          "arity": 1
+        },
+        "issuerValidlyIssued": {
           "type": "function",
           "arity": 2
         }
