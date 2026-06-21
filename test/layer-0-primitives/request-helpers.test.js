@@ -437,9 +437,33 @@ function testTrustedClientIpValidates() {
   check("trustedClientIp rejects malformed CIDR", threwCidr === true);
 }
 
+function testIpPrefixMasking() {
+  var ip = b.requestHelpers.ipPrefix;
+  check("ipPrefix is a function", typeof ip === "function");
+  // IPv4 → /24 (network address, low octet zeroed).
+  check("ipPrefix v4 masks to /24", ip("203.0.113.47") === "203.0.113.0/24");
+  check("ipPrefix v4 same /24 → same bucket", ip("203.0.113.47") === ip("203.0.113.250"));
+  check("ipPrefix v4 cross-/24 → different bucket", ip("203.0.113.1") !== ip("198.51.100.1"));
+  // IPv6 → /64 (low 64 bits zeroed), deterministic uncompressed emit.
+  check("ipPrefix v6 masks to /64", ip("2001:db8:1234:5678::1") === "2001:db8:1234:5678:0:0:0:0/64");
+  check("ipPrefix v6 same /64 → same bucket",
+    ip("2001:db8:1234:5678::1") === ip("2001:db8:1234:5678:abcd:ef01:2345:6789"));
+  check("ipPrefix v6 cross-/64 → different bucket",
+    ip("2001:db8:1234:5678::1") !== ip("2001:db8:1234:9999::1"));
+  // IPv4-mapped IPv6 folds to the v4 /24 bucket.
+  check("ipPrefix folds ::ffff: mapped v4 to the v4 bucket",
+    ip("::ffff:203.0.113.5") === ip("203.0.113.99"));
+  // Garbage / non-string → "" (never throws).
+  check("ipPrefix returns '' for a non-string", ip(null) === "" && ip(12345) === "");
+  check("ipPrefix returns '' for an empty string", ip("") === "");
+  check("ipPrefix returns '' for an unparseable address", ip("not-an-ip") === "");
+  check("ipPrefix rejects an out-of-range v4 octet", ip("999.0.0.1") === "");
+}
+
 async function run() {
   testSurface();
   testSafeHeadersDistinct();
+  testIpPrefixMasking();
   testClientIpDefaultIgnoresXff();
   testClientIpPeerGatedTrustedPeer();
   testClientIpPeerGatedUntrustedPeerIgnoresXff();

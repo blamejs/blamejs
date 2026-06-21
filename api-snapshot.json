@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.15.14",
-  "createdAt": "2026-06-21T19:36:15.615Z",
+  "createdAt": "2026-06-21T21:50:49.620Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49208,6 +49208,10 @@
           "arity": 2
         },
         "extractBearer": {
+          "type": "function",
+          "arity": 1
+        },
+        "ipPrefix": {
           "type": "function",
           "arity": 1
         },
