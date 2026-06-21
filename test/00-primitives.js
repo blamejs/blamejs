@@ -1356,6 +1356,17 @@ async function testAuthJwtIssuerAudienceSubject() {
   check("issuer mismatch throws auth-jwt/iss-mismatch",
         threw && threw.code === "auth-jwt/iss-mismatch");
 
+  // Array-valued iss must NOT any-of match a single-issuer expectation
+  // (CVE-2025-30144 / fast-jwt class): iss is StringOrURI, not a list.
+  var arrIssTok = await j.sign({ iss: ["https://evil.example", "https://blamejs.example.com"], sub: "u" }, {
+    privateKey: k.privateKey, algorithm: "ML-DSA-87",
+  });
+  threw = null;
+  try { await j.verify(arrIssTok, Object.assign({}, verifyOpts, { issuer: "https://blamejs.example.com" })); }
+  catch (e) { threw = e; }
+  check("array-valued iss refused (no any-of issuer bypass)",
+        threw && threw.code === "auth-jwt/iss-mismatch");
+
   // Audience mismatch
   threw = null;
   try { await j.verify(token, Object.assign({}, verifyOpts, { audience: "api-c" })); }

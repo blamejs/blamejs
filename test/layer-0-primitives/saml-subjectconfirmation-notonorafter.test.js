@@ -314,12 +314,37 @@ async function testUnparseableConditionsTimestampRefused() {
     _verifyThrows(sp, b64, { expectedInResponseTo: inResponseTo }) === "auth-saml/conditions-bad-timestamp");
 }
 
+// SAML core §2.5.1.4 — multiple <AudienceRestriction> elements are AND-combined:
+// the SP must be a member of EVERY one. An assertion whose first restriction
+// lists this SP but whose second narrows to a DIFFERENT audience must be refused
+// (checking only the first let it through — audience-confusion).
+async function testSecondAudienceRestrictionEnforced() {
+  var idp = await _mintRsaCert("idp.example");
+  var sp  = _newSp(idp);
+  var inResponseTo = "_req-2aud";
+  var b64 = _buildSignedResponse(idp, {
+    tag:    "two-aud",
+    method: "urn:oasis:names:tc:SAML:2.0:cm:bearer",
+    nameId: "u@example.com",
+    scd:    _bearerScd(" NotOnOrAfter=\"" + _isoFromNow(5 * 60 * 1000) + "\"", inResponseTo),    // allow:raw-time-literal — 5m future
+    conditions: "<saml:Conditions NotBefore=\"" + _isoFromNow(-5 * 60 * 1000) +                  // allow:raw-time-literal — 5m skew
+      "\" NotOnOrAfter=\"" + _isoFromNow(5 * 60 * 1000) + "\">" +                                 // allow:raw-time-literal — 5m future
+      "<saml:AudienceRestriction><saml:Audience>" + SP_ENTITY_ID +
+      "</saml:Audience></saml:AudienceRestriction>" +
+      "<saml:AudienceRestriction><saml:Audience>https://other-sp.example/different" +
+      "</saml:Audience></saml:AudienceRestriction></saml:Conditions>",
+  });
+  check("second AudienceRestriction (different audience) refused (AND-combined)",
+    _verifyThrows(sp, b64, { expectedInResponseTo: inResponseTo }) === "auth-saml/wrong-audience");
+}
+
 async function run() {
   await testBearerValidNotOnOrAfterAccepted();
   await testBearerMissingNotOnOrAfterRefused();
   await testBearerUnparseableNotOnOrAfterRefused();
   await testHolderOfKeyNotOnOrAfterRefused();
   await testMissingAudienceRestrictionRefused();
+  await testSecondAudienceRestrictionEnforced();
   await testUnparseableConditionsTimestampRefused();
 }
 
