@@ -253,6 +253,57 @@ async function testFinalNextFallbackOnUnhandledError() {
     capturedErr === sentinel);
 }
 
+async function testHaltingMiddlewareSettlesPromise() {
+  // A regular (3-arg) middleware that writes the response and returns
+  // WITHOUT calling next() halts the chain — the documented "this
+  // middleware handled the request" pattern (auth/rate-limit/bot block).
+  // The composed promise MUST still settle; a permanently-pending
+  // promise retains its req/res closure forever (memory leak under
+  // sustained blocked traffic). finalNext must NOT fire — the chain was
+  // halted, so the caller's next-flag stays false and the router does
+  // not proceed to the route handler.
+  var finalCalled = false;
+  var pipe = b.middleware.composePipeline([
+    { name: "pass", mw: _passMw("a") },
+    { name: "halt", mw: function (req, res, next) { res._ended = true; /* no next() */ } },
+    { name: "after", mw: _passMw("z") },
+  ]);
+  var req = {}; var res = {};
+  var settled = false;
+  pipe(req, res, function () { finalCalled = true; }).then(function () { settled = true; });
+  try {
+    await helpers.waitUntil(function () { return settled; },
+      { timeoutMs: 2000, label: "compose-pipeline: halting middleware settles the composed promise" });
+  } catch (_e) { /* stays false on the buggy tree → check fails RED */ }
+  check("halting middleware settles the composed promise", settled === true);
+  check("downstream middleware not run after a halt",
+    !req._tags || req._tags.indexOf("z") === -1);
+  check("finalNext NOT called when a middleware halts the chain", finalCalled === false);
+}
+
+async function testHandledErrorSettlesWithoutFinalNext() {
+  // An error handler that consumes the error WITHOUT calling next has
+  // handled the request (same halt contract as a 3-arg middleware): the
+  // promise settles but finalNext must not fire, so the caller does not
+  // proceed to the route handler on top of an already-sent error page.
+  var finalCalled = false;
+  var sentinel = new Error("boom");
+  var pipe = b.middleware.composePipeline([
+    { name: "failing",      mw: _bailMw(sentinel),                                       position: 10 },
+    { name: "errorHandler", mw: function (err, req, res, _next) { res._handled = err; }, position: 20 },
+  ]);
+  var req = {}; var res = {};
+  var settled = false;
+  pipe(req, res, function () { finalCalled = true; }).then(function () { settled = true; });
+  try {
+    await helpers.waitUntil(function () { return settled; },
+      { timeoutMs: 2000, label: "compose-pipeline: handled error settles the composed promise" });
+  } catch (_e) { /* RED if it hangs */ }
+  check("handled error settles the composed promise", settled === true);
+  check("error handler consumed the error", res._handled === sentinel);
+  check("finalNext NOT called when an error handler halts the chain", finalCalled === false);
+}
+
 async function run() {
   testSurface();
   testSequentialDispatch();
@@ -269,6 +320,8 @@ async function run() {
   await testAsyncMiddlewareAwaited();
   await testErrorMiddlewareReceivesError();
   await testFinalNextFallbackOnUnhandledError();
+  await testHaltingMiddlewareSettlesPromise();
+  await testHandledErrorSettlesWithoutFinalNext();
 }
 
 module.exports = { run: run };
