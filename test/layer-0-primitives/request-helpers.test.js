@@ -366,6 +366,30 @@ function testTrustedClientIpResolves() {
     owned.resolve({ headers: { "true-client-ip": "9.9.9.9" } }) === "9.9.9.9");
 }
 
+function testTrustedProxyMappedPeerNormalized() {
+  // A dual-stack listener reports an IPv4 proxy peer as an IPv4-mapped IPv6
+  // address (::ffff:10.0.0.9). It must still match an IPv4 trustedProxies CIDR
+  // so X-Forwarded-* is honored — otherwise the proxy is treated as untrusted
+  // and the gate keys on the proxy address / misclassifies the scheme.
+  var pg = b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"] });
+  var viaMapped = { socket: { remoteAddress: "::ffff:10.0.0.9" },
+    headers: { "x-forwarded-for": "203.0.113.7" } };
+  check("trustedClientIp recognizes an IPv4-mapped trusted-proxy peer",
+    pg.resolve(viaMapped) === "203.0.113.7");
+
+  var tp = b.requestHelpers.trustedProtocol({ trustedProxies: ["10.0.0.0/8"] });
+  var mappedHttps = { socket: { encrypted: false, remoteAddress: "::ffff:10.0.0.9" },
+    headers: { "x-forwarded-proto": "https" } };
+  check("trustedProtocol recognizes an IPv4-mapped trusted-proxy peer",
+    tp.resolve(mappedHttps) === "https");
+
+  // A direct (untrusted) IPv4-mapped peer still can't forge: not in the CIDR.
+  var forgedMapped = { socket: { remoteAddress: "::ffff:198.51.100.66" },
+    headers: { "x-forwarded-for": "203.0.113.7" } };
+  check("trustedClientIp still ignores forged XFF from an untrusted mapped peer",
+    pg.resolve(forgedMapped) === "::ffff:198.51.100.66");
+}
+
 function testTrustedProtocol() {
   var tp = b.requestHelpers.trustedProtocol({ trustedProxies: ["10.0.0.0/8"] });
   check("trustedProtocol trustedProxies → peerGated", tp.peerGated === true);
@@ -402,6 +426,7 @@ async function run() {
   testClientIpLegacyFormsStillWork();
   testTrustedClientIpPeerGatedFlag();
   testTrustedClientIpResolves();
+  testTrustedProxyMappedPeerNormalized();
   testTrustedProtocol();
   testTrustedClientIpValidates();
   testResolveRoutePrefersRoutePattern();

@@ -5145,6 +5145,52 @@ var KNOWN_ANTIPATTERNS = [
     reason: "basicConstraints cA:TRUE enforcement is owned by x509Chain.issuerValidlyIssued / x509Chain.isCaCert; tsa/mail-bimi/mail-crypto-smime route through it. Any lib file calling X.checkIssued(Y) (Y!=X) directly bypasses the cA check and must use x509Chain instead. lib/x509-chain.js is the home of the primitive.",
   },
   {
+    id: "trusted-proxy-cidr-must-canonicalize-peer",
+    primitive: "b.requestHelpers.trustedClientIp",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // The peer-gating trustedProxies predicate matches the immediate peer
+    // address against operator CIDRs. cidrContains refuses a cross-family
+    // compare, so an IPv4-mapped IPv6 peer (::ffff:a.b.c.d from a dual-stack
+    // listener) silently fails an IPv4 CIDR and the proxy reads as untrusted —
+    // X-Forwarded-* is then ignored and the gate keys on the proxy. The peer
+    // MUST be folded through ssrfGuard.canonicalizeHost (var canon) first; a
+    // raw `cidrContains(trustedProxies[i], addr)` re-introduces the bypass.
+    regex: /cidrContains\(trustedProxies\[\w+\],\s*(?!canon\b)\w/,
+    allowlist: [],
+    reason: "Match the immediate peer against trustedProxies only after folding IPv4-mapped IPv6 via ssrfGuard.canonicalizeHost (the `canon` local) — cidrContains rejects a cross-family compare, so a raw peer addr lets a dual-stack proxy read as untrusted. request-helpers.js's _trustedProxyPredicate owns this.",
+  },
+  {
+    id: "http-upload-content-length-must-guard-transform",
+    primitive: "b.httpClient.request",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A Content-Length set from a Buffer body's length is wrong once a
+    // size-changing uploadTransform (gzip / encrypt / frame) is interposed —
+    // the server truncates extra bytes or waits for bytes that never arrive.
+    // The assignment must be guarded by `uploadTransforms.length === 0` so a
+    // transformed body is framed (chunked / DATA frames) on its real size.
+    regex: /Buffer\.isBuffer\(opts\.body\)(?:(?!uploadTransforms)[\s\S]){0,400}?content-length"\]\s*=\s*(?:String\()?opts\.body\.length/i,
+    allowlist: [],
+    reason: "Set Content-Length from opts.body.length only when uploadTransforms.length === 0 — a size-changing uploadTransform makes the original length wrong (truncation / hang). Omit it (chunked / H2 DATA frames) when a transform is present. lib/http-client.js owns both legs.",
+  },
+  {
+    id: "http-response-collect-must-use-download-pipeline",
+    primitive: "b.httpClient.request",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // The buffered (non-stream) response collector must read from the
+    // _buildDownloadStream pipeline tail, not the raw socket stream — reading
+    // `res`/`stream` directly bypasses maxBytesPerSec + downloadTransform in
+    // buffer / always-resolve mode (the documented default), so a configured
+    // throttle / transform silently no-ops. Anchored on the full-response
+    // collector (maxResponseBytes) so the bounded error-prefix reader is not
+    // matched.
+    regex: /boundedChunkCollector\(\{ maxBytes: maxResponseBytes \}\)(?:(?!_buildDownloadStream)[\s\S]){0,300}?\b(?:res|stream)\.on\("data"/,
+    allowlist: [],
+    reason: "Feed the full-response collector from _buildDownloadStream(...) (the dlSource / dlH2 tail), never raw res/stream .on('data') — otherwise maxBytesPerSec / downloadTransform apply only in stream mode. lib/http-client.js owns both H1 + H2 paths.",
+  },
+  {
     // A hard quota / rate / budget ceiling must be enforced with an
     // atomic conditional reserve — the limit test and the charge are
     // one indivisible operation ("add only if current + amount fits").
