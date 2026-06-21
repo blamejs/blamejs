@@ -136,6 +136,26 @@ function testNonModificationBypassesShape() {
   check("read-shape audit bypasses before/after requirement", ok === true);
 }
 
+function testOffListModificationVerbsRequireShape() {
+  // §11.10(e) must fail closed: a modifying verb NOT on the legacy denylist
+  // (anonymize / revoke / overwrite / merge / withdraw_consent / restrict)
+  // must still require before/after — previously it bypassed the check.
+  var mods = ["subject.anonymize", "consent.revoke", "subject.overwrite",
+              "db.merge", "subject.withdraw_consent", "subject.restrict"];
+  for (var i = 0; i < mods.length; i += 1) {
+    var r = b.fda21cfr11.checkGxpAudit({
+      action: mods[i], recordedAt: Date.now(), actorUserId: "u",
+    });
+    check("checkGxpAudit requires §11.10(e) shape for " + mods[i], r.ok === false);
+  }
+  // A genuinely complete modification row (before/after/reason) passes.
+  var full = b.fda21cfr11.checkGxpAudit({
+    action: "subject.anonymize", recordedAt: Date.now(), actorUserId: "u",
+    reason: "GDPR Art.17", metadata: { before: { name: "Alice" }, after: { name: null } },
+  });
+  check("checkGxpAudit accepts a complete anonymize row", full.ok === true);
+}
+
 function testSignatureStrippedRefusedWhenVerifierWired() {
   // #B0 — with verifyWith wired, a record whose signature is null/empty must
   // NOT verify on recordHash alone (recordHash is self-consistency, not
@@ -168,6 +188,7 @@ async function run() {
   testAssertGxpAuditMetadataAsString();
   testCheckGxpAuditMissingActor();
   testNonModificationBypassesShape();
+  testOffListModificationVerbsRequireShape();
 }
 
 module.exports = { run: run };

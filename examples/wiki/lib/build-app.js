@@ -374,11 +374,13 @@ async function buildApp(opts) {
         credentials: false,
       },
       rateLimit: {
-        // burst sized as 2 minutes' worth of refill at 2 tokens/sec —
-        // an idle visitor accrues a full minute-scale buffer between
-        // bursts so static-asset preloads don't trip the limiter.
+        // burst is a TOKEN COUNT, not a duration: 2 minutes' worth of refill at
+        // 2 tokens/sec = 240 tokens, so an idle visitor accrues a minute-scale
+        // buffer between bursts and static-asset preloads don't trip the
+        // limiter. (Was C.TIME.minutes(2) = 120000 — a ms/count unit error that
+        // set burst to 120k and effectively disabled the limiter.)
         backend:         "memory",
-        burst:           b.constants.TIME.minutes(2),
+        burst:           240,
         refillPerSecond: 2,
         skipPaths:       ["/healthz", "/readyz"],
       },

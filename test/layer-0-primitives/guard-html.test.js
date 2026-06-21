@@ -289,6 +289,31 @@ function testGuardHtmlByteCaps() {
 
 // ---- Sanitize round-trip ----
 
+function testGuardHtmlCommentEndDifferential() {
+  // mXSS comment-parser differential: the WHATWG HTML parser closes a comment
+  // at "--!>" (comment-end-bang) and ABRUPTLY at "<!-->" / "<!--->". A
+  // tokenizer honouring only "-->" treats the trailing <img onerror> as part
+  // of an inert comment; the browser parses it as a LIVE element. With the
+  // comment boundary fixed, the <img> is a real token the sanitizer disarms
+  // and validate flags — even in the permissive (allowComments) profile.
+  var payloads = [
+    "<!-- a --!><img src=x onerror=alert(1)>",
+    "<!--><img src=x onerror=alert(1)>-->",
+    "<!---><img src=x onerror=alert(1)>",
+  ];
+  for (var i = 0; i < payloads.length; i += 1) {
+    var p = payloads[i];
+    var s = b.guardHtml.sanitize(p, { profile: "permissive" });
+    check("comment-differential: sanitize strips smuggled onerror (" + i + ")",
+          s.indexOf("onerror=alert") === -1);
+    check("comment-differential: sanitize is not a verbatim pass-through (" + i + ")",
+          s !== p);
+    var v = b.guardHtml.validate(p, { profile: "permissive" });
+    check("comment-differential: validate flags the smuggled element (" + i + ")",
+          v.ok === false);
+  }
+}
+
 function testGuardHtmlSanitizeBasic() {
   var clean = b.guardHtml.sanitize("<p>hello <b>world</b></p>",
                                    { profile: "strict" });
@@ -412,6 +437,7 @@ async function run() {
   testGuardHtmlControlChar();
   testGuardHtmlSizeCaps();
   testGuardHtmlByteCaps();
+  testGuardHtmlCommentEndDifferential();
   testGuardHtmlSanitizeBasic();
   testGuardHtmlEscape();
   testGuardHtmlBadProfile();
