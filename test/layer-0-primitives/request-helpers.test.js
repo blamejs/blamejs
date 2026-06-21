@@ -133,6 +133,27 @@ function testParseListHeader() {
         JSON.stringify(rh.parseListHeader("\ta\t,\tb\n")) === '["a","b"]');
 }
 
+function testParseQualityListQuoteAware() {
+  var rh = b.requestHelpers;
+  // The q-value must come from the parameter literally named `q`, parsed
+  // quote-aware — never a `q=`-shaped substring inside a quoted parameter value,
+  // and a quoted value's ',' / ';' must not split the list.
+  var quoted = rh.parseQualityList('text/html;title="x;q=0.1";q=0.9');
+  check("parseQualityList: q= inside a quoted value is not the q-value",
+        quoted.length === 1 && quoted[0].value === "text/html" && quoted[0].q === 0.9);
+  var commaInQuote = rh.parseQualityList('a/b;p="x,y";q=0.3');
+  check("parseQualityList: comma inside a quoted value does not split the list",
+        commaInQuote.length === 1 && commaInQuote[0].value === "a/b" && commaInQuote[0].q === 0.3);
+  var leveled = rh.parseQualityList("text/html;level=1;q=0.5");
+  check("parseQualityList: a media-type param before q is ignored",
+        leveled.length === 1 && leveled[0].q === 0.5);
+  var ranked = rh.parseQualityList("br;q=1.0, gzip;q=0.5, *;q=0");
+  check("parseQualityList: ranks by descending q",
+        ranked[0].value === "br" && ranked[1].value === "gzip" && ranked[2].q === 0);
+  check("parseQualityList: missing q defaults to 1",
+        rh.parseQualityList("en")[0].q === 1);
+}
+
 function testSafeHeadersDistinct() {
   check("safeHeadersDistinct is fn", typeof b.requestHelpers.safeHeadersDistinct === "function");
 
@@ -439,6 +460,7 @@ async function run() {
   await testCaptureStatusOnEndThrowDoesntBreakResponse();
   testCaptureStatusValidatesArgs();
   testParseListHeader();
+  testParseQualityListQuoteAware();
   testExtractBearerSurface();
   testExtractBearerHappyPath();
   testExtractBearerCaseInsensitiveScheme();
