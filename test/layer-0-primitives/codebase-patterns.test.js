@@ -3061,6 +3061,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/archive-tar-read.js:_assertGuardMetadata",
         "lib/archive-tar-read.js:extract",
         "lib/auth/ciba.js:_registerInitialInterval",
+        "lib/auth/ciba.js:_verifyIdTokenIfPresent",
         "lib/auth/ciba.js:pollToken",
         "lib/auth/oauth.js:exchangeToken",
         "lib/auth/oauth.js:pollDeviceCode",
