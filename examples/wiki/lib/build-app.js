@@ -65,6 +65,13 @@ async function buildApp(opts) {
   var adminPassword = opts.adminPassword || null;
   var webhookUrl = opts.webhookUrl || null;
   var webhookSecret = opts.webhookSecret || null;
+  // Rate-limit burst (token count). Default: 2 minutes' worth of refill at
+  // 2 tokens/sec, ample for real browsing. Overridable so the e2e link/nav
+  // crawler — which fetches every page in a tight loop, far above any human
+  // rate — isn't 429'd while exercising completeness.
+  var rateLimitBurst = opts.rateLimitBurst !== undefined
+    ? opts.rateLimitBurst
+    : 2 * (b.constants.TIME.minutes(2) / b.constants.TIME.seconds(1));
 
   // ---- Build client assets via b.bundler ----
   // Hashes wiki.js + editor.js into public/dist/<name>.<hash>.js so
@@ -375,13 +382,14 @@ async function buildApp(opts) {
       },
       rateLimit: {
         // burst is a TOKEN COUNT, not a duration: 2 minutes' worth of refill at
-        // 2 tokens/sec = 240 tokens, so an idle visitor accrues a minute-scale
-        // buffer between bursts and static-asset preloads don't trip the
-        // limiter. (Was C.TIME.minutes(2) = 120000 — a ms/count unit error that
+        // 2 tokens/sec, so an idle visitor accrues a minute-scale buffer between
+        // bursts and static-asset preloads don't trip the limiter. Expressed as
+        // refillPerSecond × window-in-seconds so the count is never a bare magic
+        // number. (Was C.TIME.minutes(2) = 120000 — a ms/count unit error that
         // set burst to 120k and effectively disabled the limiter.)
         backend:         "memory",
-        burst:           240,
         refillPerSecond: 2,
+        burst:           rateLimitBurst,
         skipPaths:       ["/healthz", "/readyz"],
       },
       // cookies + cspNonce + fetchMetadata ride createApp's secure
