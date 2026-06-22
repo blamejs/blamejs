@@ -1508,6 +1508,7 @@ async function run() {
   await testApiEncryptDerivedPruneInterval();
   await testApiEncryptHttpClientHelperShape();
   await testApiEncryptHttpClientRoundTrip();
+  await testApiEncryptHttpClientWallClockTimeout();
   await testApiEncryptEncryptedErrorReadback();
 
   // v0.7.3 — per-session keying mode
@@ -1528,6 +1529,56 @@ async function run() {
   await testApiEncryptPerSessionSessionInfo();
   await testApiEncryptPerSessionResetRotates();
   await testApiEncryptObservabilityCounters();
+}
+
+// #355 — b.httpClient.encrypted must forward timeoutMs (overall wall-clock cap),
+// not only idleTimeoutMs. A peer that trickles bytes within the idle window
+// (never tripping the idle timeout) but never completes the response would
+// otherwise hold the encrypted call open indefinitely. RED before the fix
+// (timeoutMs absent from the passable forwarding set): the request never settles
+// inside the wall-clock bound. GREEN after: it rejects at ~timeoutMs.
+async function testApiEncryptHttpClientWallClockTimeout() {
+  var http = require("http");
+  var keypair = _serverKeypair();
+  var timer = null;
+  var server = http.createServer(function (req, res) {
+    req.on("data", function () {});
+    req.on("end", function () {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // Trickle one byte every 50ms forever — socket never idle long enough to
+      // trip idleTimeoutMs, response never ends → only a wall-clock cap bounds it.
+      timer = setInterval(function () { try { res.write("x"); } catch (_e) { /* socket gone */ } }, 50);
+      res.on("close", function () { if (timer) { clearInterval(timer); timer = null; } });
+    });
+  });
+  var port = await helpers.listenOnRandomPort(server);
+  try {
+    var enc = b.httpClient.encrypted({
+      pubkey:  keypair,
+      baseUrl: "http://127.0.0.1:" + port,
+      method:  "POST",
+    });
+    var started = Date.now();
+    var rejected = false;
+    try {
+      await enc.request({
+        path:             "/slow",
+        body:             { user: "alice" },
+        timeoutMs:        400,                       // overall wall-clock cap
+        allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+        allowInternal:    true,
+      });
+    } catch (_e) {
+      rejected = true;
+    }
+    var elapsed = Date.now() - started;
+    check("httpClient.encrypted: slow-trickle request is bounded (rejects)", rejected === true);
+    check("httpClient.encrypted: bounded by the wall-clock cap (~timeoutMs, not idle)",
+          elapsed < 3000);
+  } finally {
+    if (timer) clearInterval(timer);
+    server.close();
+  }
 }
 
 module.exports = { run: run };
