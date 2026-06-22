@@ -49,6 +49,8 @@ async function testSmtpResponseTooLargeBounded() {
   // the client moves past connect), then on the first client command
   // streams non-CRLF bytes forever.
   var server = net.createServer(function (sock) {
+    // Client destroys mid-blast at the cap; swallow the resulting ECONNRESET.
+    sock.on("error", function () { if (streamTimer) { clearInterval(streamTimer); streamTimer = null; } });
     sock.write("220 evil.example ESMTP\r\n");
     sock.on("data", function () {
       // Client just sent EHLO; respond with an unbounded non-CRLF blast.
@@ -96,6 +98,8 @@ async function testSmtpTransactionDeadlineBounded() {
   // generous idle timeout but a tiny maxTransactionMs the send must still
   // fail on the wall-clock deadline.
   var server = net.createServer(function (sock) {
+    // Client destroys at the transaction deadline; swallow the ECONNRESET.
+    sock.on("error", function () { if (trickleTimer) { clearInterval(trickleTimer); trickleTimer = null; } });
     sock.write("220 slow.example ESMTP\r\n");
     sock.on("data", function () {
       // Keep the socket "alive" with periodic continuation lines so the
