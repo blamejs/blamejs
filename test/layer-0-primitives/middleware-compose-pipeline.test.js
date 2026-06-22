@@ -265,7 +265,7 @@ async function testHaltingMiddlewareSettlesPromise() {
   var finalCalled = false;
   var pipe = b.middleware.composePipeline([
     { name: "pass", mw: _passMw("a") },
-    { name: "halt", mw: function (req, res, next) { res._ended = true; /* no next() */ } },
+    { name: "halt", mw: function (req, res, next) { res.writableEnded = true; /* ended response, no next() */ } },
     { name: "after", mw: _passMw("z") },
   ]);
   var req = {}; var res = {};
@@ -289,8 +289,8 @@ async function testHandledErrorSettlesWithoutFinalNext() {
   var finalCalled = false;
   var sentinel = new Error("boom");
   var pipe = b.middleware.composePipeline([
-    { name: "failing",      mw: _bailMw(sentinel),                                       position: 10 },
-    { name: "errorHandler", mw: function (err, req, res, _next) { res._handled = err; }, position: 20 },
+    { name: "failing",      mw: _bailMw(sentinel),                                                            position: 10 },
+    { name: "errorHandler", mw: function (err, req, res, _next) { res._handled = err; res.writableEnded = true; }, position: 20 },
   ]);
   var req = {}; var res = {};
   var settled = false;
@@ -302,6 +302,26 @@ async function testHandledErrorSettlesWithoutFinalNext() {
   check("handled error settles the composed promise", settled === true);
   check("error handler consumed the error", res._handled === sentinel);
   check("finalNext NOT called when an error handler halts the chain", finalCalled === false);
+}
+
+async function testDeferredNextContinuesChain() {
+  // A callback-style middleware that calls next() LATER (from a timer, stream,
+  // or legacy callback) returns before next() runs. The pipeline must NOT treat
+  // that bare return as a halt: the chain continues when the deferred next()
+  // fires, downstream middleware run, and finalNext is called.
+  var finalCalled = false;
+  var pipe = b.middleware.composePipeline([
+    { name: "a", mw: _passMw("a") },
+    { name: "deferred", mw: function (req, res, next) {
+      setTimeout(function () { req._tags.push("deferred"); next(); }, 5);
+    } },
+    { name: "c", mw: _passMw("c") },
+  ]);
+  var req = {}; var res = {};
+  await pipe(req, res, function (err) { finalCalled = !err; });
+  check("deferred next() continues the chain (callback-style middleware)",
+    req._tags && req._tags.join("") === "adeferredc");
+  check("finalNext called after a deferred next()", finalCalled === true);
 }
 
 async function run() {
@@ -322,6 +342,7 @@ async function run() {
   await testFinalNextFallbackOnUnhandledError();
   await testHaltingMiddlewareSettlesPromise();
   await testHandledErrorSettlesWithoutFinalNext();
+  await testDeferredNextContinuesChain();
 }
 
 module.exports = { run: run };

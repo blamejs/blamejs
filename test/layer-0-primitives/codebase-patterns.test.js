@@ -5146,6 +5146,40 @@ var KNOWN_ANTIPATTERNS = [
     reason: "basicConstraints cA:TRUE enforcement is owned by x509Chain.issuerValidlyIssued / x509Chain.isCaCert; tsa/mail-bimi/mail-crypto-smime route through it. Any lib file calling X.checkIssued(Y) (Y!=X) directly bypasses the cA check and must use x509Chain instead. lib/x509-chain.js is the home of the primitive.",
   },
   {
+    id: "compose-pipeline-settle-on-response-ended-not-return",
+    primitive: "b.middleware.composePipeline",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // composePipeline must settle its promise on a HALT (the response ended
+    // without next()), never merely because a middleware FUNCTION returned.
+    // A callback-style middleware that calls next() later (timer/stream/legacy
+    // callback) returns with advanced===false but is NOT halted; resolving on
+    // a bare `if (!advanced)` marks the pipeline finished so the deferred
+    // next() is ignored and the chain stalls (Codex PR#357). The fixed form
+    // gates on the response: `if (!advanced && _responseEnded(res))`. The bare
+    // `if (!advanced)` is the regression shape — `advanced` is unique to this
+    // dispatch loop, so no allowlist is needed.
+    regex: /if\s*\(\s*!advanced\s*\)/,
+    allowlist: [],
+    reason: "compose-pipeline must settle only when the response actually ended (_responseEnded), not when a middleware function returns — a bare `if (!advanced)` resolve breaks callback-style deferred-next middleware (Codex PR#357). Use `if (!advanced && _responseEnded(res))`.",
+  },
+  {
+    id: "ciba-authreqid-binding-not-truthiness-gated",
+    primitive: "b.auth.ciba",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // The CIBA id_token auth_req_id binding must not be guarded by a bare
+    // truthiness test: an empty-string auth_req_id (a valid-typed but falsy
+    // value reaching the helper from a push notification body) would skip the
+    // substitution defense entirely (Codex PR#357 — same class as the oauth
+    // empty-nonce fail-open). The fixed form fails closed:
+    // `if (typeof expectedAuthReqId !== "string" || expectedAuthReqId.length === 0)`.
+    // `expectedAuthReqId` is unique to ciba.js, so no allowlist is needed.
+    regex: /if\s*\(\s*expectedAuthReqId\s*\)/,
+    allowlist: [],
+    reason: "the CIBA auth_req_id binding must fail closed on an empty/missing id (`typeof x !== 'string' || x.length === 0`), never skip behind a bare `if (expectedAuthReqId)` — a falsy auth_req_id otherwise bypasses the cross-user token-substitution defense (Codex PR#357).",
+  },
+  {
     id: "trusted-proxy-cidr-must-canonicalize-peer",
     primitive: "b.requestHelpers.trustedClientIp",
     scanScope: "lib",

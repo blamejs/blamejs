@@ -108,6 +108,17 @@ async function run() {
     catch (e) { threwAbsent = e; }
     check("parseNotification: id_token missing the auth_req_id claim refused",
           threwAbsent && threwAbsent.code === "auth-ciba/id-token-authreqid-mismatch");
+
+    // An EMPTY auth_req_id in the notification body must be refused outright —
+    // otherwise it reaches the binding helper as a falsy expected value and the
+    // substitution defense is skipped, so an id_token minted for ANOTHER flow
+    // would be returned as trusted.
+    var emptyPush = _push(_mintIdToken(issuer, "req-attacker"), "");
+    var threwEmpty = null;
+    try { await ciba.parseNotification(emptyPush.req, emptyPush.opts); }
+    catch (e) { threwEmpty = e; }
+    check("parseNotification: empty auth_req_id in the body is refused",
+          threwEmpty && threwEmpty.code === "auth-ciba/no-auth-req-id-in-body");
   });
 }
 
