@@ -31,6 +31,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Bundled Public Suffix List refreshed to current upstream",
+          "body": "The vendored Mozilla Public Suffix List — which b.publicSuffix uses to derive organizational domains for DMARC (psd= / np=), BIMI, cookie-scope checks, and same-site policy — is refreshed to the latest upstream revision. Domain classification reflects recent additions and removals to the list."
+        }
+      ]
+    },
+    {
       "heading": "Security",
       "items": [
         {
