@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.15",
-  "createdAt": "2026-06-22T00:16:09.227Z",
+  "frameworkVersion": "0.15.16",
+  "createdAt": "2026-06-22T12:04:10.257Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2345,6 +2345,10 @@
         "lock": {
           "type": "function",
           "arity": 3
+        },
+        "openAppendNoFollowSync": {
+          "type": "function",
+          "arity": 2
         },
         "openNoFollowSync": {
           "type": "function",
@@ -16059,6 +16063,10 @@
         "shutdown": {
           "type": "function",
           "arity": 0
+        },
+        "supportsTransactions": {
+          "type": "function",
+          "arity": 1
         },
         "transaction": {
           "type": "function",
@@ -49213,7 +49221,7 @@
         },
         "ipPrefix": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         },
         "makeResourceAuditEmitter": {
           "type": "function",

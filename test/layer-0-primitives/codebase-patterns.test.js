@@ -8547,6 +8547,54 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Symlink-follow / torn-write class (CWE-59 / CWE-377). A raw nodeFs.writeFileSync / nodeFs.createWriteStream to a destination path follows a symlink an attacker pre-planted there and can leave a half-written file on a crash. The §1 sweep routed every hand-rolled write through an atomic-file primitive: writeSync (buffer payloads — cookie-jar flush, archive/tar extract, backup payloads, p12 export, api-snapshot, sealed-pem marker), writeStream (object-store streaming put — staged into a no-follow exclusive temp + atomic rename, capped by maxBytes), and writeExclSync (the vault seal/unseal/rotate staged write that must re-read + verify the bytes before the rename — clears any stale entry then O_EXCL|O_NOFOLLOW creates so a re-planted symlink fails closed). The three allowlisted files are the genuinely-safe forms: atomic-file.js owns the primitives (its createWriteStream binds an _openExclTemp fd); backup/index.js writeFileSync passes { flag: 'wx' } (O_EXCL refuses a pre-planted target); http-client.js opens its download temp with explicit O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW flags. Any new raw nodeFs.writeFileSync/createWriteStream elsewhere trips this — call the matching atomic-file primitive instead.",
   },
   {
+    id: "raw-fs-append-open-without-nofollow",
+    primitive: "b.atomicFile.openAppendNoFollowSync — O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW append open",
+    // The append-sink sibling of raw-fs-write-without-exclusive-nofollow. A
+    // long-lived append target (an active log file kept open across appends and
+    // reopened on rotation) can't use a one-shot atomic write, but a bare
+    // nodeFs.openSync(path, "a") / appendFileSync(path, ...) still FOLLOWS a
+    // symlink an attacker pre-planted at `path` (CWE-59) — redirecting the
+    // append stream to a victim file. openAppendNoFollowSync adds O_NOFOLLOW so
+    // the symlink is refused (ELOOP) atomically with the open, closing the
+    // caller-pre-check-then-unlink race. The primitive itself opens with a
+    // numeric flags variable (not the "a" string), so its own home does not
+    // match and needs no allowlist.
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /\bnodeFs\.(?:openSync\s*\(\s*[^,]+,\s*"a"|appendFileSync\s*\(|appendFile\s*\()/,
+    allowlist: [],
+    reason: "Symlink-follow append class (CWE-59). A bare nodeFs.openSync(path, \"a\") or nodeFs.appendFileSync(path, ...) follows a symlink an attacker pre-planted at the append target and redirects the log/append stream to an attacker-chosen file; a caller's pre-check-then-unlink can't close the race because the sink's own open is what follows the link. The fix routes every long-lived append open through b.atomicFile.openAppendNoFollowSync (O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW): the file is created/appended normally but a symlink at the final component fails the open closed with ELOOP. The v0.15.16 sweep converted log-stream-local.js (active log sink) and daemon.js (detached-process stdout/stderr log). Zero allowlist — the primitive opens with a numeric flags variable, so any new nodeFs.openSync(..., \"a\") / appendFileSync / appendFile in lib/ trips this; call b.atomicFile.openAppendNoFollowSync instead.",
+  },
+  {
+    id: "httpclient-request-idle-timeout-without-wall-clock",
+    primitive: "forward BOTH timeoutMs (overall wall-clock) and idleTimeoutMs to httpClient.request — never idle-only",
+    // #355 class. httpClient distinguishes timeoutMs (overall wall-clock cap)
+    // from idleTimeoutMs (zero-progress cap). A consumer that maps its single
+    // configured timeout to idleTimeoutMs ONLY has no overall bound: a peer
+    // trickling bytes within the idle window holds the request open forever
+    // (slow-loris). Every httpClient request object that sets idleTimeoutMs must
+    // also set timeoutMs on the line immediately before it. This detector flags
+    // an `idleTimeoutMs:` property (identifier/member value) whose preceding line
+    // is NOT a `timeoutMs:` line. The allowlist is the SERVER-side / pool idle
+    // timeouts — inbound connection inactivity disconnect (RFC 5321 §4.5.3.2.7
+    // for SMTP, IMAP/POP3/ManageSieve/submission/TLS) and the external-db
+    // connection pool — a structurally different concept (a long-lived server
+    // socket has no per-request wall-clock to cap), NOT an outbound httpClient
+    // request.
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /\n[ \t]*(?!timeoutMs\b)[A-Za-z_$][\w$]*:[^\n]*\n[ \t]*idleTimeoutMs:[ \t]*[A-Za-z_$]/,
+    allowlist: [
+      "lib/mail-server-imap.js",        // inbound IMAP server socket idle disconnect
+      "lib/mail-server-managesieve.js", // inbound ManageSieve server socket idle disconnect
+      "lib/mail-server-mx.js",          // inbound SMTP/MX server socket idle (RFC 5321 §4.5.3.2.7)
+      "lib/mail-server-pop3.js",        // inbound POP3 server socket idle disconnect
+      "lib/mail-server-submission.js",  // inbound submission server socket idle disconnect
+      "lib/mail-server-tls.js",         // inbound TLS server socket idle (re-armed post-handshake)
+    ],
+    reason: "Slow-trickle hold-open class (#355, CWE-400). httpClient.request takes timeoutMs (overall wall-clock cap) AND idleTimeoutMs (zero-progress cap) as DISTINCT bounds. A consumer wrapping httpClient that forwards only idleTimeoutMs leaves the request unbounded in wall-clock time: a peer that emits one byte just under the idle window keeps resetting the idle timer forever, holding the call open indefinitely. The v0.15.16 sweep set timeoutMs alongside idleTimeoutMs in every httpClient consumer (api-encrypt httpClient, the object-store shared request wrapper + azure/gcs bucket-ops, queue-sqs, the cloudwatch/otlp/webhook log sinks, the HIBP password breach check). The detector requires timeoutMs on the line immediately before every idleTimeoutMs property; the only allowlisted files are inbound SERVER socket idle timeouts and the external-db pool idle — a long-lived server connection's inactivity disconnect, not an outbound request needing a per-request wall-clock cap. A new httpClient consumer forwarding idle-only trips this — set timeoutMs too.",
+  },
+  {
     id: "allowlist-map-indexed-by-untrusted-key-without-hasown",
     primitive: "Object.prototype.hasOwnProperty.call(MAP, key) — proto-shadow-safe allowlist membership",
     // Prototype-pollution / proto-shadow class. An object-literal allowlist
