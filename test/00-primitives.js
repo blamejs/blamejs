@@ -13490,6 +13490,16 @@ function testJsonModuleSurface() {
   check("safeJson.validate is a function",   typeof b.safeJson.validate === "function");
   check("safeJson.canonical is a function",  typeof b.safeJson.canonical === "function");
   check("safeJson.SafeJsonError exists",     typeof b.safeJson.SafeJsonError === "function");
+  // isJsonObject — only a plain object is true; null / arrays / scalars (all
+  // valid JSON documents parse() accepts) are not, so a parsed header / claims
+  // set must be re-checked before its fields are dereferenced.
+  check("safeJson.isJsonObject is a function", typeof b.safeJson.isJsonObject === "function");
+  check("safeJson.isJsonObject true for a plain object", b.safeJson.isJsonObject({ a: 1 }) === true);
+  check("safeJson.isJsonObject false for null",  b.safeJson.isJsonObject(null) === false);
+  check("safeJson.isJsonObject false for an array", b.safeJson.isJsonObject([1, 2]) === false);
+  check("safeJson.isJsonObject false for a scalar", b.safeJson.isJsonObject("x") === false);
+  check("safeJson.isJsonObject false for a parsed JSON null",
+    b.safeJson.isJsonObject(b.safeJson.parse("null")) === false);
 }
 
 function testJsonParse() {
