@@ -45,6 +45,15 @@ function _serverKeypair() {
   return b.crypto.generateEncryptionKeyPair();
 }
 
+// #361 — a rejection emitted on an ESTABLISHED per-session encrypted channel is
+// wrapped in the session envelope (an { _ct, ... } object), so its reason never
+// travels in cleartext. Pre-session / per-request rejections stay plaintext
+// ({ error: <code> }). This helper distinguishes the two captured-body shapes.
+function _isEncryptedEnvelope(captured) {
+  try { var p = JSON.parse(captured); return !!p && typeof p._ct === "string"; }
+  catch (_e) { return false; }
+}
+
 // ---- Nonce-store ----
 
 async function testNonceStoreSurface() {
@@ -1006,8 +1015,14 @@ async function testApiEncryptPerSessionExpiry() {
   });
   await fin2;
   check("per-session expired: 401", res2._endedStatus === 401);
-  check("per-session expired: body says session-expired or session-unknown",
-        /session-expired|session-unknown/.test(res2._captured));
+  // #361: when the store still holds the (past-TTL) row the channel is
+  // established, so the expiry rejection is wrapped in the session envelope;
+  // when the store has already evicted the TTL=1ms row the request is
+  // session-unknown BEFORE any key is resolved, so it stays plaintext. Both
+  // are valid 401 refusals — accept either (neither leaks "session-expired"
+  // over an established channel in cleartext).
+  check("per-session expired: encrypted envelope OR plaintext session-unknown",
+        _isEncryptedEnvelope(res2._captured) || /session-unknown/.test(res2._captured));
 }
 
 async function testApiEncryptPerSessionMaxResponses() {
@@ -1042,8 +1057,9 @@ async function testApiEncryptPerSessionMaxResponses() {
   });
   await fin2;
   check("per-session maxResponses exceeded: 401", res2._endedStatus === 401);
-  check("per-session maxResponses exceeded: body says rotation-required",
-        /session-rotation-required/.test(res2._captured));
+  // #361: established channel → the rotation-required rejection is encrypted.
+  check("per-session maxResponses exceeded: rejection is an encrypted envelope",
+        _isEncryptedEnvelope(res2._captured));
 }
 
 async function testApiEncryptPerSessionResponseCounterMonotonic() {
@@ -1286,8 +1302,11 @@ async function testApiEncryptPerSessionConcurrentCtrExecutesOnce() {
   check("concurrent-ctr: exactly one 200 and one 400",
         statuses[0] === 200 && statuses[1] === 400);
   var rejected = a.res._endedStatus === 400 ? a.res : c.res;
-  check("concurrent-ctr: the loser is refused with the replay shape",
-        /encrypted-payload-rejected/.test(rejected._captured));
+  // #361: on an established per-session channel the rejection body is wrapped
+  // in the session envelope (it must NOT leak the replay reason in cleartext),
+  // so the loser's body is an encrypted { _ct, ... } envelope, not plaintext.
+  check("concurrent-ctr: the loser's rejection is an encrypted envelope (no plaintext leak)",
+        _isEncryptedEnvelope(rejected._captured));
 }
 
 async function testApiEncryptPerSessionSequentialCounterStillWorks() {
@@ -1410,7 +1429,7 @@ async function testApiEncryptCtrClaimLifetimeAndSetFailure() {
   await mw(req3, res3, function () { execCount += 1; res3.json({ ok: 3 }); });
   await fin3;
   check("ctr-claim: replay of the captured body is refused",
-        res3._endedStatus === 400 && /encrypted-payload-rejected/.test(res3._captured));
+        res3._endedStatus === 400 && _isEncryptedEnvelope(res3._captured));   // #361: established channel → encrypted rejection
   check("ctr-claim: handler did not execute twice", execCount === 1);
 }
 

@@ -300,7 +300,45 @@ async function testEnqueueRoundTripsAvailableAt() {
   }
 }
 
+// R7-4: a deps-bearing flow child must be PARKED (non-leaseable) from the
+// instant it is enqueued. enqueueFlow's first pass now passes dependsOn so
+// queue-local parks the child at FLOW_BLOCKED immediately, instead of leaving
+// it leaseable until the second pass — a window in which a concurrent consumer
+// could lease it before its dependencies have run. Driven on the real
+// queue-local consumer (enqueue → lease), distinguishing jobs by returned id.
+async function testFlowChildParkedAtEnqueue() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    var queueLocal = require("../../lib/queue-local");
+    var ql = queueLocal.create();   // default store (framework db, single-node)
+
+    var childEnq = await ql.enqueue("park-q", { n: "child" },
+      { dependsOn: ["dep-a"], flowId: "f1", flowChildName: "child" });
+    var rootEnq = await ql.enqueue("park-q", { n: "root" },
+      { flowId: "f1", flowChildName: "root" });
+    var leased = await ql.lease("park-q", 30000, 10);
+    var leasedIds = leased.map(function (j) { return j.jobId; });
+    check("R7-4: a root (no-deps) child is immediately leaseable",
+          leasedIds.indexOf(rootEnq.jobId) !== -1);
+    check("R7-4: a deps-bearing child is PARKED (not leased) at enqueue time",
+          leasedIds.indexOf(childEnq.jobId) === -1);
+
+    // Contrast: WITHOUT dependsOn at enqueue (the pre-fix first-pass shape) the
+    // same child WOULD be leaseable — proving the parking is what closes the
+    // race, not some other gate.
+    var unparkedEnq = await ql.enqueue("park-q2", { n: "unparked" },
+      { flowId: "f2", flowChildName: "unparked" });
+    var leased2 = await ql.lease("park-q2", 30000, 10);
+    check("R7-4 contrast: a child enqueued WITHOUT dependsOn is leaseable",
+          leased2.map(function (j) { return j.jobId; }).indexOf(unparkedEnq.jobId) !== -1);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
+  await testFlowChildParkedAtEnqueue();
   await testFlowSurface();
   await testRepeatCronReEnqueuesAfterComplete();
   await testRepeatStopsOnFinalFailure();
