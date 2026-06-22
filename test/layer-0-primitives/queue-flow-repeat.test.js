@@ -337,8 +337,53 @@ async function testFlowChildParkedAtEnqueue() {
   }
 }
 
+// P1: if a dependency completes in the WINDOW between enqueueFlow's first
+// pass (which enqueues + parks the deps-bearing child) and its second pass
+// (patchFlowDeps, which resolves dependency NAMES → sibling jobIds), the
+// completion has already released the child (complete() →
+// _maybeReleaseFlowChildren bumps availableAt to now). patchFlowDeps must
+// NOT re-park it: the dependency is done and never completes again, so a
+// re-park would strand the child pending-but-unleaseable forever. Driven on
+// the real queue-local consumer: enqueue (parked) → complete the dep (the
+// in-window release) → patchFlowDeps → the child MUST still be leaseable.
+async function testPatchFlowDepsDoesNotReparkReleasedChild() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    var queueLocal = require("../../lib/queue-local");
+    var ql = queueLocal.create();
+
+    // First-pass shape: a no-deps dependency + a deps-bearing child parked by
+    // its dependsOn (the dependency NAMES the first pass writes).
+    var depEnq = await ql.enqueue("win-q", { n: "dep" },
+      { flowId: "fw", flowChildName: "dep-a" });
+    var childEnq = await ql.enqueue("win-q", { n: "child" },
+      { dependsOn: ["dep-a"], flowId: "fw", flowChildName: "child" });
+
+    // The dependency completes BEFORE the second pass — releasing the child.
+    var leasedDep = await ql.lease("win-q", 30000, 10);
+    var leasedDepIds = leasedDep.map(function (j) { return j.jobId; });
+    check("window: the dependency leased while the child is still parked",
+          leasedDepIds.indexOf(depEnq.jobId) !== -1 &&
+          leasedDepIds.indexOf(childEnq.jobId) === -1);
+    await ql.complete(depEnq.jobId);   // → _maybeReleaseFlowChildren releases the child
+
+    // Second pass runs AFTER the in-window release.
+    await ql.patchFlowDeps(childEnq.jobId, [depEnq.jobId]);
+
+    // The child must still be leaseable. On the pre-fix tree patchFlowDeps
+    // re-parked availableAt at MAX_SAFE_INTEGER, stranding it forever.
+    var leasedChild = await ql.lease("win-q", 30000, 10);
+    check("P1: a child released in the enqueue window is NOT re-parked by patchFlowDeps",
+          leasedChild.map(function (j) { return j.jobId; }).indexOf(childEnq.jobId) !== -1);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   await testFlowChildParkedAtEnqueue();
+  await testPatchFlowDepsDoesNotReparkReleasedChild();
   await testFlowSurface();
   await testRepeatCronReEnqueuesAfterComplete();
   await testRepeatStopsOnFinalFailure();

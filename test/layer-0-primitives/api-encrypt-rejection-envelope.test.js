@@ -41,11 +41,15 @@ function _serverKeypair() {
   return b.crypto.generateEncryptionKeyPair();
 }
 
-// On an established per-session channel a replayed subsequent request is
-// refused — and that refusal MUST be an encrypted envelope, not a
-// plaintext { error }. RED on the current tree (rejection emitted as
-// plaintext JSON); GREEN once _writeRejection wraps it in the session
-// envelope.
+// On an established per-session channel a rejection that consumes a
+// persisted response counter (the post-claim tag-mismatch path) MUST be an
+// encrypted envelope, not a plaintext { error } — leaking, in cleartext over
+// an otherwise-encrypted channel, which check tripped. RED before #361
+// (rejection emitted as plaintext JSON); GREEN once _writeRejection wraps it
+// in the session envelope. The session must remain USABLE afterwards: the
+// rejection rides a response counter the server actually persisted (the
+// atomic claim ran before the decrypt failed), so the client's monotonic
+// _ctr check still holds on the next genuine response.
 async function testRejectionEncryptedOnEstablishedSession() {
   var keypair = _serverKeypair();
   var mw = b.middleware.apiEncrypt({
@@ -82,19 +86,23 @@ async function testRejectionEncryptedOnEstablishedSession() {
   check("second request returns 200", res2._endedStatus === 200);
   second.decryptResponse(JSON.parse(res2._captured));
 
-  // REPLAY the second request verbatim (same _ctr=2) — refused with the
-  // counter-replay shape. This is the leak vector: the rejection rides
-  // the established channel and MUST be encrypted.
+  // Third request with a FRESH counter (ctr=3) but a corrupted ciphertext:
+  // it passes the shape / expiry / rotation / replay gates AND wins the
+  // atomic (sid, ctr) claim — so the server persists the consumed response
+  // counter — then fails the AEAD decrypt. This rejection rides the session
+  // envelope under that persisted counter (the leak vector #361 closes).
+  var third = clientCtx.encryptRequest({ user: "alice", action: "tamper" });
   var req3 = _bodyReq("POST", { "content-type": "application/json" }, "");
-  req3.body = JSON.parse(JSON.stringify(second.body));
+  req3.body = JSON.parse(JSON.stringify(third.body));
+  req3.body._ct = Buffer.from("corrupted-ciphertext-bytes").toString("base64");
   var res3 = _mkRes();
   var fin3 = _newFinish(res3);
   await mw(req3, res3, function () {
-    check("replay must NOT reach next()", false);
+    check("tampered ciphertext must NOT reach next()", false);
   });
   await fin3;
 
-  check("replay on established session returns 400", res3._endedStatus === 400);
+  check("tampered request on established session returns 400", res3._endedStatus === 400);
 
   var rejBody = JSON.parse(res3._captured);
   // The core assertion: the rejection is an ENCRYPTED envelope, NOT a
@@ -110,10 +118,97 @@ async function testRejectionEncryptedOnEstablishedSession() {
         typeof rejBody._ctr === "number");
 
   // The encrypted rejection must decrypt under the session key to reveal
-  // the error code only to the legitimate key-holder.
-  var plain = second.decryptResponse(rejBody);
+  // the error code only to the legitimate key-holder — and decrypting it
+  // advances the client's response counter.
+  var plain = third.decryptResponse(rejBody);
   check("decrypted rejection reveals the error code to the key-holder",
         plain && typeof plain.error === "string" && plain.error.length > 0);
+
+  // P2 regression guard: the session must still be usable. The encrypted
+  // rejection consumed a counter the server PERSISTED (it won the claim), so
+  // the next genuine request's response counter is strictly above the one
+  // the client just saw — decrypting it must NOT throw a replay error.
+  var fourth = clientCtx.encryptRequest({ user: "alice", action: "after-reject" });
+  var req4 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req4.body = fourth.body;
+  var res4 = _mkRes();
+  var fin4 = _newFinish(res4);
+  await mw(req4, res4, function () { res4.json({ ok: true, n: 4 }); });
+  await fin4;
+  check("a genuine request after an encrypted rejection still returns 200",
+        res4._endedStatus === 200);
+  var afterReject = fourth.decryptResponse(JSON.parse(res4._captured));
+  check("its response decrypts cleanly (counter stayed monotonic)",
+        afterReject && afterReject.ok === true && afterReject.n === 4);
+}
+
+// P2: the two GENERIC surviving-session rejections (monotonic-counter replay
+// and atomic-claim loss) return BEFORE the consumed response counter is
+// persisted. Encrypting them would emit a _ctr the client tracks as consumed
+// while the server never records it — so the next genuine response reuses
+// that _ctr and the client refuses it as a replay, bricking the session.
+// They must stay PLAINTEXT (their body is generic — no session-lifecycle
+// reason leaks), and the session must remain usable across the rejection.
+// RED before the P2 fix (replay rejection encrypted → the follow-up valid
+// response desyncs → decryptResponse throws); GREEN after.
+async function testReplayRejectionStaysPlaintextAndSessionSurvives() {
+  var keypair = _serverKeypair();
+  var mw = b.middleware.apiEncrypt({
+    keypair: keypair, audit: false, keying: "per-session", sessionTtlMs: 60_000,
+  });
+  var clientCtx = b.middleware.apiEncrypt.client({
+    pubkey: keypair, keying: "per-session",
+  });
+
+  // Bootstrap + one valid request so the channel is established (lastReqCtr=2).
+  var first = clientCtx.encryptRequest({ user: "bob" });
+  var req1 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req1.body = first.body;
+  var res1 = _mkRes();
+  var fin1 = _newFinish(res1);
+  await mw(req1, res1, function () { res1.json({ ok: true, n: 1 }); });
+  await fin1;
+  first.decryptResponse(JSON.parse(res1._captured));
+
+  var second = clientCtx.encryptRequest({ user: "bob", action: "ping" });
+  var req2 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req2.body = second.body;
+  var res2 = _mkRes();
+  var fin2 = _newFinish(res2);
+  await mw(req2, res2, function () { res2.json({ ok: true, n: 2 }); });
+  await fin2;
+  second.decryptResponse(JSON.parse(res2._captured));
+
+  // REPLAY the second request verbatim (stale _ctr=2 <= lastReqCtr=2). This
+  // is the monotonic-replay path: it must refuse, and the refusal stays
+  // plaintext so no unpersisted response counter is consumed.
+  var reqR = _bodyReq("POST", { "content-type": "application/json" }, "");
+  reqR.body = JSON.parse(JSON.stringify(second.body));
+  var resR = _mkRes();
+  var finR = _newFinish(resR);
+  await mw(reqR, resR, function () { check("replay must NOT reach next()", false); });
+  await finR;
+  check("replay on established session returns 400", resR._endedStatus === 400);
+  var replBody = JSON.parse(resR._captured);
+  check("replay rejection is generic PLAINTEXT (no consumed counter)",
+        replBody.error === "encrypted-payload-rejected" && replBody._ct === undefined);
+
+  // The session must still work: a genuine next request (ctr=3) succeeds and
+  // its response decrypts cleanly. On the pre-P2 tree the replay rejection
+  // was an encrypted envelope whose _ctr the client consumed, so this
+  // decryptResponse would throw CLIENT_RESPONSE_REPLAY.
+  var third = clientCtx.encryptRequest({ user: "bob", action: "after-replay" });
+  var req3 = _bodyReq("POST", { "content-type": "application/json" }, "");
+  req3.body = third.body;
+  var res3 = _mkRes();
+  var fin3 = _newFinish(res3);
+  await mw(req3, res3, function () { res3.json({ ok: true, n: 3 }); });
+  await fin3;
+  check("a genuine request after a plaintext replay rejection returns 200",
+        res3._endedStatus === 200);
+  var afterReplay = third.decryptResponse(JSON.parse(res3._captured));
+  check("its response decrypts cleanly (replay rejection did not desync the counter)",
+        afterReplay && afterReplay.ok === true && afterReplay.n === 3);
 }
 
 // A pre-session handshake error — a bootstrap envelope whose _ek does not
@@ -198,6 +293,7 @@ async function testPerRequestModeRejectionStaysPlaintext() {
 
 async function run() {
   await testRejectionEncryptedOnEstablishedSession();
+  await testReplayRejectionStaysPlaintextAndSessionSurvives();
   await testHandshakeErrorStaysPlaintext();
   await testUnknownSidStaysPlaintext();
   await testPerRequestModeRejectionStaysPlaintext();

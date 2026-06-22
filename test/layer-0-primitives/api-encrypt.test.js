@@ -1302,11 +1302,15 @@ async function testApiEncryptPerSessionConcurrentCtrExecutesOnce() {
   check("concurrent-ctr: exactly one 200 and one 400",
         statuses[0] === 200 && statuses[1] === 400);
   var rejected = a.res._endedStatus === 400 ? a.res : c.res;
-  // #361: on an established per-session channel the rejection body is wrapped
-  // in the session envelope (it must NOT leak the replay reason in cleartext),
-  // so the loser's body is an encrypted { _ct, ... } envelope, not plaintext.
-  check("concurrent-ctr: the loser's rejection is an encrypted envelope (no plaintext leak)",
-        _isEncryptedEnvelope(rejected._captured));
+  // The atomic-claim loser returns BEFORE the consumed response counter is
+  // persisted, so its generic rejection stays PLAINTEXT: encrypting it would
+  // emit a response _ctr the client tracks as consumed while the server never
+  // records it, desyncing the session's monotonic counter. The body is generic
+  // ("encrypted-payload-rejected") so plaintext leaks no session-lifecycle
+  // reason. See _writeRejection({ plaintext: true }).
+  check("concurrent-ctr: the loser is refused with the generic plaintext rejection body",
+        /encrypted-payload-rejected/.test(rejected._captured) &&
+        !_isEncryptedEnvelope(rejected._captured));
 }
 
 async function testApiEncryptPerSessionSequentialCounterStillWorks() {
@@ -1428,8 +1432,12 @@ async function testApiEncryptCtrClaimLifetimeAndSetFailure() {
   var fin3 = _newFinish(res3);
   await mw(req3, res3, function () { execCount += 1; res3.json({ ok: 3 }); });
   await fin3;
-  check("ctr-claim: replay of the captured body is refused",
-        res3._endedStatus === 400 && _isEncryptedEnvelope(res3._captured));   // #361: established channel → encrypted rejection
+  // The replay loses the atomic claim, which returns before persisting a
+  // consumed counter — so the refusal is generic PLAINTEXT (see
+  // _writeRejection({ plaintext: true })), not an envelope.
+  check("ctr-claim: replay of the captured body is refused (generic plaintext)",
+        res3._endedStatus === 400 && /encrypted-payload-rejected/.test(res3._captured) &&
+        !_isEncryptedEnvelope(res3._captured));
   check("ctr-claim: handler did not execute twice", execCount === 1);
 }
 
