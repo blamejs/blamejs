@@ -5150,18 +5150,20 @@ var KNOWN_ANTIPATTERNS = [
     primitive: "b.middleware.composePipeline",
     scanScope: "lib",
     skipCommentLines: true,
-    // composePipeline must settle its promise on a HALT (the response ended
-    // without next()), never merely because a middleware FUNCTION returned.
-    // A callback-style middleware that calls next() later (timer/stream/legacy
-    // callback) returns with advanced===false but is NOT halted; resolving on
-    // a bare `if (!advanced)` marks the pipeline finished so the deferred
-    // next() is ignored and the chain stalls (Codex PR#357). The fixed form
-    // gates on the response: `if (!advanced && _responseEnded(res))`. The bare
-    // `if (!advanced)` is the regression shape — `advanced` is unique to this
-    // dispatch loop, so no allowlist is needed.
-    regex: /if\s*\(\s*!advanced\s*\)/,
+    // The REGULAR (3-arg) middleware branch must settle on a HALT (the
+    // response ended), never merely because the middleware FUNCTION returned —
+    // a callback-style middleware that calls next() later (timer/stream/legacy)
+    // returns with advanced===false but is NOT halted; a bare `if (!advanced)`
+    // resolve there marks the pipeline finished so the deferred next() is
+    // ignored and the chain stalls (Codex PR#357). The fix gates on the
+    // response: `if (!advanced && _responseEnded(res))`. Anchored on the 3-arg
+    // call `entry.mw(req, res, _next)` so it targets ONLY the regular branch —
+    // the error-handler branch (`entry.mw(err, req, res, _next)`) legitimately
+    // settles on a bare `if (!advanced)` per the Express "no next = handled"
+    // convention and must not be flagged.
+    regex: /entry\.mw\(req, res, _next\)[\s\S]{0,200}?if \(\s*!advanced\s*\)\s*_resolveOnce/,
     allowlist: [],
-    reason: "compose-pipeline must settle only when the response actually ended (_responseEnded), not when a middleware function returns — a bare `if (!advanced)` resolve breaks callback-style deferred-next middleware (Codex PR#357). Use `if (!advanced && _responseEnded(res))`.",
+    reason: "the REGULAR-middleware settle in compose-pipeline must be response-gated (`if (!advanced && _responseEnded(res))`), not a bare `if (!advanced) _resolveOnce()` — the bare form breaks callback-style deferred-next middleware (Codex PR#357). The behavioral guard is testDeferredNextContinuesChain; this detector anchors on the 3-arg entry.mw(req, res, _next) call so the error-handler branch's legitimate bare settle is not matched.",
   },
   {
     id: "ciba-authreqid-binding-not-truthiness-gated",
