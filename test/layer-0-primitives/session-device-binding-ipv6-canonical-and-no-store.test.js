@@ -153,10 +153,38 @@ function testStaticFingerprintNoStore() {
     Buffer.isBuffer(fp) && fp.length === 32);
 }
 
+// Codex P2 (#362): routing the IP mask through requestHelpers.ipPrefix must
+// PRESERVE the configured prefix width, not silently force the helper's bare
+// /24 + /64 default. The device-binding IPv6 default is /48; a client roaming
+// within its /48 allocation but across a different /64 must NOT drift. (RED
+// when ipPrefix ignores the width and buckets at /64.)
+async function testConfiguredV6PrefixWidthPreserved() {
+  // Default instance (v6 = /48): same /48, DIFFERENT /64 -> same fingerprint.
+  var inst = b.sessionDeviceBinding.create({ bindingStore: _memoryStore() });
+  var fpA = inst.fingerprint(_req("2001:db8:0:1::5"));
+  var fpB = inst.fingerprint(_req("2001:db8:0:2::9"));     // same /48, different /64
+  check("(P2) default v6=/48: same /48 different /64 -> same fp (not /64)", fpA.equals(fpB));
+  var fpC = inst.fingerprint(_req("2001:db8:1::5"));        // different /48
+  check("(P2) default v6=/48: different /48 still diverges", !fpA.equals(fpC));
+
+  // Configured wider bucket (v6 = /32): same /32, different /48 -> same fp.
+  var wide = b.sessionDeviceBinding.create({ bindingStore: _memoryStore(), ipPrefixBits: { v6: 32 } });
+  var wA = wide.fingerprint(_req("2001:db8:1::1"));
+  var wB = wide.fingerprint(_req("2001:db8:99::1"));        // same /32, different /48
+  check("(P2) configured v6=/32: same /32 different /48 -> same fp (width honored)", wA.equals(wB));
+
+  // Configured tighter bucket (v6 = /64): same /48 different /64 -> DIVERGES.
+  var tight = b.sessionDeviceBinding.create({ bindingStore: _memoryStore(), ipPrefixBits: { v6: 64 } });
+  var tA = tight.fingerprint(_req("2001:db8:0:1::5"));
+  var tB = tight.fingerprint(_req("2001:db8:0:2::9"));      // same /48, different /64
+  check("(P2) configured v6=/64: same /48 different /64 -> diverges (width honored)", !tA.equals(tB));
+}
+
 async function run() {
   testStaticFingerprintCanonicalIpv6();
   await testVerifyCanonicalIpv6AcrossForms();
   await testIpPrefixBitsZeroSkipsIp();
+  await testConfiguredV6PrefixWidthPreserved();
   await testNoStoreInstanceFingerprintReachable();
   testStaticFingerprintNoStore();
 }

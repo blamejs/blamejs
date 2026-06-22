@@ -156,6 +156,8 @@ async function testProxyConnectHeadersTooLargeBounded() {
   // A fake proxy that accepts the CONNECT, then streams bytes that never
   // contain the CRLFCRLF header terminator.
   var server = net.createServer(function (sock) {
+    // Client tears down once the cap trips; swallow the resulting ECONNRESET.
+    sock.on("error", function () { if (streamTimer) { clearInterval(streamTimer); streamTimer = null; } });
     sock.on("data", function () {
       if (streamTimer) return;
       var blast = Buffer.alloc(16 * 1024, 0x42); // 16 KiB of 'B', no CRLFCRLF
@@ -188,6 +190,55 @@ async function testProxyConnectHeadersTooLargeBounded() {
     err && err.code === "proxy/connect-headers-too-large");
 }
 
+// ---- (5) Proxy CONNECT: ABSOLUTE wall-clock deadline (Codex P2, #362) ----
+// A proxy that trickles a byte just inside every idle window but never sends
+// CRLFCRLF would reset an idle socket.setTimeout forever and never trip the
+// 64 KiB cap. The connect must still fail via an ABSOLUTE deadline. RED when
+// the bound is socket.setTimeout (idle): the connect hangs past the deadline.
+async function testProxyConnectAbsoluteDeadlineBounded() {
+  var trickle = null;
+  var server = net.createServer(function (sock) {
+    // The client tears the socket down at the deadline; writing to it after
+    // emits ECONNRESET on the server side — expected, swallow it so the test
+    // process doesn't crash on an unhandled 'error'.
+    sock.on("error", function () { if (trickle) { clearInterval(trickle); trickle = null; } });
+    sock.on("data", function () {
+      if (trickle) return;
+      // One byte every 50ms — keeps an idle timer warm, stays far under the
+      // 64 KiB header cap, never sends the CRLFCRLF terminator.
+      trickle = setInterval(function () {
+        if (!sock.writable) { clearInterval(trickle); return; }
+        try { sock.write("x"); } catch (_e) { clearInterval(trickle); }
+      }, 50);
+    });
+  });
+  var port = await listen(server);
+
+  b.network.proxy._setConnectTimeoutForTest(300);   // small absolute deadline
+  b.network.proxy.set({ http: "http://127.0.0.1:" + port });
+  var agent = b.network.proxy.agentFor("http://target.example/");
+
+  var started = Date.now();
+  var err = null;
+  await new Promise(function (resolve) {
+    agent.createConnection({ host: "target.example", port: 80 }, function (e, sock) {
+      err = e;
+      if (sock) { try { sock.destroy(); } catch (_e) { /* ignore */ } }
+      resolve();
+    });
+  });
+  var elapsed = Date.now() - started;
+
+  if (trickle) clearInterval(trickle);
+  b.network.proxy._resetForTest();
+  await closeServer(server);
+
+  check("proxy: trickling CONNECT reply still fails (absolute deadline)", err !== null);
+  check("proxy: rejects with connect-timeout", err && err.code === "proxy/connect-timeout");
+  check("proxy: bounded by the absolute deadline (~timeout, not held open by trickle)",
+    elapsed < 3000);
+}
+
 // ---- Run ----
 
 async function run() {
@@ -195,6 +246,7 @@ async function run() {
   await testSmtpTransactionDeadlineBounded();
   testMaxTransactionMsValidated();
   await testProxyConnectHeadersTooLargeBounded();
+  await testProxyConnectAbsoluteDeadlineBounded();
 }
 
 module.exports = { run: run };

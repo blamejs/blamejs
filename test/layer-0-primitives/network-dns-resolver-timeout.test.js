@@ -52,9 +52,9 @@ async function testQueryTimesOutOnHangingTransport() {
     threw = e;
   }
   check("queryA rejects on a hanging transport (does not hang)", threw !== null);
+  var msg = threw ? String(threw.message) : "";
   check("rejection is the resolver deadline, not the test backstop",
-    threw && /timed out/i.test(String(threw && threw.message)) &&
-    !/TEST-DEADLINE/.test(String(threw && threw.message)));
+    /timed out/i.test(msg) && !/TEST-DEADLINE/.test(msg));
   check("transport.lookup was actually invoked", transport.lookupCalls === 1);
 }
 
@@ -72,9 +72,9 @@ async function testFollowCnamesHopTimesOut() {
     threw = e;
   }
   check("followCnames rejects when a hop's transport stalls", threw !== null);
+  var msg2 = threw ? String(threw.message) : "";
   check("followCnames rejection is the resolver deadline",
-    threw && /timed out/i.test(String(threw && threw.message)) &&
-    !/TEST-DEADLINE/.test(String(threw && threw.message)));
+    /timed out/i.test(msg2) && !/TEST-DEADLINE/.test(msg2));
 }
 
 async function testBadTimeoutRejectedAtCreate() {

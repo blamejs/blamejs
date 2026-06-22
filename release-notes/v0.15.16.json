@@ -69,7 +69,7 @@
       "items": [
         {
           "title": "Device fingerprint IP masking is canonical",
-          "body": "b.sessionDeviceBinding masked the client IP into its prefix bucket by textual group slicing with no IPv6 normalization, so equivalent forms of one address (a ::-compressed form vs its fully-expanded form) hashed to different fingerprints and a roaming client could be logged out on a false drift. It now masks through the same canonical prefix helper b.session already uses."
+          "body": "b.sessionDeviceBinding masked the client IP into its prefix bucket by textual group slicing with no IPv6 normalization, so equivalent forms of one address (a ::-compressed form vs its fully-expanded form) hashed to different fingerprints and a roaming client could be logged out on a false drift. It now masks through the same canonical prefix helper b.session uses, preserving the configured prefix width (the IPv6 default stays /48, and ipPrefixBits is honored). b.requestHelpers.ipPrefix accepts { v4Bits, v6Bits } to override the /24 + /64 default for a function-form fingerprint or other reuse."
         }
       ]
     },
