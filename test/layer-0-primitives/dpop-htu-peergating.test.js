@@ -129,6 +129,20 @@ function testDpopRefusesBareTrustForwardedHeaders() {
   var def = null;
   try { def = b.middleware.dpop({ replayStore: _ns() }); } catch (e) { def = e; }
   check("dpop: default (no forwarded trust) mounts", typeof def === "function");
+
+  // getHtu owns the entire URI → _reconstructHtu (and the forwarded headers) is
+  // never consulted, so a leftover trustForwardedHeaders:true is moot and must
+  // NOT fail construction (the refusal only matters when htu is reconstructed).
+  var withGetHtu = null;
+  try {
+    withGetHtu = b.middleware.dpop({
+      replayStore: _ns(),
+      trustForwardedHeaders: true,
+      getHtu: function () { return "https://api.example.com/resource"; },
+    });
+  } catch (e) { withGetHtu = e; }
+  check("dpop: trustForwardedHeaders:true WITH getHtu mounts (reconstruction bypassed)",
+        typeof withGetHtu === "function");
 }
 
 // ---- end-to-end: a forged X-Forwarded-Proto/Host from a non-trusted peer
