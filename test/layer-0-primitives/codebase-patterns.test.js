@@ -332,6 +332,7 @@ var VALID_ALLOW_CLASSES = {
   "raw-randombytes-token": 1,
   "raw-time-literal": 1,
   "raw-timing-safe-equal": 1,
+  "raw-xfp": 1,
   "regex-no-length-cap": 1,
   "seal-without-aad": 1,
   "silent-catch": 1,
@@ -1799,6 +1800,30 @@ function testNoRawXffRead() {
   matches = matches.filter(function (m) { return m.file !== "lib/request-helpers.js"; });
   matches = _filterMarkers(matches, "raw-xff");
   _report("req.headers['x-forwarded-for'] routes through requestHelpers.clientIp",
+    matches);
+}
+
+// ---- Pattern 20b: peer-gating bypass — raw X-Forwarded-Proto/-Host read ----
+
+function testNoRawForwardedProtoHostRead() {
+  // class: raw-xfp
+  // The XFP sibling of Pattern 20. X-Forwarded-Proto / X-Forwarded-Host are
+  // forgeable; reading them directly for a scheme/authority decision (Secure
+  // cookie, HSTS, same-origin, the cryptographically-bound DPoP htu) bypasses
+  // the peer-gating boundary — a direct caller can spoof the header. Route
+  // through requestHelpers.trustedProtocol / trustedHost (or requestProtocol /
+  // requestHost with a peer predicate) so the header is honored only when the
+  // immediate peer is a declared trusted proxy. csrf-protect / security-headers
+  // / cors / bot-guard / dpop all do; dpop was the consumer this rule was added
+  // for (it read XFP/XFH via a bare trustForwardedHeaders boolean → htu
+  // confusion). span-http-server reads both for the url.scheme/server.address
+  // telemetry span attributes (display-only, not a trust sink) and carries an
+  // allow:raw-xfp marker.
+  var matches = _scan(/req\.headers\s*\[\s*["']x-forwarded-(?:proto|host)["']\s*\]/i);
+  // request-helpers.js IS the canonical reader (the primitive home).
+  matches = matches.filter(function (m) { return m.file !== "lib/request-helpers.js"; });
+  matches = _filterMarkers(matches, "raw-xfp");
+  _report("req.headers['x-forwarded-proto'|'x-forwarded-host'] routes through requestHelpers.trustedProtocol/trustedHost",
     matches);
 }
 
@@ -13064,6 +13089,7 @@ async function run() {
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
   testNoRawXffRead();
+  testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
   testNoRawProcessEnv();
   testNoRawTimingSafeEqual();
