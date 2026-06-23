@@ -5,6 +5,11 @@
 # and open a PR there. See `oss-fuzz/projects/blamejs/README.md` in
 # this repo for the full submission procedure.
 
+# The base-builder is intentionally NOT digest-pinned here (unlike the
+# .clusterfuzzlite/ copy): OSS-Fuzz's build infra expects projects to track
+# the latest base-builder so the fuzzing toolchain stays current, and a digest
+# pin in the upstream-submission template would diverge from that convention.
+# This is a CI-only fuzzing image, never deployed.
 FROM gcr.io/oss-fuzz-base/base-builder-javascript
 
 # Clone the framework into the build context. OSS-Fuzz builds against

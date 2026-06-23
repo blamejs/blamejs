@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.17",
-  "createdAt": "2026-06-22T16:36:04.979Z",
+  "frameworkVersion": "0.15.18",
+  "createdAt": "2026-06-23T02:52:08.114Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49239,6 +49239,10 @@
           "type": "function",
           "arity": 2
         },
+        "requestHost": {
+          "type": "function",
+          "arity": 2
+        },
         "requestProtocol": {
           "type": "function",
           "arity": 2
@@ -49256,6 +49260,10 @@
           "arity": 1
         },
         "trustedClientIp": {
+          "type": "function",
+          "arity": 1
+        },
+        "trustedHost": {
           "type": "function",
           "arity": 1
         },

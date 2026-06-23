@@ -22,7 +22,7 @@
 # The :latest runtime image runs as `nonroot` (different user, lower
 # privilege); --chown=nonroot:nonroot on the COPY --from=deps rewrites
 # ownership at copy time into the runtime image.
-FROM cgr.dev/chainguard/node:latest-dev AS deps
+FROM cgr.dev/chainguard/node:latest-dev@sha256:dbfacc7cc45ae4f4bd5ca8b6f0ab7273df4d99cc6fed1c299a7aecc76399cbf6 AS deps
 WORKDIR /home/node
 COPY --chown=node:node package.json index.js NOTICE LICENSE README.md ./
 COPY --chown=node:node bin ./bin
@@ -41,7 +41,7 @@ RUN rm -rf node_modules data data-e2e public/dist \
  && node -e "var b = require('@blamejs/core'); var path = require('node:path'); (async function () { var bundler = b.bundler.create({ entries: { wiki: path.join(process.cwd(), 'src', 'wiki.js'), editor: path.join(process.cwd(), 'src', 'editor.js') }, outdir: path.join(process.cwd(), 'public', 'dist'), manifest: 'manifest.json', hashLen: 16 }); await bundler.build(); console.log('[Dockerfile] bundle pre-built into public/dist'); })().catch(function (e) { console.error('bundle build failed:', e.stack || e); process.exit(1); });" \
  && mkdir -p /home/node/data-skeleton
 
-FROM cgr.dev/chainguard/node:latest AS runtime
+FROM cgr.dev/chainguard/node:latest@sha256:61db1ce1142fa38639ac49071f796c3f04409ef371c5005db18ff1604c429f7e AS runtime
 # Explicit USER directive — Chainguard's :latest image already runs as
 # `nonroot` (UID 65532) by default, but Trivy's static Dockerfile
 # checker (DS-0002) flags any image without an explicit USER line

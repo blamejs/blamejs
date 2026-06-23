@@ -9,8 +9,13 @@
 # fuzz workflows (`.github/workflows/cflite_*.yml`). OSS-Fuzz upstream
 # uses the project-specific Dockerfile under `oss-fuzz/projects/blamejs/`
 # which mirrors this shape — keep them in sync.
-
-FROM gcr.io/oss-fuzz-base/base-builder-javascript
+#
+# The base is digest-pinned for a reproducible CI fuzz toolchain (Dependabot
+# bumps it via the docker ecosystem entry for /.clusterfuzzlite). Note: the
+# oss-fuzz/projects/blamejs/ copy is intentionally left on the floating tag —
+# OSS-Fuzz's own build infra expects projects to track the latest base-builder,
+# so pinning there would diverge from upstream convention.
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:0588debfb70a08145c31bf744c2ebdd892611679b9cb5689d9c481bf9e11086c
 
 # Copy the framework source. ClusterFuzzLite mounts the repo at
 # $SRC/blamejs, so we COPY everything (including fuzz/) into one
