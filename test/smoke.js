@@ -226,6 +226,12 @@ var SOLO_TIMEOUT_MS = FILE_TIMEOUT_MS * SOLO_TIMEOUT_MULT;
 var FORK_RETRIES = parseInt(process.env.SMOKE_FORK_RETRIES || "1", 10);
 if (!Number.isFinite(FORK_RETRIES) || FORK_RETRIES < 0) FORK_RETRIES = 1;
 
+// Opt-in leaked-handle audit (SMOKE_AUDIT_HANDLES=1). The worker always
+// computes the per-file leak set (cheap); this gate only controls REPORTING,
+// because the snapshot-diff over-reports async-closing handles as false
+// positives. Turn it on to triage the real-leak population for a cleanup pass.
+var AUDIT_HANDLES = !!process.env.SMOKE_AUDIT_HANDLES;
+
 // _readTimings / _writeTimings — persist per-test durations under
 // .test-output/smoke-timings.json so the next run's LPT scheduler can
 // place long-tail tests on the first worker. Median of last 5 runs to
@@ -356,7 +362,13 @@ function _runFileForked(modulePath, displayName, timeoutMs) {
       // process-level teardown failure — a leaked handle that delays / faults
       // exit, common on a resource-starved runner — and is retriable. A clean
       // assertion failure (parsed.ok === false) is deterministic, NOT retriable.
+      // Retriable process-level transients: a non-zero exit after the
+      // assertions passed (a leaked handle faulting exit) OR a late async error
+      // the worker attributed (parsed.lateError). Both differ from a clean
+      // assertion failure (parsed.ok === false WITHOUT lateError), which is
+      // deterministic and NOT retried.
       var processFailedAfterPass = code !== 0 && parsed.ok === true;
+      var lateError = parsed.lateError === true;
       settle({
         ok:     code === 0 && parsed.ok,
         ms:     ms,
@@ -367,7 +379,8 @@ function _runFileForked(modulePath, displayName, timeoutMs) {
           : undefined),
         stderr: stderrBuf,
         displayName: displayName,
-        retriable: processFailedAfterPass,
+        retriable: processFailedAfterPass || lateError,
+        leaks:  Array.isArray(parsed.leaks) ? parsed.leaks : [],
       });
     });
   });
@@ -497,6 +510,7 @@ async function _runLayer(layerNum, legacyPath, layerName) {
 
     // Print in original sort() order so the per-run output is stable
     // for diff-based comparison (the solo/LPT order is internal scheduling).
+    var leakReport = [];
     for (var p = 0; p < files.length; p += 1) {
       var rf = resultsByFile[files[p]];
       if (!rf) continue;                                                         // pool aborted before this file ran
@@ -505,7 +519,21 @@ async function _runLayer(layerNum, legacyPath, layerName) {
         if (rf.stderr) process.stderr.write(rf.stderr);
         throw new Error(rf.displayName + ": " + (rf.error || "fork failed"));
       }
-      console.log("  " + _padRight(files[p], 40) + " (" + rf.ms + "ms)");
+      console.log("  " + _padRight(files[p], 40) + " (" + rf.ms + "ms)" +
+        (AUDIT_HANDLES && rf.leaks && rf.leaks.length ? "  [leaked: " + rf.leaks.join(", ") + "]" : ""));
+      if (rf.leaks && rf.leaks.length) leakReport.push(files[p] + " :: " + rf.leaks.join(", "));
+    }
+    // Handle-leak population — opt-in diagnostic (SMOKE_AUDIT_HANDLES=1). A
+    // test that leaks a timer / socket / server / worker is the same root that
+    // flakes a slow runner (delay) or throws after pass (fork-fail). Off by
+    // default because the snapshot-diff over-reports async-CLOSING handles (a
+    // server whose close() callback fired but whose handle lingers a tick past
+    // the grace window) as false positives; turn it on to triage real leaks.
+    if (AUDIT_HANDLES && leakReport.length) {
+      console.log("");
+      console.log("  ⚠ " + leakReport.length + " layer-0 file(s) held a handle past run() " +
+        "(SMOKE_AUDIT_HANDLES — triage: real leak vs async-close-in-flight):");
+      for (var lr = 0; lr < leakReport.length; lr += 1) console.log("      " + leakReport[lr]);
     }
     helpers.addExternalChecks(totalChecks);
     _writeTimings(newTimings);

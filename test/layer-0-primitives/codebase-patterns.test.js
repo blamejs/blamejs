@@ -9380,6 +9380,29 @@ var KNOWN_ANTIPATTERNS = [
     reason: "#123 macOS codebase-patterns watchdog hang. _scanShardInWorker rejected on worker error/exit without w.terminate(), so an errored worker thread stayed alive holding open handles; the parent then could not exit and the smoke run ran to the 25-min watchdog on memory-starved macOS-arm64 runners (it hung this very release's CI). Every settle path must reap the worker via w.terminate() first; the fix funnels message/error/exit through a settle() guard that terminates before resolve/reject. Fires on the bare `w.once(\"error\", reject)` shape; silent once error/exit route through settle().",
   },
   {
+    // A test file must invoke its run()/IIFE ONLY under
+    // `if (require.main === module)`. The smoke worker REQUIRES each test
+    // module and then awaits its exported run(); a module-level `run()` (or
+    // `run().then(...process.exit...)`) at column 0 fires a SECOND, unawaited
+    // run() at require-time that races the worker's result print — and if it
+    // calls process.exit() it exits the worker BEFORE the result line is
+    // written, which the parent reports as the unattributable "no result line"
+    // / "fork failed". Found via the worker's late-error + leaked-handle audit
+    // sweep (defineguard-default-gate-posture-caps / dpop-middleware-
+    // replaystore-required / otlp-attr-redaction + two integration files), the
+    // same slow-runner-flake root as #123. Export run and guard the
+    // self-execution. Structural test-harness-contract drift a behavioral test
+    // can't assert (the race only surfaces under require, intermittently on a
+    // slow runner) — the detector is the guard.
+    id: "test-unguarded-module-level-run",
+    primitive: "a test file's run()/self-execution must sit under `if (require.main === module)` (export run for the smoke worker to await) — a bare module-level run() at column 0 re-runs at require-time and races / exits the worker",
+    scanScope: "test",
+    regex: /^run\s*\(/m,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "The smoke worker requires each test module and awaits its exported run(); a column-0 `run()` / `run().then(...process.exit...)` fires a second unawaited run() at require-time that races the worker's result print (and process.exit() exits before the result line, read as 'no result line' / 'fork failed' on a slow runner). Export `run` and wrap the invocation in `if (require.main === module)`. Fires on any `run(` at the start of a line; `function run()`, `module.exports = { run }`, and an indented `run()` inside the require-main guard stay silent.",
+  },
+  {
     // `Promise + setTimeout` direct sleep in tests is forbidden;
     // tests waiting on an asynchronous condition MUST use
     // `helpers.waitUntil`. v0.10.14 introduced the detector with a
