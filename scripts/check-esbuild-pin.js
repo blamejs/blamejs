@@ -27,12 +27,18 @@ var ROOT = path.resolve(__dirname, "..");
 var PIN_PATH = path.join(__dirname, "esbuild-binary-pin.json");
 var HEX64_RE = /^[0-9a-f]{64}$/;
 
-// Workflows whose SEA-build step installs the pinned tool versions. A workflow
-// that does not build the SEA (no esbuild@ / postject@ token) is simply skipped.
+// Workflows whose SEA-build step installs the pinned tool versions. Each MUST
+// carry an exact `<tool>@<version>` spec for every required tool: an install
+// line that drops the version (e.g. `npm install esbuild postject`) would let CI
+// resolve an unreviewed esbuild and silently fall back to the binary-hash smoke
+// gate's skip path, so a missing pinned spec is itself a violation (fail-closed).
+// If the SEA build legitimately moves out of one of these, update this list in
+// the same change.
 var WORKFLOWS = [
   ".github/workflows/ci.yml",
   ".github/workflows/npm-publish.yml",
 ];
+var REQUIRED_TOOLS = ["esbuild", "postject"];
 
 // Returns { ok: boolean, violations: [{ file, line, content }] }. Never throws on
 // expected-missing inputs — a missing file is reported as a violation so the
@@ -76,28 +82,43 @@ function checkEsbuildPin() {
     }
   }
 
-  // Every workflow that builds the SEA installs the exact package.json versions.
+  // Every scoped workflow installs the exact package.json versions — and MUST
+  // pin each required tool with a `<tool>@<version>` spec (a missing spec means
+  // an unpinned, unreviewed install slips through).
+  var expectedFor = { esbuild: esbuildVer, postject: postjectVer };
   WORKFLOWS.forEach(function (rel) {
     var src;
     try { src = fs.readFileSync(path.join(ROOT, rel), "utf8"); }
     catch (e) { push(rel, "unreadable: " + (e && e.message)); return; }
-    if (esbuildVer) checkSpec(bad, rel, src, /esbuild@([0-9][\w.-]*)/g, "esbuild", esbuildVer);
-    if (postjectVer) checkSpec(bad, rel, src, /postject@([0-9][\w.-]*)/g, "postject", postjectVer);
+    REQUIRED_TOOLS.forEach(function (tool) {
+      var expected = expectedFor[tool];
+      if (!expected) return; // already reported as a missing package.json devDep above
+      checkSpec(bad, rel, src, tool, expected);
+    });
   });
 
   return { ok: bad.length === 0, violations: bad };
 }
 
-function checkSpec(bad, rel, src, re, tool, expected) {
-  re.lastIndex = 0;
+function checkSpec(bad, rel, src, tool, expected) {
+  var re = new RegExp(tool + "@([0-9][\\w.-]*)", "g");
   var m;
-  while ((m = re.exec(src)) !== null) {
-    if (m[1] !== expected) {
+  var found = [];
+  while ((m = re.exec(src)) !== null) { found.push(m[1]); }
+  if (found.length === 0) {
+    bad.push({ file: rel, line: 0,
+      content: rel + " has no pinned " + tool + "@<version> spec — the SEA-build install must pin " +
+        tool + "@" + expected + " (an unpinned install resolves an unreviewed version and the " +
+        "binary-hash smoke gate falls back to its skip path)" });
+    return;
+  }
+  found.forEach(function (ver) {
+    if (ver !== expected) {
       bad.push({ file: rel, line: 0,
-        content: rel + " installs " + tool + "@" + m[1] + " but package.json devDependencies pins " +
+        content: rel + " installs " + tool + "@" + ver + " but package.json devDependencies pins " +
           tool + "@" + expected + " — bump the pin (and re-review the esbuild binary hash) or fix the workflow" });
     }
-  }
+  });
 }
 
 module.exports = { checkEsbuildPin: checkEsbuildPin };
