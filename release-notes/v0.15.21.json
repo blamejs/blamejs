@@ -26,7 +26,7 @@
         },
         {
           "title": "b.backupManifest.signBytes / verifyBytes — schema-agnostic signing",
-          "body": "b.backupManifest.signBytes(canonicalBytes) and verifyBytes(canonicalBytes, signatureBlock, { expectedFingerprint }) sign and verify a consumer's own canonical bytes with the same audit-sign keypair and fingerprint pinning as the v1-manifest sign() / verifySignature(), without adopting the framework's manifest schema — so a bespoke backup-header format can authenticate itself against the framework signing key."
+          "body": "b.backupManifest.signBytes(canonicalBytes) and verifyBytes(canonicalBytes, signatureBlock, { expectedFingerprint }) sign and verify a consumer's own canonical bytes with the same audit-sign keypair and fingerprint pinning as the v1-manifest sign() / verifySignature(), without adopting the framework's manifest schema — so a bespoke backup-header format can authenticate itself against the framework signing key. Fingerprint pinning is bound to the key the signature actually verifies under: the pin is checked against the fingerprint recomputed from the signature block's own public key (the new b.auditSign.fingerprintOf(publicKeyPem) helper), not the block's self-asserted fingerprint field, so a block can't claim a trusted fingerprint while being signed by a different key. The same binding now also applies to the v1-manifest verifySignature(). b.auditSign.verify additionally no longer requires init() when given an explicit public key, so a downstream verifier that holds only a trusted public key can check a detached signature."
         },
         {
           "title": "b.fsm side-effect-free transition resolution + deferrable audit",

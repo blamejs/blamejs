@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.15.21",
-  "createdAt": "2026-06-25T04:41:25.483Z",
+  "createdAt": "2026-06-25T05:51:04.845Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2561,6 +2561,10 @@
         "anchor": {
           "type": "function",
           "arity": 2
+        },
+        "fingerprintOf": {
+          "type": "function",
+          "arity": 1
         },
         "getAlgorithm": {
           "type": "function",

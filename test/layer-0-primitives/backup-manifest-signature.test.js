@@ -5,6 +5,7 @@
  */
 
 var helpers = require("../helpers");
+var nodeCrypto = require("node:crypto");
 var b     = helpers.b;
 var check = helpers.check;
 
@@ -139,6 +140,57 @@ async function run() {
   });
   var noSig = b.backupManifest.verifySignature(unsigned);
   check("verifySignature on unsigned manifest → ok=false", noSig.ok === false);
+
+  // Fingerprint-pinning substitution attack: an attacker signs arbitrary bytes
+  // with their OWN key, then sets the block's self-asserted `fingerprint` field
+  // to the trusted value. The pin MUST be checked against the fingerprint
+  // recomputed from the block's publicKey (the key the signature verifies
+  // under), not the attacker-controlled `fingerprint` string, or the forged
+  // block passes pinning.
+  var trustedFp = b.auditSign.getPublicKeyFingerprint();
+  var atkBytes = Buffer.from("attacker-controlled-payload", "utf8");
+  var atk = nodeCrypto.generateKeyPairSync("ed25519");
+  var atkPubPem = atk.publicKey.export({ type: "spki", format: "pem" }).toString();
+  var atkSig = nodeCrypto.sign(null, atkBytes, atk.privateKey);
+  var forged = {
+    algorithm: "ed25519", publicKey: atkPubPem,
+    fingerprint: trustedFp,                     // the lie
+    value: atkSig.toString("base64"), signedAt: new Date(0).toISOString(),
+  };
+  // The forged signature genuinely verifies under the attacker's own key.
+  check("forged signature verifies under the attacker key (precondition)",
+        nodeCrypto.verify(null, atkBytes, atkPubPem, atkSig) === true);
+  // ...but pinning to the trusted fingerprint MUST reject it.
+  var forgedRes = b.backupManifest.verifyBytes(atkBytes, forged, { expectedFingerprint: trustedFp });
+  check("verifyBytes rejects a forged-fingerprint block under pinning", forgedRes.ok === false);
+  check("verifyBytes forged-rejection cites the fingerprint mismatch",
+        /does not match expectedFingerprint/.test(forgedRes.reason || ""));
+  // verifySignature (manifest path) shares the fix — same substitution refused.
+  var forgedManifest = JSON.parse(JSON.stringify(fixture));
+  forgedManifest.signature = forged;
+  var forgedMRes = b.backupManifest.verifySignature(forgedManifest, { expectedFingerprint: trustedFp });
+  check("verifySignature rejects a forged-fingerprint manifest under pinning", forgedMRes.ok === false);
+
+  // b.auditSign.fingerprintOf recomputes the fingerprint from a PEM, no init.
+  check("auditSign.fingerprintOf is a function", typeof b.auditSign.fingerprintOf === "function");
+  check("auditSign.fingerprintOf(active pubkey) == active fingerprint",
+        b.auditSign.fingerprintOf(b.auditSign.getPublicKey()) === trustedFp);
+
+  // Verifier-only path: a process that never ran auditSign.init() must still be
+  // able to verify a detached block (it holds only a trusted public key). Reset
+  // LAST so earlier checks keep their initialized signer.
+  var honestBytes = Buffer.from("downstream-verifier-payload", "utf8");
+  var honestBlock = b.backupManifest.signBytes(honestBytes);
+  b.auditSign._resetForTest();
+  var reThrew = null;
+  try { b.auditSign.getPublicKey(); } catch (e) { reThrew = e; }
+  check("verifier-only precondition: audit-sign is uninitialized", reThrew !== null);
+  check("verifyBytes works in a verifier-only process (no init)",
+        b.backupManifest.verifyBytes(honestBytes, honestBlock).ok === true);
+  check("verifyBytes pinned works in a verifier-only process",
+        b.backupManifest.verifyBytes(honestBytes, honestBlock, { expectedFingerprint: trustedFp }).ok === true);
+  check("verifyBytes still rejects tampered bytes in a verifier-only process",
+        b.backupManifest.verifyBytes(Buffer.from("tampered"), honestBlock).ok === false);
 }
 
 module.exports = { run: run };

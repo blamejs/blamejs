@@ -738,6 +738,14 @@ async function run() {
   check("guardedUpdate null fence renders IS NULL, binds no null",
         casNull.sql.indexOf('"locked_by" IS NULL') !== -1 && casNull.params.indexOf(null) === -1);
 
+  // An UNDEFINED fence is refused (not silently collapsed to IS NULL) — an
+  // omitted/unset expected value would turn a CAS into "match NULL-state rows"
+  // and update the wrong rows. Only an EXPLICIT null means IS NULL.
+  rejects("guardedUpdate guardWhere(undefined) is refused", function () {
+    return sql.guardedUpdate("orders").set({ status: "x" }).where("id", 1)
+      .guardWhere("status", undefined).toSql();
+  }, "sql-builder/bad-guard-value");
+
   // mysql backtick quoting + postgres $N positional carry through unchanged.
   var casMy = sql.guardedUpdate("orders", { dialect: "mysql" })
     .set({ status: "shipped" }).where("id", 7).guardWhere("status", "paid").toSql();
