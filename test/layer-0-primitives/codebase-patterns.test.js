@@ -12287,6 +12287,41 @@ function testEsbuildPinAgreesAcrossArtifacts() {
     bad);
 }
 
+// The test-detached-async-iife antipattern (scanScope: "test") covers *.test.js,
+// but the legacy single-layer entry files (test/00-primitives.js …
+// 50-integration.js) are required + run directly by smoke.js via _runLayer and
+// are NOT in _testFiles(). A top-level `(async function () {...})()` there would
+// have the same detached false-pass — the worker awaits mod.run / mod.groups,
+// never a require-time IIFE — so scan those files for the same shape here. Scoped
+// to the IIFE pattern ONLY (not the full test-discipline catalog): those files
+// carry a separate, larger setTimeout-sleep cleanup that is its own task.
+function testNoDetachedAsyncIifeInLegacyLayerFiles() {
+  var bad = [];
+  var entries;
+  try { entries = fs.readdirSync(TEST_ROOT); }
+  catch (_e) { entries = []; }
+  for (var i = 0; i < entries.length; i++) {
+    if (!/^[0-9]{2}-[\w-]+\.js$/.test(entries[i])) continue;
+    var content;
+    try { content = fs.readFileSync(path.join(TEST_ROOT, entries[i]), "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[j])) continue; // skip comment lines
+      if (/^\(async\b/.test(lines[j])) {
+        bad.push({ file: "test/" + entries[i], line: j + 1,
+          content: "top-level `(async` IIFE — define `async function run()` + `module.exports = { run }` " +
+                   "and invoke under `if (require.main === module)`; a detached async IIFE false-passes its " +
+                   "post-await assertions (the worker awaits mod.run / mod.groups, not a require-time IIFE)" });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "test-detached-async-iife-legacy");
+  _report("no detached top-level async IIFE in the legacy single-layer smoke entry files " +
+          "(test/NN-*.js run via smoke.js _runLayer — an IIFE there false-passes like in a *.test.js)",
+    bad);
+}
+
 // v1 — error codes are the operator-grep contract and must be
 // `namespace/kebab-case`. The first string argument to `new XError(...)`
 // and `XError.factory(...)` IS the code (defineClass constructor signature
@@ -13249,6 +13284,7 @@ async function run() {
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
   testEsbuildPinAgreesAcrossArtifacts();
+  testNoDetachedAsyncIifeInLegacyLayerFiles();
   testNoTrackedInternalNotes();
   testResidencyGatesWired();
   testWikiStopGraceExceedsShutdownBudget();
