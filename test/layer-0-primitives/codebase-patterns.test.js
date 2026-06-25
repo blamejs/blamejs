@@ -5171,6 +5171,25 @@ var KNOWN_ANTIPATTERNS = [
     reason: "basicConstraints cA:TRUE enforcement is owned by x509Chain.issuerValidlyIssued / x509Chain.isCaCert; tsa/mail-bimi/mail-crypto-smime route through it. Any lib file calling X.checkIssued(Y) (Y!=X) directly bypasses the cA check and must use x509Chain instead. lib/x509-chain.js is the home of the primitive.",
   },
   {
+    id: "fingerprint-pin-against-claimed-field-not-recomputed",
+    primitive: "b.auditSign.fingerprintOf",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A fingerprint PIN (expectedFingerprint, supplied out-of-band by the
+    // verifier) must be checked against a fingerprint RECOMPUTED from the
+    // signature block's own publicKey — fingerprintOf(block.publicKey) — NOT
+    // the block's self-asserted `.fingerprint` field. An attacker controls that
+    // field: sign arbitrary bytes with their OWN key, set `fingerprint` to the
+    // trusted value, and a `block.fingerprint === expectedFingerprint` check
+    // passes while the signature still verifies under the attacker's key (the
+    // backup-manifest verifyBytes/verifySignature P1 substitution bug). Binding
+    // the pin to fingerprintOf(publicKey) — the key the signature is actually
+    // verified under — closes the substitution. Fires on either argument order.
+    regex: /(?:[\w.]+\.fingerprint\s*[!=]==\s*[\w.]*\bexpectedFingerprint\b|\bexpectedFingerprint\b\s*[!=]==\s*[\w.]+\.fingerprint\b)/,
+    allowlist: [],
+    reason: "A fingerprint pin must be compared against auditSign.fingerprintOf(<the block's publicKey>) — the key the signature verifies under — never the block's untrusted self-asserted `.fingerprint` field (an attacker sets that to the trusted value while signing with their own key). backup/manifest.js _verifyPayloadAgainstBlock recomputes via derivedFingerprint = fingerprintOf(sig.publicKey). Any `X.fingerprint === expectedFingerprint` (either order) re-introduces the substitution bypass and must recompute instead.",
+  },
+  {
     id: "compose-pipeline-settle-on-response-ended-not-return",
     primitive: "b.middleware.composePipeline",
     scanScope: "lib",
