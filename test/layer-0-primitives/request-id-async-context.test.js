@@ -38,10 +38,13 @@ function _serveOnce(mwOpts, id) {
   return new Promise(function (resolve, reject) {
     srv.listen(0, function () {
       var port = srv.address().port;
-      http.get({ port: port, path: "/x", headers: id ? { "x-request-id": id } : {} }, function (r) {
+      http.get({ port: port, path: "/x", agent: false, headers: id ? { "x-request-id": id } : {} }, function (r) {
         var d = ""; r.on("data", function (c) { d += c; });
-        r.on("end", function () { srv.close(); resolve({ body: JSON.parse(d), hdr: r.headers["x-request-id"] }); });
-      }).on("error", function (e) { srv.close(); reject(e); });
+        // Await the server close so the listening handle is released before the
+        // test resolves — a fire-and-forget srv.close() leaves a TCPServerWrap
+        // lingering (the leak the harness audit flags).
+        r.on("end", function () { srv.close(function () { resolve({ body: JSON.parse(d), hdr: r.headers["x-request-id"] }); }); });
+      }).on("error", function (e) { srv.close(function () { reject(e); }); });
     });
   });
 }
@@ -83,7 +86,7 @@ async function testConcurrentRequestsIsolated() {
   var port = srv.address().port;
   function get(id) {
     return new Promise(function (resolve) {
-      http.get({ port: port, path: "/x", headers: { "x-request-id": id } }, function (r) {
+      http.get({ port: port, path: "/x", agent: false, headers: { "x-request-id": id } }, function (r) {
         var d = ""; r.on("data", function (c) { d += c; });
         r.on("end", function () { resolve({ id: id, body: JSON.parse(d), hdr: r.headers["x-request-id"] }); });
       });
@@ -93,7 +96,7 @@ async function testConcurrentRequestsIsolated() {
     get("req-AAAAAA01"), get("req-BBBBBB02"), get("req-CCCCCC03"),
     get("req-DDDDDD04"), get("req-EEEEEE05"),
   ]);
-  srv.close();
+  await new Promise(function (r) { srv.close(r); });   // release the listening handle
   var allIsolated = results.every(function (r) { return r.body.als === r.id; });
   check("concurrent: every request's ALS id is its own (no bleed)", allIsolated);
   var hdrsMatch = results.every(function (r) { return r.hdr === r.id; });

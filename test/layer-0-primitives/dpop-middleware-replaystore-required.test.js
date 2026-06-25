@@ -43,4 +43,7 @@ function run() {
   process.stdout.write("OK — dpop middleware replayStore-required tests\n");
 }
 
-run();
+module.exports = { run: run };
+if (require.main === module) {
+  run().catch(function (e) { process.stderr.write((e && e.stack ? e.stack : String(e)) + "\n"); process.exit(1); });
+}
