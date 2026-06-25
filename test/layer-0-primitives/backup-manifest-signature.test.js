@@ -12,6 +12,8 @@ async function run() {
   check("backupManifest.sign is fn",            typeof b.backupManifest.sign === "function");
   check("backupManifest.verifySignature is fn", typeof b.backupManifest.verifySignature === "function");
   check("backupManifest.signingPayload is fn",  typeof b.backupManifest.signingPayload === "function");
+  check("backupManifest.signBytes is fn",       typeof b.backupManifest.signBytes === "function");
+  check("backupManifest.verifyBytes is fn",     typeof b.backupManifest.verifyBytes === "function");
   check("backupBundle.verifyManifestSignature is fn",
     typeof b.backup.verifyManifestSignature === "function");
 
@@ -88,6 +90,43 @@ async function run() {
   // verifyManifestSignature accepts a parsed manifest
   var viaWrapper = b.backup.verifyManifestSignature({ manifest: reparsed });
   check("backup.verifyManifestSignature accepts parsed manifest", viaWrapper.ok === true);
+
+  // #351 — schema-agnostic signBytes/verifyBytes: a consumer with a bespoke
+  // (non-manifest) format signs its OWN canonical bytes with the same keypair +
+  // fingerprint pinning, without adopting the v1 manifest schema.
+  var customBytes = Buffer.from("custom-header\x00v=2\x00payload=" + "ab".repeat(40), "utf8");
+  var sigBlock = b.backupManifest.signBytes(customBytes);
+  check("signBytes returns a detached signature block",
+    sigBlock && typeof sigBlock.algorithm === "string" &&
+    sigBlock.publicKey.indexOf("-----BEGIN") === 0 &&
+    typeof sigBlock.fingerprint === "string" &&
+    typeof sigBlock.value === "string" && sigBlock.value.length > 0);
+
+  var okBytes = b.backupManifest.verifyBytes(customBytes, sigBlock);
+  check("verifyBytes on the exact bytes → ok", okBytes.ok === true && okBytes.fingerprint === sigBlock.fingerprint);
+
+  // A string with the SAME bytes verifies too (UTF-8 normalization parity).
+  var okStr = b.backupManifest.verifyBytes(customBytes.toString("utf8"), sigBlock);
+  check("verifyBytes accepts an equivalent string payload", okStr.ok === true);
+
+  // Tamper one byte → verification fails.
+  var tamperedBytes = Buffer.from(customBytes); tamperedBytes[0] = tamperedBytes[0] ^ 0x01;
+  var badBytes = b.backupManifest.verifyBytes(tamperedBytes, sigBlock);
+  check("verifyBytes on tampered bytes → ok=false", badBytes.ok === false);
+
+  // Fingerprint pinning: a wrong expected fingerprint refuses even valid bytes.
+  var pinned = b.backupManifest.verifyBytes(customBytes, sigBlock, { expectedFingerprint: sigBlock.fingerprint });
+  check("verifyBytes with the correct pinned fingerprint → ok", pinned.ok === true);
+  var pinnedBad = b.backupManifest.verifyBytes(customBytes, sigBlock, { expectedFingerprint: "deadbeef" });
+  check("verifyBytes with a wrong pinned fingerprint → ok=false", pinnedBad.ok === false);
+
+  // A malformed signature block is refused, not thrown.
+  var noBlock = b.backupManifest.verifyBytes(customBytes, { algorithm: "x" });
+  check("verifyBytes with an incomplete block → ok=false", noBlock.ok === false);
+  // signBytes rejects a non-string/Buffer payload at the boundary.
+  var threwIn = null;
+  try { b.backupManifest.signBytes({ not: "bytes" }); } catch (e) { threwIn = e; }
+  check("signBytes rejects a non-bytes payload", threwIn && threwIn.code === "backup-manifest/bad-input");
 
   // Manifest without signature returns ok:false (no signature to verify)
   var unsigned = b.backupManifest.create({
