@@ -5190,6 +5190,29 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A fingerprint pin must be compared against auditSign.fingerprintOf(<the block's publicKey>) — the key the signature verifies under — never the block's untrusted self-asserted `.fingerprint` field (an attacker sets that to the trusted value while signing with their own key). backup/manifest.js _verifyPayloadAgainstBlock recomputes via derivedFingerprint = fingerprintOf(sig.publicKey). Any `X.fingerprint === expectedFingerprint` (either order) re-introduces the substitution bypass and must recompute instead.",
   },
   {
+    id: "platform-parameterized-containment-resolves-with-runtime-path-module",
+    primitive: "b.safePath (target-platform lexical resolve)",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A path validator parameterized by opts.platform must resolve AND bound its
+    // LEXICAL containment with the TARGET platform's path module
+    // (`pathMod = isWin ? nodePath.win32 : nodePath.posix`), not the runtime
+    // node:path. The per-segment walk already splits on the target separator
+    // (`sep = isWin ? /[\\/]/ : /\//`); if the lexical resolve uses runtime
+    // semantics they disagree. On a POSIX host validating opts.platform:
+    // "windows", runtime node:path treats `\` as an ordinary filename char, so
+    // `ok\..\..\outside` was NOT collapsed and slipped past the boundary slice —
+    // resolving to `<base>/ok\..\..\outside`, a path that escapes the base once a
+    // Windows consumer reads the backslashes (Codex P1, PR #372). The realpath
+    // check hits the live filesystem and legitimately keeps a SEPARATE runtime
+    // resolve under distinctly-named vars (rtBaseResolved / rtJoined / rtSep), so
+    // those don't match this anchor. Fires if the lexical `joined` reverts to
+    // `nodePath.resolve(baseResolved, ...)` or `sepChar` to `nodePath.sep`.
+    regex: /\bjoined\s*=\s*nodePath\.resolve\s*\(\s*baseResolved|\bvar\s+sepChar\s*=\s*nodePath\.sep\b/,
+    allowlist: [],
+    reason: "b.safePath.resolve refuses traversal lexically by resolving rel under base and slicing on the containment boundary. When validating for a non-runtime platform (opts.platform), the lexical resolve + boundary separator MUST come from the target module (pathMod = isWin ? nodePath.win32 : nodePath.posix) so they share the per-segment walk's platform semantics — otherwise a separator the target treats as a delimiter (the Windows backslash) is treated as a filename char by the runtime resolver and a cross-platform `ok\\..\\..\\outside` traversal escapes the base. The realpath check keeps a separate runtime resolve (rtBaseResolved/rtJoined/rtSep) because it touches the live FS. Reverting the lexical `joined`/`sepChar` to runtime nodePath re-opens the cross-platform traversal hole.",
+  },
+  {
     id: "compose-pipeline-settle-on-response-ended-not-return",
     primitive: "b.middleware.composePipeline",
     scanScope: "lib",
