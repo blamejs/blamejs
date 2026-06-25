@@ -79,6 +79,44 @@ function run() {
       check("vendor manifest: " + name + " :: " + fk + " hash matches",
             declared[fk] === actual[fk]);
     }
+
+    // SBOM / CVE scanners (Trivy / Grype / a CycloneDX export) key on the
+    // STRUCTURED components[<pkg>].version, not the human version string. A
+    // hand-maintained components sub-object can drift from the version string
+    // (#366: the bundle moved @peculiar/x509 1.13.0 -> 2.0.0, the version
+    // string was updated to 2.0.0 but components still read 1.13.0, so any
+    // advisory in the (1.13.0, 2.0.0] range matched the wrong version). Nothing
+    // auto-derives components (refresh-vendor-manifest only refreshes hashes),
+    // so gate the consistency here: every structured component version MUST
+    // appear in the package's version string, making the drift un-shippable.
+    if (pkg.components && typeof pkg.version === "string") {
+      var comps = Object.keys(pkg.components);
+      for (var c = 0; c < comps.length; c += 1) {
+        var comp = comps[c];
+        var cv = pkg.components[comp] && pkg.components[comp].version;
+        if (typeof cv !== "string") continue;
+        check("vendor manifest: " + name + " :: components[" + comp + "].version (" + cv +
+              ") is reflected in the version string (" + pkg.version + ")",
+              pkg.version.indexOf(cv) !== -1);
+      }
+    }
+
+    // The cpe (Common Platform Enumeration) string encodes the version in
+    // field 5 (cpe:2.3:a:vendor:product:VERSION:...) and CVE scanners match
+    // against it — the same SBOM-drift class as components[] (#366 sibling:
+    // @noble/curves shipped 2.2.0 but its cpe still read 0.0.0). Gate it: the
+    // cpe version must equal the package's (leading) semver, so a wrong-version
+    // CVE match can't ship.
+    if (typeof pkg.cpe === "string") {
+      var cpeM = /^cpe:2\.3:a:[^:]+:[^:]+:([^:]+):/.exec(pkg.cpe);
+      var cpeVer = cpeM ? cpeM[1] : null;
+      var pkgSemver = (String(pkg.version).match(/\d+\.\d+\.\d+/) || [null])[0];
+      if (cpeVer !== null && cpeVer !== "*" && pkgSemver !== null) {
+        check("vendor manifest: " + name + " :: cpe version (" + cpeVer +
+              ") matches the package version (" + pkgSemver + ")",
+              cpeVer === pkgSemver);
+      }
+    }
   }
   check("vendor manifest: scanned at least one hash",
         totalHashes > 0);
