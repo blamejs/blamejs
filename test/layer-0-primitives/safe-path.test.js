@@ -65,6 +65,35 @@ function testErrorClassExported() {
   check("SafePathError exported", typeof b.safePath.SafePathError === "function");
 }
 
+// #371 — opts.platform gates only the per-segment naming rules; it must NOT
+// drive the lexical-containment separator (nodePath.resolve always resolves
+// with RUNTIME semantics). Validating against the OPPOSITE platform's rules
+// (the recommended cross-platform pattern) used to refuse every in-base path
+// with safe-path/escapes-base because the boundary slice compared the runtime-
+// separated output against the opts.platform separator.
+function testPlatformSeparatorIsRuntime() {
+  var nodePath = require("node:path");
+  var other = process.platform === "win32" ? "linux" : "windows";
+  // Drive-prefixed base on Windows, posix base elsewhere; forward slashes are
+  // normalized to the runtime separator by nodePath.resolve.
+  var base = process.platform === "win32" ? "C:/srv/uploads" : "/srv/uploads";
+
+  var inBase = b.safePath.resolveOrNull(base, "file.txt", { platform: other });
+  check("opposite-platform override resolves an in-base file (not null)",
+    typeof inBase === "string" && inBase.indexOf("file.txt") !== -1);
+  var nested = b.safePath.resolveOrNull(base, "a/b/file.txt", { platform: other });
+  check("opposite-platform override resolves a nested in-base path",
+    typeof nested === "string" && nested.indexOf("file.txt") !== -1);
+  var v = b.safePath.validate(base, "data/x.json", { platform: other });
+  check("opposite-platform override validate() ok=true", v.ok === true && typeof v.resolved === "string");
+  // Containment is still ENFORCED under the override — a real traversal refused.
+  check("opposite-platform override still refuses a traversal",
+    b.safePath.resolveOrNull(base, "../../etc/passwd", { platform: other }) === null);
+  // The containment boundary uses the runtime separator.
+  check("resolved path begins with the runtime-separated base",
+    typeof inBase === "string" && inBase.indexOf(nodePath.resolve(base)) === 0);
+}
+
 function run() {
   testHappyPath();
   testRefusalClasses();
@@ -72,6 +101,7 @@ function run() {
   testResolveOrNullReturnsNull();
   testValidateReturnsVerdict();
   testErrorClassExported();
+  testPlatformSeparatorIsRuntime();
 }
 
 if (require.main === module) run();
