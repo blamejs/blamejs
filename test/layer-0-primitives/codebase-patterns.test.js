@@ -9426,6 +9426,20 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The smoke worker requires each test module and awaits its exported run(); a column-0 `run()` / `run().then(...process.exit...)` fires a second unawaited run() at require-time that races the worker's result print (and process.exit() exits before the result line, read as 'no result line' / 'fork failed' on a slow runner). Export `run` and wrap the invocation in `if (require.main === module)`. Fires on any `run(` at the start of a line; `function run()`, `module.exports = { run }`, and an indented `run()` inside the require-main guard stay silent.",
   },
   {
+    id: "test-detached-async-iife",
+    primitive: "define `async function run() {...}`, `module.exports = { run }`, and invoke under `if (require.main === module) run().catch(...)` — never a top-level `(async function () {...})()` IIFE",
+    scanScope: "test",
+    regex: /^\(async\b/m,
+    skipCommentLines: true,
+    allowlist: [
+      // The smoke runner itself — its top-level `(async function () {...})()` is
+      // the orchestrator's process entry point (it forks the per-file workers),
+      // not a worker-awaited test body. It has no run() to export.
+      "test/smoke.js",
+    ],
+    reason: "The smoke worker requires each test module and only `await mod.run()`. A test written as a top-level `(async function run(){...})()` IIFE runs DETACHED on require: the worker measures + prints its result before the IIFE's post-await assertions execute, so every check after the first await silently never counts (parsers-standalone reported 4 of 26 checks this way) and a failing post-await assertion is never seen — a false pass. Export `run` and invoke under `if (require.main === module)`. Fires on a column-0 `(async` (function or arrow IIFE); `async function run()` (no leading paren), `module.exports = { run }`, and an indented async IIFE inside a helper stay silent. Synchronous `(function(){...})()` IIFEs complete during require, so they do not undercount and are out of scope here.",
+  },
+  {
     // `Promise + setTimeout` direct sleep in tests is forbidden;
     // tests waiting on an asynchronous condition MUST use
     // `helpers.waitUntil`. v0.10.14 introduced the detector with a
