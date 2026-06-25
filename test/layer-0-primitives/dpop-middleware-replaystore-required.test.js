@@ -45,5 +45,10 @@ function run() {
 
 module.exports = { run: run };
 if (require.main === module) {
-  run().catch(function (e) { process.stderr.write((e && e.stack ? e.stack : String(e)) + "\n"); process.exit(1); });
+  // run() is synchronous here — wrap in Promise.resolve().then so the standalone
+  // CLI path works whether run is sync or async (a bare run().catch throws
+  // "Cannot read properties of undefined" on a sync run that returns undefined).
+  Promise.resolve().then(run).catch(function (e) {
+    process.stderr.write((e && e.stack ? e.stack : String(e)) + "\n"); process.exit(1);
+  });
 }
