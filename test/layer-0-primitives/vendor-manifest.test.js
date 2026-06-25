@@ -90,15 +90,23 @@ function run() {
     // so gate the consistency here: every structured component version MUST
     // appear in the package's version string, making the drift un-shippable.
     if (pkg.components && typeof pkg.version === "string") {
-      var comps = Object.keys(pkg.components);
-      for (var c = 0; c < comps.length; c += 1) {
-        var comp = comps[c];
-        var cv = pkg.components[comp] && pkg.components[comp].version;
-        if (typeof cv !== "string") continue;
-        check("vendor manifest: " + name + " :: components[" + comp + "].version (" + cv +
-              ") is reflected in the version string (" + pkg.version + ")",
-              pkg.version.indexOf(cv) !== -1);
-      }
+      // Bind the structured component versions to the version string as a
+      // MULTISET, not a loose substring: the sorted list of component versions
+      // must equal the sorted list of semver tokens in the version string. A
+      // bare "does the component version appear in the string" check would let
+      // a component drift to a value that merely appears elsewhere in the string
+      // — e.g. setting @peculiar/x509 to pkijs's 3.4.0 passes indexOf against
+      // "2.0.0+pkijs-3.4.0" but the SBOM then reports the wrong x509 version.
+      // The multiset {3.4.0,3.4.0} != {2.0.0,3.4.0} catches it.
+      var compVers = Object.keys(pkg.components)
+        .map(function (cn) { return pkg.components[cn] && pkg.components[cn].version; })
+        .filter(function (v) { return typeof v === "string"; })
+        .sort();
+      var strVers = (pkg.version.match(/\d+\.\d+\.\d+/g) || []).slice().sort();
+      check("vendor manifest: " + name + " :: components[] versions [" + compVers.join(",") +
+            "] are exactly the semver tokens in the version string [" + strVers.join(",") + "]",
+            compVers.length === strVers.length &&
+            compVers.every(function (v, i) { return v === strVers[i]; }));
     }
 
     // The cpe (Common Platform Enumeration) string encodes the version in
