@@ -736,15 +736,19 @@ async function testStripeNonceStoreConcurrentAtomic() {
   if (ns.close) await ns.close();
 }
 
-// b.webhook.verify is HMAC + timing-safe compare only — it must NOT pull the
-// outbound http-client (and its node:http / node:https / node:http2 chain),
-// which is unavailable in a Worker / edge runtime. webhook.js re-exports
-// webhook-dispatcher, which also reaches http-client, so BOTH hops must defer
-// it. A child process requires the webhook module in isolation and verifies a
-// Stripe signature; the edge guarantee holds iff no Node networking builtin
-// appears in process.moduleLoadList on that path. RED on a top-level
-// `require("./http-client")` in either module (pulls node:http at load); GREEN
-// once both lazyRequire it and only the delivery path resolves it.
+// The webhook module is the Worker/edge-safe import for inbound verification:
+// require it directly (e.g. require("@blamejs/core/lib/webhook")) rather than
+// the framework's aggregate entry, which eagerly initializes the Node
+// networking stack. b.webhook.verify is HMAC + timing-safe compare only, so the
+// module must NOT pull the outbound http-client (node:http / node:https /
+// node:http2 chain) at load — directly, OR transitively through the
+// webhook-dispatcher delivery store. This child process requires the module in
+// isolation and verifies a Stripe signature; the edge guarantee holds iff no
+// Node networking builtin appears in process.moduleLoadList on that path. RED on
+// a top-level `require("./http-client")` in either module (node:http loads at
+// module eval); GREEN once both lazyRequire it and only the delivery path
+// resolves it. moduleLoadList records a loaded builtin as "NativeModule http",
+// so the filter must match that form (not only "node:http").
 function testVerifyLoadableWithoutHttpClient() {
   var cp = require("node:child_process");
   var nodePath = require("node:path");
@@ -760,7 +764,9 @@ function testVerifyLoadableWithoutHttpClient() {
     "webhook.verify({ alg: 'hmac-sha256-stripe', secret: secret, header: 't=' + t + ',v1=' + sig, body: body })" +
     "  .then(function (r) {" +
     "    if (!r || r.ok !== true) { process.stderr.write('verify-not-ok'); process.exit(3); }" +
-    "    var net = process.moduleLoadList.filter(function (m) { return /node:(http|https|http2|net|tls|_http|_tls)/.test(m); });" +
+    // process.moduleLoadList records a loaded networking builtin as
+    // "NativeModule http" (Node 20+) or "node:http" (older) — match both forms.
+    "    var net = process.moduleLoadList.filter(function (m) { return /^(?:NativeModule |node:)(net|tls|http|https|http2)$/.test(m); });" +
     "    if (net.length) { process.stderr.write('net-loaded:' + net.join(',')); }" +
     "    process.exit(net.length ? 1 : 0);" +
     "  })" +
