@@ -310,8 +310,8 @@ var VALID_ALLOW_CLASSES = {
   "fs-path-from-operator-identifier-without-traversal-refusal": 1,
   "gitleaks-entropy": 1,
   "handrolled-buffer-collect": 1,
-  "handrolled-debounce": 1,
-  "hostname-compare-trailing-dot": 1,
+  "handrolled-debounce-stream-idle": 1,
+  "hostname-compare-trailing-dot-pre-split-refused": 1,
   "inline-numeric-bounds-cascade": 1,
   "inline-require": 1,
   "inline-require-non-empty-string-validation": 1,
@@ -327,18 +327,59 @@ var VALID_ALLOW_CLASSES = {
   "raw-hash-compare": 1,
   "raw-new-url": 1,
   "raw-outbound-http": 1,
-  "raw-process-env": 1,
-  "raw-randombytes-token": 1,
+  "raw-process-env-bootstrap": 1,
+  "raw-randombytes-token-mime-boundary": 1,
   "raw-time-literal": 1,
-  "raw-timing-safe-equal": 1,
-  "raw-xfp": 1,
+  "raw-timing-safe-equal-boot-prechecked": 1,
+  "raw-xfp-telemetry-only": 1,
   "regex-no-length-cap": 1,
   "seal-without-aad": 1,
-  "silent-catch": 1,
+  "silent-catch-stream-teardown": 1,
   "slsa-framework-action-not-sha-pinned": 1,
-  "timer-no-unref": 1,
+  "timer-no-unref-unrefed-below": 1,
   "wildcard-suffix-match-without-single-label-check": 1,
 };
+
+// Retired allow-class tokens — a class renamed during a re-verification pass so
+// its OLD name can never be silently re-granted (operator 2026-06-26: "rename the
+// per-class token so it doesn't get re-added as the same 'silent-catch'"). Key =
+// retired token; value = where it went + the rule. Two protections below:
+//   (1) testNoRetiredAllowTokenReRegistered refuses re-adding a retired token to
+//       VALID_ALLOW_CLASSES (the old name cannot be quietly resurrected), and
+//   (2) testNoOrphanAllowClass reports a `// allow:<retired>` marker with a
+//       pointer to the current token instead of a generic "unregistered" note.
+// To re-open a class for re-verification: rename its token in VALID_ALLOW_CLASSES
+// AND its detector's _filterMarkers() arg, add the old token here, then re-stamp
+// each surviving site under the NEW token only after re-checking it. Never reuse
+// a retired name; never bulk find-replace the markers.
+var RETIRED_ALLOW_TOKENS = {
+  "silent-catch": "renamed to 'silent-catch-stream-teardown' (2026-06-26 re-verify pass) — re-examine each empty-catch site before reusing; the old token is retired and must not be re-registered",
+  "raw-randombytes-token": "renamed to 'raw-randombytes-token-mime-boundary' (2026-06-26 re-verify pass) — the one site is a MIME boundary, not an auth credential; re-verify before reusing",
+  "raw-timing-safe-equal": "renamed to 'raw-timing-safe-equal-boot-prechecked' (2026-06-26 re-verify pass) — node timingSafeEqual used directly (b.crypto circular at boot) with a length pre-check; re-verify before reusing",
+  "handrolled-debounce": "renamed to 'handrolled-debounce-stream-idle' (2026-06-26 re-verify pass) — a single file-stream idle-deadline reset, not a reusable debounce; re-verify before reusing",
+  "hostname-compare-trailing-dot": "renamed to 'hostname-compare-trailing-dot-pre-split-refused' (2026-06-26 re-verify pass) — List-Id parts are pre-split on '.', so an empty trailing-dot label is refused upstream; re-verify before reusing",
+  "raw-xfp": "renamed to 'raw-xfp-telemetry-only' (2026-06-26 re-verify pass) — both sites use X-Forwarded-Proto as a telemetry/display label, not a trust sink; re-verify before reusing",
+  "raw-process-env": "renamed to 'raw-process-env-bootstrap' (2026-06-26 re-verify pass) — both sites read a bootstrap signal (TZ / log header) with no operator-supplied default needed; re-verify before reusing",
+  "timer-no-unref": "renamed to 'timer-no-unref-unrefed-below' (2026-06-26 re-verify pass) — both sites call .unref() immediately below, so the timer doesn't pin the event loop; re-verify before reusing",
+};
+
+function testNoRetiredAllowTokenReRegistered() {
+  // A retired token must never reappear as a VALID_ALLOW_CLASSES key — that would
+  // silently re-grant the old blessing under its original name, defeating the
+  // rename-to-re-verify forcing function. Pick a fresh distinct token instead.
+  var bad = [];
+  Object.keys(RETIRED_ALLOW_TOKENS).forEach(function (tok) {
+    if (Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, tok)) {
+      bad.push({
+        file:    "test/layer-0-primitives/codebase-patterns.test.js",
+        line:    0,
+        content: "retired allow-token '" + tok + "' was re-registered in " +
+                 "VALID_ALLOW_CLASSES — " + RETIRED_ALLOW_TOKENS[tok],
+      });
+    }
+  });
+  _report("no retired allow-token is re-registered in VALID_ALLOW_CLASSES", bad);
+}
 
 function testNoOrphanAllowClass() {
   // scanScope: lib + test (every shipped + test source).
@@ -365,11 +406,14 @@ function testNoOrphanAllowClass() {
       while ((m = re.exec(comment)) !== null) {
         var cls = m[1];
         if (!Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls)) {
+          var isRetired = Object.prototype.hasOwnProperty.call(RETIRED_ALLOW_TOKENS, cls);
           bad.push({
             file:    rel,
             line:    li + 1,
-            content: "unregistered allow-class '" + cls + "' — names no detector " +
-                     "(fix the typo, or register it in VALID_ALLOW_CLASSES)",
+            content: isRetired
+              ? "retired allow-class '" + cls + "' — " + RETIRED_ALLOW_TOKENS[cls]
+              : "unregistered allow-class '" + cls + "' — names no detector " +
+                "(fix the typo, or register it in VALID_ALLOW_CLASSES)",
           });
         }
       }
@@ -1741,8 +1785,8 @@ function testNoSilentCatchSwallow() {
   // re-throw, log, or have an allow marker explaining why dropping
   // is correct (e.g., best-effort cleanup, audit-safe drops).
   var matches = _scan(/catch\s*\(\s*_\w*\s*\)\s*\{\s*\}/);
-  matches = _filterMarkers(matches, "silent-catch");
-  _report("empty catch(_e) {} blocks have an explicit silent-catch allow marker",
+  matches = _filterMarkers(matches, "silent-catch-stream-teardown");
+  _report("empty catch(_e) {} blocks have an explicit silent-catch-stream-teardown allow marker",
     matches);
 }
 
@@ -1800,7 +1844,7 @@ function testNoRawForwardedProtoHostRead() {
   var matches = _scan(/req\.headers\s*\[\s*["']x-forwarded-(?:proto|host)["']\s*\]/i);
   // request-helpers.js IS the canonical reader (the primitive home).
   matches = matches.filter(function (m) { return m.file !== "lib/request-helpers.js"; });
-  matches = _filterMarkers(matches, "raw-xfp");
+  matches = _filterMarkers(matches, "raw-xfp-telemetry-only");
   _report("req.headers['x-forwarded-proto'|'x-forwarded-host'] routes through requestHelpers.trustedProtocol/trustedHost",
     matches);
 }
@@ -1836,7 +1880,7 @@ function testNoRawProcessEnv() {
     return m.file !== "lib/safe-env.js" &&
            m.file !== "lib/parsers/safe-env.js";
   });
-  matches = _filterMarkers(matches, "raw-process-env");
+  matches = _filterMarkers(matches, "raw-process-env-bootstrap");
   _report("process.env reads route through safeEnv.readVar (or have allow marker)",
     matches);
 }
@@ -1854,7 +1898,7 @@ function testNoRawTimingSafeEqual() {
   var matches = _scan(/\bnodeCrypto\.timingSafeEqual\(/);
   // The framework crypto module is the canonical wrapper.
   matches = matches.filter(function (m) { return m.file !== "lib/crypto.js"; });
-  matches = _filterMarkers(matches, "raw-timing-safe-equal");
+  matches = _filterMarkers(matches, "raw-timing-safe-equal-boot-prechecked");
   _report("crypto.timingSafeEqual routes through b.crypto.timingSafeEqual " +
           "(length-tolerant wrapper)",
     matches);
@@ -1970,7 +2014,7 @@ function testTimersUnref() {
       });
     }
   }
-  bad = _filterMarkers(bad, "timer-no-unref");
+  bad = _filterMarkers(bad, "timer-no-unref-unrefed-below");
   _report("setInterval timers call .unref() (or have allow marker for " +
           "process-pinning intent)",
     bad);
@@ -1987,7 +2031,7 @@ function testNoRawRandomBytesToken() {
   var matches = _scan(/\b(nodeCrypto|crypto)\.randomBytes\([^)]+\)\s*\.\s*toString\s*\(/);
   // crypto.js itself wraps these.
   matches = matches.filter(function (m) { return m.file !== "lib/crypto.js"; });
-  matches = _filterMarkers(matches, "raw-randombytes-token");
+  matches = _filterMarkers(matches, "raw-randombytes-token-mime-boundary");
   _report("nodeCrypto.randomBytes(n).toString routes through " +
           "b.crypto.generateToken / generateBytes (or has allow marker)",
     matches);
@@ -2215,7 +2259,7 @@ function testNoHandrolledDebounce() {
       }
     }
   }
-  bad = _filterMarkers(bad, "handrolled-debounce");
+  bad = _filterMarkers(bad, "handrolled-debounce-stream-idle");
   _report("hand-rolled clearTimeout/setTimeout debounce → use " +
           "safeAsync.debounce (timer lifecycle owned)",
     bad);
@@ -10373,7 +10417,7 @@ function testHostnameCompareTrailingDotNormalize() {
       content: "hostname compared against reserved-name set without trailing-dot normalize — `localhost.` resolves to the same target as `localhost` (RFC 1034 §3.1); strip trailing dots BEFORE the equality check or attackers bypass the gate by appending a dot",
     });
   }
-  bad = _filterMarkers(bad, "hostname-compare-trailing-dot");
+  bad = _filterMarkers(bad, "hostname-compare-trailing-dot-pre-split-refused");
   _report("reserved-hostname string-equality compare must strip trailing root-zone dot first (RFC 1034 §3.1; SSRF gate bypass class — guard-list-unsubscribe v0.10.7 finding)",
     bad);
 }
@@ -13125,6 +13169,7 @@ async function run() {
   testDenyPathComposesDenyResponse();
   testNoInternalNarrativeComments();
   testNoOrphanAllowClass();
+  testNoRetiredAllowTokenReRegistered();
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
   testNumericOptsValidate();
