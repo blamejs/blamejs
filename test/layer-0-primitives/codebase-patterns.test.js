@@ -299,7 +299,6 @@ var VALID_ALLOW_CLASSES = {
   "backup-adapter-storage-without-posture-check": 1,
   "bare-canonicalize-walk": 1,
   "bare-error-throw": 1,
-  "bare-json-parse": 1,
   "bare-split-on-quoted-header": 1,
   "console-direct": 1,
   "deny-path-hardcoded-response": 1,
@@ -1595,17 +1594,18 @@ function testRawNewURL() {
 // ---- Pattern 14: silent JSON.parse() on operator-supplied data ----
 
 function testNoBareJsonParse() {
-  // `JSON.parse(operatorInput)` lacks the maxBytes / depth / proto
-  // pollution defenses that `safeJson.parse` adds. Internal JSON
-  // (vendor manifest, tests, internal state) is fine with bare parse.
+  // Inverse guard (NO allow path): every JSON parse in lib/ routes through
+  // `safeJson.parse` / `safeJson.parseStringOrObject`, which add the
+  // proto-pollution-key strip + depth / key / size caps a raw `JSON.parse`
+  // lacks. A raw `JSON.parse` re-creates a `"__proto__"` member as an own key
+  // and is unbounded — even "internal" callers (a sealed store payload, a
+  // sandbox worker's result, a canonical re-format) route through the primitive
+  // so the guarantee can't be bypassed one site at a time. safe-json.js IS the
+  // wrapper, so its own `JSON.parse` (the thing being wrapped) is the sole site.
   var matches = _scan(/\bJSON\.parse\(/);
-  // safe-json.js IS the safe wrapper; the bare JSON.parse call lives
-  // there by definition (it's what safe-json wraps with maxBytes /
-  // depth / proto-pollution defenses).
   matches = matches.filter(function (m) { return m.file !== "lib/safe-json.js"; });
-  matches = _filterMarkers(matches, "bare-json-parse");
-  _report("JSON.parse on operator input routes through safeJson.parse " +
-          "(or has allow marker)",
+  _report("JSON parse in lib/ routes through safeJson.parse / safeJson.parseStringOrObject " +
+          "(no raw JSON.parse — use the primitive; it carries the proto / depth / size defenses)",
     matches);
 }
 
