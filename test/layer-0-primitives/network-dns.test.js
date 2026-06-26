@@ -233,10 +233,20 @@ function testDnsErrorPermanentClassification() {
   check("DnsError dns/unsupported-type is permanent", new DnsError("dns/unsupported-type", "x").permanent === true);
   check("DnsError dns/no-result is permanent",       new DnsError("dns/no-result", "x").permanent === true);
   check("DnsError unknown code is permanent (fail closed)", new DnsError("dns/never-defined", "x").permanent === true);
-  // Transient — network / resolver availability (a retry may succeed).
+  // Caller-shape / environment config errors raised before any network work are
+  // permanent — a retry cannot make absent config or invalid input valid.
+  check("DnsError dns/transport-unavailable is permanent (transport not configured)",
+        new DnsError("dns/transport-unavailable", "x").permanent === true);
+  check("DnsError dns/dnr-no-resolvers is permanent (empty/invalid resolver list)",
+        new DnsError("dns/dnr-no-resolvers", "x").permanent === true);
+  check("DnsError dns/setservers-failed is permanent (invalid resolver address)",
+        new DnsError("dns/setservers-failed", "x").permanent === true);
+  check("DnsError dns/no-system-resolvers is permanent (none configured)",
+        new DnsError("dns/no-system-resolvers", "x").permanent === true);
+  // Transient — a network round-trip that a retry can plausibly fix.
   check("DnsError dns/lookup-timeout is transient",  new DnsError("dns/lookup-timeout", "x").permanent === false);
   check("DnsError dns/resolve-failed is transient",  new DnsError("dns/resolve-failed", "x").permanent === false);
-  check("DnsError dns/no-system-resolvers is transient", new DnsError("dns/no-system-resolvers", "x").permanent === false);
+  check("DnsError dns/dot-failed is transient",      new DnsError("dns/dot-failed", "x").permanent === false);
 }
 
 async function run() {
