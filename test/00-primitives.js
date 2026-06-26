@@ -528,9 +528,16 @@ function testAsyncSafeWithTimeoutSignalCases() {
 
 async function testAsyncSafeWithTimeoutSignalTimeoutFires() {
   var sig = b.safeAsync.withTimeoutSignal(null, 30);
+  // Tight bound, not a loose 5s window: the 30ms timeout must fire well within
+  // 500ms even under SMOKE_PARALLEL contention (the prior fixed 80ms wait this
+  // replaced proved sub-80ms is the norm). waitUntil exits early on fast
+  // platforms and THROWS when the budget is exceeded, so a regression that
+  // stretches the 30ms deadline into hundreds / thousands of ms (or never)
+  // overruns the 500ms budget and fails the test — the "fires near its
+  // configured deadline" guarantee is preserved, not lost to a loose window.
   await helpers.waitUntil(function () { return sig.aborted === true; }, {
-    timeoutMs: 5000,
-    label:     "withTimeoutSignal: timeout-only signal aborts",
+    timeoutMs: 500,
+    label:     "withTimeoutSignal: timeout-only signal aborts within its 30ms deadline",
   });
   check("withTimeoutSignal: timeout-only signal fires after ms", sig.aborted === true);
 }
