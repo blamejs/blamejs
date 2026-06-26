@@ -125,6 +125,26 @@ function _walk(dir, files) {
   return files;
 }
 
+// Like _walk but also prunes node_modules / .test-output — used to scan the
+// FULL repo surface (incl operator-shipped examples/*/lib app code) for retired
+// allow-tokens, without descending into vendored example dependencies.
+function _walkAllSource(dir, files) {
+  files = files || [];
+  var base = path.basename(dir);
+  if (base === "vendor" || base === "node_modules" || base === ".test-output" ||
+      base === ".git" || base === "dist" || base === "build" || base === "coverage") return files;
+  var entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (_e) { return files; }
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var full = path.join(dir, e.name);
+    if (e.isDirectory()) _walkAllSource(full, files);
+    else if (e.isFile() && e.name.endsWith(".js")) files.push(full);
+  }
+  return files;
+}
+
 function _libFiles() { return _walk(LIB_ROOT); }
 
 // Test-tree walker. Excludes infra: test/helpers/_*.js (shape-matcher,
@@ -385,6 +405,50 @@ function testNoRetiredAllowTokenReRegistered() {
     }
   });
   _report("no retired allow-token is re-registered in VALID_ALLOW_CLASSES", bad);
+}
+
+function testNoRetiredTokenUsedAnywhere() {
+  // A retired token must appear NOWHERE in the repo — not as an `// allow:<token>`
+  // suppression marker AND not as a `_filterMarkers(..., "<token>")` detector arg.
+  // testNoOrphanAllowClass only covers lib + test/ markers; it misses (a) operator-
+  // shipped example app code under examples/*/lib, and (b) a DUPLICATED detector suite
+  // (examples/wiki/test/codebase-patterns.test.js) whose filter still references the
+  // old class. Renaming a class in one suite but leaving a copy on the old name keeps
+  // the retired approval silently reusable in that suite's CI path (Codex P2, PR #384).
+  // This scans the FULL source surface (lib + test + all examples, minus node_modules).
+  var retired = Object.keys(RETIRED_ALLOW_TOKENS);
+  if (retired.length === 0) { check("no retired allow-token used anywhere (none retired)", true); return; }
+  var alt = retired.map(function (t) { return t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }).join("|");
+  // The new name is always `<old>-<suffix>`, so a trailing `-`/word char means it is the
+  // NEW token (exempt); a non-identifier boundary means the bare retired token is in use.
+  var markerRe = new RegExp("\\ballow:(" + alt + ")(?![-\\w])");
+  var filterRe = new RegExp("_filterMarkers\\([^,]+,\\s*[\"'](" + alt + ")[\"']");
+  var examplesRoot = path.resolve(__dirname, "..", "..", "examples");
+  var seen = {};
+  var files = _libFiles().concat(_walk(TEST_ROOT)).concat(_walkAllSource(examplesRoot));
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    // Skip THIS file: it holds RETIRED_ALLOW_TOKENS + the regexes that name retired tokens.
+    if (rel === "test/layer-0-primitives/codebase-patterns.test.js") continue;
+    if (seen[rel]) continue; seen[rel] = true;
+    if (/\/node_modules\//.test(rel) || /\/\.test-output\//.test(rel)) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var m = markerRe.exec(lines[li]) || filterRe.exec(lines[li]);
+      if (m) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "retired allow-token '" + m[1] + "' still used here — " + RETIRED_ALLOW_TOKENS[m[1]],
+        });
+      }
+    }
+  }
+  _report("no retired allow-token is used as a marker or detector arg anywhere (lib + test + examples)", bad);
 }
 
 function testNoOrphanAllowClass() {
@@ -13176,6 +13240,7 @@ async function run() {
   testNoInternalNarrativeComments();
   testNoOrphanAllowClass();
   testNoRetiredAllowTokenReRegistered();
+  testNoRetiredTokenUsedAnywhere();
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
   testNumericOptsValidate();
