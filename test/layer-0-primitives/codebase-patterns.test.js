@@ -125,6 +125,26 @@ function _walk(dir, files) {
   return files;
 }
 
+// Like _walk but also prunes node_modules / .test-output — used to scan the
+// FULL repo surface (incl operator-shipped examples/*/lib app code) for retired
+// allow-tokens, without descending into vendored example dependencies.
+function _walkAllSource(dir, files) {
+  files = files || [];
+  var base = path.basename(dir);
+  if (base === "vendor" || base === "node_modules" || base === ".test-output" ||
+      base === ".git" || base === "dist" || base === "build" || base === "coverage") return files;
+  var entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (_e) { return files; }
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var full = path.join(dir, e.name);
+    if (e.isDirectory()) _walkAllSource(full, files);
+    else if (e.isFile() && e.name.endsWith(".js")) files.push(full);
+  }
+  return files;
+}
+
 function _libFiles() { return _walk(LIB_ROOT); }
 
 // Test-tree walker. Excludes infra: test/helpers/_*.js (shape-matcher,
@@ -304,7 +324,7 @@ var VALID_ALLOW_CLASSES = {
   "deny-path-hardcoded-response": 1,
   "duplicate-regex": 1,
   "dynamic-regex": 1,
-  "dynamic-require": 1,
+  "dynamic-require-operator-module": 1,
   "from-base64url-untrapped": 1,
   "hand-rolled-sql": 1,
   "fs-path-from-operator-identifier-without-traversal-refusal": 1,
@@ -318,14 +338,14 @@ var VALID_ALLOW_CLASSES = {
   "internal-binding-in-prose": 1,
   "internal-narrative-comment": 1,
   "list-without-pagination": 1,
-  "math-random-noncrypto": 1,
+  "math-random-noncrypto-jitter-sampling": 1,
   "no-number-money-arithmetic": 1,
   "numeric-opt-Infinity": 1,
   "primitive-unreachable": 1,
   "process-exit-operator-optin": 1,
   "raw-byte-literal": 1,
   "raw-hash-compare": 1,
-  "raw-new-url": 1,
+  "raw-new-url-parse-only": 1,
   "raw-outbound-http-framework-internal": 1,
   "raw-process-env-bootstrap": 1,
   "raw-randombytes-token-mime-boundary": 1,
@@ -364,6 +384,9 @@ var RETIRED_ALLOW_TOKENS = {
   "handrolled-buffer-collect": "renamed to 'handrolled-buffer-collect-bounded-framing' (2026-06-26 re-verify pass) — every site is a bounded protocol-framing / TLV-serialization assembly, not a collect-to-end stream; re-verify before reusing",
   "process-exit": "renamed to 'process-exit-operator-optin' (2026-06-26 re-verify pass) — every site exits only on an explicit operator opt-in (exitAfterPhases / { exit: true } bin shim / watchdog); re-verify before reusing",
   "raw-outbound-http": "renamed to 'raw-outbound-http-framework-internal' (2026-06-26 re-verify pass) — every site routes through b.httpClient / a framework wrapper, or is the documented DoH cycle exception; re-verify before reusing",
+  "math-random-noncrypto": "renamed to 'math-random-noncrypto-jitter-sampling' (2026-06-26 re-verify pass) — every site is jitter / sampling / backoff where predictability is not a threat; re-verify before reusing",
+  "raw-new-url": "renamed to 'raw-new-url-parse-only' (2026-06-26 re-verify pass) — every site parses for shape/origin inspection, is the safeUrl wrapper itself, or is re-validated downstream — none is an unguarded outbound-fetch target; re-verify before reusing",
+  "dynamic-require": "renamed to 'dynamic-require-operator-module' (2026-06-26 re-verify pass) — every site loads an operator-supplied path (migration / seed / extensibility entry, centralized in module-loader.js) or is diagnostic message text; re-verify before reusing",
 };
 
 function testNoRetiredAllowTokenReRegistered() {
@@ -382,6 +405,50 @@ function testNoRetiredAllowTokenReRegistered() {
     }
   });
   _report("no retired allow-token is re-registered in VALID_ALLOW_CLASSES", bad);
+}
+
+function testNoRetiredTokenUsedAnywhere() {
+  // A retired token must appear NOWHERE in the repo — not as an `// allow:<token>`
+  // suppression marker AND not as a `_filterMarkers(..., "<token>")` detector arg.
+  // testNoOrphanAllowClass only covers lib + test/ markers; it misses (a) operator-
+  // shipped example app code under examples/*/lib, and (b) a DUPLICATED detector suite
+  // (examples/wiki/test/codebase-patterns.test.js) whose filter still references the
+  // old class. Renaming a class in one suite but leaving a copy on the old name keeps
+  // the retired approval silently reusable in that suite's CI path (Codex P2, PR #384).
+  // This scans the FULL source surface (lib + test + all examples, minus node_modules).
+  var retired = Object.keys(RETIRED_ALLOW_TOKENS);
+  if (retired.length === 0) { check("no retired allow-token used anywhere (none retired)", true); return; }
+  var alt = retired.map(function (t) { return t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }).join("|");
+  // The new name is always `<old>-<suffix>`, so a trailing `-`/word char means it is the
+  // NEW token (exempt); a non-identifier boundary means the bare retired token is in use.
+  var markerRe = new RegExp("\\ballow:(" + alt + ")(?![-\\w])");
+  var filterRe = new RegExp("_filterMarkers\\([^,]+,\\s*[\"'](" + alt + ")[\"']");
+  var examplesRoot = path.resolve(__dirname, "..", "..", "examples");
+  var seen = {};
+  var files = _libFiles().concat(_walk(TEST_ROOT)).concat(_walkAllSource(examplesRoot));
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    // Skip THIS file: it holds RETIRED_ALLOW_TOKENS + the regexes that name retired tokens.
+    if (rel === "test/layer-0-primitives/codebase-patterns.test.js") continue;
+    if (seen[rel]) continue; seen[rel] = true;
+    if (/\/node_modules\//.test(rel) || /\/\.test-output\//.test(rel)) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var m = markerRe.exec(lines[li]) || filterRe.exec(lines[li]);
+      if (m) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "retired allow-token '" + m[1] + "' still used here — " + RETIRED_ALLOW_TOKENS[m[1]],
+        });
+      }
+    }
+  }
+  _report("no retired allow-token is used as a marker or detector arg anywhere (lib + test + examples)", bad);
 }
 
 function testNoOrphanAllowClass() {
@@ -1572,7 +1639,7 @@ function testNoDynamicRequires() {
   // interpolation is rare in require()). Skip require.resolve too —
   // distinct API.
   var matches = _scan(/\brequire\(\s*[^"'`)]/);
-  matches = _filterMarkers(matches, "dynamic-require");
+  matches = _filterMarkers(matches, "dynamic-require-operator-module");
   _report("require() argument must be a string literal " +
           "(or has dynamic-require allow marker)",
     matches);
@@ -1586,7 +1653,7 @@ function testNoMathRandomForSecurity() {
   // Math.random has legitimate uses (jitter, non-security IDs); those
   // get an allow marker.
   var matches = _scan(/\bMath\.random\(/);
-  matches = _filterMarkers(matches, "math-random-noncrypto");
+  matches = _filterMarkers(matches, "math-random-noncrypto-jitter-sampling");
   _report("Math.random() in lib/ has an explicit non-crypto allow marker",
     matches);
 }
@@ -1611,7 +1678,7 @@ function testRawNewURL() {
   // protocol allowlist + length cap + userinfo block apply. Internal
   // URL building (test fixtures, sigv4 canonical query) is fine.
   var matches = _scan(/\bnew URL\(/);
-  matches = _filterMarkers(matches, "raw-new-url");
+  matches = _filterMarkers(matches, "raw-new-url-parse-only");
   _report("new URL(...) routes through safeUrl.parse (or has allow marker)",
     matches);
 }
@@ -13173,6 +13240,7 @@ async function run() {
   testNoInternalNarrativeComments();
   testNoOrphanAllowClass();
   testNoRetiredAllowTokenReRegistered();
+  testNoRetiredTokenUsedAnywhere();
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
   testNumericOptsValidate();
