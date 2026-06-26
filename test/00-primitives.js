@@ -393,7 +393,7 @@ async function testAsyncSafeCircuitBreakerStateTransitions() {
   try { await br.wrap(async function () { return "ok"; }); }
   catch (e) { fastFail = e; }
   check("CircuitBreaker: open state fast-fails",            fastFail && fastFail.code === "CIRCUIT_OPEN");
-  await new Promise(function (r) { setTimeout(r, 50); });
+  await helpers.passiveObserve(50, "CircuitBreaker: cooldownMs(30) lapses before half-open probe");
   var probe = await br.wrap(async function () { return "ok"; });
   check("CircuitBreaker: half-open probe success",          probe === "ok");
   check("CircuitBreaker: closes after success threshold",   br.getState() === "closed");
@@ -528,7 +528,10 @@ function testAsyncSafeWithTimeoutSignalCases() {
 
 async function testAsyncSafeWithTimeoutSignalTimeoutFires() {
   var sig = b.safeAsync.withTimeoutSignal(null, 30);
-  await new Promise(function (r) { setTimeout(r, 80); });
+  await helpers.waitUntil(function () { return sig.aborted === true; }, {
+    timeoutMs: 5000,
+    label:     "withTimeoutSignal: timeout-only signal aborts",
+  });
   check("withTimeoutSignal: timeout-only signal fires after ms", sig.aborted === true);
 }
 
@@ -5235,7 +5238,7 @@ async function testRestoreListRollbacksAndPurge() {
     });
     // Two restores to create two rollback points
     await restore.run({ bundleId: bundleId });
-    await new Promise(function (r) { setTimeout(r, 5); });
+    await helpers.passiveObserve(5, "restore rollback: timestamps differ between two rollback points");
     await restore.run({ bundleId: bundleId });
 
     var rb = restore.listRollbacks();
@@ -5551,7 +5554,7 @@ async function testBackupRetentionPurgeOlder() {
     for (var i = 0; i < 4; i++) {
       var r = await backup.run();
       ids.push(r.bundleId);
-      await new Promise(function (rr) { setTimeout(rr, 5); });
+      await helpers.passiveObserve(5, "backup retention: timestamps differ between sequential backups");
     }
     var listed = await backup.list();
     check("4 bundles before purge",                 listed.length === 4);
@@ -5575,7 +5578,7 @@ async function testBackupRetentionAutoSweepOnRun() {
     for (var i = 0; i < 4; i++) {
       var r = await backup.run();
       ids.push(r.bundleId);
-      await new Promise(function (rr) { setTimeout(rr, 5); });
+      await helpers.passiveObserve(5, "backup auto-sweep: timestamps differ between sequential backups");
     }
     // After 4 runs with retention=2, only the 2 newest should remain
     var listed = await backup.list();
@@ -8560,13 +8563,10 @@ async function testCompressionPipedStreamLargerThanHighWaterMarkCompletes() {
   var payload = Buffer.alloc(256 * 1024, "A");
   var source  = stream.Readable.from([payload]);
 
-  // Race the pipe completion against a timeout. Pre-fix this hangs
-  // indefinitely; with the drain forward it completes promptly.
+  // Bound the pipe completion with a wall-clock ceiling. Pre-fix this
+  // hangs indefinitely; with the drain forward it completes promptly.
   var done = new Promise(function (resolve) {
     res.on("finish", function () { resolve("ok"); });
-  });
-  var timeout = new Promise(function (resolve) {
-    setTimeout(function () { resolve("timeout"); }, 3000);
   });
 
   await new Promise(function (resolve) {
@@ -8577,7 +8577,11 @@ async function testCompressionPipedStreamLargerThanHighWaterMarkCompletes() {
     });
   });
 
-  var outcome = await Promise.race([done, timeout]);
+  var outcome = await helpers.withTestTimeout(
+    "piped stream completes (no stall on backpressure)",
+    function () { return done; },
+    { timeoutMs: 3000 }
+  );
   check("piped stream completes (no stall on backpressure)", outcome === "ok");
   if (outcome !== "ok") return;
 
@@ -11784,7 +11788,7 @@ async function testSessionRotateExpiredReturnsNull() {
   try {
     await setupTestDb(tmpDir);
     var s = await b.session.create({ userId: "u-4", ttlMs: 1 }); // 1ms TTL
-    await new Promise(function (r) { setTimeout(r, 30); });
+    await helpers.passiveObserve(30, "session rotate: 1ms TTL lapses before rotate");
     var rotated = await b.session.rotate(s.token);
     check("rotate: expired session returns null",       rotated === null);
   } finally {
