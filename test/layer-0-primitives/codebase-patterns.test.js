@@ -309,7 +309,7 @@ var VALID_ALLOW_CLASSES = {
   "hand-rolled-sql": 1,
   "fs-path-from-operator-identifier-without-traversal-refusal": 1,
   "gitleaks-entropy": 1,
-  "handrolled-buffer-collect": 1,
+  "handrolled-buffer-collect-bounded-framing": 1,
   "handrolled-debounce-stream-idle": 1,
   "hostname-compare-trailing-dot-pre-split-refused": 1,
   "inline-numeric-bounds-cascade": 1,
@@ -322,11 +322,11 @@ var VALID_ALLOW_CLASSES = {
   "no-number-money-arithmetic": 1,
   "numeric-opt-Infinity": 1,
   "primitive-unreachable": 1,
-  "process-exit": 1,
+  "process-exit-operator-optin": 1,
   "raw-byte-literal": 1,
   "raw-hash-compare": 1,
   "raw-new-url": 1,
-  "raw-outbound-http": 1,
+  "raw-outbound-http-framework-internal": 1,
   "raw-process-env-bootstrap": 1,
   "raw-randombytes-token-mime-boundary": 1,
   "raw-time-literal": 1,
@@ -361,6 +361,9 @@ var RETIRED_ALLOW_TOKENS = {
   "raw-xfp": "renamed to 'raw-xfp-telemetry-only' (2026-06-26 re-verify pass) — both sites use X-Forwarded-Proto as a telemetry/display label, not a trust sink; re-verify before reusing",
   "raw-process-env": "renamed to 'raw-process-env-bootstrap' (2026-06-26 re-verify pass) — both sites read a bootstrap signal (TZ / log header) with no operator-supplied default needed; re-verify before reusing",
   "timer-no-unref": "renamed to 'timer-no-unref-unrefed-below' (2026-06-26 re-verify pass) — both sites call .unref() immediately below, so the timer doesn't pin the event loop; re-verify before reusing",
+  "handrolled-buffer-collect": "renamed to 'handrolled-buffer-collect-bounded-framing' (2026-06-26 re-verify pass) — every site is a bounded protocol-framing / TLV-serialization assembly, not a collect-to-end stream; re-verify before reusing",
+  "process-exit": "renamed to 'process-exit-operator-optin' (2026-06-26 re-verify pass) — every site exits only on an explicit operator opt-in (exitAfterPhases / { exit: true } bin shim / watchdog); re-verify before reusing",
+  "raw-outbound-http": "renamed to 'raw-outbound-http-framework-internal' (2026-06-26 re-verify pass) — every site routes through b.httpClient / a framework wrapper, or is the documented DoH cycle exception; re-verify before reusing",
 };
 
 function testNoRetiredAllowTokenReRegistered() {
@@ -1697,7 +1700,7 @@ function testFormatValidatorLengthCap() {
 
 function testNoProcessExitInLib() {
   var matches = _scan(/\bprocess\.exit\(/);
-  matches = _filterMarkers(matches, "process-exit");
+  matches = _filterMarkers(matches, "process-exit-operator-optin");
   _report("no process.exit() in lib/ (CLI surface only)", matches);
 }
 
@@ -2071,7 +2074,7 @@ function testNoRawOutboundHttp() {
     "lib/testing.js":      true,
   };
   matches = matches.filter(function (m) { return !exemptFiles[m.file]; });
-  matches = _filterMarkers(matches, "raw-outbound-http");
+  matches = _filterMarkers(matches, "raw-outbound-http-framework-internal");
   _report("http(s).request / fetch route through b.httpClient (or have allow marker)",
     matches);
 }
@@ -2219,7 +2222,7 @@ function testNoHandrolledBufferCollect() {
       }
     }
   }
-  bad = _filterMarkers(bad, "handrolled-buffer-collect");
+  bad = _filterMarkers(bad, "handrolled-buffer-collect-bounded-framing");
   _report("hand-rolled chunks-array buffer collect → use " +
           "safeBuffer.boundedChunkCollector (cap-bounded)",
     bad);
