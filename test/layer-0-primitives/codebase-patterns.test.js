@@ -304,7 +304,7 @@ var VALID_ALLOW_CLASSES = {
   "deny-path-hardcoded-response": 1,
   "duplicate-regex": 1,
   "dynamic-regex": 1,
-  "dynamic-require": 1,
+  "dynamic-require-operator-module": 1,
   "from-base64url-untrapped": 1,
   "hand-rolled-sql": 1,
   "fs-path-from-operator-identifier-without-traversal-refusal": 1,
@@ -318,14 +318,14 @@ var VALID_ALLOW_CLASSES = {
   "internal-binding-in-prose": 1,
   "internal-narrative-comment": 1,
   "list-without-pagination": 1,
-  "math-random-noncrypto": 1,
+  "math-random-noncrypto-jitter-sampling": 1,
   "no-number-money-arithmetic": 1,
   "numeric-opt-Infinity": 1,
   "primitive-unreachable": 1,
   "process-exit-operator-optin": 1,
   "raw-byte-literal": 1,
   "raw-hash-compare": 1,
-  "raw-new-url": 1,
+  "raw-new-url-parse-only": 1,
   "raw-outbound-http-framework-internal": 1,
   "raw-process-env-bootstrap": 1,
   "raw-randombytes-token-mime-boundary": 1,
@@ -364,6 +364,9 @@ var RETIRED_ALLOW_TOKENS = {
   "handrolled-buffer-collect": "renamed to 'handrolled-buffer-collect-bounded-framing' (2026-06-26 re-verify pass) — every site is a bounded protocol-framing / TLV-serialization assembly, not a collect-to-end stream; re-verify before reusing",
   "process-exit": "renamed to 'process-exit-operator-optin' (2026-06-26 re-verify pass) — every site exits only on an explicit operator opt-in (exitAfterPhases / { exit: true } bin shim / watchdog); re-verify before reusing",
   "raw-outbound-http": "renamed to 'raw-outbound-http-framework-internal' (2026-06-26 re-verify pass) — every site routes through b.httpClient / a framework wrapper, or is the documented DoH cycle exception; re-verify before reusing",
+  "math-random-noncrypto": "renamed to 'math-random-noncrypto-jitter-sampling' (2026-06-26 re-verify pass) — every site is jitter / sampling / backoff where predictability is not a threat; re-verify before reusing",
+  "raw-new-url": "renamed to 'raw-new-url-parse-only' (2026-06-26 re-verify pass) — every site parses for shape/origin inspection, is the safeUrl wrapper itself, or is re-validated downstream — none is an unguarded outbound-fetch target; re-verify before reusing",
+  "dynamic-require": "renamed to 'dynamic-require-operator-module' (2026-06-26 re-verify pass) — every site loads an operator-supplied path (migration / seed / extensibility entry, centralized in module-loader.js) or is diagnostic message text; re-verify before reusing",
 };
 
 function testNoRetiredAllowTokenReRegistered() {
@@ -1572,7 +1575,7 @@ function testNoDynamicRequires() {
   // interpolation is rare in require()). Skip require.resolve too —
   // distinct API.
   var matches = _scan(/\brequire\(\s*[^"'`)]/);
-  matches = _filterMarkers(matches, "dynamic-require");
+  matches = _filterMarkers(matches, "dynamic-require-operator-module");
   _report("require() argument must be a string literal " +
           "(or has dynamic-require allow marker)",
     matches);
@@ -1586,7 +1589,7 @@ function testNoMathRandomForSecurity() {
   // Math.random has legitimate uses (jitter, non-security IDs); those
   // get an allow marker.
   var matches = _scan(/\bMath\.random\(/);
-  matches = _filterMarkers(matches, "math-random-noncrypto");
+  matches = _filterMarkers(matches, "math-random-noncrypto-jitter-sampling");
   _report("Math.random() in lib/ has an explicit non-crypto allow marker",
     matches);
 }
@@ -1611,7 +1614,7 @@ function testRawNewURL() {
   // protocol allowlist + length cap + userinfo block apply. Internal
   // URL building (test fixtures, sigv4 canonical query) is fine.
   var matches = _scan(/\bnew URL\(/);
-  matches = _filterMarkers(matches, "raw-new-url");
+  matches = _filterMarkers(matches, "raw-new-url-parse-only");
   _report("new URL(...) routes through safeUrl.parse (or has allow marker)",
     matches);
 }
