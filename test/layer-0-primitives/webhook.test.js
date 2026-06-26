@@ -736,6 +736,48 @@ async function testStripeNonceStoreConcurrentAtomic() {
   if (ns.close) await ns.close();
 }
 
+// b.webhook.verify is HMAC + timing-safe compare only — it must NOT pull the
+// outbound http-client (and its node:http / node:https / node:http2 chain),
+// which is unavailable in a Worker / edge runtime. webhook.js re-exports
+// webhook-dispatcher, which also reaches http-client, so BOTH hops must defer
+// it. A child process requires the webhook module in isolation and verifies a
+// Stripe signature; the edge guarantee holds iff no Node networking builtin
+// appears in process.moduleLoadList on that path. RED on a top-level
+// `require("./http-client")` in either module (pulls node:http at load); GREEN
+// once both lazyRequire it and only the delivery path resolves it.
+function testVerifyLoadableWithoutHttpClient() {
+  var cp = require("node:child_process");
+  var nodePath = require("node:path");
+  var repoRoot = nodePath.resolve(__dirname, "..", "..");
+  var webhookPath = nodePath.join(repoRoot, "lib", "webhook.js");
+  var script =
+    "var crypto = require('node:crypto');" +
+    "var webhook = require(" + JSON.stringify(webhookPath) + ");" +
+    "var secret = 'whsec_edgeruntime';" +
+    "var body = '{\"id\":\"evt_edge\"}';" +
+    "var t = Math.floor(Date.now() / 1000);" +
+    "var sig = crypto.createHmac('sha256', secret).update(t + '.' + body).digest('hex');" +
+    "webhook.verify({ alg: 'hmac-sha256-stripe', secret: secret, header: 't=' + t + ',v1=' + sig, body: body })" +
+    "  .then(function (r) {" +
+    "    if (!r || r.ok !== true) { process.stderr.write('verify-not-ok'); process.exit(3); }" +
+    "    var net = process.moduleLoadList.filter(function (m) { return /node:(http|https|http2|net|tls|_http|_tls)/.test(m); });" +
+    "    if (net.length) { process.stderr.write('net-loaded:' + net.join(',')); }" +
+    "    process.exit(net.length ? 1 : 0);" +
+    "  })" +
+    "  .catch(function (e) { process.stderr.write(String(e && e.message)); process.exit(2); });";
+  var code = 0;
+  var stderr = "";
+  try {
+    cp.execFileSync(process.execPath, ["-e", script], { stdio: ["ignore", "ignore", "pipe"], timeout: 30000 });
+  } catch (e) {
+    code = (e && typeof e.status === "number") ? e.status : -1;
+    stderr = (e && e.stderr) ? e.stderr.toString() : "";
+  }
+  check("webhook.verify composes with no node networking builtin loaded (edge-runtime safe) [exit=" +
+        code + (stderr ? " stderr=" + stderr.slice(0, 120).replace(/\n/g, " ") : "") + "]",
+        code === 0);
+}
+
 // signer.send dispatches through the shared httpClient keep-alive transport
 // pool; a cached client socket finalizes its destroy on a later event-loop
 // turn, past the forked worker's grace window. Reset the pool, then poll until
@@ -801,6 +843,8 @@ async function _runTests() {
   await testStripeNonceStoreFromPrimitive();
   await testStripeNonceStoreBadShapeRefused();
   await testStripeNonceStoreConcurrentAtomic();
+  // #378 — verify path must stay free of the Node networking chain.
+  testVerifyLoadableWithoutHttpClient();
 }
 
 module.exports = { run: run };

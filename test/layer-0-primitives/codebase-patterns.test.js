@@ -631,36 +631,14 @@ function testNoUnresolvedMarkers() {
 // or an item on the gap backlog being worked down. The key is the file; the
 // value is a list of distinctive content substrings to permit. Remove an entry
 // when the comment is corrected or the gap is closed — that is the backlog.
-var STALE_DEFER_ALLOWLIST = {
-  // Deliberate defer-with-condition: needs an envelope-semantics decision
-  // (per-tenant KEM keypair vs symmetric); explicit escape hatch is passing
-  // { publicKey, ecPublicKey } directly. Tracked for design, not overdue work.
-  "lib/archive-wrap.js": [
-    // quote-free phrases (source has escaped \" so avoid quote chars here)
-    "deferred to v0.12.11",
-    "lands in v0.12.11",
-  ],
-  // Deliberate: Sieve extension refused per RFC 5228 §3.2 — script-declared
-  // capability gating, defer-with-condition (operator demand).
-  "lib/safe-sieve.js": ["not implemented in v0.9.55 — script refused"],
-  // Conditional on a future vendoring decision (no bundled EXIF/IPTC reader);
-  // operator-feeds-metadata escape hatch. Defer-with-condition.
-  "lib/ai-content-detect.js": ["IPTC PhotoMetadata reader lands in v0.10.9"],
-  // GAP BACKLOG (being worked down — these are real overdue items):
-  //   archive-read ZIP64 read (promised v0.12.8) — building. (The
-  //   fromTrustedStream defer was reworded to a version-free "not
-  //   implemented / re-opens when needed" in v0.13.15, so it no longer
-  //   needs an allowlist entry.)
-  "lib/archive-read.js": [
-    "not supported in v0.12.7. Will land",
-    "switch to tar — lands v0.12.8",
-    "carries ZIP64 sentinel sizes (not supported in v0.12.7)",
-  ],
-  "lib/safe-archive.js": [
-    "tar lands v0.12.8, gz v0.12.9",
-    "fromTrustedStream` is deferred to v0.12.8",
-  ],
-};
+// Empty: every prior entry's promised-landing comment has been reworded to a
+// version-free re-open-condition (the established shape — a deferred feature
+// states its escape hatch, not a version it "lands in"), so no source line
+// matches the PROMISE pattern below and nothing needs allowlisting. Re-add an
+// entry { "lib/<file>.js": ["<distinctive substring>"] } only for a deliberate
+// defer-with-condition whose comment unavoidably names a version; prefer
+// rewording the comment instead.
+var STALE_DEFER_ALLOWLIST = {};
 
 function testNoStaleDefers() {
   var path = require("node:path");

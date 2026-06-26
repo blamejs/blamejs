@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.30",
+  "date": "2026-06-26",
+  "headline": "`b.webhook.verify` loads in a Worker / edge runtime — the inbound HMAC-signature check no longer pulls the Node HTTP client (and its `node:http` chain), which only the outbound delivery path needs",
+  "summary": "Importing b.webhook eagerly loaded ./http-client — directly, and transitively through the b.webhook.dispatcher delivery store — whose top-level node:http / node:https / node:http2 requires throw at module load in a Cloudflare Workers / edge runtime. That blocked b.webhook.verify (HMAC-SHA-256 + timing-safe compare, no outbound HTTP) from being composed at the edge to pre-verify an inbound Stripe webhook signature. Both modules now lazy-require the HTTP client, so it resolves only when the outbound delivery path runs; the inbound verify path loads with no Node networking module touched.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.webhook.verify composes in a Worker / edge runtime",
+          "body": "b.webhook and its b.webhook.dispatcher store required the outbound HTTP client at module load, so importing b.webhook at all failed in a runtime without node:http / node:net / node:tls — even though b.webhook.verify needs only HMAC-SHA-256 and a timing-safe compare. The HTTP client is now resolved lazily on the outbound delivery path only; the inbound verify path loads no Node networking module. An edge handler can pre-verify an inbound Stripe webhook signature with the primitive's hardening (header-size cap, v1-hex anti-DoS cap, minimum-tolerance floor, optional replay store) instead of hand-rolling the t=/v1= parse, tolerance window, and timing-safe compare."
+        }
+      ]
+    }
+  ]
+}
