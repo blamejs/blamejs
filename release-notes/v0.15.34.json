@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.34",
+  "date": "2026-06-26",
+  "headline": "Internal test-suite hardening only — the published library's runtime behavior and public API are unchanged (source-comment marker text aside)",
+  "summary": "Two more suppression classes in the codebase-patterns guard suite were re-verified from scratch and renamed to descriptive tokens, with their old names recorded as retired and their in-source marker comments updated to match. No runtime code, public API, or wire format changed.",
+  "sections": [
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Two more suppression-marker classes re-verified and their tokens retired",
+          "body": "Continuing the re-verification pass: the raw-hash-compare and seal-without-aad guard classes were re-read and confirmed (a data-residency region tag compared with === — not a secret; and two intentional non-AEAD-bound seals — a non-regulated plain-mode column whose AAD is enforced by the posture seal-envelope floor where it matters, and a throwaway vault-readiness probe), then renamed to descriptive tokens with their old names added to the retired-token set. This is test-suite tooling; no shipped framework behavior changed."
+        }
+      ]
+    }
+  ]
+}
