@@ -340,7 +340,7 @@ var VALID_ALLOW_CLASSES = {
   "list-without-pagination": 1,
   "math-random-noncrypto-jitter-sampling": 1,
   "no-number-money-arithmetic": 1,
-  "numeric-opt-Infinity": 1,
+  "numeric-opt-Infinity-intentional": 1,
   "primitive-unreachable": 1,
   "process-exit-operator-optin": 1,
   "raw-byte-literal": 1,
@@ -390,6 +390,7 @@ var RETIRED_ALLOW_TOKENS = {
   "raw-hash-compare": "renamed to 'raw-hash-compare-nonsecret-tag' (2026-06-26 re-verify pass) — the one site compares a data-residency region tag with ===, not a secret hash; re-verify before reusing",
   "seal-without-aad": "renamed to 'seal-without-aad-by-design' (2026-06-26 re-verify pass) — both sites intentionally seal without AAD (a non-regulated plain-mode table whose AAD is enforced by the posture sealEnvelopeFloor where required, and a throwaway vault-readiness probe sentinel); re-verify before reusing",
   "bare-split-on-quoted-header": "renamed to 'bare-split-on-quoted-header-token-grammar' (2026-06-26 re-verify pass) — every live marker splits an RFC token-only header grammar with no quoted-string members (RRULE / RFC 9421 component-ids / TLS-RPT rua / SCIM attribute paths), so a bare comma/semicolon split is correct; re-verify the grammar before reusing. The re-verify also found 5 markers were inert (detector pre-filter skips their file, or the line is a .replace not a split) and cleared them",
+  "numeric-opt-Infinity": "renamed to 'numeric-opt-Infinity-intentional' (2026-06-27 re-verify pass) — only the markers where Infinity is genuinely SAFE remain: clamped to a max (agent-posture-chain maxHopCount), fail-closed (age-gate requireAge / consentRequired), or a deliberate unbounded intent (inbox retentionDays = retain indefinitely, ws-client reconnect maxAttempts = retry forever). The re-verify found 13 sites where Infinity SILENTLY DISABLED a cap or security check (clock-skew → expiry/OCSP-freshness/ARC-expiry; ws-client maxMessageBytes/maxFrameBytes/handshakeTimeoutMs; inbox/flag-cache/audit-chain caps; mail-arc-sign timestamp) — those now route through numeric-bounds (throw / safe-default on non-finite) and lost the marker. re-verify each remaining site before reusing",
 };
 
 function testNoRetiredAllowTokenReRegistered() {
@@ -694,13 +695,13 @@ function testNoRawTimeLiterals() {
 }
 
 function testNumericOptsValidate() {
-  // class: numeric-opt-Infinity
+  // class: numeric-opt-Infinity-intentional
   var matches = _scan(
     /typeof\s+opts\.\w+\s*===\s*"number"\s*&&\s*opts\.\w+\s*>=?\s*0\b/);
   // numeric-bounds itself contains the helper definitions that look
   // like the pattern.
   matches = matches.filter(function (m) { return m.file !== "lib/numeric-bounds.js"; });
-  matches = _filterMarkers(matches, "numeric-opt-Infinity");
+  matches = _filterMarkers(matches, "numeric-opt-Infinity-intentional");
   _report("numeric opts route through lib/numeric-bounds (or have an allow marker)",
     matches);
 }
