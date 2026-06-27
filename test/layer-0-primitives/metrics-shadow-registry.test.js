@@ -28,7 +28,7 @@ function testInc() {
   shadow.inc("hits", { route: "/api" });
   var snap = shadow.snapshot();
   check("counter incremented",      snap.counters.hits[""] === 2);
-  check("labeled counter tracked",  snap.counters.hits["route=/api"] === 1);
+  check("labeled counter tracked",  snap.counters.hits['{"route":"/api"}'] === 1);
   // Non-mirrored counter silently ignored.
   shadow.inc("not_mirrored");
   check("non-mirrored ignored",     snap.counters.not_mirrored === undefined);
@@ -43,7 +43,7 @@ function testSet() {
   shadow.set("queue_depth", 7, { tenant: "a" });
   var snap = shadow.snapshot();
   check("gauge set",                snap.gauges.queue_depth[""] === 42);
-  check("labeled gauge",            snap.gauges.queue_depth["tenant=a"] === 7);
+  check("labeled gauge",            snap.gauges.queue_depth['{"tenant":"a"}'] === 7);
 }
 
 function testCardinalityCap() {
@@ -83,6 +83,29 @@ function testPrometheusPreservesLabels() {
     out.indexOf("# TYPE tenant_b_hits_total counter") !== -1);
 }
 
+function testPrometheusLabelValueInjection() {
+  // A `,` or `=` in a label VALUE must stay inside the value — it must NOT
+  // forge extra label pairs in the exposition output (label injection that
+  // downstream tenant-scoping / authz selectors / recording rules would trust
+  // as a boundary). The shadow registry previously serialized the label set to
+  // a `name=value,...` key and re-split it on `,` for rendering, so a comma in
+  // a value split into multiple forged pairs.
+  var shadow = b.metrics.snapshot.shadowRegistry({
+    namespace: "tenant_x",
+    counters:  ["hits_total"],
+  });
+  shadow.inc("hits_total", { route: 'a,evil="bad' });
+  var out = shadow.render({ format: "prometheus" });
+  // The full value (comma + escaped quote) stays inside route's quotes.
+  check("label value with a comma stays inside the value (no forged pair)",
+    out.indexOf('route="a,evil=\\"bad"') !== -1);
+  // The series line carries exactly ONE label pair (no injected second label).
+  var line = out.split("\n").filter(function (l) { return l.indexOf("tenant_x_hits_total{") === 0; })[0] || "";
+  var braces = line.slice(line.indexOf("{") + 1, line.lastIndexOf("}"));
+  var labelNames = (braces.match(/(^|,)[a-zA-Z_][a-zA-Z0-9_]*="/g) || []).length;                     // allow:regex-no-length-cap — counts top-level label-name= boundaries in a bounded exposition line
+  check("exactly one label pair (no injected label)", labelNames === 1);
+}
+
 function testRefusalsAtConfigTime() {
   var threw;
   threw = false; try { b.metrics.snapshot.shadowRegistry({}); } catch (_e) { threw = true; }
@@ -105,6 +128,7 @@ function run() {
   testSet();
   testCardinalityCap();
   testPrometheusPreservesLabels();
+  testPrometheusLabelValueInjection();
   testRefusalsAtConfigTime();
 }
 
