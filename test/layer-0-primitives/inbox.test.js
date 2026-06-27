@@ -188,6 +188,16 @@ async function run() {
 
   var deleted = await inbox.sweep();
   check("inbox.sweep: returns deleted count",     typeof deleted === "number");
+
+  // retentionDays: Infinity means "retain indefinitely" — sweep() must be a
+  // no-op (delete nothing), not compute an invalid horizon. Before the fix the
+  // sqlite path threw RangeError on `new Date(now - Infinity).toISOString()`.
+  var foreverInbox = b.inbox.create({
+    externalDb: fake.db, table: "forever_inbox", audit: false, retentionDays: Infinity,
+  });
+  await foreverInbox.declareSchema(fake.xdb);
+  var foreverDeleted = await foreverInbox.sweep();
+  check("inbox.sweep: retentionDays Infinity retains all (no-op, no throw)", foreverDeleted === 0);
 }
 
 module.exports = { run: run };
