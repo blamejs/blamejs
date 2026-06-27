@@ -240,6 +240,17 @@ function run() {
     },
     /invalid regex/);
 
+  // ReDoS-shaped pattern (nested quantifier) refused. The compiled regex is
+  // .test()'d against runtime (request) attribute values, so a catastrophic-
+  // backtracking pattern is a DoS vector; the 200-char length bound is NOT a
+  // ReDoS defense (`(a+)+$` is 6 chars). The pattern is screened through
+  // b.guardRegex before compilation.
+  rejects("targeting: ReDoS-shaped regex (nested quantifier) refused",
+    function () {
+      t.validateRules([{ variant: "v", conditions: [{ attribute: "x", op: "regex", value: "(a+)+$" }] }]);
+    },
+    /unsafe|ReDoS|backtrack|quantifier/i);
+
   // nested attribute path
   var pathRules = t.validateRules([
     { variant: "v1", conditions: [{ attribute: "user.role", op: "eq", value: "admin" }] },
