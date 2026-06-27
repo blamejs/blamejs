@@ -319,7 +319,7 @@ var VALID_ALLOW_CLASSES = {
   "backup-adapter-storage-without-posture-check": 1,
   "bare-canonicalize-walk": 1,
   "bare-error-throw": 1,
-  "bare-split-on-quoted-header": 1,
+  "bare-split-on-quoted-header-token-grammar": 1,
   "console-direct": 1,
   "deny-path-hardcoded-response": 1,
   "duplicate-regex": 1,
@@ -389,6 +389,7 @@ var RETIRED_ALLOW_TOKENS = {
   "dynamic-require": "renamed to 'dynamic-require-operator-module' (2026-06-26 re-verify pass) — every site loads an operator-supplied path (migration / seed / extensibility entry, centralized in module-loader.js) or is diagnostic message text; re-verify before reusing",
   "raw-hash-compare": "renamed to 'raw-hash-compare-nonsecret-tag' (2026-06-26 re-verify pass) — the one site compares a data-residency region tag with ===, not a secret hash; re-verify before reusing",
   "seal-without-aad": "renamed to 'seal-without-aad-by-design' (2026-06-26 re-verify pass) — both sites intentionally seal without AAD (a non-regulated plain-mode table whose AAD is enforced by the posture sealEnvelopeFloor where required, and a throwaway vault-readiness probe sentinel); re-verify before reusing",
+  "bare-split-on-quoted-header": "renamed to 'bare-split-on-quoted-header-token-grammar' (2026-06-26 re-verify pass) — every live marker splits an RFC token-only header grammar with no quoted-string members (RRULE / RFC 9421 component-ids / TLS-RPT rua / SCIM attribute paths), so a bare comma/semicolon split is correct; re-verify the grammar before reusing. The re-verify also found 5 markers were inert (detector pre-filter skips their file, or the line is a .replace not a split) and cleared them",
 };
 
 function testNoRetiredAllowTokenReRegistered() {
@@ -10320,7 +10321,7 @@ function testNoBoolStringCoerceShape() {
 //
 // Surfaced 2026-05-11 — `b.cdnCacheControl.parse` did this.
 function testNoBareCommaSplitOnQuotedHeader() {
-  // class: bare-split-on-quoted-header
+  // class: bare-split-on-quoted-header-token-grammar
   var files = _libFiles();
   var bad = [];
   for (var fi = 0; fi < files.length; fi++) {
@@ -10342,7 +10343,7 @@ function testNoBareCommaSplitOnQuotedHeader() {
       });
     }
   }
-  bad = _filterMarkers(bad, "bare-split-on-quoted-header");
+  bad = _filterMarkers(bad, "bare-split-on-quoted-header-token-grammar");
   _report("RFC structured-fields parser must use quote-aware top-level splitter, not bare `.split(\",\") / .split(\";\")` (RFC 8941 §3.3.3 quoted-string values can contain delimiter chars — cdn-cache-control.parse bug class)",
     bad);
 }
