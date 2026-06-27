@@ -15,6 +15,10 @@
         {
           "title": "MCP tool input-schema patterns are screened for ReDoS before matching request input",
           "body": "b.mcp.validateToolInput compiled a tool author's input-schema `pattern` and matched it against tool-call argument values; the 4096-character input cap does not bound backtracking (a `(a+)+$` pattern blows up at roughly forty input characters). The schema pattern is now screened through b.guardRegex (strict) before compilation, so a ReDoS-shaped pattern in a registered tool's schema fails input validation instead of letting hostile arguments hang the validator."
+        },
+        {
+          "title": "b.guardRegex now catches wrapped nested-quantifier patterns",
+          "body": "The nested-quantifier detector matched a quantified group whose body contained a quantifier, but its inner match was paren-blind, so wrapping the inner quantifier in an extra group — `((a)+)+`, `(([a-z]+)*)*`, `((a+))+` — slipped past it while remaining catastrophic. A structural scan now tracks group nesting and refuses an unbounded-quantified group whose body itself contains an unbounded quantifier at any depth, so the wrapped forms are rejected alongside the bare `(a+)+`. Bounded repeats (`{n}`, `{n,m}`) are unaffected. This strengthens every b.guardRegex caller, including the flag-targeting and MCP screening above."
         }
       ]
     }

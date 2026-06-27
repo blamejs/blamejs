@@ -250,6 +250,19 @@ function run() {
       t.validateRules([{ variant: "v", conditions: [{ attribute: "x", op: "regex", value: "(a+)+$" }] }]);
     },
     /unsafe|ReDoS|backtrack|quantifier/i);
+  // Wrapping the inner quantified atom in an extra group — `((a)+)+$` — is the
+  // same catastrophic-backtracking class; a paren-blind `[^()]*` detector misses
+  // it. The structural screener must still refuse these nested-group forms.
+  rejects("targeting: wrapped nested-quantifier regex refused",
+    function () {
+      t.validateRules([{ variant: "v", conditions: [{ attribute: "x", op: "regex", value: "((a)+)+$" }] }]);
+    },
+    /unsafe|ReDoS|backtrack|quantifier/i);
+  rejects("targeting: deeper wrapped nested-quantifier regex refused",
+    function () {
+      t.validateRules([{ variant: "v", conditions: [{ attribute: "x", op: "regex", value: "(([a-z]+)*)*$" }] }]);
+    },
+    /unsafe|ReDoS|backtrack|quantifier/i);
 
   // nested attribute path
   var pathRules = t.validateRules([
