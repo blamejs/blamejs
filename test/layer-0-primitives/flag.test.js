@@ -496,6 +496,12 @@ function run() {
     function () { b.flag.cache({}); }, /must implement/);
   rejects("cache: ttlMs too small",
     function () { b.flag.cache(memProvider, { ttlMs: 100 }); }, /ttlMs/);
+  // A non-finite ttlMs / maxEntries must be refused (Infinity would otherwise
+  // give a never-expiring entry / an unbounded cache, not be clamped).
+  rejects("cache: maxEntries Infinity refused (unbounded cache)",
+    function () { b.flag.cache(memProvider, { ttlMs: 5000, maxEntries: Infinity }); }, /maxEntries|finite/);
+  rejects("cache: ttlMs Infinity refused",
+    function () { b.flag.cache(memProvider, { ttlMs: Infinity }); }, /ttlMs|finite/);
 
   var cachedProvider = b.flag.cache(memProvider, { ttlMs: 5000, maxEntries: 50 });
   check("cache: kind",                           cachedProvider.kind === "cache:memory");

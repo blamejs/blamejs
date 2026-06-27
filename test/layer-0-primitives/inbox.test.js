@@ -118,6 +118,12 @@ async function run() {
   var fake = _makeFakeExternalDb();
   rejects("inbox.create: bad table name",
     function () { b.inbox.create({ externalDb: fake.db, table: "bad-name" }); }, /not a safe SQL identifier/);
+  // A non-finite byte/length cap must be refused — Infinity would disable the
+  // cap and admit unbounded stored payloads / identifiers.
+  rejects("inbox.create: maxPayloadBytes Infinity refused",
+    function () { b.inbox.create({ externalDb: fake.db, table: "t", maxPayloadBytes: Infinity }); }, /maxPayloadBytes|finite/);
+  rejects("inbox.create: messageIdMaxLen Infinity refused",
+    function () { b.inbox.create({ externalDb: fake.db, table: "t", messageIdMaxLen: Infinity }); }, /messageIdMaxLen|finite/);
 
   var inbox = b.inbox.create({
     externalDb: fake.db,
