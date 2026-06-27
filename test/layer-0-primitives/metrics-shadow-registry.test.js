@@ -106,6 +106,37 @@ function testPrometheusLabelValueInjection() {
   check("exactly one label pair (no injected label)", labelNames === 1);
 }
 
+function testPrometheusReservedLabelNames() {
+  // A label whose NAME is `constructor`, `prototype`, or `__proto__` is a valid
+  // Prometheus label name ([a-zA-Z_][a-zA-Z0-9_]*) and must survive render. The
+  // shadow registry must NOT route the label key through a prototype-pollution-
+  // hardened JSON parse (which strips those names), nor lose the dimension.
+  var shadow = b.metrics.snapshot.shadowRegistry({
+    namespace: "tenant_y",
+    counters:  ["hits_total"],
+  });
+  shadow.inc("hits_total", { constructor: "a" });
+  shadow.inc("hits_total", { prototype: "b" });
+  // `{ __proto__: "c" }` as a literal sets the prototype (a no-op for a string);
+  // the real vector is a labels object that came from parsed external data, so
+  // its `__proto__` is an own enumerable property.
+  shadow.inc("hits_total", JSON.parse('{"__proto__":"c"}'));
+  var out = shadow.render({ format: "prometheus" });
+  check("label named constructor survives render",
+    out.indexOf('tenant_y_hits_total{constructor="a"} 1') !== -1);
+  check("label named prototype survives render",
+    out.indexOf('tenant_y_hits_total{prototype="b"} 1') !== -1);
+  check("label named __proto__ survives render",
+    out.indexOf('tenant_y_hits_total{__proto__="c"} 1') !== -1);
+  // No dimension collapsed into a bare unlabeled series: every value line for
+  // this metric carries a label brace.
+  var valueLines = out.split("\n").filter(function (l) {
+    return l.indexOf("tenant_y_hits_total") === 0 && l.indexOf("# TYPE") !== 0;
+  });
+  var bare = valueLines.filter(function (l) { return l.indexOf("{") === -1; });
+  check("no unlabeled bare series leaked", bare.length === 0);
+}
+
 function testRefusalsAtConfigTime() {
   var threw;
   threw = false; try { b.metrics.snapshot.shadowRegistry({}); } catch (_e) { threw = true; }
@@ -129,6 +160,7 @@ function run() {
   testCardinalityCap();
   testPrometheusPreservesLabels();
   testPrometheusLabelValueInjection();
+  testPrometheusReservedLabelNames();
   testRefusalsAtConfigTime();
 }
 
