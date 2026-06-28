@@ -3615,6 +3615,15 @@ function testFormsValidateTypes() {
   } catch (e) { stringPatternThrew = /pre-compiled RegExp/.test(e.message); }
   check("validate: string pattern → throws clear config error", stringPatternThrew);
 
+  // A catastrophic-backtracking (ReDoS) pattern is refused at config time —
+  // the wrapped nested quantifier /((a)+)+$/ never reaches .test(). Input
+  // is kept short/harmless so the test can't actually backtrack.
+  var redosPatternThrew = false;
+  try {
+    f.validate({ fields: [{ name: "code", type: "text", pattern: /((a)+)+$/ }]}, { code: "a" });
+  } catch (e) { redosPatternThrew = /pattern rejected as unsafe|ReDoS/.test(e.message); }
+  check("validate: ReDoS-shaped pattern → refused at config", redosPatternThrew);
+
   // Select / radio enum
   r = f.validate({ fields: [
     { name: "c", type: "select", options: [{ value: "US" }, { value: "FR" }]},

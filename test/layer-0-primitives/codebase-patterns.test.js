@@ -1881,6 +1881,95 @@ function testNoDynamicRegexFromOperatorInput() {
     matches);
 }
 
+// ---- Pattern: operator RegExp instance matched against request input without a ReDoS screen ----
+//
+// A primitive that accepts an operator-supplied RegExp (`instanceof RegExp`
+// from opts) AND executes it (`.test` / `.exec` / `.match`) is a ReDoS surface
+// when the matched value is attacker-controllable (User-Agent, Origin, request
+// path, form field, SMTP HELO, remote asset name): an accidentally-catastrophic
+// operator pattern pins a CPU on a crafted input, and a length cap does not
+// bound backtracking. v0.15.38 / v0.15.39 swept the whole family — bot-guard,
+// cors, span-http-server, request-log, request-helpers, forms, static,
+// mail-helo, self-update (+ the string-compile siblings flag-targeting / mcp,
+// covered by the dynamic-regex detector) — and routed every operator pattern
+// through `b.guardRegex.assertSafe` at config time. A NEW such site must do the
+// same. This is the structural guard the operator-regex-ReDoS class (a Codex
+// finding) earns so it can't be reintroduced. The ALLOW map covers files whose
+// accepted RegExp is matched against a TRUSTED value, not attacker request data.
+function testOperatorRegexScreenedForReDoS() {
+  var ALLOW = {
+    "lib/dev.js": "ignore RegExp matched against an fs.watch filename in the operator's local source tree; dev-loop only, hard-refused under NODE_ENV=production",
+    "lib/parsers/safe-env.js": "keyShape RegExp matched against env-var keys parsed from the operator's .env config at boot, not request input",
+    "lib/safe-json.js": "JSON Schema `pattern` is part of the operator-owned schema (the documented trust boundary), not request data — same stance as the dynamic-regex detector's safe-json exclusion",
+  };
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (ALLOW[rel]) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    if (!/instanceof RegExp/.test(content)) continue;             // accepts an operator RegExp opt
+    if (!/\.(?:test|exec|match)\s*\(/.test(content)) continue;    // and executes a regex
+    if (/\bassertSafe\s*\(/.test(content)) continue;              // already ReDoS-screened
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (/instanceof RegExp/.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "accepts an operator-supplied RegExp + executes a regex but never calls b.guardRegex.assertSafe — screen the operator pattern for ReDoS at config time, or add the file to this detector's ALLOW map with a reason if the regex is matched against trusted (non-request) input",
+        });
+        break;
+      }
+    }
+  }
+  _report("a primitive accepting + executing an operator-supplied RegExp must ReDoS-screen it via b.guardRegex.assertSafe (or be allowlisted as matched-against-trusted-input)",
+    bad);
+}
+
+// ---- Pattern: process.moduleLoadList filter must match the "NativeModule X" naming ----
+//
+// An edge-runtime guard test inspects process.moduleLoadList to assert a
+// networking builtin did NOT eager-load. Node 20+ records a loaded builtin as
+// "NativeModule http" (Node <24 also used "node:http"); filtering ONLY the
+// `node:` form silently passes even after a top-level networking require is
+// reintroduced — the test rots green and the regression ships (Codex P2, PR
+// #381). Any test that filters moduleLoadList must also match "NativeModule ".
+function testModuleLoadListMatchesNativeModuleNaming() {
+  var files = _testFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    if (!/moduleLoadList/.test(content)) continue;
+    if (/NativeModule/.test(content)) continue;            // matches the Node 20+ form
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (/moduleLoadList/.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "filters process.moduleLoadList without matching the 'NativeModule X' naming (Node 20+) — a `node:`-only filter rots green when a top-level builtin require is reintroduced; match `NativeModule ` too",
+        });
+        break;
+      }
+    }
+  }
+  _report("a test filtering process.moduleLoadList must match the 'NativeModule X' naming (Node 20+), not only 'node:X'",
+    bad);
+}
+
+// (No structural detector for the PR #370 sync-run().catch class: a sync
+// `function run()` that RETURNS a promise chain is the common, correct pattern,
+// so `run().then/.catch` cannot be distinguished lexically from the bug shape
+// — sync run() returning UNDEFINED. That case is behavioral, guarded by the
+// inline fix + the test-detached-async-iife / test-unguarded-module-level-run
+// detectors for adjacent shapes.)
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13278,6 +13367,8 @@ async function run() {
   testBuildProfileWrongKey();
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
+  testOperatorRegexScreenedForReDoS();
+  testModuleLoadListMatchesNativeModuleNaming();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
