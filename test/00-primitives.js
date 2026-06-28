@@ -17949,7 +17949,12 @@ async function testFileUploadPathTraversalRejected() {
   var b = require("./../index");
   var u = b.fileUpload.create({ stagingDir: _fuTmpDir("traversal") });
   var bad = ["../escape", "/abs", "with/slash", "with\\backslash",
-             "with\0null", "with spaces", "with*glob", ""];
+             "with\0null", "with spaces", "with*glob", "",
+             // the bare path tokens: the char-class allows dots, so "." / ".."
+             // pass the regex but resolve to the staging dir / its PARENT —
+             // path.join(stagingDir, "..") escapes and a later rmSync would
+             // recursively delete the parent.
+             "..", "."];
   var allRejected = true;
   for (var i = 0; i < bad.length; i++) {
     var threw = false;
