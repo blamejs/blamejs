@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.38",
-  "createdAt": "2026-06-27T15:30:08.749Z",
+  "frameworkVersion": "0.15.39",
+  "createdAt": "2026-06-28T02:51:23.603Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -33330,6 +33330,10 @@
               }
             }
           }
+        },
+        "assertSafe": {
+          "type": "function",
+          "arity": 5
         },
         "buildProfile": {
           "type": "function",

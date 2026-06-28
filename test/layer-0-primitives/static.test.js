@@ -313,6 +313,23 @@ function testRejectsUnknownOpts() {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// hashedPathPattern is .test()'d against the attacker-controlled request
+// path on every download; a catastrophic-backtracking (ReDoS) pattern is a
+// per-request DoS. The screen runs at create() time, so a nested-quantifier
+// pattern (`((a)+)+$` — WRAPPED nested quantifier) must be refused up front.
+// The matched input stays trivial so the test never actually backtracks.
+function testHashedPathPatternReDoSRefused() {
+  var threw = null;
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-redos-"));
+  try {
+    b.staticServe.create({ root: dir, hashedPathPattern: /((a)+)+$/ });
+  } catch (e) { threw = e; }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  check("hashedPathPattern ReDoS shape refused at config time",
+        threw && threw.code === "static/unsafe-pattern" &&
+        /pattern rejected as unsafe/.test(threw.message));
+}
+
 // onError mirrors onServe on the refusal paths. A denying permissions
 // gate forces a 403, which previously fired no operator callback.
 async function testOnErrorFiresOnRefusal() {
@@ -557,6 +574,7 @@ async function run() {
     await testMountTypeExplicitOverrideWins();
     testMountTypeBadValueThrows();
     testRejectsUnknownOpts();
+    testHashedPathPatternReDoSRefused();
     await testOnErrorFiresOnRefusal();
     await testOnErrorThrowDoesNotCorruptResponse();
     testOnErrorRejectsNonFunction();

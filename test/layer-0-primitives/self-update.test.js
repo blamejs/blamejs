@@ -60,6 +60,25 @@ function testPollRejectsBadOpts() {
             e && /selfupdate\/bad-releases-url/.test(e.code || "")); });
 }
 
+function testPollRejectsUnsafeAssetPattern() {
+  // A wrapped nested quantifier is catastrophic-backtracking (ReDoS)
+  // shaped; it must be refused at config-time, before any request runs.
+  // The releasesUrl is well-formed so the assetPattern screen is what
+  // fails — and the refusal happens before any .test() so nothing ever
+  // backtracks.
+  return Promise.resolve()
+    .then(function () {
+      return b.selfUpdate.poll({
+        releasesUrl:    "https://example.invalid/releases",
+        currentVersion: "1.0.0",
+        assetPattern:   /((a)+)+$/,
+      });
+    })
+    .then(function () { check("poll() ReDoS assetPattern should throw", false); },
+          function (e) { check("poll: rejects ReDoS-shaped assetPattern",
+            e && /selfupdate\/unsafe-asset-pattern/.test(e.code || "")); });
+}
+
 function testCompareTags() {
   var cmp = b.selfUpdate.compareTags;
   check("compareTags: public surface exposed",  typeof cmp === "function");
@@ -300,6 +319,7 @@ async function run() {
     testSurface();
     testCompareTags();
     await testPollRejectsBadOpts();
+    await testPollRejectsUnsafeAssetPattern();
     await testPollAvailableAndUpToDate();
     await testPollArrayShape();
     await testPollNon2xxRefused();
