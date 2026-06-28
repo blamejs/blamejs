@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.49",
+  "date": "2026-06-28",
+  "headline": "`b.crypto.httpSig` now canonicalizes `@query-param` names and values per RFC 9421 §2.2.8, so its HTTP Message Signatures interoperate with conformant peers",
+  "summary": "b.crypto.httpSig built the signature base for a @query-param component from the raw on-wire query bytes — the name was matched with encodeURIComponent and the value was emitted verbatim, with no decode-then-reencode. RFC 9421 §2.2.8 requires both the name and the value to be canonicalized: parsed as application/x-www-form-urlencoded (so a '+' and a %20 both become a space, and hex case is normalized) and then re-encoded, with a space rendered as %20. Because the framework signed and verified with the same raw bytes, blamejs-to-blamejs round-trips still worked, but a signature covering a query parameter whose name or value required encoding (a space, a '+', mixed or lowercase percent-encoding) did not match the base a conformant peer constructs — and an emitted identifier could even carry a literal space that the verifier then could not parse. Sign now emits the canonical percent-encoded name and signs the canonical value, and both sign and verify resolve the value through the same canonicalizer; the framework's base now matches the RFC's own published §2.2.8 example vectors. The whole-query @query component (§2.2.7), which the RFC defines as the raw encoded query, is unchanged, and signatures over plain-ASCII parameter names and values are byte-identical to before.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "HTTP Message Signatures @query-param canonicalization (RFC 9421 §2.2.8)",
+          "body": "b.crypto.httpSig now canonicalizes a @query-param component's name and value per RFC 9421 §2.2.8 — decode as application/x-www-form-urlencoded then re-encode, so a '+'-encoded space becomes %20, a %20 and a '+' resolve identically, and percent-encoding hex case is normalized to uppercase. Previously the name was matched with encodeURIComponent and the value was emitted raw, so a signature covering a query parameter that required encoding did not match the signature base a conformant RFC 9421 peer builds, and an emitted ;name=\"...\" identifier could carry a literal space the verifier could not parse. Sign emits the canonical name and signs the canonical value; verify resolves the value through the same canonicalizer and reproduces the received identifier per §2.5. The framework's signature base now matches the RFC's published §2.2.8 example vectors. The whole-query @query component (§2.2.7) stays the raw encoded query, and signatures over plain-ASCII parameters are byte-identical to before."
+        }
+      ]
+    }
+  ]
+}
