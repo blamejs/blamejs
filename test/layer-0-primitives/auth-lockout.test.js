@@ -324,6 +324,20 @@ async function testCustomDurationFn() {
   check("custom-fn: 2nd lockout = 2s", v2.lockedUntil === nowMs + 2000);
 }
 
+async function testBadDurationFnSurfaces() {
+  // A configuration fault inside the cache.update mutator (a lockoutDurations
+  // function returning a non-number) must surface, not be swallowed as a cache
+  // backend failure and silently disable the lockout.
+  var lockout = b.auth.lockout.create({
+    cache: _newCache("ns-baddur"), namespace: "login", maxAttempts: 1,
+    lockoutDurations: function () { return "not-a-number"; },
+  });
+  var threw = null;
+  try { await lockout.recordFailure("k"); } catch (e) { threw = e; }
+  check("bad lockoutDurations function surfaces (not swallowed as fail-open)",
+        threw !== null && /lockoutDurations|duration/i.test(threw.message || ""));
+}
+
 async function testWindowDecay() {
   var nowMs = 1700000000000;
   var lockout = b.auth.lockout.create({
@@ -571,6 +585,7 @@ async function run() {
     await testRecordSuccessClears();
     await testExponentialLadder();
     await testCustomDurationFn();
+    await testBadDurationFnSurfaces();
     await testWindowDecay();
     await testAdminUnlock();
     await testUnlockClearsAttemptsBelowThreshold();
