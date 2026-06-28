@@ -118,6 +118,25 @@ async function testRefusalEmitsAudit() {
   check("refusal emits network.byte_quota.exceeded", hit);
 }
 
+async function testConcurrentRecordLosesNoBytesOnCacheBackend() {
+  // RED before the fix: the cache backend's account() did a non-atomic
+  // get → mutate → set, so concurrent record() calls for the same key all read
+  // the same counter and clobbered each other (lost update), letting a peer's
+  // rolling byte total stay under quota and bypass the limit on the shared
+  // (cluster) cache path. The memory backend is single-writer-synchronous and
+  // safe; the bug is cache-only. The fix routes account() through the cache's
+  // atomic compare-and-set update(), so every concurrent charge is counted.
+  var cache = b.cache.create({ backend: "memory", namespace: "bq-race", ttlMs: 86400000, maxEntries: 1000 });
+  var q = b.network.byteQuota.create({ bytesPerDay: b.constants.BYTES.mib(100), cache: cache, audit: false });
+  var N = 20, per = b.constants.BYTES.kib(1);
+  var jobs = [];
+  for (var i = 0; i < N; i++) jobs.push(q.record("10.0.0.9", per));
+  await Promise.all(jobs);
+  var v = await q.check("10.0.0.9", 0);
+  check("concurrent record() on the cache backend loses no bytes (atomic RMW)",
+        v.total === N * per);
+}
+
 async function run() {
   await testCheckBelowQuotaPasses();
   await testCheckOverQuotaRefuses();
@@ -129,6 +148,7 @@ async function run() {
   testCreateRefusesBadQuota();
   await testCheckRejectsBadKey();
   await testRefusalEmitsAudit();
+  await testConcurrentRecordLosesNoBytesOnCacheBackend();
   console.log("OK — network-byte-quota tests");
 }
 

@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.41",
+  "date": "2026-06-28",
+  "headline": "A byte quota backed by a shared cache now accumulates per-key bytes with an atomic compare-and-set, so two concurrent requests from the same peer can no longer lose each other's byte accounting and slip under the daily limit",
+  "summary": "b.network.byteQuota — and the b.middleware.dailyByteQuota that composes it — accumulated per-key bytes on a cache backend with a non-atomic read-modify-write: it read the rolling counter, added the request's bytes in memory, and wrote the whole entry back. On a cache shared across nodes, two concurrent requests for the same key both read the same counter, each added only its own bytes, and one write clobbered the other — a lost update that let a peer's rolling 24-hour byte total stay below the quota and bypass the 429. The accounting now runs through the cache's atomic update() (compare-and-set, with retry on the cluster backend), so every concurrent charge is counted. A cache backing a byte quota must support atomic update(); b.cache provides it, and the quota now refuses a get/set-only cache at construction rather than silently undercounting. The single-node in-memory backend was already safe (it accumulates synchronously). The read-side check() no longer writes back a slid window, which removes a second path that could clobber a concurrent charge.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Byte quota on a shared cache counts concurrent requests atomically (no lost updates)",
+          "body": "b.network.byteQuota's cache backend accumulated bytes with a get → add → set that is not atomic, so concurrent requests from one peer on a multi-node deployment lost each other's byte charges and the rolling daily byte budget was under-enforced. Accounting now uses the cache's atomic compare-and-set update(), counting every concurrent request. A cache wired to a byte quota must support update() — b.cache does; a plain get/set cache is refused at create() with byte-quota/cache-no-atomic-update instead of silently dropping charges. b.middleware.dailyByteQuota, which composes byteQuota, inherits the fix. The single-node memory backend was unaffected."
+        }
+      ]
+    }
+  ]
+}
