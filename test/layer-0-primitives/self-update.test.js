@@ -314,6 +314,35 @@ async function testSwapHashMismatchRefused() {
   try { fs.rmdirSync(dir);      } catch (_e) { /* best-effort */ }
 }
 
+async function testSwapSymlinkedFromRefused() {
+  // A symlinked `from` must be refused at read (O_NOFOLLOW): hashing the link
+  // TARGET while installing the link itself would let an attacker point the link
+  // at verified bytes, pass expectedHash, then repoint the installed link at
+  // unverified bytes. POSIX-only — Windows symlink creation needs privileges.
+  var dir = _tmp("dir-symlink");
+  fs.mkdirSync(dir, { recursive: true });
+  var real = path.join(dir, "real.bin");
+  var link = path.join(dir, "link.bin");
+  var to   = path.join(dir, "to.bin");
+  fs.writeFileSync(real, Buffer.from("REAL-BYTES"));
+  var madeLink = false;
+  try { fs.symlinkSync(real, link); madeLink = true; } catch (_e) { /* no symlink privilege */ }
+  if (!madeLink) {
+    check("swap: symlinked-from test skipped (no symlink privilege)", true);
+    try { fs.unlinkSync(real); fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
+    return;
+  }
+  var realHash = nodeCrypto.createHash("sha3-512").update(Buffer.from("REAL-BYTES")).digest("hex");
+  var threw = null;
+  try {
+    await b.selfUpdate.swap({ from: link, to: to, backupTo: path.join(dir, "to.bin.bak"), expectedHash: realHash });
+  } catch (e) { threw = e; }
+  check("swap: a symlinked from is refused (read with O_NOFOLLOW)",
+        threw && /selfupdate\/swap-read-failed/.test(threw.code || ""));
+  check("swap: symlinked from did not install", !fs.existsSync(to));
+  try { fs.unlinkSync(link); fs.unlinkSync(real); fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
+}
+
 async function testRollbackMissingBackupRefused() {
   var dir = _tmp("dir3");
   fs.mkdirSync(dir, { recursive: true });
@@ -357,6 +386,7 @@ async function run() {
     await testSwapAndRollback();
     await testSwapMissingFromRefused();
     await testSwapHashMismatchRefused();
+    await testSwapSymlinkedFromRefused();
     await testRollbackMissingBackupRefused();
   } finally {
     await _drainTcpHandles();
