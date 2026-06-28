@@ -52,6 +52,13 @@ async function run() {
   ]);
   check("keyedSerializer: distinct keys run independently", aDone && bDone);
 
+  // fn runs as a thunk: the previous task's settled value must NOT leak in as an
+  // argument (a fn with an optional param must see its own default, not prev's result).
+  await ks.run("z", function () { return "first-result"; });
+  var leakedArg = "unset";
+  await ks.run("z", function (maybePrev) { leakedArg = maybePrev; });
+  check("keyedSerializer: queued task receives no leaked prior result", leakedArg === undefined);
+
   // ---- repeating: fires periodically; stop() halts ----
   var ticks = 0;
   var loop = b.safeAsync.repeating(function () { ticks += 1; }, 25);
