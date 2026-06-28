@@ -3336,6 +3336,15 @@ async function testStaticServeBandwidthQuotaPerActor() {
   var fakeCache = {
     get: async function (k) { return store.get(k); },
     set: async function (k, v) { store.set(k, v); return true; },
+    // Atomic-on-single-thread RMW (mirrors b.cache's memory backend contract):
+    // the static quota counters accumulate via cache.update, so the stub must
+    // implement it — read + mutate + write with no await between.
+    update: async function (k, fn) {
+      var dec = fn(store.has(k) ? store.get(k) : null);
+      if (dec && dec.abort !== undefined) return { aborted: dec.abort };
+      store.set(k, dec.value);
+      return { updated: true, value: dec.value };
+    },
   };
   var ctx = await _staticTestServer({
     files: { "a.bin": "1234567890" },          // 10 bytes
@@ -3360,6 +3369,15 @@ async function testStaticServeConcurrencyCap() {
   var fakeCache = {
     get: async function (k) { return store.get(k); },
     set: async function (k, v) { store.set(k, v); return true; },
+    // Atomic-on-single-thread RMW (mirrors b.cache's memory backend contract):
+    // the static quota counters accumulate via cache.update, so the stub must
+    // implement it — read + mutate + write with no await between.
+    update: async function (k, fn) {
+      var dec = fn(store.has(k) ? store.get(k) : null);
+      if (dec && dec.abort !== undefined) return { aborted: dec.abort };
+      store.set(k, dec.value);
+      return { updated: true, value: dec.value };
+    },
   };
   var ctx = await _staticTestServer({
     files: { "a.bin": "x" },
