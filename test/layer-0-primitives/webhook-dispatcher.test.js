@@ -83,7 +83,8 @@ function _stubTransport() {
 // zero rows (the other txn committed the flip first), and the reselect-by-id
 // re-reads the now-in-flight row and hands it back — so BOTH pollers attempt
 // the same delivery in one cycle.
-function _contendedPgDb(dueId) {
+function _contendedPgDb(dueId, dialect) {
+  dialect = dialect || "postgres";
   function _run(sqlText) {
     var isClaimSelect = /select/i.test(sqlText)
       && /status\s*=\s*'pending'/i.test(sqlText)
@@ -100,9 +101,11 @@ function _contendedPgDb(dueId) {
     if (/select/i.test(sqlText) && /status\s*=\s*'in-flight'/i.test(sqlText)) return { rows: [{ delivery_id: dueId }] };
     return { rows: [], changes: 0 };
   }
-  var xdb = { dialect: "postgres", query: async function (s) { return _run(s); } };
+  // dialect carries the operator-supplied string (incl. the `postgresql` alias)
+  // so the test exercises the dialect-normalization path the claim depends on.
+  var xdb = { dialect: dialect, query: async function (s) { return _run(s); } };
   return {
-    dialect: "postgres",
+    dialect: dialect,
     query: async function (s) { return _run(s); },
     transaction: async function (fn) { return await fn(xdb); },
   };
@@ -355,6 +358,19 @@ async function testPostgresClaimUsesSkipLockedDisjoint() {
   var res = await wd.processRetries();
   check("processRetries claims nothing a concurrent poller already locked (Postgres SKIP LOCKED disjointness)",
         res.attempted === 0);
+
+  // The `postgresql` alias normalizes to Postgres for SQL rendering, so the
+  // SKIP LOCKED decision must follow the same normalization — otherwise the
+  // dispatcher emits Postgres SQL but falls back to the mark-then-reselect race.
+  var pgAlias = _contendedPgDb("d_contended_alias", "postgresql");
+  var wdAlias = b.webhook.dispatcher({
+    externalDb: pgAlias, httpRequest: _stubTransport(), maxAttempts: 3,
+    retryBackoff: { initialMs: 1000, maxMs: 5000, factor: 2 },
+    now: function () { return 1700000000000; },
+  });
+  var resAlias = await wdAlias.processRetries();
+  check("processRetries honors SKIP LOCKED under the 'postgresql' dialect alias",
+        resAlias.attempted === 0);
 }
 
 async function testMaxAttemptsDeadLetters() {
