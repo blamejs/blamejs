@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.48",
+  "date": "2026-06-28",
+  "headline": "`b.network.dns.tsig` now accepts a message it signed with a non-default Original ID, fixing a sign/verify digest mismatch that made the originalId option non-functional (RFC 8945)",
+  "summary": "b.network.dns.tsig.verify restores the Original ID carried in the TSIG RDATA into the DNS message header before computing the HMAC, so a signed message survives an on-wire ID rewrite by a forwarder. b.network.dns.tsig.sign digested the message's current header ID instead of the Original ID, so any message signed with the originalId option set to a value other than the message's header ID produced a MAC the framework's own verify rejected (BADSIG) — the advertised originalId option was effectively non-functional for any non-default value. sign() now digests the Original-ID form, matching verify(); when originalId equals the message's header ID (the default) the digest is byte-for-byte identical to before, so existing signatures and the reference vectors are unaffected.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "TSIG: a message signed with a non-default Original ID now verifies (RFC 8945)",
+          "body": "b.network.dns.tsig.verify restores the Original ID carried in the TSIG RDATA into the DNS message header before computing the HMAC, so a signed message survives an on-wire ID rewrite by a forwarder. b.network.dns.tsig.sign digested the message's current header ID instead of the Original ID, so any message signed with the originalId option set to a value other than the message's header ID produced a MAC the framework's own verify rejected (BADSIG). sign() now digests the Original-ID form, matching verify(); when originalId equals the message's header ID (the default) the digest is byte-for-byte identical to before, so existing signatures and the reference vectors are unaffected."
+        }
+      ]
+    }
+  ]
+}
