@@ -1970,6 +1970,54 @@ function testModuleLoadListMatchesNativeModuleNaming() {
 // inline fix + the test-detached-async-iife / test-unguarded-module-level-run
 // detectors for adjacent shapes.)
 
+// ---- Pattern: a competing-consumer claim must use FOR UPDATE SKIP LOCKED ----
+//
+// A poller that claims due rows across concurrent workers — SELECT
+// status='pending' inside a transaction, then flip the rows to
+// 'in-flight'/'inflight' — MUST hold a row lock via FOR UPDATE SKIP LOCKED on
+// the row-locking backends (Postgres / MySQL). Without it, two pollers under
+// READ COMMITTED both SELECT the same pending row; the loser's gated UPDATE
+// matches zero rows, but a reselect-by-id re-reads the row the WINNER just
+// flipped to in-flight and hands it back — so both workers process the same row
+// in one cycle. sqlite's single writer is safe via the mark-then-reselect
+// fallback, but that fallback ALONE (no skipLocked branch) is the bug.
+// b.outbox._claimBatch and b.queue-local are the canonical correct claims; the
+// webhook dispatcher's processRetries shipped without the skipLocked branch and
+// double-claimed under Postgres / MySQL (fixed this release). This guards every
+// future poller from re-introducing the no-SKIP-LOCKED shape.
+function testCompetingConsumerClaimUsesSkipLocked() {
+  var bad = [];
+  var files = _libFiles();
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    // The claim shape: marks rows to in-flight/inflight via a builder .set AND
+    // selects rows by status='pending' (the competing-consumer claim idiom).
+    var marksInflight = /\.set\(\s*\{[^{}]*status:\s*["']in-?flight["']/.test(content)
+      || /\.set\(\s*["']status["']\s*,\s*["']in-?flight["']/.test(content);
+    if (!marksInflight) continue;
+    var selectsPending = /status\s*=\s*'pending'/.test(content)
+      || /\.where\(\s*["']status["']\s*,\s*["']pending["']/.test(content);
+    if (!selectsPending) continue;
+    if (/skipLocked|SKIP LOCKED/.test(content)) continue;     // competing-consumer safe
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (/status:\s*["']in-?flight["']|["']status["']\s*,\s*["']in-?flight["']/.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "a competing-consumer claim (SELECT status='pending' then flip to in-flight) must use FOR UPDATE SKIP LOCKED on the row-locking backends (Postgres / MySQL) so concurrent pollers see disjoint sets — mirror b.outbox._claimBatch; a mark-then-reselect with no skipLocked branch double-claims under READ COMMITTED",
+        });
+        break;
+      }
+    }
+  }
+  _report("every competing-consumer claim (pending->in-flight poller) must use FOR UPDATE SKIP LOCKED (mirror b.outbox._claimBatch)",
+    bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13369,6 +13417,7 @@ async function run() {
   testNoDynamicRegexFromOperatorInput();
   testOperatorRegexScreenedForReDoS();
   testModuleLoadListMatchesNativeModuleNaming();
+  testCompetingConsumerClaimUsesSkipLocked();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
