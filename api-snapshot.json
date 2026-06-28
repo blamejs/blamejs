@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.46",
-  "createdAt": "2026-06-28T14:16:00.009Z",
+  "frameworkVersion": "0.15.47",
+  "createdAt": "2026-06-28T15:25:51.155Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -42064,6 +42064,10 @@
         "dkim": {
           "type": "object",
           "members": {
+            "ARC_AMS_REUSE": {
+              "type": "primitive",
+              "valueType": "symbol"
+            },
             "DKIM_CLOCK_SKEW_MS_MAX": {
               "type": "primitive",
               "valueType": "number"
