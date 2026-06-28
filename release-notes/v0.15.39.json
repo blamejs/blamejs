@@ -15,6 +15,19 @@
       ]
     },
     {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Build guard: an operator regex matched against request input must be ReDoS-screened",
+          "body": "A codebase guard now fails the build if a primitive accepts an operator-supplied RegExp and executes it against request input without screening the pattern through b.guardRegex.assertSafe — so the catastrophic-backtracking class fixed in this release cannot be reintroduced at a new site (the trusted-input cases — local filesystem paths, operator config keys, operator-owned schemas — are explicitly allowlisted)."
+        },
+        {
+          "title": "Build guard: process.moduleLoadList filters must match the 'NativeModule X' naming",
+          "body": "A guard now fails the build if a test filters process.moduleLoadList by the 'node:X' name only. Node 20+ records a loaded builtin as 'NativeModule X', so a 'node:'-only filter in an edge-runtime no-eager-load test would rot green and miss a reintroduced top-level networking require."
+        }
+      ]
+    },
+    {
       "heading": "Added",
       "items": [
         {
