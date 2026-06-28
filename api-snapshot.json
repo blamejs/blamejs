@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.41",
-  "createdAt": "2026-06-28T07:40:25.818Z",
+  "frameworkVersion": "0.15.42",
+  "createdAt": "2026-06-28T08:56:22.926Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49781,6 +49781,10 @@
         "flushLoop": {
           "type": "function",
           "arity": 3
+        },
+        "keyedSerializer": {
+          "type": "function",
+          "arity": 0
         },
         "makeBatchDrain": {
           "type": "function",

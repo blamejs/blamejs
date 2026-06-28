@@ -19,6 +19,38 @@ async function run() {
   // ---- Surface ----
   check("safeAsync.repeating is fn",   typeof b.safeAsync.repeating === "function");
   check("safeAsync.flushLoop is fn",   typeof b.safeAsync.flushLoop === "function");
+  check("safeAsync.keyedSerializer is fn", typeof b.safeAsync.keyedSerializer === "function");
+
+  // ---- keyedSerializer: serializes per key, lets distinct keys run concurrently ----
+  var ks = b.safeAsync.keyedSerializer();
+  // A non-atomic read-modify-write on a shared counter: read -> await -> write.
+  // Without serialization the 5 concurrent calls would all read the same value
+  // and lose updates; serialized per key, every increment lands.
+  var counter = 0;
+  async function rmwIncrement() {
+    var seen = counter;
+    await Promise.resolve();          // yield — the interleave window
+    counter = seen + 1;
+  }
+  await Promise.all([
+    ks.run("k", rmwIncrement), ks.run("k", rmwIncrement), ks.run("k", rmwIncrement),
+    ks.run("k", rmwIncrement), ks.run("k", rmwIncrement),
+  ]);
+  check("keyedSerializer: 5 serialized RMWs on one key lose no update", counter === 5);
+
+  // A rejection in one task must not wedge the key's queue.
+  var ran = false;
+  await ks.run("k", function () { return Promise.reject(new Error("boom")); }).catch(function () {});
+  await ks.run("k", function () { ran = true; return Promise.resolve(); });
+  check("keyedSerializer: a rejected task does not wedge the key", ran === true);
+
+  // Distinct keys are independent (both complete).
+  var aDone = false, bDone = false;
+  await Promise.all([
+    ks.run("a", function () { aDone = true; return Promise.resolve(); }),
+    ks.run("b", function () { bDone = true; return Promise.resolve(); }),
+  ]);
+  check("keyedSerializer: distinct keys run independently", aDone && bDone);
 
   // ---- repeating: fires periodically; stop() halts ----
   var ticks = 0;
