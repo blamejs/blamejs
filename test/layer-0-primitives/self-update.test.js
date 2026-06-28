@@ -252,7 +252,8 @@ async function testSwapAndRollback() {
   fs.writeFileSync(to,      Buffer.from("OLD-BINARY"));
   fs.writeFileSync(newPath, Buffer.from("NEW-BINARY"));
 
-  var rs = await b.selfUpdate.swap({ from: newPath, to: to, backupTo: backupTo });
+  var newHash = nodeCrypto.createHash("sha3-512").update(Buffer.from("NEW-BINARY")).digest("hex");
+  var rs = await b.selfUpdate.swap({ from: newPath, to: to, backupTo: backupTo, expectedHash: newHash });
   check("swap: ok=true",                           rs.ok === true);
   check("swap: to has new bytes",                  fs.readFileSync(to, "utf8") === "NEW-BINARY");
   check("swap: backup has old bytes",              fs.readFileSync(backupTo, "utf8") === "OLD-BINARY");
@@ -274,14 +275,43 @@ async function testSwapMissingFromRefused() {
   var threw = null;
   try {
     await b.selfUpdate.swap({
-      from:     path.join(dir, "absent.bin"),
-      to:       path.join(dir, "to.bin"),
-      backupTo: path.join(dir, "to.bin.bak"),
+      from:         path.join(dir, "absent.bin"),
+      to:           path.join(dir, "to.bin"),
+      backupTo:     path.join(dir, "to.bin.bak"),
+      expectedHash: "00",   // present so validation passes; the existsSync(from) check fires first
     });
   } catch (e) { threw = e; }
   check("swap: missing-from refused",
         threw && /selfupdate\/missing-from/.test(threw.code || ""));
   try { fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
+}
+
+async function testSwapHashMismatchRefused() {
+  // RED before the fix: swap() renamed `from` into place with no re-check, so an
+  // attacker who swapped `from` after selfUpdate.verify passed (or pointed verify
+  // at a different inode via a symlink) installed unverified bytes. swap() now
+  // re-hashes `from` against expectedHash (verify's hash) immediately before the
+  // install and refuses a mismatch.
+  var dir = _tmp("dir-tamper");
+  fs.mkdirSync(dir, { recursive: true });
+  var to       = path.join(dir, "blamejs.bin");
+  var backupTo = path.join(dir, "blamejs.bin.bak");
+  var newPath  = path.join(dir, "blamejs.bin.new");
+  fs.writeFileSync(to, Buffer.from("OLD-BINARY"));
+  // verify() checked these bytes...
+  var verifiedHash = nodeCrypto.createHash("sha3-512").update(Buffer.from("GOOD-BINARY")).digest("hex");
+  // ...but `from` was swapped to different bytes after verify.
+  fs.writeFileSync(newPath, Buffer.from("TAMPERED-BINARY"));
+  var threw = null;
+  try {
+    await b.selfUpdate.swap({ from: newPath, to: to, backupTo: backupTo, expectedHash: verifiedHash });
+  } catch (e) { threw = e; }
+  check("swap: from tampered after verify is refused (hash mismatch)",
+        threw && /selfupdate\/swap-hash-mismatch/.test(threw.code || ""));
+  check("swap: tampered bytes NOT installed", fs.readFileSync(to, "utf8") === "OLD-BINARY");
+  try { fs.unlinkSync(to);      } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(newPath); } catch (_e) { /* best-effort */ }
+  try { fs.rmdirSync(dir);      } catch (_e) { /* best-effort */ }
 }
 
 async function testRollbackMissingBackupRefused() {
@@ -326,6 +356,7 @@ async function run() {
     await testVerifyPassFail();
     await testSwapAndRollback();
     await testSwapMissingFromRefused();
+    await testSwapHashMismatchRefused();
     await testRollbackMissingBackupRefused();
   } finally {
     await _drainTcpHandles();
