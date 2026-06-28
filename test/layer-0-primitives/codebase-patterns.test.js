@@ -2095,6 +2095,45 @@ function testRegistryCheckThenCreateSerialized() {
   _report("a registry check-then-create on a pluggable backend must serialize per key (b.safeAsync.keyedSerializer)", bad);
 }
 
+// ---- Pattern: a cert-chain issuance link must use issuerValidlyIssued ----
+//
+// A multi-hop X.509 chain walker must test each ISSUANCE link with
+// x509Chain.issuerValidlyIssued (which enforces basicConstraints cA:TRUE),
+// NOT a bare X509Certificate.checkIssued(): node's checkIssued does not enforce
+// the CA bit, so a non-CA / end-entity cert (cA:FALSE) spliced in as an
+// intermediate is wrongly accepted as an issuer — the classic basicConstraints
+// bypass (CVE-2002-0862 class). fido-mds3 was the sole outlier (fixed this
+// release); mdoc / tsa / bimi / content-credentials / smime all route through
+// issuerValidlyIssued. A self-signed-root check (cert.checkIssued(cert) — same
+// receiver and argument) is NOT an issuance hop and is fine. lib/x509-chain.js
+// owns the one legitimate checkIssued (inside issuerValidlyIssued).
+function testCertChainIssuanceUsesIssuerValidlyIssued() {
+  var bad = [];
+  var files = _libFiles();
+  var RE = /([\w$.[\]]+)\.checkIssued\s*\(\s*([\w$.[\]\s+]+?)\s*\)/;
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel === "lib/x509-chain.js") continue;   // the canonical home (inside issuerValidlyIssued)
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (content.indexOf(".checkIssued(") === -1) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var t = lines[li].trim();
+      if (t.indexOf("//") === 0 || t.indexOf("*") === 0) continue;   // comment line
+      var m = RE.exec(lines[li]);
+      if (!m) continue;
+      if (m[1].replace(/\s+/g, "") === m[2].replace(/\s+/g, "")) continue;  // self-signed check, not an issuance hop
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "a cert-chain issuance link uses bare X509Certificate.checkIssued() (no basicConstraints cA:TRUE enforcement) — route it through x509Chain.issuerValidlyIssued(issuer, subject), like mdoc / tsa / bimi / content-credentials, so a non-CA intermediate is refused (basicConstraints bypass, CVE-2002-0862)",
+      });
+    }
+  }
+  _report("a cert-chain issuance link must use x509Chain.issuerValidlyIssued (cA-enforcing), not bare checkIssued", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13497,6 +13536,7 @@ async function run() {
   testCompetingConsumerClaimUsesSkipLocked();
   testCacheCounterUsesAtomicUpdate();
   testRegistryCheckThenCreateSerialized();
+  testCertChainIssuanceUsesIssuerValidlyIssued();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
