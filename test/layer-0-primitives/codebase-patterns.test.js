@@ -2018,6 +2018,49 @@ function testCompetingConsumerClaimUsesSkipLocked() {
     bad);
 }
 
+// ---- Pattern: a cache-backed counter must use atomic cache.update ----
+//
+// Accumulating on a cache with `await cache.get(K)` → mutate/increment →
+// `await cache.set(K, ...)` is a non-atomic read-modify-write: two concurrent
+// writers read the same value and one set clobbers the other (lost update),
+// under-counting on a shared / cluster cache and letting a quota / rate /
+// bandwidth / concurrency cap be bypassed. b.cache.update is the atomic
+// compare-and-set RMW. The byte-quota and static bandwidth/concurrency
+// lost-updates (fixed this release) were this shape. Allowlisted: a cache used
+// for lookups or cache-aside (the stored value is recomputed or replaced
+// wholesale, never incremented) or whose writes are serialized another way (an
+// in-process per-key chain) — none of which can lose an increment.
+function testCacheCounterUsesAtomicUpdate() {
+  var ALLOW = {
+    "lib/auth/lockout.js": "the failure counter's read->increment->write is serialized per-key in-process via _recordChains (concurrent recordFailure apply sequentially), so the get/set RMW cannot interleave",
+    "lib/network-dns-resolver.js": "a DNS lookup cache (cache-aside): get a cached resolution, set the freshly-resolved entry — the stored value is replaced wholesale, never incremented, so there is no lost-update counter",
+    "lib/tenant-quota.js": "a cache-aside for bytesUsed (recomputed by walking the tenant's tables, then cached) — the value is replaced from source, not incremented; the QPS/rows budget counter is an in-process Map, not the cache",
+  };
+  var bad = [];
+  var files = _libFiles();
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (ALLOW[rel]) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (!/\bcache\.get\s*\(/.test(content)) continue;
+    if (!/\bcache\.set\s*\(/.test(content)) continue;
+    if (/\bcache\.update\s*\(/.test(content)) continue;     // already atomic
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (/\bcache\.set\s*\(/.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "a cache-backed counter must use atomic cache.update, not a cache.get -> mutate -> cache.set read-modify-write (loses concurrent updates on a shared cache) — use cache.update, or allowlist this file with the reason its get/set is not a lost-update counter (lookup / cache-aside, or in-process-serialized)",
+        });
+        break;
+      }
+    }
+  }
+  _report("a cache-backed counter must use the atomic cache.update, not a get->set read-modify-write", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13418,6 +13461,7 @@ async function run() {
   testOperatorRegexScreenedForReDoS();
   testModuleLoadListMatchesNativeModuleNaming();
   testCompetingConsumerClaimUsesSkipLocked();
+  testCacheCounterUsesAtomicUpdate();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
