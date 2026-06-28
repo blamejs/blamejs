@@ -372,6 +372,32 @@ function testQueryParamRfc9421PublishedVectors() {
   check("sign matches the RFC 9421 §2.2.8 published @query-param base vectors", ok === true);
 }
 
+// A decoded @query-param name containing a literal form delimiter ('&' or a
+// '+') must canonicalize to its percent-encoded form, NOT be split by the
+// form parser. With a colliding bare 'a' parameter present, mis-splitting
+// "a&b" to "a" would sign the WRONG parameter's value. The canonical name for
+// a param on the wire as a%26b is name="a%26b".
+function testQueryParamDecodedNameWithDelimiter() {
+  var keys = _genEd25519();
+  var msg = {
+    method:  "GET",
+    url:     "https://api.example.com/p?a%26b=right&a=wrong",
+    headers: { host: "api.example.com" },
+  };
+  var signed = b.crypto.httpSig.sign(msg, {
+    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
+    covered: ["@method", "@query-param;name=\"a&b\""],   // decoded name with a literal &
+  });
+  check("decoded name with '&' canonicalizes to %26 (not split to \"a\")",
+        /;name="a%26b"/.test(signed.headers["Signature-Input"]) &&
+        !/;name="a"/.test(signed.headers["Signature-Input"]));
+  var verified = b.crypto.httpSig.verify(
+    Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) }),
+    { keyResolver: function () { return keys.publicKey; } });
+  check("decoded-name-with-& message round-trips (covers a%26b, not a)",
+        verified.valid === true);
+}
+
 async function run() {
   testSurface();
   testRoundTripEd25519();
@@ -386,6 +412,7 @@ async function run() {
   testQueryParamEmittedNameCanonicalized();
   testQueryParamVerifiesConformantPeer();
   testQueryParamRfc9421PublishedVectors();
+  testQueryParamDecodedNameWithDelimiter();
 }
 
 module.exports = { run: run };
