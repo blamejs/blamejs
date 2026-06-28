@@ -328,6 +328,19 @@ function testHashedPathPatternReDoSRefused() {
   check("hashedPathPattern ReDoS shape refused at config time",
         threw && threw.code === "static/unsafe-pattern" &&
         /pattern rejected as unsafe/.test(threw.message));
+
+  // The screen must ACCEPT the framework's own exported default when a caller
+  // pins it explicitly — its `{8,}` open-ended repeat is a single linear
+  // counted repeat, not catastrophic backtracking. (Rejecting it would break
+  // configs that passed b.staticServe.DEFAULT_HASHED_PATTERN.)
+  var okThrew = null;
+  var dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-okpat-"));
+  try {
+    b.staticServe.create({ root: dir2, hashedPathPattern: b.staticServe.DEFAULT_HASHED_PATTERN });
+  } catch (e) { okThrew = e; }
+  finally { fs.rmSync(dir2, { recursive: true, force: true }); }
+  check("hashedPathPattern accepts the exported DEFAULT_HASHED_PATTERN (bounded repeat is linear)",
+        okThrew === null);
 }
 
 // onError mirrors onServe on the refusal paths. A denying permissions

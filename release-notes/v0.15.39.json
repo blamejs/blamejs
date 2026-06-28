@@ -19,7 +19,7 @@
       "items": [
         {
           "title": "b.guardRegex.assertSafe — screen a RegExp or pattern string for ReDoS in one call",
-          "body": "b.guardRegex.assertSafe(input, label?, ErrorClass?, code?, opts?) screens an already-compiled RegExp (its source) or a raw pattern string for catastrophic-backtracking shapes using the strict profile, throwing the supplied framework-error class (or the underlying GuardRegexError) on a hostile pattern and returning the input on success. It is the config-time guard used by the request-lifecycle fixes above, and operators can apply it to their own patterns before matching them against untrusted input."
+          "body": "b.guardRegex.assertSafe(input, label?, ErrorClass?, code?, opts?) screens an already-compiled RegExp (its source) or a raw pattern string for the catastrophic-backtracking classes — nested, alternation-with, and lookaround quantifiers — throwing the supplied framework-error class (or the underlying GuardRegexError) on a hostile pattern and returning the input on success. It allows large or open-ended bounded repeats (`{8,}`, `{n,m}`): a single counted repeat matches in linear time and legitimate patterns (including the framework's own defaults) use them. It is the config-time guard used by the request-lifecycle fixes above, and operators can apply it to their own patterns before matching them against untrusted input."
         }
       ]
     }
