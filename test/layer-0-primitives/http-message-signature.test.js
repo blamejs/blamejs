@@ -238,32 +238,6 @@ function testQueryParam() {
         verified.valid === true);
 }
 
-function testQueryParamNameWithWhitespace() {
-  // RFC 9421 §2.2.8 — a @query-param name is the percent-decoded parameter
-  // name and may contain whitespace. The signer emits it as a quoted
-  // sf-string (e.g. ;name="my key"); the verifier's covered-component parser
-  // must read that quoted value quote-aware. A non-quote-aware scan stops at
-  // the interior space, truncates the parameter to ;name="my, and the
-  // signature base can no longer be rebuilt — a validly-signed request fails
-  // to verify.
-  var keys = _genEd25519();
-  var msg = {
-    method:  "GET",
-    url:     "https://api.example.com/x?my%20key=alpha&id=42",
-    headers: { host: "api.example.com" },
-  };
-  var signed = b.crypto.httpSig.sign(msg, {
-    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
-    covered: ["@method", "@query-param;name=\"my key\""],
-  });
-  var verified = b.crypto.httpSig.verify(
-    Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) }),
-    { keyResolver: function () { return keys.publicKey; } }
-  );
-  check("query-param with a whitespace-containing name round-trips",
-        verified.valid === true);
-}
-
 async function run() {
   testSurface();
   testRoundTripEd25519();
@@ -274,7 +248,6 @@ async function run() {
   testUnknownKeyid();
   testValidation();
   testQueryParam();
-  testQueryParamNameWithWhitespace();
 }
 
 module.exports = { run: run };

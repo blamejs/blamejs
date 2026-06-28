@@ -2,8 +2,8 @@
   "$schema": "../scripts/release-notes-schema.json",
   "version": "0.15.48",
   "date": "2026-06-28",
-  "headline": "`b.network.dns.tsig` and `b.crypto.httpSig` now accept their own valid signatures in two cases their verifiers previously rejected: a TSIG message signed with a non-default Original ID, and an HTTP signature covering a @query-param whose name contains whitespace",
-  "summary": "Two signing primitives produced signatures their own verifiers rejected because the sign and verify halves disagreed on what bytes are covered. In b.network.dns.tsig (RFC 8945), verify() restores the Original ID into the DNS header before computing the HMAC (so a message survives an on-wire ID rewrite by a forwarder), but sign() digested the message's current header ID instead — so any message signed with an originalId different from the message's header ID failed verification with BADSIG. The advertised originalId option was effectively non-functional for any non-default value. In b.crypto.httpSig (RFC 9421), the signer emits a @query-param component name as a quoted structured-field string, but the verifier's covered-component parser scanned the trailing parameters with a non-quote-aware whitespace run, so a name containing whitespace (e.g. name=\"my key\") was truncated at the interior space and the signature base could no longer be reconstructed, rejecting a validly-signed request. Both verifiers were already correct; the signer (TSIG) and the parser (httpSig) are brought into agreement, and the default paths are byte-for-byte unchanged.",
+  "headline": "`b.network.dns.tsig` now accepts a message it signed with a non-default Original ID, fixing a sign/verify digest mismatch that made the originalId option non-functional (RFC 8945)",
+  "summary": "b.network.dns.tsig.verify restores the Original ID carried in the TSIG RDATA into the DNS message header before computing the HMAC, so a signed message survives an on-wire ID rewrite by a forwarder. b.network.dns.tsig.sign digested the message's current header ID instead of the Original ID, so any message signed with the originalId option set to a value other than the message's header ID produced a MAC the framework's own verify rejected (BADSIG) — the advertised originalId option was effectively non-functional for any non-default value. sign() now digests the Original-ID form, matching verify(); when originalId equals the message's header ID (the default) the digest is byte-for-byte identical to before, so existing signatures and the reference vectors are unaffected.",
   "sections": [
     {
       "heading": "Fixed",
@@ -11,10 +11,6 @@
         {
           "title": "TSIG: a message signed with a non-default Original ID now verifies (RFC 8945)",
           "body": "b.network.dns.tsig.verify restores the Original ID carried in the TSIG RDATA into the DNS message header before computing the HMAC, so a signed message survives an on-wire ID rewrite by a forwarder. b.network.dns.tsig.sign digested the message's current header ID instead of the Original ID, so any message signed with the originalId option set to a value other than the message's header ID produced a MAC the framework's own verify rejected (BADSIG). sign() now digests the Original-ID form, matching verify(); when originalId equals the message's header ID (the default) the digest is byte-for-byte identical to before, so existing signatures and the reference vectors are unaffected."
-        },
-        {
-          "title": "HTTP Message Signatures: a @query-param name containing whitespace now verifies (RFC 9421)",
-          "body": "b.crypto.httpSig.sign emits a @query-param component name as a quoted structured-field string, but b.crypto.httpSig.verify parsed the trailing component parameters with a non-quote-aware whitespace scan. A parameter name containing whitespace — e.g. a percent-decoded query key like name=\"my key\" — was truncated at the interior space, so the signature base could not be rebuilt and a validly-signed request was rejected. The covered-component parser is now quote-aware (skipping backslash-escapes inside the quoted value), so a whitespace-containing @query-param name round-trips; names without whitespace are unaffected."
         }
       ]
     }
