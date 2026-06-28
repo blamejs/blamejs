@@ -2061,6 +2061,41 @@ function testCacheCounterUsesAtomicUpdate() {
   _report("a cache-backed counter must use the atomic cache.update, not a get->set read-modify-write", bad);
 }
 
+// ---- Pattern: a registry check-then-create must serialize per key ----
+//
+// An async check-then-create on a pluggable backend — `await backend.get(key)`
+// -> throw a `/duplicate` error if present -> `await backend.set(key, ...)` —
+// has an await between the read and the write, so two concurrent calls for one
+// key both observe absence and both write (duplicate-create / lost-registration).
+// It must be serialized per key (b.safeAsync.keyedSerializer, exposed on ctx as
+// registrySerializer) so the second call sees the first's row and is refused.
+// The agent orchestrator + tenant registries were this shape (fixed this release).
+function testRegistryCheckThenCreateSerialized() {
+  var bad = [];
+  var files = _libFiles();
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (!/\/duplicate["']/.test(content)) continue;             // throws a duplicate error
+    if (!/backend\.get\s*\(/.test(content)) continue;           // the check
+    if (!/backend\.set\s*\(/.test(content)) continue;           // the create
+    if (/keyedSerializer|registrySerializer/.test(content)) continue;  // serialized per key
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (/\/duplicate["']/.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "a check-then-create on a pluggable backend (await backend.get -> throw /duplicate -> await backend.set) must be serialized per key (b.safeAsync.keyedSerializer / ctx.registrySerializer) so two concurrent calls for one key can't both create",
+        });
+        break;
+      }
+    }
+  }
+  _report("a registry check-then-create on a pluggable backend must serialize per key (b.safeAsync.keyedSerializer)", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13462,6 +13497,7 @@ async function run() {
   testModuleLoadListMatchesNativeModuleNaming();
   testCompetingConsumerClaimUsesSkipLocked();
   testCacheCounterUsesAtomicUpdate();
+  testRegistryCheckThenCreateSerialized();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
