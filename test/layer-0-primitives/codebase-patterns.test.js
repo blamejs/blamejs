@@ -2032,7 +2032,6 @@ function testCompetingConsumerClaimUsesSkipLocked() {
 // in-process per-key chain) — none of which can lose an increment.
 function testCacheCounterUsesAtomicUpdate() {
   var ALLOW = {
-    "lib/auth/lockout.js": "the failure counter's read->increment->write is serialized per-key in-process via _recordChains (concurrent recordFailure apply sequentially), so the get/set RMW cannot interleave",
     "lib/network-dns-resolver.js": "a DNS lookup cache (cache-aside): get a cached resolution, set the freshly-resolved entry — the stored value is replaced wholesale, never incremented, so there is no lost-update counter",
     "lib/tenant-quota.js": "a cache-aside for bytesUsed (recomputed by walking the tenant's tables, then cached) — the value is replaced from source, not incremented; the QPS/rows budget counter is an in-process Map, not the cache",
   };
