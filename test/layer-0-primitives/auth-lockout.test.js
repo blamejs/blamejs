@@ -228,6 +228,25 @@ async function testConcurrentFailuresAllCounted() {
   check("5 concurrent failures all counted (no lost update)", state.attempts === 5);
 }
 
+async function testCrossNodeFailuresAllCounted() {
+  // The in-process serializer only orders calls within ONE instance. Several
+  // lockout instances sharing one cache (multiple app nodes) each serialize
+  // their own calls, so concurrent recordFailure for the same key ACROSS nodes
+  // races the cache read-modify-write (get -> increment -> set) and increments
+  // are lost — a brute-force attacker spread across nodes stays under the
+  // lockout threshold. The atomic cache.update counts every failure. Each node
+  // fires once, so the race is N-way (no per-node serializer masks it).
+  var cache = _newCache("ns-xnode");
+  var N = 12;
+  var nodes = [];
+  for (var i = 0; i < N; i++) {
+    nodes.push(b.auth.lockout.create({ cache: cache, namespace: "login", maxAttempts: 1000 }));
+  }
+  await Promise.all(nodes.map(function (n) { return n.recordFailure("attacker"); }));
+  var verdict = await nodes[0].check("attacker");
+  check("cross-node concurrent failures all counted (atomic RMW)", verdict.attempts === N);
+}
+
 async function testNonMutatingCheck() {
   var lockout = b.auth.lockout.create({
     cache: _newCache("ns-nonmutating"), namespace: "login", maxAttempts: 5,
@@ -486,6 +505,7 @@ async function testBackendErrorFailOpen() {
     get: function () { return Promise.reject(new Error("backend down")); },
     set: function () { return Promise.reject(new Error("backend down")); },
     del: function () { return Promise.reject(new Error("backend down")); },
+    update: function () { return Promise.reject(new Error("backend down")); },
   };
   var lockout = b.auth.lockout.create({
     cache: brokenCache, namespace: "login", observability: obsCap,
@@ -546,6 +566,7 @@ async function run() {
     await testKeyValidation();
     await testRecordFailureCounter();
     await testConcurrentFailuresAllCounted();
+    await testCrossNodeFailuresAllCounted();
     await testNonMutatingCheck();
     await testRecordSuccessClears();
     await testExponentialLadder();
