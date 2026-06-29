@@ -9871,6 +9871,24 @@ var KNOWN_ANTIPATTERNS = [
     reason: "#123 macOS codebase-patterns watchdog hang. _scanShardInWorker rejected on worker error/exit without w.terminate(), so an errored worker thread stayed alive holding open handles; the parent then could not exit and the smoke run ran to the 25-min watchdog on memory-starved macOS-arm64 runners (it hung this very release's CI). Every settle path must reap the worker via w.terminate() first; the fix funnels message/error/exit through a settle() guard that terminates before resolve/reject. Fires on the bare `w.once(\"error\", reject)` shape; silent once error/exit route through settle().",
   },
   {
+    // A test that asserts a raw ECDSA signature's first byte is NOT 0x30 (the
+    // DER SEQUENCE tag) to prove "this is raw, not DER" is NONDETERMINISTIC: the
+    // first byte of an IEEE-P1363 r||s signature is r's high octet, which equals
+    // 0x30 ~1/256 of the time, so a bare check flakes ~1/256 (it blocked a
+    // release's ubuntu smoke). The fixed r||s LENGTH (64 for P-256, 96 for
+    // P-384) is the deterministic raw-vs-DER distinguisher and what the verifier
+    // keys off, so the byte check must be guarded with a `|| sig.length === <N>`
+    // disjunction (the sd-jwt-vc-ecdsa-p1363 convention). Structural test-flake
+    // drift a behavioral test can't assert (it passes 255/256 of the time).
+    id: "test-ecdsa-raw-sig-der-tag-byte-flake",
+    primitive: "a test asserting a raw ECDSA signature's first byte !== 0x30 (DER SEQUENCE tag) must guard it with a `|| sig.length === <N>` disjunction — the byte is r's high octet and equals 0x30 ~1/256 of the time, so a bare check flakes nondeterministically",
+    scanScope: "test",
+    regex: /\[0\]\s*!==\s*0x30(?!.*\|\|.*length)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "0.15.54 — self-update-standalone-verifier-ecdsa-encoding.test.js:189 asserted that a raw IEEE-P1363 P-384 signature's first byte was not the DER SEQUENCE tag 0x30, to prove it was not DER-encoded; that byte is r's high octet, which equals 0x30 ~1/256 of the time, so the setup assertion flaked and blocked the release's ubuntu smoke (the saml-mdq-wrapping release CI). The deterministic distinguisher is the fixed 96-byte (P-384) / 64-byte (P-256) raw length; the fix guards the byte check with a `|| sig.length === N` disjunction, matching sd-jwt-vc-ecdsa-p1363.test.js:51. Fires on a bare first-byte-not-0x30 check with no length disjunction on the same line; silent once guarded.",
+  },
+  {
     // A test file must invoke its run()/IIFE ONLY under
     // `if (require.main === module)`. The smoke worker REQUIRES each test
     // module and then awaits its exported run(); a module-level `run()` (or
