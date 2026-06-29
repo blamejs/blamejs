@@ -211,6 +211,40 @@ async function run() {
     check("mislabel: PDF content named .png is scanned by the sniffed .pdf gate (not dodged by extension)",
           pdfGateRan === true && refusedCode === "CONTENT_SAFETY_REFUSED");
   }
+
+  // ---- A STREAMED mislabel routes to its real type's gate, so the skip
+  //      surfaces as "streamed-over-reassembly-cap" (not "no-gate") ----
+  {
+    var emitted7 = [];
+    var pdfStreamGateChecked = false;
+    var u7 = b.fileUpload.create({
+      stagingDir:               _tmpDir("streamed-mislabel"),
+      filenameSafety:           null,
+      fileType:                 b.fileType,
+      maxStreamReassemblyBytes: 4,   // tiny — the PDF streams (bodyBuffer null)
+      contentSafety:  {
+        ".pdf": { check: function () { pdfStreamGateChecked = true; return { ok: true, action: "serve" }; } },
+      },
+      audit: { safeEmit: function (e) { emitted7.push(e); } },
+      onFinalize: async function (info) {
+        if (info.stream) { for await (var _c of info.stream) { void _c; } }
+        return { ok: true, sha3: info.sha3, size: info.size };
+      },
+    });
+    emitted7.length = 0;
+    var pdfBig = Buffer.from("%PDF-1.4\n" + "x".repeat(64) + "\n%%EOF\n", "utf8");   // > 4-byte cap
+    await _uploadAndFinalize(u7, "u-streamed-mislabel", [pdfBig], { metadata: { filename: "evil.png" } });
+    var skips7 = _skipEvents(emitted7);
+    // The .pdf gate cannot scan the un-reassembled body, but the magic bytes
+    // (read from the first chunk) routed to it — so the skip names the
+    // reassembly cap, surfacing the bypass, rather than "no-gate-for-extension"
+    // which would hide that the configured .pdf gate was skipped.
+    check("streamed mislabel: the sniffed .pdf gate could not scan the streamed body",
+          pdfStreamGateChecked === false);
+    check("streamed mislabel: skip reason is the reassembly cap (sniffed gate surfaced, not no-gate)",
+          skips7.some(function (s) { return s.reason === "streamed-over-reassembly-cap"; }) &&
+          !skips7.some(function (s) { return s.reason === "no-gate-for-extension"; }));
+  }
 }
 
 module.exports = { run: run };
