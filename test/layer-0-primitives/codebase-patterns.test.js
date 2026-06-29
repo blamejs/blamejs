@@ -2137,6 +2137,75 @@ function testCertChainIssuanceUsesIssuerValidlyIssued() {
   _report("a cert-chain issuance link must use x509Chain.issuerValidlyIssued (cA-enforcing), not bare checkIssued", bad);
 }
 
+// ---- Pattern: domainToASCII must reject URL delimiters before a host compare ----
+// node:url.domainToASCII silently TRUNCATES at "/" "?" "#" "\" — e.g.
+// domainToASCII("victim.example/evil") === "victim.example" — so a host carrying
+// a delimiter canonicalizes to a trusted PREFIX. A canonicalizer that feeds the
+// raw result into an identity / authorization comparison lets a hostile host
+// masquerade as a trusted one (the BIMI/VMC SubjectAltName bypass class, and a
+// DMARC-alignment spoof). The two guarded homes — public-suffix._normalizeInput
+// and mail.toAscii — reject those delimiters BEFORE calling domainToASCII; every
+// other consumer must route through publicSuffix.canonicalDomain (delimiter-safe,
+// fails closed to "").
+function testDomainToAsciiRejectsUrlDelimiters() {
+  var bad = [];
+  var files = _libFiles();
+  var RE = /\bdomainToASCII\s*\(/;
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    // The two homes that reject "/" "?" "#" "\" before calling domainToASCII.
+    if (rel === "lib/public-suffix.js" || rel === "lib/mail.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (content.indexOf("domainToASCII(") === -1) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var t = lines[li].trim();
+      if (t.indexOf("//") === 0 || t.indexOf("*") === 0) continue;   // comment line
+      if (RE.test(lines[li])) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "raw node:url.domainToASCII() used for host normalization — it silently TRUNCATES at a URL delimiter (\"/\" \"?\" \"#\"), reducing a hostile host to a trusted prefix (the BIMI/VMC SAN bypass + DMARC-alignment spoof class). Route the host through publicSuffix.canonicalDomain, which rejects delimiters and fails closed.",
+        });
+      }
+    }
+  }
+  _report("a host canonicalizer must route domainToASCII through publicSuffix.canonicalDomain (delimiter-safe), not call it raw", bad);
+}
+
+// ---- Pattern: URLSearchParams("..."+x) must escape "&" in the concatenated x ----
+// new URLSearchParams(str) parses str as a query and splits pairs on "&". A
+// caller value concatenated into that string (e.g. new URLSearchParams("k=" +
+// token)) is split + truncated at any literal "&" the value carries — silently
+// dropping everything after it (the httpSig @query-param decoded-name bug). The
+// value must be "&"-escaped (.replace(/&/g, "%26")) before concatenation.
+function testUrlSearchParamsConcatEscapesAmpersand() {
+  var bad = [];
+  var files = _libFiles();
+  var RE = /new\s+URLSearchParams\s*\(\s*["'][^"']*["']\s*\+/;   // string-literal + concat into the query
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (content.indexOf("URLSearchParams") === -1) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      if (!RE.test(line)) continue;
+      // Safe iff the concatenated value is "&"-escaped on the same expression.
+      if (/replace\s*\(\s*\/&\//.test(line) || line.indexOf("%26") !== -1) continue;
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "new URLSearchParams() built by concatenating a value into the query string — it splits on a literal \"&\" in that value, silently truncating it (the httpSig @query-param bug). Escape the value with .replace(/&/g, \"%26\") before concatenation.",
+      });
+    }
+  }
+  _report("a URLSearchParams query built by string concatenation must escape \"&\" in the concatenated value", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13540,6 +13609,8 @@ async function run() {
   testCacheCounterUsesAtomicUpdate();
   testRegistryCheckThenCreateSerialized();
   testCertChainIssuanceUsesIssuerValidlyIssued();
+  testDomainToAsciiRejectsUrlDelimiters();
+  testUrlSearchParamsConcatEscapesAmpersand();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();

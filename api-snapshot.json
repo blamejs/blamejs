@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.49",
-  "createdAt": "2026-06-28T22:00:40.331Z",
+  "frameworkVersion": "0.15.50",
+  "createdAt": "2026-06-29T00:08:41.890Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -48951,6 +48951,10 @@
     "publicSuffix": {
       "type": "object",
       "members": {
+        "canonicalDomain": {
+          "type": "function",
+          "arity": 1
+        },
         "isPublicSuffix": {
           "type": "function",
           "arity": 1
