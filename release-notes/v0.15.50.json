@@ -1,0 +1,44 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.50",
+  "date": "2026-06-28",
+  "headline": "`b.mail.bimi` closes a VMC certificate authorization bypass, and the host/origin comparisons in `b.ssrfGuard`, `b.middleware.csrfProtect`, and `b.mail.dmarc` now canonicalize both sides so case, trailing-dot, and IDN differences cannot decide a security check",
+  "summary": "Four security and correctness decisions compared a host, origin, or domain where one side was normalized and the other was not, so two values that denote the same host in different encodings reached different verdicts. The most serious was in b.mail.bimi.fetchAndVerifyMark: when a VMC/CMC certificate's URI Subject Alternative Name could not be parsed as a URL (for example, a host carrying userinfo), the matcher fell back to a raw substring search of the whole SAN string — so a CA-chained certificate whose real host was attacker-controlled but whose SAN contained the victim domain anywhere (in the userinfo or path) was accepted to vouch for that victim domain. The fallback is removed (an unparseable URI SAN now fails closed) and both the certificate host and the BIMI domain are canonicalized before comparison. b.ssrfGuard allow/deny lists compared the operator's entries verbatim against the URL parser's already-lowercased host, so a mixed-case or trailing-dot deny entry silently failed to block its host; both sides now canonicalize through canonicalizeHost. b.middleware.csrfProtect canonicalized the candidate Origin via the URL parser but built the same-origin baseline by raw concatenation of the Host header, refusing a legitimate same-origin request whose Host was mixed-case or carried an explicit default port; the baseline and allowedOrigins now go through the same canonicalizer. b.mail.dmarc strict alignment compared the From and SPF/DKIM authentication domains with only case-folding, failing an aligned message whose authentication domain carried a trailing dot or an IDN label; both are now canonicalized the same way the relaxed path already was. A new b.publicSuffix.canonicalDomain primitive provides the shared encoding-stable host form.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "BIMI VMC certificate SubjectAltName authorization bypass closed",
+          "body": "b.mail.bimi.fetchAndVerifyMark binds a verified mark certificate to the BIMI domain via its Subject Alternative Name. When a URI SAN could not be parsed as a URL (e.g. a host with userinfo, or a malformed/homograph URI), the matcher fell back to a raw substring search of the entire SAN string, so a CA-chained certificate whose actual host was attacker-controlled — but whose SAN contained the victim domain as a substring (in the userinfo or path) — was accepted to vouch for the victim domain. The substring fallback is removed: a URI SAN the URL parser refuses now fails closed, and both the certificate host and the BIMI domain are canonicalized (lowercase, trailing-dot strip, IDN A-label) before an exact host comparison."
+        },
+        {
+          "title": "SSRF allow/deny lists now match the host case-insensitively",
+          "body": "b.ssrfGuard.createAllowlist compared each operator allow/deny entry verbatim against the URL parser's host, which is already lowercased. A mixed-case or trailing-dot denylist entry therefore failed to match its own host and did not block it. Both the host and each non-CIDR entry now canonicalize through canonicalizeHost before comparison, so a denylisted host is blocked regardless of the case or trailing-dot form the operator wrote."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "CSRF Origin check no longer refuses a legitimate same-origin request",
+          "body": "b.middleware.csrfProtect canonicalized the incoming Origin/Referer through the URL parser but built the same-origin baseline by concatenating the raw Host header, and compared allowedOrigins verbatim. A legitimate same-origin POST whose Host header was mixed-case or carried an explicit default port (:80/:443) was refused as cross-origin. The baseline and each allowedOrigins entry now pass through the same origin canonicalizer as the candidate."
+        },
+        {
+          "title": "DMARC strict alignment canonicalizes the compared domains",
+          "body": "b.mail.dmarc strict alignment (aspf=s / adkim=s) compared the From domain against the SPF/DKIM authentication domain with only case-folding, while the relaxed path already normalized via the public-suffix lookup. An aligned message whose authentication domain carried a trailing dot or an IDN label was wrongly failed. Both domains are now canonicalized identically before the strict comparison."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.publicSuffix.canonicalDomain — encoding-stable host form",
+          "body": "Returns the bare canonical host form of a domain (lowercase, single trailing dot stripped, IDN labels as their A-label/punycode form) for identity comparison, without walking the public-suffix list. Two values that denote the same host in different encodings return the same string; an invalid or hostile host returns the empty string and matches nothing. It is the shared building block for the DMARC-alignment and certificate SAN authorization comparisons above."
+        }
+      ]
+    }
+  ]
+}

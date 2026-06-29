@@ -37,6 +37,9 @@ async function _mintChain(opts) {
   opts = opts || {};
   var interCa = opts.interCa === true;          // default cA:FALSE (the attack)
   var leafSan = opts.leafSan || "victim.example";
+  // Default SAN is DNS:<leafSan>; a test can supply explicit entries (e.g. a
+  // hostile URI SAN) to exercise the SAN-vs-domain matcher.
+  var leafSanEntries = opts.leafSanEntries || [{ type: "dns", value: leafSan }];
   var now = new Date();
   var notAfter = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
   var alg = { name: "ECDSA", namedCurve: "P-256" };
@@ -70,7 +73,7 @@ async function _mintChain(opts) {
     extensions: [
       new x509.BasicConstraintsExtension(false, undefined, true),
       new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
-      new x509.SubjectAlternativeNameExtension([{ type: "dns", value: leafSan }]),
+      new x509.SubjectAlternativeNameExtension(leafSanEntries),
       new x509.ExtendedKeyUsageExtension([BIMI_EKU_OID], false),
     ],
   });
@@ -170,6 +173,43 @@ async function run() {
     httpClient:      _stubHttpClient(ok.leafPem + "\n" + ok.interPem),
   });
   check("bimi.fetchAndVerifyMark: valid CA chain still verifies", rv.ok === true);
+
+  // ---- 2b. SAN-vs-domain authorization must bind to the cert's actual host.
+  // A CA-chained VMC whose only SAN is a URI the URL parser refuses (here the
+  // real host is attacker.test, with the victim domain placed in the userinfo)
+  // must NOT vouch for the victim domain. The pre-fix matcher fell back to a raw
+  // substring search of the whole SAN string when safeUrl.parse threw, so
+  // "victim.example" appearing anywhere (userinfo / path) wrongly matched.
+  var hostile = await _mintChain({
+    interCa: true,
+    leafSan: "attacker.test",
+    leafSanEntries: [{ type: "url", value: "https://victim.example@attacker.test/" }],
+  });
+  var sanThrew = null;
+  try {
+    await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "victim.example",
+      vmcUrl:          "https://victim.example/cert.pem",
+      trustAnchorsPem: hostile.rootPem,
+      httpClient:      _stubHttpClient(hostile.leafPem + "\n" + hostile.interPem),
+    });
+  } catch (e) { sanThrew = e; }
+  check("bimi.fetchAndVerifyMark: hostile URI-SAN (userinfo) does NOT vouch for the victim domain",
+        sanThrew && sanThrew.code === "bimi/vmc-domain-mismatch");
+
+  // Control: a CA-chained VMC whose URI SAN host genuinely IS the domain verifies.
+  var legit = await _mintChain({
+    interCa: true,
+    leafSan: "good.example",
+    leafSanEntries: [{ type: "url", value: "https://good.example/" }],
+  });
+  var legitRv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "good.example",
+    vmcUrl:          "https://good.example/cert.pem",
+    trustAnchorsPem: legit.rootPem,
+    httpClient:      _stubHttpClient(legit.leafPem + "\n" + legit.interPem),
+  });
+  check("bimi.fetchAndVerifyMark: a genuine URI-SAN host still verifies", legitRv.ok === true);
 
   // ---- 3. Consumer path: b.auth.fidoMds3.fetch must refuse a BLOB whose x5c
   // chains the leaf through the cA:FALSE intermediate. The forged leaf GENUINELY

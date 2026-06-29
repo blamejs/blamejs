@@ -175,6 +175,25 @@ function testCaseInsensitive() {
         b.publicSuffix.organizationalDomain("EXAMPLE.CO.UK") === "example.co.uk");
 }
 
+function testCanonicalDomain() {
+  // Encoding-stable host form for identity comparison: case, trailing dot, and
+  // IDN A-label collapse; invalid/hostile input fails closed to "".
+  check("canonicalDomain lowercases + strips trailing dot",
+        b.publicSuffix.canonicalDomain("Example.COM.") === "example.com");
+  check("canonicalDomain is idempotent on an already-canonical host",
+        b.publicSuffix.canonicalDomain("example.com") === "example.com");
+  check("canonicalDomain U-label and A-label converge",
+        b.publicSuffix.canonicalDomain("bücher.de") === "xn--bcher-kva.de" &&
+        b.publicSuffix.canonicalDomain("xn--bcher-kva.de") === "xn--bcher-kva.de");
+  check("canonicalDomain fails closed to '' on an empty label",
+        b.publicSuffix.canonicalDomain("a..b") === "");
+  check("canonicalDomain fails closed to '' on a control byte",
+        b.publicSuffix.canonicalDomain("a\x00.com") === "");
+  check("canonicalDomain fails closed to '' on a non-string",
+        b.publicSuffix.canonicalDomain(123) === "" &&
+        b.publicSuffix.canonicalDomain(null) === "");
+}
+
 async function run() {
   testExactMatch();
   testInputItselfIsPublicSuffix();
@@ -187,6 +206,7 @@ async function run() {
   testInvalidInput();
   testLookupSource();
   testCaseInsensitive();
+  testCanonicalDomain();
 }
 
 module.exports = { run: run };

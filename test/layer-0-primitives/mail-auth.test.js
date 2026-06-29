@@ -92,6 +92,25 @@ async function testDmarcEvaluateAligned() {
         rv.alignment.spf === true && rv.alignment.dkim === true);
 }
 
+async function testDmarcStrictAlignmentCanonicalizesDomain() {
+  // Strict alignment (aspf=s) must canonicalize both domains (trailing dot /
+  // case / IDN A-label) the same way the relaxed PSL path does. The SPF auth
+  // domain can legitimately carry a trailing dot (FQDN form); comparing it raw
+  // against the From domain wrongly failed a perfectly aligned message.
+  var dnsLookup = async function (host) {
+    if (host === "_dmarc.example.com") return [["v=DMARC1; p=reject; aspf=s; adkim=s"]];
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from:    "alice@example.com",
+    spf:     { result: "pass", domain: "Example.COM." },   // trailing dot + mixed case — same domain
+    dkim:    [],
+    dnsLookup: dnsLookup,
+  });
+  check("dmarc strict alignment: a trailing-dot/mixed-case SPF auth-domain still aligns",
+        rv.alignment.spf === true);
+}
+
 async function testDmarcEvaluateUnaligned() {
   var dnsLookup = async function (host) {
     if (host === "_dmarc.example.com") {
@@ -1568,6 +1587,7 @@ async function run() {
   testDmarcParseBisTags();
   testDmarcParseBisBadTag();
   await testDmarcEvaluateAligned();
+  await testDmarcStrictAlignmentCanonicalizesDomain();
   await testDmarcEvaluateUnaligned();
   await testDmarcEvaluateOrgDomainViaPsl();
   await testDmarcEvaluateNpPolicy();
