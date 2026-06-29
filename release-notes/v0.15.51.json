@@ -1,0 +1,22 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.51",
+  "date": "2026-06-29",
+  "headline": "`b.guardOauth` and `b.session.verify` now fail closed when a backing store errors, instead of silently accepting a request whose security check could not be completed",
+  "summary": "Two verifiers swallowed an error from a backing store and continued as if the check had passed. b.guardOauth's authorization-code replay defense wrapped the operator's seenCodeStore.hasSeen() call in a silent catch, so a store backend outage skipped the replay check entirely and a replayed authorization code was accepted — even though codeReusePolicy is reject at every profile. A store error now adds a high-severity oauth.code-reuse-unverifiable refusal, so the flow is denied (fail-closed) when reuse cannot be ruled out. b.session.verify enforces a device-fingerprint binding stored in the session's sealed data column; when that column could not be decrypted (key-rotation skew, database corruption, or a tamper of the independently-sealed cell) the failure was swallowed and the entire fingerprint gate — including requireFingerprintMatch and maxAnomalyScore — was skipped, so a strict-mode session was accepted from any device. An unreadable binding under a strict policy is now treated as a failure to prove the binding and the session is refused.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "OAuth authorization-code replay check fails closed on a store error",
+          "body": "b.guardOauth's code-reuse defense calls the operator-supplied seenCodeStore.hasSeen(code) to refuse a replayed authorization code (RFC 6749 §10.5). The call was wrapped in a drop-silent catch, so when the store backend errored (e.g. a Redis/DB outage) the exception was swallowed, no replay issue was raised, and the flow validated — accepting a code that could not be proven unused, despite codeReusePolicy being reject at every profile. A store error now raises a high-severity oauth.code-reuse-unverifiable issue, so the gate refuses the flow when reuse cannot be ruled out."
+        },
+        {
+          "title": "Session verify fails closed when the device-fingerprint binding can't be decrypted",
+          "body": "b.session.verify stores the device-fingerprint binding inside the session's AEAD-sealed data column. When that column failed to decrypt or parse (key-rotation skew, database corruption, or a tamper of the separately-sealed cell), the failure was swallowed and the fingerprint gate was skipped entirely — so a session under a strict binding policy (requireFingerprintMatch:true or a maxAnomalyScore threshold) was accepted from any device, silently voiding the advertised drift-kills-the-session guarantee. A present-but-undecryptable binding column under a strict policy is now treated as a failure to prove the binding and the session is refused; sessions without a binding, and the default non-strict mode, are unchanged."
+        }
+      ]
+    }
+  ]
+}
