@@ -65,6 +65,18 @@ async function testSpfVerifyMockedDns() {
   });
   check("spf.verify(non-matching ip) → fail (-all)",
         rv2.result === "fail");
+
+  // A MAIL FROM addr-spec has exactly one '@'. split("@")[1] on a multi-@
+  // string (x@attacker.example@example.com) takes the LEFTMOST segment, so SPF
+  // would authorize attacker.example (which the attacker controls) instead of
+  // the envelope sender's real domain. Refuse a multi-@ MAIL FROM (CWE-290).
+  var spfMultiAtThrew = null;
+  try {
+    await b.mail.spf.verify({ ip: "192.0.2.5",
+      mailFrom: "x@attacker.example@example.com", dnsLookup: dnsLookup });
+  } catch (e) { spfMultiAtThrew = e; }
+  check("spf.verify: a multi-@ MAIL FROM is refused as malformed (spf-bad-domain)",
+        spfMultiAtThrew && /spf-bad-domain/.test(spfMultiAtThrew.code || ""));
 }
 
 function testDmarcParse() {
@@ -282,6 +294,30 @@ async function testInboundVerifyFromHeaderDiscipline() {
   });
   check("inbound.verify: comma-separated angle-addr list → multiple authors refused",
         twoAngle.from.count === 2 && twoAngle.dmarc.recommendedAction === "reject");
+
+  // Two '@' in ONE addr-spec (x@attacker@victim). The header.from parser takes
+  // the RIGHTMOST @ segment (victim) while the DMARC domain derivation takes the
+  // LEFTMOST (attacker) — so DMARC would authorize attacker.example (which the
+  // attacker controls) while the displayed From is victim.example. An addr-spec
+  // has exactly ONE @ (RFC 5322 §3.4.1); a multi-@ address is malformed and must
+  // yield no author domain → reject, closing the leftmost/rightmost split bypass.
+  var multiAt = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "x@attacker.example",
+    message: "From: x@attacker.example@victim.example\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: multi-@ From (x@a@b) → no author domain + reject (no @-split bypass)",
+        multiAt.from.domain === null && multiAt.dmarc.recommendedAction === "reject");
+
+  // The public dmarc.evaluate must reject a multi-@ From the same way, so a
+  // direct caller can't trigger the leftmost-@ derivation.
+  var badFromThrew = null;
+  try {
+    await b.mail.dmarc.evaluate({ from: "x@attacker.example@victim.example",
+      spf: { result: "pass", domain: "attacker.example" }, dkim: [], dnsLookup: dnsLookup });
+  } catch (e) { badFromThrew = e; }
+  check("dmarc.evaluate: a multi-@ From is refused as malformed (mail-auth/dmarc-bad-from)",
+        badFromThrew && /dmarc-bad-from/.test(badFromThrew.code || ""));
 }
 
 // RFC 7489 §6.6.2 — a fail verdict computed while SPF or DKIM returned
