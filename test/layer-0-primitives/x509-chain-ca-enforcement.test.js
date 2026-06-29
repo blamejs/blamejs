@@ -211,6 +211,25 @@ async function run() {
   });
   check("bimi.fetchAndVerifyMark: a genuine URI-SAN host still verifies", legitRv.ok === true);
 
+  // domainToASCII truncates at a URL delimiter, so a DNS SAN "victim.example/evil"
+  // would have canonicalized to "victim.example" and matched — must fail closed.
+  var dnsDelim = await _mintChain({
+    interCa: true,
+    leafSan: "attacker.test",
+    leafSanEntries: [{ type: "dns", value: "victim.example/evil" }],
+  });
+  var dnsThrew = null;
+  try {
+    await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "victim.example",
+      vmcUrl:          "https://victim.example/cert.pem",
+      trustAnchorsPem: dnsDelim.rootPem,
+      httpClient:      _stubHttpClient(dnsDelim.leafPem + "\n" + dnsDelim.interPem),
+    });
+  } catch (e) { dnsThrew = e; }
+  check("bimi.fetchAndVerifyMark: a delimiter-bearing DNS SAN does NOT vouch for the prefix domain",
+        dnsThrew && dnsThrew.code === "bimi/vmc-domain-mismatch");
+
   // ---- 3. Consumer path: b.auth.fidoMds3.fetch must refuse a BLOB whose x5c
   // chains the leaf through the cA:FALSE intermediate. The forged leaf GENUINELY
   // signs the BLOB (ES256), so without cA enforcement on the intermediate link a

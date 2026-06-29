@@ -187,6 +187,13 @@ function testCanonicalDomain() {
         b.publicSuffix.canonicalDomain("xn--bcher-kva.de") === "xn--bcher-kva.de");
   check("canonicalDomain fails closed to '' on an empty label",
         b.publicSuffix.canonicalDomain("a..b") === "");
+  // domainToASCII silently TRUNCATES at a URL delimiter ("a.com/evil" -> "a.com"),
+  // which would reduce a hostile host to a trusted prefix — must fail closed.
+  check("canonicalDomain fails closed to '' on a URL delimiter (no prefix truncation)",
+        b.publicSuffix.canonicalDomain("example.com/evil") === "" &&
+        b.publicSuffix.canonicalDomain("example.com?x") === "" &&
+        b.publicSuffix.canonicalDomain("example.com#frag") === "" &&
+        b.publicSuffix.canonicalDomain("example.com\\evil") === "");
   check("canonicalDomain fails closed to '' on a control byte",
         b.publicSuffix.canonicalDomain("a\x00.com") === "");
   check("canonicalDomain fails closed to '' on a non-string",
