@@ -2291,6 +2291,47 @@ function testFileUploadLifecycleChecksOwnership() {
   _report("every fileUpload lifecycle method reading _readMeta(uploadId) must call _checkOwnership before acting (IDOR guard)", bad);
 }
 
+// ---- Pattern: scope/role wildcard matching must use b.permissions.match ----
+// The hand-rolled wildcard idiom — detect a trailing "*" (charAt(len-1)==="*"),
+// strip it (slice(0,-1)), then raw-prefix-match (indexOf(prefix)===0) — ignores
+// ":" segment boundaries, so a partial-segment scope "phi:a*" wrongly satisfies
+// "phi:admin". Scope/role wildcard matching must route through the segment-aware
+// b.permissions.match (break-glass + dual-control hand-rolled it independently).
+function testScopeWildcardUsesPermissionsMatch() {
+  var bad = [];
+  var files = _libFiles();
+  var STAR = /charAt\([^)]*\.length\s*-\s*1\)\s*===\s*"\*"/;
+  var SLICE = /\.slice\(\s*0\s*,\s*-\s*1\s*\)/;
+  var PREFIX = /\.indexOf\([^)]*\)\s*===\s*0/;
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (!STAR.test(content)) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (!STAR.test(lines[li])) continue;
+      // The full hand-rolled-wildcard signature is the trailing-"*" check plus a
+      // slice(0,-1) strip plus a raw indexOf(...)===0 prefix match, all within
+      // the same small block (a trailing-"*" check alone — e.g. URI-template
+      // explode, array-key parsing — is not a scope match).
+      var hasSlice = false, hasPrefix = false;
+      for (var w = li; w < lines.length && w <= li + 12; w++) {
+        if (SLICE.test(lines[w])) hasSlice = true;
+        if (PREFIX.test(lines[w])) hasPrefix = true;
+      }
+      if (hasSlice && hasPrefix) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "hand-rolled scope/role wildcard match (trailing-\"*\" + slice(0,-1) + indexOf(prefix)===0) ignores \":\" segment boundaries, so a partial-segment scope wrongly satisfies a different value — route through the segment-aware b.permissions.match.",
+        });
+      }
+    }
+  }
+  _report("scope/role wildcard matching must use the segment-aware b.permissions.match, not a hand-rolled prefix match", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13716,6 +13757,7 @@ async function run() {
   testUrlSearchParamsConcatEscapesAmpersand();
   testEmailDomainDerivationGuardsMultiAt();
   testFileUploadLifecycleChecksOwnership();
+  testScopeWildcardUsesPermissionsMatch();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
