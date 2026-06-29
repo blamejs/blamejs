@@ -1,0 +1,31 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.65",
+  "date": "2026-06-29",
+  "headline": "The account-takeover kill-switch now actually locks the account: b.auth.lockout gains a lock() method and the kill-switch engages it through the operator's lockout instance",
+  "summary": "b.auth.atoKillSwitch.trigger is the incident-response path for a compromised account: it destroys the user's sessions and then locks them out of new logins. The lockout step called b.auth.lockout.lock(), but no such method existed (and the kill-switch invoked it on the lockout module, which has no store), so the call threw and was swallowed — the kill-switch reported success while never locking the account, leaving an attacker who still held the credentials free to log straight back in. b.auth.lockout instances now expose lock(key, { durationMs?, untilMs?, reason? }) to force an account into lockout immediately, atomically, independent of the failure counter, and atoKillSwitch.trigger engages it through the lockout instance the operator passes as opts.lockout. When no lockout instance is supplied the step is skipped and the result's lockoutApplied is false (with an audit row), rather than silently claiming the account was locked. The release also closes a lock-clear race in lockout and refuses a self-disabling window.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Account-takeover kill-switch engages the lockout instead of silently doing nothing",
+          "body": "b.auth.atoKillSwitch.trigger invoked b.auth.lockout.lock(), which did not exist; the call threw and was caught by a best-effort guard, so the kill-switch destroyed sessions but never locked the account — an attacker still holding valid credentials could immediately re-authenticate. b.auth.lockout instances now provide lock() (an atomic, compare-and-set forced lockout), and the kill-switch calls it on the lockout instance supplied as opts.lockout. Without a lockout instance the lockout step cannot run; the result's lockoutApplied is false and an audit row records that the account was not locked, so an operator is not misled into believing a compromised account was secured. opts.lockout is now the lockout instance (or false to skip), not a boolean toggle."
+        },
+        {
+          "title": "lockout clears the failure counter atomically and refuses a zero window",
+          "body": "b.auth.lockout.recordSuccess and unlock cleared state with a read-then-delete, which could erase a lock a concurrent recordFailure had just engaged; they now clear under the same compare-and-set the failure path uses. create() also refuses windowMs: 0, which previously disabled lockout entirely (every failure decayed immediately and the zero-TTL state never persisted)."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.auth.lockout instances expose lock()",
+          "body": "lock(key, { durationMs?, untilMs?, reason? }) forces an account into lockout immediately — the operator action behind an ATO kill-switch or incident response — independent of the failure counter, defaulting to a long admin lock. A forced lock is released only by an explicit unlock(): recordSuccess() does not clear it, so a successful login by someone who still holds the compromised password cannot release a kill-switch lock. It uses the same atomic compare-and-set as the failure counter and throws if the lock cannot be committed (the caller must know it did not lock)."
+        }
+      ]
+    }
+  ]
+}
