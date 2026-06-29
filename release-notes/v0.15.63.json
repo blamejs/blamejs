@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.63",
+  "date": "2026-06-29",
+  "headline": "OID4VCI now enforces single-use of a pre-authorized code and of a single-use access token under concurrency, so two simultaneous requests can no longer mint two credentials from one",
+  "summary": "On the OID4VCI credential issuer, two single-use values were consumed by a delete whose result was ignored, so concurrent requests could each act on the same value. exchangePreAuthorizedCode read the pre-authorized code's entry, validated the transaction code, then deleted the code and minted an access token without checking that its own call had removed the entry — two simultaneous /token requests with the same code each saw the entry, each deleted it, and each minted a distinct access token, issuing two access tokens (and ultimately two credentials) from a code OID4VCI requires to be single-use. issueCredential had the same shape: with single-use access tokens (the default), it minted the credential first and deleted the access token afterward as best-effort cleanup, so two concurrent requests bearing the same token both read it and the same not-yet-rotated c_nonce, both proofs verified, and both minted a credential. Both paths now claim the value with an atomic delete and proceed only when that delete succeeded; the losing request is refused. The transaction-code and proof checks still run first, so a bad transaction code or proof does not consume the value (a wallet can retry).",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "OID4VCI pre-authorized code and access token are single-use under concurrency",
+          "body": "exchangePreAuthorizedCode and issueCredential consumed their single-use value (the pre-authorized code, and the single-use access token) with a delete whose return was discarded, and in issueCredential's case after the credential was already minted. Two concurrent requests carrying the same value therefore each succeeded — minting two access tokens from one pre-authorized code, or two credentials from one single-use access token — defeating the single-use guarantee OID4VCI §3.5 requires (an authorization intended for one credential could yield two). Both paths now delete the value atomically and issue only if that delete removed it, refusing the request that lost the race; the transaction-code and proof verifications run before the claim, so an invalid attempt does not burn the value."
+        }
+      ]
+    }
+  ]
+}
