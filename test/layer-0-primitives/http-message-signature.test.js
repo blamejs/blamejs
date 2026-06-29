@@ -489,6 +489,32 @@ function testRequiredComponentsCoverage() {
     { keyResolver: function () { return keys.publicKey; }, requiredComponents: [] });
   check("requiredComponents:[] waives the coverage floor (signature itself still verifies)",
         waived.valid === true);
+
+  // (d) Parameterized components match WITH their parameters: a required
+  // @query-param;name="tenant" is NOT satisfied by a covered ;name="other"
+  // (the required-coverage check must not truncate the parameter suffix).
+  var paramMsg = {
+    method:  "GET",
+    url:     "https://api.example.com/x?tenant=acme&other=z",
+    headers: { host: "api.example.com" },
+  };
+  var paramSigned = b.crypto.httpSig.sign(paramMsg, {
+    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
+    covered: ["@method", "@target-uri", "@query-param;name=\"other\""],
+  });
+  var paramHeaders = Object.assign({}, paramMsg.headers, paramSigned.headers);
+  var wrongParam = b.crypto.httpSig.verify(
+    Object.assign({}, paramMsg, { headers: paramHeaders }),
+    { keyResolver: function () { return keys.publicKey; },
+      requiredComponents: ["@method", "@target-uri", "@query-param;name=\"tenant\""] });
+  check("a required @query-param;name=\"tenant\" is NOT satisfied by a covered ;name=\"other\"",
+        wrongParam.valid === false && wrongParam.reason === "missing-required-component");
+  var rightParam = b.crypto.httpSig.verify(
+    Object.assign({}, paramMsg, { headers: paramHeaders }),
+    { keyResolver: function () { return keys.publicKey; },
+      requiredComponents: ["@method", "@target-uri", "@query-param;name=\"other\""] });
+  check("a required @query-param is satisfied when the covered param matches exactly",
+        rightParam.valid === true);
 }
 
 async function run() {
