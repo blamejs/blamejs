@@ -661,6 +661,104 @@ async function testOid4vciKidResolver() {
   check("OID4VCI: resolveKid failure is a typed AuthError", isAuthErr);
 }
 
+// ---- OID4VCI single-use enforcement under concurrency -----------------
+
+async function testOid4vciPreAuthCodeSingleUseConcurrent() {
+  // RFC OID4VCI §3.5 — a pre-authorized_code is single-use. Two concurrent
+  // /token requests bearing the same code both read the entry before either
+  // deletes it; they must NOT both mint an access token.
+  // exchangePreAuthorizedCode gates issuance on winning the atomic
+  // codeStore.del (the losing redemption is refused). RED before the gate:
+  // both resolve with distinct access tokens (two credentials from one code).
+  var iss = b.auth.oid4vci.issuer.create({
+    credentialIssuerUrl: "https://issuer.example",
+    credentialEndpoint:  "https://issuer.example/credential",
+    tokenEndpoint:       "https://issuer.example/token",
+    sdJwtIssuer:         { issue: async function () { return { token: "fake" }; } },
+    supportedCredentials: { "id-card-1": { format: "vc+sd-jwt", vct: "https://x/vct" } },
+  });
+  var offer = await iss.createCredentialOffer({ subject: "u-1", credentialIds: ["id-card-1"] });
+  var results = await Promise.allSettled([
+    iss.exchangePreAuthorizedCode({ preAuthCode: offer.preAuthCode }),
+    iss.exchangePreAuthorizedCode({ preAuthCode: offer.preAuthCode }),
+  ]);
+  var ok = results.filter(function (r) { return r.status === "fulfilled" && r.value && r.value.access_token; });
+  var rejected = results.filter(function (r) { return r.status === "rejected"; });
+  check("OID4VCI: concurrent pre-auth-code redemption mints exactly one access token",
+        ok.length === 1);
+  check("OID4VCI: the losing concurrent pre-auth redemption is refused (already redeemed)",
+        rejected.length === 1 && /already redeemed/.test(rejected[0].reason.message));
+}
+
+async function testOid4vciAccessTokenSingleUseConcurrent() {
+  // A single-use access token (default) must yield exactly ONE credential.
+  // Two concurrent issueCredential calls bearing the same access token both
+  // read it and the same un-rotated c_nonce, so both proofs verify; they must
+  // NOT both mint. The token is claimed (atomic gated delete) BEFORE the mint.
+  // RED before the fix: both resolve with a credential (the post-mint cleanup
+  // delete couldn't stop the race).
+  var aud = "https://issuer.example";
+  var holderKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var holderPubJwk = holderKp.publicKey.export({ format: "jwk" });
+  var iss = b.auth.oid4vci.issuer.create({
+    credentialIssuerUrl: aud, credentialEndpoint: aud + "/credential", tokenEndpoint: aud + "/token",
+    sdJwtIssuer:         { issue: async function () { return { token: "fake-sd-jwt" }; } },
+    supportedCredentials: { "id-card-1": { format: "vc+sd-jwt", vct: "https://x/vct" } },
+    resolveKid:          function (kid) { return kid === "holder-key-1" ? holderPubJwk : null; },
+  });
+  var offer  = await iss.createCredentialOffer({ subject: "u-2", credentialIds: ["id-card-1"] });
+  var tokens = await iss.exchangePreAuthorizedCode({ preAuthCode: offer.preAuthCode });
+  var proof  = _signKidProof(holderKp.privateKey, "holder-key-1", aud, tokens.c_nonce);
+  var mk = function () {
+    return iss.issueCredential({ accessToken: tokens.access_token, credentialIdentifier: "id-card-1",
+                                 proof: proof, claims: { given_name: "A" } });
+  };
+  var results = await Promise.allSettled([mk(), mk()]);
+  var ok = results.filter(function (r) { return r.status === "fulfilled" && r.value && r.value.credential; });
+  var rejected = results.filter(function (r) { return r.status === "rejected"; });
+  check("OID4VCI: concurrent issueCredential on a single-use access token mints exactly one credential",
+        ok.length === 1);
+  check("OID4VCI: the losing concurrent issueCredential is refused (access token consumed)",
+        rejected.length === 1 && /already used|consumed/.test(rejected[0].reason.message));
+}
+
+async function testOid4vciAccessTokenRestoredOnIssuerFailure() {
+  // The single-use access token is claimed (atomic delete) BEFORE the mint to
+  // stop a concurrent double-mint. But if the operator's issuer throws (a
+  // transient signer/KMS outage), the token must be RESTORED so the wallet can
+  // retry — claiming it must not permanently burn it when no credential was
+  // returned. RED before the rollback: the retry is refused as access-token-
+  // consumed though no credential was ever issued.
+  var aud = "https://issuer.example";
+  var holderKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var holderPubJwk = holderKp.publicKey.export({ format: "jwk" });
+  var failNext = true;
+  var iss = b.auth.oid4vci.issuer.create({
+    credentialIssuerUrl: aud, credentialEndpoint: aud + "/credential", tokenEndpoint: aud + "/token",
+    sdJwtIssuer: { issue: async function () {
+      if (failNext) { failNext = false; throw new Error("transient signer outage"); }
+      return { token: "fake-sd-jwt" };
+    } },
+    supportedCredentials: { "id-card-1": { format: "vc+sd-jwt", vct: "https://x/vct" } },
+    resolveKid: function (kid) { return kid === "holder-key-1" ? holderPubJwk : null; },
+  });
+  var offer  = await iss.createCredentialOffer({ subject: "u-3", credentialIds: ["id-card-1"] });
+  var tokens = await iss.exchangePreAuthorizedCode({ preAuthCode: offer.preAuthCode });
+  var proof  = _signKidProof(holderKp.privateKey, "holder-key-1", aud, tokens.c_nonce);
+  var firstThrew = false;
+  try {
+    await iss.issueCredential({ accessToken: tokens.access_token, credentialIdentifier: "id-card-1",
+                                proof: proof, claims: { given_name: "A" } });
+  } catch (_e) { firstThrew = true; }
+  check("OID4VCI: an issuer failure after claiming the token propagates the error", firstThrew);
+  // Retry with the SAME token + proof — the token was restored (the c_nonce was
+  // not rotated, since the mint failed), so the retry succeeds.
+  var retry = await iss.issueCredential({ accessToken: tokens.access_token, credentialIdentifier: "id-card-1",
+                                          proof: proof, claims: { given_name: "A" } });
+  check("OID4VCI: single-use access token is restored after an issuer failure (retry succeeds)",
+        retry && retry.credential === "fake-sd-jwt");
+}
+
 // ---- OID4VCI x5c proof (RFC 7515 §4.1.6 / OID4VCI §8.2.1.1) -----------
 
 // Build a self-signed P-256 EC leaf certificate (the holder cert the
@@ -1025,6 +1123,9 @@ async function run() {
   testDcqlMatch();
   testOid4vciIssuerConfig();
   await testOid4vciKidResolver();
+  await testOid4vciPreAuthCodeSingleUseConcurrent();
+  await testOid4vciAccessTokenSingleUseConcurrent();
+  await testOid4vciAccessTokenRestoredOnIssuerFailure();
   await testOid4vciX5cProof();
   await testOid4vciCNonceExpired();
   testCibaConfig();

@@ -2415,6 +2415,39 @@ function testArcInstanceParseUsesSharedHelper() {
   _report("ARC i= instance parsing must route through the shared _arcInstanceOf reader (no divergent regex)", bad);
 }
 
+// ---- Pattern: OID4VCI single-use store claims must gate on the delete ----
+// A pre-authorized code (codeStore) and a single-use access token (atStore)
+// are single-use: issuance must proceed only when THIS request's atomic delete
+// removed the entry. cache.del returns true only for the winner of two racing
+// deletes, so the return must be captured and checked — a bare
+// `await codeStore.del(...)` / `await atStore.del(...)` discards it, letting two
+// concurrent requests both mint (two access tokens from one code / two
+// credentials from one single-use token). cNonceStore.del is cleanup, not a
+// claim, so it is allowed to be bare.
+function testOid4vciSingleUseClaimGated() {
+  var bad = [];
+  var rel = "lib/auth/oid4vci.js";
+  var content;
+  try {
+    content = fs.readFileSync(path.resolve(path.resolve(__dirname, "..", ".."), rel), "utf8");
+  } catch (_e) { _report("OID4VCI single-use store claims gate on the delete", bad); return; }
+  var lines = content.split(/\r?\n/);
+  for (var li = 0; li < lines.length; li++) {
+    var m = lines[li].match(/\bawait\s+(codeStore|atStore)\.del\(/);
+    if (!m) continue;
+    // Must be captured into a variable (`var x = await codeStore.del(...)`),
+    // never a bare expression statement.
+    if (!/=\s*await\s+(codeStore|atStore)\.del\(/.test(lines[li])) {
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "the result of await " + m[1] + ".del(...) is discarded — a single-use claim must capture the delete result and issue only when it removed the entry (two concurrent requests would otherwise both mint).",
+      });
+    }
+  }
+  _report("OID4VCI single-use claims (codeStore/atStore .del) must capture + gate the delete result", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13843,6 +13876,7 @@ async function run() {
   testScopeWildcardUsesPermissionsMatch();
   testQueueRedisGateLuaResultCaptured();
   testArcInstanceParseUsesSharedHelper();
+  testOid4vciSingleUseClaimGated();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
