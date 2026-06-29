@@ -1,0 +1,36 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.64",
+  "date": "2026-06-29",
+  "headline": "Token and HTTP-message-signature verifiers now reject a non-finite clock-skew or tolerance value instead of letting it disable the expiry, not-before, and future-dating checks",
+  "summary": "Several verifiers read an operator-supplied clock-skew or tolerance value with a bare type check that accepted Infinity and NaN. Because the resulting comparison (for example exp + skew < now, or age > tolerance) is always false when the skew or tolerance is Infinity, a misconfigured non-finite value silently disabled the time-window check — so an expired token, a not-yet-valid token, a future-dated signature, or a replayed (too-old) signature would verify. The affected paths are the shared external-JWT verifier b.auth.jwt.verifyExternal (which the JAR / signed-request-object path also uses), the SD-JWT-VC credential verifier, the OAuth ID-token and client-attestation verifiers, and the HTTP message signature verifier's freshness and clock-skew windows. Each now requires a present skew or tolerance to be a non-negative finite number: the throw-based JWT, SD-JWT-VC, and OAuth verifiers reject a malformed value, and the verdict-returning HTTP-message-signature verifier falls back to its safe default rather than disabling the window. A build check now fails if any verifier reads one of these options without a finiteness guard.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Non-finite clock-skew / tolerance no longer disables a verifier's time-window check",
+          "body": "b.auth.jwt.verifyExternal, b.auth.sdJwtVc.verify, b.auth.oauth (ID-token and client-attestation verification), and the HTTP message signature verifier read their clock-skew, max-clock-skew, max-PoP-age, and tolerance options with a bare `typeof === \"number\"` check that let Infinity and NaN through. With such a value the expiry / not-before / future-dating comparison is always false, so the check was silently skipped and an expired or not-yet-valid token — or a future-dated or replayed signature — would verify. The JWT, SD-JWT-VC, and OAuth verifiers now reject a non-finite or negative skew (the option is operator configuration, not attacker-controlled), and the HTTP message signature verifier falls back to its default tolerance and skew. The CWT, DPoP, SAML, and OpenID Federation verifiers already enforced this and are unchanged."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "verifyExternal and jar.parse accept an `now` clock override",
+          "body": "b.auth.jwt.verifyExternal and b.auth.jar.parse now accept an optional `now` (a finite epoch-milliseconds value) to evaluate a token's exp / nbf / iat as of a specific instant instead of the wall clock — consistent with b.auth.sdJwtVc.verify. A negative clockSkewMs is no longer accepted as a way to shift the evaluation time; use `now`."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Verifier clock-skew / tolerance options must be finite-guarded",
+          "body": "A build check fails if a verifier reads a clock-skew or tolerance option with a bare `typeof === \"number\"` without a finiteness guard (a non-negative-finite check, an inline isFinite fallback, or a create-time non-negative-finite schema), preventing a future verifier from reintroducing the disable-the-window class."
+        }
+      ]
+    }
+  ]
+}

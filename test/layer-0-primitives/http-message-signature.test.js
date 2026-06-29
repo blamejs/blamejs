@@ -177,6 +177,30 @@ function testExpired() {
         verified.valid === false && verified.reason === "expired");
 }
 
+function testNonFiniteToleranceDoesNotDisableFreshness() {
+  // A non-finite toleranceMs (Infinity / NaN) must not disable the freshness
+  // window: `ageMs > Infinity` is always false, so a stale (replayed) signature
+  // would verify. A malformed tolerance falls back to the default instead. RED
+  // before the guard: the hour-old signature verifies.
+  var keys = _genEd25519();
+  var msg = { method: "GET", url: "https://api.example.com/x", headers: { host: "api.example.com" } };
+  var oldTs = Math.floor(Date.now() / 1000) - 60 * 60;     // 1 hour ago
+  var signed = b.crypto.httpSig.sign(msg, {
+    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
+    covered: ["@method", "@target-uri"], created: oldTs,
+  });
+  var vmsg = Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) });
+  var bad = [Infinity, NaN, -1];
+  for (var i = 0; i < bad.length; i++) {
+    var v = b.crypto.httpSig.verify(vmsg, {
+      keyResolver: function () { return keys.publicKey; },
+      toleranceMs: bad[i],
+    });
+    check("httpSig: non-finite/negative toleranceMs (" + String(bad[i]) + ") falls back, stale signature still 'expired'",
+          v.valid === false && v.reason === "expired");
+  }
+}
+
 function testUnknownKeyid() {
   var keys = _genEd25519();
   var msg = {
@@ -524,6 +548,7 @@ async function run() {
   testContentDigestTamper();
   testContentDigestMemberAnchored();
   testExpired();
+  testNonFiniteToleranceDoesNotDisableFreshness();
   testUnknownKeyid();
   testValidation();
   testQueryParam();

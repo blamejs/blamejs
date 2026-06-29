@@ -2448,6 +2448,53 @@ function testOid4vciSingleUseClaimGated() {
   _report("OID4VCI single-use claims (codeStore/atStore .del) must capture + gate the delete result", bad);
 }
 
+// ---- Pattern: clock-skew / tolerance opts must be finite-guarded ----
+// A token/signature verifier that reads a skew or tolerance opt with a bare
+// `typeof opts.x === "number"` lets Infinity / NaN through, and the resulting
+// `exp + Infinity < now` / `ageMs > Infinity` comparison is always false —
+// silently DISABLING the expiry / not-before / future-dating gate so an expired
+// (or future-dated, or replayed) token or signature verifies. Every such opt
+// must be finite-guarded: a numericBounds.requireNonNegativeFiniteIntIfPresent
+// throw (jwt verifiers), an inline `isFinite(...) && >= 0` fallback (verdict-
+// returning verifiers), or a create-time `validateOpts` "optional-non-negative"
+// schema. This is the OCSP non-finite-clockSkew bug class generalized across
+// the JWT / SD-JWT-VC / OAuth / HTTP-message-signature verifiers.
+function testClockSkewOptsAreFiniteGuarded() {
+  var bad = [];
+  var SKEW = "clockSkewMs|clockSkewSec|maxClockSkewSec|maxPopAgeSec|toleranceMs";
+  var READ = new RegExp("typeof\\s+\\w+\\.(" + SKEW + ")\\s*===\\s*\"number\"");
+  var files = _libFiles();
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (!READ.test(content)) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var m = lines[li].match(READ);
+      if (!m) continue;
+      var opt = m[1];
+      // (a) inline isFinite on the read line itself.
+      if (/isFinite/.test(lines[li])) continue;
+      // (b) a numericBounds / isFinite guard for the same opt in the preceding lines.
+      var guardRe = new RegExp("(requireNonNegativeFiniteIntIfPresent|isFinite)\\([^)]*\\b" + opt + "\\b");
+      var guarded = false;
+      for (var w = Math.max(0, li - 10); w < li; w++) {
+        if (guardRe.test(lines[w])) { guarded = true; break; }
+      }
+      if (guarded) continue;
+      // (c) the opt is validated at create() via a non-negative-finite validateOpts schema.
+      if (new RegExp("\\b" + opt + "\\b\\s*:\\s*\"optional-non-negative").test(content)) continue;
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "clock-skew/tolerance opt '" + opt + "' is read with a bare `typeof === \"number\"` and is not finite-guarded — Infinity/NaN would disable the time-window gate (an expired/future/replayed token or signature would verify). Guard it (numericBounds.requireNonNegativeFiniteIntIfPresent, an inline isFinite check, or a create-time validateOpts non-negative-finite schema).",
+      });
+    }
+  }
+  _report("clock-skew / tolerance verifier opts must be finite-guarded (no bare typeof===\"number\")", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -3445,6 +3492,26 @@ async function testNoDuplicateCodeBlocks() {
   // so the audit trail records exactly which body of code shares the
   // shape.
   var KNOWN_CLUSTERS = [
+    {
+      // Opts-passthrough / allow-list token run — shape-only. A run of
+      // `<ident>: <ident>.<ident>,` assignments (jar.parse forwarding its
+      // verify options to verifyExternal) and the parallel `validateOpts(opts,
+      // [ ...string keys ])` allow-list tokenize to the same skeleton as
+      // db.init's per-table `cryptoField.registerTable` metadata object,
+      // eat.verify's option forwarding, and the cookie-jar's getAll loop. The
+      // functions are wholly unrelated (OAuth request-object parsing vs schema
+      // registration vs EAT verification vs cookie enumeration); the longest
+      // byte-identical run across any pair is a single `key: value,` line. There
+      // is no shared primitive to extract — the coincidence is the generic
+      // object-literal / key-array shape, not behavior.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/jar.js:parse",
+        "lib/db.js:init",
+        "lib/eat.js:verify",
+        "lib/http-client-cookie-jar.js:getAll",
+      ],
+    },
     {
       // Delimited key/value split idiom — shape-only. The "split a string on a
       // separator, slice each piece at the first `=` into key + value" loop
@@ -13877,6 +13944,7 @@ async function run() {
   testQueueRedisGateLuaResultCaptured();
   testArcInstanceParseUsesSharedHelper();
   testOid4vciSingleUseClaimGated();
+  testClockSkewOptsAreFiniteGuarded();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
