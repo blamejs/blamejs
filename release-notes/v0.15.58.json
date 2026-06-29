@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.58",
+  "date": "2026-06-29",
+  "headline": "File-upload content-safety scanning now also runs the gate for a file's magic-byte-detected type, so a mislabeled file can't dodge the scanner for its real type by choosing the extension",
+  "summary": "b.fileUpload selected the per-extension content-safety gate purely from the upload's filename extension, which the uploader controls. A file whose magic bytes identify one type but whose name carries another extension (e.g. a PDF named photo.png) was therefore scanned by the gate for the named extension — or, when no gate was registered for that extension, not scanned at all — so an uploader could dodge the scanner configured for the file's real type by renaming it. When a fileType detector is wired, finalize now also runs the content-safety gate for the type the magic bytes identify, in addition to the filename-extension gate, so the scanner for the real type runs even under a mismatched name. Magic-byte-less text formats (HTML, SVG, CSV) cannot be classified this way; that residual is covered by serving uploads with an explicit Content-Type plus X-Content-Type-Options: nosniff and by registering a content-safety gate for every accepted extension.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Content-safety gate selection follows the sniffed type, not just the filename extension",
+          "body": "finalize chose the content-safety gate from nodePath.extname(filename), so a file's real type could be hidden behind a chosen extension: a PDF named photo.png ran the .png gate (or, with no .png gate, skipped scanning) and never reached the .pdf scanner. When opts.fileType is wired, finalize now detects the magic-byte type and, if it differs from the filename extension and a gate is registered for it, runs that gate too (alongside the filename-extension gate), refusing or sanitizing per the gate's decision. Existing behavior is unchanged when no fileType detector is wired or the detected type matches the extension. Formats without magic bytes (HTML/SVG/CSV/plain text) remain undetectable by content sniffing — defend those by serving stored files with a fixed Content-Type and X-Content-Type-Options: nosniff, and by registering a content-safety gate for each accepted extension."
+        }
+      ]
+    }
+  ]
+}

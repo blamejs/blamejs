@@ -181,6 +181,36 @@ async function run() {
     check("skip[throwing-sink]: upload finalized despite throwing audit sink",
           threw === false && rv && rv.ok === true && rv.size === s0.length);
   }
+
+  // ---- A magic-byte-mislabeled file cannot dodge the content-safety scanner
+  //      for its REAL type via its filename extension ----
+  {
+    var pdfGateRan = false;
+    var u6 = b.fileUpload.create({
+      stagingDir:     _tmpDir("mislabel"),
+      filenameSafety: null,
+      fileType:       b.fileType,
+      contentSafety:  {
+        // A gate ONLY for .pdf, which refuses; there is NO .png gate, so a
+        // file named "*.png" would skip content scanning by its extension.
+        ".pdf": { check: function () {
+          pdfGateRan = true;
+          return { ok: false, action: "refuse", issues: [{ kind: "pdf-refused" }] };
+        } },
+      },
+      audit: { safeEmit: function () {} },
+    });
+    // PDF magic bytes (%PDF-) named "evil.png": the filename extension (.png)
+    // has no gate, so without sniffed-type gating the .pdf scanner is dodged and
+    // the upload finalizes. The sniffed-type gate must run the .pdf scanner.
+    var pdfBytes = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n", "utf8");
+    var refusedCode = null;
+    try {
+      await _uploadAndFinalize(u6, "u-mislabel", [pdfBytes], { metadata: { filename: "evil.png" } });
+    } catch (e) { refusedCode = e.code || null; }
+    check("mislabel: PDF content named .png is scanned by the sniffed .pdf gate (not dodged by extension)",
+          pdfGateRan === true && refusedCode === "CONTENT_SAFETY_REFUSED");
+  }
 }
 
 module.exports = { run: run };
