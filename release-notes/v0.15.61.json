@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.61",
+  "date": "2026-06-29",
+  "headline": "The local and Redis job queues fence completion, failure, and lease extension on the lease the caller actually holds, so a worker finishing after its lease expired can no longer disturb a job another worker has since taken over",
+  "summary": "On the local and Redis queue backends, complete(), fail(), and extendLease() identified a job only by its id. When a worker's lease expired, the sweep returned the job to the ready set and another worker leased and began running it; if the original worker then finished late, its complete() could mark the new worker's in-progress job done (and double-fire a cron repeat or re-release flow children), and its fail() could re-queue or dead-letter a job the new worker was still executing. Each lease now carries the job's attempts value (incremented once per lease), and complete(), fail(), and extendLease() act only when that value still matches — so a call from a worker that no longer holds the lease changes nothing. The generic consumer threads this automatically; the SQS backend already bound these actions to the message's receipt handle and is unchanged.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Local and Redis queues bind complete/fail/extendLease to the held lease",
+          "body": "A long-running handler whose lease expired and was swept could have its job re-leased to a second worker; when the first worker finished, complete() marked the second worker's in-progress job done — double-firing a cron-recurring job's next enqueue and re-releasing its flow dependents — while fail() re-queued or dead-lettered the job the second worker was still running (re-executing or discarding in-flight work). The backends now fence each of these calls on the leased attempts value, which is bumped once per lease; only the worker that holds the current lease can complete, fail, or extend it. A stale call returns without mutating the queue. This brings the local and Redis backends to parity with the SQS backend, which already bound these actions to the message receipt handle."
+        }
+      ]
+    }
+  ]
+}

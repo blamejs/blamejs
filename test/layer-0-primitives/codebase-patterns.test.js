@@ -2332,6 +2332,52 @@ function testScopeWildcardUsesPermissionsMatch() {
   _report("scope/role wildcard matching must use the segment-aware b.permissions.match, not a hand-rolled prefix match", bad);
 }
 
+// ---- Pattern: queue-redis inflight-transition LUA result must be captured ----
+// COMPLETE_LUA / FAIL_LUA atomically ZREM a job from the inflight set and
+// return whether THIS call won that transition (1 = won, 0/-1 = stale). The
+// caller MUST capture that result and gate its side effects on it: a stale
+// worker whose lease expired (the job swept back to ready and re-leased /
+// completed by another worker) must NOT run complete()'s cron re-enqueue +
+// flow release, nor fail()'s retry/dlq re-queue — doing so double-fires a cron
+// repeat or resurrects an already-finished job. A bare
+// `await client.runScript(COMPLETE_LUA, …)` (result discarded) is the bug
+// shape; it must be `var x = await client.runScript(COMPLETE_LUA, …)` + a
+// gate. The SQL backends carry the equivalent `WHERE status='inflight'` guard;
+// this keeps the redis backend from diverging.
+function testQueueRedisGateLuaResultCaptured() {
+  var bad = [];
+  var rel = "lib/queue-redis.js";
+  var content;
+  try {
+    content = fs.readFileSync(path.resolve(path.resolve(__dirname, "..", ".."), rel), "utf8");
+  } catch (_e) { _report("queue-redis gate-LUA results captured + gated", bad); return; }
+  var lines = content.split(/\r?\n/);
+  for (var li = 0; li < lines.length; li++) {
+    if (!/client\.runScript\(/.test(lines[li])) continue;
+    // The first ARGUMENT identifies the script. It may sit on the call line or
+    // the next few lines (the call is multi-line).
+    var gate = null;
+    for (var w = li; w < lines.length && w <= li + 3; w++) {
+      var m = lines[w].match(/(?:runScript\(\s*)?\b(COMPLETE_LUA|FAIL_LUA)\b/);
+      if (m && (w === li ? /runScript\(\s*(COMPLETE_LUA|FAIL_LUA)\b/.test(lines[w]) : /^\s*(COMPLETE_LUA|FAIL_LUA)\b/.test(lines[w]))) {
+        gate = m[1]; break;
+      }
+    }
+    if (!gate) continue;
+    // The call line MUST assign the result (so a guard can read it). A bare
+    // `await client.runScript(...)` statement discards the gate.
+    if (!/=\s*await\s+client\.runScript\(/.test(lines[li]) &&
+        !/=\s*client\.runScript\(/.test(lines[li])) {
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "the result of client.runScript(" + gate + ") is discarded — it must be captured into a variable and gated (a stale worker must not run the post-transition side effects: double cron-fire / resurrected job).",
+      });
+    }
+  }
+  _report("queue-redis complete()/fail() must capture + gate the inflight-transition LUA result (COMPLETE_LUA / FAIL_LUA)", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13758,6 +13804,7 @@ async function run() {
   testEmailDomainDerivationGuardsMultiAt();
   testFileUploadLifecycleChecksOwnership();
   testScopeWildcardUsesPermissionsMatch();
+  testQueueRedisGateLuaResultCaptured();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
