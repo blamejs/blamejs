@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.55",
+  "date": "2026-06-29",
+  "headline": "`b.fileUpload` enforces per-upload ownership: acceptChunk / finalize / status / cancelUpload now refuse a caller who is not the upload's owner, closing an IDOR",
+  "summary": "A file-upload manager recorded the owner of each upload at init() but never checked it again: acceptChunk, finalize, status, and cancelUpload looked the upload up by the caller-supplied uploadId alone. The only gate was the coarse \"fileUpload.<op>\" permission scope, which says whether an actor may perform the operation at all — not whether they own the specific upload. So any caller holding the (commonly shared) fileUpload.finalize / cancel / status / accept scope could finalize, cancel, read the status of, or push chunks into another actor's in-flight upload by its uploadId (an insecure-direct-object-reference, CWE-639). Each lifecycle method now compares the calling actor against the stored owner (actor.id || actor.userId, captured at init) and refuses a non-owner. Operator admin tooling that must act across actors opts in with create({ allowCrossActor: true }); when a permissions instance is wired, cross-actor access additionally requires the new \"fileUpload.admin\" scope, so the escape hatch is itself gated. Uploads created without an actor are owned by the anonymous identity and unreachable by a named actor (fail-closed).",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "File-upload lifecycle methods enforce per-upload ownership (IDOR fix)",
+          "body": "acceptChunk, finalize, status, and cancelUpload previously authorized only against the coarse fileUpload.<op> capability scope, never against the upload's recorded owner, so a caller with that scope could act on any actor's upload by guessing or enumerating its uploadId. Each method now refuses a caller whose identity (actor.id || actor.userId) does not match the owner stored at init() — raising fileUpload OWNERSHIP_VIOLATION — so an upload is reachable only by the actor that created it. Cross-actor admin tooling opts in via create({ allowCrossActor: true }) plus the new fileUpload.admin permission scope (required when permissions are wired); list({ scopeToActor: false }) remains the deliberate cross-actor listing view. Operators whose workflows legitimately hand an upload between actors must set allowCrossActor and grant fileUpload.admin to the acting principal."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "fileUpload lifecycle methods must enforce ownership",
+          "body": "A codebase-patterns detector flags any fileUpload lifecycle method that loads an upload by a request-supplied uploadId without calling the ownership check before acting, so a newly added method cannot silently reintroduce the IDOR."
+        }
+      ]
+    }
+  ]
+}
