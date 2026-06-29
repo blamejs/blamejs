@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.59",
+  "date": "2026-06-29",
+  "headline": "OCSP response validation binds the response to the certificate's issuer (issuerNameHash + issuerKeyHash), not the serial number alone, refusing a wrong-issuer \"good\"",
+  "summary": "An OCSP SingleResponse identifies the certificate it covers by a CertID of (hashAlgorithm, issuerNameHash, issuerKeyHash, serialNumber) — RFC 6960 §4.1.1. b.network.tls.ocsp.evaluate matched a response to the certificate under validation by the serial number alone and never compared the CertID's issuer hashes. Because a serial number is unique only within one issuer, a responder key that serves more than one issuer identity — a delegated OCSP responder, or a CA key spanning issuers — could have a signed \"good\" response for serial-S under issuer-Y accepted as proof for the serial-S certificate under issuer-X. The evaluator now recomputes the expected issuerNameHash and issuerKeyHash from the issuer certificate and refuses a response whose CertID issuer hashes do not match. The built-in fetch and stapled-OCSP paths supply the issuer certificate automatically; callers of ocsp.evaluate directly opt in by passing the new issuerCertDer (the issuer cert DER), and a response with no issuer certificate available stays bound on serial plus signature as before.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "OCSP evaluate binds the response CertID to the issuer, not the serial alone (RFC 6960 §4.1.1)",
+          "body": "b.network.tls.ocsp.evaluate selected the matching SingleResponse by normalized serial number only, ignoring the CertID's issuerNameHash and issuerKeyHash. Since serials are unique only per issuer, a \"good\" response signed by a key that also serves a different issuer (a delegated id-kp-OCSPSigning responder, or a shared CA key) could be replayed as proof for a same-serial certificate under another issuer. evaluate now recomputes the expected issuerNameHash = Hash(issuer DN) and issuerKeyHash = Hash(issuer public key) under the CertID's own hash algorithm and refuses the response if either differs (\"wrong-issuer response\"). b.network.tls.ocsp.fetch and the stapled-OCSP / requireGood paths forward the issuer certificate automatically; a direct ocsp.evaluate caller enables the binding by passing issuerCertDer (the issuer cert DER), and a call without an issuer certificate retains the prior serial-plus-signature binding."
+        }
+      ]
+    }
+  ]
+}
