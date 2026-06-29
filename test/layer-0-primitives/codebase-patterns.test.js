@@ -2253,6 +2253,44 @@ function testEmailDomainDerivationGuardsMultiAt() {
   _report("an email-domain derivation via split(\"@\")[1] must first reject a multi-@ addr-spec (single-@ guard)", bad);
 }
 
+// ---- Pattern: fileUpload lifecycle methods enforce per-upload ownership ----
+// A fileUpload lifecycle method that loads an upload by a request-supplied
+// uploadId (_readMeta(uploadId)) and then acts on it MUST call _checkOwnership
+// before mutating/returning, or a caller can act on another actor's upload by
+// guessing its uploadId (IDOR / CWE-639). A behavioral test covers the four
+// current methods; this detector keeps a NEW lifecycle method from silently
+// reintroducing the gap (the internal enumerate/cleanup sweeps read
+// _readMeta(e.name), not uploadId, so they are not matched).
+function testFileUploadLifecycleChecksOwnership() {
+  var bad = [];
+  var rel = "lib/file-upload.js";
+  var content;
+  try {
+    content = fs.readFileSync(path.resolve(path.resolve(__dirname, "..", ".."), rel), "utf8");
+  } catch (_e) { _report("fileUpload lifecycle methods enforce per-upload ownership", bad); return; }
+  var lines = content.split(/\r?\n/);
+  for (var li = 0; li < lines.length; li++) {
+    // The CALL shape (`= _readMeta(uploadId)`), not the `function _readMeta(...)`
+    // definition.
+    if (!/=\s*_readMeta\(uploadId\)/.test(lines[li])) continue;
+    // _checkOwnership must appear after the read, within the same method body
+    // (a method-closing brace at 2-space indent ends the scan).
+    var guarded = false;
+    for (var w = li + 1; w < lines.length && w <= li + 30; w++) {
+      if (/^ {2}\}/.test(lines[w])) break;                       // method-closing brace
+      if (/_checkOwnership\(/.test(lines[w])) { guarded = true; break; }
+    }
+    if (!guarded) {
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "a fileUpload lifecycle method loads an upload by request-supplied uploadId (_readMeta(uploadId)) but does not call _checkOwnership before acting — a caller could act on another actor's upload by guessing its uploadId (IDOR / CWE-639).",
+      });
+    }
+  }
+  _report("every fileUpload lifecycle method reading _readMeta(uploadId) must call _checkOwnership before acting (IDOR guard)", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13677,6 +13715,7 @@ async function run() {
   testDomainToAsciiRejectsUrlDelimiters();
   testUrlSearchParamsConcatEscapesAmpersand();
   testEmailDomainDerivationGuardsMultiAt();
+  testFileUploadLifecycleChecksOwnership();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
