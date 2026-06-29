@@ -278,6 +278,41 @@ async function testDeliveryHappyPathStubbed() {
   check("happy-path: transport opened to MX host",   captured.some(function (e) { return e.kind === "transport" && e.host === "mx1.recipient.com"; }));
 }
 
+// ---- Multi-@ recipient is refused before routing ----
+
+async function testMultiAtRecipientRefused() {
+  // A recipient with two '@' (victim@internal.host@external.com) must be
+  // refused as a permanent bad-address, NOT routed to the LEFTMOST segment's MX
+  // (split("@")[1] = internal.host) — that would mis-deliver / exfiltrate to an
+  // unintended host (CWE-290).
+  var mxDomains = [];
+  var fakeResolver = {
+    queryMx: async function (domain) {
+      mxDomains.push(domain);
+      return [{ exchange: "mx1." + domain, priority: 10 }];
+    },
+  };
+  var fakeTransport = function () {
+    return { send: async function () { return { ok: true, code: 250 }; } };
+  };
+  var deliver = b.mail.send.deliver({
+    hostname:         "mta1.example.com",
+    resolver:         fakeResolver,
+    policy:           { mtaSts: "off", dane: "off" },
+    transportFactory: fakeTransport,
+    audit:            false,
+  });
+  var result = await deliver({
+    from:   "ops@example.com",
+    to:     ["victim@internal.host@external.com"],
+    rfc822: Buffer.from("From: ops@example.com\r\nSubject: x\r\n\r\nbody"),
+  });
+  check("multi-@ recipient → permanent failure, not delivered",
+        result.failed.length === 1 && result.delivered.length === 0);
+  check("multi-@ recipient → no MX lookup on the leftmost segment",
+        mxDomains.indexOf("internal.host") === -1);
+}
+
 // ---- Defer on transient + DSN on permanent ----
 
 async function testTransientDefersPermanentFails() {
@@ -472,6 +507,7 @@ async function run() {
   testOutcomeClassifier();
   testDsnComposer();
   await testDeliveryHappyPathStubbed();
+  await testMultiAtRecipientRefused();
   await testTransientDefersPermanentFails();
   await testNullMx();
   await testMxFailover();

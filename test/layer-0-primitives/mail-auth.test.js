@@ -65,6 +65,18 @@ async function testSpfVerifyMockedDns() {
   });
   check("spf.verify(non-matching ip) → fail (-all)",
         rv2.result === "fail");
+
+  // A MAIL FROM addr-spec has exactly one '@'. split("@")[1] on a multi-@
+  // string (x@attacker.example@example.com) takes the LEFTMOST segment, so SPF
+  // would authorize attacker.example (which the attacker controls) instead of
+  // the envelope sender's real domain. A multi-@ MAIL FROM must surface as a
+  // permanent SPF error VERDICT, not a throw — spfVerify runs inside
+  // b.mail.inbound.verify, where a throw is caught as a pipeline temperror that
+  // onTemperror:"accept" would let through, skipping SPF/DMARC gating (CWE-290).
+  var spfMultiAt = await b.mail.spf.verify({ ip: "192.0.2.5",
+    mailFrom: "x@attacker.example@example.com", dnsLookup: dnsLookup });
+  check("spf.verify: a multi-@ MAIL FROM returns permerror (a verdict, not a throw)",
+        spfMultiAt.result === "permerror" && spfMultiAt.domain === null);
 }
 
 function testDmarcParse() {
@@ -184,6 +196,27 @@ async function testInboundVerifySpoofRejected() {
   check("inbound.verify: no authservId → no A-R header", v.authResults === null);
 }
 
+async function testInboundVerifyMultiAtMailFromGatesNotThrows() {
+  // A multi-@ MAIL FROM (x@attacker@victim) must NOT throw out of the verify
+  // pipeline: a throw is caught by mail-server-mx as a temperror, which
+  // onTemperror:"accept" would let through, skipping SPF/DMARC gating for the
+  // spoofed From (CWE-290). It surfaces as an SPF permerror VERDICT, and the
+  // spoofed p=reject From is still gated to reject.
+  var dnsLookup = _inboundDns({
+    "_dmarc.spoofed.example/TXT": [["v=DMARC1; p=reject"]],
+  });
+  var v = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host",
+    mailFrom: "x@attacker.example@spoofed.example",
+    message: "From: ceo@spoofed.example\r\nSubject: urgent\r\n\r\nwire money\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: multi-@ MAIL FROM → spf permerror (no throw out of the pipeline)",
+        v.spf.result === "permerror");
+  check("inbound.verify: multi-@ MAIL FROM still gates the spoofed From → reject",
+        v.dmarc.result === "fail" && v.dmarc.recommendedAction === "reject");
+}
+
 async function testInboundVerifyGroupSyntaxFromRejected() {
   // DMARC bypass via RFC 5322 group syntax: `From: Recipients:alice@victim;`
   // carries no whitespace or comma but is not a bare addr-spec — the group
@@ -282,6 +315,30 @@ async function testInboundVerifyFromHeaderDiscipline() {
   });
   check("inbound.verify: comma-separated angle-addr list → multiple authors refused",
         twoAngle.from.count === 2 && twoAngle.dmarc.recommendedAction === "reject");
+
+  // Two '@' in ONE addr-spec (x@attacker@victim). The header.from parser takes
+  // the RIGHTMOST @ segment (victim) while the DMARC domain derivation takes the
+  // LEFTMOST (attacker) — so DMARC would authorize attacker.example (which the
+  // attacker controls) while the displayed From is victim.example. An addr-spec
+  // has exactly ONE @ (RFC 5322 §3.4.1); a multi-@ address is malformed and must
+  // yield no author domain → reject, closing the leftmost/rightmost split bypass.
+  var multiAt = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host", mailFrom: "x@attacker.example",
+    message: "From: x@attacker.example@victim.example\r\n\r\nbody\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: multi-@ From (x@a@b) → no author domain + reject (no @-split bypass)",
+        multiAt.from.domain === null && multiAt.dmarc.recommendedAction === "reject");
+
+  // The public dmarc.evaluate must reject a multi-@ From the same way, so a
+  // direct caller can't trigger the leftmost-@ derivation.
+  var badFromThrew = null;
+  try {
+    await b.mail.dmarc.evaluate({ from: "x@attacker.example@victim.example",
+      spf: { result: "pass", domain: "attacker.example" }, dkim: [], dnsLookup: dnsLookup });
+  } catch (e) { badFromThrew = e; }
+  check("dmarc.evaluate: a multi-@ From is refused as malformed (mail-auth/dmarc-bad-from)",
+        badFromThrew && /dmarc-bad-from/.test(badFromThrew.code || ""));
 }
 
 // RFC 7489 §6.6.2 — a fail verdict computed while SPF or DKIM returned
@@ -1593,6 +1650,7 @@ async function run() {
   await testDmarcEvaluateNpPolicy();
   await testInboundVerifyAlignedPass();
   await testInboundVerifySpoofRejected();
+  await testInboundVerifyMultiAtMailFromGatesNotThrows();
   await testInboundVerifyGroupSyntaxFromRejected();
   await testInboundVerifyFromHeaderDiscipline();
   await testInboundVerifyTemperrorPrecedence();

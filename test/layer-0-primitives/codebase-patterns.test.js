@@ -337,6 +337,7 @@ var VALID_ALLOW_CLASSES = {
   "inline-require-non-empty-string-validation": 1,
   "internal-binding-in-prose": 1,
   "internal-narrative-comment": 1,
+  "leftmost-domain-informational": 1,
   "list-without-pagination": 1,
   "math-random-noncrypto-jitter-sampling": 1,
   "no-number-money-arithmetic": 1,
@@ -2204,6 +2205,52 @@ function testUrlSearchParamsConcatEscapesAmpersand() {
     }
   }
   _report("a URLSearchParams query built by string concatenation must escape \"&\" in the concatenated value", bad);
+}
+
+// ---- Pattern: email-domain via split("@")[1] must reject a multi-@ addr-spec ----
+// An RFC 5322 addr-spec has exactly one "@". str.split("@")[1] pulls the
+// LEFTMOST segment, so on a multi-@ string (x@attacker@victim) it derives
+// attacker's domain — while a rightmost-@ parser (lastIndexOf) derives victim.
+// When one site authorizes/routes on the leftmost domain and another gates on
+// the rightmost, DMARC/SPF authorizes a domain the attacker controls while the
+// displayed From is the victim's (CWE-290), or outbound delivery routes to an
+// unintended host. Every leftmost-@ domain pull must first reject a multi-@
+// address (str.indexOf("@") !== str.lastIndexOf("@")) within its function; a
+// purely informational, non-routing use is marked inline.
+function testEmailDomainDerivationGuardsMultiAt() {
+  var bad = [];
+  var files = _libFiles();
+  var SPLIT_RE = /\.split\(\s*["']@["']\s*\)\s*\[\s*1\s*\]/;     // leftmost-@ domain pull
+  var GUARD_RE = /lastIndexOf\(\s*["']@["']\s*\)/;               // single-@ rejection anchor
+  var FN_RE    = /^\s*(?:async\s+)?function\b/;                  // function-head boundary
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    if (content.indexOf('split("@")') === -1 && content.indexOf("split('@')") === -1) continue;
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) continue;            // comment line
+      if (!SPLIT_RE.test(line)) continue;
+      // Safe iff a single-@ rejection (lastIndexOf "@") appears on this line or
+      // anywhere above it within the same function body.
+      var guarded = GUARD_RE.test(line);
+      for (var w = li - 1; w >= 0 && !guarded && w >= li - 200; w--) {
+        if (GUARD_RE.test(lines[w])) { guarded = true; break; }
+        if (FN_RE.test(lines[w])) break;                         // hit the function head, no guard
+      }
+      if (!guarded) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "email-domain derived via str.split(\"@\")[1] (the LEFTMOST segment). On a multi-@ addr-spec (x@attacker@victim) this authorizes/routes to attacker's domain while a rightmost-@ parser reads victim — the DMARC/SPF-alignment + delivery-routing bypass class (CWE-290). Reject a multi-@ address first (str.indexOf(\"@\") !== str.lastIndexOf(\"@\")), or mark an informational non-routing use with // allow:leftmost-domain-informational.",
+        });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "leftmost-domain-informational");
+  _report("an email-domain derivation via split(\"@\")[1] must first reject a multi-@ addr-spec (single-@ guard)", bad);
 }
 
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
@@ -13611,6 +13658,7 @@ async function run() {
   testCertChainIssuanceUsesIssuerValidlyIssued();
   testDomainToAsciiRejectsUrlDelimiters();
   testUrlSearchParamsConcatEscapesAmpersand();
+  testEmailDomainDerivationGuardsMultiAt();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();
