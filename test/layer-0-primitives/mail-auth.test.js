@@ -799,6 +799,101 @@ async function testArcRealRoundtripVerifiesPass() {
         rv2.hops[0].amsResult === "pass" && rv2.hops[1].amsResult === "pass");
 }
 
+async function testArcFinalArInstanceForgery() {
+  // arcEvaluate surfaces finalAr — "the receiver's view of upstream auth
+  // results" — for downstream policy. The instance tag (i=) of every ARC
+  // header MUST be parsed identically by the indexing pass (which drives the
+  // AMS/AS crypto checks) and by the finalAr extraction. When the sealer's AMS
+  // h= omits arc-authentication-results (RFC-permitted; the verifier supports
+  // it), an attacker holding no key can inject a SECOND
+  // ARC-Authentication-Results whose instance is written so the strict indexer
+  // ignores it ("i = 1" with a space) while a looser finalAr parser still
+  // consumes it — forging the upstream auth-results on a chain that still
+  // verifies pass. finalAr must come from the same strictly-indexed hop the
+  // crypto validated. RED before the unification: attacked.finalAr carries
+  // "FORGED"; the chain still reports pass.
+  var nodeCrypto = require("crypto");
+  var arcKey = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var arcKeyPem = arcKey.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = arcKey.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var dnsLookup = async function (qname) {
+    if (qname === "arc._domainkey.relay-fa.example") return [["v=DKIM1; k=rsa; p=" + spkiB64]];
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+  var rfc822 =
+    "From: alice@example.com\r\n" +
+    "To: bob@example.com\r\n" +
+    "Subject: hello arc\r\n" +
+    "Date: Wed, 06 May 2026 12:00:00 +0000\r\n" +
+    "Message-ID: <fa-1@example.com>\r\n" +
+    "\r\n" +
+    "body body body\r\n";
+  // Sign with AAR EXCLUDED from the AMS h= — the RFC-permitted sealer shape the
+  // forgery rides (the AAR is not signature-covered, so an injected sibling is
+  // invisible to the AMS/AS crypto).
+  var hop1 = b.mail.arc.sign({
+    rfc822:            rfc822,
+    instance:          1,
+    authservId:        "relay-fa.example",
+    domain:            "relay-fa.example",
+    selector:          "arc",
+    privateKey:        arcKeyPem,
+    algorithm:         "rsa-sha256",
+    cv:                "none",
+    authResults:       "spf=pass smtp.mailfrom=alice@example.com",
+    headersToSign:     ["From", "To", "Subject", "Date", "Message-ID"],
+    excludeAarFromAms: true,
+  });
+
+  var clean = await b.mail.arc.evaluate(hop1.rfc822, { dnsLookup: dnsLookup, trustedSealers: ["relay-fa.example"] });
+  check("arc.evaluate: AAR-excluded-from-AMS chain still verifies pass",
+        clean.chainStatus === "pass");
+  check("arc.evaluate: finalAr is the genuine upstream AAR",
+        typeof clean.finalAr === "string" && /spf=pass/.test(clean.finalAr) &&
+        clean.finalAr.indexOf("FORGED") === -1);
+
+  // Inject a SECOND ARC-Authentication-Results AFTER the genuine one, using
+  // "i = 1" (the space the strict indexer rejects) so the crypto pass never
+  // sees it but a loose finalAr parser would.
+  var FORGED = "ARC-Authentication-Results: i = 1; attacker.example; dkim=pass header.d=victim.example (FORGED)\r\n";
+  var idx = hop1.rfc822.indexOf("ARC-Authentication-Results:");
+  var aarEnd = hop1.rfc822.indexOf("\r\n", idx) + 2;
+  var injected = hop1.rfc822.slice(0, aarEnd) + FORGED + hop1.rfc822.slice(aarEnd);
+
+  var attacked = await b.mail.arc.evaluate(injected, { dnsLookup: dnsLookup, trustedSealers: ["relay-fa.example"] });
+  check("arc.evaluate: an injected loose-i= AAR does not change the crypto verdict (still pass)",
+        attacked.chainStatus === "pass");
+  check("arc.evaluate: finalAr is NOT forged by an injected loose-i= AAR",
+        typeof attacked.finalAr === "string" &&
+        attacked.finalAr.indexOf("FORGED") === -1 && /spf=pass/.test(attacked.finalAr));
+}
+
+function testArcSignExcludeAarFromAms() {
+  // RFC 8617 §5.1.1 — the AMS h= should cover arc-authentication-results so
+  // receivers that canonicalize it (M365, Gmail) verify the chain; the signer
+  // auto-prepends it. `excludeAarFromAms: true` opts out (deprecated). The opt
+  // was documented + read but absent from the validate allow-list, so passing
+  // it threw "unknown option" — the opt-out was unreachable. Assert both the
+  // default (AAR present in h=) and the opt-out (AAR absent).
+  var nodeCrypto = require("crypto");
+  var key = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var keyPem = key.privateKey.export({ format: "pem", type: "pkcs8" });
+  var rfc822 = "From: a@x.example\r\nTo: b@y.example\r\nSubject: s\r\nDate: Wed, 06 May 2026 12:00:00 +0000\r\nMessage-ID: <e-1@x.example>\r\n\r\nbody\r\n";
+  var base = {
+    rfc822: rfc822, instance: 1, authservId: "x.example", domain: "x.example",
+    selector: "arc", privateKey: keyPem, algorithm: "rsa-sha256", cv: "none",
+    authResults: "spf=pass", headersToSign: ["From", "To", "Subject"],
+  };
+  var def = b.mail.arc.sign(base);
+  check("arc.sign: default AMS h= covers arc-authentication-results (auto-prepended)",
+        /h=[^;]*arc-authentication-results/i.test(def.ams));
+  var excluded = b.mail.arc.sign(Object.assign({}, base, { excludeAarFromAms: true }));
+  check("arc.sign: excludeAarFromAms is accepted (no longer an unknown-option throw)",
+        typeof excluded.ams === "string");
+  check("arc.sign: excludeAarFromAms omits arc-authentication-results from the AMS h=",
+        !/h=[^;]*arc-authentication-results/i.test(excluded.ams));
+}
+
 // ---- DMARCbis (B1) — psd= / np= / org-domain via PSL ----
 
 function testDmarcParseBisTags() {
@@ -1671,6 +1766,8 @@ async function run() {
   testArcSignSurface();
   testArcSignChain();
   await testArcRealRoundtripVerifiesPass();
+  await testArcFinalArInstanceForgery();
+  testArcSignExcludeAarFromAms();
   testDkimVerifySurface();
   await testDkimVerifyRoundTrip();
   await testDkimVerifyNoSignature();

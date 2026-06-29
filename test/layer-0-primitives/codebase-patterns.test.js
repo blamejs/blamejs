@@ -2378,6 +2378,43 @@ function testQueueRedisGateLuaResultCaptured() {
   _report("queue-redis complete()/fail() must capture + gate the inflight-transition LUA result (COMPLETE_LUA / FAIL_LUA)", bad);
 }
 
+// ---- Pattern: ARC instance (i=) parsing must route through _arcInstanceOf ----
+// The ARC instance tag is parsed in several passes: the indexing pass that
+// drives the AMS/AS crypto checks, the AMS h= retention test, and the finalAr
+// surfacing in arcEvaluate. If any pass uses a looser i= regex than the
+// indexer (allowing "i = 1" with a space, or unbounded digits), an attacker
+// can inject an ARC-Authentication-Results that the strict crypto pass ignores
+// while the loose pass consumes it — forging the upstream auth-results
+// (finalAr) on a chain that still verifies pass, with no signing key. Every
+// instance read must go through the one shared _arcInstanceOf reader; flag any
+// instance-capturing regex (`i\s*=...(\d` or `i=(\d`) elsewhere in mail-auth.
+function testArcInstanceParseUsesSharedHelper() {
+  var bad = [];
+  var rel = "lib/mail-auth.js";
+  var content;
+  try {
+    content = fs.readFileSync(path.resolve(path.resolve(__dirname, "..", ".."), rel), "utf8");
+  } catch (_e) { _report("ARC i= instance parse routes through _arcInstanceOf", bad); return; }
+  var lines = content.split(/\r?\n/);
+  // Matches an instance-capturing regex literal: `i\s*=` (spaced form) or
+  // `i=(\d` (bare capture). Prose like "i=1" / "(i=)" lacks the digit capture
+  // and the `\s*`, so comments are not flagged.
+  var ARC_I_REGEX = /i\\s\*=|i=\(\\d/;
+  var inHelper = false;
+  for (var li = 0; li < lines.length; li++) {
+    if (/function _arcInstanceOf\b/.test(lines[li])) { inHelper = true; continue; }
+    if (inHelper) { if (/^\}/.test(lines[li])) inHelper = false; continue; }
+    if (ARC_I_REGEX.test(lines[li])) {
+      bad.push({
+        file:    rel,
+        line:    li + 1,
+        content: "an ARC instance (i=) parsing regex outside _arcInstanceOf — route it through _arcInstanceOf so the crypto-indexing pass and the finalAr / AMS passes parse the instance identically (a divergent parser forges finalAr on a passing chain).",
+      });
+    }
+  }
+  _report("ARC i= instance parsing must route through the shared _arcInstanceOf reader (no divergent regex)", bad);
+}
+
 // ---- Pattern 20: trustProxy bypass — raw req.headers x-forwarded-for read ----
 
 function testNoRawXffRead() {
@@ -13805,6 +13842,7 @@ async function run() {
   testFileUploadLifecycleChecksOwnership();
   testScopeWildcardUsesPermissionsMatch();
   testQueueRedisGateLuaResultCaptured();
+  testArcInstanceParseUsesSharedHelper();
   testNoRawXffRead();
   testNoRawForwardedProtoHostRead();
   testNoRawRemoteAddress();

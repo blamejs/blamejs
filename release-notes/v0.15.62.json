@@ -1,0 +1,35 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.62",
+  "date": "2026-06-29",
+  "headline": "ARC evaluation now reads each hop's instance with the same strict parser the signature checks use, so a crafted ARC-Authentication-Results header can no longer forge the upstream auth-results surfaced to downstream policy",
+  "summary": "b.mail.arc.evaluate returns finalAr — the most recent hop's ARC-Authentication-Results, the receiver's view of the upstream authentication results — which operators may key downstream decisions on. The instance tag (i=) on each ARC header was parsed by three different regexes: the indexing pass that drives the AMS/AS signature checks required i= with no surrounding space and at most three digits, while the finalAr extraction and the AMS header-retention test accepted a looser form (a space around =, unbounded digits). When a sealer signs without covering ARC-Authentication-Results in its AMS h= (permitted by RFC 8617 and supported by the verifier), an attacker holding no key could append a second ARC-Authentication-Results written so the strict pass ignored it while the loose pass consumed it — forging finalAr on a chain that still verified as pass. All ARC instance reads now route through one strict parser, so the evaluation surfaces the same hop the signatures validated. The release also repairs the b.mail.arc.sign excludeAarFromAms option (it was read but rejected by option validation, so the documented opt-out was unreachable) and routes the ARC-Seal signature's b= stripping through the shared tag-aware helper.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "ARC finalAr is read from the strictly-indexed hop, not a looser rescan",
+          "body": "b.mail.arc.evaluate extracted finalAr (and validated the per-hop AMS header retention) with a regex that accepted ARC instance tags the signature-indexing pass rejected — a space around i= or more than three digits. A sealer that omits ARC-Authentication-Results from its AMS h= leaves the AAR outside signature coverage; an attacker could then inject a second ARC-Authentication-Results whose instance the strict crypto pass skipped but the finalAr pass accepted, presenting attacker-chosen upstream auth-results on a chain that still reported pass. Every ARC instance read now goes through a single strict parser, so finalAr is always the AAR the chain's signatures actually covered."
+        },
+        {
+          "title": "b.mail.arc.sign accepts excludeAarFromAms again",
+          "body": "The excludeAarFromAms option was read when building the AMS h= list but was missing from the function's option allow-list, so passing it raised an unknown-option error — the documented opt-out could not be used. It is now accepted."
+        },
+        {
+          "title": "ARC-Seal b= stripping uses the shared tag-aware helper",
+          "body": "The ARC-Seal verification stripped the signature's b= value with a regex that could mis-zero a value containing b= inside another tag; it now uses the same tag-aware stripper as DKIM, so canonicalization matches the signer in every case."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "ARC instance parsing must use the shared strict reader",
+          "body": "A check fails the build if any ARC instance (i=) parsing regex is added outside the single shared reader, preventing a future divergence between the signature-indexing pass and the finalAr / header-retention passes."
+        }
+      ]
+    }
+  ]
+}
