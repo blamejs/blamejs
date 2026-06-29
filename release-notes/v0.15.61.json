@@ -1,0 +1,22 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.61",
+  "date": "2026-06-29",
+  "headline": "The Redis queue backend gates job completion and failure on the lease still being held, so a stale worker can no longer double-fire a cron repeat or resurrect a finished job",
+  "summary": "On the Redis-backed job queue, complete() and fail() acted on a job without confirming the calling worker still held its lease. When a worker's lease expired and the job was swept back to the ready set (and possibly re-leased and finished by another worker), the original worker finishing late still ran the post-completion side effects: complete() re-enqueued the cron repeat a second time and re-released flow children, and fail() re-queued the already-finished job for another attempt — re-executing work that had already succeeded. Both paths now gate on the atomic inflight-removal result, matching the SQL backends' existing `status='inflight'` ownership guard: complete() runs the cron/flow side effects only when its own call removed the job from the inflight set, and fail() retries or dead-letters only when it did. A late call from a worker that no longer owns the lease returns without mutating queue state.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Redis queue: complete() no longer double-fires a cron repeat or double-releases flow children from a stale worker",
+          "body": "The Redis queue's complete() ran the cron re-enqueue and flow-children release on every call, ignoring whether the atomic completion script had actually removed the job from the inflight set. A worker whose lease had expired (the job swept back to ready and re-leased elsewhere) finishing late therefore enqueued a second firing of a cron-recurring job and released its flow dependents again. complete() now checks the inflight-removal result and runs the side effects only when its own call performed the inflight-to-done transition, so a stale completion is a no-op."
+        },
+        {
+          "title": "Redis queue: fail() no longer resurrects an already-finished job",
+          "body": "The Redis queue's fail() unconditionally moved a job to ready (for a retry) or to the dead-letter set, without confirming the job was still inflight. A worker whose lease had expired and whose job had since been completed by another worker would, on failing late, re-queue that finished job for another attempt — re-executing work that had already succeeded (a duplicate side effect for non-idempotent jobs). fail() now removes the job from the inflight set atomically and only retries or dead-letters when that removal succeeded, mirroring the SQL backends' `status='inflight'` ownership guard; a stale failure mutates nothing and reports that it did not act."
+        }
+      ]
+    }
+  ]
+}

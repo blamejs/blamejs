@@ -349,6 +349,70 @@ async function run() {
     for (var ci2 = 0; ci2 < batch1.length; ci2++) await qr.complete(batch1[ci2].jobId);
     for (var ci3 = 0; ci3 < batch2.length; ci3++) await qr.complete(batch2[ci3].jobId);
 
+    // ---- stale completer must NOT double-fire a cron repeat ----
+    // Interleaving: worker A leases a cron-recurring job on a short lease,
+    // the lease expires and sweepExpired re-queues it, worker B re-leases
+    // and completes it (enqueuing the next firing). Worker A then finishes
+    // LATE. A's complete() no longer owns the lease, so it must be a no-op:
+    // it must NOT enqueue a SECOND next-firing. Before the inflight-removal
+    // guard, complete() ran the cron re-enqueue unconditionally → the
+    // schedule fired twice per period (compounding).
+    var QSTALE = "stale-cron";
+    var enqCron = await qr.enqueue(QSTALE, { tick: 1 },
+                                   { repeat: { cron: "* * * * *" } });
+    var cronLeaseA = await qr.lease(QSTALE, 50, 1);  // 50ms lease (worker A)
+    check("stale-cron: worker A leased the cron job",
+          cronLeaseA.length === 1 && cronLeaseA[0].jobId === enqCron.jobId);
+    await helpers.waitUntil(async function () {
+      var n = await qr.sweepExpired();
+      return n >= 1 ? n : false;
+    }, { label: "queue-redis stale-cron: A's lease expired + swept" });
+    var cronLeaseB = await qr.lease(QSTALE, 5000, 1);  // worker B re-leases
+    check("stale-cron: worker B re-leased the same job",
+          cronLeaseB.length === 1 && cronLeaseB[0].jobId === enqCron.jobId);
+    var cronCompB = await qr.complete(cronLeaseB[0].jobId);  // B completes — enqueues next firing
+    check("stale-cron: worker B complete() succeeds", cronCompB === true);
+    var cronCompA = await qr.complete(cronLeaseA[0].jobId);  // A finishes LATE (stale)
+    check("stale-cron: stale worker-A complete() reports it did not act",
+          cronCompA === false);
+    // size() = ZCARD(ready) + ZCARD(inflight); the only members are the
+    // enqueued next-firing(s). Exactly ONE (from B), not two.
+    var cronSize = await qr.size(QSTALE);
+    check("stale-cron: exactly ONE next firing scheduled (no double-fire)",
+          cronSize === 1);
+    await qr.purge(QSTALE);
+
+    // ---- stale fail() must NOT resurrect an already-finished job ----
+    // Same interleaving, but worker A FAILS late instead of completing. A
+    // had attempts left, so before the guard fail() re-queued the job for
+    // another attempt — resurrecting work worker B had already completed
+    // (a duplicate run for a non-idempotent job). The inflight-removal
+    // guard makes a stale fail() a no-op.
+    var QFSTALE = "stale-fail";
+    var enqFS = await qr.enqueue(QFSTALE, { work: 1 }, { maxAttempts: 3 });
+    var fsLeaseA = await qr.lease(QFSTALE, 50, 1);  // worker A, 50ms lease
+    check("stale-fail: worker A leased the job", fsLeaseA.length === 1);
+    await helpers.waitUntil(async function () {
+      var n = await qr.sweepExpired();
+      return n >= 1 ? n : false;
+    }, { label: "queue-redis stale-fail: A's lease expired + swept" });
+    var fsLeaseB = await qr.lease(QFSTALE, 5000, 1);  // worker B re-leases (attempts → 2)
+    check("stale-fail: worker B re-leased the same job",
+          fsLeaseB.length === 1 && fsLeaseB[0].jobId === enqFS.jobId);
+    var fsCompB = await qr.complete(fsLeaseB[0].jobId);  // B completes the job
+    check("stale-fail: worker B complete() succeeds", fsCompB === true);
+    var fsFailA = await qr.fail(fsLeaseA[0].jobId, "late-failure", 0);  // A fails LATE (stale)
+    check("stale-fail: stale worker-A fail() reports it did not act",
+          fsFailA === false);
+    // The finished job must stay finished — not re-queued to ready/dlq.
+    var fsSize = await qr.size(QFSTALE);
+    var fsDlq = await qr.dlqSize(QFSTALE);
+    check("stale-fail: finished job not resurrected (queue empty)",
+          fsSize === 0 && fsDlq === 0);
+    var fsReLease = await qr.lease(QFSTALE, 5000, 1);
+    check("stale-fail: finished job is not leasable again", fsReLease.length === 0);
+    await qr.purge(QFSTALE);
+
   } finally {
     await _flushTestPrefix(url, prefix);
     await qr.shutdown();
