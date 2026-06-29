@@ -69,14 +69,14 @@ async function testSpfVerifyMockedDns() {
   // A MAIL FROM addr-spec has exactly one '@'. split("@")[1] on a multi-@
   // string (x@attacker.example@example.com) takes the LEFTMOST segment, so SPF
   // would authorize attacker.example (which the attacker controls) instead of
-  // the envelope sender's real domain. Refuse a multi-@ MAIL FROM (CWE-290).
-  var spfMultiAtThrew = null;
-  try {
-    await b.mail.spf.verify({ ip: "192.0.2.5",
-      mailFrom: "x@attacker.example@example.com", dnsLookup: dnsLookup });
-  } catch (e) { spfMultiAtThrew = e; }
-  check("spf.verify: a multi-@ MAIL FROM is refused as malformed (spf-bad-domain)",
-        spfMultiAtThrew && /spf-bad-domain/.test(spfMultiAtThrew.code || ""));
+  // the envelope sender's real domain. A multi-@ MAIL FROM must surface as a
+  // permanent SPF error VERDICT, not a throw — spfVerify runs inside
+  // b.mail.inbound.verify, where a throw is caught as a pipeline temperror that
+  // onTemperror:"accept" would let through, skipping SPF/DMARC gating (CWE-290).
+  var spfMultiAt = await b.mail.spf.verify({ ip: "192.0.2.5",
+    mailFrom: "x@attacker.example@example.com", dnsLookup: dnsLookup });
+  check("spf.verify: a multi-@ MAIL FROM returns permerror (a verdict, not a throw)",
+        spfMultiAt.result === "permerror" && spfMultiAt.domain === null);
 }
 
 function testDmarcParse() {
@@ -194,6 +194,27 @@ async function testInboundVerifySpoofRejected() {
         v.spf.result === "fail" && v.dmarc.result === "fail" &&
         v.dmarc.recommendedAction === "reject");
   check("inbound.verify: no authservId → no A-R header", v.authResults === null);
+}
+
+async function testInboundVerifyMultiAtMailFromGatesNotThrows() {
+  // A multi-@ MAIL FROM (x@attacker@victim) must NOT throw out of the verify
+  // pipeline: a throw is caught by mail-server-mx as a temperror, which
+  // onTemperror:"accept" would let through, skipping SPF/DMARC gating for the
+  // spoofed From (CWE-290). It surfaces as an SPF permerror VERDICT, and the
+  // spoofed p=reject From is still gated to reject.
+  var dnsLookup = _inboundDns({
+    "_dmarc.spoofed.example/TXT": [["v=DMARC1; p=reject"]],
+  });
+  var v = await b.mail.inbound.verify({
+    ip: "203.0.113.9", helo: "evil.host",
+    mailFrom: "x@attacker.example@spoofed.example",
+    message: "From: ceo@spoofed.example\r\nSubject: urgent\r\n\r\nwire money\r\n",
+    dnsLookup: dnsLookup,
+  });
+  check("inbound.verify: multi-@ MAIL FROM → spf permerror (no throw out of the pipeline)",
+        v.spf.result === "permerror");
+  check("inbound.verify: multi-@ MAIL FROM still gates the spoofed From → reject",
+        v.dmarc.result === "fail" && v.dmarc.recommendedAction === "reject");
 }
 
 async function testInboundVerifyGroupSyntaxFromRejected() {
@@ -1629,6 +1650,7 @@ async function run() {
   await testDmarcEvaluateNpPolicy();
   await testInboundVerifyAlignedPass();
   await testInboundVerifySpoofRejected();
+  await testInboundVerifyMultiAtMailFromGatesNotThrows();
   await testInboundVerifyGroupSyntaxFromRejected();
   await testInboundVerifyFromHeaderDiscipline();
   await testInboundVerifyTemperrorPrecedence();
