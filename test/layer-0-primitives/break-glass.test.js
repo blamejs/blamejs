@@ -225,6 +225,49 @@ async function testGrantHappyPath() {
   }
 }
 
+// ---- Grant — requireScope wildcard is segment-aware ----
+
+async function testGrantRequireScopeWildcardSegmentAware() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("patients", {
+      columns: ["ssn"], factors: ["totp"], requireScope: "phi:admin",
+    });
+    function grantWithScopes(actorId, scopes) {
+      var totp = _validTotp();
+      return b.breakGlass.grant({
+        req:    _fakeReq({ user: { id: actorId, scopes: scopes } }),
+        table:  "patients",
+        reason: "investigating ticket #12345 for compliance review",
+        factor: { type: "totp", code: totp.code, secret: totp.secret },
+      });
+    }
+    // A partial-segment wildcard must NOT satisfy a different segment value:
+    // "phi:a*" is not the segment wildcard "phi:*", so it must not glass-unseal
+    // "phi:admin" (segment-aware match via b.permissions.match, not a raw
+    // string prefix where "phi:admin".indexOf("phi:a") === 0).
+    var denied = null;
+    try { await grantWithScopes("user-deny", ["phi:a*"]); }
+    catch (e) { denied = e; }
+    check("break-glass: partial-segment wildcard 'phi:a*' does NOT satisfy requireScope 'phi:admin'",
+          denied !== null && /breakglass\/missing-scope/.test(denied.code || ""));
+
+    // A proper segment wildcard "phi:*" DOES satisfy it (legit wildcard preserved).
+    var okWild = await grantWithScopes("user-wild", ["phi:*"]);
+    check("break-glass: segment wildcard 'phi:*' satisfies requireScope 'phi:admin'",
+          okWild && typeof okWild.id === "string");
+
+    // The exact scope satisfies it.
+    var okExact = await grantWithScopes("user-exact", ["phi:admin"]);
+    check("break-glass: exact scope satisfies requireScope",
+          okExact && typeof okExact.id === "string");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- Grant — refused paths ----
 
 async function testGrantRefusalPaths() {
@@ -1128,6 +1171,7 @@ async function run() {
   await testPolicyCRUD();
   await testPolicyValidation();
   await testGrantHappyPath();
+  await testGrantRequireScopeWildcardSegmentAware();
   await testGrantRefusalPaths();
   await testConcurrentTotpGrantReplay();
   await testUnsealRowLifecycle();

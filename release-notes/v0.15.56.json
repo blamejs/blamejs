@@ -1,0 +1,31 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.56",
+  "date": "2026-06-29",
+  "headline": "Break-glass and dual-control wildcard scope matching is now segment-aware, and the JMAP cross-tenant gate validates every account-id argument (including `fromAccountId`), closing two authorization gaps",
+  "summary": "Two authorization gates under-checked their input. b.breakGlass and b.dualControl matched a wildcard scope/role by stripping a trailing \"*\" and doing a raw string-prefix comparison (requireScope.indexOf(prefix) === 0), which ignores \":\" segment boundaries — so a partial-segment grant like \"phi:a*\" satisfied a required \"phi:admin\", letting a holder break-glass-unseal or approve a flow they were not scoped for. Both now match through the canonical, segment-aware b.permissions.match, so only an exact scope or a whole-segment wildcard (\"phi:*\") satisfies the requirement. Separately, the JMAP server's cross-tenant gate validated only a method call's destination accountId, not the fromAccountId that /copy methods (Email/copy, CalendarEvent/copy — RFC 8620 §5.4) read their SOURCE account from — so an actor could name a foreign fromAccountId and copy another tenant's data. The gate now validates every account-id argument the call names.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Break-glass / dual-control wildcard scope matching is segment-aware",
+          "body": "b.breakGlass grant (requireScope) and b.dualControl approval (approverRoles) matched a wildcard-shaped actor scope/role by stripping its trailing \"*\" and testing requireScope.indexOf(prefix) === 0 — a raw string prefix that ignores the \":\" segment structure. A partial-segment grant therefore over-matched: \"phi:a*\" satisfied \"phi:admin\" (and \"p*\" satisfied any \"phi:...\"), so an actor with a narrower grant could break-glass-unseal sealed data or approve a dual-control flow they were not authorized for. Both sites now match through b.permissions.match, where \"*\" must occupy a whole \":\"-delimited segment — \"phi:*\" still satisfies \"phi:admin\", but \"phi:a*\" does not. Actor scopes/roles flow from operator-trusted assignment, so this tightens a defense-in-depth gate rather than a request-controlled bypass."
+        },
+        {
+          "title": "JMAP cross-tenant gate validates every account-id argument, not only the destination",
+          "body": "The JMAP server rejects a method call that names an accountId outside the actor's enumerated set (RFC 8620 §3.6.1). It checked only accountId, but /copy methods (Email/copy, CalendarEvent/copy — RFC 8620 §5.4) also carry fromAccountId, the SOURCE account they read from. An actor enumerated for their own destination account could therefore name a foreign fromAccountId and have the operator's copy handler read another tenant's messages. The gate now validates every account-id argument (any *AccountId) against the actor's enumerated accounts before the handler runs, so a foreign source account is refused with accountNotFound."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Scope/role wildcard matching must use b.permissions.match",
+          "body": "A codebase-patterns detector flags the hand-rolled wildcard idiom (a trailing-\"*\" check plus a slice(0,-1) strip plus a raw indexOf(prefix)===0 prefix match), so a new authorization gate cannot reintroduce a segment-unaware scope match instead of routing through b.permissions.match."
+        }
+      ]
+    }
+  ]
+}
