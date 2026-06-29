@@ -413,6 +413,55 @@ async function run() {
     check("stale-fail: finished job is not leasable again", fsReLease.length === 0);
     await qr.purge(QFSTALE);
 
+    // ---- lease fencing: a stale completer must NOT steal a RE-LEASED,
+    //      still-in-progress job (the harder window the inflight-removal
+    //      guard alone can't catch) ----
+    // Worker A leases on a short lease; it expires and is swept; worker B
+    // re-leases (attempts bumped to 2) and is STILL RUNNING (has not
+    // completed). Worker A then finishes late and calls complete() with the
+    // attempts value IT leased (1). The inflight set contains the jobId again
+    // under B's lease, so a jobId-only guard would let A mark B's live job
+    // done — the attempts fence rejects it.
+    var QFENCE = "release-steal";
+    var enqFen = await qr.enqueue(QFENCE, { work: 1 }, { maxAttempts: 5 });
+    var fenLeaseA = await qr.lease(QFENCE, 50, 1);
+    var attemptA = fenLeaseA[0].attempts;
+    check("fence: worker A leased at attempts=1", attemptA === 1);
+    await helpers.waitUntil(async function () {
+      var n = await qr.sweepExpired();
+      return n >= 1 ? n : false;
+    }, { label: "queue-redis fence: A's lease expired + swept" });
+    var fenLeaseB = await qr.lease(QFENCE, 5000, 1);  // B re-leases, attempts → 2, still running
+    check("fence: worker B re-leased at attempts=2",
+          fenLeaseB.length === 1 && fenLeaseB[0].jobId === enqFen.jobId && fenLeaseB[0].attempts === 2);
+    var fenCompA = await qr.complete(fenLeaseA[0].jobId, { attempt: attemptA });  // A finishes LATE
+    check("fence: stale worker-A complete() does NOT steal the re-leased job",
+          fenCompA === false);
+    // B's lease is intact — B can still complete its own job.
+    var fenCompB = await qr.complete(fenLeaseB[0].jobId, { attempt: 2 });
+    check("fence: worker B (current lease holder) can still complete", fenCompB === true);
+    await qr.purge(QFENCE);
+
+    // Same fence on fail(): a stale fail() must not re-queue / DLQ a job a
+    // different worker currently holds and is running.
+    var QFENCEF = "release-steal-fail";
+    var enqFenF = await qr.enqueue(QFENCEF, { work: 1 }, { maxAttempts: 5 });
+    var fenFLeaseA = await qr.lease(QFENCEF, 50, 1);
+    var attemptFA = fenFLeaseA[0].attempts;
+    await helpers.waitUntil(async function () {
+      var n = await qr.sweepExpired();
+      return n >= 1 ? n : false;
+    }, { label: "queue-redis fence-fail: A's lease expired + swept" });
+    var fenFLeaseB = await qr.lease(QFENCEF, 5000, 1);  // B re-leases, still running
+    check("fence-fail: worker B re-leased at attempts=2",
+          fenFLeaseB.length === 1 && fenFLeaseB[0].jobId === enqFenF.jobId && fenFLeaseB[0].attempts === 2);
+    var fenFailA = await qr.fail(fenFLeaseA[0].jobId, "late", { attempt: attemptFA });  // A fails LATE
+    check("fence-fail: stale worker-A fail() does NOT clobber the re-leased job",
+          fenFailA === false);
+    var fenFCompB = await qr.complete(fenFLeaseB[0].jobId, { attempt: 2 });
+    check("fence-fail: worker B (current lease holder) can still complete", fenFCompB === true);
+    await qr.purge(QFENCEF);
+
   } finally {
     await _flushTestPrefix(url, prefix);
     await qr.shutdown();
