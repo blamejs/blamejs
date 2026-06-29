@@ -105,7 +105,7 @@ function testContentDigestTamper() {
     keyid:      "k1",
     alg:        "ed25519",
     privateKey: keys.privateKey,
-    covered:    ["@method", "content-digest"],
+    covered:    ["@method", "@target-uri", "content-digest"],
   });
   var tamperedMsg = Object.assign({}, msg, {
     body:    "tampered-body",
@@ -137,7 +137,7 @@ function testContentDigestMemberAnchored() {
     keyid:      "k1",
     alg:        "ed25519",
     privateKey: keys.privateKey,
-    covered:    ["@method", "content-digest"],
+    covered:    ["@method", "@target-uri", "content-digest"],
   });
   check("#178 a valid sha3-512 content-digest member parses + matches",
         /^sha3-512=:/.test(signed.headers["Content-Digest"]));
@@ -232,7 +232,7 @@ function testQueryParam() {
   });
   var verified = b.crypto.httpSig.verify(
     Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) }),
-    { keyResolver: function () { return keys.publicKey; } }
+    { keyResolver: function () { return keys.publicKey; }, requiredComponents: [] }
   );
   check("query-param coverage round-trips",
         verified.valid === true);
@@ -280,7 +280,7 @@ function testQueryParamValueCanonicalizedToPercent20() {
   // And the self-round-trip still verifies (sign + verify share the resolver).
   var verified = b.crypto.httpSig.verify(
     Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) }),
-    { keyResolver: function () { return keys.publicKey; } });
+    { keyResolver: function () { return keys.publicKey; }, requiredComponents: [] });
   check("the +-encoded @query-param message round-trips", verified.valid === true);
 }
 
@@ -305,7 +305,7 @@ function testQueryParamEmittedNameCanonicalized() {
         !/;name="my key"/.test(signed.headers["Signature-Input"]));
   var verified = b.crypto.httpSig.verify(
     Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) }),
-    { keyResolver: function () { return keys.publicKey; } });
+    { keyResolver: function () { return keys.publicKey; }, requiredComponents: [] });
   check("a whitespace query-param name round-trips after canonicalization",
         verified.valid === true);
 }
@@ -333,7 +333,7 @@ function testQueryParamVerifiesConformantPeer() {
     "Signature-Input": "sig1=" + covered + params,
     "Signature":       "sig1=:" + sig.toString("base64") + ":",
   }) });
-  var verified = b.crypto.httpSig.verify(full, { keyResolver: function () { return keys.publicKey; } });
+  var verified = b.crypto.httpSig.verify(full, { keyResolver: function () { return keys.publicKey; }, requiredComponents: [] });
   check("verify accepts a conformant peer's canonical @query-param base (hex-case + encoded &)",
         verified.valid === true);
 }
@@ -393,9 +393,102 @@ function testQueryParamDecodedNameWithDelimiter() {
         !/;name="a"/.test(signed.headers["Signature-Input"]));
   var verified = b.crypto.httpSig.verify(
     Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) }),
-    { keyResolver: function () { return keys.publicKey; } });
+    { keyResolver: function () { return keys.publicKey; }, requiredComponents: [] });
   check("decoded-name-with-& message round-trips (covers a%26b, not a)",
         verified.valid === true);
+}
+
+// RFC 9421 §3.2 — the verifier MUST refuse a signature that does not cover the
+// components the application requires. Pre-fix, verify() built the signature
+// base solely from the attacker-supplied Signature-Input covered set and never
+// checked coverage, so an @authority-only signature was accepted after the
+// method / target-uri / body were changed (the verifier acts on a request whose
+// security-relevant parts were never signed). This pins both the explicit
+// requiredComponents refusal AND the body-aware secure default.
+function testRequiredComponentsCoverage() {
+  var keys = _genEd25519();
+
+  // (a) Under-covered signature: covers ONLY @authority.
+  var underMsg = {
+    method:  "GET",
+    url:     "https://api.example.com/x?ref=abc",
+    headers: { host: "api.example.com" },
+  };
+  var underSigned = b.crypto.httpSig.sign(underMsg, {
+    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
+    covered: ["@authority"],
+  });
+  var underHeaders = Object.assign({}, underMsg.headers, underSigned.headers);
+
+  // Explicit requiredComponents → REFUSED (the signature is cryptographically
+  // valid, but @method / @target-uri are not covered). RED on the pre-fix tree:
+  // requiredComponents was ignored, so this returned { valid: true }.
+  var refusedExplicit = b.crypto.httpSig.verify(
+    Object.assign({}, underMsg, { headers: underHeaders }),
+    { keyResolver: function () { return keys.publicKey; },
+      requiredComponents: ["@method", "@target-uri"] });
+  check("under-covered signature refused when requiredComponents demands @method/@target-uri",
+        refusedExplicit.valid === false && refusedExplicit.reason === "missing-required-component");
+
+  // The secure DEFAULT (no requiredComponents passed) also refuses it —
+  // coverage enforcement is on by default, not opt-in.
+  var refusedDefault = b.crypto.httpSig.verify(
+    Object.assign({}, underMsg, { headers: underHeaders }),
+    { keyResolver: function () { return keys.publicKey; } });
+  check("under-covered signature refused by the secure default (@method/@target-uri required)",
+        refusedDefault.valid === false && refusedDefault.reason === "missing-required-component");
+
+  // The captured @authority-only signature replayed across a DIFFERENT method +
+  // path is refused (the concrete attack the finding pins).
+  var replay = b.crypto.httpSig.verify(
+    { method: "DELETE", url: "https://api.example.com/admin/delete-all",
+      headers: Object.assign({ host: "api.example.com" }, underSigned.headers) },
+    { keyResolver: function () { return keys.publicKey; } });
+  check("replay of @authority-only signature across method+path is refused",
+        replay.valid === false && replay.reason === "missing-required-component");
+
+  // (b) Positive control — a fully-covered signature still verifies, both under
+  // the explicit required set and under the secure default (no over-tightening).
+  var fullMsg = {
+    method:  "POST",
+    url:     "https://api.example.com/orders",
+    headers: { host: "api.example.com" },
+    body:    '{"amount":1}',
+  };
+  var fullSigned = b.crypto.httpSig.sign(fullMsg, {
+    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
+    covered: ["@method", "@target-uri", "@authority", "content-digest"],
+  });
+  var fullHeaders = Object.assign({}, fullMsg.headers, fullSigned.headers);
+  var okExplicit = b.crypto.httpSig.verify(
+    Object.assign({}, fullMsg, { headers: fullHeaders }),
+    { keyResolver: function () { return keys.publicKey; },
+      requiredComponents: ["@method", "@target-uri"] });
+  check("fully-covered signature verifies under explicit requiredComponents", okExplicit.valid === true);
+  var okDefault = b.crypto.httpSig.verify(
+    Object.assign({}, fullMsg, { headers: fullHeaders }),
+    { keyResolver: function () { return keys.publicKey; } });
+  check("fully-covered bodied signature verifies under the secure default (incl. content-digest)",
+        okDefault.valid === true);
+
+  // (c) Body-aware rule: a bodied request whose signer omitted content-digest is
+  // refused by the default; requiredComponents:[] waives the floor (audited
+  // escape hatch — the signature itself is still verified).
+  var noDigest = b.crypto.httpSig.sign(fullMsg, {
+    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
+    covered: ["@method", "@target-uri", "@authority"],   // content-digest omitted
+  });
+  var noDigestHeaders = Object.assign({}, fullMsg.headers, noDigest.headers);
+  var refusedNoDigest = b.crypto.httpSig.verify(
+    Object.assign({}, fullMsg, { headers: noDigestHeaders }),
+    { keyResolver: function () { return keys.publicKey; } });
+  check("bodied request without content-digest coverage refused by default",
+        refusedNoDigest.valid === false && refusedNoDigest.reason === "missing-required-component");
+  var waived = b.crypto.httpSig.verify(
+    Object.assign({}, fullMsg, { headers: noDigestHeaders }),
+    { keyResolver: function () { return keys.publicKey; }, requiredComponents: [] });
+  check("requiredComponents:[] waives the coverage floor (signature itself still verifies)",
+        waived.valid === true);
 }
 
 async function run() {
@@ -413,6 +506,7 @@ async function run() {
   testQueryParamVerifiesConformantPeer();
   testQueryParamRfc9421PublishedVectors();
   testQueryParamDecodedNameWithDelimiter();
+  testRequiredComponentsCoverage();
 }
 
 module.exports = { run: run };
