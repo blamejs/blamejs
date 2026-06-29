@@ -309,6 +309,21 @@ async function run() {
   check("middleware: grant short-circuits",        nextG === 1);
   check("middleware: req.user.stepUp.byGrant",     reqG.user.stepUp && reqG.user.stepUp.byGrant === true);
 
+  // ---- middleware: a grant minted for ONE user must not elevate ANOTHER ----
+  // grantToken above was minted for subject "u-grant"; a request authenticated
+  // as a DIFFERENT principal ("u-other") must not be elevated by it (cross-user
+  // step-up grant replay). The grant carries its subject and must be bound to
+  // the authenticated principal.
+  var nextX = 0;
+  var reqX = _mockReq({ "x-step-up-grant": grantToken.token },
+                      { id: "u-other", claims: { acr: "loa1" } });
+  var resX = _mockRes();
+  grantMw(reqX, resX, function () { nextX += 1; });
+  check("middleware: cross-user grant does NOT elevate (subject binding) → 401",
+        nextX === 0 && resX._sent.status === 401);
+  check("middleware: cross-user grant did not attach stepUp",
+        !(reqX.user && reqX.user.stepUp));
+
   // ---- middleware: grant scope mismatch falls through to claims ----
   var nextS = 0;
   var grantTokenWrong = b.auth.stepUp.grant.create({
