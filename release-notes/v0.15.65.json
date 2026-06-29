@@ -23,7 +23,7 @@
       "items": [
         {
           "title": "b.auth.lockout instances expose lock()",
-          "body": "lock(key, { durationMs?, untilMs?, reason? }) forces an account into lockout immediately — the operator action behind an ATO kill-switch or incident response — independent of the failure counter, defaulting to a long admin lock that requires an explicit unlock(). It uses the same atomic compare-and-set as the failure counter and throws if the lock cannot be committed (the caller must know it did not lock)."
+          "body": "lock(key, { durationMs?, untilMs?, reason? }) forces an account into lockout immediately — the operator action behind an ATO kill-switch or incident response — independent of the failure counter, defaulting to a long admin lock. A forced lock is released only by an explicit unlock(): recordSuccess() does not clear it, so a successful login by someone who still holds the compromised password cannot release a kill-switch lock. It uses the same atomic compare-and-set as the failure counter and throws if the lock cannot be committed (the caller must know it did not lock)."
         }
       ]
     }

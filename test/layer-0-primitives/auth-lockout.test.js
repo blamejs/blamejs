@@ -584,6 +584,18 @@ async function testLockForcesLockout() {
   // unlock clears it.
   var had = await lockout.unlock("victim");
   check("lock: unlock clears the forced lock", had === true && (await lockout.check("victim")).locked === false);
+
+  // A forced (ATO/admin) lock must SURVIVE recordSuccess — a successful login
+  // by someone who still holds the compromised password must not release the
+  // kill-switch lock. RED before the forced flag: recordSuccess deletes it.
+  await lockout.lock("victim2", { reason: "ato", durationMs: 60 * 1000 });
+  await lockout.recordSuccess("victim2");
+  check("lock: a forced lock survives recordSuccess (compromised-password login can't clear it)",
+        (await lockout.check("victim2")).locked === true);
+  // Only an explicit unlock() releases a forced lock.
+  await lockout.unlock("victim2");
+  check("lock: unlock() releases the forced lock", (await lockout.check("victim2")).locked === false);
+
   // A lock whose resolved instant is not in the future is refused.
   var threw = false;
   try { await lockout.lock("victim", { untilMs: Date.now() - 1000 }); } catch (_e) { threw = true; }
