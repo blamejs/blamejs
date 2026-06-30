@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.67",
+  "date": "2026-06-29",
+  "headline": "Path-scoped router middleware can no longer be bypassed by percent-encoding the request path: the router refuses an encoded path separator or null byte and decodes the path once, so a security gate and the resource it guards always agree on the path",
+  "summary": "b.router supports path-scoped middleware — router.use('/admin', gate) runs a gate (requireAal, bearerAuth, requireMtls, csrfProtect, …) only for requests under a prefix. The gate matched the request path with its percent-escapes intact, while downstream consumers such as b.staticServe and router.serveStatic percent-decode the path before resolving the file. Because the gate and the consumer disagreed on decoding, an attacker could encode a character in the guarded segment (/%61dmin/secret) or hide a separator (/admin%2fsecret) so the gate's segment match missed while the consumer still reached the protected resource — an authentication, authorization, CSRF, or mTLS bypass for any resource served under a scoped gate. The router now refuses a request whose path contains an encoded path separator (%2f, %5c) or null byte (%00), and decodes the remaining escapes exactly once, so the gate, the route matcher, and every consumer act on a single canonical path. A request that legitimately needs those bytes was always ambiguous and is now rejected with 400 rather than silently routed two different ways. Route parameters captured from the path are now percent-decoded, matching the conventional behavior.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Path-scoped middleware is no longer bypassable via percent-encoded paths",
+          "body": "A gate mounted with router.use(prefix, mw) matched req.pathname with percent-escapes preserved, but b.staticServe and router.serveStatic decode the path before resolving the resource. An attacker could percent-encode a character in the guarded segment (/%61dmin/secret, where %61 is 'a') so the segment compare saw '%61dmin' and skipped the gate, or hide a separator (/admin%2fsecret) so the gate saw one segment while the file resolver saw two — in both cases the protected resource was served without the gate running. The router now rejects a path containing an encoded separator (%2f/%5c) or null byte (%00) with 400, and percent-decodes the path exactly once before any path-scoped decision, so the gate and the resource it protects always resolve the same path. Operators who mounted authentication, authorization, CSRF, or mTLS gates with the scoped form no longer have a silent bypass beneath them."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Encoded path separators and null bytes in the request path are refused; route params are decoded",
+          "body": "A request whose path contains %2f, %5c, or %00 is answered with 400 Bad Request — these have no unambiguous routing meaning (a consumer would treat them as a separator or terminator), and a request that needs a literal slash in a value should carry it in a query parameter. Path parameters captured by a route pattern (for example :id) are now percent-decoded before they reach the handler in req.params, matching conventional router behavior; handlers that previously received a still-encoded value will now receive the decoded form."
+        }
+      ]
+    }
+  ]
+}
