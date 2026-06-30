@@ -1,0 +1,39 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.15.66",
+  "date": "2026-06-29",
+  "headline": "Recursive serializers and parsers refuse pathologically deep input with a typed error instead of overflowing the stack and crashing the process",
+  "summary": "Several of the framework's recursive walkers over attacker-reachable input lacked an effective nesting cap, so a deeply nested value could exhaust the V8 call stack and throw an uncaught RangeError — crashing the process (a denial of service). b.canonicalJson is the most exposed: content-credentials verification canonicalises an untrusted manifest before it checks the signature, so a hostile credential could crash a verifier pre-authentication. b.jsonSchema.validate had a depth guard, but its limit was set so high the stack overflowed before the guard could fire, so validating a request body against a recursive schema crashed rather than returning a typed error. b.i18n.messageFormat parsed and rendered nested plural/select cases with no cap. Each walker now throws a typed framework error well before native overflow, and legitimate (even deeply nested) input is unaffected. The release also corrects DNSSEC signature-window comparison to the RFC 1982 serial-number arithmetic the spec requires, and makes the Redis client treat a malformed reply frame as a connection fault rather than letting it crash the host.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Canonical JSON refuses excessively nested input before it can overflow the stack",
+          "body": "b.canonicalJson.stringify and stringifyJcs walk the value recursively. They detected circular references but had no nesting cap, so a deeply nested (acyclic) object or array overflowed the V8 stack with an uncaught RangeError. This is reachable before authentication: content-credentials verification canonicalises the untrusted manifest to hash it before verifying the signature, so a hostile credential could crash the verifier. Both serializers now throw a typed nesting-depth error at a depth far beyond any legitimate signed document and well short of native overflow."
+        },
+        {
+          "title": "JSON Schema validation depth guard now fires before the stack overflows",
+          "body": "b.jsonSchema.validate caps subschema-validation nesting to defend against a recursive schema (for example items pointing back at the root with $ref) applied to a deeply nested instance — both attacker-controlled when validating a request body. The cap was set so high the V8 stack overflowed first, so the guard never ran and a crafted body crashed the validator with an uncaught RangeError instead of the typed reference-depth error. The limit is now well under native overflow; legitimate documents — deeply nested or wide — continue to validate."
+        },
+        {
+          "title": "ICU MessageFormat refuses pathologically nested templates",
+          "body": "b.i18n.messageFormat.parse and format recurse once per nested plural/select case, with no depth cap. A template nested thousands of levels deep overflowed the stack. format() and parse() are public and b.i18n.t can render operator-supplied entries, so a hostile template is a denial-of-service vector; it now fails as a typed bad-template error. Real-world nesting (a handful of levels) is unaffected."
+        },
+        {
+          "title": "Redis client treats a malformed reply frame as a connection fault, not a crash",
+          "body": "The RESP decoder recurses on nested arrays with no depth cap, and the data handler did not guard the parse, so a malformed or hostilely deep frame from a server threw out of the socket callback and could crash the host. The decoder now caps reply nesting and any parse fault tears the socket down and rejects in-flight commands for a reconnect — the same path as any other lost connection."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "DNSSEC compares RRSIG validity windows with RFC 1982 serial arithmetic",
+          "body": "b.network.dns.dnssec compared an RRSIG's inception and expiration against the current time by magnitude. RFC 4034 §3.1.5 requires the 32-bit timestamps to be interpreted with RFC 1982 serial-number arithmetic, which agrees with a plain comparison only while the values stay below 2^31. A signature whose window straddles the 2^31 (January 2038) or 2^32 (February 2106) boundary was mis-ordered — an in-window signature rejected, or a stale one accepted. The comparison now masks the clock into the same 32-bit serial space and tests the wrapped signed delta."
+        }
+      ]
+    }
+  ]
+}
