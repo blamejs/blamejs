@@ -2,7 +2,7 @@
   "$schema": "../scripts/release-notes-schema.json",
   "version": "0.15.68",
   "date": "2026-07-02",
-  "headline": "The mail delivery-status, return-receipt, and ARC signature builders now refuse CR, LF, and NUL in the fields they place on message header lines, closing a header-injection path where a hostile original sender or a malicious peer MX could smuggle headers or forge report parts; archive entry names and SRS envelope rewriting reject the same bytes",
+  "headline": "A security-hardening release: mail delivery-status / return-receipt / ARC builders reject CR, LF, and NUL in header-line fields (header injection); the XML canonicalizer's nesting cap now actually fires (stack-overflow DoS on deeply-nested SAML/WebDAV input); and the Idempotency-Key replay cache is scoped to the authenticated principal (cross-actor response disclosure) — plus archive/SRS byte hardening",
   "summary": "b.mail composes RFC 3464 delivery-status notifications (b.mail.send.deliver(...).buildDsn, b.mailBounce.dsn.build), RFC 8098 message-disposition notifications (b.mailMdn.build), and RFC 8617 ARC signatures (b.mail.arc.sign) by interpolating operator- and peer-supplied values — recipient addresses, the reporting-MTA name, the remote server's 5xx diagnostic reply, and the ARC authserv-id / domain / selector — into `Name: value` header lines. A value containing a CR or LF let a hostile original sender (whose message is being bounced) or a malicious peer MX (whose 5xx reply is echoed into the DSN) inject an extra header or forge an additional multipart/report part. Structured fields (addresses, MTA names, identifiers) are now rejected outright, and the free-text 5xx diagnostic — which is legitimately multi-line — is folded to a single line. The same class is closed in two adjacent places: tar and zip entry names refuse CR/LF (a bare LF in an over-long tar name flowed into the POSIX pax extended header, where a crafted name could forge a `path=` record that overrides the ustar name and escapes the extraction directory), and SRS envelope-from rewriting refuses control characters in the address it re-emits as a MAIL FROM. A new b.safeBuffer.assertHeaderSafe primitive centralizes the reject-CR/LF/NUL check every header builder now composes.",
   "sections": [
     {
@@ -27,6 +27,23 @@
         {
           "title": "SRS envelope rewriting refuses control characters in the address",
           "body": "b.mail.srs rewrite / srs1Rewrite / reverse embed the address they are given into the SRS0/SRS1 envelope address that becomes a subsequent SMTP MAIL FROM. They now reject CR/LF/NUL in the input address so a malformed address cannot be smuggled into an envelope command."
+        },
+        {
+          "title": "The XML canonicalizer's nesting-depth cap now actually fires (stack-overflow DoS)",
+          "body": "b.xmlC14n.parse — the recursive-descent parser behind SAML and WebDAV canonicalization — carried a documented 200-level nesting cap that was dead: the depth counter was a per-frame-local incremented then decremented around each single recursive call, so it never exceeded 1 at the check. Deeply-nested untrusted XML recursed unbounded and overflowed the stack, crashing the process — a pre-authentication denial of service for any endpoint that canonicalizes attacker-supplied XML. The depth is now threaded through the recursion and enforced at entry, so nesting past the cap is refused before it can exhaust the stack."
+        },
+        {
+          "title": "The Idempotency-Key replay cache is scoped to the authenticated principal",
+          "body": "b.middleware.idempotencyKey keyed its replay/response cache slot solely on the client-supplied Idempotency-Key header, with no binding to the authenticated principal. Two principals presenting the same (shared or guessed) key collided: one was served the other's cached response (cross-actor disclosure), or an attacker could pre-seed a key to force a 422 on the real client (cross-actor denial). The slot is now scoped to the authenticated principal, resolved via b.requestHelpers.extractActorContext and overridable with the new opts.scopeFn. Mount the middleware after authentication so the request carries the principal; slots for unauthenticated requests share a single anonymous scope."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Refreshed the vendored public-suffix list and the pinned CI action SHAs",
+          "body": "The vendored Mozilla Public Suffix List (which backs registrable-domain boundaries in b.guardDomain and cookie-scope checks) is refreshed to its current upstream revision, and the SHA-pinned GitHub Actions in the release and scanning workflows are bumped to their latest upstream releases. No operator action required."
         }
       ]
     },
