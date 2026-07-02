@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.15.68",
-  "createdAt": "2026-07-02T19:24:12.411Z",
+  "createdAt": "2026-07-02T19:49:40.029Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49904,6 +49904,10 @@
           "arity": 2
         },
         "collectStream": {
+          "type": "function",
+          "arity": 2
+        },
+        "foldHeaderText": {
           "type": "function",
           "arity": 2
         },

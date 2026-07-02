@@ -259,6 +259,16 @@ function testDsnRejectsCrlfHeaderInjection() {
   check("DSN: injected reason cannot forge a part Content-Type",
     !/^Content-Type: text\/evil/m.test(folded));
 
+  // A NUL in the free-text reason is stripped by the fold, not serialized
+  // into the Diagnostic-Code header line (NUL is never valid in an RFC 5322
+  // header and downstream SMTP parsers treat it specially).
+  var withNul = deliver.buildDsn({
+    dsnFrom: "mailer-daemon@m.example", originalFrom: "alice@sender.com",
+    recipient: "bob@dest.com", reason: "550 full" + String.fromCharCode(0) + "evil",
+  });
+  check("DSN: NUL in reason is stripped from the output",
+    withNul.indexOf(String.fromCharCode(0)) === -1);
+
   // Structured fields (addresses, reporting-MTA name, enhanced status)
   // can never legitimately carry CR/LF/NUL — a bounce built from a
   // hostile original sender or peer fails closed instead of smuggling.

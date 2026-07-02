@@ -572,6 +572,15 @@ async function testDsnBuildRejectsCrlfInjection() {
   check("dsn build: folded diagnosticCode cannot start a header line",
     !/^X-Injected:/m.test(folded) && !/^Bcc:/m.test(folded));
 
+  // A NUL in the free-text diagnosticCode is stripped by the fold, not
+  // serialized into the Diagnostic-Code header line.
+  var nulDsn = b.mailBounce.dsn.build({
+    finalRecipient: "user@example.com", action: "failed", status: "5.1.1",
+    diagnosticCode: "smtp; 550 no user" + String.fromCharCode(0) + "evil",
+  });
+  check("dsn build: NUL in diagnosticCode stripped from output",
+    nulDsn.indexOf(String.fromCharCode(0)) === -1);
+
   // Structured fields (recipients, MTA names, RFC 5322 envelope headers)
   // fail closed on CR / LF / NUL.
   var e1 = threw(function () {

@@ -35,7 +35,11 @@
       "items": [
         {
           "title": "b.safeBuffer.assertHeaderSafe(value, label, ErrorClass, code)",
-          "body": "Throws when a string bound for a CRLF-delimited protocol line contains CR, LF, or a NUL byte, in the caller's own error domain. Structured header fields (addresses, domains, identifiers, MTA names) compose it to reject; free-text that may legitimately wrap is folded with the existing stripCrlf instead."
+          "body": "Throws when a string bound for a CRLF-delimited protocol line contains CR, LF, or a NUL byte, in the caller's own error domain. Structured header fields (addresses, domains, identifiers, MTA names) compose it to reject."
+        },
+        {
+          "title": "b.safeBuffer.foldHeaderText(value, replacement?)",
+          "body": "Folds free-text bound for a header line onto one line — replaces every CR and LF with the replacement (default a space) and removes every NUL. Used for values that may legitimately wrap, such as a multi-line SMTP 5xx reply echoed into a DSN diagnostic line, where rejecting would be too strict; unlike a plain CR/LF strip it also removes NUL, which is never valid in a header value and is treated specially by downstream mail parsers."
         }
       ]
     }

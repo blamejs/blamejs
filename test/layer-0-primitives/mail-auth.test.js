@@ -757,6 +757,12 @@ function testArcSignRejectsCrlfInjection() {
   var e4 = threw(function () { b.mail.arc.sign(withField("authservId", "relay" + String.fromCharCode(0) + "x")); });
   check("arc.sign: NUL in authservId throws arc-sign/bad-authserv",
     e4 && e4.code === "arc-sign/bad-authserv");
+  // authResults is placed verbatim on the ARC-Authentication-Results line —
+  // a NUL is a header-smuggling byte just like CR/LF, so it must be rejected
+  // (the prior guard only checked CR/LF).
+  var e5 = threw(function () { b.mail.arc.sign(withField("authResults", "spf=pass" + String.fromCharCode(0) + "x")); });
+  check("arc.sign: NUL in authResults throws arc-sign/bad-auth-results",
+    e5 && e5.code === "arc-sign/bad-auth-results");
 }
 
 // A relay's own freshly-signed ARC chain MUST verify as cv=pass. The
