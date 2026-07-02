@@ -5901,6 +5901,28 @@ var KNOWN_ANTIPATTERNS = [
     reason: "basicConstraints cA:TRUE enforcement is owned by x509Chain.issuerValidlyIssued / x509Chain.isCaCert; tsa/mail-bimi/mail-crypto-smime route through it. Any lib file calling X.checkIssued(Y) (Y!=X) directly bypasses the cA check and must use x509Chain instead. lib/x509-chain.js is the home of the primitive.",
   },
   {
+    id: "mail-report-header-builder-must-guard-crlf",
+    primitive: "b.safeBuffer.assertHeaderSafe",
+    scanScope: "lib",
+    // A DSN / MDN / ARC report-header builder interpolates operator- or
+    // peer-supplied fields (recipients, MTA names, the 5xx diagnostic
+    // reply, ARC authserv/domain/selector) into `Name: value\r\n` lines. An
+    // unguarded field lets a hostile original sender or a malicious peer MX
+    // smuggle a new header or forge a report part (CRLF injection). Every
+    // such field must route through safeBuffer.assertHeaderSafe (reject
+    // structured fields) or stripCrlf (fold free-text like the SMTP reply).
+    // The anchor matches a quoted report-header prefix immediately
+    // concatenated (`"Diagnostic-Code: smtp; " +`, `"ARC-Message-Signature: " +`)
+    // or the mail-bounce `_foldFieldValue(` choke point — the shape only a
+    // builder has (parsers/validators match field names in lowercased maps,
+    // not quoted `"Name: " +` literals), so guard-dsn / mail-arf / mail-auth
+    // are correctly excluded.
+    regex: /"(?:Final-Recipient|Diagnostic-Code|Disposition|Original-Recipient|Reporting-MTA|ARC-Message-Signature|ARC-Seal|ARC-Authentication-Results)\b[^"\n]*"\s*\+|_foldFieldValue\s*\(/,
+    requires: /assertHeaderSafe/,
+    allowlist: [],
+    reason: "DSN (mail-send-deliver.buildDsn, mail-bounce.dsn.build), MDN (mail-mdn.build) and ARC (mail-arc-sign.sign) report-header builders MUST compose safeBuffer.assertHeaderSafe on every structured field (and stripCrlf-fold the free-text 5xx reason). An unguarded `Name: value\\r\\n` built from a hostile original sender / peer MX is a header-injection vector (v0.15.68 root sweep — 4 HIGH + archive + srs). A new builder in this family that matches the report-header anchor but drops the guard re-opens the class.",
+  },
+  {
     id: "fingerprint-pin-against-claimed-field-not-recomputed",
     primitive: "b.auditSign.fingerprintOf",
     scanScope: "lib",
