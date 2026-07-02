@@ -35,6 +35,22 @@
         {
           "title": "The Idempotency-Key replay cache is scoped to the authenticated principal",
           "body": "b.middleware.idempotencyKey keyed its replay/response cache slot solely on the client-supplied Idempotency-Key header, with no binding to the authenticated principal. Two principals presenting the same (shared or guessed) key collided: one was served the other's cached response (cross-actor disclosure), or an attacker could pre-seed a key to force a 422 on the real client (cross-actor denial). The slot is now scoped to the authenticated principal, resolved via b.requestHelpers.extractActorContext and overridable with the new opts.scopeFn. Mount the middleware after authentication so the request carries the principal; slots for unauthenticated requests share a single anonymous scope."
+        },
+        {
+          "title": "Mail and data parsers reject reserved prototype keys in untrusted input",
+          "body": "b.csv.parse, b.mime-parse (Content-Type parameters), b.eat (Entity Attestation Token claims), b.mailBimi (tiny-PS attributes), b.mailArf (feedback-report fields), and b.safeIcap (ICAP response headers) built plain objects keyed by names taken directly from untrusted input. A key of __proto__, constructor, or prototype would shadow or re-parent the object, letting an attacker taint a downstream type check. Every one of these sites now refuses the reserved keys — CSV throws csv/forbidden-header (an operator DDL surface); the parsers that must stay lenient drop the poisoned key and keep parsing."
+        },
+        {
+          "title": "Verifiable-credential JOSE verification binds the algorithm to the key's curve",
+          "body": "b.vc.verify / b.vc.verifyPresentation resolved the public key and then verified with the algorithm named in the attacker-controlled JWS header, with no check that the two agree. A header claiming ES384 (or EdDSA) could be verified against a P-256 key an ECDSA curve/type confusion (CWE-347, RFC 7518 §3.4). The verifier now rejects any alg whose required curve/key-type doesn't match the resolved key, before the signature check."
+        },
+        {
+          "title": "Span-event names are redacted on the telemetry wire",
+          "body": "The OTLP span exporter ran span names and exception messages through the telemetry redactor but passed span-EVENT names through verbatim, so a value-shape secret (a connection string, a token) placed in an event name egressed unredacted. Event names now route through the same redactor as span names, on both the JSON and protobuf wire paths."
+        },
+        {
+          "title": "Session refresh enforces the idle and absolute timeout floors",
+          "body": "b.session.touch refreshed a session's activity timestamp without re-checking the idle / absolute timeout floors that b.session.verify enforces, so a floor-expired session could be resurrected by a refresh instead of being killed. Both floors are now evaluated on the refresh path (as on verify), and a session past either floor is deleted rather than extended."
         }
       ]
     },
@@ -44,6 +60,10 @@
         {
           "title": "Refreshed the vendored public-suffix list and the pinned CI action SHAs",
           "body": "The vendored Mozilla Public Suffix List (which backs registrable-domain boundaries in b.guardDomain and cookie-scope checks) is refreshed to its current upstream revision, and the SHA-pinned GitHub Actions in the release and scanning workflows are bumped to their latest upstream releases. No operator action required."
+        },
+        {
+          "title": "Concurrent DNS cache misses are coalesced into a single upstream lookup",
+          "body": "b.network.dns.resolver now single-flights in-flight queries: when several callers miss the cache for the same name at once, one upstream lookup is issued and the others await its result, instead of each firing its own request (a cache stampede that amplified load on the upstream resolver). Each caller still applies its own DNSSEC validate gate against the shared answer."
         }
       ]
     },

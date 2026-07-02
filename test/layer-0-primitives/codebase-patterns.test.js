@@ -5972,6 +5972,20 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The idempotency replay cache write must use a principal-scoped key (scopedKey derived via scopeFn / extractActorContext), not the raw client Idempotency-Key. Reverting store.get/set to the raw key drops the scopedKey reference and re-opens cross-actor disclosure / denial.",
   },
   {
+    id: "vc-jose-verify-must-bind-alg-to-key",
+    primitive: "b.vc.verify",
+    scanScope: "lib",
+    // vc._verifyJose resolves the public key then calls nodeCrypto.verify
+    // with the header-declared alg. Without binding the alg to the key's
+    // type/curve (_assertJoseAlgKey), an attacker picks the alg (hash +
+    // dsaEncoding) independent of the key an ECDSA curve/type confusion
+    // (CWE-347, RFC 7518 3.4). The binding check must stay composed.
+    regex: /function _verifyJose\b/,
+    requires: /_assertJoseAlgKey/,
+    allowlist: [],
+    reason: "The JOSE verify path must bind the header alg to the resolved key's curve/type via _assertJoseAlgKey before nodeCrypto.verify. Dropping the call re-opens ECDSA alg/curve confusion (an ES384 header verified against a P-256 key).",
+  },
+  {
     id: "fingerprint-pin-against-claimed-field-not-recomputed",
     primitive: "b.auditSign.fingerprintOf",
     scanScope: "lib",
@@ -7013,6 +7027,13 @@ var KNOWN_ANTIPATTERNS = [
       "lib/cose.js",                    // protMap.has(HDR_CRIT) → validate the crit array if present
       "lib/cwt.js",                     // raw.has(exp) → validate the exp claim if present
       "lib/db-query.js",                // JSONB_CONTAINMENT_OPS.has(op) → special-case the operator if it is one
+      // (3) Single-flight coalescing table — `if (inflight.has(key))` awaits an
+      //     in-flight async cache fill and returns the shared result; NOTHING is
+      //     inserted-then-rejected (the winner registers its own promise via a
+      //     plain `inflight.set` after the check). The matched `throw` is a
+      //     per-caller DNSSEC validate gate on the shared answer, not a
+      //     duplicate-key reject, so requireAbsent can't express it.
+      "lib/network-dns-resolver.js",    // inflight single-flight map, not a uniqueness register
       // (NB: the prototype-pollution POISONED_KEYS deny-set guards that used to
       //  live here — body-parser, the safe-* parsers, safe-schema — were
       //  extracted into the pick.isPoisonedKey primitive and no longer fire.)
