@@ -21,7 +21,7 @@ function threwCode(fn) {
   try { fn(); return null; } catch (e) { return e.code || null; }
 }
 function threw(fn) {
-  try { fn(); return false; } catch (e) { return true; }
+  try { fn(); return false; } catch (_e) { return true; }
 }
 
 async function main() {
@@ -118,7 +118,7 @@ async function main() {
   // ---- content-credentials: immutability + typed rejections ----
   var m = b.contentCredentials.build({ provider: "Acme", system: "s", systemVersion: "1.0.0", contentId: "c" });
   var before = m.content.id;
-  try { m.content.id = "HACKED"; } catch (e) { /* strict-mode throw is fine too */ }
+  try { m.content.id = "HACKED"; } catch (_e) { /* strict-mode throw is fine too */ }
   check("content-credentials: nested claim object is deep-frozen",
     m.content.id === before && Object.isFrozen(m.content));
   check("content-credentials: NaN generatedAt typed-rejected",
