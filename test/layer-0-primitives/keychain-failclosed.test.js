@@ -154,6 +154,25 @@ async function run() {
   });
   check("keychain.remove: no fallbackFile still returns false (no throw)",
     noneRemove === false);
+
+  // First-writer store into a not-yet-existing directory: the RMW lock's
+  // sentinel file lives beside fallbackFile, so store must create the parent
+  // directory before locking — otherwise the first store into a fresh path
+  // fails where the pre-lock atomicFile.write created the dir lazily.
+  var freshBase = path.join(os.tmpdir(), "kc-fc-firstwriter-" + process.pid);
+  fs.rmSync(freshBase, { recursive: true, force: true });
+  var freshFile = path.join(freshBase, "nested", "deep", "keychain.enc");
+  var freshStored = await b.keychain.store({
+    service: "s", account: "a", password: "pw", preferFile: true,
+    fallbackFile: freshFile, passphrase: pass,
+  });
+  var freshGot = await b.keychain.retrieve({
+    service: "s", account: "a", preferFile: true,
+    fallbackFile: freshFile, passphrase: pass,
+  });
+  check("keychain.store: first writer creates the missing parent directory",
+    freshStored.stored === true && !!freshGot && freshGot.password === "pw");
+  fs.rmSync(freshBase, { recursive: true, force: true });
 }
 
 module.exports = { run: run };
