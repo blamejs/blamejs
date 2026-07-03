@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright (c) blamejs contributors
 // Prism 1.30.0 — bundled for blamejs wiki
 // Source: https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/  (MIT, Lea Verou + contributors)
 // Bundle: prism.min.js + components/{markup, css, clike, javascript, json, bash, sql, markup-templating}.min.js

@@ -94,9 +94,11 @@ async function _bootApp() {
   // below can forward X-Forwarded-Proto: https and see the app emit its strong
   // HSTS (production always runs behind Caddy/nginx). Requests that don't send
   // X-Forwarded-* are unaffected — clientIp/proto still resolve from the socket.
-  if (!process.env.WIKI_ADMIN_TRUSTED_PROXIES) {
-    process.env.WIKI_ADMIN_TRUSTED_PROXIES = "127.0.0.0/8,::1/128";
-  }
+  // Append (never merely default) loopback so the check is isolated from any
+  // inherited production CIDR list — a preset value without loopback would
+  // otherwise leave the forwarded-https request from 127.0.0.1 untrusted.
+  var _tp = process.env.WIKI_ADMIN_TRUSTED_PROXIES;
+  process.env.WIKI_ADMIN_TRUSTED_PROXIES = (_tp ? _tp + "," : "") + "127.0.0.0/8,::1/128";
   return buildApp({
     dataDir:       DATA_DIR,
     port:          0,                 // ephemeral
