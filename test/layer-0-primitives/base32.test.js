@@ -44,6 +44,7 @@ function testVectors() {
 
 function testOptions() {
   check("padding:false omits =", b.base32.encode(Buffer.from("f"), { padding: false }) === "MY");
+  check("Uint8Array encode mirrors Buffer", b.base32.encode(new Uint8Array([0x66, 0x6f, 0x6f])) === "MZXW6===");
   check("round-trip random 20 bytes", (function () {
     var buf = require("crypto").randomBytes(20);
     return b.base32.decode(b.base32.encode(buf)).equals(buf);
