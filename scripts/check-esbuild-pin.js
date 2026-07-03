@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 
 // Enforces that the SEA-build tool versions installed across the build artifacts

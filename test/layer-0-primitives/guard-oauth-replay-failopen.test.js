@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * b.guardOauth code-reuse (replay) defense must FAIL CLOSED when the operator's

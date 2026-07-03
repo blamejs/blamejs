@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * mail-mdn — RFC 3798 / RFC 8098 Message Disposition Notification

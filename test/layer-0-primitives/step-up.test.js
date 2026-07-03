@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * b.auth.stepUp + b.middleware.requireStepUp + elevation grants —

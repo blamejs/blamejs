@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * b.crypto.httpSig — RFC 9421 HTTP Message Signatures.

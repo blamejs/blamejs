@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * Layer 0 — b.vc (W3C Verifiable Credentials 2.0, VC-JOSE-COSE).

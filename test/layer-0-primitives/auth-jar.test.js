@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * Layer 0 — b.auth.jar: RFC 9101 JWT-Secured Authorization Request.

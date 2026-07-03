@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * file-upload — per-upload OWNERSHIP is enforced (IDOR / CWE-639).

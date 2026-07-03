@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * b.mail.dkim — RFC 6376 (rsa-sha256) + RFC 8463 (ed25519-sha256)

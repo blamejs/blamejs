@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * mime-parse — RFC 5322 / 2045 header-block + MIME structure parsing shared by

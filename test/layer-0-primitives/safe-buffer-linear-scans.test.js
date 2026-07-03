@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * b.safeBuffer linear-scan helpers that replace O(n^2) regexes (ReDoS class).
