@@ -231,6 +231,7 @@ function _regenArtifacts(opts) {
   _run("node", ["scripts/check-api-snapshot.js"]);
   _run("node", ["scripts/check-changelog-extract.js"]);
   _run("node", ["scripts/check-esbuild-pin.js"]);
+  _run("node", ["scripts/pin-all.js"]);
   _ok("CHANGELOG + api-snapshot regenerated");
 }
 

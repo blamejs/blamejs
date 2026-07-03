@@ -13107,21 +13107,22 @@ function testWikiPortAgreesAcrossArtifacts() {
     bad);
 }
 
-// The esbuild dev-tool is pinned across artifacts that carry no lockfile to keep
-// them in sync: package.json devDependencies (the version source-of-truth, also
-// postject), ci.yml + npm-publish.yml's exact `npm install esbuild@<v>` for the
-// SEA / bundler-output build, and scripts/esbuild-binary-pin.json's reviewed
-// per-platform binary hashes (verified on disk by the bundler-output smoke
-// gate). A bump that updates one and not the others is the v0.11.40 silent-drift
-// class: ci.yml tested 0.28.0 while package.json declared 0.28.1, so CI verified
-// an unreviewed version. The agreement + per-platform hash COMPLETENESS is owned
-// by one shared checker (scripts/check-esbuild-pin.js), called here and by
-// release.js regen so neither path can silently drift — a bump that forgets the
-// reviewed hashes fails closed instead of degrading the smoke pin to a skip.
+// The esbuild dev-tool is pinned across three artifacts kept in sync:
+// package.json devDependencies (the version source-of-truth, also postject), the
+// committed root package-lock.json that ci.yml + npm-publish.yml install via
+// `npm ci` for the SEA / bundler-output build, and scripts/esbuild-binary-pin.json's
+// reviewed per-platform binary hashes (verified on disk by the bundler-output
+// smoke gate). A bump that updates one and not the others is the v0.11.40
+// silent-drift class: CI verified an unreviewed version while package.json
+// declared another. The lockfile-package.json agreement + per-platform hash
+// COMPLETENESS is owned by one shared checker (scripts/check-esbuild-pin.js),
+// called here and by release.js regen so neither path can silently drift — a
+// bump that forgets the reviewed hashes fails closed instead of degrading the
+// smoke pin to a skip.
 function testEsbuildPinAgreesAcrossArtifacts() {
   var checkEsbuildPin = require("../../scripts/check-esbuild-pin.js").checkEsbuildPin;
   var bad = _filterMarkers(checkEsbuildPin().violations, "esbuild-pin-cross-artifact-drift");
-  _report("esbuild pin agrees across package.json devDep + ci.yml/npm-publish.yml install + " +
+  _report("esbuild pin agrees across package.json devDep + package-lock.json (npm ci) + " +
           "esbuild-binary-pin.json reviewed per-platform hashes (prevent a workflow / pin silently " +
           "drifting from the reviewed version)",
     bad);

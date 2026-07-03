@@ -47,6 +47,23 @@ async function run() {
   check("fromJwt: revoked index reads as revoked (status 1)", parsed.list.get(5) === 1);
   check("fromJwt: an unset index reads as valid (status 0)", parsed.list.get(0) === 0);
 
+  // #49 (RFC 8725 §3.11 typ-confusion): fromJwt binds header.typ to the
+  // "statuslist+jwt" that toJwt stamps. A token carrying a VALID status_list
+  // claim but a different typ (minted for another purpose) must be refused on
+  // the typ, before the claim check — every sibling verifier enforces its typ.
+  var slPayload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+  var wrongTypToken = await b.auth.jwt.sign(slPayload, {
+    privateKey: kp.privateKey, algorithm: "ML-DSA-87", typ: "JWT",
+  });
+  var typThrew = null;
+  try {
+    await b.auth.statusList.fromJwt(wrongTypToken, {
+      publicKey: kp.publicKey, algorithms: ["ML-DSA-87"], expectedIssuer: "https://issuer.example",
+    });
+  } catch (e) { typThrew = e.code; }
+  check("fromJwt rejects a typ-confused token carrying a valid status_list claim (auth-jwt/typ-mismatch)",
+        typThrew === "auth-jwt/typ-mismatch");
+
   // B11: the out-of-range read MUST fail closed, not read 0/valid.
   var oobThrew = null, oobValue;
   try { oobValue = parsed.list.get(parsed.list.size + 10); }
