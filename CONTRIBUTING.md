@@ -98,6 +98,15 @@ A new framework primitive lands with at least layer-0 tests. New middleware land
 
 The smoke target is `OK — N checks passed` ending with a count higher than the previous release. New operator-facing routes / primitives add their own checks to `examples/wiki/test/e2e.js`.
 
+## Developer Certificate of Origin (DCO)
+
+Contributions are accepted under the [Developer Certificate of Origin](https://developercertificate.org/).
+By adding a `Signed-off-by` line to each commit you certify that you wrote the
+patch — or otherwise have the right to submit it — under the project's Apache-2.0
+license. Sign off with `git commit -s` (which appends
+`Signed-off-by: Your Name <you@example.com>`); the sign-off must match the commit
+author. Releases are cut with sign-off through `scripts/release.js`.
+
 ## The PR loop
 
 1. **Open an issue first** for non-trivial work — design discussion catches scope problems before code is written. Trivial fixes (typos, doc tweaks, single-line bug fixes) can skip the issue.

@@ -231,6 +231,8 @@ function _regenArtifacts(opts) {
   _run("node", ["scripts/check-api-snapshot.js"]);
   _run("node", ["scripts/check-changelog-extract.js"]);
   _run("node", ["scripts/check-esbuild-pin.js"]);
+  _run("node", ["scripts/pin-all.js", "--lockfiles"]);
+  _run("node", ["scripts/pin-all.js"]);
   _ok("CHANGELOG + api-snapshot regenerated");
 }
 
@@ -675,7 +677,7 @@ function cmdCommit() {
   fs.writeFileSync(msgPath, lines.join("\n") + "\n");
 
   _run("git", ["add", "-A"]);
-  _run("git", ["commit", "-F", msgPath]);
+  _run("git", ["commit", "-s", "-F", msgPath]);   // -s: DCO Signed-off-by (CONTRIBUTING.md)
   _ok("signed commit");
 
   _verifyCommitSignature("new");

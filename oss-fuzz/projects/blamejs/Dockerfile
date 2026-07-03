@@ -5,12 +5,13 @@
 # and open a PR there. See `oss-fuzz/projects/blamejs/README.md` in
 # this repo for the full submission procedure.
 
-# The base-builder is intentionally NOT digest-pinned here (unlike the
-# .clusterfuzzlite/ copy): OSS-Fuzz's build infra expects projects to track
-# the latest base-builder so the fuzzing toolchain stays current, and a digest
-# pin in the upstream-submission template would diverge from that convention.
-# This is a CI-only fuzzing image, never deployed.
-FROM gcr.io/oss-fuzz-base/base-builder-javascript
+# The base-builder is digest-pinned here (mirroring the .clusterfuzzlite/ copy
+# that Dependabot tracks — scripts/pin-all.js keeps the two in sync) so OpenSSF
+# Scorecard sees a pinned base: this in-repo template is only ever SCANNED,
+# never built by OSS-Fuzz's own infra. The actual upstream OSS-Fuzz submission
+# un-pins the FROM in its own PR per OSS-Fuzz convention (that infra tracks the
+# latest base-builder). This is a CI-only fuzzing image, never deployed.
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:454290c335fd888ca5231b585d5674841f35bd38d0d2de40db64da83926c8b1a
 
 # Clone the framework into the build context. OSS-Fuzz builds against
 # main on every run; once the project is accepted, ClusterFuzz tracks
