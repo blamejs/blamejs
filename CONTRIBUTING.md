@@ -130,6 +130,13 @@ author. Releases are cut with sign-off through `scripts/release.js`.
 
 ## What to contribute
 
+**New here?** Issues labeled [`good first issue`](https://github.com/blamejs/blamejs/labels/good%20first%20issue)
+are deliberately scoped small and self-contained — a doc or wiki-example fix, a
+test for an uncovered branch, an error message that could better say what to do
+next. They're the best on-ramp: pick one, comment that you're taking it, and open
+a PR per the loop above. If none fit, the areas below are all newcomer-friendly at
+their smaller end.
+
 Good contribution areas, ordered by current need:
 
 1. **Operator ergonomics** — wiki docs gaps, DEPLOY.md improvements, CLI verb usability, error messages that don't say what to do next.

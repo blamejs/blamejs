@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 // The OTLP span exporter must run every attribute VALUE through the telemetry
 // redactor before serialization. Telemetry is a first-class EGRESS sink — a

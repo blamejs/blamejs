@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 
 // pin-all.js — aggregate every supply-chain PIN in one pass so a fix run keeps

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
 "use strict";
 /**
  * b.breakGlass — column-policy / row-enforcement step-up auth (v0.5.0).
