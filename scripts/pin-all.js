@@ -30,6 +30,16 @@ var cp = require("node:child_process");
 
 var ROOT = path.resolve(__dirname, "..");
 var FIX = process.argv.indexOf("--fix") !== -1;
+// --lockfiles: regenerate ONLY the committed lockfiles (no Action/digest work,
+// no token). release.js regen runs this after the version bump so a version-only
+// release doesn't leave the lockfiles' package versions pointing at the prior
+// release (which npm ci + a spec-only check both tolerate until the file:-linked
+// entry breaks CI).
+var LOCKFILES_ONLY = process.argv.indexOf("--lockfiles") !== -1;
+
+function rootVersion() {
+  try { return readJson(path.join(ROOT, "package.json")).version; } catch (_e) { return null; }
+}
 
 // Every directory whose committed package-lock.json backs a CI `npm ci`.
 var LOCKFILE_DIRS = [
@@ -89,6 +99,24 @@ function checkLockfile(entry) {
         " — regenerate with `node scripts/pin-all.js --fix`");
     }
   });
+
+  // Version drift: a version-only release bumps package.json but a spec-only
+  // comparison still passes, leaving the lockfile's own recorded version — and
+  // any file:-linked @blamejs/core entry — pointing at the prior release. npm ci
+  // tolerates the root-version mismatch, but the linked entry eventually breaks
+  // `npm ci` in the wiki build, so catch the drift here.
+  var pkgs = lock.packages || {};
+  var selfVer = pkgs[""] && pkgs[""].version;
+  if (entry.dir === "." && selfVer !== undefined && selfVer !== pkg.version) {
+    problems.push(entry.dir + "/package-lock.json records root version " + selfVer +
+      " but package.json is " + pkg.version + " — regenerate with `node scripts/pin-all.js --lockfiles`");
+  }
+  var rootVer = rootVersion();
+  var coreNode = pkgs["node_modules/@blamejs/core"];
+  if (coreNode && coreNode.version !== undefined && rootVer && coreNode.version !== rootVer) {
+    problems.push(entry.dir + "/package-lock.json links @blamejs/core@" + coreNode.version +
+      " but the framework is at " + rootVer + " — regenerate with `node scripts/pin-all.js --lockfiles`");
+  }
 }
 
 function fixLockfile(entry) {
@@ -162,7 +190,9 @@ function fixActions() {
 
 // ---- Run ----
 
-if (FIX) {
+if (LOCKFILES_ONLY) {
+  LOCKFILE_DIRS.forEach(fixLockfile);
+} else if (FIX) {
   LOCKFILE_DIRS.forEach(fixLockfile);
   DIGEST_SYNCS.forEach(fixDigestSync);
   fixActions();
@@ -173,9 +203,11 @@ if (FIX) {
 
 fixed.forEach(function (f) { console.log("[pin-all] fixed: " + f); });
 if (problems.length) {
-  problems.forEach(function (p) { console.error("[pin-all] " + (FIX ? "ERROR" : "DRIFT") + ": " + p); });
+  problems.forEach(function (p) { console.error("[pin-all] " + ((FIX || LOCKFILES_ONLY) ? "ERROR" : "DRIFT") + ": " + p); });
   process.exit(1);
 }
-console.log("[pin-all] OK — " + (FIX
-  ? "lockfiles regenerated, Action SHAs pinned, Docker digests synced."
-  : "committed lockfiles in sync with package.json and Docker base digests mirrored (Action-SHA currency has its own gate)."));
+console.log("[pin-all] OK — " + (LOCKFILES_ONLY
+  ? "committed lockfiles regenerated to the current versions."
+  : FIX
+    ? "lockfiles regenerated, Action SHAs pinned, Docker digests synced."
+    : "committed lockfiles (specs + versions) in sync with package.json and Docker base digests mirrored (Action-SHA currency has its own gate)."));

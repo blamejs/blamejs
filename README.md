@@ -13,6 +13,7 @@ One install. One upgrade path. One place to look when something breaks — no bl
 [![CI](https://img.shields.io/github/actions/workflow/status/blamejs/blamejs/ci.yml?branch=main&label=CI)](https://github.com/blamejs/blamejs/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/blamejs/blamejs?include_prereleases&sort=semver)](https://github.com/blamejs/blamejs/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/blamejs/blamejs/badge)](https://scorecard.dev/viewer/?uri=github.com/blamejs/blamejs)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13471/badge)](https://www.bestpractices.dev/projects/13471)
 [![SLSA Level 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![node](https://img.shields.io/node/v/@blamejs/core.svg)](https://nodejs.org)

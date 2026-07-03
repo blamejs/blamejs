@@ -32,7 +32,11 @@
       "items": [
         {
           "title": "scripts/pin-all.js — aggregated supply-chain pin tool",
-          "body": "One command re-pins every supply-chain segment: `--fix` regenerates the committed lockfiles (root / examples/wiki / fuzz), pins the GitHub Action SHAs, and syncs the Docker base-image digests; `--check` (wired into CI and the release flow) verifies the lockfile and digest segments are in sync and fails closed on drift. Contributor tooling — it does not ship in the tarball."
+          "body": "One command re-pins every supply-chain segment: `--fix` regenerates the committed lockfiles (root / examples/wiki / fuzz), pins the GitHub Action SHAs, and syncs the Docker base-image digests; `--check` (wired into CI and the release flow) verifies the lockfile and digest segments — including each lockfile's package version — are in sync and fails closed on drift. Contributor tooling — it does not ship in the tarball."
+        },
+        {
+          "title": "Project-governance and assurance documentation; OpenSSF Best Practices silver badge",
+          "body": "Adds a ROADMAP.md (documented direction plus an explicit out-of-scope list), a Developer Certificate of Origin policy in CONTRIBUTING.md (contributions carry a Signed-off-by; releases sign off through the release tooling), and an explicit security assurance case in SECURITY.md (a top security claim decomposed into evidence-backed sub-claims, with a residual-risk statement). The project earned the OpenSSF Best Practices silver badge, linked from the README."
         }
       ]
     }
