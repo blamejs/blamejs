@@ -65,10 +65,17 @@ async function main() {
   check("guard-sql: ? placeholder still passes", frag("x = ?") === true);
 
   // ---- mcp: validation gates enforce without an explicit top-level type:object ----
+  var inferredObjSchema = { properties: { path: { type: "string" } }, required: ["path"] };
   check("mcp: validateToolInput enforces required with no type:object (fail-open closed)",
-    threw(function () {
-      b.mcp.validateToolInput("t", {}, { properties: { path: { type: "string" } }, required: ["path"] });
-    }));
+    threw(function () { b.mcp.validateToolInput("t", {}, inferredObjSchema); }));
+  check("mcp: validateToolInput rejects a scalar for an inferred object schema",
+    threw(function () { b.mcp.validateToolInput("t", "oops", inferredObjSchema); }));
+  check("mcp: validateToolInput rejects an array for an inferred object schema",
+    threw(function () { b.mcp.validateToolInput("t", ["x"], inferredObjSchema); }));
+  check("mcp: validateToolInput rejects null for an inferred object schema",
+    threw(function () { b.mcp.validateToolInput("t", null, inferredObjSchema); }));
+  check("mcp: validateToolInput still accepts a valid object for an inferred object schema",
+    !threw(function () { b.mcp.validateToolInput("t", { path: "ok" }, inferredObjSchema); }));
   check("mcp: assertProtocolVersion honors explicit empty accepted:[]",
     threw(function () {
       b.mcp.assertProtocolVersion({ headers: { "mcp-protocol-version": "2024-11-05" } }, { accepted: [] });
