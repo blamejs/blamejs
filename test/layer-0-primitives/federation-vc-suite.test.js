@@ -1111,9 +1111,30 @@ async function testFileLifecycle() {
   }
 }
 
+function testXmlC14nRejectsDeepNesting() {
+  // The MAX_DEPTH nesting cap must actually fire: an XML nested far deeper
+  // than the cap (but well below the JS stack limit) must be refused, not
+  // parsed. A dead cap leaves the recursive-descent parser open to a
+  // stack-overflow DoS on deeply-nested untrusted XML (SAML / WebDAV input).
+  function deep(n) {
+    var open = "", close = "";
+    for (var i = 0; i < n; i++) { open += "<a>"; close = "</a>" + close; }
+    return "<root>" + open + "x" + close + "</root>";
+  }
+  var threw = null;
+  try { b.xmlC14n.parse(deep(500)); } catch (e) { threw = e; }
+  check("xmlC14n.parse: nesting past the cap is refused (cap fires)",
+    threw && /nesting depth/.test(threw.message || ""));
+  var okThrew = null;
+  try { b.xmlC14n.parse(deep(10)); } catch (e) { okThrew = e; }
+  check("xmlC14n.parse: shallow nesting still parses (no over-rejection)",
+    okThrew === null);
+}
+
 async function run() {
   testXmlC14nBasic();
   testXmlC14nSingleMatchInvariant();
+  testXmlC14nRejectsDeepNesting();
   testSamlSpAuthnRequest();
   testSamlSpRefusesUnsigned();
   testFederationParseAndPolicy();

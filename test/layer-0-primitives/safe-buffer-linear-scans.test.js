@@ -121,6 +121,17 @@ function run() {
   bcRejects("missing opts",      function () { sb.makeByteCoercer(); });
   bcRejects("non-fn errorClass", function () { sb.makeByteCoercer({ errorClass: 5, typeCode: "x" }); });
   bcRejects("empty typeCode",    function () { sb.makeByteCoercer({ errorClass: FakeErr, typeCode: "" }); });
+
+  // ---- foldHeaderText: fold each CR/LF to the replacement + strip NUL ----
+  check("foldHeaderText: each CR and LF replaced (default space)",
+    b.safeBuffer.foldHeaderText("550 full\r\nX-Injected: evil") === "550 full  X-Injected: evil");
+  check("foldHeaderText: NUL removed (never valid in a header value)",
+    sb.foldHeaderText("a" + String.fromCharCode(0) + "b") === "ab");
+  check("foldHeaderText: custom replacement folds each CR/LF",
+    sb.foldHeaderText("a\nb\nc", "-") === "a-b-c");
+  check("foldHeaderText: CR/LF and NUL together neutralized",
+    sb.foldHeaderText("x\r\ny" + String.fromCharCode(0) + "z") === "x  yz");
+  check("foldHeaderText: non-string passthrough", sb.foldHeaderText(42) === 42);
 }
 
 module.exports = { run: run };

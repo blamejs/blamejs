@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.15.67",
-  "createdAt": "2026-06-30T00:23:30.675Z",
+  "frameworkVersion": "0.15.68",
+  "createdAt": "2026-07-02T22:30:16.323Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49891,6 +49891,10 @@
           "type": "instance",
           "ctorName": "RegExp"
         },
+        "assertHeaderSafe": {
+          "type": "function",
+          "arity": 4
+        },
         "boundedChunkCollector": {
           "type": "function",
           "arity": 1
@@ -49900,6 +49904,10 @@
           "arity": 2
         },
         "collectStream": {
+          "type": "function",
+          "arity": 2
+        },
+        "foldHeaderText": {
           "type": "function",
           "arity": 2
         },

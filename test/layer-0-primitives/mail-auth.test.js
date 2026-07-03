@@ -727,6 +727,44 @@ function testArcSignChain() {
     /timestamp|finite/);
 }
 
+function testArcSignRejectsCrlfInjection() {
+  var nodeCrypto = require("crypto");
+  var arcKey = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var arcKeyPem = arcKey.privateKey.export({ format: "pem", type: "pkcs8" });
+  var rfc822 = "From: a@x\r\nTo: b@y\r\nSubject: hi\r\n" +
+    "Date: Wed, 06 May 2026 12:00:00 +0000\r\nMessage-ID: <1@x>\r\n\r\nbody\r\n";
+  var base = {
+    rfc822: rfc822, instance: 1, authservId: "relay.example.com", domain: "relay.example.com",
+    selector: "arc", privateKey: arcKeyPem, algorithm: "rsa-sha256", cv: "none",
+    authResults: "spf=pass smtp.mailfrom=a@x",
+  };
+  function withField(k, v) { var o = {}; for (var kk in base) o[kk] = base[kk]; o[k] = v; return o; }
+  function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
+
+  // authservId / domain / selector are interpolated verbatim into the ARC
+  // header block (ARC-Authentication-Results / ARC-Seal /
+  // ARC-Message-Signature). A CR/LF must not smuggle a new header — the
+  // authResults field was already guarded; these were not.
+  var e1 = threw(function () { b.mail.arc.sign(withField("authservId", "relay.example.com\r\nInjected: 1")); });
+  check("arc.sign: CRLF in authservId throws arc-sign/bad-authserv",
+    e1 && e1.code === "arc-sign/bad-authserv");
+  var e2 = threw(function () { b.mail.arc.sign(withField("domain", "relay.example.com\r\nInjected: 1")); });
+  check("arc.sign: CRLF in domain throws arc-sign/bad-domain",
+    e2 && e2.code === "arc-sign/bad-domain");
+  var e3 = threw(function () { b.mail.arc.sign(withField("selector", "arc\r\nInjected: 1")); });
+  check("arc.sign: CRLF in selector throws arc-sign/bad-selector",
+    e3 && e3.code === "arc-sign/bad-selector");
+  var e4 = threw(function () { b.mail.arc.sign(withField("authservId", "relay" + String.fromCharCode(0) + "x")); });
+  check("arc.sign: NUL in authservId throws arc-sign/bad-authserv",
+    e4 && e4.code === "arc-sign/bad-authserv");
+  // authResults is placed verbatim on the ARC-Authentication-Results line —
+  // a NUL is a header-smuggling byte just like CR/LF, so it must be rejected
+  // (the prior guard only checked CR/LF).
+  var e5 = threw(function () { b.mail.arc.sign(withField("authResults", "spf=pass" + String.fromCharCode(0) + "x")); });
+  check("arc.sign: NUL in authResults throws arc-sign/bad-auth-results",
+    e5 && e5.code === "arc-sign/bad-auth-results");
+}
+
 // A relay's own freshly-signed ARC chain MUST verify as cv=pass. The
 // ARC-Message-Signature carries i=<instance> — an RFC 8617 §4.1.2 instance
 // number (1..50), NOT a DKIM AUID. AMS verification reuses the DKIM verifier
@@ -1765,6 +1803,7 @@ async function run() {
   await testArcEvaluateBreakAt();
   testArcSignSurface();
   testArcSignChain();
+  testArcSignRejectsCrlfInjection();
   await testArcRealRoundtripVerifiesPass();
   await testArcFinalArInstanceForgery();
   testArcSignExcludeAarFromAms();

@@ -235,6 +235,80 @@ function testDsnComposer() {
   check("DSN: boundary closes correctly",           /\r\n--dsn-[a-z0-9-]+--\r\n$/m.test(dsn));
 }
 
+// ---- DSN CRLF/NUL header-injection guard (RFC 5321/5322 line safety) ----
+
+function testDsnRejectsCrlfHeaderInjection() {
+  var deliver = b.mail.send.deliver({ hostname: "m.example", audit: false });
+  function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
+
+  // The 5xx diagnostic `reason` is echoed from the REMOTE peer's SMTP
+  // reply — free-form and legitimately multi-line, so it is folded to a
+  // single line. A malicious peer returning a reply that carries CR/LF
+  // must not be able to start a new header line or forge a report part.
+  var folded = deliver.buildDsn({
+    dsnFrom:      "mailer-daemon@m.example",
+    originalFrom: "alice@sender.com",
+    recipient:    "bob@dest.com",
+    reason:       "550 mailbox full\r\nX-Injected: evil\r\n--dsn-forged\r\nContent-Type: text/evil",
+    statusCode:   "5.2.2",
+  });
+  check("DSN: injected reason cannot start a new header line",
+    !/^X-Injected:/m.test(folded));
+  check("DSN: injected reason cannot forge a report part boundary",
+    !/^--dsn-forged/m.test(folded));
+  check("DSN: injected reason cannot forge a part Content-Type",
+    !/^Content-Type: text\/evil/m.test(folded));
+
+  // A NUL in the free-text reason is stripped by the fold, not serialized
+  // into the Diagnostic-Code header line (NUL is never valid in an RFC 5322
+  // header and downstream SMTP parsers treat it specially).
+  var withNul = deliver.buildDsn({
+    dsnFrom: "mailer-daemon@m.example", originalFrom: "alice@sender.com",
+    recipient: "bob@dest.com", reason: "550 full" + String.fromCharCode(0) + "evil",
+  });
+  check("DSN: NUL in reason is stripped from the output",
+    withNul.indexOf(String.fromCharCode(0)) === -1);
+
+  // Structured fields (addresses, reporting-MTA name, enhanced status)
+  // can never legitimately carry CR/LF/NUL — a bounce built from a
+  // hostile original sender or peer fails closed instead of smuggling.
+  var e1 = threw(function () {
+    deliver.buildDsn({ dsnFrom: "mailer-daemon@m.example",
+      originalFrom: "alice@sender.com\r\nBcc: victim@evil.test",
+      recipient: "bob@dest.com", reason: "550" });
+  });
+  check("DSN: CRLF in originalFrom throws deliver/bad-dsn-field",
+    e1 && e1.code === "deliver/bad-dsn-field");
+  var e2 = threw(function () {
+    deliver.buildDsn({ dsnFrom: "mailer-daemon@m.example",
+      originalFrom: "alice@sender.com",
+      recipient: "bob@dest.com\r\nRcpt-To: victim@evil.test", reason: "550" });
+  });
+  check("DSN: CRLF in recipient throws deliver/bad-dsn-field",
+    e2 && e2.code === "deliver/bad-dsn-field");
+  var e3 = threw(function () {
+    deliver.buildDsn({ dsnFrom: "mailer-daemon@m.example",
+      originalFrom: "alice@sender.com", recipient: "bob@dest.com",
+      reason: "550", reportingMta: "mta.example\r\nX-Evil: 1" });
+  });
+  check("DSN: CRLF in reportingMta throws deliver/bad-dsn-field",
+    e3 && e3.code === "deliver/bad-dsn-field");
+  var e4 = threw(function () {
+    deliver.buildDsn({ dsnFrom: "mailer-daemon@m.example",
+      originalFrom: "alice@sender.com", recipient: "bob@dest.com",
+      reason: "550", statusCode: "5.0.0\r\nX-Evil: 1" });
+  });
+  check("DSN: CRLF in statusCode throws deliver/bad-dsn-field",
+    e4 && e4.code === "deliver/bad-dsn-field");
+  var e5 = threw(function () {
+    deliver.buildDsn({ dsnFrom: "mailer-daemon@m.example",
+      originalFrom: "alice@sender.com" + String.fromCharCode(0) + "evil", recipient: "bob@dest.com",
+      reason: "550" });
+  });
+  check("DSN: NUL in originalFrom throws deliver/bad-dsn-field",
+    e5 && e5.code === "deliver/bad-dsn-field");
+}
+
 // ---- Delivery happy-path (stubbed MX + transport) ----
 
 async function testDeliveryHappyPathStubbed() {
@@ -506,6 +580,7 @@ async function run() {
   await testEnvelopeValidation();
   testOutcomeClassifier();
   testDsnComposer();
+  testDsnRejectsCrlfHeaderInjection();
   await testDeliveryHappyPathStubbed();
   await testMultiAtRecipientRefused();
   await testTransientDefersPermanentFails();

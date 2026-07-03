@@ -5901,6 +5901,91 @@ var KNOWN_ANTIPATTERNS = [
     reason: "basicConstraints cA:TRUE enforcement is owned by x509Chain.issuerValidlyIssued / x509Chain.isCaCert; tsa/mail-bimi/mail-crypto-smime route through it. Any lib file calling X.checkIssued(Y) (Y!=X) directly bypasses the cA check and must use x509Chain instead. lib/x509-chain.js is the home of the primitive.",
   },
   {
+    id: "mail-report-header-builder-must-guard-crlf",
+    primitive: "b.safeBuffer.assertHeaderSafe",
+    scanScope: "lib",
+    // A DSN / MDN / ARC report-header builder interpolates operator- or
+    // peer-supplied fields (recipients, MTA names, the 5xx diagnostic
+    // reply, ARC authserv/domain/selector) into `Name: value\r\n` lines. An
+    // unguarded field lets a hostile original sender or a malicious peer MX
+    // smuggle a new header or forge a report part (CRLF injection). Every
+    // such field must route through safeBuffer.assertHeaderSafe (reject
+    // structured fields) or stripCrlf (fold free-text like the SMTP reply).
+    // The anchor matches a quoted report-header prefix immediately
+    // concatenated (`"Diagnostic-Code: smtp; " +`, `"ARC-Message-Signature: " +`)
+    // or the mail-bounce `_foldFieldValue(` choke point — the shape only a
+    // builder has (parsers/validators match field names in lowercased maps,
+    // not quoted `"Name: " +` literals), so guard-dsn / mail-arf / mail-auth
+    // are correctly excluded.
+    regex: /"(?:Final-Recipient|Diagnostic-Code|Disposition|Original-Recipient|Reporting-MTA|ARC-Message-Signature|ARC-Seal|ARC-Authentication-Results)\b[^"\n]*"\s*\+|_foldFieldValue\s*\(/,
+    requires: /assertHeaderSafe/,
+    allowlist: [],
+    reason: "DSN (mail-send-deliver.buildDsn, mail-bounce.dsn.build), MDN (mail-mdn.build) and ARC (mail-arc-sign.sign) report-header builders MUST compose safeBuffer.assertHeaderSafe on every structured field (and stripCrlf-fold the free-text 5xx reason). An unguarded `Name: value\\r\\n` built from a hostile original sender / peer MX is a header-injection vector (v0.15.68 root sweep — 4 HIGH + archive + srs). A new builder in this family that matches the report-header anchor but drops the guard re-opens the class.",
+  },
+  {
+    id: "dsn-diagnostic-free-text-fold-must-strip-nul",
+    primitive: "b.safeBuffer.foldHeaderText",
+    scanScope: "lib",
+    // A DSN builder folds the peer's free-text 5xx diagnostic (which may
+    // legitimately wrap) onto the Diagnostic-Code header line. That fold must
+    // use foldHeaderText (removes CR/LF AND NUL), not a bare CR/LF strip — a
+    // NUL is never valid in an RFC 5322 header value and is treated specially
+    // by downstream SMTP parsers, so a CR/LF-only fold serializes it
+    // verbatim. Only mail-send-deliver + mail-bounce build a Diagnostic-Code
+    // line, and both now compose foldHeaderText.
+    regex: /"Diagnostic-Code/,
+    requires: /foldHeaderText/,
+    allowlist: [],
+    reason: "A builder emitting a Diagnostic-Code header must fold the free-text diagnostic with safeBuffer.foldHeaderText (CR/LF + NUL), not a bare stripCrlf — otherwise a NUL in the peer's 5xx reply is serialized into the header line. Reverting the fold to stripCrlf drops the foldHeaderText reference and trips this.",
+  },
+  {
+    id: "xml-c14n-parseElement-must-thread-depth",
+    primitive: "xml-c14n nesting-depth cap",
+    scanScope: "lib",
+    // lib/xml-c14n.js parseElement must thread the nesting depth through the
+    // recursion (parseElement(depth) at entry, parseElement(depth + 1) on
+    // descent, parseElement(0) at the root) so the MAX_DEPTH cap can
+    // actually fire. The pre-fix code kept a per-frame-local `var depth = 0`
+    // incremented then decremented around each single recursive call, so it
+    // was always 1 at the check — a dead cap and a stack-overflow DoS on
+    // deeply-nested untrusted SAML / WebDAV XML. `parseElement` is unique to
+    // xml-c14n; an empty-arg parseElement() (definition or self-call)
+    // re-introduces the dead cap.
+    regex: /parseElement\s*\(\s*\)/,
+    allowlist: [],
+    reason: "xml-c14n's recursive-descent parseElement must thread the depth argument so the MAX_DEPTH nesting cap fires. An arg-less parseElement() (definition or self-call) drops the threading and re-opens the stack-exhaustion DoS on deeply-nested untrusted XML.",
+  },
+  {
+    id: "idempotency-replay-slot-must-bind-principal",
+    primitive: "b.requestHelpers.extractActorContext",
+    scanScope: "lib",
+    // The Idempotency-Key replay/response cache must key its slot on the
+    // authenticated principal (requestHelpers.extractActorContext /
+    // opts.scopeFn -> scopedKey), not on the client-supplied Idempotency-Key
+    // alone. Otherwise principal B is served principal A's cached response
+    // via a shared / guessed key (cross-actor disclosure), or A pre-seeds a
+    // key to force a 422 on B (cross-actor denial). `opts.store.set(` is
+    // unique to the idempotency middleware's replay-write.
+    regex: /opts\.store\.set\s*\(/,
+    requires: /scopeFn|scopedKey/,
+    allowlist: [],
+    reason: "The idempotency replay cache write must use a principal-scoped key (scopedKey derived via scopeFn / extractActorContext), not the raw client Idempotency-Key. Reverting store.get/set to the raw key drops the scopedKey reference and re-opens cross-actor disclosure / denial.",
+  },
+  {
+    id: "vc-jose-verify-must-bind-alg-to-key",
+    primitive: "b.vc.verify",
+    scanScope: "lib",
+    // vc._verifyJose resolves the public key then calls nodeCrypto.verify
+    // with the header-declared alg. Without binding the alg to the key's
+    // type/curve (_assertJoseAlgKey), an attacker picks the alg (hash +
+    // dsaEncoding) independent of the key an ECDSA curve/type confusion
+    // (CWE-347, RFC 7518 3.4). The binding check must stay composed.
+    regex: /function _verifyJose\b/,
+    requires: /_assertJoseAlgKey/,
+    allowlist: [],
+    reason: "The JOSE verify path must bind the header alg to the resolved key's curve/type via _assertJoseAlgKey before nodeCrypto.verify. Dropping the call re-opens ECDSA alg/curve confusion (an ES384 header verified against a P-256 key).",
+  },
+  {
     id: "fingerprint-pin-against-claimed-field-not-recomputed",
     primitive: "b.auditSign.fingerprintOf",
     scanScope: "lib",
@@ -6942,6 +7027,13 @@ var KNOWN_ANTIPATTERNS = [
       "lib/cose.js",                    // protMap.has(HDR_CRIT) → validate the crit array if present
       "lib/cwt.js",                     // raw.has(exp) → validate the exp claim if present
       "lib/db-query.js",                // JSONB_CONTAINMENT_OPS.has(op) → special-case the operator if it is one
+      // (3) Single-flight coalescing table — `if (inflight.has(key))` awaits an
+      //     in-flight async cache fill and returns the shared result; NOTHING is
+      //     inserted-then-rejected (the winner registers its own promise via a
+      //     plain `inflight.set` after the check). The matched `throw` is a
+      //     per-caller DNSSEC validate gate on the shared answer, not a
+      //     duplicate-key reject, so requireAbsent can't express it.
+      "lib/network-dns-resolver.js",    // inflight single-flight map, not a uniqueness register
       // (NB: the prototype-pollution POISONED_KEYS deny-set guards that used to
       //  live here — body-parser, the safe-* parsers, safe-schema — were
       //  extracted into the pick.isPoisonedKey primitive and no longer fire.)
