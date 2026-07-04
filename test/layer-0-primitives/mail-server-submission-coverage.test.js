@@ -359,6 +359,8 @@ async function testBdatBranches(tls) {
     sock.write("BDAT " + pbuf.length + " LAST\r\n");
     sock.write(pbuf);
     check("BDAT LAST finalizes → 250", /^250 /.test(await r));
+    await helpers.waitUntil(function () { return h.length >= 1; },
+      { timeoutMs: 5000, label: "submission BDAT: agent handoff received after BDAT LAST" });
     check("agent got BDAT body", h.length === 1 && h[0].body.toString("utf8") === part);
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
@@ -780,6 +782,8 @@ async function testBdatMore(tls) {
     check("BDAT chunk with pipelined tail → 250", /^250 /.test(await r2));
     // Zero-byte LAST after real chunks → finalizes the accumulated body.
     check("BDAT 0 LAST after chunks → 250", /^250 /.test(await _send(sock, "BDAT 0 LAST")));
+    await helpers.waitUntil(function () { return h.length >= 1; },
+      { timeoutMs: 5000, label: "submission BDAT: agent handoff received after BDAT 0 LAST" });
     check("agent received accumulated BDAT body", h.length === 1 && h[0].body.toString("utf8") === "abcdexyz");
   } finally { sock.destroy(); }
 
