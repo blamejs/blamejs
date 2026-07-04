@@ -1,0 +1,961 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+/**
+ * b.network.tls — error / defensive / adversarial branch coverage.
+ *
+ * Complements network-tls.test.js (ECH + PKIX), network-tls-build-options
+ * .test.js (buildOptions), and tls-ocsp-verify.test.js (OCSP CertID
+ * binding). This suite drives the CA trust store, PQC key-share surface,
+ * OCSP parse/build/evaluate error paths, Certificate-Transparency SCT +
+ * Merkle-proof verifiers, the expiry / pinset-drift monitors, and the
+ * SNICallback wrapper — every wrong-state, malformed-input, and
+ * fault-injected branch reachable without opening a real socket.
+ *
+ * Certificates are synthesised as DER via lib/asn1-der (shape-only —
+ * X509Certificate parses subject / issuer / validity / fingerprint / serial
+ * off the structure without verifying the signature) so the whole suite
+ * stays laptop-runnable with no live TLS endpoint.
+ */
+
+var helpers    = require("../helpers");
+var b          = helpers.b;
+var check      = helpers.check;
+var nodeCrypto = require("node:crypto");
+var nodeFs     = require("node:fs");
+var nodeOs     = require("node:os");
+var nodePath   = require("node:path");
+var nodeTls    = require("node:tls");
+var asn1       = require("../../lib/asn1-der");
+
+var nt = b.network.tls;
+var C  = b.constants;
+
+var OID_TLS_FEATURE = "1.3.6.1.5.5.7.1.24";
+var OID_CT_SCT_LIST = "1.3.6.1.4.1.11129.2.4.2";
+var OID_OCSP_NONCE  = "1.3.6.1.5.5.7.48.1.2";
+
+// ---- synthetic-cert builders --------------------------------------
+
+function _synthCert(opts) {
+  opts = opts || {};
+  var serial     = opts.serial     || Buffer.from([0x12, 0x34]);
+  var cn         = opts.cn         || "Test CA";
+  var keyBytes   = opts.keyBytes   || Buffer.from("k-bytes-aaaaaaaaaaaaaaaaaaaaaaaa");
+  var notBefore  = opts.notBefore  || "260101000000Z";
+  var notAfter   = opts.notAfter   || "270101000000Z";
+  var algId    = asn1.writeSequence([asn1.writeOid("1.2.840.113549.1.1.1"), asn1.writeNull()]);
+  var cnrdn    = asn1.writeSequence([asn1.writeOid("2.5.4.3"), asn1.writeNode(0x0c, Buffer.from(cn, "ascii"))]);
+  var name     = asn1.writeSequence([asn1.writeNode(0x31, cnrdn)]);
+  var validity = asn1.writeSequence([
+    asn1.writeNode(0x17, Buffer.from(notBefore, "ascii")),
+    asn1.writeNode(0x17, Buffer.from(notAfter, "ascii")),
+  ]);
+  var spki     = asn1.writeSequence([algId,
+    asn1.writeNode(0x03, Buffer.concat([Buffer.from([0]), keyBytes]))]);
+  var version  = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  var tbsKids  = [version, asn1.writeInteger(serial), algId, name, validity, name, spki];
+  if (opts.exts && opts.exts.length) {
+    tbsKids.push(asn1.writeContextExplicit(3, asn1.writeSequence(opts.exts)));
+  }
+  var tbs = asn1.writeSequence(tbsKids);
+  return asn1.writeSequence([tbs, algId, asn1.writeNode(0x03, Buffer.from([0, 0, 0, 0]))]);
+}
+
+function _toPem(der) {
+  return "-----BEGIN CERTIFICATE-----\n" +
+    der.toString("base64").replace(/(.{64})/g, "$1\n") +
+    "\n-----END CERTIFICATE-----\n";
+}
+
+function _mustStapleExt() {
+  return asn1.writeSequence([
+    asn1.writeOid(OID_TLS_FEATURE),
+    asn1.writeOctetString(asn1.writeSequence([asn1.writeInteger(Buffer.from([5]))])),
+  ]);
+}
+
+function _buildSctBytes(opts) {
+  opts = opts || {};
+  var logId = opts.logId || Buffer.alloc(32, 0xaa);
+  var ts = Buffer.alloc(8); ts.writeBigUInt64BE(BigInt(opts.timestamp || 1700000000000));
+  var extVec = Buffer.from([0x00, 0x00]);
+  var sig = opts.sig || Buffer.from("sigbytes!");
+  var sigLen = Buffer.alloc(2); sigLen.writeUInt16BE(sig.length);
+  return Buffer.concat([
+    Buffer.from([opts.version === undefined ? 0 : opts.version]),
+    logId, ts, extVec,
+    Buffer.from([opts.hashAlgo === undefined ? 4 : opts.hashAlgo,
+                 opts.sigAlgo === undefined ? 3 : opts.sigAlgo]),
+    sigLen, sig,
+  ]);
+}
+
+function _sctListRaw(sctBytesArr, opts) {
+  opts = opts || {};
+  var parts = [];
+  for (var i = 0; i < sctBytesArr.length; i += 1) {
+    var l = Buffer.alloc(2); l.writeUInt16BE(sctBytesArr[i].length);
+    parts.push(l, sctBytesArr[i]);
+  }
+  var body = Buffer.concat(parts);
+  var outer = Buffer.alloc(2);
+  outer.writeUInt16BE(opts.lieOuterLen === undefined ? body.length : opts.lieOuterLen);
+  return Buffer.concat([outer, body]);
+}
+
+function _sctExt(sctListRaw) {
+  return asn1.writeSequence([
+    asn1.writeOid(OID_CT_SCT_LIST),
+    asn1.writeOctetString(asn1.writeOctetString(sctListRaw)),
+  ]);
+}
+
+// Build a signed BasicOCSPResponse over a single (serial, issuer) CertID.
+function _buildOcsp(o) {
+  o = o || {};
+  var serial    = o.serial || Buffer.from([0x12, 0x34, 0x56, 0x78]);
+  var issuerDer = o.issuerDer;
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var issuerPem = kp.publicKey.export({ type: "spki", format: "pem" });
+  var req = nt.ocsp.buildRequest({
+    leafCertDer:   _synthCert({ serial: serial, cn: "Leaf", keyBytes: Buffer.from("leaf-key-bytes-aaaaaaaaaaaaaaaa") }),
+    issuerCertDer: issuerDer,
+    nonce:         false,
+  });
+  var reqTop  = asn1.readNode(req.requestDer);
+  var reqTbs  = asn1.readSequence(reqTop.value)[0];
+  var reqList = asn1.readSequence(reqTbs.value)[0];
+  var reqOne  = asn1.readSequence(reqList.value)[0];
+  var certId  = asn1.readSequence(reqOne.value)[0];
+
+  var certStatus;
+  if (o.status === "revoked") {
+    certStatus = asn1.writeContextImplicit(1, asn1.writeNode(0x18, Buffer.from("20250101000000Z")));
+  } else if (o.status === "unknown") {
+    certStatus = asn1.writeContextImplicit(2, Buffer.alloc(0));
+  } else {
+    certStatus = asn1.writeContextImplicit(0, Buffer.alloc(0));
+  }
+  var timeTag = o.timeTag === undefined ? 0x18 : o.timeTag;
+  var thisU = asn1.writeNode(timeTag, Buffer.from(o.thisUpdate || "20250615000000Z"));
+  var srKids = [certId.raw, certStatus, thisU];
+  if (o.nextUpdate !== null) {
+    srKids.push(asn1.writeContextExplicit(0, asn1.writeNode(0x18,
+      Buffer.from(o.nextUpdate || "20991231000000Z"))));
+  }
+  var singleResponse = asn1.writeSequence(srKids);
+  var responderId = asn1.writeContextExplicit(2, asn1.writeOctetString(Buffer.alloc(20, 0xcc)));
+  var producedAt  = asn1.writeNode(0x18, Buffer.from("20250615000000Z"));
+  var responses   = asn1.writeSequence([singleResponse]);
+  var rdKids = [responderId, producedAt, responses];
+  if (o.nonce) {
+    var nonceExt = asn1.writeSequence([
+      asn1.writeOid(OID_OCSP_NONCE),
+      asn1.writeOctetString(asn1.writeOctetString(o.nonce)),
+    ]);
+    rdKids.push(asn1.writeContextExplicit(1, asn1.writeSequence([nonceExt])));
+  }
+  var tbs = asn1.writeSequence(rdKids);
+  var sig = o.badSig
+    ? Buffer.alloc(70, 0x00)
+    : nodeCrypto.sign("sha256", tbs, kp.privateKey);
+  var sigAlg = asn1.writeSequence([asn1.writeOid(o.sigAlgOid || "1.2.840.10045.4.3.2")]);
+  var basic  = asn1.writeSequence([tbs, sigAlg, asn1.writeBitString(sig)]);
+  var rbInner = asn1.writeSequence([asn1.writeOid("1.3.6.1.5.5.7.48.1.1"), asn1.writeOctetString(basic)]);
+  var der = asn1.writeSequence([
+    asn1.writeNode(0x0a, Buffer.from([0])),
+    asn1.writeContextExplicit(0, rbInner),
+  ]);
+  return { der: der, issuerPem: issuerPem };
+}
+
+function _ctLeafHash(signedEntryDer, ts) {
+  var tsBuf = Buffer.alloc(8); tsBuf.writeBigUInt64BE(BigInt(Math.floor(ts)));
+  var lenBuf = Buffer.alloc(3); lenBuf.writeUIntBE(signedEntryDer.length, 0, 3);
+  var leafBytes = Buffer.concat([
+    Buffer.from([0]), Buffer.from([0]), tsBuf, Buffer.from([0, 0]),
+    lenBuf, signedEntryDer, Buffer.from([0, 0]),
+  ]);
+  return nodeCrypto.createHash("sha256")
+    .update(Buffer.concat([Buffer.from([0]), leafBytes])).digest();
+}
+function _ctInner(left, right) {
+  return nodeCrypto.createHash("sha256")
+    .update(Buffer.concat([Buffer.from([1]), left, right])).digest();
+}
+
+var _SERIAL = Buffer.from([0x12, 0x34, 0x56, 0x78]);
+var _NOW    = Date.parse("2025-06-15T00:00:01Z");
+
+// =====================================================================
+// CA trust store
+// =====================================================================
+
+function testAddCaShapes() {
+  nt._resetForTest();
+  var der = _synthCert({ cn: "Alpha CA" });
+  var added = nt.addCa(_toPem(der), { label: "alpha" });
+  check("addCa(string PEM) returns one meta", Array.isArray(added) && added.length === 1);
+  check("addCa meta carries subject", added[0].subject === "CN=Alpha CA");
+
+  // Buffer input
+  var addedBuf = nt.addCa(Buffer.from(_toPem(_synthCert({ cn: "Beta CA" })), "utf8"), { label: "beta" });
+  check("addCa(Buffer PEM) works", addedBuf.length === 1 && addedBuf[0].subject === "CN=Beta CA");
+
+  // Bundle with two CERTIFICATE blocks -> two metas.
+  var bundle = _toPem(_synthCert({ cn: "Gamma CA", serial: Buffer.from([0x0a]) })) +
+               _toPem(_synthCert({ cn: "Delta CA", serial: Buffer.from([0x0b]) }));
+  var addedBundle = nt.addCaBundle(bundle, { label: "bundle" });
+  check("addCaBundle with two blocks returns two metas", addedBundle.length === 2);
+
+  check("getTrustStore reflects all four", nt.getTrustStore().length === 4);
+  check("getCaPems returns four PEMs", nt.getCaPems().length === 4);
+  var store = nt.getTrustStore();
+  check("getTrustStore entry exposes fingerprint256 + label",
+        typeof store[0].fingerprint256 === "string" && store[0].label === "alpha");
+  nt._resetForTest();
+}
+
+function testAddCaRejections() {
+  nt._resetForTest();
+  // Non-string non-Buffer -> tls/bad-ca via _normalizePem.
+  var e1 = null;
+  try { nt.addCa(12345); } catch (e) { e1 = e; }
+  check("addCa(number) throws tls/bad-ca", e1 && e1.code === "tls/bad-ca");
+
+  // Path-like string that is not a readable path -> tls/empty-pem.
+  var e2 = null;
+  try { nt.addCa("/no/such/path/to/ca.pem"); } catch (e) { e2 = e; }
+  check("addCa(nonexistent path) throws tls/empty-pem", e2 && e2.code === "tls/empty-pem");
+
+  // Has a BEGIN marker (not path-like) but no CERTIFICATE block -> empty-pem.
+  var e3 = null;
+  try { nt.addCa("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----"); }
+  catch (e) { e3 = e; }
+  check("addCa(non-CERTIFICATE PEM) throws tls/empty-pem", e3 && e3.code === "tls/empty-pem");
+
+  // CERTIFICATE block with unparseable body -> tls/bad-ca-pem.
+  var e4 = null;
+  try { nt.addCa("-----BEGIN CERTIFICATE-----\nnot valid base64 @@@\n-----END CERTIFICATE-----"); }
+  catch (e) { e4 = e; }
+  check("addCa(garbage CERTIFICATE body) throws tls/bad-ca-pem", e4 && e4.code === "tls/bad-ca-pem");
+
+  // Unknown opt key -> validateOpts.
+  var e5 = null;
+  try { nt.addCa(_toPem(_synthCert({})), { nope: true }); } catch (e) { e5 = e; }
+  check("addCa unknown opt throws via validateOpts", e5 && /unknown option/.test(e5.message));
+  nt._resetForTest();
+}
+
+function testAddCaFromFileAndDir() {
+  nt._resetForTest();
+  var dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "blamejs-tls-ca-"));
+  try {
+    var file = nodePath.join(dir, "single.pem");
+    nodeFs.writeFileSync(file, _toPem(_synthCert({ cn: "File CA" })));
+    var addedFile = nt.addCa(file, { label: "from-file" });
+    check("addCa(file path) reads + parses PEM", addedFile.length === 1 && addedFile[0].subject === "CN=File CA");
+
+    // Directory of certs (only .pem/.crt/.cer are read, sorted).
+    var certDir = nodePath.join(dir, "bundle");
+    nodeFs.mkdirSync(certDir);
+    nodeFs.writeFileSync(nodePath.join(certDir, "a.pem"), _toPem(_synthCert({ cn: "Dir A", serial: Buffer.from([0x21]) })));
+    nodeFs.writeFileSync(nodePath.join(certDir, "b.crt"), _toPem(_synthCert({ cn: "Dir B", serial: Buffer.from([0x22]) })));
+    nodeFs.writeFileSync(nodePath.join(certDir, "ignore.txt"), "not a cert");
+    var addedDir = nt.addCa(certDir, { label: "from-dir" });
+    check("addCa(directory) reads only .pem/.crt/.cer", addedDir.length === 2);
+  } finally {
+    nodeFs.rmSync(dir, { recursive: true, force: true });
+    nt._resetForTest();
+  }
+}
+
+function testRemoveCa() {
+  nt._resetForTest();
+  var added = nt.addCa(_toPem(_synthCert({ cn: "Rm CA" })), { label: "rm" });
+  var fp = added[0].fingerprint256;
+
+  var eBad = null;
+  try { nt.removeCa(""); } catch (e) { eBad = e; }
+  check("removeCa('') throws tls/bad-fingerprint", eBad && eBad.code === "tls/bad-fingerprint");
+  var eBad2 = null;
+  try { nt.removeCa(12345); } catch (e) { eBad2 = e; }
+  check("removeCa(non-string) throws tls/bad-fingerprint", eBad2 && eBad2.code === "tls/bad-fingerprint");
+
+  check("removeCa(unknown fp) returns 0", nt.removeCa("AA:BB:CC") === 0);
+  // Lower-case + match on real fingerprint.
+  check("removeCa(known fp, case-insensitive) returns 1", nt.removeCa(fp.toLowerCase()) === 1);
+  check("store empty after remove", nt.getTrustStore().length === 0);
+  nt._resetForTest();
+}
+
+function testRemoveCaByLabel() {
+  nt._resetForTest();
+  nt.addCa(_toPem(_synthCert({ cn: "L1" })), { label: "keep" });
+  nt.addCa(_toPem(_synthCert({ cn: "L2", serial: Buffer.from([0x31]) })), { label: "drop" });
+  nt.addCa(_toPem(_synthCert({ cn: "L3", serial: Buffer.from([0x32]) })), { label: "drop" });
+
+  var eBad = null;
+  try { nt.removeCaByLabel(""); } catch (e) { eBad = e; }
+  check("removeCaByLabel('') throws tls/bad-label", eBad && eBad.code === "tls/bad-label");
+
+  check("removeCaByLabel(unknown) returns 0", nt.removeCaByLabel("nope") === 0);
+  check("removeCaByLabel('drop') removes both", nt.removeCaByLabel("drop", { audit: false }) === 2);
+  check("one entry survives", nt.getTrustStore().length === 1);
+  nt._resetForTest();
+}
+
+function testClearAll() {
+  nt._resetForTest();
+  check("clearAll on empty store returns 0", nt.clearAll() === 0);
+  nt.addCa(_toPem(_synthCert({ cn: "C1" })), {});
+  nt.addCa(_toPem(_synthCert({ cn: "C2", serial: Buffer.from([0x41]) })), {});
+  check("clearAll returns removed count", nt.clearAll({ audit: false }) === 2);
+  check("store empty after clearAll", nt.getTrustStore().length === 0);
+  nt._resetForTest();
+}
+
+function testPurgeExpired() {
+  nt._resetForTest();
+  nt.addCa(_toPem(_synthCert({ cn: "Fresh", notAfter: "270101000000Z" })), { label: "fresh" });
+  nt.addCa(_toPem(_synthCert({ cn: "Expired", serial: Buffer.from([0x51]), notBefore: "190101000000Z", notAfter: "200101000000Z" })), { label: "expired" });
+  var removed = nt.purgeExpired({ audit: false });
+  check("purgeExpired removes the expired cert only", removed === 1);
+  var store = nt.getTrustStore();
+  check("only the fresh cert survives purge", store.length === 1 && store[0].label === "fresh");
+  check("purgeExpired again returns 0 (nothing left to purge)", nt.purgeExpired() === 0);
+  nt._resetForTest();
+}
+
+function testExpiringSoon() {
+  nt._resetForTest();
+  var eBad = null;
+  try { nt.expiringSoon(-1); } catch (e) { eBad = e; }
+  check("expiringSoon(negative) throws tls/bad-window", eBad && eBad.code === "tls/bad-window");
+  var eInf = null;
+  try { nt.expiringSoon(Infinity); } catch (e) { eInf = e; }
+  check("expiringSoon(Infinity) throws tls/bad-window", eInf && eInf.code === "tls/bad-window");
+
+  nt.addCa(_toPem(_synthCert({ cn: "Soon", notAfter: "270101000000Z" })), { label: "soon" });
+  var big = nt.expiringSoon(C.TIME.days(3650));
+  check("expiringSoon with wide window lists the cert", big.length === 1 && big[0].label === "soon");
+  var none = nt.expiringSoon(0);
+  check("expiringSoon(0) lists nothing not-yet-past", none.length === 0);
+  nt._resetForTest();
+}
+
+function testSystemTrustAndApplyToContext() {
+  nt._resetForTest();
+  check("isSystemTrustEnabled false by default", nt.isSystemTrustEnabled() === false);
+  nt.useSystemTrust(true);
+  check("useSystemTrust(true) enables", nt.isSystemTrustEnabled() === true);
+
+  nt.addCa(_toPem(_synthCert({ cn: "Ctx CA" })), {});
+  var ctx = nt.applyToContext({ base: { rejectUnauthorized: true } });
+  check("applyToContext preserves base keys", ctx.rejectUnauthorized === true);
+  check("applyToContext sets ca array", Array.isArray(ctx.ca) && ctx.ca.length >= 1);
+  check("applyToContext sets groups from key shares",
+        typeof ctx.groups === "string" && ctx.groups.indexOf("X25519MLKEM768") === 0);
+  check("systemTrust folds in root certificates",
+        ctx.ca.length > 1 || nodeTlsHasNoRoots());
+
+  // Operator-supplied groups override is preserved.
+  var ctx2 = nt.applyToContext({ base: { groups: "X25519" } });
+  check("applyToContext keeps operator groups override", ctx2.groups === "X25519");
+
+  nt.useSystemTrust(false);
+  check("useSystemTrust(false) disables", nt.isSystemTrustEnabled() === false);
+
+  var eBad = null;
+  try { nt.applyToContext({ nope: 1 }); } catch (e) { eBad = e; }
+  check("applyToContext unknown opt throws via validateOpts", eBad && /unknown option/.test(eBad.message));
+  nt._resetForTest();
+}
+function nodeTlsHasNoRoots() {
+  return !Array.isArray(nodeTls.rootCertificates);
+}
+
+function testBaselineDrift() {
+  nt._resetForTest();
+  check("detectBaselineDrift null before capture", nt.detectBaselineDrift() === null);
+  nt.captureBaselineFingerprints();
+  var drift0 = nt.detectBaselineDrift();
+  check("no drift right after capture", drift0 && drift0.drifted === false);
+
+  var added = nt.addCa(_toPem(_synthCert({ cn: "Drift CA" })), {});
+  var drift1 = nt.detectBaselineDrift();
+  check("adding a CA registers as drift (added)",
+        drift1 && drift1.drifted === true && drift1.added.indexOf(added[0].fingerprint256) !== -1);
+
+  nt.captureBaselineFingerprints();
+  nt.removeCa(added[0].fingerprint256);
+  var drift2 = nt.detectBaselineDrift();
+  check("removing a CA registers as drift (removed)",
+        drift2 && drift2.drifted === true && drift2.removed.length === 1);
+  nt._resetForTest();
+}
+
+// =====================================================================
+// expiry / pinset-drift monitors
+// =====================================================================
+
+function testMonitorValidation() {
+  var e1 = null;
+  try { nt.expiryMonitor({ intervalMs: 0, windowMs: 1000 }); } catch (e) { e1 = e; }
+  check("expiryMonitor bad intervalMs throws tls/bad-interval", e1 && e1.code === "tls/bad-interval");
+  var e2 = null;
+  try { nt.expiryMonitor({ intervalMs: 1000, windowMs: -1 }); } catch (e) { e2 = e; }
+  check("expiryMonitor bad windowMs throws tls/bad-window", e2 && e2.code === "tls/bad-window");
+  var e3 = null;
+  try { nt.pinsetDriftMonitor({ intervalMs: Infinity }); } catch (e) { e3 = e; }
+  check("pinsetDriftMonitor bad intervalMs throws tls/bad-interval", e3 && e3.code === "tls/bad-interval");
+}
+
+async function testExpiryMonitorTick() {
+  nt._resetForTest();
+  nt.addCa(_toPem(_synthCert({ cn: "Mon CA", notAfter: "270101000000Z" })), { label: "mon" });
+  var seen = 0;
+  var lastRows = null;
+  var mon = nt.expiryMonitor({
+    intervalMs: 15,
+    windowMs:   C.TIME.days(3650),
+    onExpiring: function (rows) { seen += 1; lastRows = rows; },
+  });
+  try {
+    await helpers.waitUntil(function () { return seen >= 1; },
+      { timeoutMs: 5000, label: "expiryMonitor: onExpiring fired" });
+    check("expiryMonitor tick invoked onExpiring", seen >= 1);
+    check("onExpiring received the expiring row", lastRows && lastRows.length === 1 && lastRows[0].label === "mon");
+  } finally {
+    mon.stop();
+    mon.stop();  // idempotent second stop is a no-op
+    nt._resetForTest();
+  }
+}
+
+async function testPinsetDriftMonitorTick() {
+  nt._resetForTest();
+  nt.captureBaselineFingerprints();               // baseline = [] (empty store)
+  nt.addCa(_toPem(_synthCert({ cn: "Drift Mon CA" })), {});  // now drifts vs baseline
+  var seen = 0;
+  var lastDrift = null;
+  var mon = nt.pinsetDriftMonitor({
+    intervalMs: 15,
+    onDrift:    function (d) { seen += 1; lastDrift = d; },
+  });
+  try {
+    await helpers.waitUntil(function () { return seen >= 1; },
+      { timeoutMs: 5000, label: "pinsetDriftMonitor: onDrift fired" });
+    check("pinsetDriftMonitor tick invoked onDrift", seen >= 1);
+    check("onDrift reports the added fingerprint", lastDrift && lastDrift.added.length === 1);
+  } finally {
+    mon.stop();
+    nt._resetForTest();
+  }
+}
+
+// =====================================================================
+// PQC key shares
+// =====================================================================
+
+function testPqcKeyShares() {
+  nt._resetForTest();
+  var def = nt.pqc.getKeyShares();
+  check("getKeyShares returns default list", Array.isArray(def) && def[0] === "X25519MLKEM768");
+
+  var afterSet = nt.pqc.setKeyShares(["X25519MLKEM768", "X25519"]);
+  check("setKeyShares narrows the list", afterSet.length === 2 && afterSet[1] === "X25519");
+
+  var eArr = null;
+  try { nt.pqc.setKeyShares("X25519"); } catch (e) { eArr = e; }
+  check("setKeyShares(non-array) throws tls/bad-key-shares", eArr && eArr.code === "tls/bad-key-shares");
+  var eEmpty = null;
+  try { nt.pqc.setKeyShares([]); } catch (e) { eEmpty = e; }
+  check("setKeyShares([]) throws tls/bad-key-shares", eEmpty && eEmpty.code === "tls/bad-key-shares");
+  var eEntry = null;
+  try { nt.pqc.setKeyShares([""]); } catch (e) { eEntry = e; }
+  check("setKeyShares(empty entry) throws tls/bad-key-share", eEntry && eEntry.code === "tls/bad-key-share");
+  var eColon = null;
+  try { nt.pqc.setKeyShares(["X25519:X25519"]); } catch (e) { eColon = e; }
+  check("setKeyShares(entry with ':') throws tls/bad-key-share", eColon && eColon.code === "tls/bad-key-share");
+  var eLong = null;
+  try { nt.pqc.setKeyShares([new Array(66).join("a")]); } catch (e) { eLong = e; }
+  check("setKeyShares(>64-char entry) throws tls/bad-key-share", eLong && eLong.code === "tls/bad-key-share");
+  var eNum = null;
+  try { nt.pqc.setKeyShares([123]); } catch (e) { eNum = e; }
+  check("setKeyShares(non-string entry) throws tls/bad-key-share", eNum && eNum.code === "tls/bad-key-share");
+
+  var reset = nt.pqc.resetKeyShares();
+  check("resetKeyShares restores default", reset.length === 4 && reset[0] === "X25519MLKEM768");
+
+  // preferredGroups alias surface.
+  nt.preferredGroups.set(["X25519"]);
+  check("preferredGroups.get reflects set", nt.preferredGroups.get()[0] === "X25519");
+  nt.preferredGroups.reset();
+  check("preferredGroups.reset restores default", nt.preferredGroups.get().length === 4);
+  check("preferredGroups.DEFAULT is the frozen default", nt.preferredGroups.DEFAULT[0] === "X25519MLKEM768");
+  check("pqc.DEFAULT_KEY_SHARES exposed", nt.pqc.DEFAULT_KEY_SHARES[0] === "X25519MLKEM768");
+  nt._resetForTest();
+}
+
+// =====================================================================
+// OCSP — parse / build / evaluate
+// =====================================================================
+
+function testOcspParseShapeErrors() {
+  var cases = [
+    { der: Buffer.from([0x30, 0x00]), label: "empty SEQUENCE (no responseStatus)" },
+    // successful (0) but no responseBytes.
+    { der: asn1.writeSequence([asn1.writeNode(0x0a, Buffer.from([0]))]), label: "successful missing responseBytes" },
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var threw = null;
+    try { nt.ocsp.parseResponse(cases[i].der); } catch (e) { threw = e; }
+    check("parseResponse rejects " + cases[i].label + " with ocsp-bad-shape",
+          threw && /ocsp-bad-shape/.test(threw.code || ""));
+  }
+  // Unknown responseStatus int -> "unknown:<n>".
+  var rv = nt.ocsp.parseResponse(Buffer.from([0x30, 0x03, 0x0a, 0x01, 0x09]));
+  check("parseResponse maps unknown status int to 'unknown:9'", rv.status === "unknown:9");
+}
+
+function testOcspParseUnsupportedResponseType() {
+  // successful + responseBytes whose responseType OID is not id-pkix-ocsp-basic.
+  var rbInner = asn1.writeSequence([asn1.writeOid("1.2.3.4"), asn1.writeOctetString(Buffer.from([0x30, 0x00]))]);
+  var der = asn1.writeSequence([asn1.writeNode(0x0a, Buffer.from([0])), asn1.writeContextExplicit(0, rbInner)]);
+  var threw = null;
+  try { nt.ocsp.parseResponse(der); } catch (e) { threw = e; }
+  check("parseResponse rejects non-basic responseType",
+        threw && threw.code === "tls/ocsp-unsupported-response-type");
+}
+
+function testOcspParseBadTime() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "T CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  var fx = _buildOcsp({ issuerDer: issuer, status: "good", thisUpdate: "2025Z" });  // too short for either time form
+  var threw = null;
+  try { nt.ocsp.parseResponse(fx.der); } catch (e) { threw = e; }
+  check("parseResponse rejects malformed time with ocsp-bad-time",
+        threw && threw.code === "tls/ocsp-bad-time");
+}
+
+function testOcspParseUtcTimeYear() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "U CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  // UTCTime (0x17) YY>=50 -> 19xx.
+  var fx = _buildOcsp({ issuerDer: issuer, status: "good", timeTag: 0x17, thisUpdate: "750101000000Z", nextUpdate: null });
+  var parsed = nt.ocsp.parseResponse(fx.der);
+  var ms = parsed.basic.responses[0].thisUpdate;
+  check("parseResponse UTCTime YY>=50 maps to 19xx",
+        ms === Date.UTC(1975, 0, 1, 0, 0, 0));
+}
+
+function testOcspEvaluateBranches() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Eval CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+
+  var good = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var okRv = nt.ocsp.evaluate(good.der, { issuerPem: good.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate good response ok=true", okRv.ok === true && okRv.certStatus === "good");
+
+  // Missing serialHex -> fail closed.
+  var noSer = nt.ocsp.evaluate(good.der, { issuerPem: good.issuerPem, now: _NOW });
+  check("evaluate without serialHex fails closed", noSer.ok === false && noSer.signatureValid === true);
+
+  // Serial not present.
+  var notFound = nt.ocsp.evaluate(good.der, { issuerPem: good.issuerPem, serialHex: "deadbeef", now: _NOW });
+  check("evaluate serial-not-found fails closed", notFound.ok === false &&
+        /no entry for the requested cert serial/.test((notFound.errors || []).join(" ")));
+
+  // Revoked.
+  var rev = _buildOcsp({ issuerDer: issuer, status: "revoked", serial: _SERIAL });
+  var revRv = nt.ocsp.evaluate(rev.der, { issuerPem: rev.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate revoked -> ok=false certStatus=revoked", revRv.ok === false && revRv.certStatus === "revoked");
+
+  // Unknown certStatus.
+  var unk = _buildOcsp({ issuerDer: issuer, status: "unknown", serial: _SERIAL });
+  var unkRv = nt.ocsp.evaluate(unk.der, { issuerPem: unk.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate unknown certStatus -> ok=false", unkRv.ok === false && unkRv.certStatus === "unknown");
+
+  // Bad signature -> signatureValid false.
+  var bad = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, badSig: true });
+  var badRv = nt.ocsp.evaluate(bad.der, { issuerPem: bad.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate bad signature -> ok=false signatureValid=false", badRv.ok === false && badRv.signatureValid === false);
+
+  // Unsupported signature algorithm OID.
+  var badAlg = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, sigAlgOid: "1.2.3.999" });
+  var badAlgRv = nt.ocsp.evaluate(badAlg.der, { issuerPem: badAlg.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate unsupported sig-alg -> ok=false signatureValid=false", badAlgRv.ok === false && badAlgRv.signatureValid === false);
+
+  // thisUpdate in the future.
+  var fut = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, thisUpdate: "20990101000000Z" });
+  var futRv = nt.ocsp.evaluate(fut.der, { issuerPem: fut.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate future thisUpdate -> ok=false", futRv.ok === false && /future/.test((futRv.errors || []).join(" ")));
+
+  // Past nextUpdate.
+  var past = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, thisUpdate: "20200101000000Z", nextUpdate: "20200201000000Z" });
+  var pastRv = nt.ocsp.evaluate(past.der, { issuerPem: past.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate past nextUpdate -> ok=false", pastRv.ok === false && /past nextUpdate/.test((pastRv.errors || []).join(" ")));
+
+  // Non-finite clockSkew falls back to default (does not disable the window).
+  var futSkew = nt.ocsp.evaluate(fut.der, { issuerPem: fut.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, clockSkewMs: Infinity });
+  check("evaluate non-finite clockSkew does not disable future-check", futSkew.ok === false);
+}
+
+function testOcspEvaluateNonce() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Nonce CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  var nonce = Buffer.from("0123456789abcdef");
+  var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, nonce: nonce });
+
+  var match = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, expectedNonce: nonce });
+  check("evaluate nonce match -> ok=true nonce=matched", match.ok === true && match.nonce === "matched");
+
+  var mismatch = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, expectedNonce: Buffer.from("ffffffffffffffff") });
+  check("evaluate nonce mismatch -> ok=false", mismatch.ok === false && /nonce mismatch/.test((mismatch.errors || []).join(" ")));
+
+  // expectedNonce not a Buffer -> shape error.
+  var badShape = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, expectedNonce: "hex" });
+  check("evaluate expectedNonce non-Buffer -> ok=false", badShape.ok === false && /must be a Buffer/.test((badShape.errors || []).join(" ")));
+
+  // Present but not checked (no expectedNonce).
+  var present = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
+  check("evaluate nonce present-not-checked", present.nonce === "present-not-checked");
+
+  // expectedNonce supplied but response carries none.
+  var noNonceFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var missing = nt.ocsp.evaluate(noNonceFx.der, { issuerPem: noNonceFx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, expectedNonce: nonce });
+  check("evaluate expected nonce but response has none -> ok=false", missing.ok === false && /missing nonce/.test((missing.errors || []).join(" ")));
+}
+
+function testOcspEvaluateIssuerBindShapeErrors() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Bind CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  // issuerCertDer not a Buffer -> shape error.
+  var rv = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, issuerCertDer: "not-a-buffer" });
+  check("evaluate issuerCertDer non-Buffer -> ok=false", rv.ok === false && /must be a Buffer/.test((rv.errors || []).join(" ")));
+}
+
+function testOcspBuildRequest() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Req CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  var leaf = _synthCert({ serial: _SERIAL, cn: "Leaf", keyBytes: Buffer.from("leaf-key-bytes-aaaaaaaaaaaaaaaa") });
+
+  var withNonce = nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer });
+  check("buildRequest default nonce is 16 bytes", Buffer.isBuffer(withNonce.nonce) && withNonce.nonce.length === 16);
+  check("buildRequest returns a DER buffer", Buffer.isBuffer(withNonce.requestDer) && withNonce.requestDer.length > 0);
+
+  var noNonce = nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, nonce: false });
+  check("buildRequest nonce:false -> nonce null", noNonce.nonce === null);
+
+  var custom = nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, nonceLen: 32 });
+  check("buildRequest nonceLen:32 honored", custom.nonce.length === 32);
+
+  var e1 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: "x", issuerCertDer: issuer }); } catch (e) { e1 = e; }
+  check("buildRequest bad leafCertDer throws ocsp-bad-input", e1 && e1.code === "tls/ocsp-bad-input");
+  var e2 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: 42 }); } catch (e) { e2 = e; }
+  check("buildRequest bad issuerCertDer throws ocsp-bad-input", e2 && e2.code === "tls/ocsp-bad-input");
+  var e3 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, nonceLen: 99 }); } catch (e) { e3 = e; }
+  check("buildRequest out-of-range nonceLen throws ocsp-bad-nonce-len", e3 && e3.code === "tls/ocsp-bad-nonce-len");
+}
+
+async function testOcspFetchGuards() {
+  var e1 = null;
+  try { await nt.ocsp.fetch({ leafPem: 123 }); } catch (e) { e1 = e; }
+  check("ocsp.fetch bad input throws ocsp-bad-input", e1 && e1.code === "tls/ocsp-bad-input");
+
+  var e2 = null;
+  try { await nt.ocsp.fetch({ leafPem: "not a cert", issuerPem: "also not a cert" }); } catch (e) { e2 = e; }
+  check("ocsp.fetch unparseable PEM throws ocsp-bad-cert", e2 && e2.code === "tls/ocsp-bad-cert");
+
+  // Valid certs with no AIA responder URL -> ocsp-no-responder.
+  var leafPem = _toPem(_synthCert({ cn: "Fetch Leaf", serial: _SERIAL }));
+  var issuerPem = _toPem(_synthCert({ cn: "Fetch CA", serial: Buffer.from([0x01]) }));
+  var e3 = null;
+  try { await nt.ocsp.fetch({ leafPem: leafPem, issuerPem: issuerPem }); } catch (e) { e3 = e; }
+  check("ocsp.fetch with no responder URL throws ocsp-no-responder", e3 && e3.code === "tls/ocsp-no-responder");
+}
+
+async function testOcspRequireGoodEmpty() {
+  var e1 = null;
+  try { await nt.ocsp.requireGood({}); } catch (e) { e1 = e; }
+  check("requireGood without issuerPem throws ocsp-missing-issuer", e1 && e1.code === "tls/ocsp-missing-issuer");
+}
+
+function testOcspMustStaple() {
+  var e1 = null;
+  try { nt.ocsp.inspectMustStaple("not a buffer"); } catch (e) { e1 = e; }
+  check("inspectMustStaple bad input throws ocsp-bad-input", e1 && e1.code === "tls/ocsp-bad-input");
+
+  var msCert = _synthCert({ cn: "MS CA", exts: [_mustStapleExt()] });
+  var ms = nt.ocsp.inspectMustStaple(msCert);
+  check("inspectMustStaple detects must-staple", ms.mustStaple === true && ms.features.indexOf(5) !== -1);
+
+  var plainCert = _synthCert({ cn: "Plain CA" });
+  check("inspectMustStaple on plain cert -> mustStaple false", nt.ocsp.inspectMustStaple(plainCert).mustStaple === false);
+
+  // requireMustStaple predicate.
+  var predicate = nt.ocsp.requireMustStaple();
+  check("requireMustStaple missing peer cert.raw -> error",
+        predicate(null, {}) instanceof nt.TlsTrustError);
+  var msViolation = predicate({ raw: msCert }, { ocspBytes: Buffer.alloc(0) });
+  check("must-staple cert w/o staple -> ocsp-must-staple-violated",
+        msViolation && msViolation.code === "tls/ocsp-must-staple-violated");
+  var msOk = predicate({ raw: msCert }, { ocspBytes: Buffer.from([0x30, 0x00]) });
+  check("must-staple cert with a staple -> null (permitted)", msOk === null);
+  var plainOk = predicate({ raw: plainCert }, {});
+  check("non-must-staple cert -> null under default policy", plainOk === null);
+
+  var strict = nt.ocsp.requireMustStaple({ enforceUnconditional: true });
+  var strictViolation = strict({ raw: plainCert }, {});
+  check("enforceUnconditional refuses plain cert w/o staple",
+        strictViolation && strictViolation.code === "tls/ocsp-staple-required");
+}
+
+// =====================================================================
+// Certificate Transparency
+// =====================================================================
+
+function testCtInspectAndParse() {
+  var e1 = null;
+  try { nt.ct.inspect("not a buffer"); } catch (e) { e1 = e; }
+  check("ct.inspect bad input throws ct-bad-input", e1 && e1.code === "tls/ct-bad-input");
+
+  var plain = _synthCert({ cn: "No SCT" });
+  check("ct.inspect no-SCT cert -> hasSctExtension false", nt.ct.inspect(plain).hasSctExtension === false);
+
+  var sct = _buildSctBytes({});
+  var withSct = _synthCert({ cn: "SCT CA", exts: [_sctExt(_sctListRaw([sct]))] });
+  var inspected = nt.ct.inspect(withSct);
+  check("ct.inspect SCT cert -> hasSctExtension true", inspected.hasSctExtension === true);
+
+  var e2 = null;
+  try { nt.ct.parseScts("nope"); } catch (e) { e2 = e; }
+  check("ct.parseScts bad input throws ct-bad-input", e2 && e2.code === "tls/ct-bad-input");
+  check("ct.parseScts no-SCT cert -> []", nt.ct.parseScts(plain).length === 0);
+  var parsed = nt.ct.parseScts(withSct);
+  check("ct.parseScts returns one SCT with hashAlgo/sigAlgo",
+        parsed.length === 1 && parsed[0].hashAlgo === 4 && parsed[0].sigAlgo === 3);
+}
+
+function testCtVerifyScts() {
+  var e1 = null;
+  try { nt.ct.verifyScts("nope"); } catch (e) { e1 = e; }
+  check("verifyScts bad input throws ct-bad-input", e1 && e1.code === "tls/ct-bad-input");
+
+  var plain = _synthCert({ cn: "No SCT" });
+  check("verifyScts no-SCT cert -> reason no-sct-extension", nt.ct.verifyScts(plain).reason === "no-sct-extension");
+
+  // Cert with an SCT but no log keys -> insufficient-verified, per-sct log-key-missing.
+  var sct = _buildSctBytes({});
+  var withSct = _synthCert({ cn: "SCT CA", exts: [_sctExt(_sctListRaw([sct]))] });
+  var rv = nt.ct.verifyScts(withSct, {});
+  check("verifyScts with no log keys -> ok false insufficient-verified",
+        rv.ok === false && rv.reason === "insufficient-verified" && rv.scts[0].reason === "log-key-missing");
+
+  // Parse-error: lie about the outer SCT-list length.
+  var badList = _sctListRaw([sct], { lieOuterLen: 9999 });
+  var badCert = _synthCert({ cn: "Bad SCT", exts: [_sctExt(badList)] });
+  var badRv = nt.ct.verifyScts(badCert, {});
+  check("verifyScts with malformed SCT list -> reason parse-error", badRv.reason === "parse-error");
+
+  // requireScts predicate.
+  var predicate = nt.ct.requireScts({});
+  check("requireScts missing peer cert.raw -> error", predicate(null) instanceof nt.TlsTrustError);
+  var noExt = predicate({ raw: plain });
+  check("requireScts no-SCT cert -> tls/ct-no-sct-extension", noExt && noExt.code === "tls/ct-no-sct-extension");
+  var insuff = predicate({ raw: withSct });
+  check("requireScts insufficient -> tls/ct-insufficient-verified", insuff && insuff.code === "tls/ct-insufficient-verified");
+}
+
+function testCtVerifyInclusion() {
+  var signedEntry = Buffer.from("fake-signed-entry-der-bytes");
+  var ts = 1700000000000;
+  var leafHash = _ctLeafHash(signedEntry, ts);
+
+  // Trivial single-leaf tree: computedRoot === leafHash.
+  var trivial = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: leafHash },
+  });
+  check("verifyInclusion trivial tree valid", trivial.valid === true);
+
+  // 2-leaf tree, leafIndex 0.
+  var sib = Buffer.alloc(32, 0x11);
+  var root2 = _ctInner(leafHash, sib);
+  var two = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [sib],
+    sthFromLog: { treeSize: 2, rootHash: root2.toString("hex") },
+  });
+  check("verifyInclusion 2-leaf leafIndex0 valid (hex rootHash)", two.valid === true);
+
+  // Root mismatch.
+  var mismatch = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: Buffer.alloc(32, 0x00) },
+  });
+  check("verifyInclusion root mismatch -> valid false root-mismatch", mismatch.valid === false && mismatch.reason === "root-mismatch");
+
+  // Shape errors.
+  var errCases = [
+    [undefined, "missing-opts"],
+    [{}, "missing-sct"],
+    [{ sct: {} }, "missing-leaf-certificate"],
+    [{ sct: {}, leafCertificate: Buffer.from("x") }, "missing-sth"],
+    [{ sct: {}, leafCertificate: Buffer.from("x"), sthFromLog: {}, leafIndex: -1 }, "bad-leaf-index"],
+    [{ sct: {}, leafCertificate: Buffer.from("x"), sthFromLog: {}, leafIndex: 0, auditPath: "no" }, "bad-audit-path"],
+  ];
+  for (var i = 0; i < errCases.length; i += 1) {
+    var r = nt.ct.verifyInclusion(errCases[i][0]);
+    check("verifyInclusion reason=" + errCases[i][1], r.valid === false && r.reason === errCases[i][1]);
+  }
+
+  // Bad SCT timestamp.
+  var badTs = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: "nope", signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: leafHash },
+  });
+  check("verifyInclusion bad timestamp -> bad-sct-timestamp", badTs.reason === "bad-sct-timestamp");
+
+  // Bad STH root length.
+  var badRoot = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: Buffer.alloc(4) },
+  });
+  check("verifyInclusion bad-sth-root (short buffer)", badRoot.reason === "bad-sth-root");
+}
+
+function testCtVerifyConsistency() {
+  var X = Buffer.alloc(32, 0x22);
+  var same = nt.ct.verifyConsistency({ firstSize: 1, secondSize: 1, proof: [], firstRoot: X, secondRoot: X });
+  check("verifyConsistency m=n=1 valid", same.valid === true);
+
+  var sib = Buffer.alloc(32, 0x33);
+  var second = _ctInner(X, sib);
+  var grow = nt.ct.verifyConsistency({ firstSize: 1, secondSize: 2, proof: [sib], firstRoot: X, secondRoot: second });
+  check("verifyConsistency m=1 n=2 valid", grow.valid === true);
+
+  var mismatch = nt.ct.verifyConsistency({ firstSize: 1, secondSize: 1, proof: [], firstRoot: X, secondRoot: Buffer.alloc(32, 0x99) });
+  check("verifyConsistency root mismatch -> valid false", mismatch.valid === false && mismatch.reason === "root-mismatch");
+
+  // Empty proof but first tree not a complete subtree -> walk-failed.
+  var incomplete = nt.ct.verifyConsistency({ firstSize: 3, secondSize: 4, proof: [], firstRoot: X, secondRoot: X });
+  check("verifyConsistency incomplete-subtree empty proof -> walk-failed", incomplete.valid === false && incomplete.reason === "consistency-walk-failed");
+
+  // Shape errors.
+  check("verifyConsistency missing-opts", nt.ct.verifyConsistency(undefined).reason === "missing-opts");
+  check("verifyConsistency bad-first-root", nt.ct.verifyConsistency({ firstRoot: Buffer.alloc(4), secondRoot: X }).reason === "bad-first-root");
+  check("verifyConsistency bad-second-root", nt.ct.verifyConsistency({ firstRoot: X, secondRoot: Buffer.alloc(4) }).reason === "bad-second-root");
+  check("verifyConsistency bad sizes -> walk-failed",
+        nt.ct.verifyConsistency({ firstSize: 0, secondSize: 1, proof: [], firstRoot: X, secondRoot: X }).reason === "consistency-walk-failed");
+}
+
+// =====================================================================
+// parseEchConfigList extra framing branches
+// =====================================================================
+
+function testEchExtraFraming() {
+  // Single-byte buffer -> too short for outer prefix.
+  var e1 = null;
+  try { nt.parseEchConfigList(Buffer.from([0x00])); } catch (e) { e1 = e; }
+  check("parseEchConfigList 1-byte buffer -> ech-config-malformed", e1 && e1.code === "tls/ech-config-malformed");
+
+  // Truncated ECHConfig header.
+  var e2 = null;
+  try { nt.parseEchConfigList(Buffer.from([0x00, 0x02, 0xfe, 0x0d])); } catch (e) { e2 = e; }
+  check("parseEchConfigList truncated config header -> ech-config-malformed", e2 && e2.code === "tls/ech-config-malformed");
+
+  // Declared config length overflows list.
+  var e3 = null;
+  try { nt.parseEchConfigList(Buffer.from([0x00, 0x04, 0xfe, 0x0d, 0x00, 0xff])); } catch (e) { e3 = e; }
+  check("parseEchConfigList config length overflow -> ech-config-malformed", e3 && e3.code === "tls/ech-config-malformed");
+}
+
+// =====================================================================
+// wrapSNICallback
+// =====================================================================
+
+function testWrapSniCallback() {
+  check("wrapSNICallback(non-function) returns arg unchanged", nt.wrapSNICallback(42) === 42);
+
+  // Operator callback that throws synchronously -> wrapper surfaces via cb(err, null).
+  var wrapped = nt.wrapSNICallback(function () { throw new Error("boom in SNI"); });
+  var cbErr = "unset";
+  var cbCtx = "unset";
+  wrapped("evil.example.com", function (err, ctx) { cbErr = err; cbCtx = ctx; });
+  check("throwing SNICallback surfaces the error to cb", cbErr instanceof Error && /boom in SNI/.test(cbErr.message));
+  check("throwing SNICallback passes null ctx", cbCtx === null);
+
+  // Normal callback passes through untouched.
+  var okWrapped = nt.wrapSNICallback(function (servername, cb) { cb(null, { servername: servername }); });
+  var okCtx = null;
+  okWrapped("good.example.com", function (_err, ctx) { okCtx = ctx; });
+  check("non-throwing SNICallback passes through", okCtx && okCtx.servername === "good.example.com");
+
+  // Callback that throws AFTER already invoking cb (double-invoke) is swallowed.
+  var didNotThrow = true;
+  try {
+    var dbl = nt.wrapSNICallback(function (servername, cb) { cb(null, null); throw new Error("late throw"); });
+    dbl("x", function () {});
+  } catch (_e) { didNotThrow = false; }
+  check("SNICallback throwing after cb() does not escape the wrapper", didNotThrow === true);
+}
+
+// =====================================================================
+
+async function run() {
+  nt._resetForTest();
+  try {
+    // CA store
+    testAddCaShapes();
+    testAddCaRejections();
+    testAddCaFromFileAndDir();
+    testRemoveCa();
+    testRemoveCaByLabel();
+    testClearAll();
+    testPurgeExpired();
+    testExpiringSoon();
+    testSystemTrustAndApplyToContext();
+    testBaselineDrift();
+    // monitors
+    testMonitorValidation();
+    await testExpiryMonitorTick();
+    await testPinsetDriftMonitorTick();
+    // PQC
+    testPqcKeyShares();
+    // OCSP
+    testOcspParseShapeErrors();
+    testOcspParseUnsupportedResponseType();
+    testOcspParseBadTime();
+    testOcspParseUtcTimeYear();
+    testOcspEvaluateBranches();
+    testOcspEvaluateNonce();
+    testOcspEvaluateIssuerBindShapeErrors();
+    testOcspBuildRequest();
+    await testOcspFetchGuards();
+    await testOcspRequireGoodEmpty();
+    testOcspMustStaple();
+    // CT
+    testCtInspectAndParse();
+    testCtVerifyScts();
+    testCtVerifyInclusion();
+    testCtVerifyConsistency();
+    // ECH extra framing
+    testEchExtraFraming();
+    // SNI
+    testWrapSniCallback();
+  } finally {
+    nt._resetForTest();
+  }
+}
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  run().then(function () { console.log("OK"); })
+       .catch(function (e) { console.error(e.stack || e); process.exit(1); });
+}
