@@ -1,0 +1,63 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.5",
+  "date": "2026-07-03",
+  "headline": "Correctness fixes across the ReDoS guard, Base32 codec, HTTP multipart builder, SAML encrypted-assertion decryption, and the OAuth device grant — several restore advertised functionality that was silently non-working, plus a multipart header-injection fix",
+  "summary": "This patch fixes a batch of correctness and security defects, several of which restore advertised behaviour that never actually worked. The ReDoS guard (b.guardRegex) no longer false-rejects LINEAR patterns that use a quantified non-capturing group (`(?:…)?`, `(?:…)*`) or an optional quantified group (`(X+)?`, `(?:X+)?`) — those repeat the group at most once and are not catastrophic; the detector now correctly requires the OUTER quantifier to be unbounded, so operator regex screening and b.selfUpdate asset patterns that use an optional SemVer suffix work again while genuine `(a+)+` shapes are still refused. The Base32 decoder now rejects NON-CANONICAL input (a final symbol whose unused low bits are non-zero — previously two distinct strings decoded to the same bytes, a malleability problem for the TOTP secrets and identifiers Base32 backs) and impossible symbol counts (1/3/6 mod 8 that silently produced a truncated buffer). The HTTP multipart/form-data builder now refuses CR/LF/NUL in a field name, filename, or content-type, closing a part-header-injection / form-part-forgery path. Two SAML EncryptedAssertion decryption paths that were completely dead — ML-KEM-1024 key transport and XChaCha20-Poly1305 content — are fixed (they referenced crypto entry points that were never exported, so the framework's advertised PQC-first / AEAD SAML encryption always failed and misreported the cause as a wrong-key or tag-mismatch error). The OAuth device grant now works against spec-compliant identity providers (its poll aborted on the first `authorization_pending`, which RFC 8628 delivers as an HTTP 400 the client was rejecting before reading), and a static (non-discovery) OAuth client can now use introspection, dynamic registration, and device authorization by configuring those endpoints. Smaller fixes round it out: the HTTP client's default error carries statusCode/permanent; the CLI dev server's repeatable flags accumulate; DANE and MTA-STS failures are scoped correctly per RFC; and typed errors replace raw TypeErrors on a couple of malformed-input paths.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "b.guardRegex no longer false-rejects linear quantified-group patterns (#432, #429)",
+          "body": "The nested-quantifier ReDoS detector treated the `?` in a `(?:` group prefix as an inner quantifier and treated a bounded outer `?` / `{0,1}` as a dangerous outer quantifier, so it wrongly refused LINEAR patterns like `^(?:/page/\\d+)?$`, `^foo(?:bar)*$`, `^(a+)?$`, and `(?:[-+][0-9A-Za-z.-]+)?`. The catastrophic class requires the OUTER quantifier to be unbounded (`*`/`+`/`{n,}`). The detector now relies solely on the paren-aware structural scanner, which requires an unbounded outer quantifier and does not miscount a group prefix — so genuine `(a+)+` / `((a)+)+` shapes stay refused while these linear ones are accepted. Consumers screening operator-supplied regexes (route rules, and b.selfUpdate asset patterns using an optional SemVer prerelease/build group) are no longer forced to rewrite valid input."
+        },
+        {
+          "title": "Base32 decoder rejects non-canonical encodings and impossible lengths",
+          "body": "b.base32.decode discarded the final symbol's unused low bits without checking they were zero (RFC 4648 §3.5), so two distinct strings — e.g. `MY======` and `MZ======` — decoded to the same bytes (decoder malleability), and it silently accepted impossible symbol counts (1/3/6 mod 8) that can't represent whole bytes, returning a truncated buffer. Both are now refused (`base32/non-canonical`, `base32/bad-length`), giving a one-to-one mapping between a byte sequence and its Base32 string — important where the string is a key / secret / dedup handle (TOTP, identifiers). Valid input, including unpadded and loose-mode input, is unaffected."
+        },
+        {
+          "title": "HTTP multipart/form-data builder refuses CR/LF/NUL in part-header values",
+          "body": "The multipart body builder interpolated the field name, file field, filename, and content-type onto `Content-Disposition:` / `Content-Type:` part-header lines without a control-character check, so an attacker controlling one of those values could smuggle a CRLF and inject additional part headers or forge form parts. CR, LF, and NUL in any of those values are now refused, matching the header-safety the mail-header sweep already applies to RFC 822 lines."
+        },
+        {
+          "title": "SAML EncryptedAssertion ML-KEM-1024 and XChaCha20-Poly1305 decryption now work",
+          "body": "verifyResponse's post-quantum key-transport branch and its XChaCha20-Poly1305 content branch called crypto entry points that the crypto module never exported, so every ML-KEM-1024-wrapped or XChaCha20-Poly1305-encrypted SAML assertion failed with an internal TypeError that was re-reported as a key-unwrap or tag-mismatch error — the advertised PQC-first / AEAD SAML encryption was dead. Both paths now route through the exported envelope-open and packed-AEAD primitives, verified with a full encrypt→decrypt round trip. Fails closed (no auth bypass) either way."
+        },
+        {
+          "title": "OAuth device grant polls correctly against spec-compliant providers",
+          "body": "pollDeviceCode issued its token request in the default buffering mode, so the HTTP client rejected the HTTP 400 that RFC 8628 §3.5 / RFC 6749 §5.2 use to carry `authorization_pending` / `slow_down` before the poll loop could read the OAuth error body — the grant aborted on the first poll (which is almost always `authorization_pending`, since the user hasn't approved yet). The request now resolves 4xx OAuth error responses so the pending / slow-down / terminal handling runs and the device grant completes."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "HTTP client default error carries statusCode and permanent",
+          "body": "request() fell back to the base FrameworkError when no explicit opts.errorClass was passed, so error.statusCode and error.permanent were undefined on the default path despite the documented default of HttpClientError. The default is now HttpClientError, so those fields are populated for every consumer."
+        },
+        {
+          "title": "Static OAuth clients can configure introspection / registration / device-authorization endpoints",
+          "body": "create() never read opts.introspectionEndpoint / registrationEndpoint / deviceAuthorizationEndpoint into its static-endpoint set, so introspectToken / registerClient / deviceAuthorization resolved those endpoints only via OIDC discovery — a static (non-discovery) client could not use them, even though introspectToken's own error told operators to set the endpoint on create(). Those three endpoints are now honored from static config."
+        },
+        {
+          "title": "CLI dev server repeatable flags accumulate",
+          "body": "`blamejs dev --arg / --watch / --ignore` are documented repeatable, but the argument parser overwrote each on repeat, so only the last occurrence survived — only the last --watch directory was monitored, only the last --ignore applied, and the child received only the last --arg. Repeated occurrences of these flags now accumulate as documented."
+        },
+        {
+          "title": "DANE per-recipient failure isolation and MTA-STS testing-mode handling",
+          "body": "A DANE-enforce TLSA-lookup failure threw out of the entire deliver() batch instead of failing just the one recipient; it now fails that recipient and lets the rest proceed. And an MTA-STS policy published in `testing` mode was hard-bounced under the default enforce posture, violating RFC 8461 §5.2 (testing mode is report-only); a testing-mode policy no longer blocks delivery."
+        },
+        {
+          "title": "external-db validates defaultBackend and enforces the pool min floor",
+          "body": "init() did not validate that opts.defaultBackend named a registered backend, so a typo surfaced as an opaque TypeError at the first query instead of a typed config-time error; it is now validated at init. The pool `min` (documented as a floor on idle clients) was never enforced; the reaper now respects it."
+        },
+        {
+          "title": "mail-bounce returns a typed error for a null SES SNS message",
+          "body": "An SES SNS notification whose Message field is JSON literal `null` dereferenced null and threw a raw TypeError (also risking an internal-message leak); it now throws the typed MailBounceError like the other malformed-input paths."
+        }
+      ]
+    }
+  ]
+}
