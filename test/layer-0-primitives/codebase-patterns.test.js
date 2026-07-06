@@ -13214,6 +13214,33 @@ function testFuzzBuildWiresJazzerAndPairsCorpus() {
     bad);
 }
 
+// The wiki example depends on the framework via a file: link installed with
+// --install-links. If examples/wiki/package-lock.json's @blamejs/core node is
+// empty ({}) — as `pin-all --lockfiles` emits when it can't reach the linked
+// package — `npm ci --install-links` creates node_modules/@blamejs/ with NO
+// @blamejs/core, so every wiki CI job (e2e, comment-block) dies at
+// require.resolve("@blamejs/core") before a single test runs. Regenerate via
+// `cd examples/wiki && rm -rf node_modules package-lock.json && npm install
+// --install-links` (which restores the version + resolved:"file:../.." metadata).
+function testWikiLockfileHasFileLinkMetadata() {
+  var lockPath = "examples/wiki/package-lock.json";
+  var lock;
+  try { lock = JSON.parse(fs.readFileSync(lockPath, "utf8")); }
+  catch (_e) { return; }
+  var node = lock.packages && lock.packages["node_modules/@blamejs/core"];
+  var bad = [];
+  if (!node || typeof node.resolved !== "string" || node.resolved.indexOf("file:") !== 0) {
+    bad.push({ file: lockPath, line: 1,
+      content: "node_modules/@blamejs/core lockfile node lacks its file-link metadata " +
+               "(resolved: \"file:../..\"); npm ci --install-links then can't resolve @blamejs/core and " +
+               "every wiki job fails at require.resolve before tests start — regenerate with a full " +
+               "`rm -rf node_modules package-lock.json && npm install --install-links`" });
+  }
+  bad = _filterMarkers(bad, "wiki-lockfile-file-link");
+  _report("examples/wiki/package-lock.json carries the @blamejs/core file-link metadata (resolved: file:../..)",
+    bad);
+}
+
 // The test-detached-async-iife antipattern (scanScope: "test") covers *.test.js,
 // but the legacy single-layer entry files (test/00-primitives.js …
 // 50-integration.js) are required + run directly by smoke.js via _runLayer and
@@ -14232,6 +14259,10 @@ async function run() {
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by
   // the compiled target name (both silently regressed the OSS-Fuzz spec).
   testFuzzBuildWiresJazzerAndPairsCorpus();
+  // wiki file-link lockfile detector: examples/wiki/package-lock.json's
+  // @blamejs/core node must carry resolved:"file:../.." or npm ci --install-links
+  // can't resolve the framework and every wiki job dies before tests run.
+  testWikiLockfileHasFileLinkMetadata();
   testNoDetachedAsyncIifeInLegacyLayerFiles();
   testNoTrackedInternalNotes();
   testResidencyGatesWired();
