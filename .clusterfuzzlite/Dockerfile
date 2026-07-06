@@ -1,14 +1,25 @@
-# ClusterFuzzLite build image for blamejs.
+# ClusterFuzzLite / OSS-Fuzz build image for blamejs.
 #
-# Inherits from oss-fuzz's JavaScript base-builder (jazzer.js +
-# libFuzzer + the compile_javascript_fuzzer helper pre-installed).
-# Copy the framework source + harnesses, then build.sh wires each
-# fuzz target into a libFuzzer-shaped runnable.
+# Inherits libFuzzer + the compile_javascript_fuzzer helper from oss-fuzz's
+# JavaScript base-builder. jazzer.js is NOT in the base image — build.sh installs
+# @jazzer.js/core (pinned in fuzz/package.json) into the project-root node_modules
+# so the runnable compile_javascript_fuzzer emits can resolve it at fuzz time.
+# Copy the framework source + harnesses, then build.sh wires each fuzz target
+# into a libFuzzer-shaped runnable.
 #
-# ClusterFuzzLite consumes this same Dockerfile for the PR + batch
-# fuzz workflows (`.github/workflows/cflite_*.yml`). OSS-Fuzz upstream
-# uses the project-specific Dockerfile under `oss-fuzz/projects/blamejs/`
-# which mirrors this shape — keep them in sync.
+# This image is the OSS-Fuzz-upstream integration spec — OSS-Fuzz's own
+# oss-fuzz/projects/blamejs/ Dockerfile + build.sh mirror this shape; keep them
+# in sync. The in-repo CI fuzz workflows (.github/workflows/cflite_*.yml) do NOT
+# use this image — they invoke jazzer.js directly on ubuntu-latest (the CFLite
+# build_fuzzers wrapper is broken for JS as of 2026; see cflite_pr.yml).
+#
+# NOTE — the upstream path is currently LATENT and cannot execute targets: the
+# base-builder-javascript image ships Node 20 + GLIBC 2.31, but blamejs needs
+# Node 22+ (node:sqlite; engine floor 24.18) and @jazzer.js/core needs GLIBC 2.38.
+# build.sh is correct and forward-compatible — it re-engages unchanged once
+# OSS-Fuzz ships a Node 24 / Ubuntu 24.04 base-builder-javascript. Do NOT downgrade
+# @jazzer.js/core to "fix" this: the Node-20 floor blocks blamejs regardless, and a
+# downgrade only risks the working CI (which runs Node 24 on ubuntu-latest).
 #
 # The base is digest-pinned for a reproducible CI fuzz toolchain (Dependabot
 # bumps it via the docker ecosystem entry for /.clusterfuzzlite). Note: the

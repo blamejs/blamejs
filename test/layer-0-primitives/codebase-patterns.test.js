@@ -13146,6 +13146,74 @@ function testEsbuildPinAgreesAcrossArtifacts() {
     bad);
 }
 
+// Fuzz-build invariant: the ClusterFuzzLite / OSS-Fuzz build script
+// (.clusterfuzzlite/build.sh) must (1) install @jazzer.js/core BEFORE
+// compile_javascript_fuzzer and (2) name each seed-corpus zip after the
+// COMPILED TARGET. compile_javascript_fuzzer emits a wrapper that execs
+// <project>/node_modules/@jazzer.js/core/dist/cli.js from a wholesale copy of
+// $SRC/blamejs, so the runtime must exist at the project-root node_modules at
+// compile time — with no `npm ci` first, every target references a runtime that
+// isn't present and cannot start. The helper names targets `basename -s .js`
+// (keeping `.fuzz`: guard-csv.fuzz), so a zip paired on the `.fuzz.js`-stripped
+// base (guard-csv_seed_corpus.zip) never associates with the target and the
+// engine bootstraps from an empty corpus. Both regressed silently: the build
+// exits 0 and CI (cflite_*.yml) invokes jazzer directly, never this script — so
+// the latent OSS-Fuzz-upstream spec built targets that couldn't run and fuzzed
+// from nothing.
+function testFuzzBuildWiresJazzerAndPairsCorpus() {
+  var buildPath = ".clusterfuzzlite/build.sh";
+  var src;
+  try { src = fs.readFileSync(buildPath, "utf8"); }
+  catch (_e) { return; }                                    // absent in this checkout — skip
+  if (src.indexOf("compile_javascript_fuzzer") < 0) return; // not the fuzz build
+
+  var bad = [];
+  var lines = src.split(/\r?\n/);
+  function isBuildComment(s) { return /^\s*#/.test(s); }
+
+  // (1) an install must precede the first compile_javascript_fuzzer.
+  var firstCompile = -1;
+  for (var i = 0; i < lines.length; i += 1) {
+    if (!isBuildComment(lines[i]) && /\bcompile_javascript_fuzzer\b/.test(lines[i])) { firstCompile = i; break; }
+  }
+  if (firstCompile >= 0) {
+    var hasInstallBefore = false;
+    for (var j = 0; j < firstCompile; j += 1) {
+      if (!isBuildComment(lines[j]) && /\bnpm\s+(ci|install|i)\b/.test(lines[j])) { hasInstallBefore = true; break; }
+    }
+    if (!hasInstallBefore) {
+      bad.push({ file: buildPath, line: firstCompile + 1,
+        content: "compile_javascript_fuzzer runs with no `npm ci`/`npm install` before it — " +
+                 "@jazzer.js/core is never installed, so every compiled target references a runtime " +
+                 "that isn't present and fails to start (the build still exits 0, so the gap is silent)" });
+    }
+  }
+
+  // (2) the seed-corpus zip must be named after the compiled target
+  // (basename -s .js, keeping `.fuzz`), never a var stripped with `.fuzz.js`.
+  for (var z = 0; z < lines.length; z += 1) {
+    if (isBuildComment(lines[z])) continue;
+    var zm = /zip\b[^\n]*\$\{?(\w+)\}?_seed_corpus\.zip/.exec(lines[z]);
+    if (!zm) continue;
+    var zipVar = zm[1];
+    var wrongStem = new RegExp("\\b" + zipVar + "\\s*=\\s*\\$\\(\\s*basename\\b[^)]*\\.fuzz\\.js\\s*\\)");
+    for (var a = 0; a < lines.length; a += 1) {
+      if (!isBuildComment(lines[a]) && wrongStem.test(lines[a])) {
+        bad.push({ file: buildPath, line: z + 1,
+          content: "seed-corpus zip named from $" + zipVar + " (=`basename ... .fuzz.js`, drops `.fuzz`); " +
+                   "the compiled target keeps `.fuzz` (basename -s .js), so the corpus never pairs — " +
+                   "derive the zip name from the target (basename -s .js)" });
+        break;
+      }
+    }
+  }
+
+  bad = _filterMarkers(bad, "fuzz-build-jazzer-runtime");
+  _report(".clusterfuzzlite/build.sh installs @jazzer.js/core before compile_javascript_fuzzer + " +
+          "names each seed-corpus zip after the compiled target so the engine pairs it",
+    bad);
+}
+
 // The test-detached-async-iife antipattern (scanScope: "test") covers *.test.js,
 // but the legacy single-layer entry files (test/00-primitives.js …
 // 50-integration.js) are required + run directly by smoke.js via _runLayer and
@@ -14160,6 +14228,10 @@ async function run() {
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
   testEsbuildPinAgreesAcrossArtifacts();
+  // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
+  // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by
+  // the compiled target name (both silently regressed the OSS-Fuzz spec).
+  testFuzzBuildWiresJazzerAndPairsCorpus();
   testNoDetachedAsyncIifeInLegacyLayerFiles();
   testNoTrackedInternalNotes();
   testResidencyGatesWired();
