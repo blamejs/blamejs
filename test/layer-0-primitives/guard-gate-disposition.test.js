@@ -90,6 +90,6 @@ function run() {
 module.exports = { run: run };
 
 if (require.main === module) {
-  try { run(); console.log("[guard-gate-disposition-coverage] OK — " + helpers.getChecks() + " checks passed"); }
+  try { run(); console.log("[guard-gate-disposition] OK — " + helpers.getChecks() + " checks passed"); }
   catch (e) { console.error("FAIL:", e.stack || e); process.exit(1); }
 }

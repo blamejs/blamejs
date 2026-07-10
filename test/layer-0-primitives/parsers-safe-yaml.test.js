@@ -279,11 +279,11 @@ function run() {
 
 module.exports = { run: run };
 
-// Allow direct execution: `node test/layer-0-primitives/parsers-safe-yaml-coverage.test.js`
+// Allow direct execution: `node test/layer-0-primitives/parsers-safe-yaml.test.js`
 if (require.main === module) {
   try {
     run();
-    console.log("OK — parsers-safe-yaml-coverage " + helpers.getChecks() + " checks passed");
+    console.log("OK — parsers-safe-yaml " + helpers.getChecks() + " checks passed");
     process.exit(0);
   } catch (e) {
     console.error(helpers.formatErr(e));

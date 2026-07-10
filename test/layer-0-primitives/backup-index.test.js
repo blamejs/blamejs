@@ -684,7 +684,7 @@ module.exports = { run: run };
 
 if (require.main === module) {
   run().then(
-    function () { console.log("[backup-index-coverage] OK — " + helpers.getChecks() + " checks passed"); },
+    function () { console.log("[backup-index] OK — " + helpers.getChecks() + " checks passed"); },
     function (e) { console.error("FAIL:", e && e.stack || e); process.exit(1); }
   );
 }

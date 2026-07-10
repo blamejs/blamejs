@@ -12,7 +12,7 @@
  * suites never reach. Every assertion drives the public API
  * (`b.metrics.*`) — never a private internal.
  *
- * Run standalone: `node test/layer-0-primitives/metrics-coverage.test.js`
+ * Run standalone: `node test/layer-0-primitives/metrics.test.js`
  * Or via smoke:   `node test/smoke.js`
  */
 

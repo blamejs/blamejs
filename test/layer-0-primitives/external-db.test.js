@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * external-db-coverage — error / defensive / adversarial branch coverage for
+ * external-db — error / defensive / adversarial branch coverage for
  * b.externalDb. Drives the PUBLIC API with in-memory fake drivers (no real
  * Postgres): init/config validation, backend-pick precedence, query retry +
  * connection-destroy paths, transaction (deadlock retry / rollback /
@@ -832,7 +832,7 @@ async function run() {
 
 if (require.main === module) {
   run().then(
-    function () { process.stdout.write("OK — external-db-coverage: " + helpers.getChecks() + " checks passed\n"); process.exit(0); },
+    function () { process.stdout.write("OK — external-db: " + helpers.getChecks() + " checks passed\n"); process.exit(0); },
     function (err) { console.error(err && err.stack); process.exit(1); }
   );
 }

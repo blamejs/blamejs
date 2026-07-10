@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.16.8",
-  "createdAt": "2026-07-10T14:54:51.636Z",
+  "frameworkVersion": "0.16.9",
+  "createdAt": "2026-07-10T21:25:01.238Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49930,6 +49930,10 @@
         "normalizeText": {
           "type": "function",
           "arity": 2
+        },
+        "quoteString": {
+          "type": "function",
+          "arity": 1
         },
         "secureZero": {
           "type": "function",

@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * db-coverage — error / defensive / adversarial branch coverage for
+ * db — error / defensive / adversarial branch coverage for
  * lib/db.js driven through the public b.db surface. Focus is the
  * non-happy-path: bad-init opts, reserved-table collisions,
  * personal-data-category validation, exportCsv / transaction / stream

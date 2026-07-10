@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * guard-sql-coverage — error / adversarial-branch coverage for
+ * guard-sql — error / adversarial-branch coverage for
  * b.guardSql (the raw-SQL content-safety primitive).
  *
  * The smoke + integration suites already exercise the happy path (a
@@ -28,7 +28,7 @@
  *   - sanitize's refuse-throw path and gate's serve / audit-only /
  *     refuse / fail-closed dispositions.
  *
- * Run standalone: node test/layer-0-primitives/guard-sql-coverage.test.js
+ * Run standalone: node test/layer-0-primitives/guard-sql.test.js
  * Or via smoke:   node test/smoke.js
  */
 
@@ -426,7 +426,7 @@ module.exports = { run: run };
 
 if (require.main === module) {
   run().then(
-    function () { console.log("[guard-sql-coverage] OK — " + helpers.getChecks() + " checks passed"); process.exit(0); },
+    function () { console.log("[guard-sql] OK — " + helpers.getChecks() + " checks passed"); process.exit(0); },
     function (e) { console.error("FAIL:", e && e.stack || e); process.exit(1); }
   );
 }

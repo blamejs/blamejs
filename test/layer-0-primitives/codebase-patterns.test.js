@@ -10939,6 +10939,25 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: ["lib/metrics.js"],
     reason: "Prometheus exposition escaping is owned by lib/metrics.js (_escapeLabelValue for label values, the help-text escape in the snapshot family normalizer); every exposition surface routes through its shared family encoder. A second escape chain in another lib file means a duplicate encoder whose output can drift from the canonical exposition — compose the metrics encoder instead.",
   },
+  {
+    id: "rfc-quoted-string-escape-owned-by-safeBuffer",
+    primitive: "b.safeBuffer.quoteString",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // RFC quoted-string serialization (escape backslash + DQUOTE, wrap
+    // in DQUOTEs — sf-string / Link-header params / Authentication-
+    // Results reason / IMAP / ManageSieve strings) is owned by
+    // safeBuffer.quoteString. A hand-rolled backslash-doubling chain
+    // followed immediately by a DQUOTE escape is that serializer
+    // re-implemented inline; its escaping can drift (the pre-extraction
+    // copies disagreed on String() coercion) and a missed site is a
+    // parameter-smuggling seam. The Prometheus exposition chain escapes
+    // newline between the two steps, so it does not match here (it has
+    // its own detector + owner).
+    regex: /\.replace\(\/\\\\\/g,\s*"\\{4}"\)\.replace\(\/"\/g/,
+    allowlist: ["lib/safe-buffer.js"],
+    reason: "Backslash+DQUOTE quoted-string escaping is owned by safeBuffer.quoteString (RFC 8941 sf-string, RFC 8288 Link params, RFC 8601 reason, RFC 3501 IMAP, RFC 5804 ManageSieve all route through it). An inline `.replace(/\\\\/g,...).replace(/\"/g,...)` chain in another lib file is the serializer re-implemented — compose safeBuffer.quoteString instead. lib/safe-buffer.js is the primitive's home.",
+  },
 
 ];
 
