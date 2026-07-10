@@ -192,6 +192,35 @@ var TEST_REF_ALLOWLIST = {
   "vault.getCurrentPassphrase": GAP,
   "websocket.WebSocketError": GAP,
   "websocket.buildUpgradeResponse": GAP,
+  "archive.adapters.http": GAP,
+  "auth.fal.isValidBand": GAP,
+  "compliance.aiAct.gpai.adherenceForm": GAP,
+  "compliance.aiAct.gpai.verifyAdherence": GAP,
+  "guardArchive.buildProfile": GAP,
+  "guardCidr.sanitize": GAP,
+  "guardCidr.validate": GAP,
+  "guardDomain.sanitize": GAP,
+  "guardGraphql.gate": GAP,
+  "guardGraphql.sanitize": GAP,
+  "guardJsonpath.sanitize": GAP,
+  "guardJwt.sanitize": GAP,
+  "guardOauth.gate": GAP,
+  "guardOauth.sanitize": GAP,
+  "guardPdf.inspectMagic": GAP,
+  "guardRegex.gate": GAP,
+  "guardShell.sanitize": GAP,
+  "guardTemplate.sanitize": GAP,
+  "guardUuid.sanitize": GAP,
+  "log.makeViaOrFallback": GAP,
+  "logStream.bootFromEnv": GAP,
+  "logStream.debug": GAP,
+  "mail.crypto.pgp.experimental.wkd.fetch": GAP,
+  "mail.crypto.smime.verifyAll": GAP,
+  "mail.send.deliver.create": GAP,
+  "mail.server.rateLimit.resolve": GAP,
+  "middleware.tusUpload.close": GAP,
+  "queue.bootFromEnv": GAP,
+  "time.toIso8601NoMs": GAP,
 };
 
 function _walkJsFiles(dir, out) {
@@ -212,15 +241,21 @@ function _walkJsFiles(dir, out) {
 }
 
 function _readTestCorpus(testDirs) {
-  var blob = "";
+  // Per-file contents, not one concatenated blob: the split signal in
+  // _testReferenced requires the namespace and the method to co-occur
+  // in the SAME test file — corpus-wide matching would count a
+  // primitive as covered when one test names the namespace and an
+  // unrelated test happens to call the same common method name
+  // (`.create(`, `.parse(`).
+  var files = [];
   for (var d = 0; d < testDirs.length; d += 1) {
-    var files = _walkJsFiles(testDirs[d], []);
-    for (var i = 0; i < files.length; i += 1) {
-      try { blob += fs.readFileSync(files[i], "utf8") + "\n"; }
+    var paths = _walkJsFiles(testDirs[d], []);
+    for (var i = 0; i < paths.length; i += 1) {
+      try { files.push(fs.readFileSync(paths[i], "utf8")); }
       catch (_e) { /* drop unreadable */ }
     }
   }
-  return { blob: blob };
+  return { files: files };
 }
 
 // primBare: the @primitive without the `b.` prefix (e.g.
@@ -228,9 +263,12 @@ function _readTestCorpus(testDirs) {
 // relative to lib/ (e.g. "auth/oauth.js") — a require() of that module
 // counts as a namespace reference.
 function _testReferenced(corpus, primBare, moduleRel) {
-  var blob = corpus.blob;
+  var files = corpus.files;
   var full = new RegExp("\\bb\\." + _reEscape(primBare) + "(?![A-Za-z0-9_$])");                      // allow:dynamic-regex — built from the in-repo @primitive tag, _reEscape'd; no operator input
-  if (full.test(blob)) return true;
+  var i;
+  for (i = 0; i < files.length; i += 1) {
+    if (full.test(files[i])) return true;
+  }
 
   var segs = primBare.split(".");
   if (segs.length < 2) return false;   // single-segment: only the verbatim form counts
@@ -240,10 +278,14 @@ function _testReferenced(corpus, primBare, moduleRel) {
   var nsRef = new RegExp("\\bb\\." + _reEscape(ns) + "(?![A-Za-z0-9_$])");                           // allow:dynamic-regex — built from the in-repo @primitive tag, _reEscape'd; no operator input
   var modNoExt = String(moduleRel).replace(/\\/g, "/").replace(/\.js$/, "");
   var modRef = new RegExp("require\\([^)]*[\\\\/]" + _reEscape(modNoExt).replace(/\//g, "[\\\\/]") + "(?:\\.js)?[\"']"); // allow:dynamic-regex — built from the lib-relative file path of the primitive's own module, _reEscape'd; no operator input
-  if (!nsRef.test(blob) && !modRef.test(blob)) return false;
-
   var methodRef = new RegExp("\\." + _reEscape(method) + "\\s*\\(");                                 // allow:dynamic-regex — built from the in-repo @primitive tag's method segment, _reEscape'd; no operator input
-  return methodRef.test(blob);
+  // Namespace (or owning-module require) and method invocation must
+  // co-occur in the SAME file — a namespace reference in one test and
+  // an unrelated `.create(` in another is not coverage of b.<ns>.create.
+  for (i = 0; i < files.length; i += 1) {
+    if ((nsRef.test(files[i]) || modRef.test(files[i])) && methodRef.test(files[i])) return true;
+  }
+  return false;
 }
 
 // Probe the universe of primitive signatures available for @related
