@@ -57,14 +57,14 @@ var SAFE_BUILTINS = { crypto: 1, "node:crypto": 1, path: 1, "node:path": 1,
   querystring: 1, "node:querystring": 1, assert: 1, "node:assert": 1, zlib: 1, "node:zlib": 1 };
 
 // require() seen by an example: framework alias → a FRESH object (never `b`
-// itself, so an example writing to the export can't mutate the real surface),
-// with an identity `.create()` for the doc convention; safe builtins pass
-// through; anything else classifies as an external (illustrative) module.
+// itself, so an example writing to the export can't mutate the real surface —
+// and no extra members: an example calling a method the shipped export
+// doesn't have must FAIL, that drift is exactly what this test catches);
+// safe builtins pass through; anything else classifies as an external
+// (illustrative) module.
 function sandboxRequire(name) {
   if (name === "blamejs" || name === "@blamejs/core") {
-    var shim = Object.assign({}, b);
-    shim.create = function () { return shim; };
-    return shim;
+    return Object.assign({}, b);
   }
   if (Object.prototype.hasOwnProperty.call(SAFE_BUILTINS, name)) return require(name);
   var e = new Error("example references external module '" + name + "'");

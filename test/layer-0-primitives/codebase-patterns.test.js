@@ -10918,6 +10918,27 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "v0.14.7 — external-db credential-rejection audits (SQLSTATE 28000 / 28P01 / 42501) now carry attemptedTable, the relation the rejected identity tried to touch, extracted defensively from the SQL. The detector requires any file emitting an action:'db.auth.failed' audit to also name attemptedTable so a future emitter can't drop the forensic field.",
   },
+  {
+    id: "prometheus-exposition-escape-owned-by-metrics",
+    primitive: "b.metrics — _escapeLabelValue / _renderFamilyLines (one exposition encoder)",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Prometheus / OpenMetrics wire-format escaping (backslash, quote,
+    // newline in label values / help text) and labeled-sample line
+    // rendering are owned by lib/metrics.js — one encoder behind the
+    // live exposition(), the shadow registry, and snapshot.render. A
+    // hand-rolled backslash-doubling chain that ALSO escapes newline
+    // (`.replace(/\\/g,"\\\\")...replace(/\n/g,"\\n")`) is the Prometheus
+    // escape signature — a second exposition encoder growing in another
+    // lib file, whose escaping/ordering drifts from the canonical one.
+    // The two-step backslash+quote chains used by RFC 8941 sf-string /
+    // IMAP / Sieve / Link-header quoted-strings do not escape newline
+    // and are deliberately out of scope. The `{1,60}` bound on the
+    // optional intermediate replace is a ReDoS backstop, not precision.
+    regex: /\.replace\(\/\\\\\/g,\s*"\\{4}"\)(?:\.replace\([^)]{1,60}\))?\.replace\(\/\\n\/g,\s*"\\{2}n"\)/,
+    allowlist: ["lib/metrics.js"],
+    reason: "Prometheus exposition escaping is owned by lib/metrics.js (_escapeLabelValue for label values, the help-text escape in the snapshot family normalizer); every exposition surface routes through its shared family encoder. A second escape chain in another lib file means a duplicate encoder whose output can drift from the canonical exposition — compose the metrics encoder instead.",
+  },
 
 ];
 
