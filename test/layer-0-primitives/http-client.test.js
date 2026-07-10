@@ -643,7 +643,7 @@ async function _drainTcpHandles() {
     return process.getActiveResourcesInfo().filter(function (t) {
       return t === "TCPSocketWrap" || t === "TCPServerWrap";
     }).length === 0;
-  }, { timeoutMs: 5000, label: "http-client-coverage: TCP handle drain after _resetForTest" });
+  }, { timeoutMs: 5000, label: "http-client: TCP handle drain after _resetForTest" });
 }
 
 async function run() {
@@ -671,6 +671,6 @@ async function run() {
 module.exports = { run: run };
 
 if (require.main === module) {
-  run().then(function () { console.log("OK http-client-coverage — " + helpers.getChecks() + " checks"); })
+  run().then(function () { console.log("OK http-client — " + helpers.getChecks() + " checks"); })
        .catch(function (e) { console.error("FAIL:", e && e.stack || e); process.exit(1); });
 }

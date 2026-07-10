@@ -8,12 +8,17 @@
  * Live DNS lookups don't run in smoke (network-bound tests live in
  * test/integration). What's covered: parse + match + alignment logic
  * via operator-supplied dnsLookup mock callbacks; ARC chain shape.
+ * Also: SPF qualifier / macro / CIDR / lookup-ceiling and DNS-failure
+ * classification edges, DMARC disposition + alignment-mode + report
+ * branches, ARC key-material failure arms, and the b.mail.authResults
+ * builder.
  */
 
-var helpers = require("../helpers");
-var b       = helpers.b;
-var check   = helpers.check;
-var arcSign = require("../../lib/mail-arc-sign");
+var helpers    = require("../helpers");
+var b          = helpers.b;
+var check      = helpers.check;
+var arcSign    = require("../../lib/mail-arc-sign");
+var nodeCrypto = require("node:crypto");
 
 function testSurface() {
   check("mail.spf.verify is a function",       typeof b.mail.spf.verify === "function");
@@ -1758,6 +1763,813 @@ function testByteCapMultibyte() {
     r && r.ok === false && r.error && r.error.code === "mail-auth/dmarc-ruf-too-large");
 }
 
+// A TXT-only dnsLookup fake: `map[host]` returns the TXT record array
+// ([["v=spf1 ..."]]); everything else is ENOTFOUND.
+function _txtOnly(map) {
+  return async function (host, type) {
+    if (type === "TXT" && Object.prototype.hasOwnProperty.call(map, host)) return map[host];
+    var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+  };
+}
+
+// Resolve a promise to the error it rejects with (or null when it fulfils).
+async function _rejectedWith(promise) {
+  try { await promise; return null; } catch (e) { return e; }
+}
+
+function _threw(fn) {
+  try { fn(); return null; } catch (e) { return e; }
+}
+
+// ---- SPF: input validation (config-time throw at the entry point) ----
+
+async function testSpfVerifyInputValidation() {
+  var e1 = await _rejectedWith(b.mail.spf.verify({ ip: 12345, mailFrom: "a@s.example" }));
+  check("spf.verify: non-string ip → spf-bad-ip throw",
+        e1 && /spf-bad-ip/.test(e1.code || ""));
+  var e2 = await _rejectedWith(b.mail.spf.verify({ ip: "192.0.2.5" }));
+  check("spf.verify: neither mailFrom nor helo → spf-bad-domain throw",
+        e2 && /spf-bad-domain/.test(e2.code || ""));
+  var e3 = await _rejectedWith(b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", bogus: 1 }));
+  check("spf.verify: unknown opt refused (config-time)", e3 !== null);
+}
+
+// ---- SPF: `all` qualifier → verdict mapping (RFC 7208 §4.6.2) ----
+
+async function testSpfAllQualifierVerdicts() {
+  var cases = [
+    { rec: "v=spf1 +all", want: "pass"     },
+    { rec: "v=spf1 ~all", want: "softfail" },
+    { rec: "v=spf1 ?all", want: "neutral"  },
+    { rec: "v=spf1 all",  want: "pass"     },   // bare mechanism defaults to '+'
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var dns = _txtOnly({ "s.example": [[cases[i].rec]] });
+    var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+    check("spf.verify(" + JSON.stringify(cases[i].rec) + ") → " + cases[i].want,
+          rv.result === cases[i].want);
+  }
+}
+
+async function testSpfNeutralWhenNoMechanismMatches() {
+  // A record with a non-matching mechanism and NO `all` / redirect falls
+  // through to the "no mechanism matched" default → neutral (RFC 7208 §4.7).
+  var dns = _txtOnly({ "s.example": [["v=spf1 ip4:198.51.100.0/24"]] });
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf.verify: no mechanism matched + no all → neutral",
+        rv.result === "neutral" && /no mechanism matched/.test(rv.explanation || ""));
+}
+
+// ---- SPF: ip6 mechanism (RFC 7208 §5.6) on an IPv6 connection ----
+
+async function testSpfIp6Mechanism() {
+  var dns = _txtOnly({ "s.example": [["v=spf1 ip6:2001:db8::/32 -all"]] });
+  var hit = await b.mail.spf.verify({ ip: "2001:db8::5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf.verify(ip6:2001:db8::/32, IP in range) → pass", hit.result === "pass");
+  var miss = await b.mail.spf.verify({ ip: "2001:dead::5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf.verify(ip6:2001:db8::/32, IP out of range) → fail (-all)", miss.result === "fail");
+}
+
+// ---- SPF: helo fallback when MAIL FROM is absent (RFC 7208 §2.4) ----
+
+async function testSpfHeloFallbackIdentity() {
+  var dns = _txtOnly({ "mail.example.com": [["v=spf1 ip4:192.0.2.0/24 -all"]] });
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", helo: "mail.example.com", dnsLookup: dns });
+  check("spf.verify: HELO identity used when MAIL FROM absent → pass on helo domain",
+        rv.result === "pass" && rv.domain === "mail.example.com");
+}
+
+// ---- SPF: include semantics (RFC 7208 §5.2) ----
+
+async function testSpfIncludeSemantics() {
+  // A single include: to a domain with NO SPF record MUST permerror
+  // (RFC 7208 §5.2) — distinct from the void-lookup-cap path.
+  var noneDns = _txtOnly({ "s.example": [["v=spf1 include:missing.example -all"]] });
+  var rvNone = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: noneDns });
+  check("spf.verify: include of a record-less domain → permerror (RFC 7208 §5.2)",
+        rvNone.result === "permerror" && /§5\.2|has no SPF record/.test(rvNone.explanation || ""));
+
+  // A matching include propagates the inner pass to the outer verdict.
+  var passDns = _txtOnly({
+    "s.example":      [["v=spf1 include:_spf.p.example -all"]],
+    "_spf.p.example": [["v=spf1 ip4:192.0.2.0/24 ~all"]],
+  });
+  var rvPass = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: passDns });
+  check("spf.verify: include that passes propagates to outer pass", rvPass.result === "pass");
+}
+
+// ---- SPF: redirect= to a record-less target → permerror (RFC 7208 §6.1) ----
+
+async function testSpfRedirectNoRecordPermerror() {
+  var dns = _txtOnly({ "s.example": [["v=spf1 redirect=_spf.missing.example"]] });
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf.verify: redirect= to a record-less domain → permerror (RFC 7208 §6.1)",
+        rv.result === "permerror" && /§6\.1|has no SPF record/.test(rv.explanation || ""));
+}
+
+// ---- SPF: macro letters + transformers (RFC 7208 §7) via exists ----
+
+async function testSpfMacroLettersAndTransformers() {
+  // Each case is one `exists:` whose expanded A-query name we capture. The
+  // exists RESOLVES (→ pass) so it never charges the §4.6.4 void slot — a
+  // multi-miss chain would trip the void cap before every shape ran.
+  async function expand(record, mailFrom) {
+    var queried = [];
+    var dns = async function (host, type) {
+      if (type === "TXT" && host === "a.b.example") return [[record]];
+      if (type === "A") { queried.push(host); return ["127.0.0.2"]; }
+      var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+    };
+    var rv = await b.mail.spf.verify({ ip: "192.0.2.9", mailFrom: mailFrom, dnsLookup: dns });
+    return { result: rv.result, queried: queried };
+  }
+  var mf = "alice@a.b.example";
+  var lo = await expand("v=spf1 exists:%{l}.%{o}.probe -all", mf);
+  check("spf macro %{l}.%{o} → local-part + full sender-domain",
+        lo.result === "pass" && lo.queried.indexOf("alice.a.b.example.probe") !== -1);
+  var d2 = await expand("v=spf1 exists:%{d2}.probe -all", mf);
+  check("spf macro %{d2} → rightmost two labels of current domain",
+        d2.result === "pass" && d2.queried.indexOf("b.example.probe") !== -1);
+  var dr = await expand("v=spf1 exists:%{dr}.probe -all", mf);
+  check("spf macro %{dr} → reversed current-domain labels",
+        dr.result === "pass" && dr.queried.indexOf("example.b.a.probe") !== -1);
+  var pct = await expand("v=spf1 exists:a%%b.probe -all", mf);
+  check("spf macro %% → literal percent",
+        pct.result === "pass" && pct.queried.indexOf("a%b.probe") !== -1);
+  var sp = await expand("v=spf1 exists:a%_b.probe -all", mf);
+  check("spf macro %_ → literal space",
+        sp.result === "pass" && sp.queried.indexOf("a b.probe") !== -1);
+}
+
+// ---- SPF: parseRecord surfaces qualifier + modifier structure ----
+
+function testSpfParseRecordStructure() {
+  var rec = b.mail.spf.parseRecord("v=spf1 ~all");
+  check("spf.parseRecord: bare '~all' → softfail qualifier + all mechanism",
+        rec.length === 1 && rec[0].qualifier === "~" && rec[0].mechanism === "all");
+  var rec2 = b.mail.spf.parseRecord("v=spf1 a:mail.example.com/24 redirect=_spf.example.com");
+  check("spf.parseRecord: modifier separated from mechanisms (non-enumerable)",
+        rec2.length === 1 && rec2[0].mechanism === "a" &&
+        Array.isArray(rec2.modifiers) && rec2.modifiers[0].name === "redirect" &&
+        rec2.modifiers[0].value === "_spf.example.com");
+}
+
+// ---- DMARC: parseRecord defaults + failure classification ----
+
+function testDmarcParseDefaultsAndErrors() {
+  var p = b.mail.dmarc.parseRecord("v=DMARC1; p=quarantine");
+  check("dmarc.parseRecord: pct/adkim/aspf default to 100/r/r when omitted",
+        p.pct === 100 && p.adkim === "r" && p.aspf === "r");
+  var eVer = _threw(function () { b.mail.dmarc.parseRecord("v=DMARC2; p=none"); });
+  check("dmarc.parseRecord: wrong version → dmarc-bad-version",
+        eVer && /dmarc-bad-version/.test(eVer.code || ""));
+  var eNoP = _threw(function () { b.mail.dmarc.parseRecord("v=DMARC1; pct=100"); });
+  check("dmarc.parseRecord: missing required p= → dmarc-missing-policy (RFC 7489 §6.3)",
+        eNoP && /dmarc-missing-policy/.test(eNoP.code || ""));
+}
+
+// ---- DMARC evaluate: from-address validation ----
+
+async function testDmarcEvaluateFromValidation() {
+  var e1 = await _rejectedWith(b.mail.dmarc.evaluate({ from: 123 }));
+  check("dmarc.evaluate: non-string from → dmarc-bad-from",
+        e1 && /dmarc-bad-from/.test(e1.code || ""));
+  var e2 = await _rejectedWith(b.mail.dmarc.evaluate({ from: "nodomain" }));
+  check("dmarc.evaluate: from lacking @domain → dmarc-bad-from",
+        e2 && /dmarc-bad-from/.test(e2.code || ""));
+}
+
+// ---- DMARC evaluate: policy-driven disposition branches ----
+
+async function testDmarcEvaluatePolicyNoneDelivers() {
+  // p=none is monitor-only: an unaligned message still delivers.
+  var dns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=none"]] });
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@example.com",
+    spf:  { result: "fail", domain: "example.com" }, dkim: [], dnsLookup: dns,
+  });
+  check("dmarc.evaluate: p=none unaligned → result fail but recommendedAction deliver",
+        rv.result === "fail" && rv.recommendedAction === "deliver");
+}
+
+async function testDmarcEvaluateNoRecordIsNone() {
+  var dns = async function () { var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e; };
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@norecord.example",
+    spf:  { result: "fail", domain: "x" }, dkim: [], dnsLookup: dns,
+  });
+  check("dmarc.evaluate: no _dmarc record → result none",
+        rv.result === "none" && rv.policy === null);
+}
+
+async function testDmarcEvaluatePermerrorOnBadRecord() {
+  // A syntactically bad record (invalid p=) is a PERMANENT error, not a
+  // silent pass — dmarc.evaluate catches the parse throw → permerror.
+  var dns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=maybe"]] });
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@example.com",
+    spf:  { result: "pass", domain: "example.com" }, dkim: [], dnsLookup: dns,
+  });
+  check("dmarc.evaluate: unparseable published policy → permerror (not a pass)",
+        rv.result === "permerror" && rv.alignment.spf === false);
+}
+
+// ---- DMARC evaluate: alignment input shapes + modes ----
+
+async function testDmarcEvaluateDkimResultShapes() {
+  var dns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=reject; adkim=r; aspf=r"]] });
+  // dkim supplied as a single object (not an array).
+  var single = await b.mail.dmarc.evaluate({
+    from: "alice@example.com", spf: { result: "fail", domain: "x" },
+    dkim: { result: "pass", domain: "example.com" }, dnsLookup: dns,
+  });
+  check("dmarc.evaluate: dkim as a single object aligns → pass",
+        single.result === "pass" && single.alignment.dkim === true);
+  // dkim result carrying a `d` field instead of `domain`.
+  var dField = await b.mail.dmarc.evaluate({
+    from: "alice@example.com", spf: { result: "fail", domain: "x" },
+    dkim: [{ result: "pass", d: "example.com" }], dnsLookup: dns,
+  });
+  check("dmarc.evaluate: dkim result exposing d= (not domain) still aligns → pass",
+        dField.result === "pass" && dField.alignment.dkim === true);
+  // A non-pass SPF result must not count as aligned even with a matching domain.
+  var soft = await b.mail.dmarc.evaluate({
+    from: "alice@example.com", spf: { result: "softfail", domain: "example.com" },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc.evaluate: SPF softfail with matching domain is NOT aligned",
+        soft.alignment.spf === false && soft.result === "fail");
+}
+
+async function testDmarcEvaluateStrictVsRelaxedAlignment() {
+  // aspf=s (strict): a subdomain From vs a parent-domain SPF auth-domain
+  // does NOT align (exact host match required).
+  var strictDns = _txtOnly({ "_dmarc.sub.example.com": [["v=DMARC1; p=reject; aspf=s; adkim=s"]] });
+  var strict = await b.mail.dmarc.evaluate({
+    from: "alice@sub.example.com", spf: { result: "pass", domain: "example.com" },
+    dkim: [], dnsLookup: strictDns,
+  });
+  check("dmarc.evaluate: strict aspf=s — sub vs parent domain does NOT align → fail",
+        strict.alignment.spf === false && strict.result === "fail");
+  // aspf=r (relaxed): the same pair aligns via the shared org-domain.
+  var relaxDns = _txtOnly({ "_dmarc.sub.example.com": [["v=DMARC1; p=reject; aspf=r"]] });
+  var relaxed = await b.mail.dmarc.evaluate({
+    from: "alice@sub.example.com", spf: { result: "pass", domain: "example.com" },
+    dkim: [], dnsLookup: relaxDns,
+  });
+  check("dmarc.evaluate: relaxed aspf=r — sub vs parent domain aligns → pass",
+        relaxed.alignment.spf === true && relaxed.result === "pass");
+}
+
+// ---- ARC verify: input validation + uncovered chain-rule / time-fault arms ----
+
+async function testArcVerifyInputValidation() {
+  var e1 = await _rejectedWith(b.mail.arc.verify(12345));
+  check("arc.verify: non-string input → arc-bad-input",
+        e1 && /arc-bad-input/.test(e1.code || ""));
+  var e2 = await _rejectedWith(b.mail.arc.verify(""));
+  check("arc.verify: empty-string input → arc-bad-input",
+        e2 && /arc-bad-input/.test(e2.code || ""));
+  var e3 = await _rejectedWith(b.mail.arc.evaluate(12345, { trustedSealers: [] }));
+  check("arc.evaluate: non-string input → arc-bad-input",
+        e3 && /arc-bad-input/.test(e3.code || ""));
+}
+
+async function testArcVerifyMissingCvArm() {
+  // A structurally-complete i=1 hop whose ARC-Seal omits cv= trips the
+  // missing-cv chain-rule arm (which takes precedence over the signature-
+  // verification failure the dummy b= would otherwise report).
+  var msg = "ARC-Seal: i=1; a=rsa-sha256; d=example.com; s=arc; b=AAAA\r\n" +
+            "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+            "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+            "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg);
+  check("arc.verify: ARC-Seal with no cv= → fail w/ missing-cv reason",
+        rv.chainStatus === "fail" && /missing-cv-at-i=1/.test(rv.reason || ""));
+}
+
+async function testArcVerifyTimeFaultArms() {
+  // RFC 8617 §5.2 — a future t= and an unparseable x= are each time faults
+  // that fail the AMS closed, independent of the (dummy) signature check.
+  var keyDns = function () {
+    return async function (qname) {
+      if (qname === "arc._domainkey.example.com") {
+        var nc = require("crypto");
+        var pair = nc.generateKeyPairSync("rsa", { modulusLength: 2048 });
+        return [["v=DKIM1; k=rsa; p=" +
+          pair.publicKey.export({ type: "spki", format: "der" }).toString("base64")]];
+      }
+      var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+    };
+  };
+  var now = Math.floor(Date.now() / 1000);
+  var futureMsg =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; t=" +
+      (now + 999999) + "; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+    "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rvF = await b.mail.arc.verify(futureMsg, { dnsLookup: keyDns() });
+  var fErrs = ((rvF.hops[0] && rvF.hops[0].amsErrors) || []).join(" ; ");
+  check("arc.verify: future t= → ams-t-future time fault (AMS fails closed)",
+        rvF.chainStatus === "fail" && /ams-t-future/.test(fErrs));
+
+  var unparseMsg =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; x=notanumber; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+    "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rvU = await b.mail.arc.verify(unparseMsg, { dnsLookup: keyDns() });
+  var uErrs = ((rvU.hops[0] && rvU.hops[0].amsErrors) || []).join(" ; ");
+  check("arc.verify: unparseable x= → ams-x-unparseable time fault (fails closed)",
+        rvU.chainStatus === "fail" && /ams-x-unparseable/.test(uErrs));
+}
+
+// ---- authResults.emit (RFC 8601 §2) — the whole builder is otherwise
+//      exercised only indirectly through inbound.verify ----
+
+function testAuthResultsEmitValidation() {
+  var E = b.mail.authResults.emit;
+  var eObj = _threw(function () { E(null); });
+  check("authResults.emit: non-object opts → ar-bad-input",
+        eObj && /ar-bad-input/.test(eObj.code || ""));
+  var eOpt = _threw(function () { E({ authservId: "mx.a", results: [], bogus: 1 }); });
+  check("authResults.emit: unknown opt refused (config-time)", eOpt !== null);
+  var eEmpty = _threw(function () { E({ authservId: "", results: [] }); });
+  check("authResults.emit: empty authservId → ar-bad-authserv-id",
+        eEmpty && /ar-bad-authserv-id/.test(eEmpty.code || ""));
+  var eCrlf = _threw(function () { E({ authservId: "mx.a\r\nInjected: 1", results: [] }); });
+  check("authResults.emit: CR/LF in authservId → ar-bad-authserv-id (no header injection)",
+        eCrlf && /ar-bad-authserv-id/.test(eCrlf.code || ""));
+  var eNul = _threw(function () { E({ authservId: "mx.a" + String.fromCharCode(0) + "x", results: [] }); });
+  check("authResults.emit: NUL in authservId → ar-bad-authserv-id",
+        eNul && /ar-bad-authserv-id/.test(eNul.code || ""));
+  var eArr = _threw(function () { E({ authservId: "mx.a", results: "nope" }); });
+  check("authResults.emit: non-array results → ar-bad-results",
+        eArr && /ar-bad-results/.test(eArr.code || ""));
+  var eEntry = _threw(function () { E({ authservId: "mx.a", results: [42] }); });
+  check("authResults.emit: non-object result entry → ar-bad-result-entry",
+        eEntry && /ar-bad-result-entry/.test(eEntry.code || ""));
+  var eMethod = _threw(function () { E({ authservId: "mx.a", results: [{ method: "bogus", result: "pass" }] }); });
+  check("authResults.emit: unknown method → ar-bad-method",
+        eMethod && /ar-bad-method/.test(eMethod.code || ""));
+  // RFC 8601 §2.7 — result vocabulary is method-specific: 'hardfail' is
+  // not in SPF's set, so it is refused rather than passed through.
+  var eResult = _threw(function () { E({ authservId: "mx.a", results: [{ method: "spf", result: "hardfail" }] }); });
+  check("authResults.emit: result outside a method's §2.7 vocabulary → ar-bad-result",
+        eResult && /ar-bad-result/.test(eResult.code || ""));
+}
+
+function testAuthResultsEmitFormatting() {
+  var E = b.mail.authResults.emit;
+  // Zero methods evaluated → the RFC 8601 §2.2 `none` form.
+  check("authResults.emit: empty results → '; none'",
+        E({ authservId: "mx.a", results: [] }) === "Authentication-Results: mx.a; none");
+  // ptype.property=value triples for the recognized shorthand keys.
+  var props = E({ authservId: "mx.a", results: [
+    { method: "spf",   result: "pass", smtpMailfrom: "u@s.example" },
+    { method: "dmarc", result: "pass", from: "u@s.example" },
+  ] });
+  check("authResults.emit: property keys mapped to RFC 8601 §2.3 ptype.property",
+        /spf=pass smtp\.mailfrom=u@s\.example/.test(props) &&
+        /dmarc=pass header\.from=u@s\.example/.test(props));
+  // A reason string with an embedded DQUOTE is backslash-escaped (§2.2).
+  var reason = E({ authservId: "mx.a", results: [{ method: "dkim", result: "fail", reason: 'key "rotated"' }] });
+  check("authResults.emit: reason DQUOTE escaped as \\\" (RFC 8601 §2.2)",
+        reason.indexOf('reason="key \\"rotated\\""') !== -1);
+  // A pvalue carrying a forbidden character (space) is dropped, not emitted.
+  var pv = E({ authservId: "mx.a", results: [{ method: "dkim", result: "pass", domain: "has space" }] });
+  check("authResults.emit: structurally-invalid pvalue is omitted (not injected)",
+        pv.indexOf("header.d=") === -1 && /dkim=pass/.test(pv));
+  // fold:false switches the clause separator from the folded form to '; '.
+  var flat = E({ authservId: "mx.a", fold: false,
+    results: [{ method: "spf", result: "pass" }, { method: "dkim", result: "pass" }] });
+  check("authResults.emit: fold:false joins clauses with '; ' (no folded inter-clause break)",
+        /spf=pass; dkim=pass/.test(flat) && flat.indexOf(";\r\n  dkim") === -1);
+  // A non-'1' version is appended after the authserv-id token (§2.2).
+  var ver = E({ authservId: "mx.a", version: "2", results: [{ method: "spf", result: "pass" }] });
+  check("authResults.emit: version appended to authserv-id when not '1'",
+        ver.indexOf("Authentication-Results: mx.a 2;") === 0);
+}
+
+// A dnsLookup fake that throws a transient (non-absence) resolver fault
+// for every query — drives the temperror classification arms.
+function _transientDns() {
+  return async function () {
+    var e = new Error("resolver server failure"); e.code = "ESERVFAIL"; throw e;
+  };
+}
+
+function _enotfound() {
+  var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+}
+
+// Run one SPF exists: policy and capture the expanded A-query names.
+async function _spfExistsExpand(record, mailFrom, ip) {
+  var queried = [];
+  var dns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [[record]];
+    if (type === "A") { queried.push(host); return ["127.0.0.2"]; }
+    return _enotfound();
+  };
+  var rv = await b.mail.spf.verify({
+    ip: ip || "192.0.2.9", mailFrom: mailFrom, dnsLookup: dns,
+  });
+  return { result: rv.result, queried: queried, explanation: rv.explanation };
+}
+
+// ---- SPF: macro escapes, letters, and custom delimiters (RFC 7208 §7) ----
+
+async function testSpfMacroEscapesAndLetters() {
+  var mf = "alice@s.example";
+  // `%-` legacy escape expands to the literal "%20" (RFC 7208 §7.1).
+  var hyphen = await _spfExistsExpand("v=spf1 exists:a%-b.probe -all", mf);
+  check("spf macro %- → literal %20",
+        hyphen.result === "pass" && hyphen.queried.indexOf("a%20b.probe") !== -1);
+  // `%{s}` — the whole sender identity (local@domain).
+  var sender = await _spfExistsExpand("v=spf1 exists:%{s}.probe -all", mf);
+  check("spf macro %{s} → full sender identity",
+        sender.result === "pass" && sender.queried.indexOf("alice@s.example.probe") !== -1);
+  // `%{p}` — validated-domain sentinel; the framework returns "unknown"
+  // rather than performing the discouraged §5.5 reverse-lookup.
+  var pMac = await _spfExistsExpand("v=spf1 exists:%{p}.probe -all", mf);
+  check("spf macro %{p} → RFC 7208 §5.5 'unknown' sentinel",
+        pMac.result === "pass" && pMac.queried.indexOf("unknown.probe") !== -1);
+  // `%{c}` — an exp-text-only letter; empty in mechanism context (§7.3).
+  var cMac = await _spfExistsExpand("v=spf1 exists:x%{c}y.probe -all", mf);
+  check("spf macro %{c} (exp-only letter) → empty in mechanism context",
+        cMac.result === "pass" && cMac.queried.indexOf("xy.probe") !== -1);
+  // Custom delimiter set: `%{l+}` splits the local-part on `+` and
+  // re-joins with `.` (RFC 7208 §7.1 transformer delimiter set).
+  var delim = await _spfExistsExpand("v=spf1 exists:%{l+}.probe -all", "a+b@s.example");
+  check("spf macro %{l+} → custom '+' split delimiter re-joined with '.'",
+        delim.result === "pass" && delim.queried.indexOf("a.b.probe") !== -1);
+}
+
+// ---- SPF: IPv6 macro letters (RFC 7208 §7.3) ----
+
+async function testSpfMacroIpv6Letters() {
+  var mf = "u@s.example";
+  var v = await _spfExistsExpand("v=spf1 exists:%{v}.probe -all", mf, "2001:db8::1");
+  check("spf macro %{v} on IPv6 connection → 'ip6'",
+        v.result === "pass" && v.queried.indexOf("ip6.probe") !== -1);
+  var iMac = await _spfExistsExpand("v=spf1 exists:%{i}.probe -all", mf, "2001:db8::1");
+  check("spf macro %{i} on IPv6 → nibble-dotted 32-part form",
+        iMac.result === "pass" &&
+        iMac.queried.indexOf("2.0.0.1.0.d.b.8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.probe") !== -1);
+}
+
+// ---- SPF: additional malformed-macro syntax arms (RFC 7208 §7.1) ----
+
+async function testSpfMacroBadSyntaxMore() {
+  async function bad(record) {
+    var dns = _txtOnly({ "s.example": [[record]] });
+    var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+    return rv;
+  }
+  var bare = await bad("v=spf1 exists:foo% -all");
+  check("spf macro: trailing bare '%' → permerror",
+        bare.result === "permerror" && /bare '%'/.test(bare.explanation || ""));
+  var digit0 = await bad("v=spf1 exists:%{s0} -all");
+  check("spf macro: transformer digit count 0 → permerror",
+        digit0.result === "permerror" && /digit count must be >= 1/.test(digit0.explanation || ""));
+  var badDelim = await bad("v=spf1 exists:%{d!} -all");
+  check("spf macro: delimiter outside the §7.1 set → permerror",
+        badDelim.result === "permerror" && /not in the RFC 7208 §7\.1 set/.test(badDelim.explanation || ""));
+}
+
+// ---- SPF: CIDR mask edges — /0 (match-all) + partial-group prefix ----
+
+async function testSpfCidrMaskEdges() {
+  // ip4:0.0.0.0/0 — a /0 authorizes every IPv4 (mask 0 → unconditional).
+  var dns4 = _txtOnly({ "s.example": [["v=spf1 ip4:0.0.0.0/0 -all"]] });
+  var r4 = await b.mail.spf.verify({ ip: "203.0.113.9", mailFrom: "a@s.example", dnsLookup: dns4 });
+  check("spf ip4:0.0.0.0/0 → pass (mask 0 matches any IPv4)", r4.result === "pass");
+
+  // ip6 partial-group prefix (/36): compares full groups + a masked
+  // remainder-bit nibble, exercising the non-16-aligned mask arm.
+  var dns36 = _txtOnly({ "s.example": [["v=spf1 ip6:2001:db8:8000::/36 -all"]] });
+  var in36 = await b.mail.spf.verify({ ip: "2001:db8:8fff::1", mailFrom: "a@s.example", dnsLookup: dns36 });
+  check("spf ip6:.../36 — IP inside the partial-group prefix → pass", in36.result === "pass");
+  var out36 = await b.mail.spf.verify({ ip: "2001:db8:0fff::1", mailFrom: "a@s.example", dnsLookup: dns36 });
+  check("spf ip6:.../36 — IP outside the partial-group prefix → fail (-all)", out36.result === "fail");
+
+  // ip6 /0 — mask 0 authorizes any IPv6.
+  var dns6z = _txtOnly({ "s.example": [["v=spf1 ip6:2001:db8::/0 -all"]] });
+  var r6z = await b.mail.spf.verify({ ip: "fe80::1", mailFrom: "a@s.example", dnsLookup: dns6z });
+  check("spf ip6:.../0 → pass (mask 0 matches any IPv6)", r6z.result === "pass");
+}
+
+// ---- SPF: multiple published records → permerror (RFC 7208 §4.5) ----
+
+async function testSpfMultipleRecordsPermerror() {
+  var dns = _txtOnly({ "s.example": [["v=spf1 -all"], ["v=spf1 +all"]] });
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf.verify: two published v=spf1 records → permerror (RFC 7208 §4.5)",
+        rv.result === "permerror" && /at most one/.test(rv.explanation || ""));
+}
+
+// ---- SPF: transient TXT lookup fault → temperror ----
+
+async function testSpfLookupFailureTemperror() {
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: _transientDns() });
+  check("spf.verify: transient TXT resolver fault → temperror (a verdict, not a throw)",
+        rv.result === "temperror" && /lookup for s\.example failed/.test(rv.explanation || ""));
+}
+
+// ---- SPF: DNS-lookup ceiling exceeded (RFC 7208 §4.6.4) ----
+
+async function testSpfLookupLimitExceeded() {
+  // Eleven DNS-touching `a` mechanisms — the 11th crosses the 10-lookup
+  // ceiling. Each A resolves to a non-matching address so the loop keeps
+  // consuming lookups instead of short-circuiting on a match.
+  var dns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 a a a a a a a a a a a -all"]];
+    if (type === "A") return ["198.51.100.1"];
+    return _enotfound();
+  };
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf.verify: 11 DNS mechanisms → permerror (RFC 7208 §4.6.4 lookup ceiling)",
+        rv.result === "permerror" && /DNS lookup limit exceeded/.test(rv.explanation || ""));
+}
+
+// ---- SPF: a / mx DNS-failure + macro arms ----
+
+async function testSpfAMxErrorBranches() {
+  // a: with a bad-macro domain-spec → permerror (the §7 expansion throws).
+  var badMacro = _txtOnly({ "s.example": [["v=spf1 a:%{z} -all"]] });
+  var rBad = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: badMacro });
+  check("spf a:%{z} — invalid macro-letter in domain-spec → permerror",
+        rBad.result === "permerror" && /not a valid macro-letter/.test(rBad.explanation || ""));
+
+  // a: whose domain-spec macro-expands to the empty string → permerror.
+  var emptyMacro = _txtOnly({ "s.example": [["v=spf1 a:%{c} -all"]] });
+  var rEmpty = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: emptyMacro });
+  check("spf a:%{c} — domain-spec expands to empty → permerror",
+        rEmpty.result === "permerror" && /expanded to empty/.test(rEmpty.explanation || ""));
+
+  // a — transient A lookup fault → temperror.
+  var aTemp = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 a -all"]];
+    if (type === "A") { var e = new Error("srv"); e.code = "ESERVFAIL"; throw e; }
+    return _enotfound();
+  };
+  var rATemp = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: aTemp });
+  check("spf a — transient A lookup fault → temperror",
+        rATemp.result === "temperror" && /a:s\.example lookup failed/.test(rATemp.explanation || ""));
+
+  // mx — transient MX lookup fault → temperror.
+  var mxTemp = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") { var e = new Error("srv"); e.code = "ESERVFAIL"; throw e; }
+    return _enotfound();
+  };
+  var rMxTemp = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxTemp });
+  check("spf mx — transient MX lookup fault → temperror",
+        rMxTemp.result === "temperror" && /mx:s\.example MX lookup failed/.test(rMxTemp.explanation || ""));
+
+  // mx — MX host A resolution transient fault → temperror.
+  var mxHostTemp = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") return [{ exchange: "mx1.s.example", preference: 10 }];
+    if (type === "A") { var e = new Error("srv"); e.code = "ESERVFAIL"; throw e; }
+    return _enotfound();
+  };
+  var rMxHostTemp = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxHostTemp });
+  check("spf mx — MX-host A resolution fault → temperror",
+        rMxHostTemp.result === "temperror" && /mx host mx1\.s\.example A\/AAAA lookup failed/.test(rMxHostTemp.explanation || ""));
+
+  // mx — MX host with no A record (void) is a miss, not an error → -all fail.
+  var mxHostVoid = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") return [{ exchange: "mx1.s.example", preference: 10 }];
+    return _enotfound();
+  };
+  var rMxVoid = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxHostVoid });
+  check("spf mx — MX host with no A record → miss, falls to -all fail",
+        rMxVoid.result === "fail");
+}
+
+// ---- SPF: exists transient lookup fault → temperror ----
+
+async function testSpfExistsTemperror() {
+  var dns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 exists:p.%{d} -all"]];
+    if (type === "A") { var e = new Error("srv"); e.code = "ESERVFAIL"; throw e; }
+    return _enotfound();
+  };
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf exists — transient A lookup fault → temperror",
+        rv.result === "temperror" && /exists:p\.s\.example lookup failed/.test(rv.explanation || ""));
+}
+
+// ---- SPF: include macro + transient arms ----
+
+async function testSpfIncludeErrorBranches() {
+  // include target is itself a bad macro-string → permerror.
+  var badMacro = _txtOnly({ "s.example": [["v=spf1 include:%{z} -all"]] });
+  var rBad = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: badMacro });
+  check("spf include:%{z} — invalid macro-letter → permerror",
+        rBad.result === "permerror" && /not a valid macro-letter/.test(rBad.explanation || ""));
+
+  // include target's TXT resolution transiently faults → temperror propagates.
+  var incTemp = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 include:inner.example -all"]];
+    if (type === "TXT" && host === "inner.example") { var e = new Error("srv"); e.code = "ESERVFAIL"; throw e; }
+    return _enotfound();
+  };
+  var rTemp = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: incTemp });
+  check("spf include — inner transient TXT fault → temperror propagates to outer verdict",
+        rTemp.result === "temperror" && /lookup for inner\.example failed/.test(rTemp.explanation || ""));
+}
+
+// ---- DMARC: transient _dmarc lookup fault → temperror ----
+
+async function testDmarcTemperror() {
+  var rv = await b.mail.dmarc.evaluate({
+    from: "u@x.example", spf: { result: "fail", domain: "x" }, dkim: [], dnsLookup: _transientDns(),
+  });
+  check("dmarc.evaluate: transient _dmarc lookup fault → temperror (not a silent pass)",
+        rv.result === "temperror" && rv.policy === null &&
+        rv.alignment.spf === false && rv.alignment.dkim === false);
+}
+
+// ---- DMARC: pct< 100 sampled disposition (RFC 7489 §6.6.4) ----
+
+async function testDmarcPctSampledDispositions() {
+  // The sample roll is a deterministic SHAKE256 of pctSampleKey → [0,100).
+  // Recompute it here and publish pct = roll so `roll >= pct` holds → the
+  // failing message lands in the SAMPLED (next-less-strict) fraction.
+  var key = "sampled-disposition-key";
+  var digest = nodeCrypto.createHash("shake256", { outputLength: 4 }).update(key).digest();
+  var u32 = (digest[0] << 24 >>> 0) + (digest[1] << 16) + (digest[2] << 8) + digest[3];
+  var roll = u32 % 100;
+
+  var rejectDns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=reject; pct=" + roll]] });
+  var reject = await b.mail.dmarc.evaluate({
+    from: "a@example.com", spf: { result: "fail", domain: "x" }, dkim: [],
+    dnsLookup: rejectDns, pctSampleKey: key,
+  });
+  check("dmarc.evaluate: p=reject, sampled fraction → recommendedAction quarantine (§6.6.4 step-down)",
+        reject.result === "fail" && reject.recommendedAction === "quarantine");
+
+  var quarDns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=quarantine; pct=" + roll]] });
+  var quar = await b.mail.dmarc.evaluate({
+    from: "a@example.com", spf: { result: "fail", domain: "x" }, dkim: [],
+    dnsLookup: quarDns, pctSampleKey: key,
+  });
+  check("dmarc.evaluate: p=quarantine, sampled fraction → recommendedAction none (§6.6.4 step-down)",
+        quar.result === "fail" && quar.recommendedAction === "none");
+}
+
+// ---- DMARC aggregate report: pre-parsed / bad-input / cap arms ----
+
+async function testDmarcAggregatePreParsedAndErrors() {
+  // Non-Buffer / non-string / non-feedback input → typed throw.
+  var eIn = _threw(function () { b.mail.dmarc.parseAggregateReport(12345); });
+  check("dmarc.parseAggregateReport: numeric input → dmarc-rua-bad-input",
+        eIn && /dmarc-rua-bad-input/.test(eIn.code || ""));
+
+  // Pre-parsed object shortcut: skips parse, shapes directly + aggregates
+  // the per-record totals.
+  var shaped = b.mail.dmarc.parseAggregateReport({
+    feedback: {
+      report_metadata: { org_name: "acme", report_id: "r-1", date_range: { begin: "1000", end: "2000" } },
+      policy_published: { domain: "d.example", p: "none", pct: "100" },
+      record: [
+        { row: { source_ip: "1.2.3.4", count: "5",
+                 policy_evaluated: { disposition: "none", dkim: "pass", spf: "fail" } },
+          identifiers: { header_from: "d.example" },
+          auth_results: { dkim: { domain: "d.example", selector: "s", result: "pass" },
+                          spf: { domain: "d.example", result: "pass" } } },
+        { row: { source_ip: "5.6.7.8", count: "3",
+                 policy_evaluated: { disposition: "reject", dkim: "fail", spf: "fail",
+                                     reason: { type: "trusted_forwarder", comment: "fwd" } } },
+          identifiers: { header_from: "d.example", envelope_from: "d.example" },
+          auth_results: { dkim: [], spf: [] } },
+      ],
+    },
+  });
+  check("dmarc.parseAggregateReport: pre-parsed object shortcut shapes metadata + records",
+        shaped.reportMetadata.orgName === "acme" && shaped.records.length === 2 &&
+        shaped.reportMetadata.dateRange.begin === 1000);
+  check("dmarc.parseAggregateReport: totals aggregate aligned vs not-aligned by count",
+        shaped.totals.messages === 8 && shaped.totals.aligned === 5 && shaped.totals.notAligned === 3);
+  check("dmarc.parseAggregateReport: per-record policy_evaluated reasons shaped",
+        shaped.records[1].dispositions.reasons.length === 1 &&
+        shaped.records[1].dispositions.reasons[0].type === "trusted_forwarder");
+
+  // Over the per-report record cap → typed throw.
+  var big = { feedback: { report_metadata: {}, policy_published: {}, record: [] } };
+  for (var i = 0; i < 10001; i += 1) big.feedback.record.push({});
+  var eCap = _threw(function () { b.mail.dmarc.parseAggregateReport(big); });
+  check("dmarc.parseAggregateReport: over the 10000-record cap → dmarc-rua-too-many-records",
+        eCap && /dmarc-rua-too-many-records/.test(eCap.code || ""));
+
+  // Parsed XML whose root is not <feedback> → typed throw.
+  var eNoFb = _threw(function () { b.mail.dmarc.parseAggregateReport("<other></other>"); });
+  check("dmarc.parseAggregateReport: non-<feedback> XML root → dmarc-rua-no-feedback",
+        eNoFb && /dmarc-rua-no-feedback/.test(eNoFb.code || ""));
+}
+
+// ---- ARC: per-hop key-material failure arms (RFC 8617 §5.1) ----
+
+function _arcKeyDns(qname, records) {
+  return async function (q) {
+    if (q === qname) return records;
+    return _enotfound();
+  };
+}
+
+async function testArcKeyErrorBranches() {
+  var from = "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+
+  // AMS missing its d= tag → the AMS reports "missing required tag(s)";
+  // the AS (all tags present) fails its key lookup → permerror.
+  var missingTags =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" + from;
+  var rMiss = await b.mail.arc.verify(missingTags, { dnsLookup: async function () { return _enotfound(); } });
+  var missAmsErrs = ((rMiss.hops[0] || {}).amsErrors || []).join(" ; ");
+  check("arc.verify: AMS missing d/s/b/a → missing-required-tag(s) + chain fail",
+        rMiss.chainStatus === "fail" && /missing required tag/.test(missAmsErrs));
+
+  // AMS unsupported signature algorithm → permerror.
+  var unsupAlg =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=magic-alg; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" + from;
+  var rAlg = await b.mail.arc.verify(unsupAlg, { dnsLookup: async function () { return _enotfound(); } });
+  var algErrs = ((rAlg.hops[0] || {}).amsErrors || []).join(" ; ");
+  check("arc.verify: AMS unsupported alg → permerror + chain fail",
+        rAlg.chainStatus === "fail" && /unsupported alg 'magic-alg'/.test(algErrs));
+
+  // A structurally-complete hop with valid tags.
+  var fullHop =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" + from;
+
+  // Published key record lacks p= → permerror.
+  var rNoP = await b.mail.arc.verify(fullHop,
+    { dnsLookup: _arcKeyDns("arc._domainkey.example.com", [["v=DKIM1; k=rsa"]]) });
+  var noPErrs = ((rNoP.hops[0] || {}).asErrors || []).join(" ; ");
+  check("arc.verify: key record missing p= → permerror",
+        rNoP.chainStatus === "fail" && /key record missing p=/.test(noPErrs));
+
+  // Published p= is well-formed base64 but not a valid SPKI key → the AS
+  // key parse fails → permerror.
+  var rBadKey = await b.mail.arc.verify(fullHop,
+    { dnsLookup: _arcKeyDns("arc._domainkey.example.com", [["v=DKIM1; k=rsa; p=AAAABBBB"]]) });
+  var badKeyErrs = ((rBadKey.hops[0] || {}).asErrors || []).join(" ; ");
+  check("arc.verify: unparseable key material → key-parse-failed permerror",
+        rBadKey.chainStatus === "fail" && /key parse failed/.test(badKeyErrs));
+
+  // Key lookup returns nothing (ENOTFOUND) on a valid-tag hop → permerror.
+  var rNoKey = await b.mail.arc.verify(fullHop, { dnsLookup: async function () { return _enotfound(); } });
+  check("arc.verify: key lookup ENOTFOUND → permerror (definitive absence, not temperror)",
+        rNoKey.chainStatus === "fail" &&
+        (rNoKey.hops[0] || {}).asResult === "permerror" &&
+        (rNoKey.hops[0] || {}).amsResult === "permerror");
+}
+
+// ---- inbound.verify: no-identity + helo-only arms ----
+
+async function testInboundNoIdentitySpfNone() {
+  // Neither MAIL FROM nor HELO → SPF short-circuits to `none` without any
+  // envelope-identity lookup. Keep the whole call offline with an
+  // absence-only resolver so DMARC also resolves no record.
+  var msg = "From: alice@example.com\r\nTo: bob@x\r\nSubject: hi\r\n\r\nbody\r\n";
+  var v = await b.mail.inbound.verify({
+    ip: "203.0.113.5", message: msg, dnsLookup: async function () { return _enotfound(); },
+  });
+  check("inbound.verify: no MAIL FROM / HELO → spf none (no identity lookup)",
+        v.spf.result === "none" && /no MAIL FROM or HELO identity/.test(v.spf.explanation || ""));
+  check("inbound.verify: no-identity + no DMARC record → dmarc none",
+        v.dmarc.result === "none");
+}
+
+async function testInboundHeloOnlyAuthResults() {
+  // HELO-only envelope: the emitted Authentication-Results carries the
+  // spf clause with an smtp.helo property (not smtp.mailfrom).
+  var msg = "From: alice@example.com\r\nTo: bob@x\r\nSubject: hi\r\n\r\nbody\r\n";
+  var dns = _txtOnly({
+    "mail.example.com":  [["v=spf1 ip4:203.0.113.0/24 -all"]],
+    "_dmarc.example.com": [["v=DMARC1; p=none"]],
+  });
+  var v = await b.mail.inbound.verify({
+    ip: "203.0.113.5", helo: "mail.example.com", message: msg,
+    authservId: "mx.receiver.example", dnsLookup: dns,
+  });
+  check("inbound.verify: HELO-only identity → spf pass on the HELO domain",
+        v.spf.result === "pass");
+  check("inbound.verify: A-R spf clause carries smtp.helo (not smtp.mailfrom)",
+        typeof v.authResults === "string" &&
+        /spf=pass smtp\.helo=mail\.example\.com/.test(v.authResults) &&
+        v.authResults.indexOf("smtp.mailfrom=") === -1);
+}
+
 async function run() {
   testByteCapMultibyte();
   testSurface();
@@ -1834,6 +2646,43 @@ async function run() {
   testDmarcForensicPrototypePollutionSafe();
   await testIprevValidatesPtrShape();
   await testArcHeaderSourceOrder();
+  await testSpfVerifyInputValidation();
+  await testSpfAllQualifierVerdicts();
+  await testSpfNeutralWhenNoMechanismMatches();
+  await testSpfIp6Mechanism();
+  await testSpfHeloFallbackIdentity();
+  await testSpfIncludeSemantics();
+  await testSpfRedirectNoRecordPermerror();
+  await testSpfMacroLettersAndTransformers();
+  testSpfParseRecordStructure();
+  testDmarcParseDefaultsAndErrors();
+  await testDmarcEvaluateFromValidation();
+  await testDmarcEvaluatePolicyNoneDelivers();
+  await testDmarcEvaluateNoRecordIsNone();
+  await testDmarcEvaluatePermerrorOnBadRecord();
+  await testDmarcEvaluateDkimResultShapes();
+  await testDmarcEvaluateStrictVsRelaxedAlignment();
+  await testArcVerifyInputValidation();
+  await testArcVerifyMissingCvArm();
+  await testArcVerifyTimeFaultArms();
+  testAuthResultsEmitValidation();
+  testAuthResultsEmitFormatting();
+  await testSpfMacroEscapesAndLetters();
+  await testSpfMacroIpv6Letters();
+  await testSpfMacroBadSyntaxMore();
+  await testSpfCidrMaskEdges();
+  await testSpfMultipleRecordsPermerror();
+  await testSpfLookupFailureTemperror();
+  await testSpfLookupLimitExceeded();
+  await testSpfAMxErrorBranches();
+  await testSpfExistsTemperror();
+  await testSpfIncludeErrorBranches();
+  await testDmarcTemperror();
+  await testDmarcPctSampledDispositions();
+  await testDmarcAggregatePreParsedAndErrors();
+  await testArcKeyErrorBranches();
+  await testInboundNoIdentitySpfNone();
+  await testInboundHeloOnlyAuthResults();
 }
 
 module.exports = { run: run };

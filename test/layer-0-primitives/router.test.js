@@ -586,7 +586,7 @@ module.exports = { run: run };
 
 if (require.main === module) {
   run().then(
-    function () { console.log("OK router-coverage — " + helpers.getChecks() + " checks"); process.exit(0); },
+    function () { console.log("OK router — " + helpers.getChecks() + " checks"); process.exit(0); },
     function (e) { console.error("FAIL:", (e && e.stack) || e); process.exit(1); }
   );
 }

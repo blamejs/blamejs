@@ -88,6 +88,205 @@ function _moduleNs(modTag) {
 function _firstSegment(primTag) {
   return _bare(primTag).split(".")[0];
 }
+function _reEscape(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");                                           // allow:regex-no-length-cap — escapes short in-repo identifiers
+}
+
+// ---- primitive-without-test (config.testDirs) ----
+//
+// Every @primitive block must be exercised somewhere in the repo's test
+// corpus. "Referenced" is keyed on BOTH the namespace and the method —
+// a bare `.parse(` match alone would false-green half the catalog:
+//
+//   1. the full dotted form `b.<ns>.<method>` appears verbatim, OR
+//   2. the namespace is referenced (`b.<ns>` verbatim, or a require()
+//      of the primitive's own lib module) AND the method is invoked
+//      (`.<method>(`) — covers handle / instance methods
+//      (`var q = b.queue.init(...); q.enqueue(...)`).
+//
+// Static "referenced" only — whether the reference actually EXECUTES is
+// the coverage gate's job (c8), not a static validator's.
+//
+// TEST_REF_ALLOWLIST: the register of primitives the test corpus does
+// not yet reference. Every entry is an open test-backfill item — write
+// the test, then delete the entry. The list only shrinks; a NEW
+// primitive must land with a test reference, never an entry here.
+var GAP = "no test references this primitive yet — open test-backfill item: " +
+  "write a test that exercises it (or, for a documented constant, asserts " +
+  "its advertised value/behavior), then delete this entry";
+var TEST_REF_ALLOWLIST = {
+  "appShutdown.pidLock": GAP,
+  "archive.adapters.fs": GAP,
+  "archive.adapters.isRandomAccessAdapter": GAP,
+  "archive.adapters.isTrustedStreamAdapter": GAP,
+  "atomicFile.cleanOrphans": GAP,
+  "auth.ciba.client.pollToken": GAP,
+  "auth.oid4vp.verifier.create": GAP,
+  "auth.oid4vp.verifier.createRequest": GAP,
+  "auth.oid4vp.verifier.verifyResponse": GAP,
+  "auth.openidFederation.verifyEntityStatement": GAP,
+  "cluster.externalDbBackend": GAP,
+  "cluster.onTransition": GAP,
+  "compliance.aiAct.fundamentalRightsImpactAssessment": GAP,
+  "compliance.aiAct.gpai.trainingDataSummary": GAP,
+  "cookies.parseSafe": GAP,
+  "crypto.decryptEnvelopeAsCertPeer": GAP,
+  "crypto.encryptEnvelopeAsCertPeer": GAP,
+  "crypto.hashCertFingerprint": GAP,
+  "crypto.hmacSha3": GAP,
+  "crypto.isCertRevoked": GAP,
+  "crypto.kdf": GAP,
+  "crypto.sri": GAP,
+  "cryptoField.getSealedFields": GAP,
+  "csv.DEFAULTS_PARSE": GAP,
+  "csv.DEFAULTS_STRINGIFY": GAP,
+  "gateContract.ISSUE_SEVERITIES": GAP,
+  "gateContract.summarizeIssues": GAP,
+  "guardArchive.loadRulePack": GAP,
+  "guardAuth.gate": GAP,
+  "guardAuth.sanitize": GAP,
+  "guardAuth.validate": GAP,
+  "guardJwt.kidSafe": GAP,
+  "guardMime.sanitize": GAP,
+  "guardMime.validate": GAP,
+  "guardTime.sanitize": GAP,
+  "guardTime.validate": GAP,
+  "htmlBalance.checkSafe": GAP,
+  "logStream.listSinks": GAP,
+  "mail.crypto.isMailCryptoError": GAP,
+  "mailStore.fts.hashTokens": GAP,
+  "middleware.assetlinks": GAP,
+  "middleware.botDisclose": GAP,
+  "middleware.cookies": GAP,
+  "middleware.gpc": GAP,
+  "middleware.headers": GAP,
+  "middleware.hostAllowlist": GAP,
+  "middleware.idempotencyKey.resealMigrate": GAP,
+  "middleware.requireContentType": GAP,
+  "middleware.webAppManifest": GAP,
+  "network.socket.applyToSocket": GAP,
+  "ntpCheck.monitor": GAP,
+  "observability.timed": GAP,
+  "redact.registerValueDetector": GAP,
+  "requestHelpers.appendVary": GAP,
+  "requestHelpers.requestProtocol": GAP,
+  "safeAsync.makeDropCallback": GAP,
+  "safeAsync.withSignal": GAP,
+  "safeBuffer.stripCrlf": GAP,
+  "safeJson.ABSOLUTE_MAX_BYTES": GAP,
+  "safeJson.ABSOLUTE_MAX_DEPTH": GAP,
+  "safeJson.ABSOLUTE_MAX_KEYS": GAP,
+  "safeJson.DEFAULT_MAX_BYTES": GAP,
+  "safeJson.DEFAULT_MAX_DEPTH": GAP,
+  "safeJson.DEFAULT_MAX_KEYS": GAP,
+  "safeSchema.SafeSchemaError": GAP,
+  "safeSchema.undefined_": GAP,
+  "safeSql.DEFAULT_IDENTIFIER_RE": GAP,
+  "safeSql.MAX_IDENTIFIER_LENGTH": GAP,
+  "safeSql.SafeSqlError": GAP,
+  "safeUrl.ALLOW_ANY": GAP,
+  "safeUrl.ALLOW_WS_ALL": GAP,
+  "safeUrl.ALLOW_WS_TLS": GAP,
+  "scheduler.nextBaselineFire": GAP,
+  "storage.getBackend": GAP,
+  "vault.getCurrentPassphrase": GAP,
+  "websocket.WebSocketError": GAP,
+  "websocket.buildUpgradeResponse": GAP,
+  "archive.adapters.http": GAP,
+  "auth.fal.isValidBand": GAP,
+  "compliance.aiAct.gpai.adherenceForm": GAP,
+  "compliance.aiAct.gpai.verifyAdherence": GAP,
+  "guardArchive.buildProfile": GAP,
+  "guardCidr.sanitize": GAP,
+  "guardCidr.validate": GAP,
+  "guardDomain.sanitize": GAP,
+  "guardGraphql.gate": GAP,
+  "guardGraphql.sanitize": GAP,
+  "guardJsonpath.sanitize": GAP,
+  "guardJwt.sanitize": GAP,
+  "guardOauth.gate": GAP,
+  "guardOauth.sanitize": GAP,
+  "guardPdf.inspectMagic": GAP,
+  "guardRegex.gate": GAP,
+  "guardShell.sanitize": GAP,
+  "guardTemplate.sanitize": GAP,
+  "guardUuid.sanitize": GAP,
+  "log.makeViaOrFallback": GAP,
+  "logStream.bootFromEnv": GAP,
+  "logStream.debug": GAP,
+  "mail.crypto.pgp.experimental.wkd.fetch": GAP,
+  "mail.crypto.smime.verifyAll": GAP,
+  "mail.send.deliver.create": GAP,
+  "mail.server.rateLimit.resolve": GAP,
+  "middleware.tusUpload.close": GAP,
+  "queue.bootFromEnv": GAP,
+  "time.toIso8601NoMs": GAP,
+};
+
+function _walkJsFiles(dir, out) {
+  var entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (_e) { return out; }
+  for (var i = 0; i < entries.length; i += 1) {
+    var ent = entries[i];
+    var p = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      if (ent.name === "node_modules" || ent.name === ".test-output" || ent.name.indexOf("data") === 0) continue;
+      _walkJsFiles(p, out);
+    } else if (ent.isFile() && /\.(js|cjs|mjs)$/.test(ent.name)) {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+function _readTestCorpus(testDirs) {
+  // Per-file contents, not one concatenated blob: the split signal in
+  // _testReferenced requires the namespace and the method to co-occur
+  // in the SAME test file — corpus-wide matching would count a
+  // primitive as covered when one test names the namespace and an
+  // unrelated test happens to call the same common method name
+  // (`.create(`, `.parse(`).
+  var files = [];
+  for (var d = 0; d < testDirs.length; d += 1) {
+    var paths = _walkJsFiles(testDirs[d], []);
+    for (var i = 0; i < paths.length; i += 1) {
+      try { files.push(fs.readFileSync(paths[i], "utf8")); }
+      catch (_e) { /* drop unreadable */ }
+    }
+  }
+  return { files: files };
+}
+
+// primBare: the @primitive without the `b.` prefix (e.g.
+// "metrics.snapshot.render"). moduleRel: the primitive's home file
+// relative to lib/ (e.g. "auth/oauth.js") — a require() of that module
+// counts as a namespace reference.
+function _testReferenced(corpus, primBare, moduleRel) {
+  var files = corpus.files;
+  var full = new RegExp("\\bb\\." + _reEscape(primBare) + "(?![A-Za-z0-9_$])");                      // allow:dynamic-regex — built from the in-repo @primitive tag, _reEscape'd; no operator input
+  var i;
+  for (i = 0; i < files.length; i += 1) {
+    if (full.test(files[i])) return true;
+  }
+
+  var segs = primBare.split(".");
+  if (segs.length < 2) return false;   // single-segment: only the verbatim form counts
+  var ns = segs.slice(0, -1).join(".");
+  var method = segs[segs.length - 1];
+
+  var nsRef = new RegExp("\\bb\\." + _reEscape(ns) + "(?![A-Za-z0-9_$])");                           // allow:dynamic-regex — built from the in-repo @primitive tag, _reEscape'd; no operator input
+  var modNoExt = String(moduleRel).replace(/\\/g, "/").replace(/\.js$/, "");
+  var modRef = new RegExp("require\\([^)]*[\\\\/]" + _reEscape(modNoExt).replace(/\//g, "[\\\\/]") + "(?:\\.js)?[\"']"); // allow:dynamic-regex — built from the lib-relative file path of the primitive's own module, _reEscape'd; no operator input
+  var methodRef = new RegExp("\\." + _reEscape(method) + "\\s*\\(");                                 // allow:dynamic-regex — built from the in-repo @primitive tag's method segment, _reEscape'd; no operator input
+  // Namespace (or owning-module require) and method invocation must
+  // co-occur in the SAME file — a namespace reference in one test and
+  // an unrelated `.create(` in another is not coverage of b.<ns>.create.
+  for (i = 0; i < files.length; i += 1) {
+    if ((nsRef.test(files[i]) || modRef.test(files[i])) && methodRef.test(files[i])) return true;
+  }
+  return false;
+}
 
 // Probe the universe of primitive signatures available for @related
 // cross-reference. Sources: every @primitive block under lib/, plus
@@ -345,6 +544,14 @@ function validate(config) {
   var docs = parser.parseTree(libDir);
   var known = _knownPrimitiveSet(docs, seederIndex, parser);
 
+  // Optional test-corpus for the primitive-without-test check. When
+  // config.testDirs is absent the check silently skips (mirrors
+  // optsResolver) — every other check still runs.
+  var testCorpus = null;
+  if (Array.isArray(config.testDirs) && config.testDirs.length > 0) {
+    testCorpus = _readTestCorpus(config.testDirs);
+  }
+
   var declaredNs = {};
   curationPages.forEach(function (page) {
     (page.namespaces || []).forEach(function (ns) { declaredNs[ns] = page.slug; });
@@ -489,6 +696,16 @@ function validate(config) {
           findings.push({
             kind: "schema", file: rel, primitive: primTag,
             msg: "@primitive namespace `" + primBare + "` does not match the file's @module `" + modNs + "`",
+          });
+        }
+      }
+
+      if (testCorpus) {
+        var testBare = _bare(primTag);
+        if (!TEST_REF_ALLOWLIST[testBare] && !_testReferenced(testCorpus, testBare, rel)) {
+          findings.push({
+            kind: "primitive-without-test", file: rel, primitive: primTag,
+            msg: "no test reference — need `b." + testBare + "` verbatim, or the namespace / owning module referenced plus `." + testBare.split(".").pop() + "(` invoked, anywhere in the test corpus. Add a test, or a TEST_REF_ALLOWLIST entry with the reason coverage is indirect.",
           });
         }
       }
