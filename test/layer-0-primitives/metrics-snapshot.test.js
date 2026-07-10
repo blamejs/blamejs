@@ -193,6 +193,11 @@ async function testRenderLabeledRegistrySnapshot() {
     g.set({ queue: "ma\"il\n" }, 5);   // hostile label value — must escape, never forge lines
     var h = registry.histogram("op_latency_seconds", { help: "lat", labelNames: ["op"], buckets: [0.01, 0.1, 1] });
     h.observe({ op: "read" }, 0.05);
+    // Colon-named metric — valid per the registry's METRIC_NAME_RE and
+    // emitted by the live exposition; the snapshot render must carry it
+    // under the same name contract, not a stricter one.
+    var rc = registry.counter("rpc:requests_total", { help: "rpc reqs", labelNames: ["method"] });
+    rc.inc({ method: "get" }, 2);
 
     var stop = b.metrics.snapshot.startWriter({
       path:       fx.path,
@@ -217,6 +222,8 @@ async function testRenderLabeledRegistrySnapshot() {
     check("labeled prom: histogram sum and count",
           out.indexOf("op_latency_seconds_sum{op=\"read\"} 0.05") !== -1 &&
           out.indexOf("op_latency_seconds_count{op=\"read\"} 1") !== -1);
+    check("labeled prom: colon-named family renders (live name contract)",
+          out.indexOf("rpc:requests_total{method=\"get\"} 2") !== -1);
 
     // Indirect proof of the one-encoder contract: every sample line the
     // live exposition() emits for these families appears verbatim in the
@@ -224,7 +231,8 @@ async function testRenderLabeledRegistrySnapshot() {
     var live = registry.exposition().split("\n").filter(function (l) {
       return l.indexOf("http_requests_total") === 0 ||
              l.indexOf("queue_depth") === 0 ||
-             l.indexOf("op_latency_seconds") === 0;
+             l.indexOf("op_latency_seconds") === 0 ||
+             l.indexOf("rpc:requests_total") === 0;
     });
     var missing = live.filter(function (l) { return out.indexOf(l) === -1; });
     check("labeled prom: snapshot render carries every live-exposition sample line (" +
