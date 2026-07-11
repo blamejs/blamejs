@@ -391,6 +391,12 @@ async function testStream() {
     check("stream with opts.table + param yields unsealed rows", okRun.rows.length === 3);
     check("stream auto-unseals the sealed column",
       okRun.rows.every(function (r) { return typeof r.payload === "string" && r.payload.indexOf("vault") === -1; }));
+
+    // A trailing positional (non-object) param with no opts object takes the
+    // params-only branch (last arg is a SQL binding, not an options bag).
+    var posOnly = await _drain(b.db.stream("SELECT * FROM events WHERE _id != ?", "e1"));
+    check("stream with a positional param and no opts binds it as a parameter",
+      posOnly.error === null && posOnly.rows.length === 2);
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -762,6 +768,15 @@ async function testStorageGuard() {
     check("growth write is refused with db/storage-low under low headroom",
       refused && refused.code === "db/storage-low");
 
+    // A writable-CTE (WITH ... INSERT) is also a growth write — the gate
+    // classifies it by effective write syntax, not just the leading keyword.
+    var refusedCte = await _catch(function () {
+      var st = b.db.prepare("WITH c AS (SELECT 1) INSERT INTO t (_id, v) SELECT 'z', '9'");
+      return st.run();
+    });
+    check("a WITH-prefixed writable-CTE growth write is refused under low headroom",
+      refusedCte && refusedCte.code === "db/storage-low");
+
     // Reads keep serving even while writes are refused.
     var readOk = await _catch(function () { return b.db.from("t").all(); });
     check("reads still serve while writes are refused", readOk === null);
@@ -774,6 +789,424 @@ async function testStorageGuard() {
     b.db.from("t").insertOne({ _id: "y", v: "2" });
     check("growth write succeeds after headroom recovers",
       b.db.from("t").where({ _id: "y" }).first().v === "2");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- tmpfs resolution: BLAMEJS_TMPDIR + fail-closed no-tmpfs -----------------
+
+async function testTmpfsResolution() {
+  var savedTmpEnv = process.env.BLAMEJS_TMPDIR;
+  var tmpDir = _mkTmp("db-cov-tmpfs-");
+  try {
+    // No opts.tmpDir and no BLAMEJS_TMPDIR: encrypted mode (the default) must
+    // resolve a tmpfs for the decrypted working copy. On a host without
+    // /dev/shm the resolver returns null and boot fail-closes with
+    // db/no-tmpfs; on a host WITH /dev/shm it resolves that mount and boots.
+    delete process.env.BLAMEJS_TMPDIR;
+    await _freshVault(tmpDir);
+    var noTmp = await _catch(function () {
+      return b.db.init({ dataDir: tmpDir, atRest: "encrypted", schema: [],
+        frameworkTables: false, auditSigning: false, minFreeBytes: 0 });
+    });
+    if (noTmp) {
+      check("encrypted init with no resolvable tmpfs fail-closes db/no-tmpfs",
+        noTmp.code === "db/no-tmpfs");
+    } else {
+      check("encrypted init resolved a host tmpfs and booted",
+        b.db.getMode() === "encrypted");
+    }
+    b.db._resetForTest();
+
+    // BLAMEJS_TMPDIR supplies the working-copy mount when opts.tmpDir is
+    // omitted. (The Linux-only tmpfs heuristic is skipped on non-Linux;
+    // allowNonTmpfsTmpDir downgrades it to a warning where it does run.)
+    var envTmpfs = path.join(tmpDir, "envtmpfs");
+    fs.mkdirSync(envTmpfs, { recursive: true });
+    process.env.BLAMEJS_TMPDIR = envTmpfs;
+    await _freshVault(tmpDir);
+    await b.db.init({ dataDir: tmpDir, atRest: "encrypted", schema: [],
+      allowNonTmpfsTmpDir: true, frameworkTables: false, auditSigning: false, minFreeBytes: 0 });
+    check("BLAMEJS_TMPDIR is honored as the encrypted-mode tmpfs mount",
+      b.db.getMode() === "encrypted");
+  } finally {
+    if (savedTmpEnv === undefined) delete process.env.BLAMEJS_TMPDIR;
+    else process.env.BLAMEJS_TMPDIR = savedTmpEnv;
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- tablePrefix passthrough + dataResidency accessor ----------------------
+
+async function testTablePrefixAndResidency() {
+  var tmpDir = _mkTmp("db-cov-prefix-");
+  try {
+    await _freshVault(tmpDir);
+    // dataDir points at a not-yet-existent nested path so init creates it;
+    // the explicit default tablePrefix drives the setTablePrefix passthrough;
+    // dataResidency flows to the accessor; a string-form primaryKey exercises
+    // the non-array normalize branch.
+    var nestedDir = path.join(tmpDir, "nested", "data");
+    check("nested dataDir does not exist before init", !fs.existsSync(nestedDir));
+    await b.db.init({
+      dataDir: nestedDir, atRest: "plain",
+      schema: [{ name: "widgets", columns: { code: "TEXT NOT NULL", label: "TEXT" }, primaryKey: "code" }],
+      frameworkTables: false, auditSigning: false,
+      tablePrefix: "_blamejs_",
+      dataResidency: { region: "eu-west-1", strict: true },
+    });
+    check("init creates a missing nested dataDir", fs.existsSync(nestedDir));
+    check("init with an explicit tablePrefix boots normally",
+      typeof b.db.from("widgets").all === "function");
+    check("getDataResidency returns the declared region",
+      b.db.getDataResidency().region === "eu-west-1");
+    check("string-form primaryKey normalizes to a single-column array",
+      JSON.stringify(b.db.getTableMetadata("widgets").primaryKey) === '["code"]');
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- encrypted round-trip: stale-tmpdb sweep, snapshot, decryptToTmp -------
+
+async function testEncryptedRoundTrip() {
+  var tmpDir = _mkTmp("db-cov-enc-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  // Seed a stale plaintext working copy from a "previous crashed process" so
+  // init's cleanStaleTmpDbs sweep has an orphan to reclaim.
+  fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db"), "orphan");
+  var encOpts = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(encOpts);
+    check("stale tmpfs working copy is swept at encrypted boot",
+      !fs.existsSync(path.join(tmpfs, "blamejs-staleorphan.db")));
+
+    b.db.from("vaultrows").insertOne({ _id: "a", v: "persisted" });
+
+    // snapshot() in encrypted mode returns the sealed envelope Buffer.
+    var snap = b.db.snapshot();
+    check("encrypted snapshot returns a sealed envelope Buffer",
+      Buffer.isBuffer(snap) && snap.length > 26);
+
+    // flushToDisk re-encrypts the live tmpfs copy to db.enc.
+    b.db.flushToDisk();
+    b.db.close();
+    check("close writes the encrypted-at-rest db.enc", fs.existsSync(path.join(tmpDir, "db.enc")));
+
+    // Re-init against the SAME vault + dataDir decrypts db.enc back into a
+    // fresh tmpfs working copy (decryptToTmp read + AEAD-verified decrypt).
+    await b.db.init(encOpts);
+    var row = b.db.from("vaultrows").where({ _id: "a" }).first();
+    check("encrypted round-trip recovers the row through decryptToTmp",
+      row && row.v === "persisted");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- snapshot() in plain mode (raw bytes, no envelope) ---------------------
+
+async function testSnapshotPlain() {
+  var tmpDir = _mkTmp("db-cov-snap-");
+  try {
+    await _plainInit(tmpDir, [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+      { frameworkTables: false, auditSigning: false });
+    b.db.from("t").insertOne({ _id: "s1" });
+    var snap = b.db.snapshot();
+    check("plain-mode snapshot returns the raw SQLite bytes as a Buffer",
+      Buffer.isBuffer(snap) && snap.length > 0);
+    // A plain snapshot is an unencrypted SQLite file — the magic header is
+    // the ASCII "SQLite format 3\0" string.
+    check("plain snapshot carries the SQLite file header",
+      snap.slice(0, 16).toString("latin1").indexOf("SQLite format 3") === 0);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- file-based migrations (run-once) --------------------------------------
+
+async function testMigrations() {
+  var tmpDir = _mkTmp("db-cov-mig-");
+  var migDir = path.join(tmpDir, "migrations");
+  fs.mkdirSync(migDir, { recursive: true });
+  fs.writeFileSync(path.join(migDir, "001-scratch.js"),
+    "module.exports = { description: 'create mig_scratch', " +
+    "up: function (db) { db.exec('CREATE TABLE mig_scratch (id INTEGER PRIMARY KEY)'); } };");
+  try {
+    await _plainInit(tmpDir, [], { frameworkTables: false, auditSigning: false, migrationDir: migDir });
+    check("migrationDir applies the pending migration",
+      b.db.prepare("SELECT name FROM sqlite_master WHERE name='mig_scratch'").get().name === "mig_scratch");
+
+    // Re-running init against the same dataDir skips the already-applied
+    // migration (run-once ledger).
+    b.db.close();
+    b.db._resetForTest();
+    await b.db.init({ dataDir: tmpDir, atRest: "plain", schema: [],
+      frameworkTables: false, auditSigning: false, migrationDir: migDir });
+    check("a re-run leaves the already-applied migration in place",
+      b.db.prepare("SELECT name FROM sqlite_master WHERE name='mig_scratch'").get().name === "mig_scratch");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- WORM posture boot assertion -------------------------------------------
+
+async function testWormPostureAssertion() {
+  var tmpDir = _mkTmp("db-cov-wormposture-");
+  try {
+    await _freshVault(tmpDir);
+    // Under a record-preservation posture (21 CFR Part 11) with framework
+    // tables enabled, boot refuses unless at least one operator table has a
+    // row-level WORM declaration.
+    b.compliance.set("fda-21cfr11");
+    var refused = await _catch(function () {
+      return b.db.init({ dataDir: tmpDir, atRest: "plain",
+        schema: [{ name: "records", columns: { _id: "TEXT PRIMARY KEY" } }] });
+    });
+    check("boot under a WORM posture with no declared table throws POSTURE_VIOLATION",
+      refused && refused.code === "POSTURE_VIOLATION");
+  } finally {
+    b.compliance.clear();
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- eraseHard legal-hold consult ------------------------------------------
+
+async function testEraseHardLegalHold() {
+  var tmpDir = _mkTmp("db-cov-lh-");
+  try {
+    await helpers.setupTestDb(tmpDir, [
+      { name: "held", columns: { _id: "TEXT PRIMARY KEY", ssn: "TEXT" }, sealedFields: ["ssn"] },
+    ]);
+    // Registering a legal-hold instance installs the framework singleton
+    // eraseHard consults via _getSingleton().isHeld(subjectId).
+    var holds = b.legalHold.create({ db: b.db, audit: b.audit });
+    holds.place("subject-held", { reason: "litigation hold — matter 42" });
+
+    b.db.from("held").insertOne({ _id: "r1", ssn: "111-11-1111" });
+    var denied = await _catch(function () {
+      return b.db.eraseHard("held", "r1", { reason: "erasure request now", subjectId: "subject-held" });
+    });
+    check("eraseHard refuses a row whose subject is on legal hold",
+      denied && denied.code === "db/erase-hard-legal-hold");
+    check("legally-held row is still present after the refusal",
+      !!b.db.from("held").where({ _id: "r1" }).first());
+
+    // A subject NOT on hold takes the pass-through branch and erases.
+    b.db.from("held").insertOne({ _id: "r2", ssn: "222-22-2222" });
+    var ok = b.db.eraseHard("held", "r2", { reason: "erasure request now", subjectId: "subject-free" });
+    check("eraseHard proceeds when the subject is not on legal hold", ok.rowsDeleted === 1);
+  } finally {
+    b.legalHold._resetForTest();
+    await helpers.teardownTestDb(tmpDir);
+  }
+}
+
+// --- integrityMonitor periodic tick (OK path) ------------------------------
+
+async function testIntegrityMonitorTick() {
+  var tmpDir = _mkTmp("db-cov-montick-");
+  var mon = null;
+  var tapInstalled = false;
+  try {
+    await _plainInit(tmpDir, [], { frameworkTables: false, auditSigning: false });
+    var seen = [];
+    b.observability.setTap(function (name) {
+      if (typeof name === "string" && name.indexOf("db.integrity_check") !== -1) seen.push(name);
+    });
+    tapInstalled = true;
+    // Short interval so the periodic PRAGMA integrity_check tick actually
+    // fires within the test; default audit:true drives the audit-emit branch.
+    mon = b.db.integrityMonitor({ intervalMs: 40 });
+    await helpers.waitUntil(function () { return seen.length >= 1; }, {
+      timeoutMs: 5000, label: "integrityMonitor: first clean tick",
+    });
+    check("integrityMonitor tick emits the db.integrity_check_ok counter",
+      seen.indexOf("db.integrity_check_ok") !== -1);
+  } finally {
+    if (mon) mon.stop();
+    if (tapInstalled) b.observability.setTap(null);
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- getTableMetadata json-schema type mapping across DDL types ------------
+
+async function testJsonSchemaTypeMapping() {
+  var tmpDir = _mkTmp("db-cov-jsontypes-");
+  try {
+    await _plainInit(tmpDir, [{
+      name: "typed",
+      columns: {
+        _id:    "TEXT PRIMARY KEY",
+        n:      "INTEGER NOT NULL",
+        amount: "REAL",
+        active: "BOOLEAN",
+        blobby: "BLOB",
+        weird:  "GEOMETRY",
+      },
+    }], { frameworkTables: false, auditSigning: false });
+
+    var js = b.db.getTableMetadata({ table: "typed", format: "json-schema-2020-12" });
+    check("json-schema maps INTEGER → integer", js.properties.n.type === "integer");
+    check("json-schema maps REAL → number (nullable union)",
+      js.properties.amount.anyOf[0].type === "number");
+    check("json-schema maps BOOLEAN → boolean",
+      js.properties.active.anyOf[0].type === "boolean");
+    check("json-schema maps BLOB → base64-encoded string",
+      js.properties.blobby.anyOf[0].contentEncoding === "base64");
+    check("json-schema falls back to string for an unrecognized type",
+      js.properties.weird.anyOf[0].type === "string");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- exportCsv WHERE filter + explicit column projection -------------------
+
+async function testExportCsvWhereProjection() {
+  var tmpDir = _mkTmp("db-cov-csv2-");
+  try {
+    await _plainInit(tmpDir, [{
+      name: "sales",
+      columns: { _id: "TEXT PRIMARY KEY", region: "TEXT", cents: "INTEGER NOT NULL" },
+    }], { frameworkTables: false, auditSigning: false });
+    b.db.from("sales").insertOne({ _id: "s1", region: "eu", cents: 100 });
+    b.db.from("sales").insertOne({ _id: "s2", region: "us", cents: 200 });
+    b.db.from("sales").insertOne({ _id: "s3", region: "eu", cents: 300 });
+
+    var out = b.db.exportCsv({
+      table: "sales", columns: ["_id", "cents"], where: { region: "eu" },
+    });
+    check("exportCsv WHERE filter narrows the row set", out.rowCount === 2);
+    check("exportCsv column projection drops unlisted columns",
+      out.csv.indexOf("region") === -1 && out.csv.indexOf("cents") !== -1);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- legacy plain-sealed DB key → re-seal with deployment-path AAD ---------
+
+async function testLegacyKeyReseal() {
+  var tmpDir = _mkTmp("db-cov-legacykey-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  try {
+    await _freshVault(tmpDir);
+    // Pre-write a pre-AAD key file the way an older release sealed it —
+    // classic vault.seal, no deployment-path binding. Boot must unseal it via
+    // the legacy path and re-seal it in place with the AAD binding.
+    var rawKeyB64 = Buffer.alloc(32, 7).toString("base64");
+    var keyPath = path.join(tmpDir, "db.key.enc");
+    fs.writeFileSync(keyPath, b.vault.seal(rawKeyB64));
+    check("seeded key file is plain vault-sealed (pre-AAD)",
+      fs.readFileSync(keyPath, "utf8").indexOf("vault:") === 0);
+
+    await b.db.init({ dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true,
+      atRest: "encrypted", frameworkTables: false, auditSigning: false, minFreeBytes: 0, schema: [] });
+    check("encrypted boot accepts the legacy plain-sealed DB key",
+      b.db.getMode() === "encrypted");
+    check("boot re-seals the DB key in place with the deployment-path AAD",
+      fs.readFileSync(keyPath, "utf8").indexOf("vault.aad:") === 0);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- refuse-to-boot on audit / consent chain break -------------------------
+
+async function testChainBreakDetection() {
+  // A tampered audit_log row (its rowHash doesn't chain from the prior row)
+  // must halt boot — tamper-evidence compromised is a hard fail-closed.
+  var d1 = _mkTmp("db-cov-chain-a-");
+  var opts1 = { dataDir: d1, atRest: "plain", schema: [], auditSigning: false };
+  try {
+    await _freshVault(d1);
+    await b.db.init(opts1);
+    // Append-only triggers permit INSERT (that's what audit.record does); a
+    // raw insert with a non-chaining rowHash simulates row-level tampering.
+    b.db.prepare("INSERT INTO audit_log (_id, recordedAt, monotonicCounter, action, " +
+      "outcome, prevHash, rowHash, nonce) VALUES (?,?,?,?,?,?,?,?)")
+      .run("tamper-a1", Date.now(), 999000, "tamper.injected", "success",
+        "deadbeef", "not-a-valid-chain-hash", Buffer.from("nonce-bytes-16xx"));
+    b.db.close();
+    b.db._resetForTest();
+    var auditBreak = await _catch(function () { return b.db.init(opts1); });
+    check("boot refuses on a broken audit_log chain (db/audit-chain-break)",
+      auditBreak && auditBreak.code === "db/audit-chain-break");
+    try { b.db.close(); } catch (_e) { /* partially-initialized */ }
+  } finally {
+    _teardownPlain(d1);
+  }
+
+  // With the audit chain intact but the consent_log chain tampered, boot must
+  // still refuse — the consent chain is verified independently.
+  var d2 = _mkTmp("db-cov-chain-c-");
+  var opts2 = { dataDir: d2, atRest: "plain", schema: [], auditSigning: false };
+  try {
+    await _freshVault(d2);
+    await b.db.init(opts2);
+    b.db.prepare("INSERT INTO consent_log (_id, recordedAt, monotonicCounter, subjectId, " +
+      "subjectIdHash, purpose, lawfulBasis, action, channel, prevHash, rowHash, nonce) " +
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run("tamper-c1", Date.now(), 999000, "subj", "subjhash", "marketing", "consent",
+        "grant", "web", "deadbeef", "bad-chain-hash", Buffer.from("nonce-bytes-16xx"));
+    b.db.close();
+    b.db._resetForTest();
+    var consentBreak = await _catch(function () { return b.db.init(opts2); });
+    check("boot refuses on a broken consent_log chain (db/consent-chain-break)",
+      consentBreak && consentBreak.code === "db/consent-chain-break");
+    try { b.db.close(); } catch (_e) { /* partially-initialized */ }
+  } finally {
+    _teardownPlain(d2);
+  }
+}
+
+// --- audit.tip rollback detection (OK / rollback / unreadable) --------------
+
+async function testRollbackDetection() {
+  var tmpDir = _mkTmp("db-cov-rollback-");
+  var opts = { dataDir: tmpDir, atRest: "plain", schema: [], auditSigning: false };
+  var tipPath = path.join(tmpDir, "audit.tip");
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(opts);
+    // A tip at or below the live MAX(monotonicCounter) is not a rollback.
+    b.db._writeAuditTip({ atMonotonicCounter: 0, rowHash: "seed", signedAt: new Date().toISOString() });
+    b.db.close();
+    b.db._resetForTest();
+    await b.db.init(opts);
+    check("boot with an in-range audit.tip passes the rollback check",
+      b.db.getMode() === "plain");
+
+    // A tip recording a HIGHER counter than the live DB means the DB was
+    // restored from an older snapshot (or rows were deleted) — refuse boot.
+    b.db._writeAuditTip({ atMonotonicCounter: 999999, rowHash: "seed", signedAt: new Date().toISOString() });
+    b.db.close();
+    b.db._resetForTest();
+    var rolled = await _catch(function () { return b.db.init(opts); });
+    check("boot with a rollback-shaped audit.tip throws db/audit-rollback-detected",
+      rolled && rolled.code === "db/audit-rollback-detected");
+    try { b.db.close(); } catch (_e) { /* partially-initialized */ }
+    b.db._resetForTest();
+
+    // A corrupt / schema-invalid audit.tip fail-closes rather than silently
+    // forfeiting rollback protection.
+    fs.writeFileSync(tipPath, "{ not valid json at all ");
+    var unreadable = await _catch(function () { return b.db.init(opts); });
+    check("boot with an unreadable audit.tip throws db/audit-tip-unreadable",
+      unreadable && unreadable.code === "db/audit-tip-unreadable");
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -800,6 +1233,19 @@ async function run() {
   await testApplyPosture();
   await testCloseAndGeneration();
   await testStorageGuard();
+  await testTmpfsResolution();
+  await testTablePrefixAndResidency();
+  await testEncryptedRoundTrip();
+  await testSnapshotPlain();
+  await testMigrations();
+  await testEraseHardLegalHold();
+  await testIntegrityMonitorTick();
+  await testJsonSchemaTypeMapping();
+  await testExportCsvWhereProjection();
+  await testLegacyKeyReseal();
+  await testChainBreakDetection();
+  await testRollbackDetection();
+  await testWormPostureAssertion();
 }
 
 module.exports = { run: run };
