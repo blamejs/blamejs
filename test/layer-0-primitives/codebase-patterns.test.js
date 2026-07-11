@@ -316,6 +316,7 @@ function _report(label, matches) {
 // unflagged. When you add a detector with a new allow-class, register it here.
 var VALID_ALLOW_CLASSES = {
   "ai-disclosure-on-request-without-requested-gate": 1,
+  "applydefaults-dropped-opt": 1,
   "archive-gz-without-safedecompress": 1,
   "archive-wrap-partial-recipient": 1,
   "backup-adapter-storage-without-posture-check": 1,
@@ -725,6 +726,76 @@ function testNoStrayConsoleCalls() {
   matches = _filterMarkers(matches, "console-direct");
   _report("no stray console.* calls in lib/ production code paths",
     matches);
+}
+
+// class: applydefaults-dropped-opt
+//
+// validateOpts.applyDefaults(opts, DEFAULTS) whitelists the result to the
+// KEYS OF `DEFAULTS` — any opt absent from DEFAULTS is stripped. So reading
+// `cfg.someOpt` off that result, when `someOpt` is not a DEFAULTS key,
+// always yields undefined: the opt is silently dropped even though the
+// three-tier validator's ALLOWED_KEYS accepted it. That shipped a DEAD
+// documented security opt in static.js (safeAttachmentForRiskyMimes — the
+// drive-by-execution Content-Disposition defense). This gate cross-checks
+// every `VAR = applyDefaults(opts, DEFAULTS)` site: it flags a `VAR.<prop>`
+// read whose <prop> is not a key of the DEFAULTS object literal in the same
+// file. The fix is to read the opt straight from `opts` (or add it to
+// DEFAULTS); the allow marker is for a genuinely-dynamic prop access.
+function testNoApplyDefaultsDroppedOpt() {
+  function _defaultsKeys(src, ident) {
+    var re = new RegExp("(?:var|const|let)\\s+" +
+      ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+      "\\s*=\\s*(?:Object\\.freeze\\()?\\{", "m");
+    var m = re.exec(src);
+    if (!m) return null;
+    var start = src.indexOf("{", m.index);
+    var depth = 0, i = start;
+    for (; i < src.length; i++) {
+      var c = src[i];
+      if (c === "{") depth++;
+      else if (c === "}") { depth--; if (depth === 0) break; }
+    }
+    var body = src.slice(start + 1, i);
+    var keys = {}, d = 0;
+    for (var j = 0; j < body.length; j++) {
+      var ch = body[j];
+      if (ch === "{" || ch === "[" || ch === "(") d++;
+      else if (ch === "}" || ch === "]" || ch === ")") d--;
+      else if (d === 0 && /[A-Za-z_$"']/.test(ch)) {
+        var mk = /^(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$]*))\s*:/.exec(body.slice(j));
+        if (mk) { keys[mk[1] || mk[2] || mk[3]] = true; j += mk[0].length - 1; }
+      }
+    }
+    return keys;
+  }
+  var callRe = /(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:validateOpts\.|_?)applyDefaults\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$.]*)\s*\)/g;
+  var matches = [];
+  var files = _libFiles();
+  for (var fi = 0; fi < files.length; fi++) {
+    var src;
+    try { src = fs.readFileSync(files[fi], "utf8"); } catch (_e) { continue; }
+    var rel = _relPath(files[fi]);
+    var m;
+    callRe.lastIndex = 0;
+    while ((m = callRe.exec(src)) !== null) {
+      var resVar = m[1], defIdent = m[3];
+      var keys = _defaultsKeys(src, defIdent.split(".").pop());
+      if (!keys) continue;                                  // defaults not a local object literal — can't verify
+      var propRe = new RegExp("\\b" + resVar + "\\.([A-Za-z_$][\\w$]*)", "g");
+      var pm, seen = {};
+      while ((pm = propRe.exec(src)) !== null) {
+        var prop = pm[1];
+        if (seen[prop]) continue;
+        seen[prop] = true;
+        if (keys[prop] || /^(hasOwnProperty|toString|constructor|prototype)$/.test(prop)) continue;
+        var line = src.slice(0, pm.index).split(/\r?\n/).length;
+        matches.push({ file: rel, line: line, content: resVar + "." + prop + " (not a key of " + defIdent + ")" });
+      }
+    }
+  }
+  matches = _filterMarkers(matches, "applydefaults-dropped-opt");
+  _report("no opt read off applyDefaults() result that is absent from its DEFAULTS " +
+    "(silently dropped — read it from opts directly or add it to DEFAULTS)", matches);
 }
 
 
@@ -14148,6 +14219,7 @@ async function run() {
   testNumericOptsValidate();
   testHttp2TeardownPaired();
   testNoStrayConsoleCalls();
+  testNoApplyDefaultsDroppedOpt();
   testNoUnresolvedMarkers();
   testNoStaleDefers();
   testNoLiteralNulBytesInSource();
