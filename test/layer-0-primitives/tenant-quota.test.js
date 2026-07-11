@@ -453,6 +453,15 @@ async function testStorageCapLifecycle() {
         sealedFields: ["secret"],
         indexes: ["tenantId"],
       },
+      {
+        // A table whose NAME is a SQL reserved word ("from"). db.from()
+        // supports it (quoting neutralizes the keyword), so the storage-byte
+        // sum — which builds its own SQL — must quote it with allowReserved
+        // too, or snapshot throws sql/reserved-word for a schema-valid table.
+        name: "from",
+        columns: { _id: "TEXT PRIMARY KEY", tenantId: "TEXT", note: "TEXT" },
+        indexes: ["tenantId"],
+      },
     ]);
 
     b.db.from("docs").insertOne({ _id: "d1", tenantId: "t-acme", body: "hello", blob: Buffer.from("ABCD") });
@@ -558,6 +567,17 @@ async function testStorageCapLifecycle() {
     // unsealed-plaintext path would count "x" as 1 byte → 12 total, far below.
     check("sealed column counted at its on-disk envelope size, not the unsealed plaintext",
       sealedSnap.bytesUsed === 3 + 8 + Buffer.byteLength(rawSecret, "utf8"));
+
+    // A reserved-word table name ("from") is schema-valid and queryable via
+    // db.from(); snapshot's own SQL must quote it with allowReserved so it
+    // does not throw sql/reserved-word. _id "rw1" (3) + tenantId "t-rw" (4)
+    // + note "hi" (2) = 9 bytes for this isolated tenant.
+    b.db.from("from").insertOne({ _id: "rw1", tenantId: "t-rw", note: "hi" });
+    var rwThrew = null, rwSnap = null;
+    try { rwSnap = await quota.snapshot("t-rw"); } catch (e) { rwThrew = e; }
+    check("snapshot does not throw on a reserved-word table name", rwThrew === null);
+    check("reserved-word table rows counted correctly",
+      rwSnap && rwSnap.bytesUsed === 3 + 4 + 2);
 
     // instrumentQuery audit-on path with a live audit chain (real safeEmit).
     var audited = b.tenantQuota.instrumentQuery({
