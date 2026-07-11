@@ -576,6 +576,13 @@ async function scenarioDeviceAndPoll(base, routes) {
   routes["/token"] = { json: { error: "authorization_pending" } };
   await athrows("pollDeviceCode: authorization_pending then budget exhausted → timeout",
     function () { return oa.pollDeviceCode("dc-1", { maxWaitMs: 1 }); }, "auth-oauth/device-poll-timeout");
+
+  // pollDeviceCode slow_down (RFC 8628 §3.5) → interval bumped, keeps polling
+  // → budget exhausted → timeout (proves the slow_down branch is taken, not
+  // surfaced as a terminal error).
+  routes["/token"] = { json: { error: "slow_down" } };
+  await athrows("pollDeviceCode: slow_down bumps the interval then times out",
+    function () { return oa.pollDeviceCode("dc-1", { maxWaitMs: 1 }); }, "auth-oauth/device-poll-timeout");
 }
 
 // pollDeviceCode over the DEFAULT b.httpClient (no `responseMode:
@@ -724,6 +731,22 @@ async function scenarioBackchannelLogout(base, routes) {
   await athrows("verifyBackchannelLogoutToken: seen() but missing jti refused",
     function () { return oa.verifyBackchannelLogoutToken(logoutTok({ jti: undefined }), { seen: function () { return true; } }); },
     "auth-oauth/no-jti");
+
+  // ---- pre-verify shape gates (fire before the JWS signature check) ----
+  await athrows("verifyBackchannelLogoutToken: oversized token refused (length cap before decode)",
+    function () { return oa.verifyBackchannelLogoutToken("a".repeat(300000)); },
+    "auth-oauth/logout-token-too-large");
+  var badHeaderTok = Buffer.from("not-json", "utf8").toString("base64url") + "." + _b64urlJson({}) + ".sig";
+  await athrows("verifyBackchannelLogoutToken: undecodable header refused",
+    function () { return oa.verifyBackchannelLogoutToken(badHeaderTok); }, "auth-oauth/bad-logout-header");
+
+  // ---- wrapper freshness floor STRICTER than verifyIdToken's (skew grace) ----
+  // iat that clears verifyIdToken's iat + maxAge + skew floor but fails the
+  // wrapper's own iat + maxAge (no skew) bound — the belt-and-suspenders check.
+  var nowBcl = Math.floor(Date.now() / 1000);
+  await athrows("verifyBackchannelLogoutToken: iat past the wrapper's own maxAge floor refused",
+    function () { return oa.verifyBackchannelLogoutToken(logoutTok({ iat: nowBcl - 130 }), { maxAgeSec: 100 }); },
+    "auth-oauth/logout-token-too-old");
 }
 
 async function scenarioJarm(base, routes) {
@@ -800,6 +823,16 @@ async function scenarioDiscovery(base, routes) {
   var oaNone = X.create({ clientId: "cov2-none", redirectUri: "https://rp.example/cb", isOidc: false });
   await athrows("resolveEndpoint: no static endpoint + no discovery refused",
     function () { return oaNone.exchangeCode({ code: "c", verifier: "v" }); }, "auth-oauth/no-endpoint");
+
+  // OP discovery advertises code_challenge_methods_supported WITHOUT S256 →
+  // refuse the authorization request (RFC 9700 §4.13 — stripped-S256 / PKCE
+  // downgrade signature).
+  wk("ddown", { json: { issuer: base + "/ddown", authorization_endpoint: base + "/auth",
+    token_endpoint: base + "/token", jwks_uri: base + "/jwks",
+    code_challenge_methods_supported: ["plain"] } });
+  var oaDown = disClient("ddown", "cov2-ddown");
+  await athrows("authorizationUrl: OP advertising plain-only PKCE methods refused (downgrade defense)",
+    function () { return oaDown.authorizationUrl(); }, "auth-oauth/pkce-downgrade");
 }
 
 async function scenarioBuildersAndUrls(base, routes) {
@@ -844,6 +877,226 @@ async function scenarioBuildersAndUrls(base, routes) {
   // _validateUrl: a syntactically-invalid (non-protocol) URL → bad-url.
   throws("create: syntactically invalid redirectUri refused",
     function () { return X.create({ clientId: "a", redirectUri: "https://" }); }, "auth-oauth/bad-url");
+}
+
+// Sign an ES256 compact JWS with an arbitrary EC P-256 private key — used to
+// craft adversarial attestation / PoP tokens the public builders refuse to
+// emit (missing sub / cnf, forbidden claim shapes, expired PoP). ieee-p1363
+// matches the attestation verifier's ES256 params so the crafted signature
+// VERIFIES and the code reaches the semantic claim checks under test.
+function _signEs256(privateKey, header, payload) {
+  var input = _b64urlJson(header) + "." + _b64urlJson(payload);
+  var sig = crypto.sign("sha256", Buffer.from(input, "ascii"), { key: privateKey, dsaEncoding: "ieee-p1363" });
+  return input + "." + sig.toString("base64url");
+}
+
+// Flip one signature byte on a compact JWS (keeps length so verify RETURNS
+// false rather than throwing).
+function _tamperJws(jws) {
+  var p = jws.split(".");
+  var s = Buffer.from(p[2], "base64url");
+  s[0] = s[0] ^ 0xff;
+  return p[0] + "." + p[1] + "." + s.toString("base64url");
+}
+
+// b.auth.oauth.buildClientAttestation / buildClientAttestationPop /
+// verifyClientAttestation / clientAttestationHeaders — the attestation-based
+// client-authentication surface (draft-ietf-oauth-attestation-based-client-
+// auth-08). Pure crypto, no network: covers the key/alg resolution error
+// wrappers, the _verifyAttestationJws adversarial-shape refusals, every
+// verifier semantic gate (sub / cnf / nbf / client_id / PoP aud+jti+iat+exp /
+// challenge / jti-replay), the async seenJti store, and the full valid
+// round-trip return.
+async function scenarioAttestationVerify() {
+  var attKp  = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var instKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var attPub  = attKp.publicKey.export({ format: "jwk" });
+  var instPub = instKp.publicKey.export({ format: "jwk" });
+  var AUD = "https://as.example";
+  var now = Math.floor(Date.now() / 1000);
+
+  // ---- buildClientAttestation: key + alg resolution error wrappers ----
+  rejects("buildClientAttestation: unusable attester key string refused (bad-key wrapper)",
+          function () { X.buildClientAttestation({ clientId: "w", attesterPrivateKey: "not-a-pem-key",
+            instanceKeyJwk: instPub }); }, "auth-oauth/attestation-bad-key");
+  rejects("buildClientAttestation: empty attester key string refused (no-key wrapper)",
+          function () { X.buildClientAttestation({ clientId: "w", attesterPrivateKey: "",
+            instanceKeyJwk: instPub }); }, "auth-oauth/attestation-no-key");
+  rejects("buildClientAttestation: symmetric algorithm refused (attestation alg allowlist)",
+          function () { X.buildClientAttestation({ clientId: "w", attesterPrivateKey: attKp.privateKey,
+            instanceKeyJwk: instPub, algorithm: "HS256" }); }, "auth-oauth/attestation-alg-not-accepted");
+  rejects("buildClientAttestation: RS256 alg on an EC attester key refused (alg/key mismatch)",
+          function () { X.buildClientAttestation({ clientId: "w", attesterPrivateKey: attKp.privateKey,
+            instanceKeyJwk: instPub, algorithm: "RS256" }); }, "auth-oauth/attestation-alg-key-mismatch");
+  rejects("buildClientAttestation: key-agreement (X25519) attester key refused (cannot sign)",
+          function () { X.buildClientAttestation({ clientId: "w",
+            attesterPrivateKey: crypto.generateKeyPairSync("x25519").privateKey,
+            instanceKeyJwk: instPub }); }, "auth-oauth/attestation-key-unsupported");
+
+  // ---- _verifyAttestationJws: adversarial attestation shapes ----
+  // (verifyClientAttestation runs the attestation JWS through it first; the
+  // pop arg is irrelevant because each refusal fires before the pop verify.)
+  var vopts = { attesterJwk: attPub, expectedAudience: AUD };
+  var dummyPop = "x.y.z";
+  await arejects("verifyClientAttestation: non-string attestation refused",
+                 function () { return X.verifyClientAttestation(123, dummyPop, vopts); }, "auth-oauth/attestation-malformed");
+  await arejects("verifyClientAttestation: empty attestation refused",
+                 function () { return X.verifyClientAttestation("", dummyPop, vopts); }, "auth-oauth/attestation-malformed");
+  await arejects("verifyClientAttestation: oversized attestation refused (header cap)",
+                 function () { return X.verifyClientAttestation("a".repeat(17000), dummyPop, vopts); }, "auth-oauth/attestation-too-large");
+  await arejects("verifyClientAttestation: 5-segment JWE attestation refused",
+                 function () { return X.verifyClientAttestation("a.b.c.d.e", dummyPop, vopts); }, "auth-oauth/attestation-jwe-refused");
+  await arejects("verifyClientAttestation: non-3-segment attestation refused",
+                 function () { return X.verifyClientAttestation("a.b", dummyPop, vopts); }, "auth-oauth/attestation-malformed");
+  await arejects("verifyClientAttestation: undecodable attestation header refused",
+                 function () { return X.verifyClientAttestation("!!!." + _b64urlJson({}) + ".sig", dummyPop, vopts); }, "auth-oauth/attestation-malformed");
+  await arejects("verifyClientAttestation: attestation header missing alg refused",
+                 function () { return X.verifyClientAttestation(_b64urlJson({ typ: "x" }) + "." + _b64urlJson({}) + ".sig", dummyPop, vopts); },
+                 "auth-oauth/attestation-malformed");
+  await arejects("verifyClientAttestation: attestation alg not in allowlist refused",
+                 function () { return X.verifyClientAttestation(_b64urlJson({ alg: "HS256" }) + "." + _b64urlJson({}) + ".sig", dummyPop, vopts); },
+                 "auth-oauth/attestation-alg-not-accepted");
+  await arejects("verifyClientAttestation: attestation crit header refused (RFC 7515 §4.1.11)",
+                 function () { return X.verifyClientAttestation(_b64urlJson({ alg: "ES256", crit: ["x"] }) + "." + _b64urlJson({}) + ".sig", dummyPop, vopts); },
+                 "auth-oauth/attestation-crit-not-supported");
+  var goodShapeAtt = _signEs256(attKp.privateKey, { alg: "ES256", typ: "oauth-client-attestation+jwt" },
+    { sub: "w", cnf: { jwk: instPub }, iat: now, exp: now + 300 });
+  await arejects("verifyClientAttestation: tampered attestation signature refused (verify → false)",
+                 function () { return X.verifyClientAttestation(_tamperJws(goodShapeAtt), dummyPop, vopts); },
+                 "auth-oauth/attestation-bad-signature");
+
+  // ---- verifyClientAttestation: semantic claim gates ----
+  var att = X.buildClientAttestation({ clientId: "wallet", attesterPrivateKey: attKp.privateKey, instanceKeyJwk: instPub });
+  var pop = X.buildClientAttestationPop({ instancePrivateKey: instKp.privateKey, audience: AUD });
+
+  var noSubAtt = _signEs256(attKp.privateKey, { alg: "ES256" }, { cnf: { jwk: instPub }, iat: now, exp: now + 300 });
+  await arejects("verifyClientAttestation: attestation missing sub refused",
+                 function () { return X.verifyClientAttestation(noSubAtt, pop, vopts); }, "auth-oauth/attestation-no-sub");
+  var noCnfAtt = _signEs256(attKp.privateKey, { alg: "ES256" }, { sub: "w", iat: now, exp: now + 300 });
+  await arejects("verifyClientAttestation: attestation missing cnf.jwk refused (RFC 7800)",
+                 function () { return X.verifyClientAttestation(noCnfAtt, pop, vopts); }, "auth-oauth/attestation-no-cnf");
+  var nbfAtt = _signEs256(attKp.privateKey, { alg: "ES256" }, { sub: "w", cnf: { jwk: instPub }, iat: now, exp: now + 300, nbf: now + 100000 });
+  await arejects("verifyClientAttestation: attestation nbf in the future refused",
+                 function () { return X.verifyClientAttestation(nbfAtt, pop, vopts); }, "auth-oauth/attestation-not-yet-valid");
+  await arejects("verifyClientAttestation: expectedClientId != attestation sub refused (draft §8 step 10)",
+                 function () { return X.verifyClientAttestation(att, pop, { attesterJwk: attPub, expectedAudience: AUD, expectedClientId: "someone-else" }); },
+                 "auth-oauth/attestation-client-id-mismatch");
+
+  var popWrongAud = X.buildClientAttestationPop({ instancePrivateKey: instKp.privateKey, audience: "https://other.example" });
+  await arejects("verifyClientAttestation: PoP aud != expectedAudience refused (draft §8 step 7)",
+                 function () { return X.verifyClientAttestation(att, popWrongAud, vopts); }, "auth-oauth/attestation-pop-aud-mismatch");
+  var popNoJti = _signEs256(instKp.privateKey, { alg: "ES256" }, { aud: AUD, iat: now });
+  await arejects("verifyClientAttestation: PoP missing jti refused",
+                 function () { return X.verifyClientAttestation(att, popNoJti, vopts); }, "auth-oauth/attestation-pop-no-jti");
+  var popNoIat = _signEs256(instKp.privateKey, { alg: "ES256" }, { aud: AUD, jti: "j1" });
+  await arejects("verifyClientAttestation: PoP missing iat refused",
+                 function () { return X.verifyClientAttestation(att, popNoIat, vopts); }, "auth-oauth/attestation-pop-no-iat");
+  var popExpired = _signEs256(instKp.privateKey, { alg: "ES256" }, { aud: AUD, jti: "j2", iat: now, exp: now - 1000 });
+  await arejects("verifyClientAttestation: PoP with exp in the past refused",
+                 function () { return X.verifyClientAttestation(att, popExpired, vopts); }, "auth-oauth/attestation-pop-expired");
+  await arejects("verifyClientAttestation: server challenge unmatched by PoP refused (draft §8 step 5/6)",
+                 function () { return X.verifyClientAttestation(att, pop, { attesterJwk: attPub, expectedAudience: AUD, challenge: "srv-nonce" }); },
+                 "auth-oauth/attestation-pop-challenge-mismatch");
+  await arejects("verifyClientAttestation: seenJti reporting replay (falsy) refused (draft §12.1)",
+                 function () { return X.verifyClientAttestation(att, pop, { attesterJwk: attPub, expectedAudience: AUD, seenJti: function () { return 0; } }); },
+                 "auth-oauth/attestation-pop-replay");
+  await arejects("verifyClientAttestation: async seenJti resolving replay refused",
+                 function () { return X.verifyClientAttestation(att, pop, { attesterJwk: attPub, expectedAudience: AUD, seenJti: function () { return Promise.resolve(0); } }); },
+                 "auth-oauth/attestation-pop-replay");
+
+  // ---- full valid round-trip (the success return) ----
+  var challPop = X.buildClientAttestationPop({ instancePrivateKey: instKp.privateKey, audience: AUD, challenge: "srv-nonce" });
+  var okv = await aresolves("verifyClientAttestation: valid attestation + PoP verifies (numeric skew/maxAge, async seenJti)",
+    function () { return X.verifyClientAttestation(att, challPop, { attesterJwk: attPub, expectedAudience: AUD,
+      expectedClientId: "wallet", challenge: "srv-nonce", maxPopAgeSec: 600, clockSkewSec: 30,
+      seenJti: function () { return Promise.resolve(true); } }); });
+  check("verifyClientAttestation: surfaces clientId + cnfJwk + attestation + pop",
+        okv && okv.clientId === "wallet" && okv.cnfJwk && okv.cnfJwk.kty === "EC" && okv.attestation && okv.pop);
+
+  // ---- clientAttestationHeaders: builds BOTH headers, verifies end-to-end ----
+  var hdrClient = X.create({ clientId: "wallet", redirectUri: "https://rp.example/cb", isOidc: false });
+  var pair = hdrClient.clientAttestationHeaders({ attesterPrivateKey: attKp.privateKey,
+    instanceKeyJwk: instPub, instancePrivateKey: instKp.privateKey, audience: AUD,
+    challenge: "hdr-challenge", expiresInSec: 120, popExpiresInSec: 90 });
+  check("clientAttestationHeaders: emits both attestation + PoP header JWTs",
+        pair && pair.headers["OAuth-Client-Attestation"] === pair.attestation &&
+        pair.headers["OAuth-Client-Attestation-PoP"] === pair.pop);
+  var hv = await aresolves("clientAttestationHeaders: emitted pair verifies against attester + cnf keys",
+    function () { return X.verifyClientAttestation(pair.attestation, pair.pop, { attesterJwk: attPub,
+      expectedAudience: AUD, expectedClientId: "wallet", challenge: "hdr-challenge" }); });
+  check("clientAttestationHeaders: round-trip surfaces verified clientId", hv && hv.clientId === "wallet");
+
+  // ---- _publicCnfJwk: every asymmetric instance-key type (EC above; RSA/OKP) ----
+  // The cnf claim MUST carry public halves only — a private component never
+  // reaches it.
+  var rsaPub = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "jwk" });
+  var attRsa = X.buildClientAttestation({ clientId: "w", attesterPrivateKey: attKp.privateKey, instanceKeyJwk: rsaPub });
+  var cnfRsa = JSON.parse(Buffer.from(attRsa.split(".")[1], "base64url").toString("utf8")).cnf.jwk;
+  check("buildClientAttestation: RSA instance key shaped into cnf (n/e only, no private half)",
+        cnfRsa.kty === "RSA" && cnfRsa.n && cnfRsa.e && cnfRsa.d === undefined);
+  var okpPub = crypto.generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" });
+  var attOkp = X.buildClientAttestation({ clientId: "w", attesterPrivateKey: attKp.privateKey, instanceKeyJwk: okpPub });
+  var cnfOkp = JSON.parse(Buffer.from(attOkp.split(".")[1], "base64url").toString("utf8")).cnf.jwk;
+  check("buildClientAttestation: OKP instance key shaped into cnf (x only, no private half)",
+        cnfOkp.kty === "OKP" && cnfOkp.x && cnfOkp.d === undefined);
+}
+
+// Network-free branches on clients that reach neither discovery nor a token
+// endpoint: authorizationUrl extraParams (reserved-key guard + pass-through),
+// parseCallback iss/state mismatch (requireIssParam skips discovery), and
+// parseFrontchannelLogoutRequest's malformed-URL refusal.
+async function scenarioOfflineExtras() {
+  var ghx = X.create({ provider: "github", clientId: "gh-x", redirectUri: "https://rp.example/cb" });
+  var extra = await ghx.authorizationUrl({ extraParams: { audience: "https://api.example", resource: "https://rs.example" } });
+  var eu = new URL(extra.url);
+  check("authorizationUrl: non-reserved extraParams appended verbatim",
+        eu.searchParams.get("audience") === "https://api.example" && eu.searchParams.get("resource") === "https://rs.example");
+  await arejects("authorizationUrl: extraParams colliding with a reserved key refused",
+                 function () { return ghx.authorizationUrl({ extraParams: { state: "smuggled" } }); },
+                 "auth-oauth/reserved-extra-param");
+
+  var sc = _staticOidcClient();  // issuer https://idp.example
+  await arejects("parseCallback: callback iss != configured issuer refused (RFC 9207 mix-up)",
+                 function () { return sc.parseCallback({ code: "c", iss: "https://evil.example" }, { requireIssParam: true }); },
+                 "auth-oauth/iss-mismatch-callback");
+  await arejects("parseCallback: state mismatch refused (CSRF defense)",
+                 function () { return sc.parseCallback({ code: "c", state: "wrong", iss: "https://idp.example" },
+                   { requireIssParam: true, expectedState: "right" }); }, "auth-oauth/state-mismatch");
+
+  rejects("parseFrontchannelLogoutRequest: malformed request URL refused",
+          function () { sc.parseFrontchannelLogoutRequest({ url: "http://a b" }); },
+          "auth-oauth/bad-frontchannel-logout-url");
+}
+
+// PAR (RFC 9126). Plain form path (authorization_details as a JSON-string
+// form param + extraParams) and the RFC 9101 signed-request-object (JAR) path
+// where the same parameters travel as request-object claims and the form body
+// carries only `request` + client auth.
+async function scenarioParFlows(base, routes) {
+  routes["/jwks"] = { json: { keys: [PUBJWK] } };
+  var jarKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var oa = mk(base, "cov2-par-flow", { pushedAuthorizationRequestEndpoint: base + "/par" });
+  routes["/par"] = { status: 201, json: { request_uri: "urn:ietf:params:oauth:request_uri:abc", expires_in: 90 } };
+
+  var par = await aresolves("pushAuthorizationRequest: plain flow returns request_uri + redirect URL",
+    function () { return oa.pushAuthorizationRequest({
+      authorizationDetails: [{ type: "payment_initiation", actions: ["initiate"] }],
+      extraParams: { audience: "https://api.example" },
+      prompt: "consent", loginHint: "u@x", maxAge: 120 }); });
+  check("pushAuthorizationRequest: request_uri + expiresIn surfaced, plain path",
+        par && par.requestUri === "urn:ietf:params:oauth:request_uri:abc" && par.expiresIn === 90 &&
+        par.url.indexOf("request_uri=") !== -1 && par.requestObjectSent === false);
+
+  await athrows("pushAuthorizationRequest: extraParams colliding with a reserved key refused",
+                function () { return oa.pushAuthorizationRequest({ extraParams: { redirect_uri: "https://evil.example" } }); },
+                "auth-oauth/reserved-extra-param");
+
+  var sro = await aresolves("pushAuthorizationRequest: signed-request-object (JAR) flow returns request_uri",
+    function () { return oa.pushAuthorizationRequest({
+      signedRequestObject: { key: jarKp.privateKey },
+      authorizationDetails: [{ type: "payment_initiation", actions: ["initiate"] }] }); });
+  check("pushAuthorizationRequest: requestObjectSent flag set on the JAR path",
+        sro && sro.requestObjectSent === true && sro.requestUri === "urn:ietf:params:oauth:request_uri:abc");
 }
 
 // b.auth.oauth fetches go through the shared b.httpClient keep-alive agent;
@@ -1177,6 +1430,24 @@ async function run() {
   rejects("crossCheck: oversized granted payload refused (parse-bomb cap)",
           function () { X._crossCheckGrantedAuthorizationDetails(big, [{ type: "payment_initiation" }], false); },
           "auth-oauth/granted-authorization-details-too-large");
+  // Granted a type that was never requested → over-grant (non-strict surfaces).
+  var unreqType = X._crossCheckGrantedAuthorizationDetails(
+    [{ type: "never-requested" }], [{ type: "asked" }], false);
+  check("crossCheck: unrequested granted type surfaced under non-strict",
+        Array.isArray(unreqType) && unreqType.length === 1);
+  // A granted subfield delivered as a NON-array scalar the request never
+  // constrained is an over-grant (RFC 9396 §7 — AS returned a scalar where a
+  // RAR array field is defined and the request omitted it).
+  var scalarSub = X._crossCheckGrantedAuthorizationDetails(
+    [{ type: "t", locations: "https://rs.example/one" }], [{ type: "t" }], false);
+  check("crossCheck: unconstrained non-array granted subfield surfaced under non-strict",
+        Array.isArray(scalarSub) && scalarSub.length === 1);
+  // A granted scalar EQUAL to the requested scalar is lenient-accepted (a
+  // non-conforming-but-equal AS output is not treated as broadening).
+  var scalarEq = X._crossCheckGrantedAuthorizationDetails(
+    [{ type: "t", actions: "read" }], [{ type: "t", actions: "read" }], true);
+  check("crossCheck: matching non-array granted scalar accepted under strict",
+        Array.isArray(scalarEq) && scalarEq.length === 1);
 
   // ---- attestation builders: validation + claim shaping ----
   var attKp  = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -1264,6 +1535,11 @@ async function run() {
                      seenJti: function () { throw new Error("store down"); } });
                  }, "auth-oauth/attestation-pop-seen-callback-failed");
 
+  // Attestation verifier semantics + full round-trip, and the remaining
+  // network-free builder/parser branches.
+  await scenarioAttestationVerify();
+  await scenarioOfflineExtras();
+
   console.log("auth-oauth offline checks passed");
 
   // ---- loopback IdP round-trips (stand-in AS on 127.0.0.1) ----
@@ -1281,6 +1557,7 @@ async function run() {
     await scenarioDeviceAndPoll(base, routes);
     await scenarioDeviceGrantDefaultHttp(base, routes);
     await scenarioStaticExtraEndpoints(base, routes);
+    await scenarioParFlows(base, routes);
     await scenarioBackchannelLogout(base, routes);
     await scenarioJarm(base, routes);
     await scenarioDiscovery(base, routes);

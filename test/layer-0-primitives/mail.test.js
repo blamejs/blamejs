@@ -1437,6 +1437,229 @@ async function testReverseDnsErrorShape() {
 }
 
 // ---------------------------------------------------------------------------
+// b.mail.feedbackId — Gmail FBL 4-tuple builder: every reject branch + ok
+// ---------------------------------------------------------------------------
+
+function testFeedbackId() {
+  function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
+  var ok = b.mail.feedbackId({
+    campaignId: "wk26-promo", customerId: "acme", mailType: "marketing", senderId: "pool-1",
+  });
+  check("feedbackId: valid 4-tuple joins with ':'", ok === "wk26-promo:acme:marketing:pool-1");
+
+  check("feedbackId: no opts → bad-feedback-id-opts",
+    threw(function () { return b.mail.feedbackId(); }).code === "mail/bad-feedback-id-opts");
+  check("feedbackId: non-object opts → bad-feedback-id-opts",
+    threw(function () { return b.mail.feedbackId("nope"); }).code === "mail/bad-feedback-id-opts");
+  check("feedbackId: missing field → bad-feedback-id-field",
+    threw(function () { return b.mail.feedbackId({ customerId: "a", mailType: "b", senderId: "c" }); }).code === "mail/bad-feedback-id-field");
+  check("feedbackId: empty-string field → bad-feedback-id-field",
+    threw(function () { return b.mail.feedbackId({ campaignId: "", customerId: "a", mailType: "b", senderId: "c" }); }).code === "mail/bad-feedback-id-field");
+  check("feedbackId: >64-char field → bad-feedback-id-field",
+    threw(function () { return b.mail.feedbackId({ campaignId: "x".repeat(65), customerId: "a", mailType: "b", senderId: "c" }); }).code === "mail/bad-feedback-id-field");
+  check("feedbackId: ':' in field (separator corruption) → bad-feedback-id-field",
+    threw(function () { return b.mail.feedbackId({ campaignId: "a:b", customerId: "a", mailType: "b", senderId: "c" }); }).code === "mail/bad-feedback-id-field");
+  check("feedbackId: control char in field → bad-feedback-id-field",
+    threw(function () { return b.mail.feedbackId({ campaignId: "a\tb", customerId: "a", mailType: "b", senderId: "c" }); }).code === "mail/bad-feedback-id-field");
+  check("feedbackId: CR in field → bad-feedback-id-field",
+    threw(function () { return b.mail.feedbackId({ campaignId: "a\rb", customerId: "a", mailType: "b", senderId: "c" }); }).code === "mail/bad-feedback-id-field");
+}
+
+// ---------------------------------------------------------------------------
+// b.mail.toAscii — domainToASCII returns empty (non-delimiter junk) → null
+// ---------------------------------------------------------------------------
+
+function testToAsciiPunycodeEmptyReturnsNull() {
+  // A bare space / bare "xn--" prefix reaches nodeUrl.domainToASCII (no URL
+  // delimiter to short-circuit on) which yields "" — the length-0 guard maps
+  // that to null rather than surfacing an empty ACE label.
+  check("toAscii(' ') → null (empty ACE)", b.mail.toAscii(" ") === null);
+  check("toAscii('xn--') → null (empty ACE)", b.mail.toAscii("xn--") === null);
+}
+
+// ---------------------------------------------------------------------------
+// b.mail.create — CAN-SPAM postalAddress validation at construction time
+// ---------------------------------------------------------------------------
+
+function testCreateCommercialPostalAddressValidation() {
+  function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
+  var mem = b.mail.transports.memory();
+  var validAddr = { street: "1 St", city: "Springfield", region: "IL", postalCode: "62701", country: "US" };
+
+  check("create: commercial:true with no postalAddress → missing-postal-address",
+    threw(function () { return b.mail.create({ transport: mem, commercial: true, audit: false }); }).code === "mail/missing-postal-address");
+  check("create: commercial:true empty-string address → missing-postal-address",
+    threw(function () { return b.mail.create({ transport: mem, commercial: true, postalAddress: "   ", audit: false }); }).code === "mail/missing-postal-address");
+  check("create: commercial:true non-object non-string address → missing-postal-address",
+    threw(function () { return b.mail.create({ transport: mem, commercial: true, postalAddress: 5, audit: false }); }).code === "mail/missing-postal-address");
+  check("create: commercial:true object address missing a required field → missing-postal-address",
+    threw(function () { return b.mail.create({ transport: mem, commercial: true, audit: false,
+      postalAddress: { street: "1 St", city: "X", region: "Y", postalCode: "62701" } }); }).code === "mail/missing-postal-address");
+  check("create: commercial:true address field with control char → missing-postal-address",
+    threw(function () { return b.mail.create({ transport: mem, commercial: true, audit: false,
+      postalAddress: { street: "1 St", city: "X", region: "Y", postalCode: "62701", country: "U\nS" } }); }).code === "mail/missing-postal-address");
+
+  // regulated:true is the alias for commercial:true — same postal-address gate.
+  check("create: regulated:true is the commercial alias (valid address builds)",
+    threw(function () { return b.mail.create({ transport: mem, regulated: true, postalAddress: validAddr, audit: false }); }) === null);
+  check("create: regulated:true with no address → missing-postal-address",
+    threw(function () { return b.mail.create({ transport: mem, regulated: true, audit: false }); }).code === "mail/missing-postal-address");
+
+  // String-shape postalAddress carries no structured country/postalCode fields,
+  // so a footerHtml override needn't (can't) echo them — create still builds.
+  check("create: string postalAddress + footerHtml builds (no structured field check)",
+    threw(function () { return b.mail.create({ transport: mem, commercial: true, audit: false,
+      postalAddress: "Acme, 500 Rue, 75001 Paris, FR", footerHtml: "<div>anything</div>" }); }) === null);
+}
+
+// ---------------------------------------------------------------------------
+// b.mail.create send() — CAN-SPAM opt-out enforcement + object-address footer
+// ---------------------------------------------------------------------------
+
+async function testCommercialSendCanSpamAndObjectFooter() {
+  var addr = { street: "1 St", city: "Springfield", region: "IL", postalCode: "62701", country: "US" };
+  var captured = [];
+  var m = b.mail.create({
+    transport: function (msg) { captured.push(msg); return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false, commercial: true, postalAddress: addr,
+  });
+
+  // (a) commercial send with neither unsubscribe object nor List-Unsubscribe
+  // header → hard refusal before the transport is touched.
+  var eNoUnsub = await _sendErr(m, { to: "a@x.com", from: "f@x.com", text: "hi" });
+  check("commercial send: no opt-out → mail/canspam-no-unsubscribe",
+    eNoUnsub && eNoUnsub.code === "mail/canspam-no-unsubscribe");
+  check("commercial send: refusal happened before transport", captured.length === 0);
+
+  // Headers present but none is List-Unsubscribe → the header scan exhausts
+  // and the opt-out gate still refuses (distinct branch from headers absent).
+  var eOtherHdr = await _sendErr(m, { to: "a@x.com", from: "f@x.com", text: "hi", headers: { "X-Other": "1" } });
+  check("commercial send: non-matching headers still → mail/canspam-no-unsubscribe",
+    eOtherHdr && eOtherHdr.code === "mail/canspam-no-unsubscribe");
+
+  // (b) unsubscribe object → expands to List-Unsubscribe, send proceeds, and
+  // the html footer is rendered from the STRUCTURED object address (<br>-joined
+  // street / city+region+postal / country).
+  captured.length = 0;
+  await m.send({ to: "a@x.com", from: "f@x.com", html: "<p>buy</p>", unsubscribe: { url: "https://x.test/u" } });
+  var sHtml = captured[0];
+  check("commercial send: object address html footer carries street", sHtml.html.indexOf("1 St") !== -1);
+  check("commercial send: object address html footer carries country", sHtml.html.indexOf("US") !== -1);
+  check("commercial send: object address html footer uses <br> join", sHtml.html.indexOf("<br>") !== -1);
+  check("commercial send: text part synthesized from object address when html-only",
+    typeof sHtml.text === "string" && sHtml.text.indexOf("Springfield") !== -1);
+
+  // (c) a pre-existing List-Unsubscribe header satisfies the opt-out gate too
+  // (the header-scan branch of _hasUnsubscribe, distinct from the object form).
+  captured.length = 0;
+  await m.send({ to: "a@x.com", from: "f@x.com", text: "hi", headers: { "List-Unsubscribe": "<https://x.test/u>" } });
+  check("commercial send: List-Unsubscribe header satisfies opt-out gate", captured.length === 1);
+}
+
+// ---------------------------------------------------------------------------
+// _validateMessage — Reply-To / custom-header CRLF+NUL injection refusals
+// ---------------------------------------------------------------------------
+
+async function testMessageHeaderInjectionBranches() {
+  var m = b.mail.create({
+    transport: function () { return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false,
+  });
+  var base = { to: "a@x.com", from: "f@x.com", text: "hi" };
+  function withProp(extra) { return Object.assign({}, base, extra); }
+
+  var eReply = await _sendErr(m, withProp({ replyTo: "a\r\nBcc: evil@x.com" }));
+  check("send: CRLF in replyTo → mail/invalid-reply-to (header injection)",
+    eReply && eReply.code === "mail/invalid-reply-to");
+
+  var crlfKey = {}; crlfKey["X-Evil\r\nBcc"] = "evil@x.com";
+  var eKeyCrlf = await _sendErr(m, withProp({ headers: crlfKey }));
+  check("send: CRLF in a header key → mail/invalid-header",
+    eKeyCrlf && eKeyCrlf.code === "mail/invalid-header");
+
+  var nulKey = {}; nulKey["X-Evil\0Bcc"] = "evil@x.com";
+  var eKeyNul = await _sendErr(m, withProp({ headers: nulKey }));
+  check("send: NUL in a header key → mail/invalid-header",
+    eKeyNul && eKeyNul.code === "mail/invalid-header");
+
+  var eValCrlf = await _sendErr(m, withProp({ headers: { "X-Good": "ok\r\nBcc: evil@x.com" } }));
+  check("send: CRLF in a header value → mail/invalid-header",
+    eValCrlf && eValCrlf.code === "mail/invalid-header");
+}
+
+// ---------------------------------------------------------------------------
+// _mergeMessage — defaults.headers ∪ message.headers shallow merge
+// ---------------------------------------------------------------------------
+
+async function testMergeMessageHeaderMerge() {
+  var captured = [];
+  var m = b.mail.create({
+    transport: function (msg) { captured.push(msg); return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false,
+    defaults: { headers: { "X-Default": "d" } },
+  });
+  await m.send({ to: "a@x.com", from: "f@x.com", text: "hi", headers: { "X-Msg": "mm" } });
+  var hk = Object.keys(captured[0].headers || {});
+  check("merge: defaults.headers + message.headers both present",
+    hk.indexOf("X-Default") !== -1 && hk.indexOf("X-Msg") !== -1);
+}
+
+// ---------------------------------------------------------------------------
+// smtpTransport — rejectUnauthorized:false audits the insecure TLS session
+// ---------------------------------------------------------------------------
+
+function testSmtpRejectUnauthorizedAudits() {
+  // Building the transport with cert-verification disabled must audit the
+  // insecure-TLS decision at config time (no socket, no throw) — the audit
+  // sink drops silently, so we only assert the transport still constructs.
+  var t = b.mail.transports.smtp({ host: "mx.example.test", rejectUnauthorized: false });
+  check("smtp: rejectUnauthorized:false still builds a transport", typeof t.send === "function");
+}
+
+// ---------------------------------------------------------------------------
+// SMTP wire — BINARYMIME auto-detected from a NUL-bearing Buffer attachment
+// even without an explicit binary:true marker.
+// ---------------------------------------------------------------------------
+
+async function testSmtpBinaryMimeFromNulBuffer(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["CHUNKING", "BINARYMIME", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({
+      from: "s@a.test", to: "r@b.test", subject: "bin", text: "see attached",
+      // NUL byte in the octet stream, but NO binary:true flag — the transport's
+      // first-4-KiB scan must classify this as binary and emit BODY=BINARYMIME.
+      attachments: [{
+        filename: "a.dat", content: Buffer.from([0x41, 0x00, 0x42, 0x00]),  // allow:raw-byte-literal — NUL-bearing octet stream, no binary flag
+        skipMagicByteCheck: true, contentType: "application/octet-stream",
+      }],
+    });
+    check("smtp-binarymime-autodetect: delivered via BDAT", r.code === 250 && st.bdatChunks.length >= 1);
+    check("smtp-binarymime-autodetect: MAIL FROM carried BODY=BINARYMIME (no binary flag)",
+      /BODY=BINARYMIME/.test(st.mailFromLine || ""));
+  } finally { await closeServer(st); }
+
+  // Counterpart: a Buffer attachment with NO NUL bytes and no binary flag must
+  // NOT be classified binary — the scan exhausts and MAIL FROM omits BINARYMIME.
+  var st2 = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(st2);
+  try {
+    var t2 = tlsTransport(certPair, st2.port);
+    var r2 = await t2.send({
+      from: "s@a.test", to: "r@b.test", subject: "clean", text: "hi",
+      attachments: [{
+        filename: "note.txt", content: Buffer.from("plain ascii payload", "utf8"),
+        skipMagicByteCheck: true, contentType: "text/plain",
+      }],
+    });
+    check("smtp-binarymime-autodetect: clean buffer delivered", r2.code === 250);
+    check("smtp-binarymime-autodetect: clean buffer omits BODY=BINARYMIME",
+      !/BODY=BINARYMIME/.test(st2.mailFromLine || ""));
+  } finally { await closeServer(st2); }
+}
+
+// ---------------------------------------------------------------------------
 
 async function run() {
   testSmtpTransportAcceptsChunkingOpts();
@@ -1483,6 +1706,15 @@ async function run() {
   await testSmtpDkimSignFailureRejectsPreConnect();
   await testReverseDnsErrorShape();
 
+  // Error / adversarial / defensive branches added for coverage.
+  testFeedbackId();
+  testToAsciiPunycodeEmptyReturnsNull();
+  testCreateCommercialPostalAddressValidation();
+  await testCommercialSendCanSpamAndObjectFooter();
+  await testMessageHeaderInjectionBranches();
+  await testMergeMessageHeaderMerge();
+  testSmtpRejectUnauthorizedAudits();
+
   // SMTP state machine over loopback TLS — mint one cert pair, reuse.
   var ca = await b.mtlsEngine.generateCa({ generation: 1 });
   var leaf = await b.mtlsEngine.signClientCert({
@@ -1505,6 +1737,7 @@ async function run() {
   await testSmtpSocketTimeout(certPair);
   await testSmtpStarttlsHappyPath(certPair);
   await testSmtpStarttlsRejected(certPair);
+  await testSmtpBinaryMimeFromNulBuffer(certPair);
 }
 
 module.exports = { run: run };
