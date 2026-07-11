@@ -14,11 +14,12 @@ var os    = helpers.os;
 var path  = helpers.path;
 
 // A b.db-shaped stub that satisfies create()'s duck-type check
-// (from + getTableMetadata functions) without booting a real DB — used
-// only by the config-validation cases, which throw before any query runs.
+// (from + prepare + getTableMetadata functions) without booting a real DB —
+// used only by the config-validation cases, which throw before any query runs.
 function _stubDb() {
   return {
     from:             function () { return { where: function () { return this; }, select: function () { return this; }, all: function () { return []; } }; },
+    prepare:          function () { return { all: function () { return []; }, get: function () { return null; } }; },
     getTableMetadata: function () { return {}; },
   };
 }
@@ -332,6 +333,7 @@ async function testEmptyMetadataResolvesNoTables() {
     from: function () {
       return { where: function () { return this; }, select: function () { return this; }, all: function () { return []; } };
     },
+    prepare: function () { return { all: function () { return []; }, get: function () { return null; } }; },
     getTableMetadata: function () { return null; },
   };
   var quota = b.tenantQuota.create({ db: nullMetaDb, tenantField: "tenantId", audit: false });
@@ -442,6 +444,15 @@ async function testStorageCapLifecycle() {
         name: "sansTenant",
         columns: { _id: "TEXT PRIMARY KEY", label: "TEXT" },
       },
+      {
+        // A table with a SEALED column — its on-disk value is a vault
+        // envelope far larger than the plaintext it unseals to. The byte
+        // count must measure the stored envelope, not the auto-unsealed cell.
+        name: "sealed_docs",
+        columns: { _id: "TEXT PRIMARY KEY", tenantId: "TEXT", secret: "TEXT" },
+        sealedFields: ["secret"],
+        indexes: ["tenantId"],
+      },
     ]);
 
     b.db.from("docs").insertOne({ _id: "d1", tenantId: "t-acme", body: "hello", blob: Buffer.from("ABCD") });
@@ -532,6 +543,21 @@ async function testStorageCapLifecycle() {
     var blobSnap = await quota.snapshot("t-blob");
     check("blob bytes counted by byteLength (not the stringified array)",
       blobSnap.bytesUsed === 3 + 6 + 8);
+
+    // Sealed-column storage: a sealed cell is stored as a (much larger) vault
+    // envelope. The byte count must read the raw stored value, not the ORM's
+    // auto-unsealed facade — otherwise a tenant with sealed columns slips far
+    // under a storage cap. Insert a tiny plaintext ("x"), then verify the
+    // count reflects the full on-disk envelope for that isolated tenant.
+    b.db.from("sealed_docs").insertOne({ _id: "sd1", tenantId: "t-sealed", secret: "x" });
+    var rawSecret = b.db.prepare('SELECT secret FROM sealed_docs WHERE _id = ?').get("sd1").secret;
+    check("sealed column is stored as a vault envelope, not plaintext (precondition)",
+      typeof rawSecret === "string" && rawSecret !== "x" && Buffer.byteLength(rawSecret, "utf8") > 20);
+    var sealedSnap = await quota.snapshot("t-sealed");
+    // _id "sd1" (3) + tenantId "t-sealed" (8) + the raw envelope bytes. The
+    // unsealed-plaintext path would count "x" as 1 byte → 12 total, far below.
+    check("sealed column counted at its on-disk envelope size, not the unsealed plaintext",
+      sealedSnap.bytesUsed === 3 + 8 + Buffer.byteLength(rawSecret, "utf8"));
 
     // instrumentQuery audit-on path with a live audit chain (real safeEmit).
     var audited = b.tenantQuota.instrumentQuery({
