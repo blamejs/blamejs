@@ -632,6 +632,7 @@ async function _runTests() {
   await _testOptionDefaultBranches();
   await _testPostCloseSocketErrorSwallowed();
   await _testWssDialReachesTlsHandshake();
+  await _testWssDialIpv6LiteralOmitsSni();
 
   console.log("OK — ws-client tests");
 }
@@ -1105,6 +1106,39 @@ async function _testWssDialReachesTlsHandshake() {
   check("wss dial: IP-literal target reaches TLS handshake (times out, not ERR_INVALID_ARG_VALUE)",
     err && err.code === "ws-client/handshake-timeout");
   tcp.close();
+}
+
+// Same defense for an IPv6 literal: `parsed.hostname` keeps the brackets
+// (`[::1]`), and net.isIP only recognizes the bare form. Without stripping the
+// brackets before the IP test, the client sends SNI = "[::1]" — a bracketed IP
+// literal, which is malformed per RFC 6066 §3 (SNI MUST be a hostname) and a
+// strict TLS server can reject. Observe the exact options handed to
+// tls.connect: for an IPv6-literal target the servername must be OMITTED (the
+// same treatment IPv4 literals get), not set to the bracketed address.
+async function _testWssDialIpv6LiteralOmitsSni() {
+  var tls = require("node:tls");
+  var orig = tls.connect;
+  var captured = null;
+  tls.connect = function (opts) {
+    if (captured === null) { captured = opts || {}; tls.connect = orig; }
+    // Return a dummy socket that immediately errors so the dial tears down
+    // cleanly without a real network attempt.
+    var s = orig.call(tls, { host: "127.0.0.1", port: 1, servername: undefined });
+    s.on("error", function () {});
+    return s;
+  };
+  try {
+    var c = _trackedConnect("wss://[::1]:8443/", {
+      reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 300,
+    });
+    c.on("error", function () {});
+    await helpers.waitUntil(function () { return captured !== null; },
+      { timeoutMs: 5000, label: "ws-client: tls.connect called for wss IPv6-literal dial" });
+    check("wss dial: IPv6-literal target omits SNI (not set to the bracketed IP literal)",
+      captured && captured.servername === undefined);
+  } finally {
+    tls.connect = orig;
+  }
 }
 
 module.exports = { run: run };
