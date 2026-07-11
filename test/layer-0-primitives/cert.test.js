@@ -10,7 +10,7 @@
  *   - SNI callback (exact + wildcard + fallback)
  *   - manual refresh() with a mocked ACME client
  *   - audit emission on issue / renew / renew-failed
- *   - key escrow (encrypt-to-recipient via b.crypto.encryptEnvelope)
+ *   - key escrow (encrypt-to-recipient via b.crypto.encrypt)
  *
  * The live ACME path against an external CA isn't exercised here
  * (no test CA shipped in the framework); the issue/renew flow is
@@ -1213,6 +1213,35 @@ async function testKeyEscrowSealsRecoverableEnvelope() {
   } catch (e) { badThrew = e; }
   check("keyEscrow: non-string / non-object recipient refused at config time",
     badThrew && badThrew.code === "cert/bad-key-escrow");
+
+  // An object-form recipient with an empty publicKey is refused too: the
+  // object path must require a non-empty key like the string path does, or a
+  // "" key slips through config and fails deeper at b.crypto.encrypt time.
+  var emptyKeyThrew = null;
+  try {
+    b.cert.create({
+      storage: { type: "sealed-disk", rootDir: _tmpDir(), vault: _ephemeralVault() },
+      acme:    { directory: "https://example/", accountKey: "auto" },
+      certs:   [{ name: "c", domains: ["c.example"], challenge: GOOD_CHALLENGE,
+        keyEscrow: { recipient: { publicKey: "" } } }],
+    });
+  } catch (e) { emptyKeyThrew = e; }
+  check("keyEscrow: object recipient with empty publicKey refused at config time",
+    emptyKeyThrew && emptyKeyThrew.code === "cert/bad-key-escrow");
+
+  // A present-but-empty ecPublicKey (the optional P-384 hybrid leg) is refused
+  // too — an empty hybrid key must not silently downgrade to ML-KEM-only.
+  var emptyEcThrew = null;
+  try {
+    b.cert.create({
+      storage: { type: "sealed-disk", rootDir: _tmpDir(), vault: _ephemeralVault() },
+      acme:    { directory: "https://example/", accountKey: "auto" },
+      certs:   [{ name: "d", domains: ["d.example"], challenge: GOOD_CHALLENGE,
+        keyEscrow: { recipient: { publicKey: "ml-kem-pem", ecPublicKey: "" } } }],
+    });
+  } catch (e) { emptyEcThrew = e; }
+  check("keyEscrow: object recipient with empty ecPublicKey refused at config time",
+    emptyEcThrew && emptyEcThrew.code === "cert/bad-key-escrow");
 }
 
 // ---- Corrupt sealed cert that unseals but won't parse → re-issue ----
