@@ -1197,11 +1197,53 @@ async function testDefaultAuditEnabled() {
   check("audit-enabled default path delivers", result.delivered.length === 1);
 }
 
+// ---- b.mail.send.deliver.create — documented factory dotted form ----
+//
+// The @primitive / @signature / @example advertise
+// `b.mail.send.deliver.create(opts)` as the way to build a delivery
+// handle. This drives that exact dotted form end-to-end (stubbed MX +
+// transport, no real SMTP socket) so the documented operator consumer
+// path is verified — not only the collapsed `b.mail.send.deliver(opts)`
+// callable the other tests exercise.
+async function testDeliverCreateDottedForm() {
+  check("b.mail.send.deliver.create is a function",
+    typeof b.mail.send.deliver.create === "function");
+
+  var fakeResolver = {
+    queryMx: async function (domain) { return [{ exchange: "mx1." + domain, priority: 10 }]; },
+  };
+  var fakeTransport = function () {
+    return { send: async function () { return { ok: true, code: 250 }; } };
+  };
+  var deliver = b.mail.send.deliver.create({
+    hostname:         "mta1.example.com",
+    resolver:         fakeResolver,
+    policy:           { mtaSts: "off", dane: "off" },
+    transportFactory: fakeTransport,
+    audit:            false,
+  });
+  check("create() returns a callable deliver handle", typeof deliver === "function");
+  var result = await deliver({
+    from:   "ops@example.com",
+    to:     ["alice@recipient.com"],
+    rfc822: Buffer.from("From: ops@example.com\r\nTo: alice@recipient.com\r\nSubject: hi\r\n\r\nbody"),
+  });
+  check("create()'d handle delivers via the stubbed transport",
+    result.delivered.length === 1 && result.delivered[0].recipient === "alice@recipient.com");
+
+  // The documented factory refuses bad opts the same as the callable form.
+  var threw = null;
+  try { b.mail.send.deliver.create({}); } catch (e) { threw = e; }
+  check("create({}) without hostname → deliver/bad-hostname",
+    threw && threw.code === "deliver/bad-hostname");
+}
+
 // ---- Run ----
 
 async function run() {
   testSurface();
   testFactoryRefusesBadOpts();
+  await testDeliverCreateDottedForm();
   await testEnvelopeValidation();
   testOutcomeClassifier();
   testDsnComposer();

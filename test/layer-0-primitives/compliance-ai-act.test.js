@@ -776,6 +776,141 @@ function run() {
       });
     }, /copVersion/);
 
+  // ---- full-dotted-path drive: FRIA (Art. 27), GPAI training-data
+  // summary (Art. 53(1)(d)), COP adherence form + signed-declaration
+  // verify. Each primitive is exercised through the real
+  // b.compliance.aiAct.* consumer path with a valid input plus a
+  // missing-required-field typed refusal. ----
+
+  // b.compliance.aiAct.fundamentalRightsImpactAssessment — Art. 27 FRIA
+  var friaDoc = b.compliance.aiAct.fundamentalRightsImpactAssessment({
+    systemId:          "credit-scoring-v3",
+    systemDescription: { purpose: "loan approval / creditworthiness" },
+    deploymentContext: { purpose: "loan approval", sector: "financial",
+                         geography: "EU", scale: "1M decisions/year" },
+    affectedPersons:   { categories: ["EU consumers"], estimatedCount: 1000000 },
+    risksToFundamentalRights: ["discriminatory denial", "right to explanation"],
+    mitigations:       ["bias audit every 6 months", "human review threshold"],
+    humanOversight:    { roles: ["credit officer"], escalationPath: "ombudsman" },
+    reviewCadence:     "semi-annual",
+  });
+  check("fria: Article 27 document",                    friaDoc.article.indexOf("Article 27") !== -1);
+  check("fria: systemId echoed",                        friaDoc.systemId === "credit-scoring-v3");
+  check("fria: risks carried through",                  friaDoc.risks.length === 2);
+  check("fria: mitigations carried through",            friaDoc.mitigations.length === 2);
+  check("fria: humanOversight carried through",         friaDoc.humanOversight.escalationPath === "ombudsman");
+  check("fria: reviewCadence honored",                  friaDoc.reviewCadence === "semi-annual");
+  check("fria: classification derived from systemDescription",
+        friaDoc.classification !== null && typeof friaDoc.classification.tier === "string");
+  check("fria: operator-must-notify status",            friaDoc.notificationStatus === "operator-must-notify");
+
+  // Defaults when optional context + systemDescription are omitted
+  var friaMin = b.compliance.aiAct.fundamentalRightsImpactAssessment({ systemId: "s1" });
+  check("fria: classification null without systemDescription", friaMin.classification === null);
+  check("fria: reviewCadence defaults to annual",       friaMin.reviewCadence === "annual");
+
+  rejects("fria: missing systemId refused",
+    function () { b.compliance.aiAct.fundamentalRightsImpactAssessment({}); },
+    /systemId must be a non-empty string/);
+  rejects("fria: missing opts refused",
+    function () { b.compliance.aiAct.fundamentalRightsImpactAssessment(); },
+    /opts must be an object/);
+  check("fria: missing opts is a typed ComplianceError with descriptive message",
+    (function () {
+      try { b.compliance.aiAct.fundamentalRightsImpactAssessment({}); return false; }
+      catch (e) { return e.name === "ComplianceError" && e.code === "compliance-ai-act/no-system-id" &&
+                         /systemId must be a non-empty string/.test(e.message); }
+    })());
+
+  // b.compliance.aiAct.gpai.trainingDataSummary — Art. 53(1)(d) template
+  var tds = b.compliance.aiAct.gpai.trainingDataSummary({
+    modelId:        "acme-llm-7b",
+    modelVersion:   "1.0",
+    provider:       { name: "Acme AI", address: "1 St", contact: "ai@acme.example" },
+    dataCategories: ["web-crawl", "books", "code"],
+    modalities:     ["text"],
+    sources: [
+      { identifier: "CommonCrawl-2024", type: "web-crawl", licenseStatus: "permitted" },
+    ],
+    biasMitigation: { methodsApplied: ["demographic-balance"], auditCadence: "quarterly" },
+  });
+  check("trainingDataSummary: Article 53(1)(d)",        tds.article.indexOf("Article 53(1)(d)") !== -1);
+  check("trainingDataSummary: AI Office template",      tds.template.indexOf("AI Office") !== -1);
+  check("trainingDataSummary: modelId echoed",          tds.modelId === "acme-llm-7b");
+  check("trainingDataSummary: modalities carried",      tds.modalities.length === 1 && tds.modalities[0] === "text");
+  check("trainingDataSummary: source normalized",       tds.sources[0].identifier === "CommonCrawl-2024");
+  check("trainingDataSummary: source defaults applied", tds.sources[0].url === null && tds.sources[0].size === null);
+  check("trainingDataSummary: licenseStatus preserved", tds.sources[0].licenseStatus === "permitted");
+  check("trainingDataSummary: copyrightStatus defaulted", tds.copyrightStatus.respectsRightReservations === null);
+  check("trainingDataSummary: well-known publish note", tds.note.indexOf("well-known") !== -1);
+
+  rejects("trainingDataSummary: missing modelId refused",
+    function () { b.compliance.aiAct.gpai.trainingDataSummary({ modelVersion: "1.0" }); },
+    /modelId must be a non-empty string/);
+  rejects("trainingDataSummary: missing opts refused",
+    function () { b.compliance.aiAct.gpai.trainingDataSummary(); },
+    /opts must be an object/);
+  check("trainingDataSummary: missing modelId is a typed ComplianceError with descriptive message",
+    (function () {
+      try { b.compliance.aiAct.gpai.trainingDataSummary({ modelVersion: "1.0" }); return false; }
+      catch (e) { return e.name === "ComplianceError" && e.code === "compliance-ai-act/no-model-id" &&
+                         /modelId must be a non-empty string/.test(e.message); }
+    })());
+
+  // b.compliance.aiAct.gpai.adherenceForm — derived Art. 53 obligation set
+  var dotEvidence = b.crypto.sha3Hash("annex-xi-technical-documentation-v1");
+  var dotForm = b.compliance.aiAct.gpai.adherenceForm({
+    modelId: "dotted-llm", modelVersion: "2.0",
+    commitments: [{ article: "Art. 53(1)(a)", statement: "Annex XI docs maintained", evidenceHash: dotEvidence }],
+  });
+  check("adherenceForm: derives 4 Art. 53 obligations", dotForm.commitments.length === 4);
+  check("adherenceForm: not systemic by default",       dotForm.isSystemicRisk === false);
+  check("adherenceForm: articles Art. 53 only",         dotForm.articles.length === 1 && dotForm.articles[0] === "Art. 53");
+  check("adherenceForm: bound commitment evidenced",    dotForm.commitments[0].evidenced === true);
+  check("adherenceForm: unsupplied obligation surfaced", dotForm.commitments[1].evidenced === false);
+
+  rejects("adherenceForm: missing modelVersion refused",
+    function () {
+      b.compliance.aiAct.gpai.adherenceForm({
+        modelId: "m",
+        commitments: [{ article: "Art. 53(1)(a)", statement: "x", evidenceHash: dotEvidence }],
+      });
+    }, /modelVersion/);
+  rejects("adherenceForm: missing opts refused",
+    function () { b.compliance.aiAct.gpai.adherenceForm(); },
+    /must be an object|opts/);
+
+  // b.compliance.aiAct.gpai.verifyAdherence — signed round-trip verdict.
+  // The verify contract RETURNS a verdict { valid, adherence, reason } and
+  // never throws, so its "refusals" are verdicts, not exceptions.
+  var dotPair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+  var dotArticles = ["Art. 53(1)(a)", "Art. 53(1)(b)", "Art. 53(1)(c)", "Art. 53(1)(d)"];
+  var dotCommitments = dotArticles.map(function (a) {
+    return { article: a, statement: "evidence for " + a, evidenceHash: dotEvidence };
+  });
+  var dotEnv = b.compliance.aiAct.gpai.declareAdherence({
+    modelId: "dotted-llm", modelVersion: "2.0",
+    commitments: dotCommitments,
+    privateKeyPem: dotPair.privateKey,
+  });
+  var dotVerdict = b.compliance.aiAct.gpai.verifyAdherence(dotEnv, dotPair.publicKey);
+  check("verifyAdherence: valid round-trip",            dotVerdict.valid === true);
+  check("verifyAdherence: reason null on success",      dotVerdict.reason === null);
+  check("verifyAdherence: surfaces adherence form",     dotVerdict.adherence.modelId === "dotted-llm");
+
+  // Missing required public key → typed verdict refusal (never throws)
+  var dotNoKeyVerdict = b.compliance.aiAct.gpai.verifyAdherence(dotEnv);
+  check("verifyAdherence: missing public key → verdict refusal",
+        dotNoKeyVerdict.valid === false && dotNoKeyVerdict.reason === "public-key-required" &&
+        dotNoKeyVerdict.adherence === null);
+
+  // Wrong signing key → signature-invalid verdict
+  var dotOtherPair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+  var dotBadVerdict = b.compliance.aiAct.gpai.verifyAdherence(dotEnv, dotOtherPair.publicKey);
+  check("verifyAdherence: wrong key → signature-invalid verdict",
+        dotBadVerdict.valid === false && dotBadVerdict.reason === "signature-invalid" &&
+        dotBadVerdict.adherence === null);
+
   console.log("OK — compliance-ai-act tests");
 }
 

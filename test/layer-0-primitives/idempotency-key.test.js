@@ -619,6 +619,70 @@ async function testDbStoreSealRoundTripWithVault() {
   }
 }
 
+function testResealMigrateInMemoryStoreUnsupported() {
+  // Operators on the in-memory store can't bulk-reseal — the helper
+  // reports the reason instead of throwing so a boot script stays quiet.
+  var store = b.middleware.idempotencyKey.memoryStore();
+  var info = b.middleware.idempotencyKey.resealMigrate(store);
+  check("resealMigrate: in-memory store reports store-does-not-support-reseal",
+    info.migrated === 0 && info.skipped === 0 &&
+    info.reason === "store-does-not-support-reseal");
+}
+
+function testResealMigrateSealDisabled() {
+  // A dbStore with sealing off (vault not wired) can't reseal — the
+  // helper delegates and surfaces the aad-or-seal-disabled reason.
+  var db = _mockDb();
+  var store = b.middleware.idempotencyKey.dbStore({
+    db: db, tableName: "_t_reseal_noseal", hashKeys: false, seal: false,
+  });
+  var info = b.middleware.idempotencyKey.resealMigrate(store);
+  check("resealMigrate: seal-disabled dbStore reports aad-or-seal-disabled",
+    info.migrated === 0 && info.skipped === 0 && info.reason === "aad-or-seal-disabled");
+}
+
+async function testResealMigrateAlreadyAadSealed() {
+  // With vault + AAD sealing on, a row written by the store is already
+  // in the vault.aad: envelope. resealMigrate walks the table, detects
+  // it's already migrated, and skips it — succeeding with reason:null.
+  var dataDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "idemp-reseal-"));
+  try {
+    if (typeof vault._resetForTest === "function") vault._resetForTest();
+    cryptoField.clearForTest();
+    await vault.init({ dataDir: dataDir, mode: "plaintext" });
+
+    var db = _mockDb();
+    var store = b.middleware.idempotencyKey.dbStore({
+      db: db, tableName: "_t_reseal_aad", hashKeys: false, seal: true, aad: true,
+    });
+    check("resealMigrate: seal + aad enabled when vault ready",
+      store._sealEnabled === true && store._aadOn === true);
+
+    store.set("k1", {
+      fingerprint: "fp",
+      statusCode:  200,
+      headers:     { "x-a": "1" },
+      body:        Buffer.from('{"ok":true}').toString("base64"),
+    }, 60000);
+    check("resealMigrate: fresh row is written in the vault.aad: envelope",
+      typeof db._data.get("k1").headers === "string" &&
+      db._data.get("k1").headers.indexOf("vault.aad:") === 0);
+
+    var info = b.middleware.idempotencyKey.resealMigrate(store);
+    check("resealMigrate: already-AAD row is skipped, migration succeeds",
+      info.migrated === 0 && info.skipped === 1 && info.reason === null);
+
+    // The row still round-trips after the walk (no corruption).
+    var v = store.get("k1");
+    check("resealMigrate: row still readable after the walk",
+      v && v.fingerprint === "fp" && v.headers["x-a"] === "1");
+  } finally {
+    if (typeof vault._resetForTest === "function") vault._resetForTest();
+    cryptoField.clearForTest();
+    try { nodeFs.rmSync(dataDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
   testSurface();
   testBadOpts();
@@ -646,6 +710,9 @@ async function run() {
   testDbStoreSealedRowAcrossProcessesNotDeleted();
   testDbStoreCorruptHeadersDeletedWhenNotSealed();
   await testDbStoreSealRoundTripWithVault();
+  testResealMigrateInMemoryStoreUnsupported();
+  testResealMigrateSealDisabled();
+  await testResealMigrateAlreadyAadSealed();
 }
 
 module.exports = { run: run };
