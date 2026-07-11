@@ -93,7 +93,7 @@ async function _expectReject(label, promise, codeRe) {
   var threw = null;
   try { await promise; } catch (e) { threw = e; }
   check("archive.adapters " + label,
-    !!threw && codeRe.test((threw && threw.code) || ""));
+    !!threw && codeRe.test(threw.code || ""));
 }
 
 async function testFsAdapter() {
