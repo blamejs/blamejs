@@ -96,14 +96,14 @@ function _cfg(id, entity, extra) {
 async function _rejects(label, fn, re) {
   var threw = null;
   try { await fn(); } catch (e) { threw = e; }
-  check(label, !!threw && re.test((threw && threw.code) || ""));
+  check(label, !!threw && re.test(threw.code || ""));
 }
 
 // Assert a sync call throws with a code matching `re`.
 function _throws(label, fn, re) {
   var threw = null;
   try { fn(); } catch (e) { threw = e; }
-  check(label, !!threw && re.test((threw && threw.code) || ""));
+  check(label, !!threw && re.test(threw.code || ""));
 }
 
 // Build a chain array for applyMetadataPolicy: one leaf node whose

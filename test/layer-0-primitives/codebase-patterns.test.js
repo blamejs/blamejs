@@ -10411,6 +10411,25 @@ var KNOWN_ANTIPATTERNS = [
     reason: "0.15.54 — self-update-standalone-verifier-ecdsa-encoding.test.js:189 asserted that a raw IEEE-P1363 P-384 signature's first byte was not the DER SEQUENCE tag 0x30, to prove it was not DER-encoded; that byte is r's high octet, which equals 0x30 ~1/256 of the time, so the setup assertion flaked and blocked the release's ubuntu smoke (the saml-mdq-wrapping release CI). The deterministic distinguisher is the fixed 96-byte (P-384) / 64-byte (P-256) raw length; the fix guards the byte check with a `|| sig.length === N` disjunction, matching sd-jwt-vc-ecdsa-p1363.test.js:51. Fires on a bare first-byte-not-0x30 check with no length disjunction on the same line; silent once guarded.",
   },
   {
+    // A test helper that guards a value truthy with `!!x &&` on the LEFT of an
+    // && and then re-guards the SAME variable inside a sub-expression on the
+    // right (`!!x && f((x && x.prop) || …)`) has a redundant inner `x &&`:
+    // once `!!x` short-circuits true, x is truthy, so `x && x.prop` is just
+    // `x.prop`. Sound because the outer `!!x &&` gates the whole sub-expression
+    // — the temper on `||` excludes the shape where an intervening `||` breaks
+    // that guarantee (`!!x && a || b(x && x.y)` — there b's inner guard is real
+    // because x can be null on the right of `||`). A pure-redundancy code-smell
+    // the linters flag as an always-true conditional; a behavioral test can't
+    // assert it (both forms behave identically), so the detector is the guard.
+    id: "test-redundant-inner-truthy-guard",
+    primitive: "a redundant always-true inner guard — a value already proven truthy by a leading double-bang test is re-tested with a second and-guard inside the same guarded call, so the inner guard is dead; read the property directly instead",
+    scanScope: "test",
+    regex: /!!(\w+)\s*&&(?:(?!\|\|)[^\n])*\(\s*\1\s*&&\s*\1\./,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "0.16.15 — openid-federation.test.js `_rejects`/`_throws` re-tested `threw` inside the guarded `re.test(...)` even though the leading double-bang test on `threw` already proved it truthy, so the inner test was dead; the code-quality bot flagged it as a useless always-true conditional and blocked merge on thread-resolution (same class as the 0.16.10 agent-helper double-check). Fixed by reading `threw.code` directly. The `||` temper keeps only the sound shape — it does NOT fire on external-db-routing.test.js:297, where the same-variable inner guard is real because the value can be null on the right of an `||`. Fires when a double-bang guard is followed on one line, with no intervening `||`, by a parenthesized re-test of the same variable; silent once the inner guard is dropped.",
+  },
+  {
     // A test file must invoke its run()/IIFE ONLY under
     // `if (require.main === module)`. The smoke worker REQUIRES each test
     // module and then awaits its exported run(); a module-level `run()` (or
