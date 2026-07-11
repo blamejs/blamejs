@@ -473,6 +473,30 @@ async function sectionBootedApiKey() {
     var idMatch = ci.out().match(/^id:\s+([a-f0-9]+)/m);
     check("apikey issue: id captured", !!idMatch);
     var id = idMatch ? idMatch[1] : "deadbeef";
+    var keyMatch = ci.out().match(/^key:\s+(\S+)/m);
+
+    // list → owner header + active-key row loop (the list subcommand body)
+    var cl = _captureCtx();
+    var rcl = await cli.main(["api-key", "list"].concat(base).concat(["--owner-id", "dave"]), cl);
+    check("apikey list: exit 0", rcl === 0);
+    check("apikey list: owner header", /owner: dave \(\d+ active keys\)/.test(cl.out()));
+
+    // verify a VALID composite token BEFORE rotate (rotate with default
+    // gracePeriodMs=0 immediately invalidates the old secret) → success
+    // path prints the resolved id / ownerId / scopes.
+    if (keyMatch) {
+      var cvf = _captureCtx();
+      var rcvf = await cli.main(["api-key", "verify"].concat(base).concat(["--token", keyMatch[1]]), cvf);
+      check("apikey verify valid → exit 0", rcvf === 0);
+      check("apikey verify valid → prints ownerId", /ownerId:\s+dave/.test(cvf.out()));
+    }
+
+    // verify a syntactically-bogus token → registry.verify returns null →
+    // report.error("rejected: ...") → non-zero.
+    var cvb = _captureCtx();
+    var rcvb = await cli.main(["api-key", "verify"].concat(base).concat(["--token", "not-a-real-token"]), cvb);
+    check("apikey verify bogus → non-zero", rcvb !== 0);
+    check("apikey verify bogus → rejected msg", /rejected: token does not verify/.test(cvb.err()));
 
     // rotate → new secret, exit 0 (the rotate subcommand is otherwise untested)
     var cr = _captureCtx();
@@ -566,6 +590,16 @@ async function sectionBootedMtls() {
       ["--subject", "cn-b", "--password", "p12-passphrase-abc"]), cp);
     check("mtls issue-p12 (stdout): exit 0", rcp === 0);
     check("mtls issue-p12 (stdout): prints fingerprint", /fingerprint \(sha3-512\)/.test(cp.out()));
+
+    // issue-p12 WITH --out → atomicFile.writeSync writes the bundle to disk
+    // (the `outPath` branch, distinct from the stdout-stream branch above).
+    var p12Out = path.join(dataDir, "client.p12");
+    var co = _captureCtx();
+    var rco = await cli.main(["mtls", "issue-p12"].concat(base).concat(
+      ["--subject", "cn-c", "--password", "p12-passphrase-xyz", "--out", p12Out]), co);
+    check("mtls issue-p12 --out: exit 0", rco === 0);
+    check("mtls issue-p12 --out: reports written path", /p12 written: /.test(co.out()));
+    check("mtls issue-p12 --out: file exists on disk", fs.existsSync(p12Out));
   } finally { _rm(dataDir); }
 }
 
@@ -638,6 +672,822 @@ function sectionRepeatableFlags() {
   // array — _coerceList wraps it, so the shape contract downstream is scalar.
   var one = b.argParser.parseRaw(["--watch", "./only"]);
   check("parseRaw: single --watch stays a string", one.flags.watch === "./only");
+}
+
+// ---------------------------------------------------------------------------
+// migrate — the whole _runMigrate body (up / down / status / no-op / bad-steps
+// / cannot-open / broken-migration catch) against a local temp sqlite file.
+// Structurally identical to the seed section already in this file; the CLI
+// opens its own raw node:sqlite handle via _openSqlite, so no framework boot.
+// ---------------------------------------------------------------------------
+async function sectionMigrate() {
+  var dir = _tmpDir("blamejs-cli-migrate");
+  try {
+    var dbPath = path.join(dir, "mig.db");
+    var migDir = path.join(dir, "migrations");
+    fs.mkdirSync(migDir, { recursive: true });
+    fs.writeFileSync(path.join(migDir, "0001-foo.js"),
+      "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE foo (id INTEGER)\"); }," +
+      " down: function (db) { db['exec'](\"DROP TABLE foo\"); } };");
+    fs.writeFileSync(path.join(migDir, "0002-bar.js"),
+      "module.exports = { up: function (db) { db['exec'](\"CREATE TABLE bar (id INTEGER)\"); }," +
+      " down: function (db) { db['exec'](\"DROP TABLE bar\"); } };");
+
+    // bare `migrate` (no subcommand) → usage on stderr, exit 2
+    var cbare = _captureCtx();
+    check("migrate bare: exit 2", (await cli.main(["migrate"], cbare)) === 2);
+    check("migrate bare: usage", /Usage: blamejs migrate/.test(cbare.err()));
+
+    // unknown subcommand → error + usage, exit 2
+    var cunk = _captureCtx();
+    check("migrate unknown sub: exit 2", (await cli.main(["migrate", "frobnicate"], cunk)) === 2);
+    check("migrate unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    // known subcommand but missing --db → exit 2
+    var cnodb = _captureCtx();
+    check("migrate status no --db: exit 2", (await cli.main(["migrate", "status"], cnodb)) === 2);
+    check("migrate status no --db: message", /--db <path> is required/.test(cnodb.err()));
+
+    // status before any apply → 0/2 applied + pending listing loop
+    var cs = _captureCtx();
+    var rcs = await cli.main(["migrate", "status", "--db", dbPath, "--dir", migDir], cs);
+    check("migrate status (pre): exit 0", rcs === 0);
+    check("migrate status (pre): 0/2 applied", /applied: 0 \/ 2/.test(cs.out()));
+    check("migrate status (pre): lists pending", /0001-foo\.js/.test(cs.out()) && /0002-bar\.js/.test(cs.out()));
+
+    // up → applies both (the applied-count loop)
+    var cu = _captureCtx();
+    var rcu = await cli.main(["migrate", "up", "--db", dbPath, "--dir", migDir], cu);
+    check("migrate up: exit 0", rcu === 0);
+    check("migrate up: applies 2", /applied 2 migration/.test(cu.out()));
+
+    // status after up → applied-rows loop (the ✓ lines)
+    var cs2 = _captureCtx();
+    await cli.main(["migrate", "status", "--db", dbPath, "--dir", migDir], cs2);
+    check("migrate status (post): 2/2 applied", /applied: 2 \/ 2/.test(cs2.out()));
+
+    // up again → no-pending branch
+    var cu2 = _captureCtx();
+    var rcu2 = await cli.main(["migrate", "up", "--db", dbPath, "--dir", migDir], cu2);
+    check("migrate up again: exit 0", rcu2 === 0);
+    check("migrate up again: no pending", /no pending migrations/.test(cu2.out()));
+
+    // down --steps 1 → reverts most-recent (the reverted-count loop)
+    var cd = _captureCtx();
+    var rcd = await cli.main(["migrate", "down", "--db", dbPath, "--dir", migDir, "--steps", "1"], cd);
+    check("migrate down --steps 1: exit 0", rcd === 0);
+    check("migrate down --steps 1: reverts bar", /reverted 1 migration/.test(cd.out()) && /0002-bar\.js/.test(cd.out()));
+
+    // down with no --steps → default 1
+    var cd2 = _captureCtx();
+    var rcd2 = await cli.main(["migrate", "down", "--db", dbPath, "--dir", migDir], cd2);
+    check("migrate down (default steps): reverts foo", rcd2 === 0 && /0001-foo\.js/.test(cd2.out()));
+
+    // down again on a fully-reverted db → nothing-to-revert branch
+    var cd3 = _captureCtx();
+    var rcd3 = await cli.main(["migrate", "down", "--db", dbPath, "--dir", migDir], cd3);
+    check("migrate down (empty): nothing to revert", rcd3 === 0 && /nothing to revert/.test(cd3.out()));
+
+    // --steps 0 → positive-integer validation → exit 2
+    var cbad = _captureCtx();
+    var rcbad = await cli.main(["migrate", "down", "--db", dbPath, "--dir", migDir, "--steps", "0"], cbad);
+    check("migrate down --steps 0: exit 2", rcbad === 2);
+    check("migrate down --steps 0: message", /--steps must be a positive integer/.test(cbad.err()));
+
+    // unopenable db (parent dir absent) → _openSqlite throws → exit 1
+    var copen = _captureCtx();
+    var rcopen = await cli.main(
+      ["migrate", "status", "--db", path.join(dir, "no-such-dir", "x.db"), "--dir", migDir], copen);
+    check("migrate status unopenable db: exit 1", rcopen === 1);
+    check("migrate status unopenable db: message", /cannot open db/.test(copen.err()));
+
+    // a migration whose up() throws → runner.up() rejects → the run catch
+    // returns exit 1 with the code:message shape.
+    var dir2 = _tmpDir("blamejs-cli-migrate-boom");
+    try {
+      var db2 = path.join(dir2, "mig.db");
+      var migDir2 = path.join(dir2, "migrations");
+      fs.mkdirSync(migDir2, { recursive: true });
+      fs.writeFileSync(path.join(migDir2, "0001-boom.js"),
+        "module.exports = { up: function () { throw new Error(\"boom-mig\"); } };");
+      var cboom = _captureCtx();
+      var rcboom = await cli.main(["migrate", "up", "--db", db2, "--dir", migDir2], cboom);
+      check("migrate up broken migration: exit 1", rcboom === 1);
+      check("migrate up broken migration: stderr", /blamejs migrate up:/.test(cboom.err()));
+    } finally { _rm(dir2); }
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// api-snapshot — bare usage / unknown subcommand / non-breaking compare (exit 0)
+// / compare where the saved-snapshot READ itself fails.
+// ---------------------------------------------------------------------------
+async function sectionApiSnapshotEdges() {
+  var dir = _tmpDir("blamejs-cli-apisnap2");
+  try {
+    // bare `api-snapshot` (no subcommand) → usage on stderr, exit 2
+    var cbare = _captureCtx();
+    var rcbare = await cli.main(["api-snapshot"], cbare);
+    check("api-snapshot bare: exit 2", rcbare === 2);
+    check("api-snapshot bare: usage on stderr", /Usage: blamejs api-snapshot/.test(cbare.err()));
+
+    // unknown subcommand → exit 2
+    var cunk = _captureCtx();
+    var rcunk = await cli.main(["api-snapshot", "frobnicate"], cunk);
+    check("api-snapshot unknown sub: exit 2", rcunk === 2);
+    check("api-snapshot unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    // capture then compare against the SAME module → no diff → exit 0 (the
+    // non-breaking return path, distinct from the breaking exit-1 case).
+    var mod = path.join(dir, "mod.js");
+    fs.writeFileSync(mod, "module.exports = { version: \"2.0.0\", greet: function greet() {} };");
+    var snap = path.join(dir, "snap.json");
+    var ccap = _captureCtx();
+    check("api-snapshot capture (same-mod): exit 0",
+      (await cli.main(["api-snapshot", "capture", "--file", snap, "--module", mod], ccap)) === 0);
+    var ccmp = _captureCtx();
+    var rccmp = await cli.main(["api-snapshot", "compare", "--file", snap, "--module", mod], ccmp);
+    check("api-snapshot compare no-change: exit 0", rccmp === 0);
+
+    // capture with NO --module → the default-module branch loads the
+    // framework root index.js (operator-omitted-flag default path).
+    var defSnap = path.join(dir, "default-snap.json");
+    var cdef = _captureCtx();
+    var rcdef = await cli.main(["api-snapshot", "capture", "--file", defSnap], cdef);
+    check("api-snapshot capture (default module): exit 0", rcdef === 0);
+    check("api-snapshot capture (default module): wrote file", fs.existsSync(defSnap));
+
+    // compare where the saved snapshot file cannot be READ → the read catch
+    // (distinct from the capture-current-surface catch) → exit 1.
+    var cread = _captureCtx();
+    var rcread = await cli.main(
+      ["api-snapshot", "compare", "--file", path.join(dir, "no-such-snap.json"), "--module", mod], cread);
+    check("api-snapshot compare unreadable snap: exit 1", rcread === 1);
+    check("api-snapshot compare unreadable snap: message", /api-snapshot compare:/.test(cread.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// audit verify-chain — arg-validation + defensive open/query branches.
+// ---------------------------------------------------------------------------
+async function sectionAuditVerifyChainEdges() {
+  var dir = _tmpDir("blamejs-cli-audit-vc");
+  try {
+    // missing --db → exit 2
+    var cnodb = _captureCtx();
+    var rcnodb = await cli.main(["audit", "verify-chain"], cnodb);
+    check("verify-chain no --db: exit 2", rcnodb === 2);
+    check("verify-chain no --db: message", /--db <path> is required/.test(cnodb.err()));
+
+    // --max-rows 0 → positive-integer validation → exit 2
+    var okDb = path.join(dir, "ok.db");
+    var h = new sqlite.DatabaseSync(okDb);
+    h.prepare("CREATE TABLE audit_log (_id INTEGER PRIMARY KEY, monotonicCounter INTEGER," +
+      " prevHash TEXT, rowHash TEXT, nonce BLOB)").run();
+    h.close();
+    var cmr = _captureCtx();
+    var rcmr = await cli.main(["audit", "verify-chain", "--db", okDb, "--max-rows", "0"], cmr);
+    check("verify-chain --max-rows 0: exit 2", rcmr === 2);
+    check("verify-chain --max-rows 0: message", /--max-rows must be a positive integer/.test(cmr.err()));
+
+    // unopenable db (parent dir absent) → _openSqlite throws → exit 1
+    var copen = _captureCtx();
+    var rcopen = await cli.main(
+      ["audit", "verify-chain", "--db", path.join(dir, "no-dir", "x.db")], copen);
+    check("verify-chain unopenable db: exit 1", rcopen === 1);
+    check("verify-chain unopenable db: message", /cannot open db at/.test(copen.err()));
+
+    // db opens but the audit table does not exist → the queryAllAsync prepare
+    // throws inside the try → the outer catch returns exit 1.
+    var emptyDb = path.join(dir, "empty.db");
+    var h2 = new sqlite.DatabaseSync(emptyDb);
+    h2.prepare("CREATE TABLE unrelated (id INTEGER)").run();
+    h2.close();
+    var cq = _captureCtx();
+    var rcq = await cli.main(
+      ["audit", "verify-chain", "--db", emptyDb, "--table", "audit_log"], cq);
+    check("verify-chain missing table: exit 1", rcq === 1);
+    check("verify-chain missing table: message", /blamejs audit verify-chain:/.test(cq.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// restore — bare / unknown-sub / list(empty) / inspect(bad-bundle catch) /
+// apply(no-passphrase) / rollback(default-no-points) / list-rollbacks(empty).
+// Everything below drives the real b.backup.diskStorage + b.restoreRollback
+// primitives; none needs a live network or a decryptable bundle.
+// ---------------------------------------------------------------------------
+async function sectionRestoreEdges() {
+  var dir = _tmpDir("blamejs-cli-restore2");
+  try {
+    // bare `restore` → usage, exit 2
+    var cbare = _captureCtx();
+    check("restore bare: exit 2", (await cli.main(["restore"], cbare)) === 2);
+    check("restore bare: usage", /Usage: blamejs restore/.test(cbare.err()));
+
+    // unknown subcommand → error + usage, exit 2
+    var cunk = _captureCtx();
+    check("restore unknown sub: exit 2", (await cli.main(["restore", "frobnicate"], cunk)) === 2);
+    check("restore unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    // inspect with NEITHER --bundle NOR --storage-root → the requireBundle
+    // "--bundle OR --storage-root ..." selector error, exit 2.
+    var cnosel = _captureCtx();
+    check("restore inspect (no selector): exit 2", (await cli.main(["restore", "inspect"], cnosel)) === 2);
+    check("restore inspect (no selector): message",
+      /--bundle <dir> OR --storage-root/.test(cnosel.err()));
+
+    // list against an empty storage root → "no bundles" success path
+    var store = path.join(dir, "store");
+    fs.mkdirSync(store, { recursive: true });
+    var cl = _captureCtx();
+    var rcl = await cli.main(["restore", "list", "--storage-root", store], cl);
+    check("restore list (empty store): exit 0", rcl === 0);
+    check("restore list (empty store): no bundles line", /no bundles in /.test(cl.out()));
+
+    // inspect a nonexistent bundle-id under a valid storage root → the
+    // restore.create().inspect() rejects → the catch returns exit 1.
+    var ci = _captureCtx();
+    var rci = await cli.main(
+      ["restore", "inspect", "--storage-root", store, "--bundle-id", "nope"], ci);
+    check("restore inspect (missing bundle): exit 1", rci === 1);
+    check("restore inspect (missing bundle): reports it", /blamejs restore inspect:/.test(ci.err()));
+
+    // apply with a valid selector + data-dir but NO passphrase → the
+    // passphrase gate returns exit 2 (distinct from the max-pulled-* gates).
+    var ca = _captureCtx();
+    var rca = await cli.main(
+      ["restore", "apply", "--data-dir", path.join(dir, "dd"),
+       "--bundle", path.join(dir, "bun")], ca);
+    check("restore apply (no passphrase): exit 2", rca === 2);
+    check("restore apply (no passphrase): message",
+      /--passphrase or BLAMEJS_BACKUP_PASSPHRASE is required/.test(ca.err()));
+
+    // rollback WITHOUT --rollback, against a data-dir with no rollback points →
+    // the default "most-recent" branch finds none → exit 2 with the explicit
+    // "pass --rollback" hint.
+    var dd = path.join(dir, "dd-empty");
+    fs.mkdirSync(dd, { recursive: true });
+    var crb = _captureCtx();
+    var rcrb = await cli.main(["restore", "rollback", "--data-dir", dd], crb);
+    check("restore rollback (no points): exit 2", rcrb === 2);
+    check("restore rollback (no points): hint", /no rollback points at .* pass --rollback/.test(crb.err()));
+
+    // list-rollbacks against a data-dir with no rollback points → empty path,
+    // exit 0.
+    var clr = _captureCtx();
+    var rclr = await cli.main(["restore", "list-rollbacks", "--data-dir", dd], clr);
+    check("restore list-rollbacks (empty): exit 0", rclr === 0);
+    check("restore list-rollbacks (empty): no points line", /no rollback points at /.test(clr.out()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// backup — bare usage + unknown subcommand (cheap dispatch edges; the
+// decrypt/inspect success paths need a real encrypted bundle → out of scope
+// for an in-process test).
+// ---------------------------------------------------------------------------
+async function sectionBackupEdges() {
+  var cbare = _captureCtx();
+  check("backup bare: exit 2", (await cli.main(["backup"], cbare)) === 2);
+  check("backup bare: usage", /Usage: blamejs backup/.test(cbare.err()));
+
+  var cunk = _captureCtx();
+  check("backup unknown sub: exit 2", (await cli.main(["backup", "frobnicate"], cunk)) === 2);
+  check("backup unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+}
+
+// ---------------------------------------------------------------------------
+// mtls — dispatch + flag validation + boot-failure + not-yet-initialised CA
+// branches. status(no-CA) / show-cert(no-CA) boot a plaintext app on a fresh
+// data dir; the wrapped-boot-failure path uses an empty ctx.env so bootApp
+// throws on the missing passphrase and the catch reports "boot failed".
+// ---------------------------------------------------------------------------
+async function sectionMtlsEdges() {
+  var dir = _tmpDir("blamejs-cli-mtls2");
+  try {
+    // bare → usage, exit 2
+    var cbare = _captureCtx();
+    check("mtls bare: exit 2", (await cli.main(["mtls"], cbare)) === 2);
+    check("mtls bare: usage", /Usage: blamejs mtls/.test(cbare.err()));
+
+    // unknown subcommand → exit 2
+    var cunk = _captureCtx();
+    check("mtls unknown sub: exit 2", (await cli.main(["mtls", "frobnicate"], cunk)) === 2);
+
+    // missing --data-dir → exit 2
+    var cnodir = _captureCtx();
+    check("mtls no data-dir: exit 2", (await cli.main(["mtls", "status"], cnodir)) === 2);
+    check("mtls no data-dir: message", /--data-dir <path> is required/.test(cnodir.err()));
+
+    // bad --vault-mode → exit 2
+    var cvm = _captureCtx();
+    check("mtls bad vault-mode: exit 2",
+      (await cli.main(["mtls", "status", "--data-dir", dir, "--vault-mode", "yolo"], cvm)) === 2);
+    check("mtls bad vault-mode: message", /--vault-mode must be/.test(cvm.err()));
+
+    // bad --sealed-mode → exit 2
+    var csm = _captureCtx();
+    check("mtls bad sealed-mode: exit 2",
+      (await cli.main(["mtls", "status", "--data-dir", dir, "--vault-mode", "plaintext",
+        "--sealed-mode", "bogus"], csm)) === 2);
+    check("mtls bad sealed-mode: message", /--sealed-mode must be/.test(csm.err()));
+
+    // default vault-mode is wrapped; empty ctx.env → bootApp throws → catch
+    // reports "boot failed" (exit 1).
+    var cboot = _captureCtx();
+    var rcboot = await cli.main(["mtls", "status", "--data-dir", dir], cboot);
+    check("mtls wrapped-boot-fail: exit 1", rcboot === 1);
+    check("mtls wrapped-boot-fail: message", /boot failed/.test(cboot.err()));
+
+    // status on a fresh (never-initialised) data dir → the CA-absent branch.
+    var fresh = _tmpDir("blamejs-cli-mtls2-fresh");
+    try {
+      var cst = _captureCtx();
+      var rcst = await cli.main(["mtls", "status", "--data-dir", fresh, "--vault-mode", "plaintext"], cst);
+      check("mtls status (no CA): exit 0", rcst === 0);
+      check("mtls status (no CA): reports no", /CA exists:\s+no/.test(cst.out()));
+      check("mtls status (no CA): hints init", /run 'blamejs mtls init'/.test(cst.out()));
+
+      // show-cert with no CA on disk → error, exit 1.
+      var csc = _captureCtx();
+      var rcsc = await cli.main(["mtls", "show-cert", "--data-dir", fresh, "--vault-mode", "plaintext"], csc);
+      check("mtls show-cert (no CA): exit 1", rcsc === 1);
+      check("mtls show-cert (no CA): message", /no CA on disk/.test(csc.err()));
+    } finally { _rm(fresh); }
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// security — dispatch + flag validation + boot-failure.
+// ---------------------------------------------------------------------------
+async function sectionSecurityEdges() {
+  var dir = _tmpDir("blamejs-cli-sec2");
+  try {
+    var cunk = _captureCtx();
+    check("security unknown sub: exit 2", (await cli.main(["security", "frobnicate"], cunk)) === 2);
+    check("security unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    var cnodir = _captureCtx();
+    check("security no data-dir: exit 2", (await cli.main(["security", "assert"], cnodir)) === 2);
+    check("security no data-dir: message", /--data-dir <path> is required/.test(cnodir.err()));
+
+    var cvm = _captureCtx();
+    check("security bad vault-mode: exit 2",
+      (await cli.main(["security", "assert", "--data-dir", dir, "--vault-mode", "yolo"], cvm)) === 2);
+
+    // wrapped (default) + empty env → boot fails → exit 1
+    var cboot = _captureCtx();
+    var rcboot = await cli.main(["security", "assert", "--data-dir", dir], cboot);
+    check("security wrapped-boot-fail: exit 1", rcboot === 1);
+    check("security wrapped-boot-fail: message", /boot failed/.test(cboot.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// config-drift — dispatch + flag validation + boot-failure + the no-sidecar
+// read branch (verify → exit 1, inspect → exit 0) on a freshly-booted app.
+// ---------------------------------------------------------------------------
+async function sectionConfigDrift() {
+  var dir = _tmpDir("blamejs-cli-drift");
+  try {
+    var cunk = _captureCtx();
+    check("config-drift unknown sub: exit 2", (await cli.main(["config-drift", "frobnicate"], cunk)) === 2);
+    check("config-drift unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    var cnodir = _captureCtx();
+    check("config-drift no data-dir: exit 2", (await cli.main(["config-drift", "verify"], cnodir)) === 2);
+    check("config-drift no data-dir: message", /--data-dir <path> is required/.test(cnodir.err()));
+
+    // wrapped (default) + empty env → boot fails → exit 1
+    var cboot = _captureCtx();
+    var rcboot = await cli.main(["config-drift", "verify", "--data-dir", dir], cboot);
+    check("config-drift wrapped-boot-fail: exit 1", rcboot === 1);
+    check("config-drift wrapped-boot-fail: message", /boot failed/.test(cboot.err()));
+
+    // Fresh plaintext boot with no captured sidecar → verify returns exit 1,
+    // inspect returns exit 0, both printing "no sidecar present".
+    var fresh = _tmpDir("blamejs-cli-drift-fresh");
+    try {
+      var cv = _captureCtx();
+      var rcv = await cli.main(["config-drift", "verify", "--data-dir", fresh, "--vault-mode", "plaintext"], cv);
+      check("config-drift verify (no sidecar): exit 1", rcv === 1);
+      check("config-drift verify (no sidecar): message", /no sidecar present/.test(cv.out()));
+
+      // inspect with an explicit --baseline exercises the baseline-opt branch
+      // (still no sidecar under that baseline → exit 0).
+      var cin = _captureCtx();
+      var rcin = await cli.main(
+        ["config-drift", "inspect", "--data-dir", fresh, "--vault-mode", "plaintext", "--baseline", "custom"], cin);
+      check("config-drift inspect (no sidecar): exit 0", rcin === 0);
+      check("config-drift inspect (no sidecar): message", /no sidecar present/.test(cin.out()));
+    } finally { _rm(fresh); }
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// vault — the whole _runVault body: dispatch, status(fresh), seal(no-pass /
+// success / keep-plaintext / already-sealed catch), unseal(no-pass / success),
+// rotate(missing-new-pass / success). Drives b.vaultPassphraseOps through the
+// CLI. A plaintext vault.key is created up-front via b.vault.init({ mode:
+// "plaintext" }); the vault singleton is reset afterward so later booted
+// sections re-init cleanly.
+// ---------------------------------------------------------------------------
+async function sectionVault() {
+  var dir = _tmpDir("blamejs-cli-vault");
+  var savedPass = process.env.BLAMEJS_VAULT_PASSPHRASE;
+  var PP = "vault-cli-old-passphrase-123456";
+  var NP = "vault-cli-new-passphrase-654321";
+  try {
+    // bare → usage, exit 2
+    var cbare = _captureCtx();
+    check("vault bare: exit 2", (await cli.main(["vault"], cbare)) === 2);
+    check("vault bare: usage", /Usage: blamejs vault/.test(cbare.err()));
+
+    // unknown subcommand → exit 2
+    var cunk = _captureCtx();
+    check("vault unknown sub: exit 2", (await cli.main(["vault", "frobnicate"], cunk)) === 2);
+    check("vault unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    // status on a dir with neither key → both "absent", exit 0
+    var cst = _captureCtx();
+    var rcst = await cli.main(["vault", "status", "--data-dir", dir], cst);
+    check("vault status (fresh): exit 0", rcst === 0);
+    check("vault status (fresh): plaintext absent", /vault\.key \(plaintext\):\s+absent/.test(cst.out()));
+
+    // seal with no passphrase → exit 2 (before any key exists)
+    var cnp = _captureCtx();
+    var rcnp = await cli.main(["vault", "seal", "--data-dir", dir], cnp);
+    check("vault seal (no pass): exit 2", rcnp === 2);
+    check("vault seal (no pass): message", /--passphrase or BLAMEJS_VAULT_PASSPHRASE is required/.test(cnp.err()));
+
+    // create a plaintext vault.key to seal (init in plaintext mode writes it)
+    delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    b.vault._resetForTest();
+    await b.vault.init({ dataDir: dir, mode: "plaintext" });
+    b.vault._resetForTest();
+
+    // seal → wraps + deletes plaintext, exit 0
+    var cse = _captureCtx();
+    var rcse = await cli.main(["vault", "seal", "--data-dir", dir, "--passphrase", PP], cse);
+    check("vault seal: exit 0", rcse === 0);
+    check("vault seal: reports sealed path", /sealed: /.test(cse.out()));
+    check("vault seal: removed plaintext", /removed plaintext vault\.key/.test(cse.out()));
+
+    // status now reports the sealed file present
+    var cst2 = _captureCtx();
+    await cli.main(["vault", "status", "--data-dir", dir], cst2);
+    check("vault status (sealed): sealed present", /vault\.key\.sealed \(wrapped\): present/.test(cst2.out()));
+
+    // seal AGAIN (plaintext already deleted) → preflight fails → catch → exit 1
+    var cse2 = _captureCtx();
+    var rcse2 = await cli.main(["vault", "seal", "--data-dir", dir, "--passphrase", PP], cse2);
+    check("vault seal (already sealed): exit 1", rcse2 === 1);
+    check("vault seal (already sealed): message", /nothing to seal/.test(cse2.err()));
+
+    // unseal with no passphrase → exit 2
+    var cunp = _captureCtx();
+    var rcunp = await cli.main(["vault", "unseal", "--data-dir", dir], cunp);
+    check("vault unseal (no pass): exit 2", rcunp === 2);
+
+    // unseal with the WRONG passphrase → unwrap rejects → catch → exit 1
+    var cuw = _captureCtx();
+    var rcuw = await cli.main(["vault", "unseal", "--data-dir", dir, "--passphrase", "totally-wrong-passphrase"], cuw);
+    check("vault unseal (wrong pass): exit 1", rcuw === 1);
+    check("vault unseal (wrong pass): message", /blamejs vault unseal:/.test(cuw.err()));
+
+    // unseal → recreates plaintext vault.key, exit 0
+    var cun = _captureCtx();
+    var rcun = await cli.main(["vault", "unseal", "--data-dir", dir, "--passphrase", PP], cun);
+    check("vault unseal: exit 0", rcun === 0);
+    check("vault unseal: reports plaintext path", /unsealed: /.test(cun.out()));
+
+    // re-seal keeping the plaintext (the --keep-plaintext branch), giving us a
+    // sealed file for rotate.
+    var cke = _captureCtx();
+    var rcke = await cli.main(
+      ["vault", "seal", "--data-dir", dir, "--passphrase", PP, "--keep-plaintext"], cke);
+    check("vault seal --keep-plaintext: exit 0", rcke === 0);
+    check("vault seal --keep-plaintext: kept plaintext", /kept plaintext vault\.key/.test(cke.out()));
+
+    // rotate missing --new-passphrase → exit 2
+    var crn = _captureCtx();
+    var rcrn = await cli.main(["vault", "rotate", "--data-dir", dir, "--passphrase", PP], crn);
+    check("vault rotate (no new-pass): exit 2", rcrn === 2);
+    check("vault rotate (no new-pass): message", /both --passphrase \(old\) and --new-passphrase/.test(crn.err()));
+
+    // rotate old→new → exit 0
+    var cro = _captureCtx();
+    var rcro = await cli.main(
+      ["vault", "rotate", "--data-dir", dir, "--passphrase", PP, "--new-passphrase", NP], cro);
+    check("vault rotate: exit 0", rcro === 0);
+    check("vault rotate: reports rotated path", /rotated: /.test(cro.out()));
+
+    // rotate with the WRONG old passphrase (sealed is now under NP) → the
+    // unwrap in rotate rejects → catch → exit 1.
+    var crw = _captureCtx();
+    var rcrw = await cli.main(
+      ["vault", "rotate", "--data-dir", dir, "--passphrase", PP, "--new-passphrase", "another-new-pass-999"], crw);
+    check("vault rotate (wrong old pass): exit 1", rcrw === 1);
+    check("vault rotate (wrong old pass): message", /blamejs vault rotate:/.test(crw.err()));
+  } finally {
+    b.vault._resetForTest();
+    if (savedPass === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    else process.env.BLAMEJS_VAULT_PASSPHRASE = savedPass;
+    _rm(dir);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// password — the whole _runPassword body. No framework boot: it runs
+// b.auth.password.policy(...).check(...) directly. --breach-check is NEVER
+// exercised (it touches the network); every path here is offline.
+// ---------------------------------------------------------------------------
+async function sectionPassword() {
+  // unknown subcommand → exit 2
+  var cunk = _captureCtx();
+  check("password unknown sub: exit 2", (await cli.main(["password", "frobnicate"], cunk)) === 2);
+  check("password unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+  // check with neither --plaintext nor --stdin → exit 2
+  var cnop = _captureCtx();
+  check("password check (no plaintext): exit 2", (await cli.main(["password", "check"], cnop)) === 2);
+  check("password check (no plaintext): message", /--plaintext <s> or --stdin is required/.test(cnop.err()));
+
+  // a strong passphrase → policy passes → "ok", exit 0
+  var cok = _captureCtx();
+  var rcok = await cli.main(
+    ["password", "check", "--plaintext", "correct-horse-battery-staple-9273-Zx!"], cok);
+  check("password check (strong): exit 0", rcok === 0);
+  check("password check (strong): prints ok", /^ok/m.test(cok.out()));
+
+  // a too-short password → policy rejects → REJECTED line, exit 1
+  var crej = _captureCtx();
+  var rcrej = await cli.main(["password", "check", "--plaintext", "x"], crej);
+  check("password check (weak): exit 1", rcrej === 1);
+  check("password check (weak): REJECTED line", /REJECTED: policy\/too-short/.test(crej.out()));
+
+  // --json arm → machine-readable verdict; exit code still reflects ok
+  var cjs = _captureCtx();
+  var rcjs = await cli.main(
+    ["password", "check", "--plaintext", "correct-horse-battery-staple-9273-Zx!", "--json"], cjs);
+  check("password check --json (strong): exit 0", rcjs === 0);
+  check("password check --json (strong): JSON body", /"ok":true/.test(cjs.out()));
+
+  // --min-length + --max-length overrides + --email / --username context
+  // flags all exercised.
+  var cml = _captureCtx();
+  var rcml = await cli.main(
+    ["password", "check", "--plaintext", "abcd", "--min-length", "4", "--max-length", "128",
+     "--email", "a@b.com", "--username", "alice"], cml);
+  check("password check --min/max-length: exits 0/1 (ran policy)", rcml === 0 || rcml === 1);
+
+  // an unknown --profile → policy() throws → "bad policy" exit 2
+  var cbp = _captureCtx();
+  var rcbp = await cli.main(
+    ["password", "check", "--plaintext", "whatever-long-enough-string", "--profile", "no-such-profile"], cbp);
+  check("password check bad profile: exit 2", rcbp === 2);
+  check("password check bad profile: message", /bad policy:/.test(cbp.err()));
+}
+
+// ---------------------------------------------------------------------------
+// file-type — unknown subcommand, allowlist match (non-json), allowlist
+// rejection, and the plain (non-allowlist) detect success arms (text + json).
+// ---------------------------------------------------------------------------
+async function sectionFileTypeEdges() {
+  var dir = _tmpDir("blamejs-cli-ft2");
+  try {
+    var pngFile = path.join(dir, "img.png");
+    fs.writeFileSync(pngFile, Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.alloc(20),
+    ]));
+
+    // unknown subcommand → exit 2
+    var cunk = _captureCtx();
+    check("file-type unknown sub: exit 2", (await cli.main(["file-type", "frobnicate"], cunk)) === 2);
+    check("file-type unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    // allowlist match, NON-json → the human-readable mime/extension/category arm
+    var cam = _captureCtx();
+    var rcam = await cli.main(
+      ["file-type", "detect", pngFile, "--allowlist", "image/png,application/pdf"], cam);
+    check("file-type allowlist match (text): exit 0", rcam === 0);
+    check("file-type allowlist match (text): mime line", /mime:\s+image\/png/.test(cam.out()));
+
+    // allowlist that EXCLUDES the detected type → assertOneOf throws → exit 1
+    var car = _captureCtx();
+    var rcar = await cli.main(
+      ["file-type", "detect", pngFile, "--allowlist", "application/pdf"], car);
+    check("file-type allowlist reject: exit 1", rcar === 1);
+    check("file-type allowlist reject: error message", /blamejs file-type detect:/.test(car.err()));
+
+    // plain detect (no allowlist), NON-json → the mime/extension text arm
+    var cpd = _captureCtx();
+    var rcpd = await cli.main(["file-type", "detect", pngFile], cpd);
+    check("file-type plain detect (text): exit 0", rcpd === 0);
+    check("file-type plain detect (text): mime line", /mime:\s+image\/png/.test(cpd.out()));
+
+    // plain detect (no allowlist), json → the json arm
+    var cpj = _captureCtx();
+    var rcpj = await cli.main(["file-type", "detect", pngFile, "--json"], cpj);
+    check("file-type plain detect (json): exit 0", rcpj === 0);
+    check("file-type plain detect (json): JSON body", /"mime":"image\/png"/.test(cpj.out()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// retention — unknown-sub + the arg-validation branches that fire BEFORE the
+// framework boot (bad ttl / bad action / soft-delete-without-field) + the
+// wrapped-boot-failure catch.
+// ---------------------------------------------------------------------------
+async function sectionRetentionEdges() {
+  var dir = _tmpDir("blamejs-cli-ret2");
+  try {
+    var cunk = _captureCtx();
+    check("retention unknown sub: exit 2", (await cli.main(["retention", "frobnicate"], cunk)) === 2);
+    check("retention unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    // --ttl-ms 0 → non-positive → exit 2
+    var cttl = _captureCtx();
+    check("retention bad ttl: exit 2",
+      (await cli.main(["retention", "preview", "--data-dir", dir, "--table", "t",
+        "--age-field", "ts", "--ttl-ms", "0"], cttl)) === 2);
+    check("retention bad ttl: message", /--ttl-ms must be a positive finite number/.test(cttl.err()));
+
+    // unknown --action → exit 2
+    var cact = _captureCtx();
+    check("retention bad action: exit 2",
+      (await cli.main(["retention", "preview", "--data-dir", dir, "--table", "t",
+        "--age-field", "ts", "--ttl-ms", "1", "--action", "bogus"], cact)) === 2);
+    check("retention bad action: message", /--action must be erase \/ delete \/ soft-delete/.test(cact.err()));
+
+    // action=soft-delete without --soft-delete-field → exit 2
+    var csd = _captureCtx();
+    check("retention soft-delete no field: exit 2",
+      (await cli.main(["retention", "preview", "--data-dir", dir, "--table", "t",
+        "--age-field", "ts", "--ttl-ms", "1", "--action", "soft-delete"], csd)) === 2);
+    check("retention soft-delete no field: message",
+      /--soft-delete-field <col> required when --action=soft-delete/.test(csd.err()));
+
+    // wrapped (default) vault-mode + empty env → boot fails → exit 1
+    var cboot = _captureCtx();
+    var rcboot = await cli.main(
+      ["retention", "preview", "--data-dir", dir, "--table", "t",
+       "--age-field", "ts", "--ttl-ms", "1"], cboot);
+    check("retention wrapped-boot-fail: exit 1", rcboot === 1);
+    check("retention wrapped-boot-fail: message", /boot failed/.test(cboot.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// erase — help, missing --confirm, wrapped-boot-failure, and the post-boot
+// bad-identifier rejection (the safeTable-strip guard).
+// ---------------------------------------------------------------------------
+async function sectionEraseEdges() {
+  var dir = _tmpDir("blamejs-cli-erase2");
+  try {
+    // erase --help → usage, exit 0 (the flags.help branch of the handler)
+    var chelp = _captureCtx();
+    var rchelp = await cli.main(["erase", "--help"], chelp);
+    check("erase --help: exit 0", rchelp === 0);
+    check("erase --help: usage", /Usage: blamejs erase/.test(chelp.out()));
+
+    // missing --confirm (table + row present) → exit 2
+    var cnc = _captureCtx();
+    var rcnc = await cli.main(["erase", "--table", "users", "--row-id", "r-1"], cnc);
+    check("erase no confirm: exit 2", rcnc === 2);
+    check("erase no confirm: message", /--confirm is required/.test(cnc.err()));
+
+    // default wrapped vault-mode + empty env → boot fails → exit 1
+    var cboot = _captureCtx();
+    var rcboot = await cli.main(
+      ["erase", "--table", "users", "--row-id", "r-1", "--confirm", "--data-dir", dir], cboot);
+    check("erase wrapped-boot-fail: exit 1", rcboot === 1);
+    check("erase wrapped-boot-fail: message", /boot failed/.test(cboot.err()));
+
+    // plaintext boot succeeds, then a table name with non-identifier chars is
+    // rejected by the safeTable-strip guard → exit 2.
+    var fresh = _tmpDir("blamejs-cli-erase2-id");
+    try {
+      var cid = _captureCtx();
+      var rcid = await cli.main(
+        ["erase", "--table", "bad-name!", "--row-id", "r-1", "--confirm",
+         "--data-dir", fresh, "--vault-mode", "plaintext"], cid);
+      check("erase bad-identifier table: exit 2", rcid === 2);
+      check("erase bad-identifier table: message", /--table must be a valid identifier/.test(cid.err()));
+    } finally { _rm(fresh); }
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// api-key — bare / unknown-sub / missing-data-dir dispatch + the wrapped-boot
+// failure catch.
+// ---------------------------------------------------------------------------
+async function sectionApiKeyEdges() {
+  var dir = _tmpDir("blamejs-cli-apikey2");
+  try {
+    var cbare = _captureCtx();
+    check("api-key bare: exit 2", (await cli.main(["api-key"], cbare)) === 2);
+    check("api-key bare: usage", /Usage: blamejs api-key/.test(cbare.err()));
+
+    var cunk = _captureCtx();
+    check("api-key unknown sub: exit 2", (await cli.main(["api-key", "frobnicate"], cunk)) === 2);
+    check("api-key unknown sub: names sub", /unknown subcommand 'frobnicate'/.test(cunk.err()));
+
+    var cnodir = _captureCtx();
+    check("api-key no data-dir: exit 2", (await cli.main(["api-key", "issue"], cnodir)) === 2);
+    check("api-key no data-dir: message", /--data-dir <path> is required/.test(cnodir.err()));
+
+    // data-dir + namespace present, default wrapped vault-mode, empty env →
+    // bootApp throws → the catch reports "boot failed" (exit 1).
+    var cboot = _captureCtx();
+    var rcboot = await cli.main(
+      ["api-key", "issue", "--data-dir", dir, "--namespace", "api",
+       "--owner-id", "x", "--scopes", "a:read"], cboot);
+    check("api-key wrapped-boot-fail: exit 1", rcboot === 1);
+    check("api-key wrapped-boot-fail: message", /boot failed/.test(cboot.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// booted raw-table paths: retention run (json delete + non-json soft-delete
+// with legal-hold) and erase (row-not-found + no-sealed-columns). The CLI
+// boots its OWN app per invocation, so the table is created out-of-band with a
+// raw node:sqlite handle after a first boot materialises the db file.
+// ---------------------------------------------------------------------------
+async function sectionBootedRawTable() {
+  var dir = _tmpDir("blamejs-cli-rawtbl");
+  try {
+    // First plaintext boot (against a missing table) materialises blamejs.db.
+    await cli.main(
+      ["retention", "preview", "--data-dir", dir, "--vault-mode", "plaintext",
+       "--table", "seed_missing", "--age-field", "ts", "--ttl-ms", "1", "--action", "delete"],
+      _captureCtx());
+    var dbFile = path.join(dir, "blamejs.db");
+    check("rawtbl: db file materialised", fs.existsSync(dbFile));
+
+    // Create a plain table with one old row + a soft-delete table with a
+    // legal-hold row, via a raw handle while no app holds the db.
+    var h = new sqlite.DatabaseSync(dbFile);
+    h.exec("CREATE TABLE ret_del (_id TEXT PRIMARY KEY, ts INTEGER)");
+    h.prepare("INSERT INTO ret_del (_id, ts) VALUES (?, ?)").run("d-old", 1);
+    h.exec("CREATE TABLE ret_soft (_id TEXT PRIMARY KEY, ts INTEGER, deletedAt INTEGER, hold INTEGER)");
+    var ins = h.prepare("INSERT INTO ret_soft (_id, ts, deletedAt, hold) VALUES (?, ?, ?, ?)");
+    ins.run("s-1", 1, null, null);
+    ins.run("s-2", 1, null, 1);
+    h.exec("CREATE TABLE er_plain (_id TEXT PRIMARY KEY, ts INTEGER)");
+    h.prepare("INSERT INTO er_plain (_id, ts) VALUES (?, ?)").run("er-1", 5);
+    h.close();
+
+    // retention run --json against the delete table → success, json summary arm
+    var cj = _captureCtx();
+    var rcj = await cli.main(
+      ["retention", "run", "--data-dir", dir, "--vault-mode", "plaintext",
+       "--table", "ret_del", "--age-field", "ts", "--ttl-ms", "1", "--action", "delete", "--json"], cj);
+    check("retention run (json delete): exit 0", rcj === 0);
+    check("retention run (json delete): json summary", /"processed":\s*1/.test(cj.out()));
+
+    // retention run non-json soft-delete + legal-hold → the text summary arm,
+    // the soft-delete-field / legal-hold-field ruleSpec wiring, and a honored
+    // legal hold.
+    var cs = _captureCtx();
+    var rcs = await cli.main(
+      ["retention", "run", "--data-dir", dir, "--vault-mode", "plaintext",
+       "--table", "ret_soft", "--age-field", "ts", "--ttl-ms", "1", "--action", "soft-delete",
+       "--soft-delete-field", "deletedAt", "--legal-hold-field", "hold"], cs);
+    check("retention run (soft-delete): exit 0", rcs === 0);
+    check("retention run (soft-delete): text summary", /processed:1/.test(cs.out()));
+    check("retention run (soft-delete): honored legal hold", /legalHoldsHonored: 1/.test(cs.out()));
+
+    // erase against an EXISTING table but a missing row id → the "no row" branch
+    var cnr = _captureCtx();
+    var rcnr = await cli.main(
+      ["erase", "--data-dir", dir, "--vault-mode", "plaintext",
+       "--table", "er_plain", "--row-id", "does-not-exist", "--confirm"], cnr);
+    check("erase (row not found): exit 1", rcnr === 1);
+    check("erase (row not found): message", /no row with _id=/.test(cnr.err()));
+
+    // erase a REAL row in a table with no sealed columns / derived hashes → the
+    // "nothing sealed to erase" guard.
+    var cns = _captureCtx();
+    var rcns = await cli.main(
+      ["erase", "--data-dir", dir, "--vault-mode", "plaintext",
+       "--table", "er_plain", "--row-id", "er-1", "--confirm"], cns);
+    check("erase (no sealed columns): exit 1", rcns === 1);
+    check("erase (no sealed columns): message", /has no sealed columns or derived hashes/.test(cns.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// top-level dispatch — an unknown command prints the "unknown command" error
+// plus the top usage, exit 2.
+// ---------------------------------------------------------------------------
+async function sectionTopUnknownCommand() {
+  var c = _captureCtx();
+  var rc = await cli.main(["totally-unknown-command"], c);
+  check("unknown top-level command: exit 2", rc === 2);
+  check("unknown top-level command: names it", /unknown command 'totally-unknown-command'/.test(c.err()));
+  check("unknown top-level command: prints top usage", /blamejs <command>/.test(c.out()));
 }
 
 async function run() {
@@ -843,6 +1693,25 @@ async function run() {
   await sectionBootedRetention();
   await sectionBootedMtls();
   await sectionBootedSecurity();
+
+  // Additional branch coverage for the remaining error / defensive / option-
+  // default paths across every subcommand.
+  await sectionMigrate();
+  await sectionApiSnapshotEdges();
+  await sectionAuditVerifyChainEdges();
+  await sectionRestoreEdges();
+  await sectionBackupEdges();
+  await sectionMtlsEdges();
+  await sectionSecurityEdges();
+  await sectionConfigDrift();
+  await sectionVault();
+  await sectionPassword();
+  await sectionFileTypeEdges();
+  await sectionRetentionEdges();
+  await sectionEraseEdges();
+  await sectionApiKeyEdges();
+  await sectionBootedRawTable();
+  await sectionTopUnknownCommand();
 }
 
 module.exports = { run: run };

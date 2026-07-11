@@ -18,6 +18,7 @@
 
 var net = require("node:net");
 var tls = require("node:tls");
+var nodeHttps = require("node:https");
 var nodeCrypto = require("node:crypto");
 
 var helpers = require("../helpers");
@@ -349,6 +350,179 @@ function _probeClosedPort() {
       s.close(function () { resolve(p); });
     });
   });
+}
+
+// Track a server's live raw TCP sockets so teardown can force-close them.
+// A plain srv.close() only stops accepting — stalled fixtures (hang mode)
+// hold sockets open, which would otherwise outlive run() and trip the TCP
+// handle-drain guard. `.close()` destroys every live connection first.
+function _trackAndClosable(srv) {
+  var conns = new Set();
+  srv.on("connection", function (sock) {
+    conns.add(sock);
+    sock.on("close", function () { conns.delete(sock); });
+  });
+  return function close() {
+    conns.forEach(function (sock) {
+      try { sock.destroy(); } catch (_e) { /* best-effort */ }
+    });
+    try { srv.close(); } catch (_e) { /* best-effort */ }
+  };
+}
+
+// A loopback TCP responder that reads the framed query then cleanly
+// half-closes (FIN) WITHOUT sending a reply — models an upstream that
+// hangs up mid-exchange, driving the system-transport close-before-reply
+// branch (distinct from an abrupt RST, which surfaces as 'error').
+function _startTcpFinNoReply() {
+  return new Promise(function (resolve) {
+    var srv = net.createServer(function (sock) {
+      sock.on("error", function () { /* fixture best-effort */ });
+      sock.on("data", function () { sock.end(); });   // FIN after the query, no reply
+    });
+    srv.unref();
+    var close = _trackAndClosable(srv);
+    srv.listen(0, "127.0.0.1", function () {
+      resolve({ srv: srv, port: srv.address().port, close: close });
+    });
+  });
+}
+
+// A loopback TCP responder that accepts the connection, consumes the
+// framed query, and NEVER replies — models an upstream that stalls after
+// accept so the wall-clock deadline (sock.setTimeout) has to tear it down.
+function _startTcpHang() {
+  return new Promise(function (resolve) {
+    var srv = net.createServer(function (sock) {
+      sock.on("data", function () { /* consume, never reply */ });
+      sock.on("error", function () { /* fixture best-effort */ });
+    });
+    srv.unref();
+    var close = _trackAndClosable(srv);
+    srv.listen(0, "127.0.0.1", function () {
+      resolve({ srv: srv, port: srv.address().port, close: close });
+    });
+  });
+}
+
+// ---- Real-handshake DoT / DoH fixtures --------------------------------
+// The framework's DoT/DoH clients pin minVersion TLSv1.3 + the hybrid-PQC
+// group list + a caller-supplied `ca`, and validate the server identity.
+// We mint a server leaf through the framework's own mtls engine (SAN
+// IP:127.0.0.1 + DNS:localhost) so a genuine TLS 1.3 handshake completes
+// against a loopback listener with NO rejectUnauthorized:false anywhere.
+// The cert keygen is the expensive part, so mint once and cache.
+var _secureCertCache = null;
+async function _mintSecureCert() {
+  if (_secureCertCache) return _secureCertCache;
+  var ca = await b.mtlsEngine.generateCa({ generation: 1 });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn:         "localhost",
+    caCertPem:  ca.caCertPem,
+    caKeyPem:   ca.caKeyPem,
+    usage:      "server",
+    sans:       ["IP:127.0.0.1", "DNS:localhost"],
+  });
+  _secureCertCache = { caPem: ca.caCertPem, keyPem: leaf.key, certPem: leaf.cert };
+  return _secureCertCache;
+}
+
+// DoT (DNS-over-TLS) loopback responder. Speaks the 2-byte-length-prefixed
+// TCP DNS framing over TLS 1.3. opts.hang completes the handshake then
+// stalls; otherwise it replies once with opts.reply and half-closes.
+function _startDotServer(cert, opts) {
+  opts = opts || {};
+  return new Promise(function (resolve) {
+    var srv = tls.createServer({
+      key:        cert.keyPem,
+      cert:       cert.certPem,
+      minVersion: "TLSv1.3",
+    }, function (sock) {
+      sock.on("error", function () { /* fixture best-effort */ });
+      if (opts.hang) return;
+      var got = [];
+      var expected = -1;
+      sock.on("data", function (chunk) {
+        got.push(chunk);
+        var all = Buffer.concat(got);
+        if (expected === -1 && all.length >= 2) expected = all.readUInt16BE(0);
+        if (expected >= 0 && all.length >= expected + 2) {
+          var rlen = Buffer.alloc(2);
+          rlen.writeUInt16BE(opts.reply.length, 0);
+          sock.write(rlen);
+          sock.write(opts.reply);
+          sock.end();
+        }
+      });
+    });
+    srv.on("error", function () { /* fixture best-effort */ });
+    srv.unref();
+    var close = _trackAndClosable(srv);
+    srv.listen(0, "127.0.0.1", function () {
+      resolve({ srv: srv, port: srv.address().port, close: close });
+    });
+  });
+}
+
+// DoH (DNS-over-HTTPS) loopback responder. Drains the request (GET query
+// string or POST body) then answers with opts.reply under
+// application/dns-message + opts.status (default 200). opts.hang receives
+// the request and never responds so the per-request deadline fires.
+function _startDohServer(cert, opts) {
+  opts = opts || {};
+  return new Promise(function (resolve) {
+    var srv = nodeHttps.createServer({
+      key:        cert.keyPem,
+      cert:       cert.certPem,
+      minVersion: "TLSv1.3",
+    }, function (req, res) {
+      req.on("error", function () { /* fixture best-effort */ });
+      req.on("data", function () { /* drain POST body */ });
+      req.on("end", function () {
+        if (opts.hang) return;
+        res.writeHead(opts.status || 200, { "content-type": "application/dns-message" });
+        res.end(opts.reply || Buffer.alloc(0));
+      });
+    });
+    srv.on("error", function () { /* fixture best-effort */ });
+    srv.unref();
+    var close = _trackAndClosable(srv);
+    srv.listen(0, "127.0.0.1", function () {
+      resolve({ srv: srv, port: srv.address().port, close: close });
+    });
+  });
+}
+
+// A record rdata (4 octets) + AAAA rdata (16 octets) builders for the
+// transport round-trip fixtures.
+function _aRdata(a, b2, c, d) { return Buffer.from([a, b2, c, d]); }
+function _aaaaRdata() {
+  var v6 = Buffer.alloc(16);
+  v6[0] = 0x20; v6[1] = 0x01; v6[2] = 0x0d; v6[3] = 0xb8; v6[15] = 0x01;   // 2001:db8::1
+  return v6;
+}
+
+// A reply whose single answer's owner name is a compression pointer
+// (0xc0 0x0c → offset 12, the question name) instead of a fully-written
+// name — the wire shape that exercises the name-compression branch of
+// _skipDnsName that a literal owner name never reaches.
+function _buildReplyCompressedName(qname, qtype, ansType, rdata, flags) {
+  var qn = _qname(qname);
+  var qtail = Buffer.alloc(4);
+  qtail.writeUInt16BE(qtype, 0);
+  qtail.writeUInt16BE(1, 2);
+  var hdr = Buffer.alloc(12);
+  hdr.writeUInt16BE(0xabcd, 0);
+  hdr.writeUInt16BE(flags === undefined ? 0x8180 : flags, 2);
+  hdr.writeUInt16BE(1, 4);
+  hdr.writeUInt16BE(1, 6);
+  var ptr = Buffer.from([0xc0, 0x0c]);                                     // pointer → question name at offset 12
+  var ah = Buffer.alloc(10);
+  ah.writeUInt16BE(ansType, 0);
+  ah.writeUInt16BE(1, 2);
+  ah.writeUInt32BE(60, 4);
+  ah.writeUInt16BE(rdata.length, 8);
+  return Buffer.concat([hdr, qn, qtail, ptr, ah, rdata]);
 }
 
 function _reset() {
@@ -1123,6 +1297,625 @@ function testDesignatedResolversFallback() {
   _reset();
 }
 
+// ======================================================================
+// DoT success paths — real TLS 1.3 handshake against a loopback responder
+// (A / AAAA decode via _decodeDnsAnswer, _dotLookup, _dotRawQuery, the
+// lookup + _resolveProtocol DoT branches)
+// ======================================================================
+async function testDotSecureTransport() {
+  var cert = await _mintSecureCert();
+
+  // ---- A-record lookup over DoT ----
+  _reset();
+  var aReply = _buildReply("secure.example.com", 1, [
+    { name: "secure.example.com", type: 1, rdata: _aRdata(203, 0, 113, 5) },
+  ]);
+  var dotA = await _startDotServer(cert, { reply: aReply });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: dotA.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var a = await dnsModule.lookup("secure.example.com", { family: 4 });
+    check("lookup(DoT): A record resolves via real TLS 1.3 handshake",
+      a.address === "203.0.113.5" && a.family === 4);
+  } finally { dotA.close(); await _drainTcpHandles(); }
+
+  // ---- AAAA-record resolve6 over DoT (_resolveProtocol DoT branch) ----
+  _reset();
+  var aaaaReply = _buildReply("v6.example.com", 28, [
+    { name: "v6.example.com", type: 28, rdata: _aaaaRdata() },
+  ]);
+  var dotAAAA = await _startDotServer(cert, { reply: aaaaReply });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: dotAAAA.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var r6 = await dnsModule.resolve6("v6.example.com");
+    check("resolve6(DoT): AAAA record decodes to an IPv6 string",
+      Array.isArray(r6) && r6.length === 1 && r6[0].indexOf("2001:") === 0);
+  } finally { dotAAAA.close(); await _drainTcpHandles(); }
+
+  // ---- SVCB query over DoT (_dotRawQuery raw path) ----
+  _reset();
+  var svcbReply = _buildReply("svc.example.com", 64, [
+    { name: "svc.example.com", type: 64,
+      rdata: _svcbRd(1, "target.example.net", [{ key: 1, value: _alpn(["h2"]) }]) },
+  ]);
+  var dotSvcb = await _startDotServer(cert, { reply: svcbReply });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: dotSvcb.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var svcb = await dnsModule.querySvcb("svc.example.com", { transport: "dot" });
+    check("querySvcb(DoT): SVCB record parses over the TLS transport",
+      Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h2");
+  } finally { dotSvcb.close(); await _drainTcpHandles(); }
+}
+
+// ======================================================================
+// DoH success paths — real HTTPS round-trip against a loopback responder
+// (_dohLookup GET + POST, _dohLookupSecure AD bit, _dohRawQuery, non-200)
+// ======================================================================
+async function testDohSecureTransport() {
+  var cert = await _mintSecureCert();
+  var aReply = _buildReply("doh.example.com", 1, [
+    { name: "doh.example.com", type: 1, rdata: _aRdata(198, 51, 100, 9) },
+  ]);
+
+  // ---- A lookup + resolve4 over DoH (GET) ----
+  _reset();
+  var dohA = await _startDohServer(cert, { reply: aReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + dohA.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var a = await dnsModule.lookup("doh.example.com", { family: 4 });
+    check("lookup(DoH GET): A record resolves over real HTTPS", a.address === "198.51.100.9");
+    var r4 = await dnsModule.resolve4("doh.example.com");
+    check("resolve4(DoH): A record via _resolveProtocol DoH branch",
+      Array.isArray(r4) && r4[0] === "198.51.100.9");
+  } finally { dohA.close(); await _drainTcpHandles(); }
+
+  // ---- POST method (usePost branch: content-type/length + req.write) ----
+  _reset();
+  var dohP = await _startDohServer(cert, { reply: aReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + dohP.port + "/dns-query", method: "POST", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var ap = await dnsModule.lookup("doh.example.com", { family: 4 });
+    check("lookup(DoH POST): A record resolves via POST body", ap.address === "198.51.100.9");
+  } finally { dohP.close(); await _drainTcpHandles(); }
+
+  // ---- resolveSecure over DoH with the AD bit set (_dohLookupSecure) ----
+  _reset();
+  var adReply = _buildReply("secure.example.com", 1, [
+    { name: "secure.example.com", type: 1, rdata: _aRdata(203, 0, 113, 1) },
+  ]);
+  adReply.writeUInt16BE(0x81a0, 2);   // flags: response + RA + AD bit (0x20 in byte 3)
+  var dohSec = await _startDohServer(cert, { reply: adReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + dohSec.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var sec = await dnsModule.resolveSecure("secure.example.com", "A");
+    check("resolveSecure(DoH): returns { rrs, ad } with the AD bit surfaced",
+      sec && Array.isArray(sec.rrs) && sec.rrs[0] === "203.0.113.1" && sec.ad === true);
+  } finally { dohSec.close(); await _drainTcpHandles(); }
+
+  // ---- SVCB over DoH (_dohRawQuery raw path) ----
+  _reset();
+  var svcbReply = _buildReply("svc.example.com", 64, [
+    { name: "svc.example.com", type: 64,
+      rdata: _svcbRd(1, "t.example.net", [{ key: 1, value: _alpn(["h3"]) }]) },
+  ]);
+  var dohSvcb = await _startDohServer(cert, { reply: svcbReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + dohSvcb.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var svcb = await dnsModule.querySvcb("svc.example.com", { transport: "doh" });
+    check("querySvcb(DoH): SVCB record parses over HTTPS",
+      Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h3");
+  } finally { dohSvcb.close(); await _drainTcpHandles(); }
+
+  // ---- DoH non-200 status → dns/doh-http ----
+  _reset();
+  var doh500 = await _startDohServer(cert, { reply: Buffer.alloc(0), status: 500 });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + doh500.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("querySvcb(DoH 500): non-200 response surfaces dns/doh-http",
+      await _throwsAsync(function () {
+        return dnsModule.querySvcb("svc.example.com", { transport: "doh" });
+      }, "dns/doh-http"));
+  } finally { doh500.close(); await _drainTcpHandles(); }
+}
+
+// ======================================================================
+// Secure-transport wall-clock deadlines — a stalled upstream must be torn
+// down (_armRequestTimeout for DoH, _dotConnect sock.setTimeout for DoT,
+// and the shared _withTimeout deadline)
+// ======================================================================
+async function testSecureTransportTimeouts() {
+  var cert = await _mintSecureCert();
+
+  // ---- DoH request accepted then stalled → dns/lookup-timeout ----
+  _reset();
+  var dohHang = await _startDohServer(cert, { hang: true });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + dohHang.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(700);
+  try {
+    check("querySvcb(DoH stalled): request deadline surfaces dns/lookup-timeout",
+      await _throwsAsync(function () {
+        return dnsModule.querySvcb("svc.example.com", { transport: "doh" });
+      }, "dns/lookup-timeout"));
+    // The promise-level deadline can win the race with the socket-level
+    // req.setTimeout; give the request-teardown callback a window to fire
+    // before the fixture is destroyed (verifies no lingering handle).
+    await helpers.passiveObserve(400, "network-dns: DoH request-teardown grace");
+  } finally { dohHang.close(); await _drainTcpHandles(); }
+
+  // ---- DoT handshake completes, query stalls → socket deadline tears down ----
+  _reset();
+  var dotHang = await _startDotServer(cert, { hang: true });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: dotHang.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(700);
+  try {
+    check("resolve4(DoT stalled): idle socket deadline surfaces a DnsError",
+      await _throwsAsync(function () { return dnsModule.resolve4("hang.example.com"); }));
+    await helpers.passiveObserve(400, "network-dns: DoT socket-teardown grace");
+  } finally { dotHang.close(); await _drainTcpHandles(); }
+}
+
+// ======================================================================
+// Remaining defensive / adversarial / option-default branches reachable
+// wholly in-process (local-form normalization, env transport override,
+// LDH label rejection, DNR entry shape, DDR non-NXDOMAIN rethrow, raw name
+// decode limits, transport-unavailable + no-resolvers guards, system
+// timeout, native-error wraps)
+// ======================================================================
+async function testLocalFormTrailingDot() {
+  _reset();
+  dnsModule.setLookupTimeoutMs(4000);
+  try {
+    var ld = await dnsModule.lookup("localhost.");
+    check("lookup: fully-qualified 'localhost.' strips the root dot → system path",
+      typeof ld.address === "string" && (ld.family === 4 || ld.family === 6));
+    // explicit family over the system resolver → sets nodeOpts.family
+    var ld4 = await dnsModule.lookup("localhost", { family: 4 });
+    check("lookup(system, family:4): pins the address family on the OS resolver",
+      ld4.family === 4);
+  } finally { _reset(); }
+}
+
+async function testEnsureSecureDefaultEnvOverride() {
+  var saved = process.env.BLAMEJS_DNS_TRANSPORT;
+  try {
+    // BLAMEJS_DNS_TRANSPORT=system → the default resolver is the OS resolver.
+    process.env.BLAMEJS_DNS_TRANSPORT = "system";
+    _reset();
+    dnsModule.setLookupTimeoutMs(4000);
+    await dnsModule.lookup("localhost");
+    check("lookup: BLAMEJS_DNS_TRANSPORT=system arms the system resolver default",
+      dnsModule._stateForTest().systemResolver === true);
+
+    // BLAMEJS_DNS_TRANSPORT=dot → default DoT config is armed; a local-form
+    // host short-circuits to the system path so no external connection runs.
+    process.env.BLAMEJS_DNS_TRANSPORT = "dot";
+    _reset();
+    dnsModule.setLookupTimeoutMs(4000);
+    await dnsModule.lookup("localhost");
+    var dotState = dnsModule._stateForTest().dot;
+    check("lookup: BLAMEJS_DNS_TRANSPORT=dot arms the default DoT config (port 853)",
+      dotState && dotState.host === "1.1.1.1" && dotState.port === 853);
+  } finally {
+    if (saved === undefined) delete process.env.BLAMEJS_DNS_TRANSPORT;
+    else process.env.BLAMEJS_DNS_TRANSPORT = saved;
+    _reset();
+  }
+}
+
+async function testValidateLdhLabelReject() {
+  _reset();
+  check("querySvcb: label with a non-LDH character throws dns/bad-host",
+    await _throwsAsync(function () {
+      return dnsModule.querySvcb("bad!char.example.com", { transport: "system" });
+    }, "dns/bad-host"));
+  _reset();
+}
+
+function testDesignatedResolversNonObjectEntry() {
+  _reset();
+  check("useDesignatedResolvers: non-object entry throws dns/dnr-malformed",
+    _throws(function () { dnsModule.useDesignatedResolvers([42]); }, "dns/dnr-malformed"));
+  _reset();
+}
+
+async function testDiscoverEncryptedRethrow() {
+  // A transport failure that is NOT rcode/NXDOMAIN must be rethrown as-is
+  // (only a genuine no-result maps to dns/ddr-not-discovered).
+  _reset();
+  var refused = await _probeClosedPort();
+  dnsModule.useSystemResolver();
+  dnsModule.setServers(["127.0.0.1:" + refused]);
+  dnsModule.setLookupTimeoutMs(2500);
+  try {
+    check("discoverEncrypted: connection failure (not NXDOMAIN) is rethrown unchanged",
+      await _throwsAsync(function () { return dnsModule.discoverEncrypted(); }, "dns/system-failed"));
+  } finally { await _drainTcpHandles(); }
+}
+
+function testReadDnsNameLimits() {
+  var rdn = dnsModule._readDnsName;
+  // Label length runs past the end of the message.
+  check("_readDnsName: label length exceeding the message throws dns/svcb-malformed",
+    _throws(function () { return rdn(Buffer.from([5, 0x61]), 0); }, "dns/svcb-malformed"));
+  // A run of single-byte labels with no terminator, longer than the
+  // 256-hop compression-loop cap → hits the iteration guard before the
+  // not-terminated guard.
+  var longLabels = Buffer.alloc(600);
+  for (var i = 0; i < 600; i += 2) { longLabels[i] = 1; longLabels[i + 1] = 0x61; }
+  check("_readDnsName: label walk beyond the 256-hop cap throws dns/svcb-malformed",
+    _throws(function () { return rdn(longLabels, 0); }, "dns/svcb-malformed"));
+}
+
+async function testRawQueryTransportUnavailable() {
+  // System-only config, then a forced doh/dot transport with no matching
+  // config → _rawQuery raises dns/transport-unavailable (permanent).
+  _reset();
+  dnsModule.useSystemResolver();
+  check("querySvcb(transport:doh) under system-only config → dns/transport-unavailable",
+    await _throwsAsync(function () {
+      return dnsModule.querySvcb("example.com", { transport: "doh" });
+    }, "dns/transport-unavailable"));
+  check("querySvcb(transport:dot) under system-only config → dns/transport-unavailable",
+    await _throwsAsync(function () {
+      return dnsModule.querySvcb("example.com", { transport: "dot" });
+    }, "dns/transport-unavailable"));
+  _reset();
+}
+
+async function testSystemRawQueryNoServers() {
+  // Force getServers() to report zero configured resolvers.
+  _reset();
+  dnsModule.useSystemResolver();
+  dnsModule._stateForTest().servers = [];
+  try {
+    check("querySvcb(system): zero configured resolvers → dns/no-system-resolvers",
+      await _throwsAsync(function () {
+        return dnsModule.querySvcb("example.com", { transport: "system" });
+      }, "dns/no-system-resolvers"));
+  } finally { _reset(); }
+}
+
+async function testSystemRawQueryTimeout() {
+  // Upstream accepts the TCP connection then stalls → sock.setTimeout
+  // wall-clock deadline settles the query with dns/lookup-timeout.
+  _reset();
+  var hang = await _startTcpHang();
+  dnsModule.useSystemResolver();
+  dnsModule.setServers(["127.0.0.1:" + hang.port]);
+  dnsModule.setLookupTimeoutMs(700);
+  try {
+    check("querySvcb(system): upstream accepts then stalls → dns/lookup-timeout",
+      await _throwsAsync(function () {
+        return dnsModule.querySvcb("example.com", { transport: "system" });
+      }, "dns/lookup-timeout"));
+    // The socket-level sock.setTimeout deadline can fire a hair after the
+    // promise-level _withTimeout; let it settle before the fixture teardown.
+    await helpers.passiveObserve(250, "network-dns: system socket-teardown grace");
+  } finally { hang.close(); await _drainTcpHandles(); }
+}
+
+async function testNativeErrorWraps() {
+  // resolve4 over the system resolver with an unparseable host → c-ares
+  // rejects with a native EBADNAME (no network); the framework wraps it as
+  // dns/resolve-failed via the non-DnsError branch.
+  _reset();
+  dnsModule.useSystemResolver();
+  dnsModule.setLookupTimeoutMs(5000);
+  check("resolve4(system): native c-ares error wraps as dns/resolve-failed",
+    await _throwsAsync(function () {
+      return dnsModule.resolve4("bad host with spaces");
+    }, "dns/resolve-failed"));
+  _reset();
+
+  // reverse of a reserved IP → native ENOTFOUND (no network); wrapped as
+  // dns/reverse-failed via the non-DnsError branch.
+  dnsModule.useSystemResolver();
+  dnsModule.setLookupTimeoutMs(5000);
+  check("reverse: native c-ares error wraps as dns/reverse-failed (IPv4)",
+    await _throwsAsync(function () { return dnsModule.reverse("0.0.0.0"); }, "dns/reverse-failed"));
+  // An IPv6 literal exercises the family-6 branch of the reverse-requested
+  // observability event.
+  check("reverse: IPv6 literal native error wraps as dns/reverse-failed",
+    await _throwsAsync(function () { return dnsModule.reverse("::"); }, "dns/reverse-failed"));
+  _reset();
+}
+
+// ======================================================================
+// DoT decode + adversarial-reply + auto-transport branches (real TLS)
+// ======================================================================
+async function testDotDecodeAndErrorBranches() {
+  var cert = await _mintSecureCert();
+
+  // ---- answer owner name via compression pointer (_skipDnsName pointer) ----
+  _reset();
+  var comp = _buildReplyCompressedName("comp.example.com", 1, 1, _aRdata(192, 0, 2, 7));
+  var s1 = await _startDotServer(cert, { reply: comp });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s1.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var a = await dnsModule.lookup("comp.example.com", { family: 4 });
+    check("lookup(DoT): compressed answer name decodes (name-compression branch)",
+      a.address === "192.0.2.7");
+  } finally { s1.close(); await _drainTcpHandles(); }
+
+  // ---- SERVFAIL rcode over DoT → decode raises dns/no-result ----
+  _reset();
+  var servfail = _buildReply("sf.example.com", 1,
+    [{ name: "sf.example.com", type: 1, rdata: _aRdata(1, 2, 3, 4) }], 0x8182);   // rcode 2 = SERVFAIL
+  var s2 = await _startDotServer(cert, { reply: servfail });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s2.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("resolve4(DoT): SERVFAIL rcode surfaces a DnsError (decode reject path)",
+      await _throwsAsync(function () { return dnsModule.resolve4("sf.example.com"); }));
+  } finally { s2.close(); await _drainTcpHandles(); }
+
+  // ---- truncated rdata over DoT → decode raises dns/bad-reply ----
+  _reset();
+  var trunc = _buildReply("tr.example.com", 1,
+    [{ name: "tr.example.com", type: 1, rdata: _aRdata(9, 9, 9, 9) }]);
+  trunc.writeUInt16BE(0x00ff, trunc.length - 6);                                  // rdlen lies past buffer end
+  var s3 = await _startDotServer(cert, { reply: trunc });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s3.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("resolve4(DoT): truncated rdata surfaces a DnsError (decode reject path)",
+      await _throwsAsync(function () { return dnsModule.resolve4("tr.example.com"); }));
+  } finally { s3.close(); await _drainTcpHandles(); }
+
+  // ---- querySvcb with NO opts → auto-selects the configured DoT transport ----
+  _reset();
+  var svcbReply = _buildReply("auto.example.com", 64, [{ name: "auto.example.com", type: 64,
+    rdata: _svcbRd(1, "t.example.net", [{ key: 1, value: _alpn(["h2"]) }]) }]);
+  var s5 = await _startDotServer(cert, { reply: svcbReply });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s5.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var svcb = await dnsModule.querySvcb("auto.example.com");                     // no opts → _rawQuery auto-selects DoT
+    check("querySvcb(auto): no transport opt auto-selects the configured DoT",
+      Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h2");
+  } finally { s5.close(); await _drainTcpHandles(); }
+
+  // ---- SVCB reply carrying a non-matching answer type → skipped ----
+  _reset();
+  var mixed = _buildReply("mix.example.com", 64, [
+    { name: "mix.example.com", type: 1,  rdata: _aRdata(10, 0, 0, 1) },          // A record — must be skipped
+    { name: "mix.example.com", type: 64, rdata: _svcbRd(1, "t.example.net", [{ key: 1, value: _alpn(["h3"]) }]) },
+  ]);
+  var s6 = await _startDotServer(cert, { reply: mixed });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s6.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var mr = await dnsModule.querySvcb("mix.example.com", { transport: "dot" });
+    check("querySvcb(DoT): a non-SVCB answer record is filtered out",
+      Array.isArray(mr) && mr.length === 1 && mr[0].params.alpn[0] === "h3");
+  } finally { s6.close(); await _drainTcpHandles(); }
+
+  // ---- reply shorter than a DNS header → decode rejects (buf < 12) ----
+  _reset();
+  var s7 = await _startDotServer(cert, { reply: Buffer.alloc(6) });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s7.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("resolve4(DoT): sub-header reply surfaces a DnsError (buf<12 guard)",
+      await _throwsAsync(function () { return dnsModule.resolve4("short.example.com"); }));
+  } finally { s7.close(); await _drainTcpHandles(); }
+
+  // ---- ancount lies (claims an answer, none present) → record-header truncated ----
+  _reset();
+  var lie = _buildReply("lie.example.com", 1, []);
+  lie.writeUInt16BE(1, 6);                                                          // ANCOUNT = 1, but no answer bytes
+  var s8 = await _startDotServer(cert, { reply: lie });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s8.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("resolve4(DoT): lying ANCOUNT surfaces a DnsError (record-header guard)",
+      await _throwsAsync(function () { return dnsModule.resolve4("lie.example.com"); }));
+  } finally { s8.close(); await _drainTcpHandles(); }
+
+  // ---- NOERROR reply with zero answers → resolve raises dns/no-result ----
+  _reset();
+  var empty = _buildReply("empty.example.com", 1, []);                              // ANCOUNT 0, NOERROR
+  var s9 = await _startDotServer(cert, { reply: empty });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: s9.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("resolve6(DoT): NOERROR with no matching answers → dns/no-result",
+      await _throwsAsync(function () { return dnsModule.resolve6("empty.example.com"); }, "dns/no-result"));
+  } finally { s9.close(); await _drainTcpHandles(); }
+}
+
+// ======================================================================
+// DoH GET-with-query, POST-secure/raw, non-200 for lookup + resolveSecure,
+// and family-0 dual-stack ordering (real HTTPS)
+// ======================================================================
+async function testDohDecodeAndErrorBranches() {
+  var cert = await _mintSecureCert();
+  var aReply = _buildReply("doh2.example.com", 1,
+    [{ name: "doh2.example.com", type: 1, rdata: _aRdata(198, 51, 100, 42) }]);
+
+  // ---- DoH url already carrying a query string → getUrl joins with '&' ----
+  _reset();
+  var qsrv = await _startDohServer(cert, { reply: aReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + qsrv.port + "/dns-query?ns=1", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var a = await dnsModule.lookup("doh2.example.com", { family: 4 });
+    check("lookup(DoH, url with existing query): appends the dns param with '&'",
+      a.address === "198.51.100.42");
+  } finally { qsrv.close(); await _drainTcpHandles(); }
+
+  // ---- resolveSecure over DoH via POST + '?'-url (usePost + '&' branches) ----
+  _reset();
+  var adReply = _buildReply("sec.example.com", 1,
+    [{ name: "sec.example.com", type: 1, rdata: _aRdata(203, 0, 113, 9) }]);
+  adReply.writeUInt16BE(0x81a0, 2);                                               // AD bit set
+  var psec = await _startDohServer(cert, { reply: adReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + psec.port + "/dns-query?p=1", method: "POST", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var sec = await dnsModule.resolveSecure("sec.example.com", "A");
+    check("resolveSecure(DoH POST, ?-url): decodes via POST body over the '&' getUrl branch",
+      sec && Array.isArray(sec.rrs) && sec.rrs[0] === "203.0.113.9" && sec.ad === true);
+  } finally { psec.close(); await _drainTcpHandles(); }
+
+  // ---- querySvcb over DoH via POST + auto transport (raw usePost branch) ----
+  _reset();
+  var svcbReply = _buildReply("praw.example.com", 64, [{ name: "praw.example.com", type: 64,
+    rdata: _svcbRd(1, "t.example.net", [{ key: 1, value: _alpn(["h2"]) }]) }]);
+  var praw = await _startDohServer(cert, { reply: svcbReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + praw.port + "/dns-query?p=1", method: "POST", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var svcb = await dnsModule.querySvcb("praw.example.com");                     // no transport → auto DoH, POST body
+    check("querySvcb(DoH POST, auto transport): raw query round-trips via POST body",
+      Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h2");
+  } finally { praw.close(); await _drainTcpHandles(); }
+
+  // ---- non-200 for lookup (_dohLookup) + resolveSecure (_dohLookupSecure) ----
+  _reset();
+  var e500 = await _startDohServer(cert, { reply: Buffer.alloc(0), status: 500 });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + e500.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("lookup(DoH 500, family:4): _dohLookup non-200 surfaces dns/doh-http",
+      await _throwsAsync(function () {
+        return dnsModule.lookup("x.example.com", { family: 4 });
+      }, "dns/doh-http"));
+    check("resolveSecure(DoH 500): _dohLookupSecure non-200 surfaces dns/doh-http",
+      await _throwsAsync(function () {
+        return dnsModule.resolveSecure("x.example.com", "A");
+      }, "dns/doh-http"));
+  } finally { e500.close(); await _drainTcpHandles(); }
+
+  // ---- family-0 dual-stack over DoH with ipv6first ordering ----
+  _reset();
+  var dsrv = await _startDohServer(cert, { reply: aReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + dsrv.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setResultOrder("ipv6first");
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    var all = await dnsModule.lookup("doh2.example.com", { all: true });          // family 0 → _dualStack both families
+    check("lookup(DoH, family 0, ipv6first): dual-stack returns the A answer",
+      Array.isArray(all) && all.length >= 1 && all[0].address === "198.51.100.42");
+  } finally { dsrv.close(); await _drainTcpHandles(); }
+}
+
+async function testResolveTypeAndNodeLookupBranches() {
+  // resolve(): a non-string type is rejected as a typed DnsError (not a
+  // raw TypeError from .toUpperCase()).
+  _reset();
+  check("resolve: non-string type throws dns/unsupported-type",
+    await _throwsAsync(function () { return dnsModule.resolve("192.0.2.1", 123); }, "dns/unsupported-type"));
+  // Omitted type defaults to 'A' (the `type || "A"` branch) and short-circuits
+  // on the IP literal offline.
+  var a = await dnsModule.resolve("192.0.2.1");
+  check("resolve: omitted type defaults to A + short-circuits the IP literal",
+    Array.isArray(a) && a[0] === "192.0.2.1");
+  _reset();
+
+  // nodeLookup(): explicit null options falls back to {} (the `options || {}`
+  // branch); an explicit family flows through to lookup().
+  var nullOpts = await _nodeLookupP("192.0.2.60", null);
+  check("nodeLookup: explicit null options defaults to {} → (address, family)",
+    nullOpts[0] === "192.0.2.60" && nullOpts[1] === 4);
+  var famOpts = await _nodeLookupP("192.0.2.61", { family: 4 });
+  check("nodeLookup: explicit family flows through to lookup()",
+    famOpts[0] === "192.0.2.61" && famOpts[1] === 4);
+  _reset();
+}
+
+// ======================================================================
+// Additional transport branches: DoH malformed-200 decode-in-end-handler,
+// DoT-raw handshake failure, system close-before-reply, no-arg config
+// throws, and the deadline-disabled (ms=0) path
+// ======================================================================
+async function testMoreTransportBranches() {
+  var cert = await _mintSecureCert();
+
+  // ---- config setters with NO opts → default {} then required-field throw ----
+  _reset();
+  check("useDnsOverHttps(): no opts defaults to {} then throws dns/bad-doh-url",
+    _throws(function () { dnsModule.useDnsOverHttps(); }, "dns/bad-doh-url"));
+  check("useDnsOverTls(): no opts defaults to {} then throws dns/bad-dot-host",
+    _throws(function () { dnsModule.useDnsOverTls(); }, "dns/bad-dot-host"));
+  _reset();
+
+  // ---- DoH 200 with a malformed body → decode throws inside the end handler ----
+  // Drives the catch(e){reject(e)} arm of _dohLookup / _dohLookupSecure /
+  // _dohRawQuery (a 200 response whose body fails to decode).
+  _reset();
+  var badBody = _buildReply("bad.example.com", 1,
+    [{ name: "bad.example.com", type: 1, rdata: _aRdata(9, 9, 9, 9) }]);
+  badBody.writeUInt16BE(0x00ff, badBody.length - 6);                              // rdlen lies past end
+  var mErr = await _startDohServer(cert, { reply: badBody });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + mErr.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("resolve4(DoH): malformed 200 body surfaces a DnsError (_dohLookup end-handler)",
+      await _throwsAsync(function () { return dnsModule.resolve4("bad.example.com"); }));
+    check("resolveSecure(DoH): malformed 200 body surfaces a DnsError (_dohLookupSecure)",
+      await _throwsAsync(function () { return dnsModule.resolveSecure("bad.example.com", "A"); }));
+    check("querySvcb(DoH): malformed 200 body surfaces a DnsError (_dohRawQuery)",
+      await _throwsAsync(function () { return dnsModule.querySvcb("bad.example.com", { transport: "doh" }); }));
+  } finally { mErr.close(); await _drainTcpHandles(); }
+
+  // ---- querySvcb(DoT) against a closed port → _dotRawQuery handshake failure ----
+  _reset();
+  var closed = await _probeClosedPort();
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: closed, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(2000);
+  try {
+    check("querySvcb(DoT, dead upstream): raw-query handshake failure surfaces a DnsError",
+      await _throwsAsync(function () { return dnsModule.querySvcb("svc.example.com", { transport: "dot" }); }));
+  } finally { await _drainTcpHandles(); }
+
+  // ---- system transport: upstream FINs after the query, no reply ----
+  _reset();
+  var fin = await _startTcpFinNoReply();
+  dnsModule.useSystemResolver();
+  dnsModule.setServers(["127.0.0.1:" + fin.port]);
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    check("querySvcb(system): upstream closes before replying → dns/system-failed",
+      await _throwsAsync(function () {
+        return dnsModule.querySvcb("example.com", { transport: "system" });
+      }, "dns/system-failed"));
+  } finally { fin.close(); await _drainTcpHandles(); }
+
+  // ---- deadline disabled (lookupTimeoutMs === 0) over a healthy DoH upstream ----
+  // Exercises the ms<=0 short-circuits in _withTimeout + _armRequestTimeout.
+  _reset();
+  var okReply = _buildReply("ok.example.com", 1,
+    [{ name: "ok.example.com", type: 1, rdata: _aRdata(192, 0, 2, 200) }]);
+  var okSrv = await _startDohServer(cert, { reply: okReply });
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + okSrv.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(0);
+  try {
+    var a = await dnsModule.lookup("ok.example.com", { family: 4 });
+    check("lookup(DoH, timeout disabled): resolves without arming a deadline",
+      a.address === "192.0.2.200");
+  } finally { okSrv.close(); await _drainTcpHandles(); }
+
+  // ---- deadline disabled over a healthy DoT upstream (_dotConnect skips setTimeout) ----
+  _reset();
+  var okDot = await _startDotServer(cert, { reply: okReply });
+  dnsModule.useDnsOverTls({ host: "127.0.0.1", port: okDot.port, servername: "localhost", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(0);
+  try {
+    var d = await dnsModule.resolve4("ok.example.com");
+    check("resolve4(DoT, timeout disabled): resolves without arming a socket deadline",
+      Array.isArray(d) && d[0] === "192.0.2.200");
+  } finally { okDot.close(); await _drainTcpHandles(); }
+}
+
 async function run() {
   try { await _runTests(); }
   finally { await _drainTcpHandles(); }
@@ -1588,6 +2381,27 @@ async function _runTests() {
   await testSystemRawQueryErrors();
   await testSystemRawQueryV6Bracket();
   await testDiscoverEncryptedBranches();
+
+  // real-handshake DoT / DoH transport round-trips + deadlines
+  await testDotSecureTransport();
+  await testDohSecureTransport();
+  await testDotDecodeAndErrorBranches();
+  await testDohDecodeAndErrorBranches();
+  await testSecureTransportTimeouts();
+
+  // remaining in-process defensive / adversarial / option-default branches
+  await testLocalFormTrailingDot();
+  await testEnsureSecureDefaultEnvOverride();
+  await testValidateLdhLabelReject();
+  testDesignatedResolversNonObjectEntry();
+  await testDiscoverEncryptedRethrow();
+  testReadDnsNameLimits();
+  await testRawQueryTransportUnavailable();
+  await testSystemRawQueryNoServers();
+  await testSystemRawQueryTimeout();
+  await testNativeErrorWraps();
+  await testResolveTypeAndNodeLookupBranches();
+  await testMoreTransportBranches();
 }
 
 module.exports = { run: run };
