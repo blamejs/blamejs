@@ -3178,6 +3178,85 @@ function testNoBareErrorThrows() {
     bad);
 }
 
+// ---- Pattern 38b: defineClass error constructed message-first ----
+//
+// defineClass() generates `constructor(code, message)` (it calls
+// `super(message, code)` against the base FrameworkError, whose own order
+// is the mirror). So EVERY `new <DefineClassError>(...)` must pass the
+// short code FIRST and the human message SECOND. A message-first call
+// (arg1 has whitespace — no code ever does — while arg2 is a bare short
+// token) buries the diagnostic in `.code` and hands the operator a bare
+// token as `.message`. Sound by construction: a whitespace first arg is
+// never a valid code, so a hit is always a swap, never a style choice.
+// Seen twice — safe-buffer `_throw` and security.assertProduction — hence
+// a structural guard, not just the behavioral test that ships with each.
+function testDefineClassErrorArgOrder() {
+  // class: define-class-error-arg-order
+  var files = _libFiles();
+  // 1. Collect every defineClass-generated error name across lib/.
+  var names = {};
+  for (var i = 0; i < files.length; i++) {
+    var c;
+    try { c = fs.readFileSync(files[i], "utf8"); } catch (_e) { continue; }
+    var dre = /defineClass\(\s*["']([A-Za-z0-9_]+)["']/g, dm;
+    while ((dm = dre.exec(c))) names[dm[1]] = true;
+  }
+  var nameList = Object.keys(names);
+  if (!nameList.length) { check("no defineClass error classes to check", true); return; }
+  var nameAlt = nameList.join("|");
+
+  // Split the first top-level args of a call starting just after '('.
+  function firstTwoArgs(src, start) {
+    var depth = 0, inStr = null, cur = "", out = [];
+    for (var k = start; k < src.length && out.length < 2; k++) {
+      var ch = src[k];
+      if (inStr) { cur += ch; if (ch === "\\") { cur += src[++k]; } else if (ch === inStr) inStr = null; continue; }
+      if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; cur += ch; continue; }
+      if (ch === "(" || ch === "[" || ch === "{") { depth++; cur += ch; continue; }
+      if (ch === ")" || ch === "]" || ch === "}") { if (depth === 0) { out.push(cur); break; } depth--; cur += ch; continue; }
+      if (ch === "," && depth === 0) { out.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    return out;
+  }
+  function leadingLiteral(arg) {
+    var m = arg.trim().match(/^"((?:[^"\\]|\\.)*)"|^'((?:[^'\\]|\\.)*)'/);
+    return m ? (m[1] != null ? m[1] : m[2]) : null;
+  }
+  function wholeCodeLiteral(arg) {
+    var m = arg.trim().match(/^"((?:[^"\\]|\\.)*)"$|^'((?:[^'\\]|\\.)*)'$/);
+    if (!m) return null;
+    var v = m[1] != null ? m[1] : m[2];
+    return (v.length > 0 && v.length <= 40 && !/\s/.test(v)) ? v : null;
+  }
+
+  var bad = [];
+  var callRe = new RegExp("new\\s+(" + nameAlt + ")\\s*\\(", "g");
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e2) { continue; }
+    callRe.lastIndex = 0;
+    var cm;
+    while ((cm = callRe.exec(content))) {
+      var lineNo = content.slice(0, cm.index).split(/\r?\n/).length;
+      var startLine = content.split(/\r?\n/)[lineNo - 1] || "";
+      if (/^\s*(\/\/|\*|\/\*)/.test(startLine)) continue;   // skip commented examples
+      var args = firstTwoArgs(content, cm.index + cm[0].length);
+      if (args.length < 2) continue;
+      var lead1 = leadingLiteral(args[0]);
+      var code2 = wholeCodeLiteral(args[1]);
+      if (lead1 && /\s/.test(lead1) && code2) {
+        bad.push({ file: rel, line: lineNo, content: ("new " + cm[1] + "(\"" + lead1.slice(0, 40) + "…\", \"" + code2 + "\")") });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "define-class-error-arg-order");
+  _report("defineClass error constructed (code, message) — not message-first " +
+          "(a whitespace first arg is never a valid code)",
+    bad);
+}
+
 // ---- Pattern 39: hand-rolled URL building ----
 
 function testNoHandrolledUrlBuild() {
@@ -14289,6 +14368,7 @@ async function run() {
   testNoManualByteCompare();
   testNoOpenCodedLazyRequire();
   testNoBareErrorThrows();
+  testDefineClassErrorArgOrder();
   testNoHandrolledUrlBuild();
   testNoHandrolledRetryLoop();
   await testNoDuplicateCodeBlocks();

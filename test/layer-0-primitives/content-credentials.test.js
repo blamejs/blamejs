@@ -11,8 +11,12 @@
  */
 
 var helpers = require("../helpers");
+var dbHelpers = require("../helpers/db");
 var b     = helpers.b;
 var check = helpers.check;
+var fs    = helpers.fs;
+var os    = helpers.os;
+var path  = helpers.path;
 var asn1  = require("../../lib/asn1-der");
 var nodeCrypto = require("node:crypto");
 
@@ -56,7 +60,7 @@ function _makeTsaCert() {
 // self-signed (issuer null). Used to assemble a real [leaf, intermediate,
 // root] chain so the identity-assertion chain walk is exercised through
 // an intermediate CA, not only a direct-root / self-signed leaf.
-function _makeCert(cn, issuer, isCa) {
+function _makeCert(cn, issuer, isCa, val) {
   var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   var spki = kp.publicKey.export({ type: "spki", format: "der" });
   var subjName  = _certName(cn);
@@ -66,7 +70,12 @@ function _makeCert(cn, issuer, isCa) {
   var version = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
   var serial = asn1.writeInteger(Buffer.from([0x2b]));
   var now = Date.now();
-  var validity = asn1.writeSequence([_utcTime(new Date(now - 86400000)), _utcTime(new Date(now + 86400000 * 3650))]);
+  // Default validity is a wide now-1d..now+10y window; `val` ({ from, to } in
+  // epoch-ms) lets a caller mint an already-expired cert so the chain walk's
+  // per-cert and anchor validity-window rejections are exercised.
+  var vFrom = val && val.from != null ? val.from : now - 86400000;
+  var vTo   = val && val.to   != null ? val.to   : now + 86400000 * 3650;
+  var validity = asn1.writeSequence([_utcTime(new Date(vFrom)), _utcTime(new Date(vTo))]);
   var tbsChildren = [version, serial, sigAlgId, issuerName, validity, subjName, spki];
   // Issuer (root / intermediate) certs carry basicConstraints cA:TRUE so the
   // chain walk's cA enforcement (x509Chain.issuerValidlyIssued) accepts them;
@@ -435,6 +444,287 @@ async function runErrorPaths() {
     e.code === "cac-implicit-label/bad-provider-code");
 }
 
+// Default-on audit branches: every build / sign / verify / signCose /
+// verifyCose and the CAWG identity assertion carries an `audit !== false`
+// emit block the audit:false round-trips never execute. Drive each through
+// the REAL audit sink (setupTestDb wires the encrypted db + audit chain)
+// and assert durable rows land — the emit does real work, not a no-op —
+// covering both the success and the fail-closed "denied" audit paths.
+async function runAuditOnPaths() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cc-audit-"));
+  await dbHelpers.setupTestDb(tmpDir);
+  try {
+    var pair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+    var manifest = cc.build(VALID_BUILD);
+
+    // sign() + verify() audit-on (verify called with opts omitted → opts:{}).
+    var env = cc.sign(manifest, { privateKeyPem: pair.privateKey });
+    check("audit-on verify still valid", cc.verify(env, pair.publicKey).valid === true);
+
+    // signCose audit-on: opt-out (warning outcome), request, and attach.
+    cc.signCose(manifest, { privateKeyPem: pair.privateKey, timestamp: false, timestampOptOutReason: "no TSA in audit test" });
+    cc.signCose(manifest, { privateKeyPem: pair.privateKey, timestamp: {} });
+    var rt = _timestampedRoundTrip(manifest, pair);
+    var attachedAudited = cc.signCose(manifest, {
+      privateKeyPem: pair.privateKey, alg: "ml-dsa-87",
+      timestamp: { token: rt.token, signature: rt.req.timestampRequest.signature },
+    });
+
+    // verifyCose audit-on: success (1054-1066), signature-mismatch (967-969),
+    // timestamp-required (1017-1019), timestamp-invalid (1027-1029), and
+    // missing-required (1047-1049) denied-audit blocks.
+    var vc = cc.verifyCose(attachedAudited.coseSign1, pair.publicKey, {
+      timestampNonce: rt.req.timestampRequest.nonce, timestampTrustAnchorsPem: [rt.anchorPem],
+    });
+    check("audit-on verifyCose success", vc.valid === true);
+    var otherPair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+    cc.verifyCose(attachedAudited.coseSign1, otherPair.publicKey, { requireTimestamp: false });
+    var optout = cc.signCose(manifest, { privateKeyPem: pair.privateKey, timestamp: false, timestampOptOutReason: "x", audit: false });
+    cc.verifyCose(optout.coseSign1, pair.publicKey);                                   // token-less → timestamp-required (opts omitted → opts:{})
+    cc.verifyCose(rt.attached.coseSign1, pair.publicKey, { timestampNonce: nodeCrypto.randomBytes(8) });   // wrong nonce → timestamp-invalid
+    var incompleteCose = cc.signCose({ provider: { name: "x" } }, { privateKeyPem: pair.privateKey, timestamp: false, timestampOptOutReason: "x", audit: false });
+    cc.verifyCose(incompleteCose.coseSign1, pair.publicKey, { requireTimestamp: false });  // missing-required
+
+    // attachIdentityAssertion + verifyIdentityAssertion audit-on (success/
+    // warning + signature-mismatch + assertion-hash-mismatch denied audits).
+    var refs = [{ label: "c2pa.actions", data: { action: "c2pa.created" } }];
+    var ia = cc.attachIdentityAssertion({ binding: "x509", subject: { name: "Acme Newsroom" }, referencedAssertions: refs, privateKeyPem: pair.privateKey });
+    cc.verifyIdentityAssertion(ia, pair.publicKey, { referencedAssertions: refs });                                    // self-asserted → warning
+    cc.verifyIdentityAssertion(ia, otherPair.publicKey, { referencedAssertions: refs });                               // wrong key → denied
+    cc.verifyIdentityAssertion(ia, pair.publicKey, { referencedAssertions: [{ label: "x", data: { other: 1 } }] });    // transplant → denied
+    // x509 chained to a trusted anchor → verified:true, audit outcome "success".
+    var trustCert = _makeTsaCert();
+    var trustPem = new nodeCrypto.X509Certificate(trustCert.certDer).toString();
+    var iaVerified = cc.verifyIdentityAssertion(ia, pair.publicKey, { referencedAssertions: refs, identityCertChainPem: trustPem, identityTrustAnchorsPem: trustPem });
+    check("audit-on identity verified:true (x509 chained)", iaVerified.verified === true);
+
+    await b.audit.flush();
+    var signedRows       = await b.audit.query({ action: "contentcredentials.signed" });
+    var verifiedRows     = await b.audit.query({ action: "contentcredentials.verified" });
+    var signedCoseRows   = await b.audit.query({ action: "contentcredentials.signed_cose" });
+    var verifiedCoseRows = await b.audit.query({ action: "contentcredentials.verified_cose" });
+    var identAttachRows  = await b.audit.query({ action: "contentcredentials.identity_attached" });
+    var identVerifyRows  = await b.audit.query({ action: "contentcredentials.identity_verified" });
+    check("audit-on: b.contentCredentials.sign emits a durable row", signedRows.length >= 1);
+    check("audit-on: b.contentCredentials.verify emits a durable row", verifiedRows.length >= 1);
+    check("audit-on: b.contentCredentials.signCose emits durable rows (optout/request/attach)", signedCoseRows.length >= 3);
+    check("audit-on: b.contentCredentials.verifyCose emits durable rows (success + denied)", verifiedCoseRows.length >= 4);
+    check("audit-on: b.contentCredentials.attachIdentityAssertion emits a durable row", identAttachRows.length >= 1);
+    check("audit-on: b.contentCredentials.verifyIdentityAssertion emits durable rows", identVerifyRows.length >= 3);
+  } finally {
+    await dbHelpers.teardownTestDb(tmpDir);
+  }
+}
+
+// CBOR + COSE_Sign1 encode/decode edge branches: the large-length CBOR
+// paths, the malformed-COSE structural rejections, the empty / non-decodable
+// protected header, and the config-time input branches (numeric generatedAt,
+// non-string signature, reuse-signature key mismatch) the happy-path
+// round-trips never reach.
+async function runCoseEdgeCases() {
+  var pair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+  var manifest = cc.build(VALID_BUILD);
+
+  // build(): a valid numeric generatedAt flows through the pinned-timestamp
+  // branch rather than defaulting to Date.now().
+  var pinned = cc.build(_buildOpts({ generatedAt: Date.UTC(2026, 4, 8) }));
+  check("build honors a valid numeric generatedAt",
+    pinned.generatedAt === Date.UTC(2026, 4, 8) && pinned.generatedAtIso === "2026-05-08T00:00:00.000Z");
+
+  // verify(): a non-string (numeric) signature is truthy but Buffer.from(n)
+  // throws → the base64 catch returns signature-base64-bad, never crashes.
+  check("verify numeric signature returns signature-base64-bad",
+    cc.verify({ manifest: manifest, signature: 12345 }, pair.publicKey, { audit: false }).reason === "signature-base64-bad");
+
+  // signCose reuse mode with a malformed private-key PEM: _publicKeyFromPrivatePem
+  // catches the createPublicKey throw and returns false → reuse mismatch.
+  check("signCose reuse-mode with unparseable PEM refused as reuse-signature-mismatch",
+    (function () {
+      var er = _err(function () {
+        cc.signCose(manifest, { privateKeyPem: "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----",
+          timestamp: { token: Buffer.from([1]), signature: "AAAA" } });
+      });
+      return er && er.code === "content-credentials/reuse-signature-mismatch";
+    })());
+
+  // signCose with opts omitted defaults opts to {} then rejects the missing key.
+  check("signCose with no opts rejected as BAD_KEY",
+    (function () { var er = _err(function () { cc.signCose(manifest); }); return er && er.code === "BAD_KEY"; })());
+
+  // signCose attach WITHOUT a re-pinned signature signs fresh (the
+  // reuseSignature==null branch) and still emits a timestamped COSE.
+  var attachFresh = cc.signCose(manifest, {
+    privateKeyPem: pair.privateKey, timestamp: { token: Buffer.from([1, 2, 3]) }, audit: false,
+  });
+  check("signCose attach without reuse-signature signs fresh + timestamped",
+    attachFresh.timestamped === true && Buffer.isBuffer(attachFresh.coseSign1));
+
+  // Large certChain crosses the CBOR array-header length thresholds
+  // (24 → 1-byte count header, 300 → 2-byte count header).
+  function _dummyChain(n) { var a = []; for (var i = 0; i < n; i += 1) a.push(Buffer.from([i & 0xff])); return a; }
+  var cose24  = cc.signCose(manifest, { privateKeyPem: pair.privateKey, timestamp: false, timestampOptOutReason: "x", certChain: _dummyChain(24), audit: false });
+  var cose300 = cc.signCose(manifest, { privateKeyPem: pair.privateKey, timestamp: false, timestampOptOutReason: "x", certChain: _dummyChain(300), audit: false });
+  check("signCose 24-cert chain (CBOR 1-byte array header) emits COSE bytes", Buffer.isBuffer(cose24.coseSign1));
+  check("signCose 300-cert chain (CBOR 2-byte array header) grows the COSE bytes", cose300.coseSign1.length > cose24.coseSign1.length);
+
+  // A cert chain at the CBOR array-count ceiling (65536 entries) overflows the
+  // 2-byte array-header range: _cborArrayHeader refuses it fail-closed with a
+  // typed cbor-overflow error rather than emitting a truncated length header
+  // that would silently misframe the x5chain array. Every fixed protocol
+  // codepoint (tag 18, labels 1/33/35, ≤2-entry maps) stays well below this
+  // ceiling, so an operator-supplied absurd chain is the only path here.
+  var overflowErr = _err(function () {
+    b.contentCredentials.signCose(manifest, {
+      privateKeyPem: pair.privateKey, timestamp: false,
+      timestampOptOutReason: "x", certChain: _dummyChain(65536), audit: false,
+    });
+  });
+  check("signCose certChain at the CBOR array ceiling (65536) refused as cbor-overflow",
+    overflowErr && overflowErr.code === "content-credentials/cbor-overflow");
+
+  // A >1 MiB manifest payload crosses the 4-byte CBOR byte-string length
+  // path AND, on verify, exceeds the safeJson payload cap so claims parse
+  // is caught (claims:null) → the required-field gate fails it closed.
+  var huge = cc.build(_buildOpts({ visibleDisclosure: "a".repeat(1100000) }));
+  var coseHuge = cc.signCose(huge, { privateKeyPem: pair.privateKey, timestamp: false, timestampOptOutReason: "x", audit: false });
+  check("signCose >1 MiB payload produces a multi-MiB COSE (4-byte length header)", coseHuge.coseSign1.length > 1048576);
+  var vHuge = cc.verifyCose(coseHuge.coseSign1, pair.publicKey, { requireTimestamp: false, audit: false });
+  check("verifyCose oversized payload fails closed (claims unrecoverable → missing-required)",
+    vHuge.valid === false && vHuge.claims === null && vHuge.reason.indexOf("missing-required") === 0);
+
+  // Malformed COSE_Sign1 shapes decode but fail the structural gate in
+  // _decodeCoseSign1 → cose-malformed verdict (never a throw).
+  function _vc(bytes) { return cc.verifyCose(bytes, pair.publicKey, { requireTimestamp: false, audit: false }); }
+  check("verifyCose 3-element array rejected as cose-malformed",
+    _vc(Buffer.from([0x83, 0x01, 0x02, 0x03])).reason === "content-credentials/cose-malformed");
+  check("verifyCose non-bytestring protected header rejected as cose-malformed",
+    _vc(Buffer.from([0x84, 0x01, 0xA0, 0x40, 0x40])).reason === "content-credentials/cose-malformed");
+  check("verifyCose non-map unprotected header rejected as cose-malformed",
+    _vc(Buffer.from([0x84, 0x40, 0x40, 0x40, 0x40])).reason === "content-credentials/cose-malformed");
+
+  // Well-formed COSE shape with an EMPTY protected header → alg decode yields
+  // an empty map (algName null); with a NON-DECODABLE protected header → the
+  // alg decode catch (algName null). Both then fail the signature check
+  // (garbage signature) → signature-mismatch, not a throw.
+  var vEmptyProt = _vc(Buffer.from([0x84, 0x40, 0xA0, 0x41, 0x00, 0x41, 0x00]));
+  check("verifyCose empty protected header → signature-mismatch (alg null)",
+    vEmptyProt.valid === false && vEmptyProt.reason === "signature-mismatch" && vEmptyProt.alg === null);
+  var vBadProt = _vc(Buffer.from([0x84, 0x41, 0xFF, 0xA0, 0x41, 0x00, 0x41, 0x00]));
+  check("verifyCose non-decodable protected header → signature-mismatch (alg null)",
+    vBadProt.valid === false && vBadProt.reason === "signature-mismatch" && vBadProt.alg === null);
+
+  // verifyCose signature verify THROWS on a malformed (non-empty) public-key
+  // PEM → the catch sets sigOk false → signature-mismatch.
+  var vBadKey = cc.verifyCose(Buffer.from([0x84, 0x40, 0xA0, 0x41, 0x00, 0x41, 0x00]),
+    "-----BEGIN PUBLIC KEY-----\nnotvalid\n-----END PUBLIC KEY-----", { requireTimestamp: false, audit: false });
+  check("verifyCose malformed public key PEM → signature-mismatch (verify throw caught)",
+    vBadKey.valid === false && vBadKey.reason === "signature-mismatch");
+}
+
+// _verifyIdentityX509Chain error branches: the certificate-parse failures,
+// expired-cert rejections, and broken-linkage refusals a valid chain never
+// reaches. Each surfaces as verified:false with a specific reason while
+// valid stays true (the signature + hash-binding are intact).
+async function runX509ChainErrorBranches() {
+  var pair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+  var refs = [{ label: "c2pa.actions", data: { action: "c2pa.created" } }];
+  var ia = cc.attachIdentityAssertion({
+    binding: "x509", subject: { name: "Acme Newsroom" },
+    referencedAssertions: refs, privateKeyPem: pair.privateKey, audit: false,
+  });
+  function _vi(trustOpts) {
+    return cc.verifyIdentityAssertion(ia, pair.publicKey,
+      Object.assign({ referencedAssertions: refs, audit: false }, trustOpts));
+  }
+  var DAY = 86400000;
+  var now = Date.now();
+
+  // Valid chain leaf but an unparseable trust anchor → bad-anchor-cert
+  // (the chain parses first, then the anchor parse throws).
+  var leaf = _makeCert("Acme Leaf", null, false);
+  check("verifyIdentity valid chain + garbage anchor → bad-anchor-cert",
+    _vi({ identityCertChainPem: leaf.pem, identityTrustAnchorsPem: "not-a-pem" }).reason === "bad-anchor-cert");
+
+  // An expired leaf in the presented chain → leaf-expired.
+  var expiredLeaf = _makeCert("Expired Leaf", null, false, { from: now - DAY * 10, to: now - DAY * 5 });
+  check("verifyIdentity expired leaf cert → leaf-expired",
+    _vi({ identityCertChainPem: expiredLeaf.pem, identityTrustAnchorsPem: leaf.pem }).reason === "leaf-expired");
+
+  // A chain whose presented intermediate did NOT issue the leaf → broken-chain.
+  var root       = _makeCert("Chain Root", null, true);
+  var inter      = _makeCert("Chain Intermediate", { name: root.name, key: root.key }, true);
+  var leafSigned = _makeCert("Chain Leaf", { name: inter.name, key: inter.key }, false);
+  var rogueInter = _makeCert("Rogue Intermediate", null, true);
+  check("verifyIdentity leaf not issued by presented intermediate → broken-chain",
+    _vi({ identityCertChainPem: [leafSigned.pem, rogueInter.pem], identityTrustAnchorsPem: root.pem }).reason === "broken-chain");
+
+  // Chain links to an EXPIRED trust anchor → anchor-expired (the chain certs
+  // are valid; only the anchor's own validity window has passed).
+  var expiredRoot   = _makeCert("Expired Root", null, true, { from: now - DAY * 10, to: now - DAY * 5 });
+  var leafOfExpired = _makeCert("Leaf of Expired Root", { name: expiredRoot.name, key: expiredRoot.key }, false);
+  check("verifyIdentity chain to expired anchor → anchor-expired",
+    _vi({ identityCertChainPem: leafOfExpired.pem, identityTrustAnchorsPem: expiredRoot.pem }).reason === "anchor-expired");
+
+  // An expired NON-leaf cert in the presented chain → chain-cert-expired
+  // (the per-cert validity loop rejects at index !== 0, before linkage).
+  var validLeaf2 = _makeCert("Valid Leaf 2", null, false);
+  var expiredCa  = _makeCert("Expired CA", null, true, { from: now - DAY * 10, to: now - DAY * 5 });
+  check("verifyIdentity expired non-leaf chain cert → chain-cert-expired",
+    _vi({ identityCertChainPem: [validLeaf2.pem, expiredCa.pem], identityTrustAnchorsPem: leaf.pem }).reason === "chain-cert-expired");
+
+  // Trust anchors supplied as an ARRAY (not a single PEM string) still resolve
+  // — the [leaf, intermediate] chain verifies to the array-form root anchor.
+  var arrRoot  = _makeCert("Array Anchor Root", null, true);
+  var arrInter = _makeCert("Array Anchor Intermediate", { name: arrRoot.name, key: arrRoot.key }, true);
+  var arrLeaf  = _makeCert("Array Anchor Leaf", { name: arrInter.name, key: arrInter.key }, false);
+  var vArr = _vi({ identityCertChainPem: [arrLeaf.pem, arrInter.pem], identityTrustAnchorsPem: [arrRoot.pem] });
+  check("verifyIdentity array-form trust anchor verifies", vArr.valid === true && vArr.verified === true);
+
+  // A trust anchor of the wrong type (neither PEM string nor array) →
+  // bad-trust-anchors (the anchor-normalization null branch).
+  check("verifyIdentity wrong-type trust anchor → bad-trust-anchors",
+    _vi({ identityCertChainPem: leaf.pem, identityTrustAnchorsPem: 12345 }).reason === "bad-trust-anchors");
+}
+
+// CAWG identity-assertion + GB 45438-2025 CAC-label input branches the
+// happy-path checks miss: a non-string assertion signature, a malformed
+// verification key, the opts-omitted default, and the contentId length ceiling.
+async function runIdentityAndCacEdge() {
+  var pair = b.crypto.generateSigningKeyPair("ml-dsa-87");
+  var refs = [{ label: "c2pa.actions", data: { action: "c2pa.created" } }];
+
+  // A structurally valid signer_payload with a NON-STRING signature: the
+  // shape gate passes, then Buffer.from(number) throws → signature-base64-bad.
+  var spShaped = { signer_payload: { binding: "x509", subject: { name: "n" }, referenced_assertions: [] }, signature: 12345 };
+  check("verifyIdentity numeric signature returns signature-base64-bad",
+    cc.verifyIdentityAssertion(spShaped, pair.publicKey, { referencedAssertions: refs, audit: false }).reason === "signature-base64-bad");
+
+  var ia = cc.attachIdentityAssertion({
+    binding: "x509", subject: { name: "n" }, referencedAssertions: refs,
+    privateKeyPem: pair.privateKey, audit: false,
+  });
+
+  // A malformed (non-empty) verification key makes b.crypto.verify throw →
+  // the catch sets sigOk false → signature-mismatch (fail closed, no throw).
+  check("verifyIdentity malformed key → signature-mismatch (verify throw caught)",
+    cc.verifyIdentityAssertion(ia, "-----BEGIN PUBLIC KEY-----\nnope\n-----END PUBLIC KEY-----",
+      { referencedAssertions: refs, audit: false }).reason === "signature-mismatch");
+
+  // verifyIdentityAssertion with opts omitted defaults opts to {} then fails
+  // the required-referencedAssertions gate (never throws).
+  check("verifyIdentity with no opts → referenced-assertions-required",
+    cc.verifyIdentityAssertion(ia, pair.publicKey).reason === "referenced-assertions-required");
+
+  // cacImplicitLabel contentId over the 128-char ceiling → bad-content-id
+  // (the length branch, distinct from the illegal-character branch).
+  var e;
+  check("cacImplicitLabel over-long contentId (>128) rejected as bad-content-id",
+    (e = _err(function () {
+      cc.cacImplicitLabel({ providerName: "P", providerCode: "91110000600037341A",
+        contentId: "a".repeat(129), contentKind: "image", generatedAt: "2026-05-17T20:00:00Z" });
+    })) && e.code === "cac-implicit-label/bad-content-id");
+}
+
 async function run() {
   check("build is fn",    typeof b.contentCredentials.build === "function");
   check("sign is fn",     typeof b.contentCredentials.sign === "function");
@@ -688,6 +978,10 @@ async function run() {
   check("attachIdentityAssertion: bad binding refused", threw && threw.code === "content-credentials/bad-identity-binding");
 
   await runErrorPaths();
+  await runCoseEdgeCases();
+  await runX509ChainErrorBranches();
+  await runIdentityAndCacEdge();
+  await runAuditOnPaths();
 }
 
 module.exports = { run: run };
