@@ -1691,6 +1691,10 @@ async function run() {
   await testDispatchOwnFromAccountAllowed();
   await testDispatchOwnAccountAllowed();
   await testDispatchAccountAgnosticMethodAllowed();
+  await testDispatchArrayArgsRecursion();
+  await testDispatchMethodEntryNonFunctionSkipped();
+  await testDispatchAccountGateEdges();
+  await testDispatchBackRefMissingObjectKey();
   await testUploadForeignAccountRefused();
   await testDownloadForeignAccountRefused();
   // v0.11.29 — JMAP Push (EventSource SSE per RFC 8620 §7.3)
@@ -1702,12 +1706,16 @@ async function run() {
   await testEventSourceStateChangeAndCloseAfter();
   await testEventSourcePingZeroDisables();
   testEventSourceBadCloseAfter();
+  await testEventSourceSendThrowCleansUp();
+  await testEventSourceSubscribeAfterClose();
+  await testEventSourcePingTickEmits();
   // v0.11.30 — blob upload + download
   await testUploadHandlerHappyPath();
   await testUploadHandlerOversizeRefused();
   testUploadHandlerRefusesUnauth();
   testUploadHandlerWithoutBackend();
   testUploadHandlerRefusesBadAccountId();
+  await testUploadHandlerReqError();
   await testDownloadHandlerHappyPath();
   await testDownloadHandlerNotFound();
   testDownloadHandlerRefusesUnauth();
@@ -1729,6 +1737,16 @@ async function run() {
   await testEmailSubmissionSetUpdateCannotUnsendWithoutOnCancel();
   await testEmailSubmissionSetDestroy();
   testEmailSubmissionSetRefusesBadOpts();
+  await testEmailSubmissionSetBadMaxRecipients();
+  await testEmailSubmissionSetMissingAccountId();
+  await testEmailSubmissionSetCreateValidationErrors();
+  await testEmailSubmissionSetUpdatePatchNotObject();
+  await testEmailSubmissionSetUpdateOnCancelOutcomes();
+  await testEmailSubmissionSetDestroyEdges();
+  await testEmailSubmissionSetDeliveryStatusVariants();
+  await testEmailSubmissionSetCreateDeliverThrows();
+  await testEmailSubmissionSetOnCreatedThrows();
+  await testEmailSubmissionSetIdentitiesReturnsNull();
   // Handlers driven over real localhost HTTP + WebSocket connections
   var wtt = helpers.withTestTimeout;
   try {
@@ -1740,6 +1758,9 @@ async function run() {
     await wtt("download handler",  testDownloadHandler);
     await wtt("event source",      testEventSource);
     await wtt("web socket",        testWebSocket);
+    await wtt("download router params", testDownloadRouterSuppliedParams);
+    await wtt("ws non-jmap subprotocol", testWebSocketNonJmapSubprotocol);
+    await wtt("ws push lifecycle edges", testWebSocketPushLifecycleEdges);
   } finally {
     await _drainTcpHandles();
   }
@@ -1938,6 +1959,482 @@ function testEmailSubmissionSetRefusesBadOpts() {
   expectThrow("refuses missing identities",
     { deliver: function () {}, lookupEmail: function () {} },
     "mail-server-jmap/no-identities");
+}
+
+// ==========================================================================
+// Dispatch-level branches: array-arg recursion, non-fn method skip, account
+// gate edge shapes, JSON-Pointer missing-key (RFC 8620 §3.6.1 / §3.7)
+// ==========================================================================
+async function testDispatchArrayArgsRecursion() {
+  // Array-valued args force _resolveBackRefs down its Array.isArray branch,
+  // recursing element-by-element (including nested objects/arrays).
+  var received = null;
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return { primaryAccounts: {}, accounts: {} }; },
+    methods: { "Bulk/set": async function (actor, args) { received = args; return { ok: true }; } },
+  });
+  var rv = await jmap.dispatch({ id: "a" }, {
+    using: [], methodCalls: [["Bulk/set", { ids: ["x1", "x2", { nested: ["deep"] }] }, "c0"]],
+  });
+  check("array-valued args resolved intact through recursion",
+    received && Array.isArray(received.ids) && received.ids[0] === "x1" &&
+    received.ids[2] && received.ids[2].nested[0] === "deep");
+  check("array-args method → non-error response", rv.methodResponses[0][0] === "Bulk/set");
+}
+
+async function testDispatchMethodEntryNonFunctionSkipped() {
+  // A methods map entry whose value is not a function is skipped at registry
+  // build time — it never registers, so a call to it is unknownMethod.
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return { primaryAccounts: {}, accounts: {} }; },
+    methods: { "Good/x": async function () { return { ok: 1 }; }, "Bad/y": 12345 },
+  });
+  var rv = await jmap.dispatch({ id: "a" }, {
+    using: [], methodCalls: [["Good/x", {}, "c0"], ["Bad/y", {}, "c1"]],
+  });
+  check("non-function method entry skipped (Good/x dispatches)",
+    rv.methodResponses[0][0] === "Good/x" && rv.methodResponses[0][1].ok === 1);
+  check("non-function method entry unregistered → unknownMethod",
+    rv.methodResponses[1][0] === "error" &&
+    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:unknownMethod");
+}
+
+async function testDispatchAccountGateEdges() {
+  // accountsFor returns null → empty permitted set → any named accountId is
+  // rejected fail-closed (_permittedAccountIds info/accounts fallbacks).
+  var jmapNull = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return null; },
+    methods: { "Mailbox/get": async function () { return { list: [] }; } },
+  });
+  var rvNull = await jmapNull.dispatch({ id: "a" }, {
+    using: [], methodCalls: [["Mailbox/get", { accountId: "A1" }, "c0"]],
+  });
+  check("accountsFor null → accountNotFound (fail-closed)",
+    rvNull.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+
+  var reached = { nullId: false };
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return { primaryAccounts: {}, accounts: { A1: { name: "x" } } }; },
+    methods: { "Mailbox/get": async function (actor, args) { reached.nullId = true; return { got: args.accountId }; } },
+  });
+  // accountId:null → the gate skips a null-valued *AccountId key (method runs).
+  var rvNullAcc = await jmap.dispatch({ id: "a" }, {
+    using: [], methodCalls: [["Mailbox/get", { accountId: null }, "c0"]],
+  });
+  check("accountId:null skips gate → method runs",
+    reached.nullId === true && rvNullAcc.methodResponses[0][0] === "Mailbox/get");
+  // non-string accountId (number) → denied with deniedAccountId coerced to null.
+  var rvNum = await jmap.dispatch({ id: "a" }, {
+    using: [], methodCalls: [["Mailbox/get", { accountId: 999 }, "c0"]],
+  });
+  check("non-string accountId → accountNotFound (denied)",
+    rvNum.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+}
+
+async function testDispatchBackRefMissingObjectKey() {
+  // JSON-Pointer walk into an object that lacks the final segment → undefined
+  // → invalidResultReference (the hasOwnProperty guard, not the array guard).
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: async function () { return { primaryAccounts: {}, accounts: {} }; },
+    methods: {
+      "First/get":  async function () { return { list: [{ id: "x1" }] }; },
+      "Second/use": async function (actor, args) { return { received: args }; },
+    },
+  });
+  var rv = await jmap.dispatch({ id: "a" }, {
+    using: [], methodCalls: [
+      ["First/get", {}, "c0"],
+      ["Second/use", { "#miss": { resultOf: "c0", name: "First/get", path: "/list/0/nope" } }, "c1"],
+    ],
+  });
+  check("back-ref to missing object key → invalidResultReference",
+    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+}
+
+// ==========================================================================
+// eventSourceHandler internal branches driven through a mock req/res:
+// _send write-throw cleanup, subscribe-resolves-after-close, ping keepalive
+// ==========================================================================
+async function testEventSourceSendThrowCleansUp() {
+  // A res.write that throws while emitting a `state` frame drives _send's
+  // catch → _cleanup (the socket-torn-down path).
+  var emitFn = null;
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function (actor, types, fn) { emitFn = fn; return Promise.resolve(function () {}); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var status = 200; var ended = false; var listeners = {};
+  var req = {
+    url: "/jmap/eventsource?ping=0", user: { id: "u1" },
+    on: function (ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); },
+    _fire: function (ev) { (listeners[ev] || []).forEach(function (fn) { try { fn(); } catch (_e) { /* ignore */ } }); },
+  };
+  var res = {
+    get statusCode() { return status; }, set statusCode(v) { status = v; },
+    setHeader: function () {},
+    write: function (chunk) { if (String(chunk).indexOf("event: state") === 0) throw new Error("socket gone"); },
+    end: function () { ended = true; },
+  };
+  jmap.eventSourceHandler(req, res);
+  await helpers.waitUntil(function () { return typeof emitFn === "function"; },
+    { timeoutMs: 5000, label: "es-send-throw: subscribePush resolved" });
+  emitFn({ kind: "StateChange", changed: { A1: { Email: "s" } } });
+  check("SSE _send write-throw triggers cleanup (res.end called)", ended === true);
+}
+
+async function testEventSourceSubscribeAfterClose() {
+  // Client disconnects (req 'close' → _cleanup, closed=true) BEFORE
+  // subscribePush resolves → the late-resolving handle is unsubscribed.
+  var resolveSub = null; var unsubCalled = false;
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function () { return new Promise(function (r) { resolveSub = r; }); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource?ping=0");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  await helpers.waitUntil(function () { return typeof resolveSub === "function"; },
+    { timeoutMs: 5000, label: "es-after-close: subscribePush invoked" });
+  mr.req._fire("close");
+  resolveSub(function () { unsubCalled = true; });
+  await helpers.waitUntil(function () { return unsubCalled === true; },
+    { timeoutMs: 5000, label: "es-after-close: late unsubscribe invoked" });
+  check("SSE subscribe resolves after close → unsubscribe invoked", unsubCalled === true);
+}
+
+async function testEventSourcePingTickEmits() {
+  // ping=5 is the RFC 8620 §7.3 floor; the keepalive interval fires an
+  // `event: ping` frame carrying the negotiated interval. Genuine timer
+  // latency (5 s min) — polled via waitUntil.
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function () { return Promise.resolve(function () {}); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  var mr = _makeMockReqRes("/jmap/eventsource?ping=5");
+  jmap.eventSourceHandler(mr.req, mr.res);
+  try {
+    await helpers.waitUntil(function () { return /event: ping/.test(mr.res._buf()); },
+      { timeoutMs: 8000, label: "es-ping: keepalive ping frame emitted" });
+    check("SSE ping keepalive frame emitted with interval",
+      /event: ping/.test(mr.res._buf()) && /"interval":5/.test(mr.res._buf()));
+  } finally {
+    mr.req._fire("close");   // clears the ping interval
+  }
+}
+
+// ==========================================================================
+// uploadHandler req 'error' event → 400 abort
+// ==========================================================================
+async function testUploadHandlerReqError() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {}, uploadBlob: function () { return Promise.resolve({ blobId: "x" }); } },
+    accountsFor: async function () { return { accounts: { A1: { name: "x" } } }; },
+    methods: {},
+  });
+  var status = 200; var ended = false; var listeners = {};
+  var req = {
+    url: "/jmap/upload/A1", user: { id: "u1" }, headers: { "content-type": "text/plain" },
+    on: function (ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); },
+    _fire: function (ev, a) { (listeners[ev] || []).forEach(function (fn) { try { fn(a); } catch (_e) { /* ignore */ } }); },
+  };
+  var res = {
+    get statusCode() { return status; }, set statusCode(v) { status = v; },
+    setHeader: function () {}, write: function () {}, end: function () { ended = true; },
+  };
+  jmap.uploadHandler(req, res);
+  req._fire("error", new Error("socket error mid-upload"));
+  check("upload req 'error' → 400", status === 400);
+  check("upload req 'error' → response ended", ended === true);
+}
+
+// ==========================================================================
+// downloadHandler router-supplied req.params path (RFC 8620 §6.2)
+// ==========================================================================
+async function testDownloadRouterSuppliedParams() {
+  var call = null;
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      downloadBlob: function (a, accountId, blobId) {
+        call = { accountId: accountId, blobId: blobId };
+        return Promise.resolve({ bytes: Buffer.from("rp"), type: "text/plain" });
+      },
+    },
+    accountsFor: DEFAULT_ACCOUNTS, methods: {},
+  });
+  var s = await _startHttp(jmap, { forceDownload: true, params: { accountId: "A1", blobId: "blob_7", name: "n.txt" } });
+  try {
+    var r = await _req(s.port, { path: "/whatever/the/router/mounted" });
+    check("download router-supplied params → 200", r.status === 200);
+    check("download router-supplied maps params to backend",
+      call && call.accountId === "A1" && call.blobId === "blob_7");
+  } finally { await _stop(s.server); }
+}
+
+// ==========================================================================
+// webSocketHandler: non-jmap subprotocol refusal (RFC 8887 §3.1)
+// ==========================================================================
+async function testWebSocketNonJmapSubprotocol() {
+  var jmap = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} }, accountsFor: DEFAULT_ACCOUNTS, methods: {},
+  });
+  var s = await _startHttp(jmap, {});
+  try {
+    var client = _wsConnect(s.port, { subprotocols: ["not-jmap"] });
+    var closed = false; var errSeen = null;
+    client.on("close", function () { closed = true; });
+    client.on("error", function (e) { errSeen = e; });
+    await _wsWait(client, function () { return closed || errSeen !== null; },
+      "ws non-jmap: server refused the connection");
+    check("ws non-jmap subprotocol → server refused (closed/errored)", closed || errSeen !== null);
+    check("ws non-jmap → never negotiated jmap", client.subprotocol !== "jmap");
+  } finally { await _stop(s.server); }
+}
+
+// ==========================================================================
+// webSocketHandler push lifecycle edges: late-cleanup when disabled during
+// subscribe setup; unsubscribe on connection close (RFC 8887 §5)
+// ==========================================================================
+async function testWebSocketPushLifecycleEdges() {
+  // (a) PushEnable, PushDisable, THEN subscribePush resolves → the deferred
+  //     handle is torn down by the late-cleanup path (!pushEnabled).
+  var cap = {};
+  var jmapLate = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function () {
+        cap.enableCalls = (cap.enableCalls || 0) + 1;
+        return new Promise(function (r) { cap.resolveSub = r; });
+      },
+    },
+    accountsFor: DEFAULT_ACCOUNTS,
+    methods: { "Core/echo": async function (a, args) { return { hi: args.hi }; } },
+  });
+  var s = await _startHttp(jmapLate, {});
+  try {
+    var client = _wsConnect(s.port);
+    var msgs = [];
+    client.on("message", function (d) { msgs.push(typeof d === "string" ? d : d.toString("utf8")); });
+    client.on("error", function () {});
+    await _wsWait(client, function () { return client.readyState === "open"; }, "ws-late: open");
+    client.send(JSON.stringify({ "@type": "WebSocketPushEnable" }));
+    await _wsWait(client, function () { return typeof cap.resolveSub === "function"; }, "ws-late: subscribePush called");
+    client.send(JSON.stringify({ "@type": "WebSocketPushDisable" }));
+    // A Request AFTER the Disable: receiving its Response proves the Disable
+    // was processed in-order (pushEnabled=false) before we resolve the setup.
+    client.send(JSON.stringify({ "@type": "Request", id: "q1", using: [], methodCalls: [["Core/echo", { hi: 1 }, "c0"]] }));
+    await _wsWait(client, function () { return msgs.some(function (m) { return /"requestId":"q1"/.test(m); }); },
+      "ws-late: post-disable response received");
+    cap.resolveSub(function () { cap.unsub = true; });
+    await _wsWait(client, function () { return cap.unsub === true; }, "ws-late: deferred unsubscribe ran");
+    check("ws push late-cleanup unsubscribes a handle that resolved after disable", cap.unsub === true);
+    client.close(1000, "bye");
+    await _wsWait(client, function () { return client.readyState === "closed"; }, "ws-late: closed");
+  } finally { await _stop(s.server); }
+
+  // (b) PushEnable resolves (pushUnsubscribe set), THEN the connection closes
+  //     → conn 'close' runs the active unsubscribe.
+  var cap2 = {};
+  var jmapClose = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function (a, dt, emitFn) { cap2.emit = emitFn; return Promise.resolve(function () { cap2.unsub = true; }); },
+    },
+    accountsFor: DEFAULT_ACCOUNTS, methods: {},
+  });
+  var s2 = await _startHttp(jmapClose, {});
+  try {
+    var c2 = _wsConnect(s2.port);
+    c2.on("error", function () {});
+    await _wsWait(c2, function () { return c2.readyState === "open"; }, "ws-close: open");
+    c2.send(JSON.stringify({ "@type": "WebSocketPushEnable" }));
+    await _wsWait(c2, function () { return typeof cap2.emit === "function"; }, "ws-close: push enabled");
+    cap2.emit(null);                       // guard: falsy event ignored
+    cap2.emit({ kind: "StateChange" });    // no `changed` → default {} fallback
+    cap2.emit({ kind: "Nope" });           // non-StateChange ignored
+    c2.close(1000, "bye");
+    await _wsWait(c2, function () { return cap2.unsub === true; }, "ws-close: unsub on conn close");
+    check("ws push conn-close unsubscribes the active subscription", cap2.unsub === true);
+  } finally { await _stop(s2.server); }
+}
+
+// ==========================================================================
+// emailSubmissionSetHandler — option-default + create/update/destroy branches
+// (RFC 8621 §7.5)
+// ==========================================================================
+function testEmailSubmissionSetBadMaxRecipients() {
+  function expectThrow(label, maxRecipients) {
+    var threw = null;
+    try {
+      b.mail.server.jmap.emailSubmissionSetHandler({
+        deliver: function () {}, lookupEmail: function () {}, identities: function () {},
+        maxRecipients: maxRecipients,
+      });
+    } catch (e) { threw = e; }
+    check(label, threw && (threw.code || "").indexOf("mail-server-jmap/bad-max-recipients") !== -1);
+  }
+  expectThrow("negative maxRecipients rejected", -5);
+  expectThrow("non-number maxRecipients rejected", "lots");
+  expectThrow("non-finite maxRecipients rejected", Infinity);
+}
+
+async function testEmailSubmissionSetMissingAccountId() {
+  var es = _makeESHandler();
+  var threw = null;
+  try { await es.handler({}, {}, {}); } catch (e) { threw = e; }
+  check("EmailSubmission/set missing accountId → invalidArguments throw",
+    threw && (threw.code || "").indexOf("invalidArguments") !== -1);
+  var threw2 = null;
+  try { await es.handler({}, null, {}); } catch (e) { threw2 = e; }
+  check("EmailSubmission/set null args → invalidArguments throw",
+    threw2 && (threw2.code || "").indexOf("invalidArguments") !== -1);
+}
+
+async function testEmailSubmissionSetCreateValidationErrors() {
+  var es = _makeESHandler();
+  async function notCreated(sub) {
+    var rv = await es.handler({}, { accountId: "A1", create: { c1: sub } }, {});
+    return rv.notCreated && rv.notCreated.c1;
+  }
+  var eNull = await notCreated(null);
+  check("create sub null → invalidArguments", eNull && eNull.type === "invalidArguments");
+  var eArr = await notCreated([1, 2]);
+  check("create sub array → invalidArguments", eArr && eArr.type === "invalidArguments");
+  var eNoId = await notCreated({ emailId: "E1", envelope: {} });
+  check("create no identityId → invalidProperties(identityId)",
+    eNoId && eNoId.type === "invalidProperties" && eNoId.properties.indexOf("identityId") !== -1);
+  var eNoEmail = await notCreated({ identityId: "I1", envelope: {} });
+  check("create no emailId → invalidProperties(emailId)",
+    eNoEmail && eNoEmail.type === "invalidProperties" && eNoEmail.properties.indexOf("emailId") !== -1);
+  var eNoEnv = await notCreated({ identityId: "I1", emailId: "E1" });
+  check("create no envelope → invalidProperties(envelope)",
+    eNoEnv && eNoEnv.type === "invalidProperties" && eNoEnv.properties.indexOf("envelope") !== -1);
+  var eNoMailFrom = await notCreated({ identityId: "I1", emailId: "E1", envelope: { rcptTo: [{ email: "a@x.com" }] } });
+  check("create no mailFrom.email → invalidProperties(envelope/mailFrom)",
+    eNoMailFrom && eNoMailFrom.type === "invalidProperties" &&
+    eNoMailFrom.properties.indexOf("envelope/mailFrom") !== -1);
+}
+
+async function testEmailSubmissionSetUpdatePatchNotObject() {
+  var es = _makeESHandler();
+  var rv = await es.handler({}, { accountId: "A1", update: { S1: "notanobject", S2: [1, 2] } }, {});
+  check("update patch string → invalidPatch", rv.notUpdated && rv.notUpdated.S1.type === "invalidPatch");
+  check("update patch array → invalidPatch", rv.notUpdated && rv.notUpdated.S2.type === "invalidPatch");
+}
+
+async function testEmailSubmissionSetUpdateOnCancelOutcomes() {
+  var esFalse = _makeESHandler({ onCancel: async function () { return false; } });
+  var rvF = await esFalse.handler({}, { accountId: "A1", update: { S1: { undoStatus: "canceled" } } }, {});
+  check("onCancel false → cannotUnsend", rvF.notUpdated && rvF.notUpdated.S1.type === "cannotUnsend");
+
+  var esThrow = _makeESHandler({ onCancel: async function () { throw new Error("cancel boom"); } });
+  var rvT = await esThrow.handler({}, { accountId: "A1", update: { S1: { undoStatus: "canceled" } } }, {});
+  check("onCancel throws (plain Error) → notUpdated serverFail shape",
+    rvT.notUpdated && rvT.notUpdated.S1.type === "serverFail");
+}
+
+async function testEmailSubmissionSetDestroyEdges() {
+  var esNoOp = _makeESHandler();   // no onDestroyed configured
+  var rv = await esNoOp.handler({}, { accountId: "A1", destroy: [123, "", "S3"] }, {});
+  check("destroy non-string id → notDestroyed invalidArguments",
+    rv.notDestroyed && rv.notDestroyed["123"] && rv.notDestroyed["123"].type === "invalidArguments");
+  check("destroy empty id → notDestroyed invalidArguments",
+    rv.notDestroyed && rv.notDestroyed[""] && rv.notDestroyed[""].type === "invalidArguments");
+  check("destroy valid id with no onDestroyed → noop accepted",
+    Array.isArray(rv.destroyed) && rv.destroyed.indexOf("S3") !== -1);
+
+  var esThrow = _makeESHandler({ onDestroyed: async function () { throw new Error("destroy boom"); } });
+  var rvT = await esThrow.handler({}, { accountId: "A1", destroy: ["S9"] }, {});
+  check("onDestroyed throws → notDestroyed serverFail",
+    rvT.notDestroyed && rvT.notDestroyed.S9 && rvT.notDestroyed.S9.type === "serverFail");
+}
+
+async function testEmailSubmissionSetDeliveryStatusVariants() {
+  // deferred + failed + smtpReply-default fallbacks across all three loops.
+  var es = _makeESHandler({
+    deliver: async function () {
+      return {
+        delivered: [{ recipient: "d@x.com" }],   // no smtpReply → "250 Accepted"
+        deferred:  [{ recipient: "q@x.com" }],   // no smtpReply → "451 ..."
+        failed:    [{ recipient: "f@x.com" }],   // no smtpReply → "550 ..."
+      };
+    },
+  });
+  var rv = await es.handler({}, {
+    accountId: "A1",
+    create: { c1: { identityId: "I1", emailId: "E1",
+      envelope: { mailFrom: { email: "ops@example.com" },
+        rcptTo: [{ email: "d@x.com" }, { email: "q@x.com" }, { email: "f@x.com" }] } } },
+  }, {});
+  var ds = rv.created.c1.deliveryStatus;
+  check("delivered → yes + default 250 smtpReply", ds["d@x.com"].delivered === "yes" && /^250/.test(ds["d@x.com"].smtpReply));
+  check("deferred → queued + default 451 smtpReply", ds["q@x.com"].delivered === "queued" && /^451/.test(ds["q@x.com"].smtpReply));
+  check("failed → no + default 550 smtpReply", ds["f@x.com"].delivered === "no" && /^550/.test(ds["f@x.com"].smtpReply));
+
+  // deliver returns {} → every deliveryStatus loop's source array falls back
+  // to [] (empty deliveryStatus).
+  var esEmpty = _makeESHandler({ deliver: async function () { return {}; } });
+  var rvE = await esEmpty.handler({}, {
+    accountId: "A1",
+    create: { c1: { identityId: "I1", emailId: "E1",
+      envelope: { mailFrom: { email: "ops@example.com" }, rcptTo: [{ email: "a@x.com" }] } } },
+  }, {});
+  check("empty deliver result → empty deliveryStatus",
+    rvE.created.c1.deliveryStatus && Object.keys(rvE.created.c1.deliveryStatus).length === 0);
+}
+
+async function testEmailSubmissionSetCreateDeliverThrows() {
+  // deliver throwing a plain Error (no _jmapType) surfaces as serverFail via
+  // the create-loop catch + _jmapErrorShape fallback.
+  var es = _makeESHandler({ deliver: async function () { throw new Error("mta down"); } });
+  var rv = await es.handler({}, {
+    accountId: "A1",
+    create: { c1: { identityId: "I1", emailId: "E1",
+      envelope: { mailFrom: { email: "ops@example.com" }, rcptTo: [{ email: "a@x.com" }] } } },
+  }, {});
+  check("deliver throws plain Error → notCreated serverFail",
+    rv.notCreated && rv.notCreated.c1 && rv.notCreated.c1.type === "serverFail");
+}
+
+async function testEmailSubmissionSetOnCreatedThrows() {
+  // onCreated is an operator persistence side-effect — a throw there is
+  // drop-silent and the create still succeeds.
+  var es = _makeESHandler({ onCreated: async function () { throw new Error("persist boom"); } });
+  var rv = await es.handler({}, {
+    accountId: "A1",
+    create: { c1: { identityId: "I1", emailId: "E1",
+      envelope: { mailFrom: { email: "ops@example.com" }, rcptTo: [{ email: "a@x.com" }] } } },
+  }, {});
+  check("onCreated throw is drop-silent → create still succeeds",
+    rv.created && rv.created.c1 && typeof rv.created.c1.id === "string");
+}
+
+async function testEmailSubmissionSetIdentitiesReturnsNull() {
+  // identities() returning null falls back to an empty list → identityNotFound.
+  var es = _makeESHandler({ identities: function () { return null; } });
+  var rv = await es.handler({}, {
+    accountId: "A1",
+    create: { c1: { identityId: "I1", emailId: "E1",
+      envelope: { mailFrom: { email: "ops@example.com" }, rcptTo: [{ email: "a@x.com" }] } } },
+  }, {});
+  check("identities()→null → identityNotFound (empty-list fallback)",
+    rv.notCreated && rv.notCreated.c1 && rv.notCreated.c1.type === "identityNotFound");
 }
 
 module.exports = { run: run };
