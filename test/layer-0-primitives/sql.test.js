@@ -1203,6 +1203,796 @@ async function run() {
 
   // ==== ordinary builder surface (aggregates, joins, grouping, DDL option branches) ====
   await runBuilderSurface();
+
+  // ==== error / adversarial / defensive / option-default branch coverage ====
+  runDialectTypeAndErrorBranches();
+  runJsonbAndWhereFamilyBranches();
+  runRawFragmentAndEmitBranches();
+  runColumnGateCteAndProjectionBranches();
+  runInsertUpdateDeleteBranches();
+  runUpsertBranches();
+  runDdlBranches();
+  runRlsCatalogPragmaDefineBranches();
+}
+
+// The framework's dialect / logical-type normalizers reject an off-allowlist
+// dialect at the config-time entry point, map every logical DDL type token to
+// its dialect-final form, and refuse a non-identifier in identifier position.
+function runDialectTypeAndErrorBranches() {
+  var sql = b.sql;
+
+  // Off-allowlist dialect throws at the entry point (every verb / DDL routes
+  // through _normDialect).
+  rejects("select on an unknown dialect refused", function () {
+    return sql.select("t", { dialect: "oracle" });
+  }, "sql-builder/bad-dialect");
+  rejects("createTable on an unknown dialect refused", function () {
+    return sql.createTable("t", [{ name: "a", type: "int" }], { dialect: "db2" });
+  }, "sql-builder/bad-dialect");
+
+  // The SqlBuilderError public constructor defaults its code when none is
+  // supplied (the fallback that keeps `.code` always present).
+  check("SqlBuilderError defaults its code",
+        new sql.SqlBuilderError("boom").code === "sql-builder/invalid");
+  check("SqlBuilderError keeps an explicit code",
+        new sql.SqlBuilderError("boom", "sql-builder/custom").code === "sql-builder/custom");
+
+  // Logical DDL types map to their dialect-final tokens - the binary / real /
+  // numeric / timestamp / json families across the three dialects.
+  check("blob -> BYTEA on postgres",
+        sql.createTable("t", [{ name: "d", type: "blob" }], { dialect: "postgres" }).sql ===
+          'CREATE TABLE IF NOT EXISTS t ("d" BYTEA)');
+  check("blob -> LONGBLOB on mysql",
+        sql.createTable("t", [{ name: "d", type: "blob" }], { dialect: "mysql" }).sql ===
+          "CREATE TABLE IF NOT EXISTS t (`d` LONGBLOB)");
+  check("bytea alias -> BLOB on sqlite",
+        sql.createTable("t", [{ name: "d", type: "bytea" }]).sql ===
+          'CREATE TABLE IF NOT EXISTS t ("d" BLOB)');
+  check("binary alias -> LONGBLOB on mysql",
+        sql.createTable("t", [{ name: "d", type: "binary" }], { dialect: "mysql" }).sql ===
+          "CREATE TABLE IF NOT EXISTS t (`d` LONGBLOB)");
+  check("float -> REAL",
+        sql.createTable("t", [{ name: "d", type: "float" }]).sql.indexOf('"d" REAL') !== -1);
+  check("decimal -> NUMERIC",
+        sql.createTable("t", [{ name: "d", type: "decimal" }]).sql.indexOf('"d" NUMERIC') !== -1);
+  check("timestamp -> TIMESTAMP",
+        sql.createTable("t", [{ name: "d", type: "timestamp" }]).sql.indexOf('"d" TIMESTAMP') !== -1);
+  check("json -> JSON on mysql",
+        sql.createTable("t", [{ name: "d", type: "json" }], { dialect: "mysql" }).sql.indexOf("`d` JSON") !== -1);
+
+  // A non-string / empty column name is refused in identifier position - both
+  // the list-validated path (columns) and the expression path (orderBy).
+  rejects("columns([<non-string>]) refused (identifier validate)", function () {
+    return sql.insert("t").columns([5]);
+  }, "sql-builder/bad-column");
+  rejects("orderBy(<non-string>) refused (qualified-column validate)", function () {
+    return sql.select("t").orderBy(123);
+  }, "sql-builder/bad-column");
+}
+
+// The JSONB operator family + the where-helper set: containment / key-existence
+// shape checks (Postgres-only), the FTS MATCH operator through _cmp, the OR
+// object / 3-arg forms, and the array / json_each / between membership helpers.
+function runJsonbAndWhereFamilyBranches() {
+  var sql = b.sql;
+  var pg = function () { return sql.select("t", { dialect: "postgres" }); };
+
+  // @> containment: a JSON-string operand is parsed + validated; an object
+  // operand is walked then canonically stringified; a non-JSON string refuses.
+  check("where @> with an object operand binds canonical JSON",
+        JSON.stringify(pg().where("meta", "@>", { a: 1 }).toSql().params) === '["{\\"a\\":1}"]');
+  check("where @> with a JSON-string operand binds it",
+        pg().where("meta", "@>", '{"a":1}').toSql().sql === 'SELECT * FROM t WHERE "meta" @> ?');
+  rejects("where @> with an invalid JSON string refused", function () {
+    return pg().where("meta", "@>", "not json").toSql();
+  }, "sql-builder/bad-jsonb-value");
+
+  // Key-existence operators: `?` needs a string key; `?|`/`?&` need a non-empty
+  // array; they emit the jsonb_exists* function family (placeholder-safe).
+  rejects("where '?' with a non-string key refused", function () {
+    return pg().where("meta", "?", 123).toSql();
+  }, "sql-builder/bad-jsonb-key");
+  rejects("where '?|' with a non-array refused", function () {
+    return pg().where("meta", "?|", "x").toSql();
+  }, "sql-builder/bad-jsonb-keys");
+  rejects("where '?&' with an empty array refused", function () {
+    return pg().where("meta", "?&", []).toSql();
+  }, "sql-builder/bad-jsonb-keys");
+  check("where '?&' emits jsonb_exists_all binding the key array",
+        pg().where("meta", "?&", ["a", "b"]).toSql().sql ===
+          'SELECT * FROM t WHERE jsonb_exists_all("meta", ?)');
+  check("where '?' emits jsonb_exists binding the single key",
+        pg().where("meta", "?", "k").toSql().sql ===
+          'SELECT * FROM t WHERE jsonb_exists("meta", ?)');
+
+  // The FTS MATCH operator through the generic whereOp path: non-sqlite refuses,
+  // an empty query string refuses, a valid one binds.
+  rejects("whereOp(col, 'MATCH', ...) on postgres refused", function () {
+    return pg().whereOp("c", "MATCH", "x").toSql();
+  }, "sql-builder/match-sqlite-only");
+  rejects("whereOp(col, 'MATCH', '') refused (empty query)", function () {
+    return sql.select("t").whereOp("c", "MATCH", "").toSql();
+  }, "sql-builder/bad-match");
+  check("whereMatch binds the FTS query as one placeholder",
+        sql.select("t").whereMatch("fts", "hello").toSql().sql ===
+          'SELECT * FROM t WHERE "fts" MATCH ?');
+  check("whereOp(col, 'MATCH', term) on sqlite binds the query",
+        sql.select("t").whereOp("fts", "MATCH", "hello").toSql().sql ===
+          'SELECT * FROM t WHERE "fts" MATCH ?');
+  check("orWhereMatch OR-joins an FTS MATCH on sqlite",
+        sql.select("t").where("a", 1).orWhereMatch("fts", "x").toSql().sql ===
+          'SELECT * FROM t WHERE "a" = ? OR "fts" MATCH ?');
+  rejects("orWhereMatch on a non-sqlite dialect refused", function () {
+    return sql.select("t", { dialect: "postgres" }).orWhereMatch("fts", "x");
+  }, "sql-builder/match-sqlite-only");
+  rejects("orWhereMatch with an empty query refused", function () {
+    return sql.select("t").orWhereMatch("fts", "");
+  }, "sql-builder/bad-match");
+
+  // orWhere object-form fans out to OR-joined equalities; orWhere 3-arg keeps
+  // the operator.
+  check("orWhere({obj}) OR-joins each key equality",
+        sql.select("t").where("a", 1).orWhere({ b: 2, c: 3 }).toSql().sql ===
+          'SELECT * FROM t WHERE "a" = ? OR "b" = ? OR "c" = ?');
+  check("orWhere(field, op, value) keeps the operator",
+        sql.select("t").where("a", 1).orWhere("b", ">", 2).toSql().sql ===
+          'SELECT * FROM t WHERE "a" = ? OR "b" > ?');
+
+  // Array / json_each / between membership helpers.
+  check("whereBetween emits a BETWEEN pair",
+        sql.select("t").whereBetween("age", 18, 65).toSql().sql ===
+          'SELECT * FROM t WHERE "age" BETWEEN ? AND ?');
+  check("whereInArray on postgres binds the whole array to = ANY(?)",
+        sql.select("t", { dialect: "postgres" }).whereInArray("id", [1, 2, 3]).toSql().sql ===
+          'SELECT * FROM t WHERE "id" = ANY(?)');
+  rejects("whereInArray with an undefined element refused", function () {
+    return sql.select("t").whereInArray("id", [1, undefined]);
+  }, "sql-builder/bad-in-value");
+  check("whereInJsonEach unrolls a JSON-array string via json_each",
+        sql.select("t").whereInJsonEach("id", "[1,2,3]").toSql().sql ===
+          'SELECT * FROM t WHERE "id" IN (SELECT value FROM json_each(?))');
+  rejects("whereInJsonEach with a non-string refused", function () {
+    return sql.select("t").whereInJsonEach("id", 5);
+  }, "sql-builder/bad-json-each");
+  rejects("whereSub with a non-builder subquery refused", function () {
+    return sql.select("t").whereSub("c", "=", 5);
+  }, "sql-builder/bad-subquery");
+  rejects("whereLike with an unknown mode refused", function () {
+    return sql.select("t").whereLike("n", "x", "weird");
+  }, "sql-builder/bad-like-mode");
+
+  // `col != NULL` / `col <> NULL` are UNKNOWN in SQL - refused like `= NULL`.
+  rejects("where(col, '!=', null) refused (never true in SQL)", function () {
+    return sql.select("t").where("a", "!=", null);
+  }, "sql-builder/null-equality");
+  rejects("where(col, '<>', null) refused (never true in SQL)", function () {
+    return sql.select("t").where("a", "<>", null);
+  }, "sql-builder/null-equality");
+}
+
+// The raw-fragment guard's shape / parity checks and the final output gate's
+// param-shape refusals + the positional-translation terminal.
+function runRawFragmentAndEmitBranches() {
+  var sql = b.sql;
+
+  rejects("whereRaw with a non-string sql refused", function () {
+    return sql.select("t").whereRaw(123, []);
+  }, "sql-builder/bad-raw");
+  rejects("whereRaw with an empty sql refused", function () {
+    return sql.select("t").whereRaw("");
+  }, "sql-builder/bad-raw");
+  check("whereRaw coerces a scalar param into a one-element bind list",
+        JSON.stringify(sql.select("t").whereRaw("c = ?", 5).toSql().params) === "[5]");
+  check("whereRaw with no params + zero placeholders binds nothing",
+        sql.select("t").whereRaw('"a" IS NOT NULL').toSql().params.length === 0);
+  rejects("whereRaw placeholder/param count mismatch refused", function () {
+    return sql.select("t").whereRaw("c = ?", []).toSql();
+  }, "sql-builder/placeholder-mismatch");
+  // A raw fragment carrying a double-quoted identifier exercises the
+  // quote-skipping pass of the raw JSONB-key-operator scanner - including a
+  // doubled-quote escape inside the identifier.
+  check("whereRaw passes a double-quoted identifier fragment through",
+        sql.select("t").whereRaw('"c" = ?', [1]).toSql().sql ===
+          'SELECT * FROM t WHERE ("c" = ?)');
+  check("whereRaw skips a doubled-quote escape inside a quoted identifier",
+        sql.select("t").whereRaw('"a""b" = ?', [1]).toSql().sql ===
+          'SELECT * FROM t WHERE ("a""b" = ?)');
+
+  // The output gate refuses a param that is not a concrete bindable value.
+  rejects("binding a function value refused at the output gate", function () {
+    return sql.insert("t").values({ a: function () {} }).toSql();
+  }, "sql-builder/bad-param-value");
+  rejects("binding a symbol value refused at the output gate", function () {
+    return sql.insert("t").values({ a: Symbol("x") }).toSql();
+  }, "sql-builder/bad-param-value");
+
+  // toExternalSql: the free-function form on a builder + the chainable form
+  // defaulting to the builder's own dialect both translate ? -> $N on postgres.
+  check("toExternalSql(builder, 'postgres') translates ? -> $N",
+        sql.toExternalSql(sql.select("t", { dialect: "postgres" }).where("a", 1), "postgres").sql ===
+          'SELECT * FROM t WHERE "a" = $1');
+  check("builder.toExternalSql() defaults to the builder's dialect",
+        sql.select("t", { dialect: "postgres" }).where("a", 1).toExternalSql().sql ===
+          'SELECT * FROM t WHERE "a" = $1');
+  rejects("toExternalSql on a non-builder / non-result refused", function () {
+    return sql.toExternalSql(42, "postgres");
+  }, "sql-builder/bad-external-input");
+}
+
+// The column-membership gate (opt + chainable + warn/reject/qualified), the WITH
+// (CTE) composition (raw body + recursive), and the SELECT projection helpers.
+function runColumnGateCteAndProjectionBranches() {
+  var sql = b.sql;
+
+  rejects("allowedColumns opt must be a non-empty array", function () {
+    return sql.select("t", { allowedColumns: [] });
+  }, "sql-builder/bad-allowed-columns");
+  rejects("allowedColumns() chainable form rejects an empty array", function () {
+    return sql.select("t").allowedColumns([]);
+  }, "sql-builder/bad-allowed-columns");
+  check("columnGate 'warn' admits an unknown column",
+        sql.select("t", { allowedColumns: ["a"], columnGateMode: "warn" })
+          .columns(["a", "zzz"]).toSql().sql === 'SELECT "a", "zzz" FROM t');
+  rejects("columnGate 'reject' (default with a set) refuses an unknown column", function () {
+    return sql.select("t", { allowedColumns: ["a"] }).where("secret", 1).toSql();
+  }, "sql-builder/unknown-column");
+  check("column gate matches on the bare segment of a qualified column",
+        sql.select("t", { allowedColumns: ["a"] }).where("x.a", 1).toSql().sql ===
+          'SELECT * FROM t WHERE "x"."a" = ?');
+  rejects("columnGate mode must be reject | warn | off", function () {
+    return sql.select("t").columnGate("bogus");
+  }, "sql-builder/bad-gate-mode");
+
+  // A raw CTE body rides the same guarded-fragment path; a recursive CTE marks
+  // the WITH clause RECURSIVE and concatenates the sub's params first.
+  check("with(name, rawFragment, params) composes a guarded raw CTE",
+        sql.select("main").with("c", '"a" > ?', [1]).columns(["x"]).toSql().sql ===
+          'WITH "c" AS ("a" > ?) SELECT "x" FROM main');
+  check("withRecursive marks RECURSIVE and folds the sub-builder params first",
+        sql.select("tree").withRecursive("tree", sql.select("nodes").where("parent", 5)).toSql().sql ===
+          'WITH RECURSIVE "tree" AS (SELECT * FROM nodes WHERE "parent" = ?) SELECT * FROM tree');
+  check("with(name, rawFragment, params, { guardProfile }) honours the opt",
+        sql.select("m").with("c", '"a" > ?', [1], { guardProfile: "strict" }).columns(["x"]).toSql().sql ===
+          'WITH "c" AS ("a" > ?) SELECT "x" FROM m');
+  rejects("with(name, <non-builder-non-string>) refused", function () {
+    return sql.select("t").with("c", 5);
+  }, "sql-builder/bad-cte");
+
+  // Projection helpers: raw projection with a bound param, a raw join with a
+  // bound param, a scalar subquery projection, and its non-builder refusal.
+  check("selectRaw carries a bound param into the projection",
+        JSON.stringify(sql.select("t").selectRaw("? + 1", [10]).toSql().params) === "[10]");
+  check("joinRaw carries a bound param into the join",
+        JSON.stringify(sql.select("t").joinRaw("INNER JOIN o ON o.x = ?", [3]).toSql().params) === "[3]");
+  check("selectSub composes a scalar subquery projection",
+        sql.select("t").selectSub(sql.select("o").count("*", "c"), "cnt").toSql().sql ===
+          'SELECT (SELECT COUNT(*) AS "c" FROM o) AS "cnt" FROM t');
+  rejects("selectSub with a non-builder refused", function () {
+    return sql.select("t").selectSub(5, "x");
+  }, "sql-builder/bad-subquery");
+  rejects("select columns() with a non-array refused", function () {
+    return sql.select("t").columns("x");
+  }, "sql-builder/bad-columns");
+  check("groupBy accepts an array of columns",
+        sql.select("t").groupBy(["a", "b"]).toSql().sql === 'SELECT * FROM t GROUP BY "a", "b"');
+
+  // Row-locking option branches (Postgres): FOR SHARE + SKIP LOCKED, FOR UPDATE
+  // NOWAIT.
+  check("forShare SKIP LOCKED emits on postgres",
+        sql.select("t", { dialect: "postgres" }).where("a", 1).forShare({ skipLocked: true }).toSql().sql
+          .indexOf("FOR SHARE SKIP LOCKED") !== -1);
+  check("forUpdate NOWAIT emits on postgres",
+        sql.select("t", { dialect: "postgres" }).where("a", 1).forUpdate({ noWait: true }).toSql().sql
+          .indexOf("FOR UPDATE NOWAIT") !== -1);
+}
+
+// INSERT column / value shape checks, UPDATE set forms, DELETE allow-no-where,
+// RETURNING normalization, and the INSERT...SELECT...WHERE conditional verb.
+function runInsertUpdateDeleteBranches() {
+  var sql = b.sql;
+
+  // INSERT column / value shapes.
+  rejects("insert columns() with a non-array refused", function () {
+    return sql.insert("t").columns("x");
+  }, "sql-builder/bad-columns");
+  rejects("insert values(array) without a prior columns() refused", function () {
+    return sql.insert("t").values([1, 2]);
+  }, "sql-builder/no-columns");
+  rejects("insert values(array) with a count mismatch refused", function () {
+    return sql.insert("t").columns(["a", "b"]).values([1]);
+  }, "sql-builder/value-count");
+  check("insert values(array) aligned to columns() emits one row",
+        sql.insert("t").columns(["a", "b"]).values([1, 2]).toSql().sql ===
+          'INSERT INTO t ("a", "b") VALUES (?, ?)');
+  rejects("insert values() with a non-object non-array refused", function () {
+    return sql.insert("t").values(5);
+  }, "sql-builder/bad-values");
+  rejects("insert values({}) empty row refused", function () {
+    return sql.insert("t").values({});
+  }, "sql-builder/empty-values");
+  rejects("insert row missing a declared column refused", function () {
+    return sql.insert("t").columns(["a", "b"]).values({ a: 1 });
+  }, "sql-builder/missing-column");
+  rejects("insert row with an extra column refused (no silent drop)", function () {
+    return sql.insert("t").columns(["a"]).values({ a: 1, z: 9 });
+  }, "sql-builder/extra-column");
+  rejects("insert render without any values() row refused", function () {
+    return sql.insert("t").columns(["a"]).toSql();
+  }, "sql-builder/empty-values");
+  check("insert values([{},{}]) emits a multi-row tuple list",
+        sql.insert("t").values([{ a: 1 }, { a: 2 }]).toSql().sql ===
+          'INSERT INTO t ("a") VALUES (?), (?)');
+
+  // RETURNING normalization: "*" default + array + the MySQL refusal.
+  check("insert returning(array) quotes each column",
+        sql.insert("t", { dialect: "postgres" }).values({ a: 1 }).returning(["a", "b"]).toSql().sql
+          .indexOf('RETURNING "a", "b"') !== -1);
+  check("insert returning('*') emits RETURNING *",
+        sql.insert("t", { dialect: "postgres" }).values({ a: 1 }).returning("*").toSql().sql
+          .indexOf("RETURNING *") !== -1);
+  check("insert returning(<single string>) wraps the one column",
+        sql.insert("t", { dialect: "postgres" }).values({ a: 1 }).returning("a").toSql().sql
+          .indexOf('RETURNING "a"') !== -1);
+  rejects("RETURNING on a MySQL delete refused", function () {
+    return sql.delete("t", { dialect: "mysql" }).where("a", 1).returning(["a"]).toSql();
+  }, "sql-builder/returning-unsupported");
+
+  // UPDATE set forms.
+  rejects("update set({}) empty object refused", function () {
+    return sql.update("t").set({}).where("a", 1);
+  }, "sql-builder/empty-set");
+  check("update set(col, value) single-assignment form",
+        sql.update("t").set("x", 5).where("a", 1).toSql().sql ===
+          'UPDATE t SET "x" = ? WHERE "a" = ?');
+  check("update setRaw composes a guarded raw assignment",
+        sql.update("t").setRaw("n", '"n" + ?', [1]).where("a", 1).toSql().sql ===
+          'UPDATE t SET "n" = "n" + ? WHERE "a" = ?');
+
+  // DELETE deliberate unconditional opt-in.
+  check("delete allowNoWhere() emits an unconditional DELETE",
+        sql.delete("t").allowNoWhere().toSql().sql === "DELETE FROM t");
+
+  // INSERT ... SELECT ... WHERE (the conditional append-only verb).
+  rejects("insertSelectWhere columns() with a non-array refused", function () {
+    return sql.insertSelectWhere("t").columns("x");
+  }, "sql-builder/bad-columns");
+  rejects("insertSelectWhere values(array) without columns() refused", function () {
+    return sql.insertSelectWhere("t").values([1]);
+  }, "sql-builder/no-columns");
+  rejects("insertSelectWhere values(array) count mismatch refused", function () {
+    return sql.insertSelectWhere("t").columns(["a", "b"]).values([1]);
+  }, "sql-builder/value-count");
+  check("insertSelectWhere values(array) + where emits a guarded conditional insert",
+        sql.insertSelectWhere("t").columns(["a"]).values([1]).where("bal", ">", 0).toSql().sql ===
+          'INSERT INTO t ("a") SELECT ? WHERE "bal" > ?');
+  rejects("insertSelectWhere values({}) empty object refused", function () {
+    return sql.insertSelectWhere("t").values({});
+  }, "sql-builder/empty-values");
+  rejects("insertSelectWhere row missing a column refused", function () {
+    return sql.insertSelectWhere("t").columns(["a", "b"]).values({ a: 1 });
+  }, "sql-builder/missing-column");
+  rejects("insertSelectWhere row with an extra column refused", function () {
+    return sql.insertSelectWhere("t").columns(["a"]).values({ a: 1, z: 2 });
+  }, "sql-builder/extra-column");
+  rejects("insertSelectWhere values() with a bad shape refused", function () {
+    return sql.insertSelectWhere("t").values(5);
+  }, "sql-builder/bad-values");
+  check("insertSelectWhere object row + whereExists composes a balance fence",
+        sql.insertSelectWhere("ledger").values({ amt: -5 })
+          .whereExists(sql.select("ledger").selectRaw("1").whereRaw('"bal" >= ?', [5])).toSql().sql ===
+          'INSERT INTO ledger ("amt") SELECT ? WHERE EXISTS (SELECT 1 FROM ledger WHERE ("bal" >= ?))');
+  check("insertSelectWhere allowNoWhere() opts out of the guard requirement",
+        sql.insertSelectWhere("t").values({ a: 1 }).allowNoWhere().toSql().sql ===
+          'INSERT INTO t ("a") SELECT ?');
+  rejects("insertSelectWhere without a where() (and no opt-in) refused", function () {
+    return sql.insertSelectWhere("t").values({ a: 1 }).toSql();
+  }, "sql-builder/no-where");
+}
+
+// The UPSERT verb - the dialect-divergence centrepiece: standard (Postgres /
+// SQLite) ON CONFLICT paths, the MySQL ON DUPLICATE KEY paths (including the
+// guarded IF-eval-order form + the auto-emitted readback SELECT), and every
+// conflict-action / value-shape refusal.
+function runUpsertBranches() {
+  var sql = b.sql;
+
+  rejects("upsert columns() non-array refused", function () {
+    return sql.upsert("t").columns("x");
+  }, "sql-builder/bad-columns");
+  rejects("upsert values() non-object refused", function () {
+    return sql.upsert("t").values([1]);
+  }, "sql-builder/bad-values");
+  rejects("upsert values({}) empty refused", function () {
+    return sql.upsert("t").values({});
+  }, "sql-builder/empty-values");
+  rejects("upsert row missing a column refused", function () {
+    return sql.upsert("t").columns(["a", "b"]).values({ a: 1 });
+  }, "sql-builder/missing-column");
+  rejects("upsert row with an extra column refused", function () {
+    return sql.upsert("t").columns(["a"]).values({ a: 1, z: 2 });
+  }, "sql-builder/extra-column");
+  rejects("upsert onConflict([]) empty refused", function () {
+    return sql.upsert("t").onConflict([]);
+  }, "sql-builder/bad-conflict");
+  rejects("upsert doUpdateFromExcluded([]) empty refused", function () {
+    return sql.upsert("t").doUpdateFromExcluded([]);
+  }, "sql-builder/conflict-action");
+  rejects("upsert doUpdate(<scalar>) refused", function () {
+    return sql.upsert("t").doUpdate(5);
+  }, "sql-builder/conflict-action");
+  rejects("upsert doUpdate({}) empty map refused", function () {
+    return sql.upsert("t").doUpdate({});
+  }, "sql-builder/conflict-action");
+  rejects("upsert render without values() refused", function () {
+    return sql.upsert("t").doNothing().toSql();
+  }, "sql-builder/empty-values");
+  rejects("upsert render without a conflict action refused", function () {
+    return sql.upsert("t").values({ id: 1 }).toSql();
+  }, "sql-builder/conflict-action");
+  rejects("upsert doUpdate without onConflict on postgres refused", function () {
+    return sql.upsert("t", { dialect: "postgres" }).values({ id: 1, n: 2 })
+      .doUpdateFromExcluded(["n"]).toSql();
+  }, "sql-builder/bad-conflict");
+
+  // Standard (Postgres / SQLite) conflict actions.
+  var pgU = function () { return sql.upsert("t", { dialect: "postgres" }); };
+  check("upsert DO UPDATE SET col = EXCLUDED.col",
+        pgU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdateFromExcluded(["n"]).toSql().sql ===
+          'INSERT INTO t ("id", "n") VALUES (?, ?) ON CONFLICT ("id") DO UPDATE SET "n" = EXCLUDED."n"');
+  check("upsert onConflict(<single string>) wraps to a one-key target",
+        pgU().values({ id: 1, n: 2 }).onConflict("id").doUpdateFromExcluded(["n"]).toSql().sql
+          .indexOf('ON CONFLICT ("id")') !== -1);
+  check("upsert doUpdate(<array>) delegates to doUpdateFromExcluded",
+        pgU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdate(["n"]).toSql().sql ===
+          'INSERT INTO t ("id", "n") VALUES (?, ?) ON CONFLICT ("id") DO UPDATE SET "n" = EXCLUDED."n"');
+  check("upsert doUpdate scalar exprParams is coerced to a one-element list",
+        JSON.stringify(pgU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdate({ n: "?" }, 7)
+          .toSql().params) === "[1,2,7]");
+  check("upsert DO NOTHING without an onConflict target emits a bare ON CONFLICT",
+        pgU().values({ id: 1 }).doNothing().toSql().sql ===
+          'INSERT INTO t ("id") VALUES (?) ON CONFLICT DO NOTHING');
+  check("upsert doUpdate({col:'?'}) re-binds a supplied param",
+        JSON.stringify(pgU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdate({ n: "?" }, [9])
+          .toSql().params) === "[1,2,9]");
+  check("upsert doUpdate({col:rawExpr}) composes a guarded raw assignment",
+        pgU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdate({ n: 'EXCLUDED."n" + ?' }, [1])
+          .toSql().sql.indexOf('DO UPDATE SET "n" = EXCLUDED."n" + ?') !== -1);
+  rejects("upsert doUpdate expr that is neither '?' nor a string refused (standard)", function () {
+    return pgU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdate({ n: 5 }).toSql();
+  }, "sql-builder/conflict-action");
+  check("upsert DO NOTHING on postgres",
+        pgU().values({ id: 1 }).onConflict(["id"]).doNothing().toSql().sql ===
+          'INSERT INTO t ("id") VALUES (?) ON CONFLICT ("id") DO NOTHING');
+  check("upsert conflictWhere fences the DO UPDATE",
+        pgU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdateFromExcluded(["n"])
+          .conflictWhere('EXCLUDED."n" > "t"."n"', []).toSql().sql
+          .indexOf('WHERE EXCLUDED."n" > "t"."n"') !== -1);
+
+  // MySQL ON DUPLICATE KEY paths.
+  var myU = function () { return sql.upsert("t", { dialect: "mysql" }); };
+  check("upsert MySQL DO NOTHING no-ops a key column",
+        myU().values({ id: 1, n: 2 }).onConflict(["id"]).doNothing().toSql().sql ===
+          "INSERT INTO t (`id`, `n`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `id` = `id`");
+  check("upsert MySQL update-from-excluded emits VALUES(col)",
+        myU().values({ id: 1, n: 2 }).doUpdateFromExcluded(["n"]).toSql().sql
+          .indexOf("ON DUPLICATE KEY UPDATE `n` = VALUES(`n`)") !== -1);
+  check("upsert MySQL doUpdate({col:'?'}) re-binds",
+        myU().values({ id: 1, n: 2 }).doUpdate({ n: "?" }, [7]).toSql().sql
+          .indexOf("ON DUPLICATE KEY UPDATE `n` = ?") !== -1);
+  check("upsert MySQL doUpdate({col:rawExpr}) composes a guarded raw assignment",
+        myU().values({ id: 1, n: 2 }).doUpdate({ n: '"n" + ?' }, [1]).toSql().sql
+          .indexOf('ON DUPLICATE KEY UPDATE `n` = "n" + ?') !== -1);
+  rejects("upsert MySQL doUpdate expr that is neither '?' nor a string refused", function () {
+    return myU().values({ id: 1, n: 2 }).doUpdate({ n: 5 }).toSql();
+  }, "sql-builder/conflict-action");
+  check("upsert MySQL readback without an onConflict key falls back to the first column",
+        myU().values({ id: 1, n: 2 }).doUpdateFromExcluded(["n"]).returning(["id"]).toSql()
+          .readbackSql.sql === "SELECT `id` FROM t WHERE `id` = ?");
+  rejects("upsert MySQL readback with a conflict key outside the value set refused", function () {
+    return myU().columns(["a", "b"]).values({ a: 1, b: 2 }).onConflict(["c"])
+      .doUpdateFromExcluded(["b"]).returning(["a"]).toSql();
+  }, "sql-builder/bad-conflict");
+  check("upsert MySQL guarded conflictWhere wraps each SET in IF(...) and orders the guard column last",
+        myU().values({ id: 1, ver: 2, n: 3 }).doUpdate({ n: "?", ver: "?" }, [3, 2])
+          .conflictWhere('"ver" < ?', [2], { guardColumn: "ver" }).toSql().sql
+          .indexOf("`n` = IF(") !== -1);
+  check("upsert MySQL guarded conflictWhere with the guard column declared first still orders it last",
+        myU().values({ id: 1, ver: 2, n: 3 }).doUpdate({ ver: "?", n: "?" }, [2, 3])
+          .conflictWhere('"ver" < ?', [2], { guardColumn: "ver" }).toSql().sql
+          .indexOf('`n` = IF("ver" < ?, ?, `n`), `ver` = IF(') !== -1);
+  check("upsert MySQL guarded conflictWhere without a guardColumn keeps declared order",
+        myU().values({ id: 1, n: 3 }).doUpdate({ n: "?" }, [3])
+          .conflictWhere('"n" < ?', [3]).toSql().sql.indexOf('`n` = IF("n" < ?, ?, `n`)') !== -1);
+  check("upsert MySQL DO NOTHING without an onConflict no-ops the first column",
+        myU().values({ id: 1, n: 2 }).doNothing().toSql().sql ===
+          "INSERT INTO t (`id`, `n`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `id` = `id`");
+  check("upsert MySQL returning() auto-emits a keyed readback SELECT",
+        myU().values({ id: 1, n: 2 }).onConflict(["id"]).doUpdateFromExcluded(["n"]).returning(["id", "n"])
+          .toSql().readbackSql.sql === "SELECT `id`, `n` FROM t WHERE `id` = ?");
+  rejects("upsert MySQL readback on a server-function conflict key refused", function () {
+    return myU().values({ id: sql.fn("CURRENT_TIMESTAMP"), n: 2 }).onConflict(["id"])
+      .doUpdateFromExcluded(["n"]).returning("*").toSql();
+  }, "sql-builder/bad-conflict");
+}
+
+// DDL builders - createTable (auto-increment / references / composite PK /
+// defaults / verbatim constraints), createIndex, alterTable, dropTable, and the
+// sqlite FTS5 virtual-table builder.
+function runDdlBranches() {
+  var sql = b.sql;
+
+  rejects("createTable with a non-array columns refused", function () {
+    return sql.createTable("t", "x");
+  }, "sql-builder/bad-columns");
+  rejects("createTable with a non-object column spec refused", function () {
+    return sql.createTable("t", ["x"]);
+  }, "sql-builder/bad-column");
+  check("createTable autoIncrement -> BIGSERIAL on postgres",
+        sql.createTable("t", [{ name: "id", autoIncrement: true }], { dialect: "postgres" }).sql ===
+          'CREATE TABLE IF NOT EXISTS t ("id" BIGSERIAL PRIMARY KEY)');
+  check("createTable serial -> AUTO_INCREMENT on mysql",
+        sql.createTable("t", [{ name: "id", serial: true }], { dialect: "mysql" }).sql ===
+          "CREATE TABLE IF NOT EXISTS t (`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY)");
+  rejects("createTable autoIncrement + default is contradictory", function () {
+    return sql.createTable("t", [{ name: "id", autoIncrement: true, default: 1 }]);
+  }, "sql-builder/bad-column");
+  check("createTable autoIncrement + verbatim constraints appends the guarded fragment",
+        sql.createTable("t", [{ name: "id", autoIncrement: true, constraints: "CHECK (id > 0)" }]).sql
+          .indexOf("INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0)") !== -1);
+  check("createTable column notNull + unique + default compose",
+        sql.createTable("t", [{ name: "e", type: "text", notNull: true, unique: true, default: "x" }]).sql ===
+          'CREATE TABLE IF NOT EXISTS t ("e" TEXT NOT NULL UNIQUE DEFAULT \'x\')');
+  check("createTable references (string) defaults to (id)",
+        sql.createTable("t", [{ name: "uid", type: "int", references: "users" }]).sql
+          .indexOf('REFERENCES users ("id")') !== -1);
+  check("createTable references object with ON DELETE / ON UPDATE actions",
+        sql.createTable("t", [{ name: "uid", type: "int",
+          references: { table: "users", column: "id", onDelete: "CASCADE", onUpdate: "RESTRICT" } }]).sql
+          .indexOf("ON DELETE CASCADE ON UPDATE RESTRICT") !== -1);
+  rejects("createTable references without a table refused", function () {
+    return sql.createTable("t", [{ name: "uid", type: "int", references: {} }]);
+  }, "sql-builder/bad-references");
+  rejects("createTable references with an empty table name refused", function () {
+    return sql.createTable("t", [{ name: "uid", type: "int", references: { table: "" } }]);
+  }, "sql-builder/bad-references");
+  rejects("createTable references with a falsy non-false spec refused", function () {
+    return sql.createTable("t", [{ name: "uid", type: "int", references: 0 }]);
+  }, "sql-builder/bad-references");
+  rejects("createTable references with an off-allowlist FK action refused", function () {
+    return sql.createTable("t", [{ name: "uid", type: "int",
+      references: { table: "users", onDelete: "EXPLODE" } }]);
+  }, "sql-builder/bad-fk-action");
+  check("createTable composite opts.primaryKey emits a table-level PK",
+        sql.createTable("t", [{ name: "a", type: "int" }, { name: "b", type: "int" }],
+          { primaryKey: ["a", "b"] }).sql.indexOf('PRIMARY KEY ("a", "b")') !== -1);
+  rejects("createTable column PK + composite PK is refused (double PRIMARY KEY)", function () {
+    return sql.createTable("t", [{ name: "a", type: "int", primaryKey: true }], { primaryKey: ["a"] });
+  }, "sql-builder/bad-column");
+  rejects("createTable column default of an unsupported type refused", function () {
+    return sql.createTable("t", [{ name: "a", type: "int", default: {} }]);
+  }, "sql-builder/bad-default");
+  check("createTable ifNotExists:false drops the IF NOT EXISTS",
+        sql.createTable("t", [{ name: "a", type: "int" }], { ifNotExists: false }).sql ===
+          'CREATE TABLE t ("a" INTEGER)');
+
+  // createIndex option branches.
+  rejects("createIndex with a non-array columns refused", function () {
+    return sql.createIndex("i", "t", []);
+  }, "sql-builder/bad-columns");
+  rejects("createIndex partial (where) on mysql refused", function () {
+    return sql.createIndex("i", "t", ["a"], { dialect: "mysql", where: "a = 1" });
+  }, "sql-builder/partial-index-unsupported");
+  check("createIndex partial where + whereParams on postgres",
+        sql.createIndex("i", "t", ["a"], { dialect: "postgres", where: '"a" > ?', whereParams: [1],
+          allowLiterals: false }).sql.indexOf('WHERE "a" > ?') !== -1);
+  check("createIndex unique + ifNotExists:false",
+        sql.createIndex("i", "t", ["a"], { unique: true, ifNotExists: false }).sql ===
+          'CREATE UNIQUE INDEX "i" ON t ("a")');
+
+  // alterTable change descriptors.
+  rejects("alterTable without a change descriptor refused", function () {
+    return sql.alterTable("t", null);
+  }, "sql-builder/bad-alter");
+  rejects("alterTable addColumn without a name refused", function () {
+    return sql.alterTable("t", { addColumn: { type: "int" } });
+  }, "sql-builder/bad-column");
+  check("alterTable addColumn with notNull / unique / default",
+        sql.alterTable("t", { addColumn: { name: "c", type: "int", notNull: true, unique: true, default: 3 } })
+          .sql === 'ALTER TABLE t ADD COLUMN "c" INTEGER NOT NULL UNIQUE DEFAULT 3');
+  check("alterTable dropColumn quotes the column",
+        sql.alterTable("t", { dropColumn: "c" }).sql === 'ALTER TABLE t DROP COLUMN "c"');
+  check("alterTable renameColumn quotes both names",
+        sql.alterTable("t", { renameColumn: { from: "a", to: "b" } }).sql ===
+          'ALTER TABLE t RENAME COLUMN "a" TO "b"');
+  rejects("alterTable renameColumn without both from/to refused", function () {
+    return sql.alterTable("t", { renameColumn: { from: "a" } });
+  }, "sql-builder/bad-alter");
+  rejects("alterTable with an unknown change refused", function () {
+    return sql.alterTable("t", { foo: 1 });
+  }, "sql-builder/bad-alter");
+
+  // dropTable option branches.
+  check("dropTable cascade on postgres",
+        sql.dropTable("t", { dialect: "postgres", cascade: true }).sql === "DROP TABLE IF EXISTS t CASCADE");
+  check("dropTable cascade is ignored on a non-postgres dialect",
+        sql.dropTable("t", { cascade: true }).sql === "DROP TABLE IF EXISTS t");
+  check("dropTable ifExists:false drops the IF EXISTS",
+        sql.dropTable("t", { ifExists: false }).sql === "DROP TABLE t");
+  check("dropTable with no opts defaults to sqlite + IF EXISTS",
+        sql.dropTable("t").sql === "DROP TABLE IF EXISTS t");
+
+  rejects("createVirtualTable with no opts refused (no columns)", function () {
+    return sql.createVirtualTable("f");
+  }, "sql-builder/bad-columns");
+
+  // sqlite FTS5 virtual table.
+  rejects("createVirtualTable on a non-sqlite dialect refused", function () {
+    return sql.createVirtualTable("f", { dialect: "postgres", columns: ["a"] });
+  }, "sql-builder/vtable-sqlite-only");
+  rejects("createVirtualTable with an empty columns array refused", function () {
+    return sql.createVirtualTable("f", { columns: [] });
+  }, "sql-builder/bad-columns");
+  check("createVirtualTable emits UNINDEXED + an allowlisted tokenize clause",
+        sql.createVirtualTable("f", { columns: [{ name: "id", unindexed: true }, "body"],
+          tokenize: "unicode61 remove_diacritics 2" }).sql ===
+          'CREATE VIRTUAL TABLE IF NOT EXISTS "f" USING fts5("id" UNINDEXED, "body", ' +
+          "tokenize = 'unicode61 remove_diacritics 2')");
+  rejects("createVirtualTable with an unsupported per-column option refused", function () {
+    return sql.createVirtualTable("f", { columns: [{ name: "id", weird: 1 }] });
+  }, "sql-builder/bad-vtable-column");
+  rejects("createVirtualTable with a non-built-in tokenizer refused", function () {
+    return sql.createVirtualTable("f", { columns: ["a"], tokenize: "customtok" });
+  }, "sql-builder/bad-tokenize");
+  rejects("createVirtualTable with an off-allowlist tokenize argument refused", function () {
+    return sql.createVirtualTable("f", { columns: ["a"], tokenize: "porter zzz" });
+  }, "sql-builder/bad-tokenize");
+  rejects("createVirtualTable with a non-string tokenize refused", function () {
+    return sql.createVirtualTable("f", { columns: ["a"], tokenize: 5 });
+  }, "sql-builder/bad-tokenize");
+  check("createVirtualTable ifNotExists:false drops the IF NOT EXISTS",
+        sql.createVirtualTable("f", { columns: ["a"], ifNotExists: false }).sql ===
+          'CREATE VIRTUAL TABLE "f" USING fts5("a")');
+  check("createVirtualTable accepts a plain { name } column object (no UNINDEXED)",
+        sql.createVirtualTable("f", { columns: [{ name: "body" }] }).sql ===
+          'CREATE VIRTUAL TABLE IF NOT EXISTS "f" USING fts5("body")');
+}
+
+// Postgres RLS builders, the audited sqlite catalog / PRAGMA sub-API, and the
+// defineTable schema-optimizer's option branches.
+function runRlsCatalogPragmaDefineBranches() {
+  var sql = b.sql;
+
+  // Row-Level Security (Postgres-only; every builder refuses a non-pg dialect).
+  rejects("enableRowLevelSecurity on sqlite refused", function () {
+    return sql.enableRowLevelSecurity("t", { dialect: "sqlite" });
+  }, "sql-builder/rls-postgres-only");
+  check("enableRowLevelSecurity force emits FORCE",
+        sql.enableRowLevelSecurity("sessions", { force: true }).sql ===
+          'ALTER TABLE "sessions" FORCE ROW LEVEL SECURITY');
+  check("enableRowLevelSecurity default emits ENABLE",
+        sql.enableRowLevelSecurity("sessions").sql ===
+          'ALTER TABLE "sessions" ENABLE ROW LEVEL SECURITY');
+  check("disableRowLevelSecurity quotes a schema-qualified table",
+        sql.disableRowLevelSecurity("sessions", { schema: "public" }).sql ===
+          'ALTER TABLE "public"."sessions" DISABLE ROW LEVEL SECURITY');
+  check("disableRowLevelSecurity with no opts defaults to postgres",
+        sql.disableRowLevelSecurity("s").sql === 'ALTER TABLE "s" DISABLE ROW LEVEL SECURITY');
+  rejects("disableRowLevelSecurity on mysql refused", function () {
+    return sql.disableRowLevelSecurity("t", { dialect: "mysql" });
+  }, "sql-builder/rls-postgres-only");
+  rejects("createPolicy with no spec refused (no using predicate)", function () {
+    return sql.createPolicy("p", "t");
+  }, "sql-builder/bad-rls-predicate");
+  check("dropPolicy with no opts defaults to postgres + IF EXISTS",
+        sql.dropPolicy("p", "s").sql === 'DROP POLICY IF EXISTS "p" ON "s"');
+  rejects("createPolicy on sqlite refused", function () {
+    return sql.createPolicy("p", "t", { using: "x" }, { dialect: "sqlite" });
+  }, "sql-builder/rls-postgres-only");
+  rejects("createPolicy with an off-allowlist command refused", function () {
+    return sql.createPolicy("p", "t", { command: "TRUNCATE", using: "1=1" });
+  }, "sql-builder/bad-rls-command");
+  rejects("createPolicy without a using predicate refused", function () {
+    return sql.createPolicy("p", "t", {});
+  }, "sql-builder/bad-rls-predicate");
+  check("createPolicy composes the full clause order (RESTRICTIVE / role / USING / WITH CHECK)",
+        sql.createPolicy("iso", "sessions", { role: "app_user", command: "SELECT", permissive: false,
+          using: '"tenant_id" = ?', usingParams: [1], withCheck: '"tenant_id" = ?', withCheckParams: [1] },
+          { schema: "public" }).sql ===
+          'CREATE POLICY "iso" ON "public"."sessions" AS RESTRICTIVE FOR SELECT TO "app_user" ' +
+          'USING ("tenant_id" = ?) WITH CHECK ("tenant_id" = ?)');
+  check("dropPolicy IF EXISTS by default",
+        sql.dropPolicy("iso", "sessions", { schema: "public" }).sql ===
+          'DROP POLICY IF EXISTS "iso" ON "public"."sessions"');
+  check("dropPolicy ifExists:false drops the IF EXISTS",
+        sql.dropPolicy("iso", "sessions", { ifExists: false }).sql ===
+          'DROP POLICY "iso" ON "sessions"');
+  rejects("dropPolicy on mysql refused", function () {
+    return sql.dropPolicy("p", "t", { dialect: "mysql" });
+  }, "sql-builder/rls-postgres-only");
+
+  // Catalog sub-API.
+  check("catalog.listTables emits the sqlite_master scan",
+        sql.catalog.listTables().sql ===
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+  check("catalog.tableExists binds the name as a parameter",
+        JSON.stringify(sql.catalog.tableExists("audit").params) === '["audit"]');
+  rejects("catalog.tableExists with an empty name refused", function () {
+    return sql.catalog.tableExists("");
+  }, "sql-builder/bad-table");
+  check("catalog.tableInfo quotes the table into the PRAGMA",
+        sql.catalog.tableInfo("audit").sql === 'PRAGMA table_info("audit")');
+  rejects("catalog.tableInfo with a non-string name refused", function () {
+    return sql.catalog.tableInfo(5);
+  }, "sql-builder/bad-table");
+  check("catalog.changes emits the changes() probe",
+        sql.catalog.changes().sql === "SELECT changes() AS c");
+  check("catalog.sampleRandom with a column list binds the limit",
+        sql.catalog.sampleRandom("s", ["a", "b"], { limit: 5 }).sql ===
+          'SELECT "a", "b" FROM "s" ORDER BY RANDOM() LIMIT ?');
+  check("catalog.sampleRandom without columns projects *",
+        sql.catalog.sampleRandom("s", null, { limit: 5 }).sql ===
+          'SELECT * FROM "s" ORDER BY RANDOM() LIMIT ?');
+  rejects("catalog.sampleRandom with an empty columns array refused", function () {
+    return sql.catalog.sampleRandom("s", [], { limit: 5 });
+  }, "sql-builder/bad-columns");
+  rejects("catalog.sampleRandom with a non-positive limit refused", function () {
+    return sql.catalog.sampleRandom("s", null, { limit: 0 });
+  }, "sql-builder/bad-limit");
+  rejects("catalog.sampleRandom with no opts refused (limit required)", function () {
+    return sql.catalog.sampleRandom("s");
+  }, "sql-builder/bad-limit");
+
+  // PRAGMA sub-API (narrow allowlist).
+  rejects("pragma with an off-allowlist verb refused", function () {
+    return sql.pragma("foo");
+  }, "sql-builder/bad-pragma");
+  rejects("pragma('table_info') routes callers to catalog.tableInfo", function () {
+    return sql.pragma("table_info");
+  }, "sql-builder/bad-pragma");
+  check("pragma wal_checkpoint defaults to PASSIVE",
+        sql.pragma("wal_checkpoint").sql === "PRAGMA wal_checkpoint(PASSIVE)");
+  check("pragma wal_checkpoint with an allowlisted mode",
+        sql.pragma("wal_checkpoint", "TRUNCATE").sql === "PRAGMA wal_checkpoint(TRUNCATE)");
+  rejects("pragma wal_checkpoint with an off-allowlist mode refused", function () {
+    return sql.pragma("wal_checkpoint", "NOPE");
+  }, "sql-builder/bad-pragma-arg");
+  check("pragma journal_mode read (no arg)",
+        sql.pragma("journal_mode").sql === "PRAGMA journal_mode");
+  check("pragma journal_mode set with an allowlisted token",
+        sql.pragma("journal_mode", "WAL").sql === "PRAGMA journal_mode=WAL");
+  check("pragma synchronous set with an allowlisted level",
+        sql.pragma("synchronous", "NORMAL").sql === "PRAGMA synchronous=NORMAL");
+  rejects("pragma journal_mode with an off-vocabulary arg refused", function () {
+    return sql.pragma("journal_mode", "BOGUS");
+  }, "sql-builder/bad-pragma-arg");
+
+  // defineTable schema optimizer.
+  rejects("defineTable with an empty spec refused", function () {
+    return sql.defineTable("t", []);
+  }, "sql-builder/bad-columns");
+  rejects("defineTable with a non-object column refused", function () {
+    return sql.defineTable("t", ["x"]);
+  }, "sql-builder/bad-column");
+  check("defineTable auto-PK/FK/index yields CREATE TABLE + two indexes",
+        sql.defineTable("orders", [{ name: "userId", type: "int" }, { name: "email", type: "text",
+          index: true }], { dialect: "postgres" }).statements.length === 3);
+  check("defineTable with a composite opts.primaryKey suppresses the auto identity PK",
+        sql.defineTable("t", [{ name: "a", type: "int" }, { name: "b", type: "int" }],
+          { primaryKey: ["a", "b"] }).statements.length === 1);
+  check("defineTable references:false opts a column out of FK inference",
+        sql.defineTable("t", [{ name: "userId", type: "int", references: false }]).statements.length === 1);
+  check("defineTable explicit opts.indexes honored with autoIndex off",
+        sql.defineTable("t", [{ name: "a", type: "int" }],
+          { autoIndex: false, indexes: [{ columns: ["a"], unique: true, name: "myidx" }] })
+          .statements.length === 2);
+  rejects("defineTable index entry without a columns array refused", function () {
+    return sql.defineTable("t", [{ name: "a", type: "int" }], { indexes: [{ columns: [] }] });
+  }, "sql-builder/bad-index");
+  rejects("defineTable index referencing an undeclared column refused", function () {
+    return sql.defineTable("t", [{ name: "a", type: "int" }], { indexes: [{ columns: ["zzz"] }] });
+  }, "sql-builder/unknown-column");
+  check("defineTable with default opts (no opts arg) builds a single statement",
+        sql.defineTable("solo", [{ name: "x", type: "int" }]).statements.length === 1);
 }
 
 module.exports = { run: run };

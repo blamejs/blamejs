@@ -633,6 +633,728 @@ async function testDownloadMaxBytes() {
   });
 }
 
+// ---- pinned-DNS lookup contract (unit) -----------------------------
+
+function testPinnedLookupContract() {
+  var lk = b.httpClient._pinnedLookupForTest([
+    { address: "10.9.8.7", family: 4 }, { address: "10.9.8.6", family: 4 }]);
+  var allRes = null, singleAddr = null, singleFam = null, fnAddr = null;
+  lk("h", { all: true }, function (err, addrs) { allRes = addrs; });
+  lk("h", {}, function (err, addr, fam) { singleAddr = addr; singleFam = fam; });
+  lk("h", function (err, addr) { fnAddr = addr; });   // options-as-callback shape
+  check("pinnedLookup: all:true returns the full family list",
+    Array.isArray(allRes) && allRes.length === 2 && allRes[0].address === "10.9.8.7");
+  check("pinnedLookup: single returns the first address + family",
+    singleAddr === "10.9.8.7" && singleFam === 4);
+  check("pinnedLookup: options-as-callback shape resolves the first address", fnAddr === "10.9.8.7");
+  check("pinnedLookup: empty / null ips yields undefined (no pinning)",
+    b.httpClient._pinnedLookupForTest([]) === undefined &&
+    b.httpClient._pinnedLookupForTest(null) === undefined);
+}
+
+// ---- multipart body build: injection rejects + streaming entry -----
+
+async function testMultipartBuildBranches() {
+  function mpReject(label, multipart) {
+    return _expectReject(label,
+      b.httpClient.request({ url: "https://x.example/", multipart: multipart }), "BAD_ARG");
+  }
+  await mpReject("multipart: CRLF in field name refused (header injection)",
+    { fields: { "a\r\nInjected: 1": "v" } });
+  await mpReject("multipart: empty field name refused",
+    { fields: { "": "v" } });
+  await mpReject("multipart: CRLF in filename refused (header injection)",
+    { files: [{ field: "f", content: "x", filename: "a\r\nX-Injected: 1" }] });
+  await mpReject("multipart: CRLF in contentType refused (header injection)",
+    { files: [{ field: "f", content: "x", contentType: "text/plain\r\nX-Injected: 1" }] });
+  await mpReject("multipart: non-object file entry refused",
+    { files: [42] });
+  await mpReject("multipart: file entry missing field refused",
+    { files: [{ content: "x" }] });
+  await mpReject("multipart: file entry with two sources refused",
+    { files: [{ field: "f", content: "x", filePath: "/nope" }] });
+  await mpReject("multipart: non-buffer/string content refused",
+    { files: [{ field: "f", content: 42 }] });
+
+  // Valid: a content file WITHOUT filename defaults to "blob".
+  var body = null;
+  await _withServer(function (req, res) {
+    var chunks = []; req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { body = Buffer.concat(chunks).toString("utf8"); res.writeHead(200); res.end("ok"); });
+  }, async function (base) {
+    var r = await b.httpClient.request({ url: base + "/mp",
+      multipart: { files: [{ field: "f", content: "PAYLOAD" }] },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("multipart: content file without a filename defaults to blob",
+      r.statusCode === 200 && /filename="blob"/.test(body || ""));
+  });
+
+  // Valid: an operator-supplied Readable stream entry (unknown size) →
+  // Content-Length omitted, chunked transfer, iterator streams the bytes.
+  var got = null, hadCL = "unset", te = "unset";
+  await _withServer(function (req, res) {
+    hadCL = req.headers["content-length"] || null;
+    te = req.headers["transfer-encoding"] || null;
+    var chunks = []; req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { got = Buffer.concat(chunks).toString("utf8"); res.writeHead(200); res.end("ok"); });
+  }, async function (base) {
+    var src = nodeStream.Readable.from([Buffer.from("STREAM-ENTRY-DATA")]);
+    var r = await b.httpClient.request({ url: base + "/mp",
+      multipart: { fields: { a: "1" }, files: [{ field: "f", stream: src, filename: "s.bin" }] },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("multipart: stream entry (unknown size) omits Content-Length + chunks",
+      r.statusCode === 200 && hadCL === null && te === "chunked");
+    check("multipart: stream entry body reached the server",
+      got != null && got.indexOf("STREAM-ENTRY-DATA") !== -1);
+  });
+
+  // Valid: a filePath entry WITHOUT an explicit filename → path.basename.
+  var fpBody = null;
+  await _withServer(function (req, res) {
+    var chunks = []; req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { fpBody = Buffer.concat(chunks).toString("utf8"); res.writeHead(200); res.end("ok"); });
+  }, async function (base) {
+    var dir = b.testing.tempDir("httpclient-cov-fpn");
+    try {
+      var fp = helpers.path.join(dir.path, "the-name.dat");
+      helpers.fs.writeFileSync(fp, "FILEPATH-DATA");
+      var r = await b.httpClient.request({ url: base + "/mp",
+        multipart: { files: [{ field: "f", filePath: fp }] },
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("multipart: filePath entry without filename defaults to path.basename",
+        r.statusCode === 200 && /filename="the-name\.dat"/.test(fpBody || ""));
+    } finally {
+      dir.cleanup();
+    }
+  });
+}
+
+// ---- jar merges with a caller-supplied Cookie header ---------------
+
+async function testJarCookieMerge() {
+  var jar = b.httpClient.cookieJar.create();
+  var saw = null;
+  await _withServer(function (req, res) {
+    saw = req.headers.cookie || null;
+    res.writeHead(200, { "set-cookie": "sid=z9; Path=/" });
+    res.end("ok");
+  }, async function (base) {
+    // Seed the jar from a first response.
+    await b.httpClient.request({ url: base + "/", jar: jar, allowedProtocols: ALLOW, allowInternal: true });
+    // Second request supplies its OWN Cookie header — the jar supplements it.
+    await b.httpClient.request({ url: base + "/", jar: jar,
+      headers: { Cookie: "caller=1" }, allowedProtocols: ALLOW, allowInternal: true });
+    check("jar: caller Cookie header merged with the jar cookie (both present)",
+      /caller=1/.test(saw || "") && /sid=z9/.test(saw || ""));
+  });
+}
+
+// ---- stream-mode non-2xx error body (h1) ---------------------------
+
+async function testStreamModeHttpError() {
+  // Small error body: rejects HTTP_ERROR with a bounded err.body prefix.
+  await _withServer(function (req, res) {
+    res.writeHead(404, { "Content-Type": "application/problem+json" });
+    res.end('{"detail":"missing"}');
+  }, async function (base) {
+    var err = await _expectReject("stream 404: rejects HTTP_ERROR",
+      b.httpClient.request({ url: base + "/x", responseMode: "stream",
+        allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+    check("stream 404: err.body carries the error payload prefix",
+      err && Buffer.isBuffer(err.body) && /missing/.test(err.body.toString("utf8")));
+  });
+
+  // Large error body: the collector fills its 16 KiB cap, destroys the
+  // stream, and still rejects (doesn't hang on a slow / large error body).
+  await _withServer(function (req, res) {
+    res.writeHead(413, { "Content-Type": "text/plain" });
+    res.end(Buffer.alloc(40000, 0x7a));
+  }, async function (base) {
+    var err = await _expectReject("stream 413: oversized error body still rejects HTTP_ERROR",
+      b.httpClient.request({ url: base + "/big", responseMode: "stream",
+        allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+    check("stream 413: err.body prefix capped at 16 KiB",
+      err && Buffer.isBuffer(err.body) && err.body.length <= 16384 && err.body.length > 0);
+  });
+}
+
+// ---- bandwidth throttle + transform interpose (h1) -----------------
+
+async function testThrottleAndTransformH1() {
+  var payload = Buffer.alloc(64, 0x71);
+  await _withServer(function (req, res) {
+    var chunks = []; req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { res.writeHead(200); res.end(payload); });
+  }, async function (base) {
+    var dlSeen = 0, ulSeen = 0, chunkSeen = 0;
+    // Upload body larger than the per-second budget forces the token-bucket
+    // to stall at least once (exercises the refill / setTimeout wait branch).
+    var upBody = Buffer.alloc(1500, 0x72);
+    var res = await b.httpClient.request({
+      url: base + "/t", method: "POST", body: upBody,
+      maxBytesPerSec: 1024,
+      downloadTransform: function () { return new nodeStream.PassThrough(); },  // factory form
+      uploadTransform: new nodeStream.PassThrough(),                            // instance form
+      onUploadProgress: function (p) { ulSeen = p.loaded; },
+      onDownloadProgress: function (p) { dlSeen = p.loaded; },
+      onChunk: function (c) { chunkSeen += c.length; },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("throttle h1: response intact through the throttle + transform chain",
+      res.body.equals(payload));
+    check("throttle h1: upload progress summed to the body length", ulSeen === 1500);
+    check("throttle h1: download progress + onChunk observed the full payload",
+      dlSeen === payload.length && chunkSeen === payload.length);
+  });
+}
+
+// ---- upload progress on a piped Readable body (no throttle) --------
+
+async function testUploadProgressPipedBody() {
+  await _withServer(function (req, res) {
+    req.on("data", function () {}); req.on("end", function () { res.writeHead(200); res.end("ok"); });
+  }, async function (base) {
+    var total = 0;
+    var src = nodeStream.Readable.from([Buffer.from("AAAA"), Buffer.from("BBBB")]);
+    var res = await b.httpClient.request({ url: base + "/u", method: "POST", body: src,
+      onUploadProgress: function (p) { total = p.loaded; },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("upload progress (piped Readable): summed bytes across data events",
+      res.statusCode === 200 && total === 8);
+  });
+}
+
+// ---- download-transform error surfaces on the buffered read (h1) ---
+
+async function testDownloadTransformErrorH1() {
+  await _withServer(function (req, res) { res.writeHead(200); res.end(Buffer.alloc(64, 1)); },
+    async function (base) {
+      await _expectReject("h1 buffer-mode download-transform error rejects RES_ERROR",
+        b.httpClient.request({ url: base + "/x",
+          downloadTransform: function () {
+            return new nodeStream.Transform({ transform: function (c, e, cb) { cb(new Error("xform boom")); } });
+          },
+          allowedProtocols: ALLOW, allowInternal: true }), "RES_ERROR");
+    });
+}
+
+// ---- downloadStream lifecycle: success / verify / mismatch / non-2xx
+
+async function testDownloadStreamLifecycle() {
+  // Config-time validation rejects (async — the opts shape is checked first).
+  await _expectReject("downloadStream: non-object opts rejects bad-opts",
+    b.httpClient.downloadStream(1), "httpclient/bad-opts");
+  await _expectReject("downloadStream: unknown hash alg rejects",
+    b.httpClient.downloadStream({ url: "https://x/", dest: "/x", hash: "md5" }), /hash must be one of/);
+  await _expectReject("downloadStream: non-hex expected digest rejects",
+    b.httpClient.downloadStream({ url: "https://x/", dest: "/x", expected: "nothex!!" }), /hex digest/);
+
+  var payload = Buffer.from("DOWNLOAD-STREAM-PAYLOAD-abc123");
+  await _withServer(function (req, res) {
+    if (req.url === "/redir") { res.writeHead(302, { Location: "/elsewhere" }); res.end(); return; }
+    res.writeHead(200, { "Content-Type": "application/octet-stream" });
+    res.end(payload);
+  }, async function (base) {
+    var dir = b.testing.tempDir("httpclient-cov-dllife");
+    try {
+      // Success (no expected): file lands, hash + bytesWritten returned.
+      var dest1 = helpers.path.join(dir.path, "a.bin");
+      var d1 = await b.httpClient.downloadStream({ url: base + "/f", dest: dest1,
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("downloadStream: success returns statusCode / bytesWritten / hash",
+        d1.statusCode === 200 && d1.bytesWritten === payload.length &&
+        typeof d1.hash === "string" && d1.hash.length > 0);
+      check("downloadStream: success created the dest file", helpers.fs.existsSync(dest1));
+
+      // Verified: expected === the first download's hash → renamed into place.
+      var dest2 = helpers.path.join(dir.path, "b.bin");
+      var d2 = await b.httpClient.downloadStream({ url: base + "/f", dest: dest2, expected: d1.hash,
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("downloadStream: matching expected hash completes the download",
+        d2.statusCode === 200 && helpers.fs.existsSync(dest2));
+
+      // Mismatch: wrong expected → hash-mismatch, tmp removed, no dest.
+      var dest3 = helpers.path.join(dir.path, "c.bin");
+      var audit = _mkAuditCapture();
+      await _expectReject("downloadStream: wrong expected hash rejects hash-mismatch",
+        b.httpClient.downloadStream({ url: base + "/f", dest: dest3, expected: "deadbeefcafe",
+          audit: audit, allowedProtocols: ALLOW, allowInternal: true }), "httpclient/hash-mismatch");
+      check("downloadStream: mismatch left no dest file", !helpers.fs.existsSync(dest3));
+      check("downloadStream: mismatch emitted a refused audit event",
+        audit.events.some(function (e) { return e.action === "system.httpclient.download_stream.refused"; }));
+
+      // 3xx slips through stream mode (no redirect follow) → http-error.
+      var dest4 = helpers.path.join(dir.path, "d.bin");
+      var err = await _expectReject("downloadStream: 3xx upstream rejects http-error",
+        b.httpClient.downloadStream({ url: base + "/redir", dest: dest4,
+          allowedProtocols: ALLOW, allowInternal: true }), "httpclient/http-error");
+      check("downloadStream: http-error carries the upstream status", err && err.statusCode === 302);
+
+      // Rename failure: point dest at an existing directory so the atomic
+      // tmp→dest rename fails; the tmp is cleaned + a refused audit emits.
+      var destDir = helpers.path.join(dir.path, "adir");
+      helpers.fs.mkdirSync(destDir);
+      var raudit = _mkAuditCapture();
+      await _expectReject("downloadStream: rename onto a directory rejects rename-failed",
+        b.httpClient.downloadStream({ url: base + "/f", dest: destDir, audit: raudit,
+          allowedProtocols: ALLOW, allowInternal: true }), "httpclient/rename-failed");
+      check("downloadStream: rename failure emitted a refused audit event",
+        raudit.events.some(function (e) {
+          return e.action === "system.httpclient.download_stream.refused" && e.metadata.reason === "rename-failed";
+        }));
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  // request-failed (connection refused) → refused audit + rethrow.
+  var failDir = b.testing.tempDir("httpclient-cov-dlfail");
+  try {
+    var audit2 = _mkAuditCapture();
+    b.httpClient._resetForTest();
+    var e = null;
+    try {
+      await b.httpClient.downloadStream({ url: "http://127.0.0.1:1/x",
+        dest: helpers.path.join(failDir.path, "x.bin"),
+        audit: audit2, allowedProtocols: ALLOW, allowInternal: true });
+    } catch (err) { e = err; }
+    check("downloadStream: connection failure rethrows + audits refused (request-failed)",
+      e != null && audit2.events.some(function (x) {
+        return x.action === "system.httpclient.download_stream.refused" && x.metadata.reason === "request-failed";
+      }));
+  } finally {
+    failDir.cleanup();
+  }
+}
+
+// ---- uploadMultipartStream lifecycle -------------------------------
+
+async function testUploadMultipartStreamLifecycle() {
+  // Config-time validation rejects (async — the opts shape is checked first).
+  await _expectReject("uploadMultipartStream: non-object opts rejects bad-opts",
+    b.httpClient.uploadMultipartStream(1), "httpclient/bad-opts");
+  await _expectReject("uploadMultipartStream: missing file object rejects",
+    b.httpClient.uploadMultipartStream({ url: "https://x/" }), /file must be an object/);
+  await _expectReject("uploadMultipartStream: non-object fields rejects",
+    b.httpClient.uploadMultipartStream({ url: "https://x/", file: { path: "/p", fieldName: "f" }, fields: [1] }), /fields must be an object/);
+
+  var dir = b.testing.tempDir("httpclient-cov-upload");
+  try {
+    var src = helpers.path.join(dir.path, "artifact.txt");
+    helpers.fs.writeFileSync(src, "UPLOAD-STREAM-BODY");
+
+    var sawCT = null, sawBodyLen = 0;
+    await _withServer(function (req, res) {
+      sawCT = req.headers["content-type"] || null;
+      var chunks = []; req.on("data", function (c) { chunks.push(c); });
+      req.on("end", function () { sawBodyLen = Buffer.concat(chunks).length; res.writeHead(200); res.end("stored"); });
+    }, async function (base) {
+      var audit = _mkAuditCapture();
+      var r = await b.httpClient.uploadMultipartStream({
+        url: base + "/up",
+        file: { path: src, fieldName: "artifact", contentType: "text/plain" },
+        fields: { tag: "v1" }, audit: audit,
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("uploadMultipartStream: success returns statusCode + response",
+        r.statusCode === 200 && r.response && r.response.body.toString() === "stored");
+      check("uploadMultipartStream: server saw a multipart Content-Type + a body",
+        /^multipart\/form-data;\s*boundary=/i.test(sawCT || "") && sawBodyLen > 0);
+      check("uploadMultipartStream: completed audit emitted",
+        audit.events.some(function (e) { return e.action === "system.httpclient.upload_stream.completed"; }));
+    });
+
+    // Missing file path → missing-file.
+    await _expectReject("uploadMultipartStream: missing file rejects missing-file",
+      b.httpClient.uploadMultipartStream({ url: "https://x.example/up",
+        file: { path: helpers.path.join(dir.path, "nope.txt"), fieldName: "f" },
+        allowedProtocols: ALLOW, allowInternal: true }), "httpclient/missing-file");
+
+    // A directory path (not a regular file) → missing-file.
+    await _expectReject("uploadMultipartStream: directory path rejects missing-file",
+      b.httpClient.uploadMultipartStream({ url: "https://x.example/up",
+        file: { path: dir.path, fieldName: "f" },
+        allowedProtocols: ALLOW, allowInternal: true }), "httpclient/missing-file");
+
+    // Request failure (connection refused) → refused audit + rethrow.
+    var audit2 = _mkAuditCapture();
+    b.httpClient._resetForTest();
+    var e = null;
+    try {
+      await b.httpClient.uploadMultipartStream({ url: "http://127.0.0.1:1/up",
+        file: { path: src, fieldName: "f" }, audit: audit2,
+        allowedProtocols: ALLOW, allowInternal: true });
+    } catch (err) { e = err; }
+    check("uploadMultipartStream: connection failure rethrows + audits refused (request-failed)",
+      e != null && audit2.events.some(function (x) {
+        return x.action === "system.httpclient.upload_stream.refused" && x.metadata.reason === "request-failed";
+      }));
+  } finally {
+    dir.cleanup();
+    b.httpClient._resetForTest();
+  }
+}
+
+// ---- RFC 9111 outbound cache paths ---------------------------------
+
+function _newHttpCache(extra) {
+  var store = b.httpClient.cache.memoryStore({ maxBytes: 1048576, maxEntries: 64 });
+  return b.httpClient.cache.create(Object.assign({ store: store }, extra || {}));
+}
+
+async function testCachePaths() {
+  // Fresh HIT: max-age=60 → second request served from cache (no upstream hit).
+  var hitCount = 0;
+  await _withServer(function (req, res) {
+    hitCount += 1;
+    res.writeHead(200, { "Cache-Control": "max-age=60", "Content-Type": "text/plain" });
+    res.end("fresh-body");
+  }, async function (base) {
+    var cache = _newHttpCache();
+    var m = await b.httpClient.request({ url: base + "/hit", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+    var h = await b.httpClient.request({ url: base + "/hit", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+    check("cache: first request is a MISS, second a HIT",
+      m.headers["x-blamejs-cache"] === "MISS" && h.headers["x-blamejs-cache"] === "HIT");
+    check("cache: HIT served without a second upstream fetch", hitCount === 1);
+    check("cache: HIT carries the stored body + an Age header",
+      h.body.toString() === "fresh-body" && typeof h.headers.age === "string");
+  });
+
+  // Inline revalidation → 304 Not Modified → REVALIDATED.
+  await _withServer(function (req, res) {
+    if (req.headers["if-none-match"] === '"v1"') { res.writeHead(304, { ETag: '"v1"' }); res.end(); return; }
+    res.writeHead(200, { "Cache-Control": "max-age=0", "ETag": '"v1"' });
+    res.end("revalidate-body");
+  }, async function (base) {
+    var cache = _newHttpCache();
+    await b.httpClient.request({ url: base + "/rev", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+    var r = await b.httpClient.request({ url: base + "/rev", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+    check("cache: stale-then-304 marks REVALIDATED + keeps the stored body",
+      r.headers["x-blamejs-cache"] === "REVALIDATED" && r.body.toString() === "revalidate-body");
+  });
+
+  // Inline revalidation → 200 fresh response → MISS (store replaced).
+  var n = 0;
+  await _withServer(function (req, res) {
+    n += 1;
+    res.writeHead(200, { "Cache-Control": "max-age=0", "ETag": '"e' + n + '"' });
+    res.end("v" + n);
+  }, async function (base) {
+    var cache = _newHttpCache();
+    await b.httpClient.request({ url: base + "/fr", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+    var r = await b.httpClient.request({ url: base + "/fr", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+    check("cache: revalidation returning 200 is a fresh MISS with the new body",
+      r.headers["x-blamejs-cache"] === "MISS" && r.body.toString() === "v2");
+  });
+
+  // stale-while-revalidate: serve STALE immediately + background refresh.
+  var swrHits = 0;
+  await _withServer(function (req, res) {
+    swrHits += 1;
+    res.writeHead(200, { "Cache-Control": "max-age=0, stale-while-revalidate=60", "ETag": '"s' + swrHits + '"' });
+    res.end("swr" + swrHits);
+  }, async function (base) {
+    var cache = _newHttpCache({ revalidateInBackground: true });
+    await b.httpClient.request({ url: base + "/swr", cache: cache, allowedProtocols: ALLOW, allowInternal: true });   // MISS + store
+    var s = await b.httpClient.request({ url: base + "/swr", cache: cache, allowedProtocols: ALLOW, allowInternal: true });  // STALE served
+    check("cache: stale-while-revalidate serves STALE immediately",
+      s.headers["x-blamejs-cache"] === "STALE" && s.body.toString() === "swr1");
+    // Background revalidation fires async — wait for the upstream to see it
+    // so the fire-and-forget request completes inside the server's lifetime.
+    await helpers.waitUntil(function () { return swrHits >= 2; },
+      { timeoutMs: 5000, label: "cache swr: background revalidation reached upstream" });
+    check("cache: swr background revalidation refreshed from upstream", swrHits >= 2);
+  });
+
+  // stale-if-error: revalidation fails → serve STALE within the SIE window.
+  await _withServer(function (req, res) {
+    if (req.headers["if-none-match"]) { req.destroy(); return; }   // fail the revalidation
+    res.writeHead(200, { "Cache-Control": "max-age=0, stale-if-error=60", "ETag": '"sie"' });
+    res.end("sie-body");
+  }, async function (base) {
+    var cache = _newHttpCache();
+    await b.httpClient.request({ url: base + "/sie", cache: cache, allowedProtocols: ALLOW, allowInternal: true });   // MISS + store
+    var r = await b.httpClient.request({ url: base + "/sie", cache: cache, allowedProtocols: ALLOW, allowInternal: true });  // reval errors → STALE
+    check("cache: stale-if-error serves STALE when revalidation fails",
+      r.headers["x-blamejs-cache"] === "STALE" && r.body.toString() === "sie-body");
+  });
+
+  // Revalidation error with NO stale-if-error window → the error propagates.
+  await _withServer(function (req, res) {
+    if (req.headers["if-none-match"]) { req.destroy(); return; }   // fail the revalidation
+    res.writeHead(200, { "Cache-Control": "max-age=0", "ETag": '"z"' });
+    res.end("zbody");
+  }, async function (base) {
+    var cache = _newHttpCache();
+    await b.httpClient.request({ url: base + "/z", cache: cache, allowedProtocols: ALLOW, allowInternal: true });   // MISS + store
+    var e = null;
+    try { await b.httpClient.request({ url: base + "/z", cache: cache, allowedProtocols: ALLOW, allowInternal: true }); }
+    catch (err) { e = err; }
+    check("cache: revalidation error without a stale window propagates the error",
+      e != null && /ECONNRESET|ECONNREFUSED|socket|REQ_ERROR|RES_ERROR/i.test((e.code || "") + " " + (e.message || "")));
+  });
+
+  // Cache MISS whose network fetch follows a redirect (the cache path threads
+  // through the redirect-aware request, not the single-shot one).
+  await _withServer(function (req, res) {
+    if (req.url === "/start") { res.writeHead(302, { Location: "/final" }); res.end(); return; }
+    res.writeHead(200, { "Cache-Control": "max-age=60" }); res.end("finalbody");
+  }, async function (base) {
+    var cache = _newHttpCache();
+    var r = await b.httpClient.request({ url: base + "/start", cache: cache, maxRedirects: 3,
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("cache: MISS follows a redirect through the cache path",
+      r.statusCode === 200 && r.body.toString() === "finalbody" && r.headers["x-blamejs-cache"] === "MISS");
+  });
+
+  // stale-while-revalidate where the BACKGROUND revalidation itself errors —
+  // the stale response is already returned; the failure is swallowed.
+  var sawConditional = false;
+  await _withServer(function (req, res) {
+    if (req.headers["if-none-match"]) { sawConditional = true; req.destroy(); return; }
+    res.writeHead(200, { "Cache-Control": "max-age=0, stale-while-revalidate=60", "ETag": '"sw"' });
+    res.end("swbody");
+  }, async function (base) {
+    var cache = _newHttpCache({ revalidateInBackground: true });
+    await b.httpClient.request({ url: base + "/s", cache: cache, allowedProtocols: ALLOW, allowInternal: true });   // MISS + store
+    var s = await b.httpClient.request({ url: base + "/s", cache: cache, allowedProtocols: ALLOW, allowInternal: true });  // STALE served
+    check("cache: swr still serves STALE when the background refresh fails",
+      s.headers["x-blamejs-cache"] === "STALE");
+    await helpers.waitUntil(function () { return sawConditional; },
+      { timeoutMs: 5000, label: "cache swr-error: background revalidation attempted" });
+    check("cache: swr background revalidation was attempted (and its error swallowed)", sawConditional);
+  });
+
+  // Non-GET method bypasses the cache entirely (network every time).
+  var posts = 0;
+  await _withServer(function (req, res) { posts += 1; req.resume(); res.writeHead(200); res.end("p"); },
+    async function (base) {
+      var cache = _newHttpCache();
+      await b.httpClient.request({ url: base + "/p", method: "POST", body: "x", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+      await b.httpClient.request({ url: base + "/p", method: "POST", body: "x", cache: cache, allowedProtocols: ALLOW, allowInternal: true });
+      check("cache: POST bypasses the cache (both reach upstream)", posts === 2);
+    });
+  b.httpClient._resetForTest();
+}
+
+// ---- HTTP/2 (h2c) extended paths -----------------------------------
+
+async function testH2cExtended() {
+  await _withH2cServer(function (stream, headers) {
+    stream.on("error", function () {});   // guard server-side stream errors on client reset
+    var p = headers[":path"];
+    if (p === "/hdr") {
+      stream.respond({ ":status": 200,
+        "x-saw-custom":     headers["x-custom"] || "",
+        "x-saw-connection": headers["connection"] || "absent",   // connection-specific header must be stripped
+        "x-saw-ae":         headers["accept-encoding"] || "" });
+      stream.end("ok");
+      return;
+    }
+    if (p === "/echo") {
+      var chunks = []; stream.on("data", function (c) { chunks.push(c); });
+      stream.on("end", function () { stream.respond({ ":status": 200 }); stream.end(Buffer.concat(chunks)); });
+      return;
+    }
+    if (p === "/cookie") { stream.respond({ ":status": 200, "set-cookie": "h2sid=q1; Path=/" }); stream.end("ck"); return; }
+    if (p === "/err500") { stream.respond({ ":status": 500 }); stream.end("boom"); return; }
+    if (p === "/reset")  { stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR); return; }
+    stream.respond({ ":status": 200 }); stream.end("ok");
+  }, async function (base) {
+    // Custom + connection-specific headers: connection stripped, custom passes,
+    // an explicit accept-encoding is preserved (default is identity otherwise).
+    var r = await b.httpClient.request({ url: base + "/hdr", preferH2: true,
+      headers: { "X-Custom": "cv", "Connection": "keep-alive", "Accept-Encoding": "gzip" },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("h2c headers: custom forwarded, connection-specific stripped",
+      r.headers["x-saw-custom"] === "cv" && r.headers["x-saw-connection"] === "absent");
+    check("h2c headers: explicit accept-encoding preserved", r.headers["x-saw-ae"] === "gzip");
+
+    // Buffer request body → content-length set, body echoed intact.
+    var echo = await b.httpClient.request({ url: base + "/echo", preferH2: true, method: "POST",
+      body: Buffer.from("h2-buffer-body"), allowedProtocols: ALLOW, allowInternal: true });
+    check("h2c buffer body: echoed intact", echo.body.toString() === "h2-buffer-body");
+
+    // Cookie jar records Set-Cookie over h2.
+    var jar = b.httpClient.cookieJar.create();
+    await b.httpClient.request({ url: base + "/cookie", preferH2: true, jar: jar, allowedProtocols: ALLOW, allowInternal: true });
+    check("h2c jar: Set-Cookie recorded from the h2 response",
+      /h2sid=q1/.test(jar.cookieHeaderFor(base + "/cookie") || ""));
+
+    // Observer fires request:start + response:end over h2.
+    var stages = [];
+    await b.httpClient.request({ url: base + "/ok", preferH2: true,
+      observer: function (s) { stages.push(s); }, allowedProtocols: ALLOW, allowInternal: true });
+    check("h2c observer: request:start + response:end fired",
+      stages.indexOf("request:start") !== -1 && stages.indexOf("response:end") !== -1);
+
+    // Stream-mode non-2xx over h2 → HTTP_ERROR with bounded err.body.
+    var se = await _expectReject("h2c stream 500: rejects HTTP_ERROR",
+      b.httpClient.request({ url: base + "/err500", preferH2: true, responseMode: "stream",
+        allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+    check("h2c stream 500: err.body carries the error payload",
+      se && Buffer.isBuffer(se.body) && /boom/.test(se.body.toString()));
+
+    // Upload throttle stages over h2 (paces the request body).
+    var up = await b.httpClient.request({ url: base + "/echo", preferH2: true, method: "POST",
+      body: Buffer.alloc(1500, 0x33), maxBytesPerSec: 1024, allowedProtocols: ALLOW, allowInternal: true });
+    check("h2c upload throttle: paced body delivered intact", up.body.length === 1500);
+
+    // Download transform that errors → surfaced on the pipeline tail as H2_STREAM_ERROR.
+    await _expectReject("h2c download-transform error rejects H2_STREAM_ERROR",
+      b.httpClient.request({ url: base + "/ok", preferH2: true,
+        downloadTransform: function () {
+          return new nodeStream.Transform({ transform: function (c, e, cb) { cb(new Error("xform boom")); } });
+        },
+        allowedProtocols: ALLOW, allowInternal: true }), "H2_STREAM_ERROR");
+
+    // Piped Readable request body that errors → REQ_BODY_ERROR over h2.
+    var badBody = new nodeStream.Readable({ read: function () { this.destroy(new Error("body blew up")); } });
+    await _expectReject("h2c upload body stream error rejects REQ_BODY_ERROR",
+      b.httpClient.request({ url: base + "/echo", preferH2: true, method: "POST", body: badBody,
+        allowedProtocols: ALLOW, allowInternal: true }), "REQ_BODY_ERROR");
+
+    // Server resets the stream → client surfaces the stream error.
+    await _expectReject("h2c server stream reset surfaces a stream error",
+      b.httpClient.request({ url: base + "/reset", preferH2: true,
+        allowedProtocols: ALLOW, allowInternal: true }), /ERR_HTTP2|H2_STREAM_ERROR/);
+  });
+  b.httpClient._resetForTest();
+}
+
+// ---- HTTP/2 (h2c) connect error / idle timeout / in-flight abort ---
+
+async function testH2cTimeoutAbortConnErr() {
+  // Connect error — no listener on the captured port.
+  var deadPort = await (async function () {
+    var s = http.createServer();
+    var port = await b.testing.listenOnRandomPort(s, "127.0.0.1");
+    await new Promise(function (r) { s.close(function () { r(); }); });
+    return port;
+  })();
+  b.httpClient._resetForTest();
+  await _expectReject("h2c: connect to a dead port rejects with a connect error",
+    b.httpClient.request({ url: "http://127.0.0.1:" + deadPort + "/x", preferH2: true,
+      allowedProtocols: ALLOW, allowInternal: true }), /ECONNREFUSED|REQ_ERROR|H2_/);
+
+  // Idle timeout — server accepts the stream but never responds.
+  await _withH2cServer(function (stream) { stream.on("error", function () {}); /* never respond */ },
+    async function (base) {
+      await _expectReject("h2c: idle timeout rejects ETIMEDOUT",
+        b.httpClient.request({ url: base + "/hang", preferH2: true, idleTimeoutMs: 300,
+          allowedProtocols: ALLOW, allowInternal: true }), "ETIMEDOUT");
+    });
+  b.httpClient._resetForTest();
+
+  // In-flight abort — abort after the stream is on the wire.
+  var onWire = false;
+  await _withH2cServer(function (stream) { stream.on("error", function () {}); onWire = true; /* never respond */ },
+    async function (base) {
+      var ctrl = new AbortController();
+      var p = b.httpClient.request({ url: base + "/hang", preferH2: true, signal: ctrl.signal,
+        allowedProtocols: ALLOW, allowInternal: true });
+      await helpers.waitUntil(function () { return onWire; },
+        { timeoutMs: 5000, label: "h2c abort: stream reached the server" });
+      ctrl.abort();
+      await _expectReject("h2c: in-flight abort rejects ABORT", p, "ABORT");
+    });
+  b.httpClient._resetForTest();
+}
+
+// ---- h1 in-flight abort with the abort listener already attached ---
+
+async function testH1AbortOnWire() {
+  var onWire = false;
+  await _withServer(function (req, res) { onWire = true; void res; /* hold the request open */ },
+    async function (base) {
+      var ctrl = new AbortController();
+      var p = b.httpClient.request({ url: base + "/hang", signal: ctrl.signal,
+        allowedProtocols: ALLOW, allowInternal: true });
+      await helpers.waitUntil(function () { return onWire; },
+        { timeoutMs: 5000, label: "h1 abort: request reached the server" });
+      ctrl.abort();
+      await _expectReject("h1: in-flight abort (listener attached) rejects ABORT", p, "ABORT");
+    });
+}
+
+// ---- default-port origin keys (unit) -------------------------------
+
+function testDefaultPortKeys() {
+  // A portless URL exercises the IANA default-port fallback inside the
+  // origin-key builder (443 for https, 80 for http). No transport is
+  // cached for these hosts, so the lookup is a pure parse + map miss.
+  check("origin key: portless https resolves without a cached transport",
+    b.httpClient._getCachedTransportKind("https://origin.invalid/") === null);
+  check("origin key: portless http resolves without a cached transport",
+    b.httpClient._getCachedTransportKind("http://origin.invalid/") === null);
+}
+
+// ---- throttled/transformed upload body error (h1 + h2) -------------
+
+async function testThrottledUploadBodyError() {
+  // h1: an erroring body routed through the throttle stages → REQ_BODY_ERROR.
+  await _withServer(function (req) { req.on("data", function () {}); req.on("error", function () {}); },
+    async function (base) {
+      var bad = new nodeStream.Readable({ read: function () { this.destroy(new Error("throttled body blew up")); } });
+      await _expectReject("throttle h1: erroring upload body rejects REQ_BODY_ERROR",
+        b.httpClient.request({ url: base + "/u", method: "POST", body: bad, maxBytesPerSec: 1024,
+          allowedProtocols: ALLOW, allowInternal: true }), "REQ_BODY_ERROR");
+    });
+
+  // h2: same, over the h2 stream upload stages.
+  await _withH2cServer(function (stream) { stream.on("error", function () {}); stream.on("data", function () {}); },
+    async function (base) {
+      var bad = new nodeStream.Readable({ read: function () { this.destroy(new Error("throttled body blew up")); } });
+      await _expectReject("throttle h2: erroring upload body rejects REQ_BODY_ERROR",
+        b.httpClient.request({ url: base + "/u", method: "POST", body: bad, preferH2: true, maxBytesPerSec: 1024,
+          allowedProtocols: ALLOW, allowInternal: true }), "REQ_BODY_ERROR");
+    });
+  b.httpClient._resetForTest();
+}
+
+// ---- h2 pre-aborted signal + h2 transport teardown -----------------
+
+async function testH2PreAbortAndTeardown() {
+  // Scope 1: warm h2, pre-aborted signal, then _resetForTest tears down the
+  // live h2 session (its per-origin key isn't re-warmed inside this scope, so
+  // no old-session `close` can race a fresh entry).
+  await _withH2cServer(function (stream) { stream.on("error", function () {}); stream.respond({ ":status": 200 }); stream.end("ok"); },
+    async function (base) {
+      await b.httpClient.request({ url: base + "/x", preferH2: true, allowedProtocols: ALLOW, allowInternal: true });
+      check("h2 teardown: transport cached as h2 after the first request",
+        b.httpClient._getCachedTransportKind(base + "/x") === "h2");
+
+      // Pre-aborted signal on a warm h2 origin → rejects before any stream.
+      var ac = new AbortController();
+      ac.abort();
+      await _expectReject("h2 pre-aborted signal: rejects ABORT",
+        b.httpClient.request({ url: base + "/x", preferH2: true, signal: ac.signal,
+          allowedProtocols: ALLOW, allowInternal: true }), "ABORT");
+
+      b.httpClient._resetForTest();   // covers _resetForTest's live-h2-session teardown branch
+      check("h2 teardown: _resetForTest cleared the live h2 session",
+        b.httpClient._getCachedTransportCount() === 0);
+    });
+
+  // Scope 2 (fresh origin): warm h2, then configurePool tears down the live
+  // h2 session + clears the cache.
+  await _withH2cServer(function (stream) { stream.on("error", function () {}); stream.respond({ ":status": 200 }); stream.end("ok"); },
+    async function (base) {
+      await b.httpClient.request({ url: base + "/y", preferH2: true, allowedProtocols: ALLOW, allowInternal: true });
+      check("h2 teardown: transport cached before configurePool",
+        b.httpClient._getCachedTransportKind(base + "/y") === "h2");
+      b.httpClient.configurePool({ maxSockets: 8 });
+      check("h2 teardown: configurePool cleared the h2 transport",
+        b.httpClient._getCachedTransportCount() === 0);
+      b.httpClient.configurePool({
+        maxSockets:     b.httpClient.DEFAULT_AGENT_OPTS.maxSockets,
+        maxFreeSockets: b.httpClient.DEFAULT_AGENT_OPTS.maxFreeSockets,
+        keepAliveMsecs: b.httpClient.DEFAULT_AGENT_OPTS.keepAliveMsecs,
+        keepAlive:      b.httpClient.DEFAULT_AGENT_OPTS.keepAlive,
+        scheduling:     b.httpClient.DEFAULT_AGENT_OPTS.scheduling,
+      });
+    });
+  b.httpClient._resetForTest();
+}
+
 // Destroy the httpClient transport pool and wait for every TCP handle to
 // close, so the async teardown completes inside run() rather than in the
 // forked worker's post-run grace window. Poll, don't sleep.
@@ -663,6 +1385,22 @@ async function run() {
     await testH2cPaths();
     await testMultipartValidRoundTrip();
     await testDownloadMaxBytes();
+    testPinnedLookupContract();
+    await testMultipartBuildBranches();
+    await testJarCookieMerge();
+    await testStreamModeHttpError();
+    await testThrottleAndTransformH1();
+    await testUploadProgressPipedBody();
+    await testDownloadTransformErrorH1();
+    await testDownloadStreamLifecycle();
+    await testUploadMultipartStreamLifecycle();
+    await testCachePaths();
+    await testH2cExtended();
+    await testH2cTimeoutAbortConnErr();
+    await testH1AbortOnWire();
+    testDefaultPortKeys();
+    await testThrottledUploadBodyError();
+    await testH2PreAbortAndTeardown();
   } finally {
     await _drainTcpHandles();
   }

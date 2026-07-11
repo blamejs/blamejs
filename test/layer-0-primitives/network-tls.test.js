@@ -36,6 +36,7 @@ var nodeFs     = require("node:fs");
 var nodeOs     = require("node:os");
 var nodePath   = require("node:path");
 var nodeTls    = require("node:tls");
+var nodeNet    = require("node:net");
 var asn1       = require("../../lib/asn1-der");
 
 var nt = b.network.tls;
@@ -540,6 +541,60 @@ function _toPem(der) {
   return "-----BEGIN CERTIFICATE-----\n" +
     der.toString("base64").replace(/(.{64})/g, "$1\n") +
     "\n-----END CERTIFICATE-----\n";
+}
+
+// Build a REAL, handshake-valid self-signed EC leaf cert (P-256) so a
+// localhost tls.createServer can complete a TLS handshake. Unlike
+// _synthCert (fake [0,0,0,0] signature, shape-only for X509 field
+// parsing), this embeds the true SPKI and an ECDSA-SHA256 signature over
+// the tbsCertificate, so a client that connects with
+// rejectUnauthorized:false completes 'secureConnect'. Serial defaults to
+// _SERIAL so a _buildOcsp staple (default serial _SERIAL) binds to the
+// connected peer's serialNumber in ocsp.requireGood.
+function _makeRealSelfSignedCert(serial) {
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var spkiDer = kp.publicKey.export({ type: "spki", format: "der" });
+  var sigAlgId = asn1.writeSequence([asn1.writeOid("1.2.840.10045.4.3.2")]);  // ecdsa-with-SHA256
+  var cnrdn = asn1.writeSequence([asn1.writeOid("2.5.4.3"),
+    asn1.writeNode(0x0c, Buffer.from("localhost", "ascii"))]);
+  var name  = asn1.writeSequence([asn1.writeNode(0x31, cnrdn)]);
+  var validity = asn1.writeSequence([
+    asn1.writeNode(0x17, Buffer.from("250101000000Z", "ascii")),
+    asn1.writeNode(0x17, Buffer.from("350101000000Z", "ascii")),
+  ]);
+  var version = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  var tbs = asn1.writeSequence([version, asn1.writeInteger(serial || _SERIAL),
+    sigAlgId, name, validity, name, spkiDer]);
+  var sig = nodeCrypto.sign("sha256", tbs, kp.privateKey);
+  var certDer = asn1.writeSequence([tbs, sigAlgId, asn1.writeBitString(sig)]);
+  return {
+    certPem: _toPem(certDer),
+    keyPem:  kp.privateKey.export({ type: "pkcs8", format: "pem" }),
+  };
+}
+
+// Start a localhost TLS server presenting the real self-signed cert. When
+// `staple` is a Buffer, the server answers the client's requestOCSP with
+// it via the 'OCSPRequest' event. Returns { srv, port, close }.
+function _startTlsServer(staple) {
+  return new Promise(function (resolve) {
+    var m = _makeRealSelfSignedCert(_SERIAL);
+    var srv = nodeTls.createServer(
+      { key: m.keyPem, cert: m.certPem, minVersion: "TLSv1.2" },
+      function (sock) { sock.on("error", function () { /* peer reset */ }); });
+    if (Buffer.isBuffer(staple)) {
+      srv.on("OCSPRequest", function (_cert, _issuer, cb) { cb(null, staple); });
+    }
+    srv.on("error", function () { /* listen/accept best-effort */ });
+    srv.unref();
+    srv.listen(0, "127.0.0.1", function () {
+      resolve({
+        srv:   srv,
+        port:  srv.address().port,
+        close: function () { try { srv.close(); } catch (_e) { /* best-effort */ } },
+      });
+    });
+  });
 }
 
 function _mustStapleExt() {
@@ -1380,6 +1435,532 @@ function testWrapSniCallback() {
 }
 
 // =====================================================================
+// buildOptions — TLS request-options builder (PQC groups + TLSv1.3 floor)
+// =====================================================================
+
+function testBuildOptionsBranches() {
+  nt._resetForTest();
+
+  // Defaults: TLSv1.3 floor + framework PQC group list; groups mirrors ecdhCurve.
+  var def = nt.buildOptions();
+  check("buildOptions default minVersion is TLSv1.3", def.minVersion === "TLSv1.3");
+  check("buildOptions default ecdhCurve leads with the hybrid group",
+        def.ecdhCurve.indexOf("X25519MLKEM768") === 0 && def.groups === def.ecdhCurve);
+
+  // opts must be a plain object — an array refuses at the config-time tier.
+  var eArr = null;
+  try { nt.buildOptions([1, 2]); } catch (e) { eArr = e; }
+  check("buildOptions on an array refuses bad-tls-options",
+        eArr && eArr.code === "network-tls/bad-tls-options");
+
+  // minVersion is locked to TLSv1.3.
+  var eMin = null;
+  try { nt.buildOptions({ minVersion: "TLSv1.2" }); } catch (e) { eMin = e; }
+  check("buildOptions minVersion!=TLSv1.3 refuses", eMin && eMin.code === "network-tls/bad-tls-options");
+
+  // Narrowing the group list (array + string ecdhCurve + string groups) is accepted.
+  check("buildOptions narrows groups[] to a subset",
+        nt.buildOptions({ groups: ["X25519MLKEM768"] }).groups === "X25519MLKEM768");
+  check("buildOptions narrows ecdhCurve string to a subset",
+        nt.buildOptions({ ecdhCurve: "X25519MLKEM768:X25519" }).ecdhCurve === "X25519MLKEM768:X25519");
+  check("buildOptions accepts a groups string",
+        nt.buildOptions({ groups: "X25519" }).groups === "X25519");
+
+  // Widening to a group outside the framework preferred list refuses.
+  var eWide = null;
+  try { nt.buildOptions({ groups: ["kyber-nonsense"] }); } catch (e) { eWide = e; }
+  check("buildOptions widening to a non-preferred group refuses",
+        eWide && eWide.code === "network-tls/bad-tls-options");
+
+  // Empty group list refuses.
+  var eEmpty = null;
+  try { nt.buildOptions({ groups: [] }); } catch (e) { eEmpty = e; }
+  check("buildOptions empty groups[] refuses", eEmpty && eEmpty.code === "network-tls/bad-tls-options");
+
+  // An empty-string entry inside the group list refuses.
+  var eBadEntry = null;
+  try { nt.buildOptions({ groups: [""] }); } catch (e) { eBadEntry = e; }
+  check("buildOptions empty-string group entry refuses", eBadEntry && eBadEntry.code === "network-tls/bad-tls-options");
+
+  // groups that is neither string nor array (but defined) refuses.
+  var eShape = null;
+  try { nt.buildOptions({ groups: 123 }); } catch (e) { eShape = e; }
+  check("buildOptions non-string non-array groups refuses", eShape && eShape.code === "network-tls/bad-tls-options");
+
+  // ca normalization: string passes through; Buffer → utf8; array joins with \n.
+  var pem1 = "-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----";
+  var pem2 = "-----BEGIN CERTIFICATE-----\nBB\n-----END CERTIFICATE-----";
+  check("buildOptions ca string passes through", nt.buildOptions({ ca: pem1 }).ca === pem1);
+  check("buildOptions ca Buffer normalizes to utf8",
+        nt.buildOptions({ ca: Buffer.from(pem1, "utf8") }).ca === pem1);
+  check("buildOptions ca array joins with newline",
+        nt.buildOptions({ ca: [pem1, Buffer.from(pem2, "utf8")] }).ca === pem1 + "\n" + pem2);
+  check("buildOptions ca null → undefined", nt.buildOptions({ ca: null }).ca === undefined);
+
+  // ca of a wrong scalar type, and a wrong-typed array entry, both refuse.
+  var eCa1 = null;
+  try { nt.buildOptions({ ca: 42 }); } catch (e) { eCa1 = e; }
+  check("buildOptions ca number refuses", eCa1 && eCa1.code === "network-tls/bad-tls-options");
+  var eCa2 = null;
+  try { nt.buildOptions({ ca: [pem1, 7] }); } catch (e) { eCa2 = e; }
+  check("buildOptions ca array wrong-typed entry refuses", eCa2 && eCa2.code === "network-tls/bad-tls-options");
+
+  // cert / key pass-through + shape guards.
+  check("buildOptions cert string passes through", nt.buildOptions({ cert: pem1 }).cert === pem1);
+  check("buildOptions key Buffer passes through",
+        Buffer.isBuffer(nt.buildOptions({ key: Buffer.from(pem2) }).key));
+  var eCert = null;
+  try { nt.buildOptions({ cert: 5 }); } catch (e) { eCert = e; }
+  check("buildOptions non-string non-Buffer cert refuses", eCert && eCert.code === "network-tls/bad-tls-options");
+  var eKey = null;
+  try { nt.buildOptions({ key: {} }); } catch (e) { eKey = e; }
+  check("buildOptions bad-shape key refuses", eKey && eKey.code === "network-tls/bad-tls-options");
+
+  // sni maps to servername; empty sni refuses.
+  check("buildOptions sni maps to servername",
+        nt.buildOptions({ sni: "internal.example.com" }).servername === "internal.example.com");
+  var eSni = null;
+  try { nt.buildOptions({ sni: "" }); } catch (e) { eSni = e; }
+  check("buildOptions empty sni refuses", eSni && eSni.code === "network-tls/bad-tls-options");
+
+  // An operator-narrowed key-share set is honored as the preferred list.
+  nt.pqc.setKeyShares(["X25519"]);
+  check("buildOptions uses the operator-narrowed key-share set",
+        nt.buildOptions().groups === "X25519");
+  nt._resetForTest();
+}
+
+// =====================================================================
+// OCSP over a real localhost TLS handshake — connect / requireStapled /
+// requireGood drive the _connectAndCheckOcsp socket path end-to-end.
+// =====================================================================
+
+async function testOcspConnectRealPaths() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "RG CA",
+    keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+
+  // 1. connect, server does not staple → resolves with ocspBytes null.
+  var s1 = await _startTlsServer(undefined);
+  try {
+    var r1 = await nt.ocsp.connect({ host: "127.0.0.1", port: s1.port,
+      rejectUnauthorized: false, servername: "localhost" });
+    check("ocsp.connect no-staple resolves with peerCert and ocspBytes null",
+          r1 && r1.ocspBytes === null && r1.peerCert && !!r1.peerCert.serialNumber);
+  } finally { s1.close(); }
+
+  // 2. requireStapled, no staple → refuses (TlsTrustError).
+  var s2 = await _startTlsServer(undefined);
+  var e2 = null;
+  try {
+    await nt.ocsp.requireStapled({ host: "127.0.0.1", port: s2.port,
+      rejectUnauthorized: false, servername: "localhost" });
+  } catch (e) { e2 = e; } finally { s2.close(); }
+  check("ocsp.requireStapled with no staple refuses", e2 instanceof nt.TlsTrustError);
+
+  // 3. requireStapled with a non-empty staple → resolves carrying the bytes.
+  var s3 = await _startTlsServer(Buffer.from([0x30, 0x00]));
+  try {
+    var r3 = await nt.ocsp.requireStapled({ host: "127.0.0.1", port: s3.port,
+      rejectUnauthorized: false, servername: "localhost" });
+    check("ocsp.requireStapled with a staple resolves ocspBytes",
+          Buffer.isBuffer(r3.ocspBytes) && r3.ocspBytes.length === 2);
+  } finally { s3.close(); }
+
+  // 4. connect to a closed port → the socket 'error' handler rejects.
+  var e4 = null;
+  try {
+    await nt.ocsp.connect({ host: "127.0.0.1", port: 1,
+      rejectUnauthorized: false, servername: "localhost" });
+  } catch (e) { e4 = e; }
+  check("ocsp.connect to a closed port rejects", e4 !== null);
+
+  // 5. requireGood — staple binds a DIFFERENT serial → evaluation fails,
+  //    requireGood throws tls/ocsp-not-good.
+  var badFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: Buffer.from([0x99, 0x99]) });
+  var s5 = await _startTlsServer(badFx.der);
+  var e5 = null;
+  try {
+    await nt.ocsp.requireGood({ host: "127.0.0.1", port: s5.port,
+      rejectUnauthorized: false, servername: "localhost", issuerPem: badFx.issuerPem });
+  } catch (e) { e5 = e; } finally { s5.close(); }
+  check("ocsp.requireGood with a wrong-serial staple throws ocsp-not-good",
+        e5 && e5.code === "tls/ocsp-not-good");
+
+  // 6. requireGood — staple binds the peer serial (_SERIAL), good + fresh →
+  //    resolves with a passing evaluation.
+  var goodFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var s6 = await _startTlsServer(goodFx.der);
+  try {
+    var r6 = await nt.ocsp.requireGood({ host: "127.0.0.1", port: s6.port,
+      rejectUnauthorized: false, servername: "localhost", issuerPem: goodFx.issuerPem });
+    check("ocsp.requireGood with a good staple resolves ok",
+          r6 && r6.ocspEvaluation && r6.ocspEvaluation.ok === true);
+  } finally { s6.close(); }
+}
+
+// =====================================================================
+// OCSP issuer/leaf cert-shape errors (buildRequest DER walk) + evaluate
+// deep issuer-binding (RFC 6960 §4.1.1) branches.
+// =====================================================================
+
+function testOcspCertShapeErrors() {
+  var leaf   = _synthCert({ serial: _SERIAL, cn: "Leaf",
+    keyBytes: Buffer.from("leaf-key-bytes-aaaaaaaaaaaaaaaa") });
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Shape CA",
+    keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+
+  // issuerCertDer is a Buffer but not a SEQUENCE (an OCTET STRING).
+  var e1 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: Buffer.from([0x04, 0x01, 0x00]) }); }
+  catch (e) { e1 = e; }
+  check("buildRequest non-SEQUENCE issuer cert throws ocsp-bad-issuer-cert",
+        e1 && e1.code === "tls/ocsp-bad-issuer-cert");
+
+  // issuer cert is a SEQUENCE whose tbs lacks the SPKI field.
+  var shortTbs = asn1.writeSequence([asn1.writeSequence([asn1.writeInteger(Buffer.from([1]))])]);
+  var e2 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: shortTbs }); }
+  catch (e) { e2 = e; }
+  check("buildRequest issuer cert lacking SPKI throws ocsp-bad-issuer-cert",
+        e2 && e2.code === "tls/ocsp-bad-issuer-cert");
+
+  // leafCertDer is a Buffer but not a SEQUENCE (issuer walk succeeds first).
+  var e3 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: Buffer.from([0x04, 0x01, 0x00]), issuerCertDer: issuer }); }
+  catch (e) { e3 = e; }
+  check("buildRequest non-SEQUENCE leaf cert throws ocsp-bad-leaf-cert",
+        e3 && e3.code === "tls/ocsp-bad-leaf-cert");
+}
+
+function testOcspEvaluateDeepBinding() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "DeepBind CA",
+    keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  var other  = _synthCert({ serial: Buffer.from([0x02]), cn: "Other CA",
+    keyBytes: Buffer.from("other-ca-key-bytes-bbbbbbbbbbbb") });
+  var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var serialHex = _SERIAL.toString("hex");
+
+  // Unparseable issuer public key PEM → verify throws, caught → ok:false.
+  var badKey = nt.ocsp.evaluate(fx.der, {
+    issuerPem: "-----BEGIN PUBLIC KEY-----\nbm90LWEta2V5\n-----END PUBLIC KEY-----\n",
+    serialHex: serialHex, now: _NOW });
+  check("evaluate with an unparseable issuer key -> ok false",
+        badKey.ok === false && /issuer public key parse failed/.test((badKey.errors || []).join(" ")));
+
+  // issuerCertDer MATCHES the CertID issuer → the §4.1.1 name/key bind passes.
+  var bound = nt.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: serialHex, now: _NOW, issuerCertDer: issuer });
+  check("evaluate with a matching issuerCertDer binds and stays ok",
+        bound.ok === true && bound.certStatus === "good");
+
+  // issuerCertDer is a DIFFERENT issuer → name/key hash mismatch, fail closed.
+  var wrong = nt.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: serialHex, now: _NOW, issuerCertDer: other });
+  check("evaluate with a wrong issuerCertDer -> ok false (wrong-issuer bind)",
+        wrong.ok === false && /issuerNameHash|issuerKeyHash/.test((wrong.errors || []).join(" ")));
+}
+
+// =====================================================================
+// CT SCT verification — per-SCT failure branches with a present log key.
+// =====================================================================
+
+function testCtVerifyMoreScts() {
+  var ecPub = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .publicKey.export({ type: "spki", format: "pem" });
+  var logHex = "aa".repeat(32);
+  function _logKeys(pem) { var m = {}; m[logHex] = pem; return m; }
+
+  // Unsupported SCT hash algorithm (not sha256/384/512) with a present key.
+  var badHash = _buildSctBytes({ hashAlgo: 99 });
+  var badHashCert = _synthCert({ cn: "BadHash", exts: [_sctExt(_sctListRaw([badHash]))] });
+  var r1 = nt.ct.verifyScts(badHashCert, { logKeys: _logKeys(ecPub), minScts: 1 });
+  check("verifyScts unsupported SCT hash algo -> per-sct unsupported-hash-algo",
+        r1.scts[0].reason === "unsupported-hash-algo");
+
+  // Log key present but unparseable.
+  var okSct  = _buildSctBytes({});
+  var okCert = _synthCert({ cn: "OkSct", exts: [_sctExt(_sctListRaw([okSct]))] });
+  var r2 = nt.ct.verifyScts(okCert, { logKeys: _logKeys("not a pem"), minScts: 1 });
+  check("verifyScts unparseable log key -> log-key-parse-failed",
+        r2.scts[0].reason === "log-key-parse-failed");
+
+  // SCT claims RSA (sigAlgo 1) but the registered log key is EC → mismatch.
+  var rsaClaim = _buildSctBytes({ sigAlgo: 1 });
+  var rsaCert  = _synthCert({ cn: "RsaClaim", exts: [_sctExt(_sctListRaw([rsaClaim]))] });
+  var r3 = nt.ct.verifyScts(rsaCert, { logKeys: _logKeys(ecPub), minScts: 1 });
+  check("verifyScts SCT-algo vs log-key-type mismatch -> log-key-algo-mismatch",
+        r3.scts[0].reason === "log-key-algo-mismatch");
+
+  // Valid EC key + matching algo but a garbage signature → not verified
+  // (verify returns false, or throws and is caught) → insufficient.
+  var r4 = nt.ct.verifyScts(okCert, { logKeys: _logKeys(ecPub), minScts: 1 });
+  check("verifyScts good key but bad signature -> not verified, insufficient",
+        r4.ok === false && r4.scts[0].verified === false);
+}
+
+// =====================================================================
+// checkServerIdentity9525 — remaining refuse branches.
+// =====================================================================
+
+function testPkixMoreBranches() {
+  // cert argument not an object → hostname-mismatch (peer cert object missing).
+  var e1 = nt.checkServerIdentity9525("foo.example.com", null);
+  check("checkServerIdentity9525 null cert -> hostname-mismatch",
+        e1 && e1.code === "tls/pkix-hostname-mismatch");
+
+  // Empty host string → hostname-mismatch.
+  var e2 = nt.checkServerIdentity9525("", _cert("DNS:foo.example.com"));
+  check("checkServerIdentity9525 empty host -> hostname-mismatch",
+        e2 && e2.code === "tls/pkix-hostname-mismatch");
+
+  // Non-ASCII (U-label) host is refused — operators pre-convert via punycode.
+  var e3 = nt.checkServerIdentity9525("héllo.example.com", _cert("DNS:xn--hllo-bpa.example.com"));
+  check("checkServerIdentity9525 non-ASCII host refuses",
+        e3 && e3.code === "tls/pkix-hostname-mismatch");
+
+  // DNS host but the cert SAN carries only iPAddress entries → mismatch.
+  var e4 = nt.checkServerIdentity9525("foo.example.com", _cert("IP Address:198.51.100.7"));
+  check("checkServerIdentity9525 DNS host vs IP-only SAN -> mismatch",
+        e4 && e4.code === "tls/pkix-hostname-mismatch");
+
+  // A SAN entry without a "kind:value" colon is skipped; a following DNS
+  // entry still matches.
+  check("checkServerIdentity9525 skips colon-less SAN entries",
+        nt.checkServerIdentity9525("foo.example.com",
+          _cert("bare-entry, DNS:foo.example.com")) === undefined);
+
+  // The short "IP" SAN kind (not only "IP Address") is honored for IP hosts.
+  check("checkServerIdentity9525 honors the short IP: SAN kind",
+        nt.checkServerIdentity9525("198.51.100.9", _cert("IP:198.51.100.9")) === undefined);
+
+  // A malformed iPAddress SAN cannot match a valid IP host.
+  var e5 = nt.checkServerIdentity9525("2001:db8::1", _cert("IP Address:2001:db8::xyz"));
+  check("checkServerIdentity9525 malformed IPv6 SAN -> mismatch",
+        e5 && e5.code === "tls/pkix-hostname-mismatch");
+}
+
+// =====================================================================
+// connectWithEch — real localhost handshake, error + timeout branches.
+// =====================================================================
+
+async function testConnectWithEchRealConnect() {
+  var validEch = _buildEchConfigDraft22({});
+
+  // alpn wrong shape → config-time throw.
+  var eAlpn = null;
+  try { nt.connectWithEch({ host: "127.0.0.1", alpn: "h2" }); } catch (e) { eAlpn = e; }
+  check("connectWithEch non-array alpn refuses",
+        eAlpn instanceof nt.NetworkTlsError && eAlpn.code === "tls/ech-bad-opts");
+
+  // Real connect over a localhost TLS server with an operator echOverride +
+  // rejectUnauthorized:false → drives _doConnect, the insecure-TLS audit,
+  // and the ECH attach/degrade branch to secureConnect.
+  var s1 = await _startTlsServer(undefined);
+  try {
+    var sock = await nt.connectWithEch({
+      host: "127.0.0.1", port: s1.port, servername: "localhost",
+      alpn: ["h2"], echOverride: validEch, rejectUnauthorized: false,
+    });
+    check("connectWithEch resolves a secured socket over localhost",
+          sock && sock.encrypted === true);
+    try { sock.destroy(); } catch (_e) { /* best-effort */ }
+  } finally { s1.close(); }
+
+  // Error path — connect to a closed port rejects.
+  var eDead = null;
+  try {
+    await nt.connectWithEch({ host: "127.0.0.1", port: 1, servername: "localhost",
+      echOverride: validEch, rejectUnauthorized: false, timeoutMs: C.TIME.seconds(5) });
+  } catch (e) { eDead = e; }
+  check("connectWithEch to a closed port rejects", eDead !== null);
+
+  // Timeout path — a plain TCP server that accepts but never speaks TLS.
+  var hung = await new Promise(function (resolve) {
+    var srv = nodeNet.createServer(function (sock) { sock.on("error", function () {}); });
+    srv.on("error", function () {});
+    srv.unref();
+    srv.listen(0, "127.0.0.1", function () { resolve({ srv: srv, port: srv.address().port }); });
+  });
+  var eTo = null;
+  try {
+    await nt.connectWithEch({ host: "127.0.0.1", port: hung.port, servername: "localhost",
+      echOverride: validEch, rejectUnauthorized: false, timeoutMs: 150 });
+  } catch (e) { eTo = e; } finally { try { hung.srv.close(); } catch (_e) { /* best-effort */ } }
+  check("connectWithEch handshake timeout rejects tls/ech-timeout",
+        eTo && eTo.code === "tls/ech-timeout");
+}
+
+// =====================================================================
+// CT SCT-list / single-SCT parse rejections (ct.parseScts throws) +
+// verifyInclusion strip + optional-consistency-proof branches.
+// =====================================================================
+
+function testCtParseSctErrors() {
+  // parseScts propagates a malformed outer length (verifyScts would swallow
+  // it as reason:"parse-error"; the raw parse surface throws).
+  var badOuter = _synthCert({ cn: "BadOuter",
+    exts: [_sctExt(_sctListRaw([_buildSctBytes({})], { lieOuterLen: 9999 }))] });
+  var e1 = null;
+  try { nt.ct.parseScts(badOuter); } catch (e) { e1 = e; }
+  check("ct.parseScts malformed outer length throws ct-bad-list",
+        e1 && e1.code === "tls/ct-bad-list");
+
+  // A single SCT shorter than the minimum v1 layout.
+  var shortSct = _synthCert({ cn: "ShortSct",
+    exts: [_sctExt(_sctListRaw([Buffer.alloc(10)]))] });
+  var e2 = null;
+  try { nt.ct.parseScts(shortSct); } catch (e) { e2 = e; }
+  check("ct.parseScts too-short SCT throws ct-sct-too-short",
+        e2 && e2.code === "tls/ct-sct-too-short");
+
+  // An SCT with a non-zero (unsupported) version byte.
+  var badVer = _synthCert({ cn: "BadVer",
+    exts: [_sctExt(_sctListRaw([_buildSctBytes({ version: 1 })]))] });
+  var e3 = null;
+  try { nt.ct.parseScts(badVer); } catch (e) { e3 = e; }
+  check("ct.parseScts non-v1 SCT throws ct-sct-bad-version",
+        e3 && e3.code === "tls/ct-sct-bad-version");
+}
+
+// ocsp.fetch composes buildRequest + httpClient; a transport rejection
+// (the framework's https-only outbound allowlist refuses the responder URL)
+// surfaces as tls/ocsp-fetch-failed. Drives the buildRequest + request +
+// catch path without a live responder.
+async function testOcspFetchRequestPath() {
+  var leafPem   = _toPem(_synthCert({ cn: "FetchReq Leaf", serial: _SERIAL }));
+  var issuerPem = _toPem(_synthCert({ cn: "FetchReq CA", serial: Buffer.from([0x01]) }));
+  var e1 = null;
+  try {
+    await nt.ocsp.fetch({ leafPem: leafPem, issuerPem: issuerPem,
+      responderUrl: "http://127.0.0.1:1/ocsp", nonce: false });
+  } catch (e) { e1 = e; }
+  check("ocsp.fetch responder transport failure throws ocsp-fetch-failed",
+        e1 && e1.code === "tls/ocsp-fetch-failed");
+}
+
+function testCtInclusionExtra() {
+  var signedEntry = Buffer.from("fake-signed-entry-der-bytes");
+  var ts = 1700000000000;
+  var leafHash = _ctLeafHash(signedEntry, ts);
+
+  // sct without signedEntryDer -> verifyInclusion strips the SCT extension
+  // from the supplied leaf cert to derive the signed entry itself.
+  var sctCert = _synthCert({ cn: "InclLeaf",
+    exts: [_sctExt(_sctListRaw([_buildSctBytes({})]))] });
+  var stripPath = nt.ct.verifyInclusion({
+    sct:             { logIdHex: "aa", timestamp: ts },  // no signedEntryDer
+    leafCertificate: sctCert, leafIndex: 0, auditPath: [],
+    sthFromLog:      { treeSize: 1, rootHash: Buffer.alloc(32, 0x00) },
+  });
+  check("verifyInclusion derives the signed entry by stripping the SCT ext",
+        stripPath.valid === false && stripPath.reason === "root-mismatch");
+
+  // Inclusion reconciles, but the optional consistency proof does not.
+  var incl = nt.ct.verifyInclusion({
+    sct:             { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog:      { treeSize: 1, rootHash: leafHash },
+    consistency:     { firstSize: 1, firstRoot: Buffer.alloc(32, 0x55), proof: [] },
+  });
+  check("verifyInclusion with a non-reconciling consistency proof fails closed",
+        incl.valid === false &&
+        (incl.reason === "consistency-mismatch" || incl.reason === "consistency-walk-failed"));
+}
+
+// The SCT + TLS-Feature cert-extension extractors are deliberately tolerant
+// of malformed ASN.1 — they return "no extension" rather than throwing so a
+// broken peer cert can't crash the CT / must-staple checks.
+function testSctAndTlsFeatureTolerance() {
+  var malformed = [
+    Buffer.from([0x30, 0x82, 0x01, 0x00]),                                     // SEQUENCE, long-form len, no content
+    Buffer.from([0x04, 0x01, 0x00]),                                           // OCTET STRING (top not SEQUENCE)
+    Buffer.from([0x30, 0x00]),                                                 // empty SEQUENCE (no children)
+    asn1.writeSequence([asn1.writeInteger(Buffer.from([1]))]),                 // tbs is INTEGER, not SEQUENCE
+    asn1.writeSequence([asn1.writeSequence([asn1.writeInteger(Buffer.from([1]))])]),  // tbs SEQUENCE, no [3] extensions
+    asn1.writeSequence([asn1.writeSequence([                                   // [3] wrapping a non-SEQUENCE
+      asn1.writeContextExplicit(3, asn1.writeInteger(Buffer.from([1]))),
+    ])]),
+  ];
+  var tolerated = true;
+  for (var i = 0; i < malformed.length; i += 1) {
+    try {
+      if (nt.ct.parseScts(malformed[i]).length !== 0) tolerated = false;
+      if (nt.ocsp.inspectMustStaple(malformed[i]).mustStaple !== false) tolerated = false;
+    } catch (_e) { tolerated = false; }
+  }
+  check("SCT + TLS-Feature extractors tolerate malformed cert buffers", tolerated);
+  check("ct.inspect on a non-cert buffer -> hasSctExtension false",
+        nt.ct.inspect(Buffer.from([0x30, 0x00])).hasSctExtension === false);
+}
+
+// RFC 9162 §2.1.3/§2.1.4 Merkle inclusion + consistency walks — multi-level
+// audit paths (siblings supplied as opaque 32-byte hashes; the expected root
+// is recomputed with the same inner-hash the module uses).
+function testCtMerklePaths() {
+  var ts = 1700000000000;
+  var signedEntry = Buffer.from("merkle-leaf-entry");
+  var h1 = _ctLeafHash(signedEntry, ts);
+  var s0 = Buffer.alloc(32, 0x11);
+  var s1 = Buffer.alloc(32, 0x22);
+
+  // 4-leaf tree, leafIndex 1 (left child then combined on the right).
+  var root4 = _ctInner(_ctInner(s0, h1), s1);
+  check("verifyInclusion 4-leaf index1 climbs the audit path",
+        nt.ct.verifyInclusion({
+          sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+          leafCertificate: Buffer.from("x"), leafIndex: 1, auditPath: [s0, s1],
+          sthFromLog: { treeSize: 4, rootHash: root4 },
+        }).valid === true);
+
+  // 3-leaf tree, right-most leaf (the fn===sn branch).
+  var root3 = _ctInner(s0, h1);
+  check("verifyInclusion 3-leaf right-most leaf (fn===sn)",
+        nt.ct.verifyInclusion({
+          sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+          leafCertificate: Buffer.from("x"), leafIndex: 2, auditPath: [s0],
+          sthFromLog: { treeSize: 3, rootHash: root3 },
+        }).valid === true);
+
+  // Audit path exhausted before the root.
+  check("verifyInclusion exhausted audit path -> inclusion-walk-failed",
+        nt.ct.verifyInclusion({
+          sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+          leafCertificate: Buffer.from("x"), leafIndex: 1, auditPath: [],
+          sthFromLog: { treeSize: 4, rootHash: root4 },
+        }).reason === "inclusion-walk-failed");
+
+  // Audit path entry that is not a 32-byte hash.
+  check("verifyInclusion non-32-byte audit entry -> inclusion-walk-failed",
+        nt.ct.verifyInclusion({
+          sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+          leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [Buffer.alloc(4)],
+          sthFromLog: { treeSize: 2, rootHash: Buffer.alloc(32, 0x00) },
+        }).reason === "inclusion-walk-failed");
+
+  // Audit path with trailing entries beyond the root.
+  check("verifyInclusion trailing audit entries -> inclusion-walk-failed",
+        nt.ct.verifyInclusion({
+          sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+          leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [s0, s1],
+          sthFromLog: { treeSize: 2, rootHash: Buffer.alloc(32, 0x00) },
+        }).reason === "inclusion-walk-failed");
+
+  // Consistency m=2 → n=4 (the odd-index skip loop runs; first tree complete).
+  var firstHash = Buffer.alloc(32, 0x33);
+  var c0 = Buffer.alloc(32, 0x44);
+  check("verifyConsistency m=2 n=4 valid",
+        nt.ct.verifyConsistency({ firstSize: 2, secondSize: 4, proof: [c0],
+          firstRoot: firstHash, secondRoot: _ctInner(firstHash, c0) }).valid === true);
+
+  // Consistency m=3 → n=4 (first tree NOT a complete subtree; proof shifted).
+  var p0 = Buffer.alloc(32, 0x55), p1 = Buffer.alloc(32, 0x66), p2 = Buffer.alloc(32, 0x77);
+  check("verifyConsistency m=3 n=4 incomplete-subtree valid",
+        nt.ct.verifyConsistency({ firstSize: 3, secondSize: 4, proof: [p0, p1, p2],
+          firstRoot: Buffer.alloc(32, 0x88),
+          secondRoot: _ctInner(p2, _ctInner(p0, p1)) }).valid === true);
+}
+
+// =====================================================================
 
 async function run() {
   testNetworkTlsErrorPermanentClassification();
@@ -1424,6 +2005,8 @@ async function run() {
     await testPinsetDriftMonitorTick();
     // PQC
     testPqcKeyShares();
+    // buildOptions
+    testBuildOptionsBranches();
     // OCSP
     testOcspParseShapeErrors();
     testOcspParseUnsupportedResponseType();
@@ -1433,16 +2016,28 @@ async function run() {
     testOcspEvaluateNonce();
     testOcspEvaluateIssuerBindShapeErrors();
     testOcspBuildRequest();
+    testOcspCertShapeErrors();
+    testOcspEvaluateDeepBinding();
     await testOcspFetchGuards();
+    await testOcspFetchRequestPath();
     await testOcspRequireGoodEmpty();
+    await testOcspConnectRealPaths();
     testOcspMustStaple();
     // CT
     testCtInspectAndParse();
     testCtVerifyScts();
+    testCtVerifyMoreScts();
+    testCtParseSctErrors();
+    testSctAndTlsFeatureTolerance();
     testCtVerifyInclusion();
+    testCtInclusionExtra();
+    testCtMerklePaths();
     testCtVerifyConsistency();
-    // ECH extra framing
+    // ECH extra framing + real connect
     testEchExtraFraming();
+    await testConnectWithEchRealConnect();
+    // PKIX extra branches
+    testPkixMoreBranches();
     // SNI
     testWrapSniCallback();
   } finally {
