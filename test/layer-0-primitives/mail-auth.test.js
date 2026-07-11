@@ -19,6 +19,7 @@ var b          = helpers.b;
 var check      = helpers.check;
 var arcSign    = require("../../lib/mail-arc-sign");
 var nodeCrypto = require("node:crypto");
+var C          = require("../../lib/constants");
 
 function testSurface() {
   check("mail.spf.verify is a function",       typeof b.mail.spf.verify === "function");
@@ -2570,6 +2571,425 @@ async function testInboundHeloOnlyAuthResults() {
         v.authResults.indexOf("smtp.mailfrom=") === -1);
 }
 
+// ---- SPF: a/mx operator-lookup empty / non-array answers (ENODATA) ----
+
+async function testSpfAMxOperatorEnodata() {
+  // RFC 7208 §5.3/§5.4 — an operator dnsLookup that RETURNS (not throws)
+  // an empty or non-array A/AAAA / MX answer is an ENODATA void, not an
+  // error: the mechanism misses and evaluation falls through to -all.
+  var aEmpty = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 a -all"]];
+    if (type === "A") return [];                                                 // successful, zero records
+    return _enotfound();
+  };
+  var rAE = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: aEmpty });
+  check("spf a — operator returns empty A array → miss → -all fail",
+        rAE.result === "fail");
+
+  var aNonArray = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 a -all"]];
+    if (type === "A") return null;                                               // malformed non-array answer
+    return _enotfound();
+  };
+  var rAN = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: aNonArray });
+  check("spf a — operator returns non-array A answer → treated as ENODATA miss → fail",
+        rAN.result === "fail");
+
+  var mxEmpty = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") return [];                                                // successful, zero records
+    return _enotfound();
+  };
+  var rME = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxEmpty });
+  check("spf mx — operator returns empty MX array → miss → -all fail",
+        rME.result === "fail");
+
+  var mxNonArray = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") return null;                                             // malformed non-array answer
+    return _enotfound();
+  };
+  var rMN = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxNonArray });
+  check("spf mx — operator returns non-array MX answer → treated as ENODATA miss → fail",
+        rMN.result === "fail");
+
+  // MX normalization (RFC 1035 §3.3.9): a mixed answer of a bare exchange
+  // string (preference defaulted to 0) and a { exchange, preference }
+  // object with trailing dots is normalized + preference-sorted; the
+  // lowest-preference host resolves to the connecting IP → pass.
+  var mxMixed = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") return [{ exchange: "mx2.s.example.", preference: 20 }, "mx1.s.example."];
+    if (type === "A" && host === "mx1.s.example") return ["192.0.2.5"];
+    if (type === "A" && host === "mx2.s.example") return ["10.0.0.9"];
+    return _enotfound();
+  };
+  var rMM = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxMixed });
+  check("spf mx — mixed string/object MX answer normalizes + sorts → matching host → pass",
+        rMM.result === "pass");
+}
+
+// ---- SPF: a/mx dual-cidr-length grammar edges (RFC 7208 §5.3/§5.4) ----
+
+async function testSpfADualCidrErrorArms() {
+  // v4 cidr-length out of range (>32) → permerror.
+  var badV4 = _txtOnly({ "s.example": [["v=spf1 a/33 -all"]] });
+  var rV4 = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: badV4 });
+  check("spf a/33 — v4 cidr-length >32 → permerror",
+        rV4.result === "permerror" && /v4 cidr-length invalid/.test(rV4.explanation || ""));
+
+  // `a:` with an empty domain-spec resolves to no target domain → permerror.
+  var noDomain = _txtOnly({ "s.example": [["v=spf1 a: -all"]] });
+  var rND = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: noDomain });
+  check("spf a: — empty domain-spec → no target domain → permerror",
+        rND.result === "permerror" && /no target domain/.test(rND.explanation || ""));
+
+  // `a//64` — valid v6 cidr-length; an AAAA in the /64 of the connecting
+  // IPv6 address matches → pass (exercises the v6-mask assignment arm).
+  var v6ok = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 a//64 -all"]];
+    if (type === "AAAA" && host === "s.example") return ["2001:db8::1"];
+    return _enotfound();
+  };
+  var rV6 = await b.mail.spf.verify({ ip: "2001:db8::9", mailFrom: "a@s.example", dnsLookup: v6ok });
+  check("spf a//64 — connecting IPv6 inside AAAA /64 → pass",
+        rV6.result === "pass");
+}
+
+// ---- SPF: §7.1 macro left-truncation to the 253-octet name ceiling ----
+
+async function testSpfMacroLeftTruncation() {
+  // RFC 7208 §7.1 — a macro expansion exceeding 253 octets is left-
+  // truncated (leading labels discarded) until it fits. Drive it with an
+  // oversized local-part (%{l}); the truncated target has no A record so
+  // the exists misses and evaluation falls to -all.
+  var longLocal = "x".repeat(300);
+  var noDot = _txtOnly({ "s.example": [["v=spf1 exists:%{l} -all"]] });
+  var rNoDot = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: longLocal + "@s.example", dnsLookup: noDot });
+  check("spf exists:%{l} — >253-octet expansion (no dot) is truncated, evaluation completes → fail",
+        rNoDot.result === "fail");
+
+  var withDot = _txtOnly({ "s.example": [["v=spf1 exists:%{l}.e -all"]] });
+  var rDot = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: longLocal + "@s.example", dnsLookup: withDot });
+  check("spf exists:%{l}.e — >253-octet expansion (dotted) left-truncated at label boundary → fail",
+        rDot.result === "fail");
+}
+
+// ---- SPF: exists mechanism crossing the §4.6.4 lookup ceiling ----
+
+async function testSpfExistsLookupLimit() {
+  // Ten `a:` mechanisms consume the 10-lookup budget (RFC 7208 §4.6.4);
+  // the following `exists` increments past the ceiling → permerror.
+  var rec = "v=spf1 a:h1 a:h2 a:h3 a:h4 a:h5 a:h6 a:h7 a:h8 a:h9 a:h10 exists:%{d} -all";
+  var dns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [[rec]];
+    if (type === "A") return ["10.0.0.1"];                                       // non-matching, so each a: misses
+    return _enotfound();
+  };
+  var rv = await b.mail.spf.verify({ ip: "203.0.113.9", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf exists — over the §4.6.4 DNS-lookup ceiling → permerror at exists",
+        rv.result === "permerror" && /lookup limit exceeded/.test(rv.explanation || "") &&
+        /at exists:/.test(rv.explanation || ""));
+}
+
+// ---- DMARCbis: sp= tag value validation ----
+
+function testDmarcParseBadSp() {
+  var threw = null;
+  try { b.mail.dmarc.parseRecord("v=DMARC1; p=none; sp=bogus"); }
+  catch (e) { threw = e; }
+  check("dmarc.parseRecord: sp= outside none|quarantine|reject → dmarcbis-bad-tag",
+        threw && /dmarcbis-bad-tag/.test(threw.code || "") && /sp=/.test(threw.message || ""));
+}
+
+// ---- DMARCbis §4.7: public-suffix-domain (psd=y) policy walk ----
+
+async function testDmarcEvaluatePsdPolicy() {
+  // Neither the From-domain nor its organizational domain publishes a
+  // DMARC record, but the public suffix (gov.uk) does with psd=y — the
+  // receiver continues the lookup at the suffix and applies that policy.
+  var dns = async function (host) {
+    if (host === "_dmarc.gov.uk") return [["v=DMARC1; p=reject; psd=y"]];
+    var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@sub.example.gov.uk",
+    spf:       { result: "fail", domain: "attacker.example" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc.evaluate: psd=y suffix record applied when domain+org have none",
+        rv.psdPolicyApplied === true &&
+        rv.policyOriginDomain === "gov.uk" &&
+        rv.result === "fail" &&
+        rv.recommendedAction === "reject");
+}
+
+// ---- ARC: header/body separator + folded-header unfolding ----
+
+async function testArcNoBodyAndFolded() {
+  // _splitHeaders (RFC 8617) requires a header/body separator; a message
+  // without one is a config-time throw, not a silent none.
+  var noBody = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+               "From: alice@example.com";
+  var e1 = await _rejectedWith(b.mail.arc.verify(noBody));
+  check("arc.verify: message with no header/body separator → arc-no-body",
+        e1 && /arc-no-body/.test(e1.code || ""));
+
+  // RFC 5322 §2.2.3 — a folded ARC-Seal (continuation line beginning with
+  // FWS) unfolds to a single logical header; the hop still parses as one.
+  var folded =
+    "ARC-Seal: i=1; a=rsa-sha256;\r\n cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+    "From: alice@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(folded, { dnsLookup: async function () { return _enotfound(); } });
+  check("arc.verify: folded ARC-Seal unfolds → single hop parsed",
+        rv.hopCount === 1 && rv.chainStatus === "fail");
+}
+
+// ---- ARC: arc.evaluate trustedSealers shape validation ----
+
+async function testArcEvaluateTrustedSealersNotArray() {
+  var eStr = await _rejectedWith(
+    b.mail.arc.evaluate("From: x\r\n\r\nbody\r\n", { trustedSealers: "example.com" }));
+  check("arc.evaluate: non-array trustedSealers → arc-bad-trusted-sealers",
+        eStr && /arc-bad-trusted-sealers/.test(eStr.code || ""));
+  var eMissing = await _rejectedWith(
+    b.mail.arc.evaluate("From: x\r\n\r\nbody\r\n", {}));
+  check("arc.evaluate: omitted trustedSealers → arc-bad-trusted-sealers",
+        eMissing && /arc-bad-trusted-sealers/.test(eMissing.code || ""));
+}
+
+// ---- authResults.emit: version tag header-injection guard (RFC 8601) ----
+
+function testAuthResultsEmitVersionControlChars() {
+  var eVer = _threw(function () {
+    b.mail.authResults.emit({ authservId: "mx.a", version: "1\r\nInjected: 1", results: [] });
+  });
+  check("authResults.emit: CR/LF in version → ar-bad-version (no header injection)",
+        eVer && /ar-bad-version/.test(eVer.code || ""));
+}
+
+// ---- DMARC RUA aggregate: size cap + decompression + XML parse faults ----
+
+function testDmarcAggregateSizeAndParseErrors() {
+  // RFC 7489 §7.2.1.1 — a report exceeding the byte ceiling is refused
+  // before any parse work (resource-exhaustion bound).
+  var tooBig = Buffer.alloc(C.BYTES.mib(8) + 1);
+  var eBig = _threw(function () { b.mail.dmarc.parseAggregateReport(tooBig); });
+  check("dmarc.parseAggregateReport: over the byte cap → dmarc-rua-too-large",
+        eBig && /dmarc-rua-too-large/.test(eBig.code || ""));
+
+  // gzip magic (0x1f 0x8b) present but the stream is malformed (not a
+  // decompression bomb) → the distinct gunzip-failed diagnostic.
+  var badGz = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+  var eGz = _threw(function () { b.mail.dmarc.parseAggregateReport(badGz); });
+  check("dmarc.parseAggregateReport: malformed gzip stream → dmarc-rua-gunzip-failed (not bomb)",
+        eGz && /dmarc-rua-gunzip-failed/.test(eGz.code || ""));
+
+  // Well-formed uncompressed bytes that aren't XML → typed XML-parse error.
+  var eXml = _threw(function () { b.mail.dmarc.parseAggregateReport("this is not xml at all"); });
+  check("dmarc.parseAggregateReport: non-XML payload → dmarc-rua-bad-xml",
+        eXml && /dmarc-rua-bad-xml/.test(eXml.code || ""));
+}
+
+function testDmarcBuildTooManyRecords() {
+  // RFC 7489 Appendix C — the aggregate builder caps records per report
+  // (resource-exhaustion bound); over-cap input is a config-time throw.
+  var eMany = _threw(function () {
+    b.mail.dmarc.buildAggregateReport({
+      reportMetadata: {}, policyPublished: {}, records: new Array(10001),
+    });
+  });
+  check("dmarc.buildAggregateReport: over the per-report record cap → dmarc-rua-build-too-many-records",
+        eMany && /dmarc-rua-build-too-many-records/.test(eMany.code || ""));
+}
+
+// ---- DMARC RUF forensic: report-structure rejection + optional-field arms ----
+
+function testDmarcForensicMoreErrorArms() {
+  var base =
+    "From: <postmaster@example.com>\r\n" +
+    "MIME-Version: 1.0\r\n" +
+    "Content-Type: multipart/report; report-type=feedback-report;\r\n" +
+    "\tboundary=\"bnd\"\r\n" +
+    "\r\n" +
+    "--bnd\r\n" +
+    "Content-Type: message/feedback-report\r\n" +
+    "\r\n" +
+    "Feedback-Type: auth-failure\r\n" +
+    "User-Agent: R/1.0\r\n" +
+    "Version: 1\r\n" +
+    "Auth-Failure: dmarc\r\n" +
+    "Reported-Domain: sender.example\r\n" +
+    "\r\n" +
+    "--bnd\r\n" +
+    "Content-Type: message/rfc822\r\n" +
+    "\r\n" +
+    "From: Sender <noreply@sender.example>\r\n" +
+    "Subject: hi\r\n" +
+    "\r\n" +
+    "body\r\n" +
+    "--bnd--\r\n";
+
+  // A mismatched report-type is a valid feedback report but not a DMARC one.
+  var rRt = b.mail.dmarc.parseForensicReport(base.replace("report-type=feedback-report", "report-type=abuse"));
+  check("dmarc.parseForensicReport: report-type != feedback-report → dmarc-ruf-bad-report",
+        rRt && rRt.ok === false && /dmarc-ruf-bad-report/.test(rRt.error.code || ""));
+
+  // multipart/report without a boundary parameter can't be split.
+  var rNoBnd = b.mail.dmarc.parseForensicReport(
+    "Content-Type: multipart/report; report-type=feedback-report\r\n\r\nbody\r\n");
+  check("dmarc.parseForensicReport: multipart/report with no boundary → dmarc-ruf-bad-report",
+        rNoBnd && rNoBnd.ok === false && /dmarc-ruf-bad-report/.test(rNoBnd.error.code || ""));
+
+  // Boundary present but the body has no parts.
+  var rNoParts = b.mail.dmarc.parseForensicReport(
+    "Content-Type: multipart/report; boundary=\"bnd\"\r\n\r\nnothing here\r\n");
+  check("dmarc.parseForensicReport: multipart body with zero parts → dmarc-ruf-bad-report",
+        rNoParts && rNoParts.ok === false && /dmarc-ruf-bad-report/.test(rNoParts.error.code || ""));
+
+  // Over the per-report part cap (CWE-400 bound).
+  var manyBody = "";
+  for (var mp = 0; mp < 70; mp += 1) manyBody += "--bnd\r\nContent-Type: text/plain\r\n\r\np" + mp + "\r\n";
+  manyBody += "--bnd--\r\n";
+  var rManyParts = b.mail.dmarc.parseForensicReport(
+    "Content-Type: multipart/report; report-type=feedback-report; boundary=\"bnd\"\r\n\r\n" + manyBody);
+  check("dmarc.parseForensicReport: over the part cap → dmarc-ruf-too-many-parts",
+        rManyParts && rManyParts.ok === false && /dmarc-ruf-too-many-parts/.test(rManyParts.error.code || ""));
+
+  // Parts present but none is message/feedback-report.
+  var noFb =
+    "Content-Type: multipart/report; report-type=feedback-report; boundary=\"bnd\"\r\n\r\n" +
+    "--bnd\r\nContent-Type: message/rfc822\r\n\r\nFrom: x@y\r\n\r\nb\r\n--bnd--\r\n";
+  var rNoFb = b.mail.dmarc.parseForensicReport(noFb);
+  check("dmarc.parseForensicReport: no message/feedback-report subpart → dmarc-ruf-no-feedback-report",
+        rNoFb && rNoFb.ok === false && /dmarc-ruf-no-feedback-report/.test(rNoFb.error.code || ""));
+
+  // Feedback-Type absent (Auth-Failure present) → the generic required-field
+  // arm (distinct from the Auth-Failure-specific one).
+  var rMissFt = b.mail.dmarc.parseForensicReport(base.replace("Feedback-Type: auth-failure\r\n", ""));
+  check("dmarc.parseForensicReport: missing Feedback-Type field → dmarc-ruf-missing-field",
+        rMissFt && rMissFt.ok === false && /dmarc-ruf-missing-field/.test(rMissFt.error.code || ""));
+
+  // A headers-only reported message (text/rfc822-headers, no body) is
+  // reassembled from its header bytes; Incidents normalizes to a number.
+  var hdrsOnly =
+    "Content-Type: multipart/report; report-type=feedback-report; boundary=\"bnd\"\r\n\r\n" +
+    "--bnd\r\nContent-Type: message/feedback-report\r\n\r\n" +
+    "Feedback-Type: auth-failure\r\nAuth-Failure: dmarc\r\nIncidents: 5\r\n\r\n" +
+    "--bnd\r\nContent-Type: text/rfc822-headers\r\n\r\n" +
+    "From: z@w\r\nSubject: s\r\n\r\n" +
+    "--bnd--\r\n";
+  var rHdrs = b.mail.dmarc.parseForensicReport(hdrsOnly);
+  check("dmarc.parseForensicReport: text/rfc822-headers part reassembled + Incidents parsed",
+        rHdrs && rHdrs.ok === true &&
+        rHdrs.report.incidents === 5 &&
+        rHdrs.report.reportedHeaders.length === 2);
+
+  // No reported-message part at all → reportedHeaders is an empty list.
+  var noReported =
+    "Content-Type: multipart/report; report-type=feedback-report; boundary=\"bnd\"\r\n\r\n" +
+    "--bnd\r\nContent-Type: message/feedback-report\r\n\r\n" +
+    "Feedback-Type: auth-failure\r\nAuth-Failure: dmarc\r\n\r\n--bnd--\r\n";
+  var rNoRep = b.mail.dmarc.parseForensicReport(noReported);
+  check("dmarc.parseForensicReport: no reported message → empty reportedHeaders, still ok",
+        rNoRep && rNoRep.ok === true && rNoRep.report.reportedHeaders.length === 0);
+
+  // A text/rfc822-headers reported part with an EMPTY body (RFC 6591 §3.2
+  // permits headers-only) is reassembled from its own header bytes rather
+  // than dropped.
+  var emptyBody =
+    "Content-Type: multipart/report; report-type=feedback-report; boundary=\"bnd\"\r\n\r\n" +
+    "--bnd\r\nContent-Type: message/feedback-report\r\n\r\n" +
+    "Feedback-Type: auth-failure\r\nAuth-Failure: dmarc\r\n\r\n" +
+    "--bnd\r\nContent-Type: text/rfc822-headers\r\n\r\n\r\n" +
+    "--bnd--\r\n";
+  var rEmpty = b.mail.dmarc.parseForensicReport(emptyBody);
+  check("dmarc.parseForensicReport: empty-body text/rfc822-headers part is reassembled from header bytes",
+        rEmpty && rEmpty.ok === true && rEmpty.report.reportedHeaders.length === 1);
+}
+
+// ---- SPF: mx expansion crossing the lookup / void ceilings (§4.6.4) ----
+
+async function testSpfMxExpansionLimits() {
+  // Nine `a:` mechanisms exhaust the lookup budget; the following `mx`
+  // resolves a host whose A-expansion increments past the ceiling.
+  var recL = "v=spf1 a:h1 a:h2 a:h3 a:h4 a:h5 a:h6 a:h7 a:h8 a:h9 mx -all";
+  var dnsL = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [[recL]];
+    if (type === "A" && /^h[0-9]/.test(host)) return ["10.0.0.1"];
+    if (type === "MX" && host === "s.example") return [{ exchange: "mx1.s.example", preference: 10 }];
+    if (type === "A" && host === "mx1.s.example") return ["10.0.0.2"];
+    return _enotfound();
+  };
+  var rL = await b.mail.spf.verify({ ip: "203.0.113.9", mailFrom: "a@s.example", dnsLookup: dnsL });
+  check("spf mx — A-expansion crossing the §4.6.4 lookup ceiling → permerror",
+        rL.result === "permerror" && /during mx:s\.example expansion/.test(rL.explanation || ""));
+
+  // Three MX hosts that each lack an A record are three void lookups —
+  // over the §4.6.4 void ceiling of 2 → permerror.
+  var dnsV = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX" && host === "s.example") return ["m1.s.example", "m2.s.example", "m3.s.example"];
+    if (type === "A") return [];                                                 // every MX host is a void lookup
+    return _enotfound();
+  };
+  var rV = await b.mail.spf.verify({ ip: "203.0.113.9", mailFrom: "a@s.example", dnsLookup: dnsV });
+  check("spf mx — over the §4.6.4 void-lookup ceiling during expansion → permerror",
+        rV.result === "permerror" && /void-lookup limit exceeded/.test(rV.explanation || "") &&
+        /mx expansion/.test(rV.explanation || ""));
+}
+
+// ---- SPF: exists domain-spec that macro-expands to empty (§5.7) ----
+
+async function testSpfExistsExpandsEmpty() {
+  var dns = _txtOnly({ "s.example": [["v=spf1 exists:%{c} -all"]] });
+  var rv = await b.mail.spf.verify({ ip: "203.0.113.9", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf exists:%{c} — domain-spec expands to empty → permerror (RFC 7208 §5.7)",
+        rv.result === "permerror" && /expanded to an empty domain/.test(rv.explanation || ""));
+}
+
+// ---- SPF: redirect= recursion depth ceiling (§6.1) ----
+
+async function testSpfRedirectDepthLimit() {
+  // A chain of redirect= modifiers that never terminates trips the
+  // recursion bound rather than spinning.
+  var dns = async function (host, type) {
+    if (type === "TXT") {
+      var m = /^d(\d+)\.ex$/.exec(host);
+      if (m) return [["v=spf1 redirect=d" + (parseInt(m[1], 10) + 1) + ".ex"]];
+    }
+    return _enotfound();
+  };
+  var rv = await b.mail.spf.verify({ ip: "203.0.113.9", mailFrom: "a@d0.ex", dnsLookup: dns });
+  check("spf redirect= — unbounded redirect chain trips the §6.1 recursion limit → permerror",
+        rv.result === "permerror" && /redirect= recursion limit exceeded/.test(rv.explanation || ""));
+}
+
+// ---- ARC: AS key TXT returned as a non-array operator answer ----
+
+async function testArcKeyNonArrayTxt() {
+  // A dnsLookup that returns the key record as a bare string (not the
+  // documented array-of-string-arrays shape) is still parsed for its
+  // tags; the malformed key material then fails the parse → permerror.
+  var from = "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var fullHop =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" + from;
+  var dns = async function (q) {
+    if (q === "arc._domainkey.example.com") return "v=DKIM1; k=rsa; p=AAAABBBB";
+    return _enotfound();
+  };
+  var rv = await b.mail.arc.verify(fullHop, { dnsLookup: dns });
+  check("arc.verify: key TXT as bare string → tags parsed, bad key material → permerror",
+        rv.chainStatus === "fail" &&
+        (rv.hops[0] || {}).asResult === "permerror" &&
+        /key parse failed/.test(((rv.hops[0] || {}).asErrors || []).join(" ; ")));
+}
+
 async function run() {
   testByteCapMultibyte();
   testSurface();
@@ -2683,6 +3103,22 @@ async function run() {
   await testArcKeyErrorBranches();
   await testInboundNoIdentitySpfNone();
   await testInboundHeloOnlyAuthResults();
+  await testSpfAMxOperatorEnodata();
+  await testSpfADualCidrErrorArms();
+  await testSpfMacroLeftTruncation();
+  await testSpfExistsLookupLimit();
+  testDmarcParseBadSp();
+  await testDmarcEvaluatePsdPolicy();
+  await testArcNoBodyAndFolded();
+  await testArcEvaluateTrustedSealersNotArray();
+  testAuthResultsEmitVersionControlChars();
+  testDmarcAggregateSizeAndParseErrors();
+  testDmarcBuildTooManyRecords();
+  testDmarcForensicMoreErrorArms();
+  await testSpfMxExpansionLimits();
+  await testSpfExistsExpandsEmpty();
+  await testSpfRedirectDepthLimit();
+  await testArcKeyNonArrayTxt();
 }
 
 module.exports = { run: run };
