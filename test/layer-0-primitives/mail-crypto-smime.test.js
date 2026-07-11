@@ -26,6 +26,7 @@ var nodeCrypto = require("crypto");
 
 var mailCrypto = require("../../lib/mail-crypto");
 var smime      = mailCrypto.smime;
+var b          = helpers.b;
 
 // ---- Helper: minimal self-signed certificate (node:crypto only) ----
 //
@@ -320,6 +321,142 @@ function testSmimeContentTypeAttrExtraction() {
         smime._extractContentTypeOid(withoutCt) === null);
 }
 
+// ---- b.mail.crypto.smime.verifyAll — multi-signer envelopes ----
+//
+// verifyAll walks EVERY SignerInfo in a CMS SignedData and verifies each
+// against the matching key in signerPublicKeys, a map keyed by the
+// SignerInfo's issuerAndSerialNumber serial-hex. smime.sign() only mints
+// single-signer envelopes, so a genuine two-signer envelope is built
+// directly via b.cms.encodeSignedData to exercise the multi-signer path.
+
+function _certDerWithSerial(serialByte) {
+  var asn1 = require("../../lib/asn1-der");
+  var serial = asn1.writeInteger(Buffer.from([serialByte]));
+  var sigAlg = asn1.writeNode(0x30, asn1.writeOid("2.16.840.1.101.3.4.3.18"));
+  var issuer = asn1.writeNode(0x30, asn1.writeOid("2.5.4.3"));
+  var tbs    = asn1.writeNode(0x30, Buffer.concat([serial, sigAlg, issuer]));
+  var fakeSigAlg = asn1.writeNode(0x30, asn1.writeOid("2.16.840.1.101.3.4.3.18"));
+  var fakeSig    = asn1.writeNode(0x03, Buffer.from([0x00, 0x00, 0x01]));
+  return asn1.writeNode(0x30, Buffer.concat([tbs, fakeSigAlg, fakeSig]));
+}
+
+// Two-signer detached CMS SignedData over `msg`; certs carry serials
+// 0x01 / 0x02 so verifyAll extracts serial-hex "01" / "02".
+function _twoSignerEnvelope(msg) {
+  var pq = require("../../lib/pqc-software");
+  var kp1 = pq.ml_dsa_65.keygen();
+  var kp2 = pq.ml_dsa_65.keygen();
+  var sd = b.cms.encodeSignedData({
+    encapContent: msg, digestAlg: "sha3-512", detached: true,
+    signers: [
+      { certificate: _certDerWithSerial(0x01), secretKey: kp1.secretKey, sigAlg: "ML-DSA-65" },
+      { certificate: _certDerWithSerial(0x02), secretKey: kp2.secretKey, sigAlg: "ML-DSA-65" },
+    ],
+  });
+  return { signature: sd, pub1: kp1.publicKey, pub2: kp2.publicKey };
+}
+
+function testVerifyAllMultiSigner() {
+  var msg = Buffer.from("multi-signer body");
+  var env = _twoSignerEnvelope(msg);
+  var v = b.mail.crypto.smime.verifyAll({
+    message: msg, signature: env.signature,
+    signerPublicKeys: { "01": env.pub1, "02": env.pub2 },
+  });
+  check("verifyAll: valid true when every signer verifies", v.valid === true);
+  check("verifyAll: reports both signers", v.signers.length === 2);
+  var serials = v.signers.map(function (s) { return s.serialHex; }).sort();
+  check("verifyAll: surfaces both signer serials ('01','02')",
+    serials[0] === "01" && serials[1] === "02");
+  check("verifyAll: reports the PQC sigAlg per signer",
+    v.signers.every(function (s) { return s.sigAlg === "ML-DSA-65"; }));
+}
+
+// The advertised guarantee: each SignerInfo is verified against its OWN
+// key. Swapping the two keys must be refused (each signature checked
+// against the wrong key), proving per-signer binding — not a reuse of
+// signerInfos[0]'s key for every signer.
+function testVerifyAllPerSignerKeyBinding() {
+  var msg = Buffer.from("bind-each-signer");
+  var env = _twoSignerEnvelope(msg);
+  var threw = null;
+  try {
+    b.mail.crypto.smime.verifyAll({
+      message: msg, signature: env.signature,
+      signerPublicKeys: { "01": env.pub2, "02": env.pub1 },   // swapped
+    });
+  } catch (e) { threw = e; }
+  check("verifyAll: swapped per-signer keys refused (signature-mismatch)",
+    threw && threw.code === "mail-crypto/smime/signature-mismatch");
+}
+
+function testVerifyAllMissingKey() {
+  var msg = Buffer.from("missing-key-case");
+  var env = _twoSignerEnvelope(msg);
+  var threw = null;
+  try {
+    b.mail.crypto.smime.verifyAll({
+      message: msg, signature: env.signature,
+      signerPublicKeys: { "01": env.pub1 },   // no key for serial "02"
+    });
+  } catch (e) { threw = e; }
+  check("verifyAll: a SignerInfo with no supplied key throws missing-key",
+    threw && threw.code === "mail-crypto/smime/missing-key");
+  check("verifyAll: missing-key names the unresolved serial",
+    threw && /02/.test(threw.message || ""));
+}
+
+function testVerifyAllTamperRefused() {
+  var msg = Buffer.from("original signed bytes");
+  var env = _twoSignerEnvelope(msg);
+  var threw = null;
+  try {
+    b.mail.crypto.smime.verifyAll({
+      message: Buffer.from("TAMPERED bytes"), signature: env.signature,
+      signerPublicKeys: { "01": env.pub1, "02": env.pub2 },
+    });
+  } catch (e) { threw = e; }
+  check("verifyAll: tampered message refused with message-digest-mismatch",
+    threw && threw.code === "mail-crypto/smime/message-digest-mismatch");
+}
+
+// A single-signer envelope minted by smime.sign() must also verify
+// through verifyAll — the consumer path for operators who always route
+// through verifyAll regardless of signer count. The signer cert (serial
+// 0x01) keys the map.
+function testVerifyAllSingleSigner() {
+  var pq = require("../../lib/pqc-software");
+  var kp = pq.ml_dsa_65.keygen();
+  var msg = "From: x@y\r\nSubject: one\r\n\r\nbody";
+  var out = smime.sign({
+    message: msg, certificate: _testCertDer(),
+    secretKey: kp.secretKey, sigAlg: "ML-DSA-65",
+  });
+  var v = b.mail.crypto.smime.verifyAll({
+    message: msg, signature: out.signature,
+    signerPublicKeys: { "01": kp.publicKey },
+  });
+  check("verifyAll: single-signer sign()-produced envelope verifies",
+    v.valid === true && v.signers.length === 1);
+  check("verifyAll: single-signer serial is '01'", v.signers[0].serialHex === "01");
+}
+
+function testVerifyAllInputValidation() {
+  function shouldThrow(label, opts) {
+    var threw = null;
+    try { b.mail.crypto.smime.verifyAll(opts); } catch (e) { threw = e; }
+    check("verifyAll validate: " + label,
+      threw && threw.code === "mail-crypto/smime/bad-opts");
+  }
+  shouldThrow("null opts", null);
+  shouldThrow("signerPublicKeys not a map",
+    { message: Buffer.from("x"), signature: Buffer.from("x"), signerPublicKeys: 5 });
+  shouldThrow("message missing",
+    { signature: Buffer.from("x"), signerPublicKeys: {} });
+  shouldThrow("signature not a Buffer",
+    { message: Buffer.from("x"), signature: "notbuf", signerPublicKeys: {} });
+}
+
 function run() {
   testSmimeSurface();
   testSmimeContentTypeAttrExtraction();
@@ -335,6 +472,12 @@ function run() {
   testSmimeCheckCertRefusesSmallRsa();
   testSmimeCheckCertInputValidation();
   testSmimeDocBlockCitations();
+  testVerifyAllMultiSigner();
+  testVerifyAllPerSignerKeyBinding();
+  testVerifyAllMissingKey();
+  testVerifyAllTamperRefused();
+  testVerifyAllSingleSigner();
+  testVerifyAllInputValidation();
 }
 
 module.exports = { run: run };

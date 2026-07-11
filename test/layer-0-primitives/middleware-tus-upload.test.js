@@ -390,6 +390,37 @@ async function run() {
   var postRes = await _drive(tus, _req("POST", "/uploads/abcdef", { "tus-resumable": VER }));
   check("405: POST on resource → Allow includes DELETE",
     postRes.status === 405 && /DELETE/.test(postRes.headers.allow));
+
+  // ---------------------------------------------------------------
+  // J. tusUpload.close — graceful-shutdown resource release
+  // ---------------------------------------------------------------
+  // The close helper is a public primitive (advertised in the
+  // @primitive block) that operators call on shutdown; it must be
+  // reachable on the b.middleware.tusUpload surface, invoke a wired
+  // `.close` hook, and tolerate values that don't expose one.
+  check("tusUpload.close: exposed on the b.middleware.tusUpload surface",
+    typeof b.middleware.tusUpload.close === "function");
+
+  var hookCalls = 0;
+  b.middleware.tusUpload.close({ close: function () { hookCalls += 1; } });
+  check("tusUpload.close: invokes a wired close hook once", hookCalls === 1);
+
+  // A real middleware instance (no `.close` method today) — the helper
+  // is a tolerant no-op, not a throw.
+  var closableTus = _mkTus();
+  var threwOnRealMw = false;
+  try { b.middleware.tusUpload.close(closableTus); } catch (_e) { threwOnRealMw = true; }
+  check("tusUpload.close: tolerant no-op on a middleware without a close hook",
+    threwOnRealMw === false);
+
+  var threwOnNullish = false;
+  try {
+    b.middleware.tusUpload.close(null);
+    b.middleware.tusUpload.close(undefined);
+    b.middleware.tusUpload.close(function () {});
+  } catch (_e) { threwOnNullish = true; }
+  check("tusUpload.close: tolerant of null / undefined / bare function",
+    threwOnNullish === false);
 }
 
 module.exports = { run: run };

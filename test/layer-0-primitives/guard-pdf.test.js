@@ -82,6 +82,30 @@ function testSanitizeBadInput() {
     _code(function () { b.guardPdf.sanitize(null, { profile: "balanced" }); }) === "pdf.bad-input");
 }
 
+// ---- magic-byte inspection ----
+
+function testInspectMagic() {
+  // %PDF-1.7 header (25 50 44 46 2D 31 2E 37) — real PDF prefix.
+  var pdfBytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x37]);
+  check("inspectMagic: %PDF- prefix → true",
+    b.guardPdf.inspectMagic(pdfBytes) === true);
+  // Exactly the 5-byte magic is enough.
+  check("inspectMagic: bare %PDF- (5 bytes) → true",
+    b.guardPdf.inspectMagic(_PDF) === true);
+  // Non-PDF bytes — the operator fed the wrong gate.
+  check("inspectMagic: mismatching bytes → false",
+    b.guardPdf.inspectMagic(Buffer.from([0x00, 0x01, 0x02])) === false);
+  // A buffer shorter than the 5-byte magic can't match.
+  check("inspectMagic: too-short buffer → false",
+    b.guardPdf.inspectMagic(Buffer.from([0x25, 0x50])) === false);
+  // Near-miss: right length, one byte off (0x2E vs 0x2D at index 4).
+  check("inspectMagic: one-byte-off prefix → false",
+    b.guardPdf.inspectMagic(Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2E])) === false);
+  // Pure inspection — never throws on non-Buffer input.
+  check("inspectMagic: null input → false (no throw)",
+    b.guardPdf.inspectMagic(null) === false);
+}
+
 function run() {
   testGuardPdfSurface();
   testGuardPdfRegistryParity();
@@ -93,6 +117,7 @@ function run() {
   testSanitizeForcesEmbeddedFileReject();
   testSanitizeForcesEncryptedReject();
   testSanitizeBadInput();
+  testInspectMagic();
 }
 
 module.exports = { run: run };

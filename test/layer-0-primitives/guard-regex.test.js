@@ -56,15 +56,44 @@ function testOtherClasses() {
   check("anchored alternation without group-quantifier accepted", assertSafeAccepts("^(?:cat|dog|bird)$"));
 }
 
-function run() {
+// ---- b.guardRegex.gate — the request-boundary screener ----
+// The gate reads ctx.identifier (or ctx.pattern) and maps validate's
+// severity to serve / audit-only / refuse before any new RegExp() compile.
+async function testGate() {
+  var gate = b.guardRegex.gate({ profile: "strict" });
+
+  var clean = await gate.check({ identifier: "^[a-z]+$" });
+  check("gate: linear pattern → action=serve, ok=true",
+    clean.ok === true && clean.action === "serve");
+
+  var nested = await gate.check({ identifier: "(a+)+b" });
+  check("gate: nested-quantifier ReDoS → action=refuse, ok=false",
+    nested.ok === false && nested.action === "refuse");
+  check("gate: nested-quantifier → nested-quantifier issue",
+    nested.issues.some(function (i) { return i.kind === "nested-quantifier"; }));
+
+  // ctx.pattern is the documented fallback field for the pattern.
+  var alt = await gate.check({ pattern: "(a|b|c)+" });
+  check("gate: alternation-with-quantifier via ctx.pattern → refuse",
+    alt.action === "refuse");
+
+  // Absent pattern is a no-op serve (nothing to screen).
+  var none = await gate.check({});
+  check("gate: no pattern supplied → action=serve",
+    none.ok === true && none.action === "serve");
+}
+
+async function run() {
   testLinearShapesAccepted();
   testCatastrophicShapesRefused();
   testOtherClasses();
+  await testGate();
 }
 
 if (require.main === module) {
-  run();
-  console.log("guard-regex OK — " + helpers.getChecks() + " checks");
+  run()
+    .then(function () { console.log("guard-regex OK — " + helpers.getChecks() + " checks"); })
+    .catch(function (e) { console.error("FAIL:", e.stack || e); process.exit(1); });
 }
 
 module.exports = { run: run };
