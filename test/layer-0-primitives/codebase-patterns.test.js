@@ -10411,6 +10411,11 @@ var KNOWN_ANTIPATTERNS = [
       // shadow-timeout posture. Not a condition-wait use; the
       // setTimeout IS the simulated latency itself.
       "test/layer-0-primitives/audit-use-store.test.js",
+      // gate-contract.test.js simulates a slow gate check (a Promise
+      // that resolves after 5s) to verify defineGate's maxRuntimeMs
+      // timeout fires first. Same shape as audit-use-store: the
+      // setTimeout IS the simulated latency, not a condition-wait.
+      "test/layer-0-primitives/gate-contract.test.js",
       // services.js implements the TCP/TLS/UDP probe primitives the
       // integration-test harness uses to detect whether a Docker
       // service is reachable. The setTimeout calls are the timeout
