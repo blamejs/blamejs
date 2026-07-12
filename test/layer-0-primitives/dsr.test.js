@@ -1502,6 +1502,26 @@ async function testDbStoreTicketTooLarge() {
     oversized = null; ticket.blob = null;   // release the big string promptly
     check("dbStore.insert: oversized ticket payload → dsr/ticket-too-large",
           threw && threw.code === "dsr/ticket-too-large");
+
+    // A vaulted store AEAD-seals + base64-expands (~4/3) the payload before
+    // binding it, so a plaintext between the expansion-safe cap (~48 MiB) and
+    // the 64 MiB read ceiling would seal PAST b.sql's 64 MiB per-value cap. It
+    // must be refused here with the store's own dsr/ticket-too-large error,
+    // not surface as a SqlBuilderError (sql-builder/param-too-large) from the
+    // insert's b.sql path.
+    var nearMax = "x".repeat(C.BYTES.mib(50));   // > the ~48 MiB vaulted cap, < 64 MiB
+    var ticket2 = {
+      id: "DSR-SEAL-EXPAND", type: "access", status: "pending",
+      subject: { subjectId: "u-2", email: "b@c.com", phone: null },
+      submittedAt: Date.now(), deadlineAt: Date.now() + C.TIME.minutes(1),
+      posture: "gdpr", verificationLevel: "minimal",
+      blob: nearMax,
+    };
+    var threw2 = null;
+    try { await store.insert(ticket2); } catch (e) { threw2 = e; }
+    nearMax = null; ticket2.blob = null;   // release promptly
+    check("dbStore.insert: vaulted payload that seals past 64 MiB → dsr/ticket-too-large (not SqlBuilderError)",
+          threw2 && threw2.code === "dsr/ticket-too-large");
   } finally {
     await teardownTestDb(tmpDir);
   }
