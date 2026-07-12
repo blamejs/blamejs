@@ -386,6 +386,28 @@ function testPolicyMergeCrossLevel() {
     chainOf({ subject_type: { one_of: ["public", "pairwise"] } },
             { subject_type: { default: "public" } }), K);
   check("policy merge: default consistent with one_of applies", defOneOf.subject_type === "public");
+  // A subordinate MAY pin an exact `value` INSIDE the superior's one_of set (a
+  // valid narrowing, OIDF 6.1.3.1.1); only a value OUTSIDE it is the downgrade.
+  var vInSet = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ token_endpoint_auth_method: { one_of: ["private_key_jwt", "self_signed_tls_client_auth"] } },
+            { token_endpoint_auth_method: { value: "private_key_jwt" } }), K);
+  check("policy merge: value consistent with a superior one_of applies",
+    vInSet.token_endpoint_auth_method === "private_key_jwt");
+  // A subordinate cannot WIDEN an anchor's exact `value` with `add` (the union
+  // would escape the pin) nor pair it with `default` -- value combines with a
+  // constraint, never with another modifier.
+  _throws("policy merge: subordinate add cannot widen an anchor pinned value",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({ grant_types: ["authorization_code"] },
+        chainOf({ grant_types: { value: ["authorization_code"] } },
+                { grant_types: { add: ["implicit"] } }), K);
+    }, /policy-merge-conflict/);
+  _throws("policy merge: value cannot be combined with default across levels",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({},
+        chainOf({ subject_type: { value: "public" } },
+                { subject_type: { default: "pairwise" } }), K);
+    }, /policy-merge-conflict/);
 }
 
 // subset_of constrains an array-valued claim; a leaf that self-declares the
@@ -395,9 +417,19 @@ function testPolicyMergeCrossLevel() {
 function testPolicySubsetOfArrayType() {
   var K = "openid_relying_party";
   function apply(meta, pol) { return b.auth.openidFederation.applyMetadataPolicy(meta, _policyChain(pol, K), K); }
-  _throws("policy subset_of: scalar claim value fails closed (no allow-list bypass)",
+  // A space-delimited string claim (OAuth `scope`, OIDF 6.1.3.1.8) is processed
+  // as an array: a subset passes; the string type is preserved on the result.
+  var okScope = apply({ scope: "openid email" }, { scope: { subset_of: ["openid", "email", "profile"] } });
+  check("policy subset_of: scope string within allow-list passes", okScope.scope === "openid email");
+  _throws("policy subset_of: scope string with a forbidden token refused",
+    function () { apply({ scope: "openid admin" }, { scope: { subset_of: ["openid", "email"] } }); },
+    /policy-subset-of-failed/);
+  // A claim the leaf type-confuses into a scalar cannot smuggle a forbidden value
+  // past the allow-list -- the split tokens are each checked.
+  _throws("policy subset_of: scalar with a forbidden token refused (no allow-list bypass)",
     function () { apply({ grant_types: "authorization_code implicit" }, { grant_types: { subset_of: ["authorization_code"] } }); },
     /policy-subset-of-failed/);
+  // A genuine non-array, non-string value (object/number) is malformed -> refused.
   _throws("policy subset_of: non-array object claim fails closed",
     function () { apply({ grant_types: { x: 1 } }, { grant_types: { subset_of: ["authorization_code"] } }); },
     /policy-subset-of-failed/);
