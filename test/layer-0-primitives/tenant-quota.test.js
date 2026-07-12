@@ -591,6 +591,24 @@ async function testStorageCapLifecycle() {
     check("reserved-word table rows counted correctly",
       rwSnap && rwSnap.bytesUsed === 3 + 4 + 2);
 
+    // A schema-qualified table name ("archive.docs") must pass identifier
+    // quoting the same way db.from() / b.sql do (they quote "schema"."table").
+    // The previous hand-rolled quoteIdentifier treated the dot as part of one
+    // name and rejected it with sql/bad-shape before the query ran. The
+    // attached "archive" db is absent here, so the query fails with a
+    // no-such-table error — the point is that it is NOT rejected at quoting.
+    var qualQuota = b.tenantQuota.create({
+      db:               b.db,
+      tenantField:      "tenantId",
+      tables:           ["archive.docs"],
+      defaultBytesCap:  b.constants.BYTES.gib(1),
+      audit:            false,
+    });
+    var qualErr = null;
+    try { await qualQuota.snapshot("t-any"); } catch (e) { qualErr = e; }
+    check("schema-qualified table name passes identifier quoting (not sql/bad-shape)",
+      qualErr === null || qualErr.code !== "sql/bad-shape");
+
     // A sealed tenantField: "tid" is sealed on disk, so a plaintext WHERE
     // never matches. snapshot must filter by the derived-hash blind index
     // (as db.from().where() does) — otherwise the cap silently counts zero.
