@@ -922,7 +922,20 @@ async function testDbStoreUpgradePath() {
         $p: JSON.stringify({ id: "DSR-LEGACY-1", status: "pending", subject: { email: "legacy@example.com" } }),
       });
 
-    // Constructing the store runs ensureSchema → reconciles the columns.
+    // Also seed an OVERSIZED legacy plaintext row: its payload cannot be
+    // re-sealed into the vaulted store (the sealed form exceeds b.sql's
+    // per-value ceiling). The backfill must SKIP it — leaving it un-migrated —
+    // rather than crash provisioning with a SqlBuilderError.
+    var bigLegacy = "x".repeat(C.BYTES.mib(50));
+    b.db.prepare("INSERT INTO dsr_tickets (id, type, status, subject_email, submitted_at, deadline_at, payload) " +
+      "VALUES ($id, $type, $status, $email, $sa, $da, $p)").run({
+        $id: "DSR-LEGACY-BIG", $type: "access", $status: "pending",
+        $email: "big@example.com", $sa: Date.now(), $da: Date.now() + 1000, $p: bigLegacy,
+      });
+    bigLegacy = null;   // release the big string promptly
+
+    // Constructing the store runs ensureSchema → reconciles the columns AND
+    // runs the legacy backfill (which must not crash on the oversized row).
     var h = _dbDsr();
     var cols = b.db.prepare("PRAGMA table_info(dsr_tickets)").all({});
     var names = cols.map(function (c) { return c.name; });
@@ -956,6 +969,15 @@ async function testDbStoreUpgradePath() {
           rawLegacy.subject_email_hash.length > 0);
     check("dbStore upgrade: legacy subject_email sealed at rest by backfill (now erasable)",
           rawLegacy && rawLegacy.subject_email !== "legacy@example.com");
+
+    // The oversized legacy row was SKIPPED by the backfill (constructing the
+    // store above did not crash), so it is still un-migrated — NULL hash,
+    // plaintext subject — whereas the normal legacy row above was migrated.
+    var rawBig = b.db.prepare(
+      "SELECT subject_email, subject_email_hash FROM dsr_tickets WHERE id = $id")
+      .all({ $id: "DSR-LEGACY-BIG" })[0];
+    check("dbStore upgrade: oversized legacy row skipped by backfill (un-migrated, no crash)",
+          rawBig && rawBig.subject_email_hash == null && rawBig.subject_email === "big@example.com");
   } finally {
     await teardownTestDb(tmpDir);
   }
