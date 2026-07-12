@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.16",
+  "date": "2026-07-12",
+  "headline": "Build the data-subject-request ticket store's SQL through the shared b.sql query builder instead of hand-assembled statements, and add a static check that keeps db-handle primitives composing b.sql",
+  "summary": "A maintainability change with no behavior difference for operators. The b.dsr ticket store built its reads and writes by concatenating table and column names into SQL strings passed to db.prepare, re-implementing the identifier quoting and sealed-field handling that b.sql — the same builder b.db.from() uses — already provides. That hand-rolled shape is how b.tenant.quota's storage query drifted from the query builder and accrued a run of parity defects fixed in 0.16.15 (reserved-word names, schema-qualified names, sealed-column filtering). The store's DML now composes b.sql (its schema DDL, which is not a b.sql concern, stays as direct statements), so its SQL cannot diverge from the builder. A new codebase-patterns check flags any db-handle primitive that passes an inline SELECT / INSERT / UPDATE / DELETE string literal to db.prepare / runSql, directing it to compose b.sql instead, so this class of drift cannot recur.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "b.dsr ticket store composes b.sql for its reads and writes",
+          "body": "The data-subject-request ticket store (insert / get / list / update / delete / purge and the legacy re-seal backfill) now builds its DML with the b.sql query builder — sql.select / insert / update / delete(table, { dialect, quoteName }).…toSql() — and prepares the resulting statement, rather than concatenating identifiers into SQL strings by hand. This removes a hand-rolled identifier-quoting surface that could drift from what b.db.from() accepts. Schema provisioning (CREATE TABLE / INDEX, ALTER, PRAGMA) is not a b.sql concern and remains as direct statements. One behavior change: on a store backed by a vault, a ticket payload is AEAD-sealed and base64-encoded (~4/3 expansion) before it is bound, and the bound cell must fit the query builder's 64 MiB per-value ceiling — so the payload is now capped at an expansion-safe plaintext size (~48 MiB) and a larger ticket is refused with dsr/ticket-too-large (route large access/portability exports through chunked storage rather than one giant sealed cell). Plaintext stores keep the full 64 MiB limit. When a vault is first enabled on a table that already holds an over-cap legacy plaintext row, the one-time re-seal backfill still migrates that row's subject columns and derived hashes — so it stays findable by subject lookup and erasable by the data-subject erasure purge — and leaves only the over-cap payload plaintext (still under the read ceiling, DB-encrypted at rest, and removed when the row is erased), rather than failing provisioning with a query-builder error."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Static check: db-handle primitives must compose b.sql for DML",
+          "body": "A new codebase-patterns check flags any primitive holding a db handle that runs DML by passing an inline SELECT / INSERT / UPDATE / DELETE string literal to db.prepare / runSql — the shape that lets a query drift from b.sql's identifier quoting and sealed-field rewrite (the b.tenant.quota storage defect class). It directs authors to build the query with b.sql and prepare the resulting string. DDL and PRAGMA (not b.sql verbs) and queries already built through a b.sql variable are out of scope."
+        }
+      ]
+    }
+  ]
+}

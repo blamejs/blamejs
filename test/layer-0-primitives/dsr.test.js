@@ -922,7 +922,20 @@ async function testDbStoreUpgradePath() {
         $p: JSON.stringify({ id: "DSR-LEGACY-1", status: "pending", subject: { email: "legacy@example.com" } }),
       });
 
-    // Constructing the store runs ensureSchema → reconciles the columns.
+    // Also seed an OVERSIZED legacy plaintext row: its payload cannot be
+    // re-sealed into the vaulted store (the sealed form exceeds b.sql's
+    // per-value ceiling). The backfill must SKIP it — leaving it un-migrated —
+    // rather than crash provisioning with a SqlBuilderError.
+    var bigLegacy = "x".repeat(C.BYTES.mib(50));
+    b.db.prepare("INSERT INTO dsr_tickets (id, type, status, subject_email, submitted_at, deadline_at, payload) " +
+      "VALUES ($id, $type, $status, $email, $sa, $da, $p)").run({
+        $id: "DSR-LEGACY-BIG", $type: "access", $status: "pending",
+        $email: "big@example.com", $sa: Date.now(), $da: Date.now() + 1000, $p: bigLegacy,
+      });
+    bigLegacy = null;   // release the big string promptly
+
+    // Constructing the store runs ensureSchema → reconciles the columns AND
+    // runs the legacy backfill (which must not crash on the oversized row).
     var h = _dbDsr();
     var cols = b.db.prepare("PRAGMA table_info(dsr_tickets)").all({});
     var names = cols.map(function (c) { return c.name; });
@@ -956,6 +969,21 @@ async function testDbStoreUpgradePath() {
           rawLegacy.subject_email_hash.length > 0);
     check("dbStore upgrade: legacy subject_email sealed at rest by backfill (now erasable)",
           rawLegacy && rawLegacy.subject_email !== "legacy@example.com");
+
+    // The oversized legacy row was migrated for FINDABILITY without crashing:
+    // its subject columns are sealed and its derived hash is populated (so
+    // list({ subject }) and the erasure purge see it — no un-erasable PII),
+    // while its over-cap payload is left plaintext (it cannot be sealed, but
+    // it is DB-encrypted at rest and removed when the row is erased).
+    var rawBig = b.db.prepare(
+      "SELECT subject_email, subject_email_hash, payload FROM dsr_tickets WHERE id = $id")
+      .all({ $id: "DSR-LEGACY-BIG" })[0];
+    check("dbStore upgrade: oversized legacy row hash populated (findable by subject lookup, erasable)",
+          rawBig && typeof rawBig.subject_email_hash === "string" && rawBig.subject_email_hash.length > 0);
+    check("dbStore upgrade: oversized legacy row subject sealed at rest",
+          rawBig && rawBig.subject_email !== "big@example.com");
+    check("dbStore upgrade: over-cap payload left plaintext (not sealed, but erasable via row delete)",
+          rawBig && typeof rawBig.payload === "string" && rawBig.payload.indexOf("vault:") !== 0);
   } finally {
     await teardownTestDb(tmpDir);
   }
@@ -1502,6 +1530,26 @@ async function testDbStoreTicketTooLarge() {
     oversized = null; ticket.blob = null;   // release the big string promptly
     check("dbStore.insert: oversized ticket payload → dsr/ticket-too-large",
           threw && threw.code === "dsr/ticket-too-large");
+
+    // A vaulted store AEAD-seals + base64-expands (~4/3) the payload before
+    // binding it, so a plaintext between the expansion-safe cap (~48 MiB) and
+    // the 64 MiB read ceiling would seal PAST b.sql's 64 MiB per-value cap. It
+    // must be refused here with the store's own dsr/ticket-too-large error,
+    // not surface as a SqlBuilderError (sql-builder/param-too-large) from the
+    // insert's b.sql path.
+    var nearMax = "x".repeat(C.BYTES.mib(50));   // > the ~48 MiB vaulted cap, < 64 MiB
+    var ticket2 = {
+      id: "DSR-SEAL-EXPAND", type: "access", status: "pending",
+      subject: { subjectId: "u-2", email: "b@c.com", phone: null },
+      submittedAt: Date.now(), deadlineAt: Date.now() + C.TIME.minutes(1),
+      posture: "gdpr", verificationLevel: "minimal",
+      blob: nearMax,
+    };
+    var threw2 = null;
+    try { await store.insert(ticket2); } catch (e) { threw2 = e; }
+    nearMax = null; ticket2.blob = null;   // release promptly
+    check("dbStore.insert: vaulted payload that seals past 64 MiB → dsr/ticket-too-large (not SqlBuilderError)",
+          threw2 && threw2.code === "dsr/ticket-too-large");
   } finally {
     await teardownTestDb(tmpDir);
   }
