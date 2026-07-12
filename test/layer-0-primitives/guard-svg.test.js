@@ -341,6 +341,135 @@ function testGuardSvgBadProfile() {
         threw && /unknown profile/i.test(threw.message));
 }
 
+function testGuardSvgSchemeWhitespaceBypass() {
+  // Browsers remove ASCII tab (U+0009) / LF (U+000A) / CR (U+000D) from a URL
+  // before resolving its scheme (WHATWG URL parser "remove ASCII tab or
+  // newline"), so `java<TAB>script:` / `java<LF>script:` navigate as
+  // `javascript:`. The guard's scheme decoder even maps the NAMED entities
+  // `&Tab;`/`&NewLine;` to those characters (its own comment names
+  // `java&Tab;script:` as the threat), but decoding is defeated unless the
+  // resulting whitespace is stripped before the scheme match. A miss here is
+  // a fail-open: validate returns ok and the gate serves the hostile bytes.
+  //
+  // The same URL parser also trims a leading/trailing C0-control-OR-SPACE run
+  // (U+0000..U+0020) before parsing, so an ENTITY-encoded leading space
+  // (`&#32;javascript:` / `&#x20;javascript:`) decodes to " javascript:" and
+  // navigates as `javascript:`. A literal leading space is caught by the raw
+  // .trim(), but the entity-encoded space survives the decode (space is not a
+  // C0 control, not tab/lf/cr), so it must be trimmed after decoding.
+  var vectors = [
+    ["literal tab",   '<svg><a xlink:href="java\tscript:alert(1)">x</a></svg>'],
+    ["literal lf",    '<svg><a xlink:href="java\nscript:alert(1)">x</a></svg>'],
+    ["literal cr",    '<svg><a xlink:href="java\rscript:alert(1)">x</a></svg>'],
+    ["&Tab; named",   '<svg><a xlink:href="java&Tab;script:alert(1)">x</a></svg>'],
+    ["&NewLine; named", '<svg><a xlink:href="java&NewLine;script:alert(1)">x</a></svg>'],
+    ["&#9; numeric",  '<svg><a xlink:href="java&#9;script:alert(1)">x</a></svg>'],
+    ["&#32; entity leading space",  '<svg><a xlink:href="&#32;javascript:alert(1)">x</a></svg>'],
+    ["&#x20; entity leading space", '<svg><a xlink:href="&#x20;javascript:alert(1)">x</a></svg>'],
+  ];
+  for (var i = 0; i < vectors.length; i++) {
+    var rv = b.guardSvg.validate(vectors[i][1], { profile: "balanced" });
+    check("scheme bypass (" + vectors[i][0] + ") flagged dangerous-url-scheme",
+          rv.ok === false &&
+          rv.issues.some(function (issue) { return issue.kind === "dangerous-url-scheme"; }));
+  }
+
+  // A control char the strip set DOES cover (U+0001) must still be caught.
+  var rvCtrl = b.guardSvg.validate(
+    '<svg><a xlink:href="&#1;javascript:alert(1)">x</a></svg>', { profile: "balanced" });
+  check("control-char-prefixed javascript: still flagged (no regression)",
+        rvCtrl.issues.some(function (issue) { return issue.kind === "dangerous-url-scheme"; }));
+
+  // A legitimate https URL is NOT flagged (no false positive from stripping).
+  var rvOk = b.guardSvg.validate(
+    '<svg><a xlink:href="https://example.com/a">x</a></svg>', { profile: "balanced" });
+  check("plain https href not flagged as dangerous scheme",
+        !rvOk.issues.some(function (issue) { return issue.kind === "dangerous-url-scheme"; }));
+
+  // sanitize must strip the tab-obfuscated scheme, not re-emit it.
+  var san = b.guardSvg.sanitize('<svg><a xlink:href="java\tscript:alert(1)">x</a></svg>',
+                                { profile: "balanced" });
+  check("sanitize: tab-obfuscated javascript scheme stripped",
+        san.indexOf("script:") === -1);
+}
+
+function testGuardSvgCssEntityBypass() {
+  // A style attribute is HTML/XML character-reference-decoded before the CSS
+  // parser sees it, so `ex&#x70;ression(` reaches CSS as `expression(` and
+  // `behavior&colon;` as `behavior:`. The css-danger check must decode the
+  // same references the URL-scheme check already decodes, or an entity-encoded
+  // style payload is served verbatim and executes (stored XSS).
+  var vectors = [
+    ["numeric &#x70; -> p (expression()",
+     '<svg><rect style="width:ex&#x70;ression(alert(1))"/></svg>'],
+    ["numeric &#x6A; -> j (url(javascript:))",
+     '<svg><rect style="background:url(&#x6A;avascript:alert(1))"/></svg>'],
+    ["decimal &#106; -> j (url(javascript:))",
+     '<svg><rect style="background:url(&#106;avascript:alert(1))"/></svg>'],
+    ["named &colon; -> : (behavior:)",
+     '<svg><rect style="behavior&colon;url(evil.htc)"/></svg>'],
+  ];
+  for (var i = 0; i < vectors.length; i++) {
+    var rv = b.guardSvg.validate(vectors[i][1], { profile: "balanced" });
+    check("CSS entity bypass (" + vectors[i][0] + ") flagged css-injection",
+          rv.issues.some(function (issue) { return issue.kind === "css-injection"; }));
+  }
+
+  // Plain (unencoded) dangerous CSS still flagged (regression guard).
+  var plain = b.guardSvg.validate('<svg><rect style="width:expression(alert(1))"/></svg>',
+                                  { profile: "balanced" });
+  check("CSS: plain expression( still flagged",
+        plain.issues.some(function (issue) { return issue.kind === "css-injection"; }));
+
+  // No false positive: a benign style value is untouched.
+  var benign = b.guardSvg.validate('<svg><rect style="fill:red;stroke-width:2"/></svg>',
+                                   { profile: "balanced" });
+  check("CSS: benign style not flagged as css-injection",
+        !benign.issues.some(function (issue) { return issue.kind === "css-injection"; }));
+}
+
+function testGuardSvgSanitizeAnimationPreserved() {
+  // permissive permits animation; a safe-target <animate> must SURVIVE
+  // sanitize. Every animation tag is in DANGEROUS_TAGS, so the sanitizer must
+  // affirmatively re-permit the safe case — otherwise the open tag is dropped
+  // while its (still allowlisted) close tag is emitted, leaving an orphan.
+  var safe = '<svg><animate attributeName="cx" to="100"/></svg>';
+  var out = b.guardSvg.sanitize(safe, { profile: "permissive" });
+  check("sanitize permissive: safe <animate> open tag preserved",
+        /<animate\b/i.test(out));
+
+  var motion = '<svg><animateMotion dur="1s"><mpath xlink:href="#p"/></animateMotion></svg>';
+  var outM = b.guardSvg.sanitize(motion, { profile: "permissive" });
+  var opens  = (outM.match(/<animatemotion\b/gi) || []).length;
+  var closes = (outM.match(/<\/animatemotion\b/gi) || []).length;
+  check("sanitize permissive: animateMotion open/close balanced (no orphan close)",
+        opens === 1 && closes === 1);
+
+  // Unsafe attributeName animation is still neutralized under permissive.
+  var unsafe = '<svg><animate attributeName="href" to="javascript:alert(1)"/></svg>';
+  var outU = b.guardSvg.sanitize(unsafe, { profile: "permissive" });
+  check("sanitize permissive: unsafe-target <animate> payload dropped",
+        outU.indexOf("javascript") === -1);
+}
+
+async function testGuardSvgGateFailOpen() {
+  var g = b.guardSvg.gate({ profile: "balanced" });
+
+  var rvScheme = await g.check({
+    contentType: "image/svg+xml",
+    bytes: Buffer.from('<svg><a xlink:href="java\tscript:alert(1)">x</a></svg>', "utf8"),
+  });
+  check("gate: tab-obfuscated javascript scheme not served as-is",
+        rvScheme.action !== "serve");
+
+  var rvCss = await g.check({
+    contentType: "image/svg+xml",
+    bytes: Buffer.from('<svg><rect style="width:ex&#x70;ression(alert(1))"/></svg>', "utf8"),
+  });
+  check("gate: entity-encoded CSS expression not served as-is",
+        rvCss.action !== "serve");
+}
+
 async function run() {
   testGuardSvgSurface();
   testGuardSvgRegistryParity();
@@ -360,7 +489,16 @@ async function run() {
   testGuardSvgCompliancePosture();
   testGdprPostureMatchesBalancedTier();
   testGuardSvgBadProfile();
+  testGuardSvgSchemeWhitespaceBypass();
+  testGuardSvgCssEntityBypass();
+  testGuardSvgSanitizeAnimationPreserved();
   await testGuardSvgGate();
+  await testGuardSvgGateFailOpen();
+}
+
+if (require.main === module) {
+  run().then(function () { console.log("OK — " + helpers.getChecks() + " checks"); })
+       .catch(function (e) { console.error(helpers.formatErr(e)); process.exit(1); });
 }
 
 module.exports = { run: run };

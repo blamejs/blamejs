@@ -6400,6 +6400,26 @@ var KNOWN_ANTIPATTERNS = [
     reason: "#114 — _blamejs_subject_restrictions declares sealedFields:[\"reason\"] but subject.js wrote the reason in clear via the raw sql.insert path. Seal on write (cryptoField.sealRow(RESTRICTIONS_TABLE, ...)); the reason is write-only (isRestricted reads only the PK) so there is no unseal site. Fires if the restriction insert lands without the seal.",
   },
   {
+    id: "guard-scheme-extractor-must-strip-url-whitespace",
+    primitive: "a content guard that extracts a URL scheme for a denylist must fold the decoded value through codepointClass.stripUrlSchemeWhitespace, so a browser-stripped tab/newline or an entity-encoded leading space cannot push the scheme past the anchor and read as scheme-less",
+    scanScope: "lib",
+    regex: /function _extractScheme\b|DANGEROUS_SCHEME_RE\.test\b/,
+    requires: /stripUrlSchemeWhitespace\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "guard-html / guard-svg (_extractScheme) and guard-markdown (DANGEROUS_SCHEME_RE.test) resolve a URL scheme against a denylist. The WHATWG URL parser removes tab/lf/cr from anywhere and trims a leading/trailing C0-control-or-space run before parsing; neither the C0-control strip (which excludes tab/lf/cr) nor a raw trim (which misses an entity-encoded space) covers that, so the decoded value MUST route through codepointClass.stripUrlSchemeWhitespace. Fires if a scheme extractor drops the shared normalizer, re-opening the java<TAB>script: / &#32;javascript: fail-open XSS.",
+  },
+  {
+    id: "guard-css-danger-check-must-decode-entities",
+    primitive: "a content guard's CSS-danger check must match the entity-decoded style value via codepointClass.decodeMarkupEntities, not the raw bytes -- a style attribute is character-reference-decoded before the CSS parser sees it",
+    scanScope: "lib",
+    regex: /CSS_DANGEROUS_PATTERNS\s*\[\s*\w+\s*\]\.test/,
+    requires: /decodeMarkupEntities\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "guard-html / guard-svg test CSS_DANGEROUS_PATTERNS against a style value. The browser character-reference-decodes a style attribute before the CSS parser runs, so a raw-byte match lets ex&#x70;ression( / url(&#x6A;avascript:) / behavior&colon; bypass the denylist (fail-open CSS-injection XSS). The check MUST decode via codepointClass.decodeMarkupEntities first. Fires if a CSS-danger check drops the decode.",
+  },
+  {
     // Vault keypair rotation stages every output file (the re-encrypted
     // db, resealed vault/db keys, additional sealed files, derived-hash
     // material, and the transient PLAINTEXT db) inside opts.stagingDir.
