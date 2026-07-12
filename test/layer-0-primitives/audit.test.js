@@ -709,6 +709,27 @@ function testApplyPosture() {
   check("applyPosture overwrites the active posture", b.audit.activePosture() === "pci-dss");
 }
 
+function testDuplicateCheckpointCounterRecognition() {
+  // The concurrent-anchor idempotency guard must recognize the duplicate
+  // atMonotonicCounter UNIQUE violation across ALL THREE backends: SQLite names
+  // the column in the message; Postgres carries the unique-index name in
+  // constraint/detail with SQLSTATE 23505; MySQL reports the key name with
+  // errno 1062. An unrelated error, or a unique violation on a DIFFERENT
+  // column, must NOT be swallowed (fail-closed).
+  var isDup = b.audit._isDuplicateCheckpointCounter;
+  check("dup-counter: sqlite column-in-message recognized",
+        isDup({ message: "UNIQUE constraint failed: _blamejs_audit_checkpoints.atMonotonicCounter", code: "SQLITE_CONSTRAINT_UNIQUE" }) === true);
+  check("dup-counter: postgres index-name + 23505 recognized",
+        isDup({ message: "duplicate key value violates unique constraint", constraint: "idx__blamejs_audit_checkpoints_chkpt_counter", code: "23505" }) === true);
+  check("dup-counter: mysql key-name + errno 1062 recognized",
+        isDup({ sqlMessage: "Duplicate entry '5' for key 'idx_chkpt_counter'", errno: 1062 }) === true);
+  check("dup-counter: unrelated error NOT swallowed",
+        isDup({ message: "connection refused ECONNREFUSED" }) === false);
+  check("dup-counter: unique violation on a DIFFERENT column NOT swallowed",
+        isDup({ message: "UNIQUE constraint failed: other_table.other_col", code: "SQLITE_CONSTRAINT_UNIQUE" }) === false);
+  check("dup-counter: null error is not a duplicate", isDup(null) === false);
+}
+
 async function run() {
   // flush() before any emit has created the AsyncHandler → the `!_auditHandler`
   // early-return arm. Harmless no-op if a handler already exists.
@@ -721,6 +742,7 @@ async function run() {
   await testQueryCriteriaAndToMs();
   await testBeginTrace();
   await testCheckpointLifecycle();
+  testDuplicateCheckpointCounterRecognition();
   await testVerifyChain();
   await testEmitFlushDropPath();
   await testSafeEmitNormalizationAndRedaction();
