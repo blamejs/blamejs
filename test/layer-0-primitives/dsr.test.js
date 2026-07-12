@@ -970,14 +970,20 @@ async function testDbStoreUpgradePath() {
     check("dbStore upgrade: legacy subject_email sealed at rest by backfill (now erasable)",
           rawLegacy && rawLegacy.subject_email !== "legacy@example.com");
 
-    // The oversized legacy row was SKIPPED by the backfill (constructing the
-    // store above did not crash), so it is still un-migrated — NULL hash,
-    // plaintext subject — whereas the normal legacy row above was migrated.
+    // The oversized legacy row was migrated for FINDABILITY without crashing:
+    // its subject columns are sealed and its derived hash is populated (so
+    // list({ subject }) and the erasure purge see it — no un-erasable PII),
+    // while its over-cap payload is left plaintext (it cannot be sealed, but
+    // it is DB-encrypted at rest and removed when the row is erased).
     var rawBig = b.db.prepare(
-      "SELECT subject_email, subject_email_hash FROM dsr_tickets WHERE id = $id")
+      "SELECT subject_email, subject_email_hash, payload FROM dsr_tickets WHERE id = $id")
       .all({ $id: "DSR-LEGACY-BIG" })[0];
-    check("dbStore upgrade: oversized legacy row skipped by backfill (un-migrated, no crash)",
-          rawBig && rawBig.subject_email_hash == null && rawBig.subject_email === "big@example.com");
+    check("dbStore upgrade: oversized legacy row hash populated (findable by subject lookup, erasable)",
+          rawBig && typeof rawBig.subject_email_hash === "string" && rawBig.subject_email_hash.length > 0);
+    check("dbStore upgrade: oversized legacy row subject sealed at rest",
+          rawBig && rawBig.subject_email !== "big@example.com");
+    check("dbStore upgrade: over-cap payload left plaintext (not sealed, but erasable via row delete)",
+          rawBig && typeof rawBig.payload === "string" && rawBig.payload.indexOf("vault:") !== 0);
   } finally {
     await teardownTestDb(tmpDir);
   }
