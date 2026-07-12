@@ -356,27 +356,28 @@ function testPolicyMergeCrossLevel() {
     u.scope.indexOf("x") !== -1 && u.scope.indexOf("y") !== -1);
 
   // Cross-operator downgrades: a subordinate must not escape a superior's
-  // constraint by expressing an override with a DIFFERENT operator. Per OIDF
-  // 1.0 §6.1.3, `value` combines only with `essential`, and `add` must stay
-  // within `subset_of`, so each merges into an invalid combination -> refused.
+  // constraint by expressing an override with a DIFFERENT operator. The merged
+  // constraint is enforced against the FINAL value at apply time, so each is
+  // refused -- a value outside the merged one_of, an add widening past the
+  // merged subset_of, a value dropping a superset_of-mandated member.
   _throws("policy merge: subordinate value cannot override a superior one_of",
     function () {
       b.auth.openidFederation.applyMetadataPolicy({},
         chainOf({ token_endpoint_auth_method: { one_of: ["private_key_jwt"] } },
                 { token_endpoint_auth_method: { value: "none" } }), K);
-    }, /policy-merge-conflict/);
+    }, /policy-one-of-failed/);
   _throws("policy merge: subordinate add cannot widen past a superior subset_of",
     function () {
       b.auth.openidFederation.applyMetadataPolicy({ scope: ["read"] },
         chainOf({ scope: { subset_of: ["read"] } },
                 { scope: { add: ["write"] } }), K);
-    }, /policy-merge-conflict/);
+    }, /policy-subset-of-failed/);
   _throws("policy merge: subordinate value cannot drop a superior superset_of member",
     function () {
       b.auth.openidFederation.applyMetadataPolicy({ grant_types: ["authorization_code"] },
         chainOf({ grant_types: { superset_of: ["authorization_code"] } },
                 { grant_types: { value: ["implicit"] } }), K);
-    }, /policy-merge-conflict/);
+    }, /policy-superset-of-failed/);
 
   // Consistent cross-operator combinations remain valid narrowings.
   var withinSub = b.auth.openidFederation.applyMetadataPolicy({ scope: [] },
@@ -402,11 +403,37 @@ function testPolicyMergeCrossLevel() {
         chainOf({ grant_types: { value: ["authorization_code"] } },
                 { grant_types: { add: ["implicit"] } }), K);
     }, /policy-merge-conflict/);
-  _throws("policy merge: value cannot be combined with default across levels",
+  // `value` + `add` is a no-op (allowed) when `add` is already within the pin;
+  // `value` + `default` is a no-op (the pinned value wins) -- neither widens.
+  var vAddNoop = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ grant_types: { value: ["authorization_code", "refresh_token"] } },
+            { grant_types: { add: ["refresh_token"] } }), K);
+  check("policy merge: value + add within the pin is a no-op",
+    vAddNoop.grant_types.length === 2 && vAddNoop.grant_types.indexOf("refresh_token") !== -1);
+  var vDefault = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ subject_type: { value: "public" } },
+            { subject_type: { default: "pairwise" } }), K);
+  check("policy merge: value + default applies the pinned value", vDefault.subject_type === "public");
+  // `superset_of` is satisfied by the FINAL value, so a co-present `add` need not
+  // itself supply the mandated member when the leaf already carries it.
+  var addSuperLeaf = b.auth.openidFederation.applyMetadataPolicy({ grant_types: ["authorization_code"] },
+    chainOf({ grant_types: { superset_of: ["authorization_code"] } },
+            { grant_types: { add: ["refresh_token"] } }), K);
+  check("policy merge: add + superset_of satisfied by leaf metadata applies",
+    addSuperLeaf.grant_types.indexOf("authorization_code") !== -1 &&
+    addSuperLeaf.grant_types.indexOf("refresh_token") !== -1);
+  // A space-delimited scope value is validated as a subset of the merged subset_of.
+  var scopeVal = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ scope: { subset_of: ["openid", "email"] } },
+            { scope: { value: "openid email" } }), K);
+  check("policy merge: scope-string value within subset_of applies", scopeVal.scope === "openid email");
+  // Disjoint one_of across levels intersects to the empty set -> refused (no
+  // value could ever satisfy the chain), not silently accepted when absent.
+  _throws("policy merge: disjoint one_of across levels refused",
     function () {
       b.auth.openidFederation.applyMetadataPolicy({},
-        chainOf({ subject_type: { value: "public" } },
-                { subject_type: { default: "pairwise" } }), K);
+        chainOf({ subject_type: { one_of: ["public"] } },
+                { subject_type: { one_of: ["pairwise"] } }), K);
     }, /policy-merge-conflict/);
 }
 
