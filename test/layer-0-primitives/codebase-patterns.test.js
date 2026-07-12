@@ -953,6 +953,18 @@ function testParserPrimitivesHaveFuzzHarness() {
     "lib/parsers/safe-env.js":        ".env file loader takes a filepath (not adversarial in-process bytes); operator controls the file boundary, schema-validation gates the values",
     "lib/safe-path.js":               "operator-supplied path-segment validator over the existing guardFilename codepoint tables (reserved-name + bidi + overlong-UTF-8 inherited transitively); the per-segment regex set is deterministic + anchored + length-bounded by the caller-supplied rel, no adversarial-bytes parser surface",
   };
+  // Untrusted-BYTE parsers that are NOT named safe-*/guard-* (so the name walk
+  // below skips them) but consume adversarial bytes off the network / disk and
+  // need the same fuzz discipline -- the INPUT SURFACE is what matters, not the
+  // filename. asn1-der parses DER from peer TLS certificates, S/MIME, BIMI VMCs,
+  // CMS, ACME and TSA responses; cms-codec (b.cms) parses CMS on top of it;
+  // link-header (b.linkHeader.parse) parses an untrusted HTTP Link response
+  // header (RFC 8288) a server / SSRF-reachable origin controls.
+  var FUZZ_REQUIRED_EXTRA = [
+    "lib/asn1-der.js",
+    "lib/cms-codec.js",
+    "lib/link-header.js",
+  ];
   var fs   = require("node:fs");
   var path = require("node:path");
   var repoRoot = path.resolve(__dirname, "..", "..");
@@ -973,6 +985,9 @@ function testParserPrimitivesHaveFuzzHarness() {
     });
   }
   _walk(libDir);
+  FUZZ_REQUIRED_EXTRA.forEach(function (rel) {
+    if (libFiles.indexOf(rel) === -1) libFiles.push(rel);
+  });
   var hits = [];
   libFiles.forEach(function (rel) {
     if (FUZZ_NOT_REQUIRED[rel]) return;
@@ -1015,7 +1030,7 @@ function testParserPrimitivesHaveFuzzHarness() {
     // mutator-only exploration. We DON'T report on it here; the
     // build script just skips the zip step when the dir is missing.
   });
-  _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED)",
+  _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator (plus the untrusted-byte parsers in FUZZ_REQUIRED_EXTRA) has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED)",
     hits);
 }
 
