@@ -1129,6 +1129,42 @@ function testSignatureInputParamTolerance() {
         unquoted.valid === true);
 }
 
+function testAlgKeyBinding() {
+  // Alg-confusion (CWE-347): the declared alg is only an authenticated label
+  // unless it is bound to the key's real type. SUPPORTED_ALGS names ARE the
+  // node asymmetricKeyType values, so sign() must refuse to emit a mislabeled
+  // token and verify() must refuse a key whose type differs from the declared
+  // alg -- a classical ed25519 key must never pass under a declared PQC alg.
+  var e = _genEd25519();
+  var m = _genMlDsa65();
+  var msg = {
+    method:  "POST",
+    url:     "https://api.example.com/x",
+    headers: { host: "api.example.com" },
+    body:    "{}",
+  };
+  var cov = ["@method", "@target-uri", "@authority", "content-digest"];
+
+  var signThrew = false;
+  try {
+    b.crypto.httpSig.sign(msg, { keyid: "k", alg: "ml-dsa-65", privateKey: e.privateKey, covered: cov });
+  } catch (err) { signThrew = (err && err.code === "BAD_OPT"); }
+  check("httpSig.sign: ed25519 key declared alg=ml-dsa-65 refused (BAD_OPT)", signThrew);
+
+  var signed = b.crypto.httpSig.sign(msg, { keyid: "k", alg: "ed25519", privateKey: e.privateKey, covered: cov });
+  var full = Object.assign({}, msg, { headers: Object.assign({}, msg.headers, signed.headers) });
+  var mismatch = b.crypto.httpSig.verify(full, { keyResolver: function () { return m.publicKey; } });
+  check("httpSig.verify: declared alg != resolved key type refused (alg-key-mismatch)",
+        mismatch.valid === false && mismatch.reason === "alg-key-mismatch");
+
+  var okEd = b.crypto.httpSig.verify(full, { keyResolver: function () { return e.publicKey; } });
+  check("httpSig: legit ed25519 round-trip still verifies", okEd.valid === true);
+  var s2 = b.crypto.httpSig.sign(msg, { keyid: "k2", alg: "ml-dsa-65", privateKey: m.privateKey, covered: cov });
+  var f2 = Object.assign({}, msg, { headers: Object.assign({}, msg.headers, s2.headers) });
+  var okMl = b.crypto.httpSig.verify(f2, { keyResolver: function () { return m.publicKey; } });
+  check("httpSig: legit ml-dsa-65 round-trip still verifies", okMl.valid === true);
+}
+
 async function run() {
   testSurface();
   testRoundTripEd25519();
@@ -1161,6 +1197,7 @@ async function run() {
   testParsedParamGates();
   testTimeGates();
   testKeyResolverThrows();
+  testAlgKeyBinding();
   testContentDigestVerifyBranches();
   testMultiLabelSignature();
   testCryptoVerdicts();
