@@ -353,6 +353,19 @@ async function testCheckpointLifecycle() {
     check("checkpoint({ skipIfUnchanged }) returns null when the tip is unchanged",
           skipped === null);
 
+    // A second checkpoint() of the SAME already-anchored tip (WITHOUT
+    // skipIfUnchanged) must not throw the raw atMonotonicCounter UNIQUE-
+    // constraint error: two anchors of one tip sign the identical payload, so
+    // the counter is already anchored and the loser returns null idempotently.
+    // This is the parallel-checkpoint collision that flaked audit.test.js under
+    // SMOKE_PARALLEL when two modules anchored the same counter concurrently.
+    var reAnchor = null;
+    var reAnchorThrew = false;
+    try { reAnchor = await b.audit.checkpoint(); }
+    catch (_e) { reAnchorThrew = true; }
+    check("re-checkpoint of an already-anchored tip returns null, never a raw UNIQUE throw",
+          reAnchorThrew === false && reAnchor === null);
+
     // verifyCheckpoints walks the anchored checkpoint and confirms the
     // row — the count strictly increased over the baseline.
     var v = await b.audit.verifyCheckpoints();

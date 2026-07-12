@@ -378,9 +378,21 @@ async function testFederationSubordinateVerifiedAgainstAttestedKeys() {
         threw && (threw.code === "auth-openid-federation/bad-signature" ||
                   threw.code === "auth-openid-federation/no-matching-kid"));
 
-  // Positive control: when the leaf statement is signed by the REAL
-  // (anchor-attested) intermediate key, the chain builds.
+  // Positive control: a fully anchor-attested chain builds. Per OIDF 1.0 §9
+  // the intermediate's OWN self-config must also be signed by a superior-
+  // attested key (not just the downward leaf statement), so the good chain
+  // serves an intermediate config signed by interReal -- the attacker-signed
+  // interCfg above is now refused at the intermediate node, not merely
+  // overridden for the next link.
+  var interCfgGood = _signEntityStatement(interReal,
+    { iss: INT, sub: INT, jwks: interReal.jwks, authority_hints: [ANCHOR] });
   var subAboutLeafGood = _signEntityStatement(interReal, { iss: INT, sub: LEAF, jwks: leaf.jwks });
+  function _fetcherGood(url) {
+    if (url === ANCHOR + "/.well-known/openid-federation") return Promise.resolve(anchorCfg);
+    if (url === INT + "/.well-known/openid-federation")    return Promise.resolve(interCfgGood);
+    if (url === LEAF + "/.well-known/openid-federation")   return Promise.resolve(leafCfg);
+    return Promise.reject(new Error("404 " + url));
+  }
   function _fetchSubordinateGood(authority, sub) {
     if (authority === ANCHOR && sub === INT)  return Promise.resolve(subAboutInter);
     if (authority === INT    && sub === LEAF) return Promise.resolve(subAboutLeafGood);
@@ -389,7 +401,7 @@ async function testFederationSubordinateVerifiedAgainstAttestedKeys() {
   var built = await b.auth.openidFederation.buildTrustChain({
     leafEntityId: LEAF,
     trustAnchors: { "https://anchor.example": anchor.jwks },
-    fetcher: _fetcher,
+    fetcher: _fetcherGood,
     fetchSubordinate: _fetchSubordinateGood,
   });
   check("federation M5: leaf statement signed by anchor-attested key builds",

@@ -1,0 +1,43 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.22",
+  "date": "2026-07-12",
+  "headline": "Bind an OpenID-Federation entity's configuration to the keys its superior attests, bind the COSE null-digest signature algorithms (EdDSA / ML-DSA-87) to the key type, make the verifiable-credential COSE media-type header mandatory, and turn two PGP parse crashes into typed refusals",
+  "summary": "Covering untested adversarial branches across the federation, COSE, verifiable-credential, and PGP verifiers surfaced a set of fail-open and crash defects, fixed at the root. b.auth.openidFederation.buildTrustChain verified each entity configuration only against its own self-published keys (integrity, not provenance) and never re-verified it against the keys the superior's subordinate statement attests, so an attacker controlling an entity's .well-known endpoint (but not its attested signing key) could serve forged metadata and have the chain accept it; each non-anchor entity's configuration is now bound to its superior-attested keys. b.cose.verify bound only the ECDSA algorithms to their curve and left the null-digest algorithms (EdDSA, ML-DSA-87) with no key binding, so node:crypto -- which dispatches on the key type, not the declared COSE alg -- accepted an EdDSA signature under an ML-DSA-only allowlist against an Ed25519 key (and the reverse); every signable COSE algorithm is now bound to its key type or curve, on both sign and verify. b.vc enforced the vc+cose / vp+cose media-type header only when present, so a COSE credential omitting it was accepted with no media-type binding; the header is now mandatory, symmetric with the JOSE path. And two PGP parsers (an rsa-pss key type that cannot express the module's signatures, and a truncated post-quantum decrypt envelope) crashed with an untyped Error instead of a typed refusal.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "b.auth.openidFederation binds each entity configuration to its superior-attested keys",
+          "body": "buildTrustChain verified every entity configuration against its own self-published JWKS (integrity) and separately verified the superior-signed subordinate statement, but never re-verified an entity's own configuration -- the source of the effective metadata resolveLeaf returns -- against the keys the superior attests. An attacker who controls an entity's <entity_id>/.well-known/openid-federation endpoint but not its attested signing key could serve a self-signed configuration carrying forged metadata and attacker keys; the honest superior's subordinate statement pinned the entity's real keys, the chain was accepted, and the forged metadata was returned (OpenID Federation 1.0 §9 requires the leaf/intermediate configuration to be verified with the JWKS the superior pins). Each non-anchor entity's configuration is now verified against its superior-attested JWKS before those keys are adopted, so the operator-pinned trust anchor flows down to gate every entity's own configuration; the anchor is already verified against the operator-pinned keys."
+        },
+        {
+          "title": "b.cose binds the null-digest signature algorithms (EdDSA / ML-DSA-87) to the key type",
+          "body": "verify() honored the declared COSE algorithm allowlist but bound only the ECDSA algorithms to their curve; the null-digest algorithms (EdDSA -8, ML-DSA-87 -50) had no key binding at all. node:crypto.verify(null, ...) dispatches on the key type and ignores the declared COSE alg, so an EdDSA signature was accepted and reported as ML-DSA-87 when the verifier's allowlist was PQC-only and it held an Ed25519 key (and the reverse), fully bypassing the algorithm allowlist; sign() had the mirror defect and could emit an EdDSA-labeled token signed with an ML-DSA key. Every signable algorithm is now bound to its key -- ECDSA by curve, EdDSA / ML-DSA-87 by key type -- on both sign and verify. The AEAD and HMAC paths bind the algorithm into the AAD / MAC structure, so no key-dispatch confusion exists there."
+        },
+        {
+          "title": "b.vc requires the COSE media-type header on a verifiable credential and presentation",
+          "body": "The COSE verify path enforced the vc+cose / vp+cose type header (RFC 9596) only when it was present, while the JOSE path mandated it -- so an issuer-signed COSE credential or presentation that omitted the header was accepted with no binding to its media type (a cross-media-type-confusion fail-open on the verify seam, where two securing forms diverged on the same should-be-mandatory check). The COSE path now requires the type header unconditionally, symmetric with the JOSE path; b.vc.issue / b.vc.present always emit it, so no round-trip regresses."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.mail.crypto.pgp turns an rsa-pss key and a truncated decrypt envelope into typed refusals",
+          "body": "Two adversarial inputs escaped as an untyped Error (which an operator catch keyed on b.mail.crypto.isMailCryptoError never catches) instead of the module's typed refusal. An rsa-pss key type was declared-accepted by sign() and verify() but cannot express the module's PKCS#1-v1.5 signatures and crashes in the shared JWK extraction before any crypto runs; it is now refused as a typed bad-key-type / key-alg-mismatch. And the post-quantum decrypt envelope parser advanced its offset using attacker-controlled length fields without bounds-checking, so a truncated envelope threw a RangeError; every read and slice in the envelope parser is now bounds-checked and a truncated envelope fails closed with a typed refusal. Valid signatures and envelopes are unaffected."
+        },
+        {
+          "title": "b.vc rejects a non-XSD validity date",
+          "body": "The validFrom / validUntil parser used Date.parse, which is lenient -- a bare year, a slash-date, a date without a time, and locale strings all parsed to some instant and were given a heuristic validity window, weakening the expiry decision the verifier relies on (Verifiable Credentials Data Model 2.0 §4.9 requires an XSD dateTime). The parser now asserts an XSD dateTime shape before parsing, so a non-conformant validity value fails closed at both issue and verify."
+        },
+        {
+          "title": "b.audit.checkpoint is idempotent on an already-anchored tip",
+          "body": "Anchoring a checkpoint read the audit-log tip, optionally skipped if unchanged, then inserted a checkpoint row whose atMonotonicCounter is unique -- but the read and the insert were not atomic, so two checkpoints of the same tip (concurrent anchors, or a second checkpoint() call without skipIfUnchanged) both computed the same counter and the loser threw a raw UNIQUE-constraint error instead of the documented no-op. Because two anchors of one tip sign the identical payload, the collision means the counter is already anchored: checkpoint() now returns null in that case (matching the skipIfUnchanged already-anchored path) and any unrecognized database error still surfaces."
+        }
+      ]
+    }
+  ]
+}
