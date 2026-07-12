@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.16.16",
-  "createdAt": "2026-07-12T03:47:39.493Z",
+  "frameworkVersion": "0.16.17",
+  "createdAt": "2026-07-12T05:30:15.197Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -42369,7 +42369,7 @@
           "members": {
             "verify": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             }
           }
         },

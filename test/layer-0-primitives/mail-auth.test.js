@@ -2990,6 +2990,158 @@ async function testArcKeyNonArrayTxt() {
         /key parse failed/.test(((rv.hops[0] || {}).asErrors || []).join(" ; ")));
 }
 
+// ---- iprev (RFC 8601 §3): forward-confirm decision via operator dnsLookup ----
+//
+// Every other primitive in mail-auth exposes an operator dnsLookup so the
+// verdict logic is unit-testable offline; iprev now does too (the PTR query
+// receives the reverse-arpa qname, the forward query the PTR name). These
+// drive the fcrdns pass/fail, PTR-shape rejection, and transient-fault arms
+// that were previously reachable only over the live network.
+
+// Build an iprev dnsLookup fake from a { ptr: [...], forward: {host: [...]} }
+// spec. `errByCode` overrides a query to REJECT with the given DNS error code.
+function _iprevDns(spec) {
+  return async function (qname, type) {
+    if (type === "PTR") {
+      if (spec.ptrError) { var pe = new Error(spec.ptrError); pe.code = spec.ptrError; throw pe; }
+      return spec.ptr || [];
+    }
+    if (type === "A" || type === "AAAA") {
+      var host = qname.replace(/\.$/, "");
+      if (spec.forwardError) { var fe = new Error(spec.forwardError); fe.code = spec.forwardError; throw fe; }
+      var fwd = (spec.forward || {})[host];
+      if (fwd === undefined) { var e = new Error("ENODATA"); e.code = "ENODATA"; throw e; }
+      return fwd;
+    }
+    var e2 = new Error("ENOTFOUND"); e2.code = "ENOTFOUND"; throw e2;
+  };
+}
+
+async function testIprevForwardConfirmedPass() {
+  // IPv4 FCrDNS: PTR resolves to a name whose forward A set contains the
+  // connecting IP → pass, fcrdns true. Also asserts the operator PTR query
+  // received the reverse-arpa qname (exercises _ipToReverseArpa).
+  var seenPtrQname = null;
+  var dns = async function (qname, type) {
+    if (type === "PTR") { seenPtrQname = qname; return ["mail.sender.example."]; }
+    if (type === "A" && qname.replace(/\.$/, "") === "mail.sender.example") return ["203.0.113.5"];
+    var e = new Error("ENODATA"); e.code = "ENODATA"; throw e;
+  };
+  var rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns });
+  check("iprev.verify: forward-confirmed IPv4 → pass + fcrdns true",
+        rv.result === "pass" && rv.fcrdns === true &&
+        rv.ptr === "mail.sender.example" && rv.forward.indexOf("203.0.113.5") !== -1);
+  check("iprev.verify: PTR query used the reverse-arpa qname (RFC 8601 §3)",
+        seenPtrQname === "5.113.0.203.in-addr.arpa");
+}
+
+async function testIprevForwardMismatchFail() {
+  // PTR forward-resolves to a set that does NOT include the connecting IP —
+  // a spoofed reverse zone. RFC 8601 §3: fail, not pass.
+  var dns = _iprevDns({ ptr: ["evil.example."], forward: { "evil.example": ["198.51.100.9"] } });
+  var rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns });
+  check("iprev.verify: PTR forward-set omits the connecting IP → fail (not pass)",
+        rv.result === "fail" && rv.fcrdns === false && rv.ptr === "evil.example");
+}
+
+async function testIprevNoPtrFail() {
+  // Operator PTR lookup returns an empty answer → no PTR → fail.
+  var dns = _iprevDns({ ptr: [] });
+  var rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns });
+  check("iprev.verify: empty PTR answer set → fail",
+        rv.result === "fail" && rv.fcrdns === false);
+}
+
+async function testIprevNoForwardRecordFail() {
+  // PTR resolves but the name has no forward record (ENODATA) → fail.
+  var dns = _iprevDns({ ptr: ["host.example."], forward: {} });
+  var rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns });
+  check("iprev.verify: PTR present but no forward record → fail",
+        rv.result === "fail" && rv.ptr === "host.example");
+}
+
+async function testIprevReverseTransientTemperror() {
+  // A transient reverse-lookup fault (SERVFAIL) → temperror (a verdict).
+  var dns = _iprevDns({ ptrError: "ESERVFAIL" });
+  var rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns });
+  check("iprev.verify: transient reverse (SERVFAIL) → temperror verdict",
+        rv.result === "temperror" && rv.fcrdns === false);
+}
+
+async function testIprevHostilePtrShapePermerror() {
+  // RFC 8601 §3 — an attacker controlling the reverse zone can publish a PTR
+  // whose rdata is arbitrary bytes (e.g. `evil<script>`). It MUST be refused
+  // as permerror BEFORE the name reaches any downstream (audit / A-R) sink,
+  // and the forward lookup must not even be attempted.
+  var forwardQueried = false;
+  var dns = async function (qname, type) {
+    if (type === "PTR") return ["evil<script>.example."];
+    if (type === "A") { forwardQueried = true; return ["203.0.113.5"]; }
+    var e = new Error("ENODATA"); e.code = "ENODATA"; throw e;
+  };
+  var rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns });
+  check("iprev.verify: hostile PTR rdata → permerror (not a valid DNS name shape)",
+        rv.result === "permerror" && rv.fcrdns === false &&
+        /not a valid DNS name shape/.test(rv.explanation || ""));
+  check("iprev.verify: hostile PTR short-circuits before the forward query",
+        forwardQueried === false);
+}
+
+async function testIprevMultiplePtrPicksFirst() {
+  // RFC 8601 §3 — with multiple PTRs the receiver picks one (the first) and
+  // continues the forward-confirm on it.
+  var dns = _iprevDns({
+    ptr: ["first.example.", "second.example."],
+    forward: { "first.example": ["203.0.113.5"] },
+  });
+  var rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns });
+  check("iprev.verify: multiple PTRs → picks the first + forward-confirms it",
+        rv.result === "pass" && rv.ptr === "first.example");
+}
+
+async function testIprevOptsValidation() {
+  // Config-time entry point — an unknown opt key is an operator typo and
+  // THROWS (three-tier: entry-point throw), not a silent ignore.
+  var threw = null;
+  try { await b.mail.iprev.verify("203.0.113.5", { bogus: 1 }); }
+  catch (e) { threw = e; }
+  check("iprev.verify: unknown opt key → config-time throw", threw !== null);
+}
+
+// RED — RFC 8601 §3: the forward-lookup catch must RETURN a temperror verdict
+// on an un-enumerated transient DNS code, mirroring the reverse-lookup catch
+// (which already does) and the primitive's own stated intent ("propagate as
+// temperror"). Pre-fix it THREW a MailAuthError for any code that wasn't
+// ENODATA/ENOTFOUND/ETIMEOUT/ESERVFAIL, so a caller of the documented
+// verdict-returning API got an exception on e.g. an EREFUSED forward fault.
+async function testIprevForwardUnknownCodeIsTemperrorNotThrow() {
+  var dns = _iprevDns({ ptr: ["host.example."], forwardError: "EREFUSED" });
+  var threw = null, rv = null;
+  try { rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns }); }
+  catch (e) { threw = e; }
+  check("iprev.verify: forward EREFUSED → temperror VERDICT (never a throw)",
+        threw === null && rv !== null && rv.result === "temperror" && rv.ptr === "host.example");
+}
+
+// RED — RFC 8601 §3 (IPv6 FCrDNS): the connecting IPv6 literal and the AAAA
+// forward record can carry different-but-equivalent textual forms (compressed
+// `2001:db8::1` vs expanded `2001:0db8:0:0:0:0:0:1`). A raw lowercased string
+// compare misses the match and marks a legitimately forward-confirmed IPv6
+// sender as fail. The compare must canonicalize both addresses.
+async function testIprevIpv6ForwardConfirmCanonicalizes() {
+  var dns = async function (qname, type) {
+    if (type === "PTR") return ["v6.sender.example."];
+    // AAAA answer in fully-expanded form — same address, different text.
+    if (type === "AAAA" && qname.replace(/\.$/, "") === "v6.sender.example") {
+      return ["2001:0db8:0000:0000:0000:0000:0000:0001"];
+    }
+    var e = new Error("ENODATA"); e.code = "ENODATA"; throw e;
+  };
+  var rv = await b.mail.iprev.verify("2001:db8::1", { dnsLookup: dns });
+  check("iprev.verify: IPv6 forward-confirm canonicalizes both forms → pass",
+        rv.result === "pass" && rv.fcrdns === true);
+}
+
 async function run() {
   testByteCapMultibyte();
   testSurface();
@@ -3048,6 +3200,16 @@ async function run() {
   await testIprevSurface();
   await testIprevPermerror();
   await testIprevValidIpShape();
+  await testIprevForwardConfirmedPass();
+  await testIprevForwardMismatchFail();
+  await testIprevNoPtrFail();
+  await testIprevNoForwardRecordFail();
+  await testIprevReverseTransientTemperror();
+  await testIprevHostilePtrShapePermerror();
+  await testIprevMultiplePtrPicksFirst();
+  await testIprevOptsValidation();
+  await testIprevForwardUnknownCodeIsTemperrorNotThrow();
+  await testIprevIpv6ForwardConfirmCanonicalizes();
   // Audit 2026-05-15 — MAIL-9/10/25/39/50/56/58/66
   await testSpfRedirectModifier();
   await testSpfVoidLookupLimit();

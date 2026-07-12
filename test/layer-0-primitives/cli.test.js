@@ -516,6 +516,46 @@ async function sectionBootedApiKey() {
       ["--owner-id", "erin", "--scopes", ","]), cs);
     check("apikey issue empty-scopes → exit 2", rcs === 2);
     check("apikey issue empty-scopes → message", /at least one non-empty scope/.test(cs.err()));
+
+    // post-boot required-flag checks that only fire AFTER a successful boot:
+    // issue with no --owner-id and issue with no --scopes each return exit 2.
+    var cNoOwner = _captureCtx();
+    var rcNoOwner = await cli.main(["api-key", "issue"].concat(base).concat(["--scopes", "a:read"]), cNoOwner);
+    check("apikey issue no owner-id (post-boot) → exit 2", rcNoOwner === 2);
+    check("apikey issue no owner-id → message", /--owner-id <id> is required/.test(cNoOwner.err()));
+
+    var cNoScopes = _captureCtx();
+    var rcNoScopes = await cli.main(["api-key", "issue"].concat(base).concat(["--owner-id", "frank"]), cNoScopes);
+    check("apikey issue no scopes (post-boot) → exit 2", rcNoScopes === 2);
+    check("apikey issue no scopes → message", /--scopes <comma-separated> is required/.test(cNoScopes.err()));
+
+    // issue WITH --label + --expires-ms → the metadata-label arm, the
+    // expiresAt-mapping arm, and the "expires:" stdout line. The subsequent
+    // list surfaces the per-row "expires=" branch, and verifying the composite
+    // token twice stamps then prints "last-used:" + "expires:".
+    var future = Date.now() + 1000 * 60 * 60 * 24;
+    var ce = _captureCtx();
+    var rce = await cli.main(["api-key", "issue"].concat(base).concat(
+      ["--owner-id", "grace", "--scopes", "a:read,b:write", "--label", "ci-token",
+       "--expires-ms", String(future)]), ce);
+    check("apikey issue --label --expires-ms → exit 0", rce === 0);
+    check("apikey issue --expires-ms → prints expires line", /^expires:\s+\d{4}-/m.test(ce.out()));
+    var graceKey = ce.out().match(/^key:\s+(\S+)/m);
+
+    var cle = _captureCtx();
+    await cli.main(["api-key", "list"].concat(base).concat(["--owner-id", "grace"]), cle);
+    check("apikey list → per-row expires= branch", /expires=\d{4}-/.test(cle.out()));
+
+    if (graceKey) {
+      // first verify stamps lastUsedAt; second verify prints both the
+      // "last-used:" and "expires:" lines (v.lastUsedAt / v.expiresAt truthy).
+      await cli.main(["api-key", "verify"].concat(base).concat(["--token", graceKey[1]]), _captureCtx());
+      var cve = _captureCtx();
+      var rcve = await cli.main(["api-key", "verify"].concat(base).concat(["--token", graceKey[1]]), cve);
+      check("apikey verify (2nd) → exit 0", rcve === 0);
+      check("apikey verify → prints last-used line", /last-used:\s+\d{4}-/.test(cve.out()));
+      check("apikey verify → prints expires line", /expires:\s+\d{4}-/.test(cve.out()));
+    }
   } finally { _rm(dataDir); }
 }
 
@@ -591,15 +631,16 @@ async function sectionBootedMtls() {
     check("mtls issue-p12 (stdout): exit 0", rcp === 0);
     check("mtls issue-p12 (stdout): prints fingerprint", /fingerprint \(sha3-512\)/.test(cp.out()));
 
-    // issue-p12 WITH --out → atomicFile.writeSync writes the bundle to disk
-    // (the `outPath` branch, distinct from the stdout-stream branch above).
+    // issue-p12 WITH --out AND --days → atomicFile.writeSync writes the bundle
+    // to disk (the `outPath` branch) and the `--days` truthy arm sets the leaf
+    // validityDays (distinct from the default-validity stdout call above).
     var p12Out = path.join(dataDir, "client.p12");
     var co = _captureCtx();
     var rco = await cli.main(["mtls", "issue-p12"].concat(base).concat(
-      ["--subject", "cn-c", "--password", "p12-passphrase-xyz", "--out", p12Out]), co);
-    check("mtls issue-p12 --out: exit 0", rco === 0);
-    check("mtls issue-p12 --out: reports written path", /p12 written: /.test(co.out()));
-    check("mtls issue-p12 --out: file exists on disk", fs.existsSync(p12Out));
+      ["--subject", "cn-c", "--password", "p12-passphrase-xyz", "--days", "45", "--out", p12Out]), co);
+    check("mtls issue-p12 --out --days: exit 0", rco === 0);
+    check("mtls issue-p12 --out --days: reports written path", /p12 written: /.test(co.out()));
+    check("mtls issue-p12 --out --days: file exists on disk", fs.existsSync(p12Out));
   } finally { _rm(dataDir); }
 }
 
@@ -850,6 +891,25 @@ async function sectionAuditVerifyChainEdges() {
     check("verify-chain --max-rows 0: exit 2", rcmr === 2);
     check("verify-chain --max-rows 0: message", /--max-rows must be a positive integer/.test(cmr.err()));
 
+    // --max-rows 2.5 → the error message promises "a positive integer", so a
+    // fractional value MUST be refused with exit 2 — matching the sibling
+    // `migrate down --steps 2.5` guard. Before the fix, verify-chain only
+    // screened `< 1` (not non-integer), so 2.5 slipped through, walked the
+    // chain, and reported the nonsensical `rowsVerified=2.5` from
+    // Math.min(rows.length, 2.5). Drive the real b.cli consumer path.
+    var cfrac = _captureCtx();
+    var rcfrac = await cli.main(["audit", "verify-chain", "--db", okDb, "--max-rows", "2.5"], cfrac);
+    check("verify-chain --max-rows 2.5: exit 2", rcfrac === 2);
+    check("verify-chain --max-rows 2.5: rejected (never verifies)", !/rowsVerified/.test(cfrac.out()));
+    check("verify-chain --max-rows 2.5: message", /--max-rows must be a positive integer/.test(cfrac.err()));
+
+    // a whole-number float string like "3.0" is an integer value → still valid
+    // (Math.floor(3) === 3), exercising the accepted-integer arm after the fix.
+    var cwhole = _captureCtx();
+    var rcwhole = await cli.main(["audit", "verify-chain", "--db", okDb, "--max-rows", "3"], cwhole);
+    check("verify-chain --max-rows 3 (integer): exit 0", rcwhole === 0);
+    check("verify-chain --max-rows 3 (integer): verifies", /rowsVerified=0/.test(cwhole.out()));
+
     // unopenable db (parent dir absent) → _openSqlite throws → exit 1
     var copen = _captureCtx();
     var rcopen = await cli.main(
@@ -1083,6 +1143,51 @@ async function sectionConfigDrift() {
       check("config-drift inspect (no sidecar): message", /no sidecar present/.test(cin.out()));
     } finally { _rm(fresh); }
   } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// config-drift — the sidecar-PRESENT branches (verified-yes + inspect JSON +
+// inspect snapshot text). A signed baseline is captured out-of-band through
+// the real b.configDrift primitive on the same data-dir, then fully shut down
+// before the CLI boots the same dir (the CLI loads the persisted audit-signing
+// key, so the sidecar verifies). Covers the block the no-sidecar section
+// (which returns early at "no sidecar present") never reaches.
+// ---------------------------------------------------------------------------
+async function sectionConfigDriftSidecar() {
+  var dataDir = _tmpDir("blamejs-cli-drift-sc");
+  try {
+    var booted = await b.cliHelpers.bootApp({ dataDir: dataDir, vaultMode: "plaintext", env: {} });
+    try {
+      var drift = booted.b.configDrift.create({ dataDir: dataDir, audit: booted.b.audit });
+      var res = await drift.checkpoint({ service: "web", replicas: 3 });
+      check("config-drift sidecar: baseline captured", res && res.signed === true && res.tamper === false);
+    } finally {
+      try { await booted.app.shutdown(); } catch (_e) { /* best-effort */ }
+    }
+
+    // inspect (text) → verified-yes branch + capturedAt/digest/snapshot printing
+    var ci = _captureCtx();
+    var rci = await cli.main(
+      ["config-drift", "inspect", "--data-dir", dataDir, "--vault-mode", "plaintext"], ci);
+    check("config-drift inspect (sidecar): exit 0", rci === 0);
+    check("config-drift inspect (sidecar): capturedAt line", /capturedAt:/.test(ci.out()));
+    check("config-drift inspect (sidecar): verified yes", /verified:\s+yes/.test(ci.out()));
+    check("config-drift inspect (sidecar): prints snapshot", /"service": "web"/.test(ci.out()));
+
+    // inspect --json → the JSON arm (machine-readable verified flag)
+    var cj = _captureCtx();
+    var rcj = await cli.main(
+      ["config-drift", "inspect", "--data-dir", dataDir, "--vault-mode", "plaintext", "--json"], cj);
+    check("config-drift inspect --json (sidecar): exit 0", rcj === 0);
+    check("config-drift inspect --json (sidecar): verified true", /"verified":\s*true/.test(cj.out()));
+
+    // verify → the verified-success branch (exit 0 + "sidecar verified at")
+    var cv = _captureCtx();
+    var rcv = await cli.main(
+      ["config-drift", "verify", "--data-dir", dataDir, "--vault-mode", "plaintext"], cv);
+    check("config-drift verify (sidecar): exit 0", rcv === 0);
+    check("config-drift verify (sidecar): verified message", /sidecar verified at/.test(cv.out()));
+  } finally { _rm(dataDir); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1704,6 +1809,7 @@ async function run() {
   await sectionMtlsEdges();
   await sectionSecurityEdges();
   await sectionConfigDrift();
+  await sectionConfigDriftSidecar();
   await sectionVault();
   await sectionPassword();
   await sectionFileTypeEdges();

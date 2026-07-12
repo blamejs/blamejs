@@ -494,12 +494,35 @@ async function testRedirects() {
     check("onRedirect: async hook awaited then follow proceeds",
       r.statusCode === 200 && seen[0] === 302);
   });
+
+  // onRedirect async REJECT aborts with the same REDIRECT_ABORTED shape a sync
+  // throw produces — an operator who awaits inside the hook (or returns a
+  // rejected Promise) must get the same error.code as the sync path, not the
+  // raw un-coded rejection. Both the returned-rejected-Promise and the
+  // async-function-throws forms reach the same continuation.
+  await _withServer(function (req, res) {
+    if (req.url === "/a") { res.writeHead(302, { Location: "/b" }); res.end(); return; }
+    res.writeHead(200); res.end("final");
+  }, async function (base) {
+    var e1 = await _expectReject("onRedirect: returned-rejected-Promise aborts with REDIRECT_ABORTED",
+      b.httpClient.request({ url: base + "/a", maxRedirects: 3,
+        onRedirect: function () { return Promise.reject(new Error("async no")); },
+        allowedProtocols: ALLOW, allowInternal: true }), "REDIRECT_ABORTED");
+    check("onRedirect: async-reject message names the hook refusal",
+      e1 && /onRedirect hook refused redirect: async no/.test(e1.message));
+    await _expectReject("onRedirect: async-function throw aborts with REDIRECT_ABORTED",
+      b.httpClient.request({ url: base + "/a", maxRedirects: 3,
+        onRedirect: async function () { throw new Error("awaited no"); },
+        allowedProtocols: ALLOW, allowInternal: true }), "REDIRECT_ABORTED");
+  });
 }
 
 // ---- cross-origin auth-header strip on redirect --------------------
 
 async function testCrossOriginStrip() {
   var sawAuthOnB = "unset";
+  var sawCookieOnB = "unset";
+  var sawProxyAuthOnB = "unset";
   var sawKeepOnB = "unset";
   var bBase = null;
   await _withTwoServers(
@@ -508,19 +531,56 @@ async function testCrossOriginStrip() {
     // B: record whether the sensitive + non-sensitive headers survived the hop.
     function (req, res) {
       sawAuthOnB = req.headers.authorization || null;
+      sawCookieOnB = req.headers.cookie || null;
+      sawProxyAuthOnB = req.headers["proxy-authorization"] || null;
       sawKeepOnB = req.headers["x-keep"] || null;
       res.writeHead(200); res.end("b");
     },
     async function (baseA, baseB) {
       bBase = baseB;
+      // Mixed-case sensitive header names exercise the lower-cased comparison
+      // in _stripCrossOriginAuth — every entry of SENSITIVE_HEADERS_LC
+      // (authorization / cookie / proxy-authorization) must drop on the hop.
       var r = await b.httpClient.request({
         url: baseA + "/start", maxRedirects: 2,
-        headers: { Authorization: "Bearer secret-token", "X-Keep": "1" },
+        headers: {
+          Authorization:         "Bearer secret-token",
+          Cookie:                "sid=secret-session",
+          "Proxy-Authorization": "Basic c2VjcmV0",
+          "X-Keep":              "1",
+        },
         allowedProtocols: ALLOW, allowInternal: true });
       check("cross-origin redirect: reached origin B", r.statusCode === 200 && r.body.toString() === "b");
       check("cross-origin redirect: Authorization stripped on hop to B", sawAuthOnB === null);
+      check("cross-origin redirect: Cookie stripped on hop to B", sawCookieOnB === null);
+      check("cross-origin redirect: Proxy-Authorization stripped on hop to B", sawProxyAuthOnB === null);
       check("cross-origin redirect: non-sensitive header preserved", sawKeepOnB === "1");
     });
+}
+
+// ---- proxy short-circuit: cloud-metadata IP is never overridable ----
+//
+// When a proxy is configured AND the operator waives local SSRF defense with
+// allowInternal:true, the DNS-resolution SSRF check is skipped (the proxy
+// resolves in its own network context). But the TEXTUAL cloud-metadata-IP
+// block still fires first — 169.254.169.254 (AWS/GCP/Azure/OpenStack/DO IMDS)
+// is refused at the hostname layer so the proxy never receives the request,
+// even with allowInternal + a proxy. network-proxy is a process-global; the
+// same module instance backs http-client's `require("./network-proxy")`.
+async function testProxyMetadataBlock() {
+  var networkProxy = require("../../lib/network-proxy");
+  networkProxy.set({ http: "http://127.0.0.1:9" });   // a proxy need not be reachable — the block fires before connect
+  try {
+    var err = await _expectReject(
+      "proxy + allowInternal: cloud-metadata IP still refused at the textual layer",
+      b.httpClient.request({ url: "http://169.254.169.254/latest/meta-data/",
+        allowInternal: true, allowedProtocols: ALLOW }),
+      /cloud-metadata/);
+    check("proxy metadata block: rejection is the SSRF cloud-metadata refusal",
+      err && err.code === "ssrf-guard/blocked-cloud-metadata");
+  } finally {
+    networkProxy._resetForTest();
+  }
 }
 
 // ---- HTTP/2 (h2c) code path ----------------------------------------
@@ -675,6 +735,20 @@ async function testMultipartBuildBranches() {
     { files: [{ field: "f", content: "x", filePath: "/nope" }] });
   await mpReject("multipart: non-buffer/string content refused",
     { files: [{ field: "f", content: 42 }] });
+  // filePath-only entry pointing at a path that can't be stat'd → the build
+  // throws before any network work, surfaced as BAD_ARG.
+  await mpReject("multipart: unreadable filePath entry refused",
+    { files: [{ field: "f", filePath: helpers.path.join("nope-no-such-dir", "missing-" + Date.now() + ".bin") }] });
+
+  // filePath-only entry pointing at a directory (stat succeeds, not a regular
+  // file) → BAD_ARG.
+  var dirEntryDir = b.testing.tempDir("httpclient-cov-mpdir");
+  try {
+    await mpReject("multipart: directory filePath entry refused (not a regular file)",
+      { files: [{ field: "f", filePath: dirEntryDir.path }] });
+  } finally {
+    dirEntryDir.cleanup();
+  }
 
   // Valid: a content file WITHOUT filename defaults to "blob".
   var body = null;
@@ -706,6 +780,27 @@ async function testMultipartBuildBranches() {
       r.statusCode === 200 && hadCL === null && te === "chunked");
     check("multipart: stream entry body reached the server",
       got != null && got.indexOf("STREAM-ENTRY-DATA") !== -1);
+  });
+
+  // Valid: an operator-supplied stream entry WITH a declared `size` → the
+  // framework can statically resolve the total body length, so Content-Length
+  // is set and the transfer is NOT chunked (the sizeKnown branch).
+  var sizedBody = null, sizedCL = "unset", sizedTE = "unset";
+  await _withServer(function (req, res) {
+    sizedCL = req.headers["content-length"] || null;
+    sizedTE = req.headers["transfer-encoding"] || null;
+    var chunks = []; req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { sizedBody = Buffer.concat(chunks).toString("utf8"); res.writeHead(200); res.end("ok"); });
+  }, async function (base) {
+    var payload = Buffer.from("STREAM-SIZED-ENTRY-DATA");
+    var src = nodeStream.Readable.from([payload]);
+    var r = await b.httpClient.request({ url: base + "/mp",
+      multipart: { files: [{ field: "f", stream: src, size: payload.length, filename: "s.bin" }] },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("multipart: sized stream entry sets Content-Length + is not chunked",
+      r.statusCode === 200 && sizedCL != null && Number(sizedCL) > 0 && sizedTE === null);
+    check("multipart: sized stream entry body reached the server",
+      sizedBody != null && sizedBody.indexOf("STREAM-SIZED-ENTRY-DATA") !== -1);
   });
 
   // Valid: a filePath entry WITHOUT an explicit filename → path.basename.
@@ -821,6 +916,35 @@ async function testUploadProgressPipedBody() {
     check("upload progress (piped Readable): summed bytes across data events",
       res.statusCode === 200 && total === 8);
   });
+}
+
+// ---- onChunk hook that throws is drop-silent (h1 + h2) -------------
+
+async function testOnChunkThrowDropSilent() {
+  var payload = Buffer.from("ONCHUNK-DROP-SILENT-PAYLOAD");
+  // h1: a throwing onChunk must not break the buffered read — the observe
+  // Transform swallows the operator-hook throw and the body arrives intact.
+  await _withServer(function (req, res) { res.writeHead(200); res.end(payload); },
+    async function (base) {
+      var r = await b.httpClient.request({ url: base + "/x",
+        onChunk: function () { throw new Error("onChunk boom"); },
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("onChunk throw (h1): request still resolves with the full body",
+        r.statusCode === 200 && r.body.equals(payload));
+    });
+
+  // h2: same drop-silent contract over the h2 pipeline.
+  await _withH2cServer(function (stream) {
+    stream.on("error", function () {});
+    stream.respond({ ":status": 200 }); stream.end(payload);
+  }, async function (base) {
+    var r = await b.httpClient.request({ url: base + "/x", preferH2: true,
+      onChunk: function () { throw new Error("onChunk boom h2"); },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("onChunk throw (h2): request still resolves with the full body",
+      r.statusCode === 200 && r.body.equals(payload));
+  });
+  b.httpClient._resetForTest();
 }
 
 // ---- download-transform error surfaces on the buffered read (h1) ---
@@ -1382,6 +1506,7 @@ async function run() {
     await testCookieJar();
     await testRedirects();
     await testCrossOriginStrip();
+    await testProxyMetadataBlock();
     await testH2cPaths();
     await testMultipartValidRoundTrip();
     await testDownloadMaxBytes();
@@ -1391,6 +1516,7 @@ async function run() {
     await testStreamModeHttpError();
     await testThrottleAndTransformH1();
     await testUploadProgressPipedBody();
+    await testOnChunkThrowDropSilent();
     await testDownloadTransformErrorH1();
     await testDownloadStreamLifecycle();
     await testUploadMultipartStreamLifecycle();
