@@ -88,10 +88,61 @@ function _makeBlob(payload, keyPem, certPem) {
   return signingInput + "." + _b64url(sig);
 }
 
-// In-future date (YYYY-MM-DD) so nextUpdate parsing succeeds.
+// In-future date (YYYY-MM-DD) so nextUpdate parsing succeeds. A negative
+// argument produces a PAST date (used to drive the stale-BLOB refusal).
 function _futureDateString(daysFromNow) {
   var d = new Date(Date.now() + daysFromNow * 86400000);                           // allow:raw-byte-literal — ms-per-day
   return d.toISOString().slice(0, 10);                                             // allow:raw-byte-literal — ISO date prefix length
+}
+
+// Strip PEM markers + whitespace from a cert to get its DER-base64 (x5c form).
+function _certDerB64(certPem) {
+  return certPem
+    .replace(/-----BEGIN CERTIFICATE-----/g, "")
+    .replace(/-----END CERTIFICATE-----/g, "")
+    .replace(/\s+/g, "");
+}
+
+// Like _makeBlob but the caller supplies the full JWS header (so a test can
+// override alg / x5c to exercise the header-adversarial branches). The payload
+// is still RS256-signed with keyPem, so the signature segment is valid,
+// non-empty base64url even when the header advertises a different alg — the
+// verifier reaches its alg check before the signature check.
+function _makeBlobRaw(header, payload, keyPem) {
+  var headerB64  = _b64url(JSON.stringify(header));
+  var payloadB64 = _b64url(JSON.stringify(payload));
+  var signingInput = headerB64 + "." + payloadB64;
+  var sig = nodeCrypto.sign("sha256", Buffer.from(signingInput, "ascii"), {
+    key:     keyPem,
+    padding: nodeCrypto.constants.RSA_PKCS1_PADDING,
+  });
+  return signingInput + "." + _b64url(sig);
+}
+
+// Mock httpClient.request with `handler`, reload fido-mds3 so it re-resolves
+// the lazyRequire'd httpClient against the mock, run fn(fm), then restore the
+// require cache. Mirrors testFetchRoundTrip's require-cache override so no real
+// network handle is ever opened.
+async function _withMockedHttp(handler, fn) {
+  var hcPath = require.resolve("../../lib/http-client");
+  var origHc = require.cache[hcPath].exports;
+  require.cache[hcPath].exports = Object.assign({}, origHc, { request: handler });
+  var fmPath = require.resolve("../../lib/auth/fido-mds3");
+  delete require.cache[fmPath];
+  var fm = require(fmPath);
+  try {
+    return await fn(fm);
+  } finally {
+    require.cache[hcPath].exports = origHc;
+    delete require.cache[fmPath];
+  }
+}
+
+// A request handler returning a 200 with `token` as the body.
+function _respondWith(token) {
+  return async function () {
+    return { statusCode: 200, headers: {}, body: Buffer.from(token, "ascii") };    // allow:raw-byte-literal — HTTP success
+  };
 }
 
 // ---- surface ----
@@ -346,6 +397,86 @@ function testCertifiedLevelPlus() {
         rv.certifiedLevel.level === 3 && rv.certifiedLevel.plus === true);
 }
 
+function testVerifyAuthenticatorAttestationKeyCompromise() {
+  // ATTESTATION_KEY_COMPROMISE is in the FIDO MDS3 3.1.4 compromise bucket: the
+  // manufacturer's batch-signing key is suspect, so every credential attested
+  // under it MUST be refused. Sibling of the REVOKED / USER_KEY_* refusals but
+  // previously untested.
+  var blob = {
+    entries: [{
+      aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+      metadataStatement: { description: "Compromised batch key" },
+      statusReports: [{ status: "ATTESTATION_KEY_COMPROMISE" }],
+    }],
+  };
+  var rv = b.auth.fidoMds3.verifyAuthenticator(blob, {
+    aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+  });
+  check("verifyAuthenticator ok=false on ATTESTATION_KEY_COMPROMISE", rv.ok === false);
+  check("verifyAuthenticator reason cites ATTESTATION_KEY_COMPROMISE",
+        rv.reason && /ATTESTATION_KEY_COMPROMISE/.test(rv.reason));
+}
+
+function testCertifiedLevelMissingDateOrdering() {
+  // A decertification (NOT_FIDO_CERTIFIED) appended AFTER a dated grant but
+  // WITHOUT its own effectiveDate must still win by array order (append order
+  // == chronological per spec). If the undated report is coerced to "" and run
+  // through a lexical compare it loses to every earlier DATED report, so
+  // certifiedLevel freezes at the stale L2 and a step-up policy requiring L2
+  // would accept a now-decertified authenticator (authenticator-assurance
+  // bypass).
+  var decertBlob = {
+    entries: [{
+      aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+      statusReports: [
+        { status: "FIDO_CERTIFIED_L2", effectiveDate: "2020-01-01" },
+        { status: "NOT_FIDO_CERTIFIED" },   // later in array, no effectiveDate
+      ],
+    }],
+  };
+  var rv = b.auth.fidoMds3.verifyAuthenticator(decertBlob, {
+    aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+  });
+  check("certifiedLevel: undated later NOT_FIDO_CERTIFIED decertifies to level 0",
+        rv.certifiedLevel.level === 0 && rv.certifiedLevel.plus === false);
+
+  // A downgrade whose newer level report has no effectiveDate must report the
+  // CURRENT (later) L1, not the historical dated L3.
+  var downgradeBlob = {
+    entries: [{
+      aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+      statusReports: [
+        { status: "FIDO_CERTIFIED_L3", effectiveDate: "2019-01-01" },
+        { status: "FIDO_CERTIFIED_L1" },   // later in array, no effectiveDate
+      ],
+    }],
+  };
+  var rv2 = b.auth.fidoMds3.verifyAuthenticator(downgradeBlob, {
+    aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+  });
+  check("certifiedLevel: undated later downgrade reports current L1, not historical L3",
+        rv2.certifiedLevel.level === 1);
+
+  // Symmetric case: an UPGRADE (later, higher level) whose effectiveDate is
+  // absent must also win by array order and report the current L3 — not be
+  // suppressed because its coerced "" loses the lexical compare against the
+  // earlier dated L1.
+  var upgradeBlob = {
+    entries: [{
+      aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+      statusReports: [
+        { status: "FIDO_CERTIFIED_L1", effectiveDate: "2024-01-01" },
+        { status: "FIDO_CERTIFIED_L3" },   // later in array, no effectiveDate
+      ],
+    }],
+  };
+  var rv3 = b.auth.fidoMds3.verifyAuthenticator(upgradeBlob, {
+    aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+  });
+  check("certifiedLevel: undated later upgrade reports current L3, not earlier L1",
+        rv3.certifiedLevel.level === 3);
+}
+
 // ---- fetch (synthetic BLOB) ----
 
 async function testFetchRoundTrip() {
@@ -399,6 +530,207 @@ async function testFetchRoundTrip() {
     require.cache[hcPath].exports = origHc;
     delete require.cache[fmPath];
   }
+}
+
+async function testFetchRejectsStaleBlob() {
+  // A signed-but-expired BLOB (nextUpdate in the past) must be refused by the
+  // operator-facing fetch path, not accepted and cached. The internal
+  // _verifyAndParseBlob refuses stale BLOBs; fetch is the path operators
+  // actually drive, and it must enforce the same refusal (otherwise an attacker
+  // serving an ancient BLOB freezes the revoked-authenticator list at a chosen
+  // time).
+  var pair = await _makeSelfSignedRsaCert();
+  var payload = {
+    legalHeader: "Stale BLOB",
+    no: 7,
+    nextUpdate: _futureDateString(-7),   // 7 days in the PAST — stale
+    entries: [{
+      aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+      metadataStatement: { description: "Stale entry" },
+      statusReports: [{ status: "REVOKED", effectiveDate: "2020-01-01" }],
+    }],
+  };
+  var token = _makeBlob(payload, pair.keyPem, pair.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://stale.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a stale BLOB (nextUpdate in the past)",
+        threw && /blob-stale/.test(threw.code || ""));
+}
+
+async function testFetchTamperedSignature() {
+  // Swap the payload segment after signing, keep the original header + sig: the
+  // signature no longer covers the payload, so the verify seam must refuse.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var parts = token.split(".");
+  var forgedPayload = _b64url(JSON.stringify({
+    no: 999, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "ffffffff-ffff-ffff-ffff-ffffffffffff", statusReports: [] }],
+  }));
+  var forged = parts[0] + "." + forgedPayload + "." + parts[2];
+  var threw = null;
+  await _withMockedHttp(_respondWith(forged), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://tamper.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a BLOB whose signature does not cover the payload",
+        threw && /bad-signature/.test(threw.code || ""));
+}
+
+async function testFetchWrongTrustRoot() {
+  // The BLOB is signed by `signer`; the operator pins a DIFFERENT root
+  // (`stranger`). The x5c tail cannot anchor to it -> chain-not-anchored.
+  var signer   = await _makeSelfSignedRsaCert();
+  var stranger = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 2, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, signer.keyPem, signer.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://wrongroot.invalid/mds3", caCertificate: stranger.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a BLOB that does not anchor to the pinned trust root",
+        threw && /chain-not-anchored/.test(threw.code || ""));
+}
+
+async function testFetchUnsupportedAlg() {
+  // HS256 (HMAC) is the canonical alg-confusion vector; the MDS3 verifier's alg
+  // table has no HMAC/none entry, so it must refuse rather than treat the leaf
+  // cert's public key as an HMAC secret. The chain still anchors (self-signed
+  // via caCertificate), so the refusal proves the alg gate, not chain failure.
+  var pair = await _makeSelfSignedRsaCert();
+  var header = { alg: "HS256", typ: "JWT", x5c: [_certDerB64(pair.certPem)] };
+  var token = _makeBlobRaw(header, {
+    no: 3, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://badalg.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses an HMAC alg (no alg-confusion path)",
+        threw && /unsupported-alg/.test(threw.code || ""));
+}
+
+async function testFetchRejectsImpossibleNextUpdate() {
+  // 2026-02-31 is not a real calendar date; _parseNextUpdate must reject it
+  // (Date.UTC would silently normalise it to 2026-03-03 and let a malformed
+  // nextUpdate masquerade as a valid future timestamp). Driven through fetch.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 1, nextUpdate: "2026-02-31",
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://baddate.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch rejects an impossible calendar nextUpdate (2026-02-31)",
+        threw && /bad-payload/.test(threw.code || ""));
+}
+
+async function testFetchMalformedBlobHeaders() {
+  var pair = await _makeSelfSignedRsaCert();
+  var goodPayload = {
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  };
+  var noAlg  = _makeBlobRaw({ typ: "JWT", x5c: [_certDerB64(pair.certPem)] }, goodPayload, pair.keyPem);
+  var noX5c  = _makeBlobRaw({ alg: "RS256", typ: "JWT" }, goodPayload, pair.keyPem);
+  var badX5c = _makeBlobRaw({ alg: "RS256", typ: "JWT", x5c: ["!!!not-a-cert!!!"] }, goodPayload, pair.keyPem);
+
+  async function fetchExpect(token, codeRe, label) {
+    var threw = null;
+    await _withMockedHttp(_respondWith(token), async function (fm) {
+      try {
+        await fm.fetch({ url: "https://malformed.invalid/mds3", caCertificate: pair.certPem, force: true });
+      } catch (e) { threw = e; }
+    });
+    check(label, threw && codeRe.test(threw.code || ""));
+  }
+  await fetchExpect(noAlg,  /bad-jws-header/, "fetch rejects a header missing alg");
+  await fetchExpect(noX5c,  /bad-jws-header/, "fetch rejects a header missing x5c");
+  await fetchExpect(badX5c, /bad-x5c/,        "fetch rejects an unparseable x5c cert");
+}
+
+async function testFetchRejectsBadStatus() {
+  // Root resolution (a plain string caCertificate) succeeds before the request;
+  // the non-2xx status is refused inside the loader.
+  var threw = null;
+  await _withMockedHttp(async function () {
+    return { statusCode: 404, headers: {}, body: Buffer.from("not found", "ascii") };  // allow:raw-byte-literal — HTTP error
+  }, async function (fm) {
+    try {
+      await fm.fetch({ url: "https://notfound.invalid/mds3", caCertificate: "ca-not-reached", force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a non-2xx HTTP status",
+        threw && /bad-status/.test(threw.code || ""));
+}
+
+async function testFetchNetworkFailure() {
+  var threw = null;
+  await _withMockedHttp(async function () {
+    throw new Error("ECONNREFUSED synthetic");
+  }, async function (fm) {
+    try {
+      await fm.fetch({ url: "https://down.invalid/mds3", caCertificate: "ca-not-reached", force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch wraps a transport failure as fido-mds3/network",
+        threw && /fido-mds3\/network/.test(threw.code || ""));
+}
+
+async function testFetchBadCaCertificate() {
+  // _resolveRoots runs before any HTTP; each bad shape fails closed with
+  // bad-ca. No mock needed — the throw precedes the request.
+  async function expectBadCa(ca, label) {
+    var threw = null;
+    try { await b.auth.fidoMds3.fetch({ url: "https://x.invalid/mds3", caCertificate: ca }); }
+    catch (e) { threw = e; }
+    check(label, threw && /bad-ca/.test(threw.code || ""));
+  }
+  await expectBadCa([], "fetch rejects an empty caCertificate array");
+  await expectBadCa([123], "fetch rejects a non-string caCertificate array element");  // allow:raw-byte-literal — bad type sample
+  await expectBadCa(5, "fetch rejects a non-string/non-array caCertificate");          // allow:raw-byte-literal — bad type sample
+}
+
+async function testFetchCacheHitAndForceBypass() {
+  // The cache path: a non-force second call is served from cache (no new HTTP);
+  // force:true bypasses the cache and refetches.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 100, nextUpdate: _futureDateString(7),                                      // allow:raw-byte-literal — fixture identifier
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var calls = 0;
+  await _withMockedHttp(async function () {
+    calls += 1;
+    return { statusCode: 200, headers: {}, body: Buffer.from(token, "ascii") };     // allow:raw-byte-literal — HTTP success
+  }, async function (fm) {
+    var url = "https://cache.invalid/mds3";
+    var a = await fm.fetch({ url: url, caCertificate: pair.certPem, force: true });
+    check("fetch (force) performs one HTTP call", calls === 1 && a.no === 100);      // allow:raw-byte-literal — fixture identifier
+    var hit = await fm.fetch({ url: url, caCertificate: pair.certPem });
+    check("fetch serves the second (non-force) call from cache", calls === 1 && hit.no === 100);  // allow:raw-byte-literal — fixture identifier
+    var refetched = await fm.fetch({ url: url, caCertificate: pair.certPem, force: true });
+    check("fetch force:true bypasses the cache and refetches", calls === 2 && refetched.no === 100);  // allow:raw-byte-literal — fixture identifier
+  });
 }
 
 async function testFetchRejectsNonHttps() {
@@ -471,10 +803,22 @@ async function run() {
     testVerifyAuthenticatorDecertified();
     testVerifyAuthenticatorPhysicalCompromise();
     testVerifyAuthenticatorRemoteCompromise();
+    testVerifyAuthenticatorAttestationKeyCompromise();
     testVerifyAuthenticatorUnknownAaguid();
     testVerifyAuthenticatorBadInputs();
     testCertifiedLevelPlus();
+    testCertifiedLevelMissingDateOrdering();
     await testFetchRoundTrip();
+    await testFetchRejectsStaleBlob();
+    await testFetchTamperedSignature();
+    await testFetchWrongTrustRoot();
+    await testFetchUnsupportedAlg();
+    await testFetchRejectsImpossibleNextUpdate();
+    await testFetchMalformedBlobHeaders();
+    await testFetchRejectsBadStatus();
+    await testFetchNetworkFailure();
+    await testFetchBadCaCertificate();
+    await testFetchCacheHitAndForceBypass();
     await testFetchRejectsNonHttps();
     await testFetchRejectsEmptyUrl();
     await testFetchRejectsBadTimeout();
