@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.16.18",
-  "createdAt": "2026-07-12T06:57:55.289Z",
+  "frameworkVersion": "0.16.19",
+  "createdAt": "2026-07-12T10:42:36.409Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6827,6 +6827,127 @@
           "type": "instance",
           "ctorName": "RegExp"
         },
+        "NAMED_ENTITY_ASCII": {
+          "type": "object",
+          "members": {
+            "NewLine": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "Tab": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "amp": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "apos": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ast": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "bsol": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "colon": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "commat": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "dollar": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "excl": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "gt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "hyphen": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lcub": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lowbar": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lpar": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lsqb": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "lt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "nbsp": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "num": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "percnt": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "period": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "plus": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "quest": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "quot": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rcub": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rpar": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rsqb": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "semi": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "sol": {
+              "type": "primitive",
+              "valueType": "string"
+            }
+          }
+        },
         "NULL_BYTE": {
           "type": "primitive",
           "valueType": "string"
@@ -6920,6 +7041,10 @@
           "type": "function",
           "arity": 1
         },
+        "decodeMarkupEntities": {
+          "type": "function",
+          "arity": 1
+        },
         "decodeNumericEntities": {
           "type": "function",
           "arity": 1
@@ -6961,6 +7086,10 @@
           "arity": 1
         },
         "scriptFor": {
+          "type": "function",
+          "arity": 1
+        },
+        "stripUrlSchemeWhitespace": {
           "type": "function",
           "arity": 1
         }

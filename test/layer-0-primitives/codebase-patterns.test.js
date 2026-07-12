@@ -6400,6 +6400,44 @@ var KNOWN_ANTIPATTERNS = [
     reason: "#114 — _blamejs_subject_restrictions declares sealedFields:[\"reason\"] but subject.js wrote the reason in clear via the raw sql.insert path. Seal on write (cryptoField.sealRow(RESTRICTIONS_TABLE, ...)); the reason is write-only (isRestricted reads only the PK) so there is no unseal site. Fires if the restriction insert lands without the seal.",
   },
   {
+    id: "guard-scheme-extractor-must-strip-url-whitespace",
+    primitive: "a content guard that extracts a URL scheme for a denylist must fold the decoded value through codepointClass.stripUrlSchemeWhitespace, so a browser-stripped tab/newline or an entity-encoded leading space cannot push the scheme past the anchor and read as scheme-less",
+    scanScope: "lib",
+    regex: /function _extractScheme\b|DANGEROUS_SCHEME_RE\.test\b/,
+    requires: /stripUrlSchemeWhitespace\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "guard-html / guard-svg (_extractScheme) and guard-markdown (DANGEROUS_SCHEME_RE.test) resolve a URL scheme against a denylist. The WHATWG URL parser removes tab/lf/cr from anywhere and trims a leading/trailing C0-control-or-space run before parsing; neither the C0-control strip (which excludes tab/lf/cr) nor a raw trim (which misses an entity-encoded space) covers that, so the decoded value MUST route through codepointClass.stripUrlSchemeWhitespace. Fires if a scheme extractor drops the shared normalizer, re-opening the java<TAB>script: / &#32;javascript: fail-open XSS.",
+  },
+  {
+    id: "guard-css-danger-check-must-decode-entities",
+    primitive: "a content guard's CSS-danger check must match the entity-decoded style value via codepointClass.decodeMarkupEntities, not the raw bytes -- a style attribute is character-reference-decoded before the CSS parser sees it",
+    scanScope: "lib",
+    regex: /CSS_DANGEROUS_PATTERNS\s*\[\s*\w+\s*\]\.test/,
+    requires: /decodeMarkupEntities\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "guard-html / guard-svg test CSS_DANGEROUS_PATTERNS against a style value. The browser character-reference-decodes a style attribute before the CSS parser runs, so a raw-byte match lets ex&#x70;ression( / url(&#x6A;avascript:) / behavior&colon; bypass the denylist (fail-open CSS-injection XSS). The check MUST decode via codepointClass.decodeMarkupEntities first. Fires if a CSS-danger check drops the decode.",
+  },
+  {
+    id: "crypto-field-sealrow-must-not-skip-empty-string",
+    primitive: "cryptoField.sealRow must seal an empty string into an authenticated envelope, never skip it -- skipping stores a bare plaintext empty string that a DB-write attacker can forge or downgrade a ciphertext to undetected",
+    scanScope: "lib",
+    regex: /===\s*null\s*\|\|\s*out\[field\]\s*===\s*""/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "cryptoField.sealRow must skip only null/undefined; an empty string is sealed (via _encodeTyped of the empty string -> a non-empty typed E: marker) so it becomes a real authenticated envelope. Re-adding an empty-string arm to the seal-skip (=== null || out[field] === empty) stores a bare plaintext empty string that unsealRow's falsy skip would accept, letting a DB-write attacker replace any sealed ciphertext with empty undetected (the sealed-column tamper-evidence hole). Fires if the empty-string skip returns to the seal path.",
+  },
+  {
+    id: "guard-css-danger-check-must-fold-url-whitespace",
+    primitive: "a guard's CSS-danger check must fold the URL-scheme whitespace a browser strips inside url(...) -- tab/lf/cr -- after entity-decoding (codepointClass.stripUrlSchemeWhitespace); a decode-only check misses an entity-hidden tab in a CSS URL scheme like url(java&Tab;script:)",
+    scanScope: "lib",
+    regex: /decodeMarkupEntities\(value\)\s*;/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "guard-html / guard-svg _isCssDangerous entity-decode a style value, but a browser also strips tab/lf/cr from a URL inside url(...) before resolving its scheme, so url(java&Tab;script:) -> url(java<TAB>script:) must be folded with stripUrlSchemeWhitespace before matching the contiguous javascript: danger pattern. A decode-only codepointClass.decodeMarkupEntities(value); with no whitespace fold re-opens the CSS whitespace-scheme bypass. Fires if the fold is dropped.",
+  },
+  {
     // Vault keypair rotation stages every output file (the re-encrypted
     // db, resealed vault/db keys, additional sealed files, derived-hash
     // material, and the transient PLAINTEXT db) inside opts.stagingDir.
