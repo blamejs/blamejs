@@ -95,22 +95,31 @@ async function testSealUnsealSeams() {
     await b.vault.init({ dataDir: tmp, mode: "plaintext" });
     b.cryptoField.clearRateCapForTest();
 
-    // --- empty-string sealed field: the three envelope branches must agree ---
-    // vault.seal returns an empty string unchanged (falsy pass-through) and the
-    // K_row branch encrypts an empty buffer fine, but vault.aad.seal REFUSES an
-    // empty plaintext (throws vault-aad/bad-input). sealRow must not let that
-    // divergence crash a write whose sealed column happens to hold "" — an
-    // operator sealing a sometimes-empty column (notes / middleName) would
-    // otherwise crash the insert only on aad tables.
+    // --- empty-string sealed field: sealed as a real envelope, tamper-evident ---
+    // vault.aad.seal REFUSES empty plaintext, so a naive skip of "" would store a
+    // bare plaintext empty string in the sealed column -- and unsealRow's falsy
+    // skip would then accept a ciphertext a DB-write attacker downgraded to "" with
+    // no AEAD failure. Instead _encodeTyped("") -> a non-empty typed marker, so a
+    // sealed empty string is a real authenticated envelope that round-trips to ""
+    // and detects a downgrade to "".
     b.cryptoField.registerTable("cf_seam_aad_empty", {
       aad: true, sealedFields: ["secret"], rowIdField: "id",
     });
+    var aadSealedEmpty = b.cryptoField.sealRow("cf_seam_aad_empty", { id: "r1", secret: "" });
+    check("aad table: empty-string sealed field is a non-empty envelope (not bare plaintext)",
+      typeof aadSealedEmpty.secret === "string" && aadSealedEmpty.secret.length > 0);
     var aadEmpty = _try(function () {
-      var sealedEmpty = b.cryptoField.sealRow("cf_seam_aad_empty", { id: "r1", secret: "" });
-      return b.cryptoField.unsealRow("cf_seam_aad_empty", sealedEmpty, "seam").secret;
+      return b.cryptoField.unsealRow("cf_seam_aad_empty",
+        Object.assign({}, aadSealedEmpty), "seam").secret;
     });
-    check("aad table: an empty-string sealed field seals + round-trips to '' (no throw)",
+    check("aad table: empty-string sealed field round-trips to empty (no throw)",
       aadEmpty.ok === true && aadEmpty.value === "");
+    // Downgrade tamper: a DB-write attacker replaces the ciphertext with "".
+    // unsealRow must fail closed (null the cell), NOT accept "" as a valid value.
+    var aadDowngrade = b.cryptoField.unsealRow("cf_seam_aad_empty",
+      Object.assign({}, aadSealedEmpty, { secret: "" }), "seam");
+    check("aad table: a ciphertext downgraded to empty fails closed (nulled, not accepted)",
+      aadDowngrade.secret === null);
 
     // Plain + K_row branches agree on the same empty-string round-trip.
     b.cryptoField.registerTable("cf_seam_plain_empty", { sealedFields: ["secret"] });
