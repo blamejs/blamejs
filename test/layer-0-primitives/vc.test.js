@@ -316,6 +316,25 @@ async function testStrictXsdValidity() {
     check("issue refuses non-XSD validFrom '" + nonXsd[i] + "'", err && err.code === "vc/bad-validity");
   }
 
+  // Shape-valid but IMPOSSIBLE calendar dates: Date.parse NORMALIZES a day
+  // overflow into a different valid instant (2024-02-31 -> 2024-03-02, a
+  // non-leap 2023-02-29 -> 2023-03-01, 2024-04-31 -> 2024-05-01) rather than
+  // rejecting it, silently shifting the validity window. The calendar fields
+  // are range-checked before Date.parse, so these fail closed.
+  var impossible = ["2024-02-31T00:00:00Z", "2024-04-31T00:00:00Z",
+                    "2023-02-29T00:00:00Z", "2024-00-15T00:00:00Z", "2024-06-00T00:00:00Z"];
+  for (var k = 0; k < impossible.length; k++) {
+    var ie = null;
+    try { await b.vc.issue(_cred({ validFrom: impossible[k] }), { securing: "jose", alg: "ES256", privateKey: EC.privateKey }); } catch (e) { ie = e; }
+    check("issue refuses impossible calendar validFrom '" + impossible[k] + "'", ie && ie.code === "vc/bad-validity");
+  }
+  // A REAL leap day (2096-02-29) and 31-day months still round-trip: the
+  // calendar check must not over-reject a valid date.
+  var leapOk = null;
+  try { await b.vc.issue(_cred({ validFrom: "2096-02-29T00:00:00Z" }), { securing: "jose", alg: "ES256", privateKey: EC.privateKey }); leapOk = true; }
+  catch (e) { leapOk = e; }
+  check("issue accepts a valid leap-day 2096-02-29 (no over-rejection)", leapOk === true);
+
   // Fail closed at VERIFY too (not only issue): a validly-signed credential
   // whose validFrom is non-XSD is refused, not accepted under a Date.parse
   // window.
