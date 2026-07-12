@@ -537,6 +537,126 @@ async function testChainNoAttestedJwks() {
     }, /no-attested-jwks/);
 }
 
+// ---- self-config bound to superior-attested (pinned) keys ----------------
+// The trust decision for an entity's effective metadata is that its Entity
+// Configuration (the metadata source) was signed by a key the superior
+// ATTESTS for it — not merely self-signed. Phase 1 self-verifies the config
+// against its OWN self-published jwks (integrity only); Phase 2 must re-bind
+// the config to the keys the superior's subordinate statement pins.
+
+async function testChainLeafConfigNotBoundToPinnedKeys() {
+  // Fail-open repro: an attacker controls the leaf's .well-known endpoint but
+  // NOT its federation-attested key. They serve a self-signed config carrying
+  // forged metadata + their own jwks (Phase-1 self-verify passes); the honest
+  // anchor's subordinate statement pins the leaf's REAL keys. The chain must
+  // refuse — the forged config was not signed by an attested key. Same kid on
+  // both keys forces a signature check (not a kid mismatch).
+  var honest = _ecEntity("leaf-k");
+  var evil   = _ecEntity("leaf-k");
+  var anchor = _ecEntity("anchor-k");
+  var leafId = "https://rp.example", anchorId = "https://anchor.example";
+
+  var forgedLeafCfg = _mint(evil.priv, "leaf-k", _cfg(leafId, evil, {
+    authority_hints: [anchorId],
+    metadata: { openid_relying_party: { client_name: "ATTACKER", redirect_uris: ["https://evil.example/cb"] } },
+  }));
+  var anchorCfg = _mint(anchor.priv, "anchor-k", _cfg(anchorId, anchor));
+  var subStmt = _mint(anchor.priv, "anchor-k",
+    { iss: anchorId, sub: leafId, iat: _NOW, exp: _NOW + 3600, jwks: honest.jwks });  // allow:raw-byte-literal — 1h validity
+
+  var byUrl = {};
+  byUrl[leafId + "/.well-known/openid-federation"]   = forgedLeafCfg;
+  byUrl[anchorId + "/.well-known/openid-federation"] = anchorCfg;
+  var m = _memFetchers(byUrl, {});
+  m.fetchSubordinate = function () { return Promise.resolve(subStmt); };
+  var anchors = {}; anchors[anchorId] = anchor.jwks;
+
+  await _rejects("buildTrustChain: leaf config signed by non-attested key refused",
+    function () {
+      return b.auth.openidFederation.buildTrustChain({ leafEntityId: leafId, trustAnchors: anchors,
+        fetcher: m.fetcher, fetchSubordinate: m.fetchSubordinate });
+    }, /bad-signature/);
+
+  await _rejects("resolveLeaf: forged leaf metadata never resolved (config unbound to pinned keys)",
+    function () {
+      return b.auth.openidFederation.resolveLeaf({ leafEntityId: leafId, trustAnchors: anchors,
+        kind: "openid_relying_party", fetcher: m.fetcher, fetchSubordinate: m.fetchSubordinate });
+    }, /bad-signature/);
+}
+
+// Build a 3-node leaf → intermediate → anchor fixture. `opts.forgeIntermediate`
+// re-signs the intermediate's self-config with an attacker key of the SAME kid
+// while the anchor still pins the intermediate's REAL keys.
+function _threeNodeFixture(opts) {
+  opts = opts || {};
+  var leaf   = _ecEntity("leaf-k");
+  var inter  = _ecEntity("int-k");
+  var anchor = _ecEntity("anchor-k");
+  var leafId = "https://rp.example", interId = "https://int.example", anchorId = "https://anchor.example";
+
+  var interSigner = opts.forgeIntermediate ? _ecEntity("int-k") : inter;
+
+  var leafCfg   = _mint(leaf.priv, "leaf-k", _cfg(leafId, leaf, {
+    authority_hints: [interId],
+    metadata: { openid_relying_party: { client_name: "RP" } },
+  }));
+  // Self-jwks matches whoever signed it so the Phase-1 self-verify passes.
+  var interCfg  = _mint(interSigner.priv, "int-k", _cfg(interId, interSigner, { authority_hints: [anchorId] }));
+  var anchorCfg = _mint(anchor.priv, "anchor-k", _cfg(anchorId, anchor));
+
+  // Anchor-signed subordinate about the intermediate pins the intermediate's
+  // REAL keys; intermediate-signed subordinate about the leaf pins the leaf's.
+  var subInter = _mint(anchor.priv, "anchor-k",
+    { iss: anchorId, sub: interId, iat: _NOW, exp: _NOW + 3600, jwks: inter.jwks });  // allow:raw-byte-literal — 1h validity
+  var subLeaf  = _mint(inter.priv, "int-k",
+    { iss: interId, sub: leafId, iat: _NOW, exp: _NOW + 3600, jwks: leaf.jwks });     // allow:raw-byte-literal — 1h validity
+
+  var byUrl = {};
+  byUrl[leafId + "/.well-known/openid-federation"]   = leafCfg;
+  byUrl[interId + "/.well-known/openid-federation"]  = interCfg;
+  byUrl[anchorId + "/.well-known/openid-federation"] = anchorCfg;
+  var m = _memFetchers(byUrl, {});
+  m.fetchSubordinate = function (authority) {
+    if (authority === interId)  return Promise.resolve(subLeaf);
+    if (authority === anchorId) return Promise.resolve(subInter);
+    return Promise.reject(new Error("no subordinate for " + authority));
+  };
+  var anchors = {}; anchors[anchorId] = anchor.jwks;
+  return { leafId: leafId, interId: interId, anchorId: anchorId, anchors: anchors,
+           fetcher: m.fetcher, fetchSubordinate: m.fetchSubordinate };
+}
+
+async function testChainThreeNodeHappy() {
+  // A full leaf → intermediate → anchor chain resolves and exercises the
+  // Phase-2 pinned-key config verify for an INTERMEDIATE node (not just the
+  // leaf) on the honest path.
+  var f = _threeNodeFixture();
+  var chain = await b.auth.openidFederation.buildTrustChain({
+    leafEntityId: f.leafId, trustAnchors: f.anchors, fetcher: f.fetcher, fetchSubordinate: f.fetchSubordinate });
+  check("buildTrustChain: 3-node leaf+intermediate+anchor chain",
+    chain.length === 3 && chain[0].role === "leaf" &&
+    chain[1].role === "intermediate" && chain[2].role === "trust_anchor");
+
+  var resolved = await b.auth.openidFederation.resolveLeaf({
+    leafEntityId: f.leafId, trustAnchors: f.anchors, kind: "openid_relying_party",
+    fetcher: f.fetcher, fetchSubordinate: f.fetchSubordinate });
+  check("resolveLeaf: 3-node chain resolves effective metadata",
+    resolved.trustAnchor === f.anchorId && resolved.effectiveMetadata.client_name === "RP");
+}
+
+async function testChainIntermediateConfigNotBoundToPinnedKeys() {
+  // The fail-open one hop up: a forged INTERMEDIATE self-config (attacker key,
+  // same kid) with the anchor pinning the intermediate's REAL keys must fail
+  // the chain — proving the pinned-key config binding covers every non-anchor
+  // node, not just the leaf.
+  var f = _threeNodeFixture({ forgeIntermediate: true });
+  await _rejects("buildTrustChain: intermediate config signed by non-attested key refused",
+    function () {
+      return b.auth.openidFederation.buildTrustChain({ leafEntityId: f.leafId, trustAnchors: f.anchors,
+        fetcher: f.fetcher, fetchSubordinate: f.fetchSubordinate });
+    }, /bad-signature/);
+}
+
 // ---- default httpClient fetcher + default subordinate fetcher ------------
 // These stub httpClient.request (the same module instance openid-federation
 // lazy-requires) so no explicit fetcher/fetchSubordinate is passed and the
@@ -634,6 +754,9 @@ async function run() {
   await testChainCycle();
   await testChainTooDeep();
   await testChainNoAttestedJwks();
+  await testChainLeafConfigNotBoundToPinnedKeys();
+  await testChainThreeNodeHappy();
+  await testChainIntermediateConfigNotBoundToPinnedKeys();
   await testDefaultFetcherErrorPaths();
   await testDefaultSubordinateFetcher();
 }

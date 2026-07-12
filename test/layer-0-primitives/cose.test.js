@@ -290,6 +290,147 @@ async function testExportKey() {
   check("exportKey: unknown alg refused", badAlg && badAlg.code === "cose/unknown-alg");
 }
 
+async function testAlgKeyTypeConfusion() {
+  // Null-digest alg/key-type confusion: EdDSA and ML-DSA-87 both sign
+  // with a null digest, so node:crypto dispatches verify() on the KEY
+  // type and ignores the declared COSE alg. Without a key-type binding an
+  // EdDSA signature is accepted under an ML-DSA-87-only ("PQC-only")
+  // allowlist, and an ML-DSA-87 signature under an EdDSA-only allowlist —
+  // a full alg-allowlist bypass (the allowlist is the security control).
+  // The forged bytes are built by hand because b.cose.sign now refuses to
+  // emit a mislabeled token.
+  function forge(algId, signKey, payloadStr) {
+    var protectedBstr = b.cbor.encode(new Map([[1, algId]]));
+    var payload = Buffer.from(payloadStr, "utf8");
+    var ss = b.cbor.encode(["Signature1", protectedBstr, Buffer.alloc(0), payload]);
+    var sig = nodeCrypto.sign(null, ss, signKey);
+    return b.cbor.encode(new b.cbor.Tag(18, [protectedBstr, new Map(), payload, sig]));
+  }
+  // EdDSA signature, DECLARED ML-DSA-87 (-50), verified against an
+  // Ed25519 key under a PQC-only allowlist.
+  var e1 = null;
+  try { await b.cose.verify(forge(-50, ED.privateKey, "forged"), { algorithms: ["ML-DSA-87"], publicKey: ED.publicKey }); } catch (e) { e1 = e; }
+  check("verify: EdDSA sig rejected under ML-DSA-87-only allowlist (alg/key confusion)", e1 && e1.code === "cose/alg-key-mismatch");
+
+  // ML-DSA-87 signature, DECLARED EdDSA (-8), verified against an ML-DSA
+  // key under an EdDSA-only allowlist.
+  var e2 = null;
+  try { await b.cose.verify(forge(-8, ML.privateKey, "forged2"), { algorithms: ["EdDSA"], publicKey: ML.publicKey }); } catch (e) { e2 = e; }
+  check("verify: ML-DSA-87 sig rejected under EdDSA-only allowlist (alg/key confusion)", e2 && e2.code === "cose/alg-key-mismatch");
+
+  // Sign side: naming one alg but supplying the other key type must be
+  // refused, never emit a mislabeled token.
+  var e3 = null;
+  try { await b.cose.sign(Buffer.from("x"), { alg: "EdDSA", privateKey: ML.privateKey }); } catch (e) { e3 = e; }
+  check("sign: EdDSA alg with an ML-DSA key refused (no mislabeled token)", e3 && e3.code === "cose/alg-key-mismatch");
+  var e4 = null;
+  try { await b.cose.sign(Buffer.from("x"), { alg: "ML-DSA-87", privateKey: ED.privateKey }); } catch (e) { e4 = e; }
+  check("sign: ML-DSA-87 alg with an Ed25519 key refused", e4 && e4.code === "cose/alg-key-mismatch");
+
+  // Regression: the legitimate pairings still verify.
+  var okEd = await b.cose.sign(Buffer.from("ed-ok"), { alg: "EdDSA", privateKey: ED.privateKey });
+  check("EdDSA legit pairing still verifies", (await b.cose.verify(okEd, { algorithms: ["EdDSA"], publicKey: ED.publicKey })).payload.toString() === "ed-ok");
+  var okMl = await b.cose.sign(Buffer.from("ml-ok"), { alg: "ML-DSA-87", privateKey: ML.privateKey });
+  check("ML-DSA-87 legit pairing still verifies", (await b.cose.verify(okMl, { algorithms: ["ML-DSA-87"], publicKey: ML.publicKey })).payload.toString() === "ml-ok");
+}
+
+async function testEcAlgCurveVerify() {
+  // A COSE_Sign1 DECLARING ES512 (-36) but carrying a P-256 key: node
+  // verifies a sha512 signature against the P-256 key as self-consistent,
+  // so the alg->curve binding must refuse it even when ES512 is
+  // allowlisted (RFC 9053 §2 alg/curve confusion).
+  var protectedBstr = b.cbor.encode(new Map([[1, -36]]));
+  var payload = Buffer.from("es512-over-p256");
+  var ss = b.cbor.encode(["Signature1", protectedBstr, Buffer.alloc(0), payload]);
+  var sig = nodeCrypto.sign("sha512", ss, { key: EC.privateKey, dsaEncoding: "ieee-p1363" });
+  var forged = b.cbor.encode(new b.cbor.Tag(18, [protectedBstr, new Map(), payload, sig]));
+  var refused = null;
+  try { await b.cose.verify(forged, { algorithms: ["ES512"], publicKey: EC.publicKey }); } catch (e) { refused = e; }
+  check("verify: ES512 declared over a P-256 key refused (alg/curve binding)", refused && refused.code === "cose/alg-curve-mismatch");
+}
+
+async function testUnprotectedAlgNotHonored() {
+  // alg (label 1) is integrity-read from the PROTECTED header only. A
+  // token with an empty protected header but a valid-looking alg smuggled
+  // into the UNPROTECTED bucket must NOT be honored — it is refused as an
+  // unknown protected alg, never verified under the smuggled alg (even
+  // though the signature and key would otherwise match).
+  var payload = Buffer.from("no-protected-alg");
+  var ss = b.cbor.encode(["Signature1", Buffer.alloc(0), Buffer.alloc(0), payload]);
+  var sig = nodeCrypto.sign(null, ss, ED.privateKey);
+  var forged = b.cbor.encode(new b.cbor.Tag(18, [Buffer.alloc(0), new Map([[1, -8]]), payload, sig]));
+  var refused = null;
+  try { await b.cose.verify(forged, { algorithms: ["EdDSA"], publicKey: ED.publicKey }); } catch (e) { refused = e; }
+  check("verify: alg in the unprotected bucket is not honored", refused && refused.code === "cose/unknown-alg");
+}
+
+async function testBareUntagged() {
+  // RFC 9052 permits an untagged COSE_Sign1 (a bare 4-element array). The
+  // verifier accepts both the tagged (18) and bare forms.
+  var tagged = await b.cose.sign(Buffer.from("bare"), { alg: "ES256", privateKey: EC.privateKey });
+  var arr = b.cbor.decode(tagged, { allowedTags: [18] }).value;
+  var bare = b.cbor.encode(arr);
+  check("verify: bare form is a raw CBOR array (no 0xd2 tag)", bare[0] !== 0xd2);
+  var out = await b.cose.verify(bare, { algorithms: ["ES256"], publicKey: EC.publicKey });
+  check("verify: bare (untagged) COSE_Sign1 verifies", out.payload.toString() === "bare");
+}
+
+async function testKeyResolver() {
+  // keyResolver receives the protected + unprotected header maps and
+  // returns the verification key (kid resolution). The resolved key still
+  // goes through the alg/key binding.
+  var s = await b.cose.sign(Buffer.from("resolve-me"), { alg: "ES256", privateKey: EC.privateKey, kid: "kr-1" });
+  var seenKid = null, sawProt = false;
+  var out = await b.cose.verify(s, {
+    algorithms: ["ES256"],
+    keyResolver: function (prot, unprot) {
+      sawProt = (prot instanceof Map) && prot.get(1) === -7;
+      var kid = unprot.get(4);
+      seenKid = Buffer.isBuffer(kid) ? kid.toString("utf8") : null;
+      return EC.publicKey;
+    },
+  });
+  check("keyResolver: resolves the key and verifies", out.payload.toString() === "resolve-me");
+  check("keyResolver: called with protected + unprotected maps (kid read)", sawProt && seenKid === "kr-1");
+
+  // Resolver returning the WRONG key → signature refused (not fail-open).
+  var wrongEc = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var bad = null;
+  try { await b.cose.verify(s, { algorithms: ["ES256"], keyResolver: function () { return wrongEc.publicKey; } }); } catch (e) { bad = e; }
+  check("keyResolver: wrong resolved key refused", bad && bad.code === "cose/bad-signature");
+
+  // Resolver returning a wrong-curve key for the declared ES256 → refused
+  // by the alg/curve binding, not verified.
+  var p384 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" });
+  var mismatch = null;
+  try { await b.cose.verify(s, { algorithms: ["ES256"], keyResolver: function () { return p384.publicKey; } }); } catch (e) { mismatch = e; }
+  check("keyResolver: wrong-curve resolved key refused (alg/curve binding)", mismatch && mismatch.code === "cose/alg-curve-mismatch");
+}
+
+async function testMalformedVerifyBranches() {
+  var protBstr = b.cbor.encode(new Map([[1, -7]]));
+  var sig = Buffer.from([0, 0]);
+  var payload = Buffer.from("p");
+  async function code(bytes) {
+    try { await b.cose.verify(bytes, { algorithms: ["ES256"], publicKey: EC.publicKey }); return null; }
+    catch (e) { return e.code; }
+  }
+  check("verify: wrong array length refused",
+    (await code(b.cbor.encode(new b.cbor.Tag(18, [protBstr, new Map(), payload])))) === "cose/malformed");
+  check("verify: non-bstr protected header refused",
+    (await code(b.cbor.encode(new b.cbor.Tag(18, [new Map(), new Map(), payload, sig])))) === "cose/malformed");
+  check("verify: non-bstr signature refused",
+    (await code(b.cbor.encode(new b.cbor.Tag(18, [protBstr, new Map(), payload, "not-bytes"])))) === "cose/malformed");
+  check("verify: protected header that is not a CBOR map refused",
+    (await code(b.cbor.encode(new b.cbor.Tag(18, [b.cbor.encode([1, 2, 3]), new Map(), payload, sig])))) === "cose/malformed");
+  check("verify: crit (label 2) not an array refused",
+    (await code(b.cbor.encode(new b.cbor.Tag(18, [b.cbor.encode(new Map([[1, -7], [2, 99]])), new Map(), payload, sig])))) === "cose/bad-crit");
+  // crit names an understood label (3 = content-type) that is ABSENT from
+  // the protected header — a crit that references nothing must be refused.
+  check("verify: crit lists an absent (understood) label refused",
+    (await code(b.cbor.encode(new b.cbor.Tag(18, [b.cbor.encode(new Map([[1, -7], [2, [3]]])), new Map(), payload, sig])))) === "cose/crit-absent");
+}
+
 async function run() {
   testSurface();
   testEncrypt0();
@@ -298,6 +439,12 @@ async function run() {
   await testPqcForward();
   await testTamperAndAllowlist();
   await testCritBypassDefense();
+  await testAlgKeyTypeConfusion();
+  await testEcAlgCurveVerify();
+  await testUnprotectedAlgNotHonored();
+  await testBareUntagged();
+  await testKeyResolver();
+  await testMalformedVerifyBranches();
   await testValidation();
   await testDetachedPayload();
   await testImportKey();
