@@ -268,6 +268,16 @@ async function scenarioVerifyIdToken(base, routes) {
     "auth-oauth/azp-mismatch");
   await aresolves("verifyIdToken: multi-aud with matching azp accepted",
     function () { return oa.verifyIdToken(mkToken(CID, { aud: [CID, "other-rp"], azp: CID })); });
+  // Single-aud token whose azp equals clientId is accepted (the azp-present-
+  // and-equal branch of OIDC Core §3.1.3.7 — distinct from the multi-aud path).
+  await aresolves("verifyIdToken: single-aud token with azp === clientId accepted",
+    function () { return oa.verifyIdToken(mkToken(CID, { azp: CID })); });
+  // A multi-aud token whose azp is a NON-string (type confusion) fails the
+  // `typeof azp !== "string"` guard and is refused as azp-required — the AS
+  // cannot dodge the authorized-party requirement by emitting a numeric azp.
+  await athrows("verifyIdToken: multi-aud with non-string azp refused (azp-required)",
+    function () { return oa.verifyIdToken(mkToken(CID, { aud: [CID, "other-rp"], azp: 123 })); },
+    "auth-oauth/azp-required");
 
   // nonce branches
   await aresolves("verifyIdToken: matching nonce accepted",
@@ -382,6 +392,18 @@ async function scenarioTokenFlows(base, routes) {
       verifyAuthorizationDetails: false,
       authorizationDetails: [{ type: "payment_initiation", actions: ["initiate"] }] }); });
   check("exchangeCode: non-strict surfaces granted details", tokLax && Array.isArray(tokLax.authorizationDetails));
+
+  // RFC 6749 §3.3 — the granted `scope` is delimited by U+0020 ONLY. A hostile
+  // AS that separates two scope tokens with a NON-space whitespace (here U+0085
+  // NEL) must NOT surface as two allowlist-matchable scopes; the pair stays a
+  // single opaque token so an operator scope allowlist can't be tricked into
+  // seeing a scope that was never granted. Drives the real exchangeCode path.
+  routes["/token"] = { json: { access_token: "at-scope", scope: "admin\u0085read" } };
+  var scTok = await aresolves("exchangeCode: hostile non-space scope separator stays one token (RFC 6749 §3.3)",
+    function () { return oa.exchangeCode({ code: "c", verifier: "v", skipNonceCheck: true }); });
+  check("exchangeCode: NEL-separated scope is not split into an allowlist bypass",
+    scTok && scTok.scope.length === 1 && scTok.scope[0] === "admin\u0085read" &&
+    scTok.scope.indexOf("admin") === -1 && scTok.scope.indexOf("read") === -1);
 
   // _postForm backend-failure branches.
   routes["/token"] = { status: 400, json: { error: "invalid_grant" } };
@@ -692,6 +714,15 @@ async function scenarioBackchannelLogout(base, routes) {
   await athrows("verifyBackchannelLogoutToken: missing sub AND sid refused",
     function () { return oa.verifyBackchannelLogoutToken(logoutTok({ sub: undefined, sid: undefined })); },
     "auth-oauth/no-sub-or-sid");
+  // Token-type confusion: a JWS that carries typ="logout+jwt" but NO
+  // back-channel-logout event is not a logout token. It must fail closed —
+  // verifyIdToken's skipExpCheck self-guard (which the wrapper relies on to
+  // waive the exp claim) refuses any token lacking the logout event, so a
+  // non-logout token cannot borrow the exp-waiver to slip an id_token in
+  // through the logout endpoint.
+  await athrows("verifyBackchannelLogoutToken: logout+jwt typ without the logout event refused (fail-closed)",
+    function () { return oa.verifyBackchannelLogoutToken(logoutTok({ events: undefined })); },
+    "auth-oauth/skip-exp-check-not-allowed");
 
   // stale logout iat (verifyIdToken freshness floor) — no exp on logout tokens.
   var nowS = Math.floor(Date.now() / 1000);
@@ -1039,6 +1070,38 @@ async function scenarioAttestationVerify() {
   var cnfOkp = JSON.parse(Buffer.from(attOkp.split(".")[1], "base64url").toString("utf8")).cnf.jwk;
   check("buildClientAttestation: OKP instance key shaped into cnf (x only, no private half)",
         cnfOkp.kty === "OKP" && cnfOkp.x && cnfOkp.d === undefined);
+
+  // ---- EdDSA end-to-end (ATTESTATION_ALGS advertises EdDSA; the EC/RSA
+  // paths above never exercise the alg=EdDSA verify branch: hash:null crypto
+  // params + the OKP arm of the alg/kty cross-check + node's Ed25519 verify).
+  // Both the Attester and the instance key are Ed25519, so the attestation
+  // JWS AND the PoP JWS travel the EdDSA verify path.
+  var edAttKp  = crypto.generateKeyPairSync("ed25519");
+  var edInstKp = crypto.generateKeyPairSync("ed25519");
+  var edAttPub  = edAttKp.publicKey.export({ format: "jwk" });
+  var edInstPub = edInstKp.publicKey.export({ format: "jwk" });
+  var edAtt = X.buildClientAttestation({ clientId: "ed-wallet",
+    attesterPrivateKey: edAttKp.privateKey, instanceKeyJwk: edInstPub });
+  check("buildClientAttestation: Ed25519 attester key infers an EdDSA-header JWS",
+        JSON.parse(Buffer.from(edAtt.split(".")[0], "base64url").toString("utf8")).alg === "EdDSA");
+  var edPop = X.buildClientAttestationPop({ instancePrivateKey: edInstKp.privateKey, audience: AUD });
+  var edV = await aresolves("verifyClientAttestation: EdDSA attestation + PoP round-trip verifies",
+    function () { return X.verifyClientAttestation(edAtt, edPop, { attesterJwk: edAttPub,
+      expectedAudience: AUD, expectedClientId: "ed-wallet" }); });
+  check("verifyClientAttestation: EdDSA round-trip surfaces clientId + OKP cnf",
+        edV && edV.clientId === "ed-wallet" && edV.cnfJwk && edV.cnfJwk.kty === "OKP");
+  // A tampered EdDSA PoP signature (one flipped byte, length preserved) must
+  // RETURN false from node's verify → typed bad-signature, never a silent pass.
+  await arejects("verifyClientAttestation: tampered EdDSA PoP signature refused (verify -> false)",
+                 function () { return X.verifyClientAttestation(edAtt, _tamperJws(edPop),
+                   { attesterJwk: edAttPub, expectedAudience: AUD }); },
+                 "auth-oauth/attestation-bad-signature");
+  // alg/kty cross-check on the EdDSA arm: an EdDSA header verified against a
+  // NON-OKP (EC) attester JWK is refused before any signature math.
+  await arejects("verifyClientAttestation: EdDSA header against an EC attester JWK refused (alg/kty)",
+                 function () { return X.verifyClientAttestation(edAtt, edPop,
+                   { attesterJwk: instPub, expectedAudience: AUD }); },
+                 "auth-jwt-external/alg-kty-mismatch");
 }
 
 // Network-free branches on clients that reach neither discovery nor a token
@@ -1263,6 +1326,14 @@ async function run() {
   check("authorizationUrl: response_mode from opts emitted",
         new URL((await ghRm.authorizationUrl()).url).searchParams.get("response_mode") === "form_post");
 
+  // An explicit create() scope array overrides the preset default and is
+  // reflected verbatim (space-joined) in the authorization request.
+  var ghScoped = X.create({ provider: "github", clientId: "gh-scope",
+    redirectUri: "https://rp.example/cb", scope: ["read:user", "repo", "gist"] });
+  check("authorizationUrl: explicit create() scope array reflected space-joined",
+        new URL((await ghScoped.authorizationUrl()).url).searchParams.get("scope") === "read:user repo gist" &&
+        ghScoped.scope.length === 3);
+
   // RFC 9396 authorization_details validation on authorizationUrl
   var rar = await gh.authorizationUrl({ authorizationDetails: [{ type: "payment_initiation", actions: ["initiate"] }] });
   check("authorizationUrl: serializes valid authorization_details",
@@ -1397,6 +1468,14 @@ async function run() {
   await arejects("parseCallback: OP error param refused",
                  function () { return oa.parseCallback({ error: "access_denied" }, { requireIssParam: true }); },
                  "auth-oauth/op-error");
+  // The refusal surfaces the OP-supplied error + error_description on the
+  // thrown error so operators can branch on `opError` (documented fields).
+  var opErr = null;
+  try { await oa.parseCallback({ error: "access_denied", error_description: "user declined consent" },
+    { requireIssParam: true }); } catch (e) { opErr = e; }
+  check("parseCallback: op-error carries opError + opErrorDescription fields",
+        opErr && opErr.code === "auth-oauth/op-error" && opErr.opError === "access_denied" &&
+        opErr.opErrorDescription === "user declined consent");
 
   // ---- parseJarmResponse: shape guards ----
   await arejects("parseJarmResponse: empty response refused",

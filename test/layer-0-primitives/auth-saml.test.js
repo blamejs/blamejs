@@ -1030,6 +1030,52 @@ function testHolderOfKey(idp, client, other) {
     _verifyCode(sp, verify(_hokSubject(_hokScd(clientB64, " NotOnOrAfter=\"" + iso(C.TIME.minutes(5)) + "\" Recipient=\"https://evil.example\"")), null, "rcp").b64, { holderOfKey: presented }) === nvc);
 }
 
+// verifyResponse — holder-of-key must apply the SAME InResponseTo replay
+// check the Bearer path applies when the operator opts in via
+// expectedInResponseTo. SAML Web-Browser-SSO Profile §4.1.4.2 (incorporated
+// into the HoK profile by §3.1) binds a solicited response's
+// SubjectConfirmationData InResponseTo to the stored AuthnRequest ID. A HoK
+// confirmation that ignored expectedInResponseTo would silently drop the
+// operator's replay defense on that path.
+function testHolderOfKeyInResponseTo(idp, client) {
+  var sp = _mkSp(idp.certPem);
+  var clientB64 = _certBody(client.certPem);
+  var presented = { presentedCertPem: client.certPem };
+  function attrs(irt) {
+    return " NotOnOrAfter=\"" + iso(C.TIME.minutes(5)) + "\" Recipient=\"" + ACS_URL + "\"" +
+      (irt !== undefined ? " InResponseTo=\"" + irt + "\"" : "");
+  }
+  function mk(tag, irt) {
+    return _mkAssertionResponse(idp, {
+      tag: "hok-irt-" + tag,
+      subjectXml: _hokSubject(_hokScd(clientB64, attrs(irt))),
+    }).b64;
+  }
+
+  // Matching InResponseTo — accepted and the validated value is echoed back
+  // (not sourced from a different, non-validated confirmation).
+  var okInfo = sp.verifyResponse(mk("ok", "_req-1"), { holderOfKey: presented, expectedInResponseTo: "_req-1" });
+  check("HoK: matching InResponseTo -> accepted",       okInfo.nameId === "alice@example.com");
+  check("HoK: matching InResponseTo -> value echoed",   okInfo.inResponseTo === "_req-1");
+
+  // Mismatched InResponseTo — the operator's replay defense MUST fire on the
+  // HoK path, exactly as it does for Bearer.
+  check("HoK: InResponseTo mismatch -> bad-in-response-to (replay defense on HoK path)",
+    _verifyCode(sp, mk("mm", "_other"), { holderOfKey: presented, expectedInResponseTo: "_req-1" })
+      === "auth-saml/bad-in-response-to");
+
+  // Absent InResponseTo while the operator expects one — also refused (a
+  // solicited response missing the binding cannot be correlated).
+  check("HoK: absent InResponseTo while expected -> bad-in-response-to",
+    _verifyCode(sp, mk("absent"), { holderOfKey: presented, expectedInResponseTo: "_req-1" })
+      === "auth-saml/bad-in-response-to");
+
+  // No expectedInResponseTo -> HoK still succeeds regardless of any present
+  // InResponseTo (the operator did not opt into the replay binding).
+  var noExpect = sp.verifyResponse(mk("noexp", "_whatever"), { holderOfKey: presented });
+  check("HoK: no expectedInResponseTo -> accepted", noExpect.nameId === "alice@example.com");
+}
+
 // ---------------------------------------------------------------------------
 // verifyResponse — Conditions, Audience, AuthnStatement variants
 // ---------------------------------------------------------------------------
@@ -1065,6 +1111,62 @@ function testConditionsAndAudience(idp) {
   // No AuthnStatement -> sessionIndex null.
   var noAuthn = sp.verifyResponse(_mkAssertionResponse(idp, { tag: "noauthn", authnStmt: "" }).b64);
   check("verify: assertion without AuthnStatement -> sessionIndex null", noAuthn.sessionIndex === null);
+}
+
+// ---------------------------------------------------------------------------
+// verifyResponse — missing structural fields on an otherwise-signed assertion
+// (each fires only AFTER the XMLDSig verifies, so the signature gate is live)
+// ---------------------------------------------------------------------------
+
+function testVerifyResponseMissingFields(idp) {
+  var sp = _mkSp(idp.certPem);
+
+  // Signed assertion whose Subject is absent -> no-subject.
+  check("verify: signed assertion without Subject -> no-subject",
+    _verifyCode(sp, _mkAssertionResponse(idp, { tag: "nosub", subjectXml: "" }).b64)
+      === "auth-saml/no-subject");
+
+  // Signed assertion with a Subject but no NameID -> no-nameid.
+  var subjectNoNameId = "<saml:Subject><saml:SubjectConfirmation Method=\"" + BEARER + "\">" +
+    "<saml:SubjectConfirmationData NotOnOrAfter=\"" + iso(C.TIME.minutes(5)) + "\" Recipient=\"" + ACS_URL + "\"/>" +
+    "</saml:SubjectConfirmation></saml:Subject>";
+  check("verify: signed Subject without NameID -> no-nameid",
+    _verifyCode(sp, _mkAssertionResponse(idp, { tag: "nonid", subjectXml: subjectNoNameId }).b64)
+      === "auth-saml/no-nameid");
+
+  // Bearer confirmation with NO InResponseTo, but the operator expects one:
+  // the `inResponseTo === null` arm of the replay check must fire (this is the
+  // sibling of the HoK path exercised above).
+  check("verify: Bearer absent InResponseTo while expected -> bad-in-response-to",
+    _verifyCode(sp, _mkAssertionResponse(idp, { tag: "birt" }).b64, { expectedInResponseTo: "_req-1" })
+      === "auth-saml/bad-in-response-to");
+}
+
+// ---------------------------------------------------------------------------
+// verifyResponse — NameID XML-comment truncation defense
+//
+// The classic SAML comment-truncation bypass (Duo Labs, 2018): an attacker
+// splits a signed NameID text value with an XML comment so a partial-text
+// extractor reads a shorter, higher-privilege value while the signature still
+// validates (exclusive-c14n strips the comment before digesting). This
+// implementation extracts the FULL concatenated text of every text node
+// (skipping comments) and canonicalizes with the same comment-stripping, so
+// both the signed digest and the consumed NameID are the whole value — never a
+// truncated prefix. A single flat-text read here would be a full auth bypass.
+// ---------------------------------------------------------------------------
+
+function testNameIdCommentTruncation(idp) {
+  var sp = _mkSp(idp.certPem);
+  var split = "<saml:Subject><saml:NameID Format=\"" + EMAIL + "\">" +
+    "admin@good.example<!--wrap-->.attacker.example</saml:NameID>" +
+    "<saml:SubjectConfirmation Method=\"" + BEARER + "\">" +
+    "<saml:SubjectConfirmationData NotOnOrAfter=\"" + iso(C.TIME.minutes(5)) + "\" Recipient=\"" + ACS_URL + "\"/>" +
+    "</saml:SubjectConfirmation></saml:Subject>";
+  var info = sp.verifyResponse(_mkAssertionResponse(idp, { tag: "cmt", subjectXml: split }).b64);
+  check("verify: comment-split NameID yields the FULL value, not a truncated prefix",
+    info.nameId === "admin@good.example.attacker.example");
+  check("verify: comment-split NameID is not truncated at the comment",
+    info.nameId !== "admin@good.example");
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,6 +1457,18 @@ async function testFetchMdqBranches(fed) {
   var signedMismatch = mismatchEntity.slice(0, mismatchEntity.indexOf(">") + 1) + sig + mismatchEntity.slice(mismatchEntity.indexOf(">") + 1);
   var r6 = await _fetchMdqWith(200, signedMismatch, fed.certPem);
   check("fetchMdq: signed EntityDescriptor entityID != requested -> mdq-entity-mismatch", r6.code === "auth-saml/mdq-entity-mismatch");
+
+  // Full success: a federation-signed EntityDescriptor whose signature
+  // verifies against trustCertPem, whose Reference binds the document-root
+  // EntityDescriptor, and whose entityID equals the requested one -> the raw
+  // metadata XML is returned (the advertised happy path, end to end).
+  var okEntity = "<md:EntityDescriptor xmlns:md=\"urn:oasis:names:tc:SAML:2.0:metadata\" ID=\"G1\" entityID=\"" + IDP_ENTITY_ID + "\">" +
+    "<md:IDPSSODescriptor protocolSupportEnumeration=\"" + SAML_P + "\"></md:IDPSSODescriptor></md:EntityDescriptor>";
+  var okSig = _fedSignature(fed, "G1", okEntity);
+  var signedOk = okEntity.slice(0, okEntity.indexOf(">") + 1) + okSig + okEntity.slice(okEntity.indexOf(">") + 1);
+  var r7 = await _fetchMdqWith(200, signedOk, fed.certPem);
+  check("fetchMdq: valid federation signature + matching entityID -> returns metadata",
+    r7.code === null && r7.xml === signedOk);
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,7 +1783,10 @@ async function run() {
   testAssertionSignedDifferentElement(idp);
   testNoValidConfirmation(idp);
   testHolderOfKey(idp, client, otherClient);
+  testHolderOfKeyInResponseTo(idp, client);
   testConditionsAndAudience(idp);
+  testVerifyResponseMissingFields(idp);
+  testNameIdCommentTruncation(idp);
   testMoreVerifyResponse(idp);
   testEncryptedAssertion(idp);
   testEncryptedExtra(idp);
