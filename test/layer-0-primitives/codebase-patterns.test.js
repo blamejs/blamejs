@@ -11133,6 +11133,27 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Backslash+DQUOTE quoted-string escaping is owned by safeBuffer.quoteString (RFC 8941 sf-string, RFC 8288 Link params, RFC 8601 reason, RFC 3501 IMAP, RFC 5804 ManageSieve all route through it). An inline `.replace(/\\\\/g,...).replace(/\"/g,...)` chain in another lib file is the serializer re-implemented — compose safeBuffer.quoteString instead. lib/safe-buffer.js is the primitive's home.",
   },
 
+  {
+    id: "db-handle-hand-rolled-dml",
+    primitive: "b.sql",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A primitive holding a db handle (opts.db) that runs DML by passing an
+    // inline SQL string LITERAL to db.prepare/runSql —
+    // `db.prepare("SELECT ... FROM " + table + " WHERE ...")` — re-implements
+    // the identifier quoting, sealed-field rewrite and dialect handling that
+    // b.sql (the builder db.from() itself uses) already does, and drifts from
+    // it: the tenant-quota storage query did exactly this and accrued a run of
+    // parity defects (reserved-word names, schema-qualified "schema.table"
+    // names, sealed-column filtering). Build the query with b.sql and prepare
+    // the resulting string instead; a `db.prepare(built.sql)` with a VARIABLE
+    // argument does not match. DDL (CREATE / ALTER / PRAGMA) is not a b.sql
+    // DML verb and uses non-DML keywords, so it is out of scope here.
+    regex: /\bdb\.(?:prepare|runSql|exec|run)\(\s*(?:[A-Za-z_$][\w.$]*\(\s*)?["'\x60][^"'\x60]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b/,
+    allowlist: [],
+    reason: "A db-handle primitive that hand-rolls DML by concatenating a SQL string literal into db.prepare/runSql re-implements b.sql's identifier quoting + sealed-field rewrite and drifts from db.from() — the tenant-quota storage query accrued reserved-word, schema-qualified and sealed-column parity defects across six review rounds doing exactly this. Compose `sql.select/insert/update/delete(table, { dialect: 'sqlite', quoteName: true }).….toSql()` and `db.prepare(built.sql)` instead (skip the unseal loop when you need raw on-disk bytes). Matches an inline SELECT/INSERT/UPDATE/DELETE literal passed to db.prepare/runSql (optionally wrapped in one helper call such as safeSql.assertSingleStatement); a db.prepare(<variable>) built by b.sql does not match, and DDL/PRAGMA is out of scope. See lib/tenant-quota.js and lib/dsr.js for the composed shape.",
+  },
+
 ];
 
 // @example placeholder detection lives in
