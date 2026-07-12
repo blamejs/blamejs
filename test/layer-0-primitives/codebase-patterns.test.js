@@ -3178,6 +3178,85 @@ function testNoBareErrorThrows() {
     bad);
 }
 
+// ---- Pattern 38b: defineClass error constructed message-first ----
+//
+// defineClass() generates `constructor(code, message)` (it calls
+// `super(message, code)` against the base FrameworkError, whose own order
+// is the mirror). So EVERY `new <DefineClassError>(...)` must pass the
+// short code FIRST and the human message SECOND. A message-first call
+// (arg1 has whitespace — no code ever does — while arg2 is a bare short
+// token) buries the diagnostic in `.code` and hands the operator a bare
+// token as `.message`. Sound by construction: a whitespace first arg is
+// never a valid code, so a hit is always a swap, never a style choice.
+// Seen twice — safe-buffer `_throw` and security.assertProduction — hence
+// a structural guard, not just the behavioral test that ships with each.
+function testDefineClassErrorArgOrder() {
+  // class: define-class-error-arg-order
+  var files = _libFiles();
+  // 1. Collect every defineClass-generated error name across lib/.
+  var names = {};
+  for (var i = 0; i < files.length; i++) {
+    var c;
+    try { c = fs.readFileSync(files[i], "utf8"); } catch (_e) { continue; }
+    var dre = /defineClass\(\s*["']([A-Za-z0-9_]+)["']/g, dm;
+    while ((dm = dre.exec(c))) names[dm[1]] = true;
+  }
+  var nameList = Object.keys(names);
+  if (!nameList.length) { check("no defineClass error classes to check", true); return; }
+  var nameAlt = nameList.join("|");
+
+  // Split the first top-level args of a call starting just after '('.
+  function firstTwoArgs(src, start) {
+    var depth = 0, inStr = null, cur = "", out = [];
+    for (var k = start; k < src.length && out.length < 2; k++) {
+      var ch = src[k];
+      if (inStr) { cur += ch; if (ch === "\\") { cur += src[++k]; } else if (ch === inStr) inStr = null; continue; }
+      if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; cur += ch; continue; }
+      if (ch === "(" || ch === "[" || ch === "{") { depth++; cur += ch; continue; }
+      if (ch === ")" || ch === "]" || ch === "}") { if (depth === 0) { out.push(cur); break; } depth--; cur += ch; continue; }
+      if (ch === "," && depth === 0) { out.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    return out;
+  }
+  function leadingLiteral(arg) {
+    var m = arg.trim().match(/^"((?:[^"\\]|\\.)*)"|^'((?:[^'\\]|\\.)*)'/);
+    return m ? (m[1] != null ? m[1] : m[2]) : null;
+  }
+  function wholeCodeLiteral(arg) {
+    var m = arg.trim().match(/^"((?:[^"\\]|\\.)*)"$|^'((?:[^'\\]|\\.)*)'$/);
+    if (!m) return null;
+    var v = m[1] != null ? m[1] : m[2];
+    return (v.length > 0 && v.length <= 40 && !/\s/.test(v)) ? v : null;
+  }
+
+  var bad = [];
+  var callRe = new RegExp("new\\s+(" + nameAlt + ")\\s*\\(", "g");
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); } catch (_e2) { continue; }
+    callRe.lastIndex = 0;
+    var cm;
+    while ((cm = callRe.exec(content))) {
+      var lineNo = content.slice(0, cm.index).split(/\r?\n/).length;
+      var startLine = content.split(/\r?\n/)[lineNo - 1] || "";
+      if (/^\s*(\/\/|\*|\/\*)/.test(startLine)) continue;   // skip commented examples
+      var args = firstTwoArgs(content, cm.index + cm[0].length);
+      if (args.length < 2) continue;
+      var lead1 = leadingLiteral(args[0]);
+      var code2 = wholeCodeLiteral(args[1]);
+      if (lead1 && /\s/.test(lead1) && code2) {
+        bad.push({ file: rel, line: lineNo, content: ("new " + cm[1] + "(\"" + lead1.slice(0, 40) + "…\", \"" + code2 + "\")") });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "define-class-error-arg-order");
+  _report("defineClass error constructed (code, message) — not message-first " +
+          "(a whitespace first arg is never a valid code)",
+    bad);
+}
+
 // ---- Pattern 39: hand-rolled URL building ----
 
 function testNoHandrolledUrlBuild() {
@@ -10332,6 +10411,25 @@ var KNOWN_ANTIPATTERNS = [
     reason: "0.15.54 — self-update-standalone-verifier-ecdsa-encoding.test.js:189 asserted that a raw IEEE-P1363 P-384 signature's first byte was not the DER SEQUENCE tag 0x30, to prove it was not DER-encoded; that byte is r's high octet, which equals 0x30 ~1/256 of the time, so the setup assertion flaked and blocked the release's ubuntu smoke (the saml-mdq-wrapping release CI). The deterministic distinguisher is the fixed 96-byte (P-384) / 64-byte (P-256) raw length; the fix guards the byte check with a `|| sig.length === N` disjunction, matching sd-jwt-vc-ecdsa-p1363.test.js:51. Fires on a bare first-byte-not-0x30 check with no length disjunction on the same line; silent once guarded.",
   },
   {
+    // A test helper that guards a value truthy with `!!x &&` on the LEFT of an
+    // && and then re-guards the SAME variable inside a sub-expression on the
+    // right (`!!x && f((x && x.prop) || …)`) has a redundant inner `x &&`:
+    // once `!!x` short-circuits true, x is truthy, so `x && x.prop` is just
+    // `x.prop`. Sound because the outer `!!x &&` gates the whole sub-expression
+    // — the temper on `||` excludes the shape where an intervening `||` breaks
+    // that guarantee (`!!x && a || b(x && x.y)` — there b's inner guard is real
+    // because x can be null on the right of `||`). A pure-redundancy code-smell
+    // the linters flag as an always-true conditional; a behavioral test can't
+    // assert it (both forms behave identically), so the detector is the guard.
+    id: "test-redundant-inner-truthy-guard",
+    primitive: "a redundant always-true inner guard — a value already proven truthy by a leading double-bang test is re-tested with a second and-guard inside the same guarded call, so the inner guard is dead; read the property directly instead",
+    scanScope: "test",
+    regex: /!!(\w+)\s*&&(?:(?!\|\|)[^\n])*\(\s*\1\s*&&\s*\1\./,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "0.16.15 — openid-federation.test.js `_rejects`/`_throws` re-tested `threw` inside the guarded `re.test(...)` even though the leading double-bang test on `threw` already proved it truthy, so the inner test was dead; the code-quality bot flagged it as a useless always-true conditional and blocked merge on thread-resolution (same class as the 0.16.10 agent-helper double-check). Fixed by reading `threw.code` directly. The `||` temper keeps only the sound shape — it does NOT fire on external-db-routing.test.js:297, where the same-variable inner guard is real because the value can be null on the right of an `||`. Fires when a double-bang guard is followed on one line, with no intervening `||`, by a parenthesized re-test of the same variable; silent once the inner guard is dropped.",
+  },
+  {
     // A test file must invoke its run()/IIFE ONLY under
     // `if (require.main === module)`. The smoke worker REQUIRES each test
     // module and then awaits its exported run(); a module-level `run()` (or
@@ -14289,6 +14387,7 @@ async function run() {
   testNoManualByteCompare();
   testNoOpenCodedLazyRequire();
   testNoBareErrorThrows();
+  testDefineClassErrorArgOrder();
   testNoHandrolledUrlBuild();
   testNoHandrolledRetryLoop();
   await testNoDuplicateCodeBlocks();

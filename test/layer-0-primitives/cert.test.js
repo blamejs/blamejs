@@ -10,7 +10,7 @@
  *   - SNI callback (exact + wildcard + fallback)
  *   - manual refresh() with a mocked ACME client
  *   - audit emission on issue / renew / renew-failed
- *   - key escrow (encrypt-to-recipient via b.crypto.encryptEnvelope)
+ *   - key escrow (encrypt-to-recipient via b.crypto.encrypt)
  *
  * The live ACME path against an external CA isn't exercised here
  * (no test CA shipped in the framework); the issue/renew flow is
@@ -529,10 +529,9 @@ async function testKeyEscrow() {
   var vault = _ephemeralVault();
   var pem = await _selfSignedCert(["example.com"], 90);
 
-  // Generate an X25519 recipient for the escrow envelope. b.crypto's
-  // encryptEnvelope accepts the recipient public key as bytes.
-  var recipient = crypto.generateKeyPairSync("x25519");
-  var recipientPubBytes = recipient.publicKey.export({ type: "spki", format: "der" });
+  // Offline break-glass recipient — an ML-KEM-1024 (+ P-384 hybrid)
+  // keypair. b.crypto.encrypt seals the escrowed key to its public keys.
+  var recipientKp = b.crypto.generateEncryptionKeyPair();
 
   // Seed a fake cert so start() doesn't try to ACME.
   fs.mkdirSync(path.join(tmp, "main"), { recursive: true });
@@ -551,7 +550,7 @@ async function testKeyEscrow() {
       name:      "main",
       domains:   ["example.com"],
       challenge: { type: "http-01", provision: async function () {}, cleanup: async function () {} },
-      keyEscrow: { recipient: recipientPubBytes },
+      keyEscrow: { recipient: { publicKey: recipientKp.publicKey, ecPublicKey: recipientKp.ecPublicKey } },
     }],
     audit: false,
   });
@@ -1164,34 +1163,85 @@ async function testIssueValidAuthSkipsProvision() {
   } finally { await mgr.stop(); restore(); }
 }
 
-// documents current behavior: the key-escrow write path calls
-// b.crypto.encryptEnvelope, which crypto.js does NOT export — so the
-// first full issue with keyEscrow set throws "encryptEnvelope is not a
-// function" out of _persistCert. The existing testKeyEscrow never
-// reaches this line (its start() short-circuits on a cached cert). This
-// is a latent bug in a security-sensitive, cross-cutting API contract
-// (the escrow recipient shape maps to no existing crypto primitive and
-// there is no break-glass decrypt side), so it is asserted, not fixed.
-async function testKeyEscrowWritePathIsBroken() {
+// Key escrow seals the renewed private key to the operator's offline
+// break-glass recipient (an ML-KEM-1024 keypair from
+// b.crypto.generateEncryptionKeyPair) via b.crypto.encrypt, writing
+// <name>/key.pem.escrow. The operator recovers it offline with
+// b.crypto.decrypt. Issue #446 — the prior implementation called a
+// nonexistent b.crypto.encryptEnvelope and threw on the first issue.
+async function testKeyEscrowSealsRecoverableEnvelope() {
   var tmp = _tmpDir();
   var vault = _ephemeralVault();
   var pem = await _selfSignedCert(["escrow.example"], 90);
-  var recipient = crypto.generateKeyPairSync("x25519").publicKey.export({ type: "spki", format: "der" });
+  var kp = b.crypto.generateEncryptionKeyPair();
   var restore = _stubAcmeCreate(_makeStubAcme(pem.certPem));
   var mgr = b.cert.create({
     storage: { type: "sealed-disk", rootDir: tmp, vault: vault },
     acme:    { directory: "https://example/", accountKey: "auto" },
     certs:   [{ name: "m", domains: ["escrow.example"], challenge: GOOD_CHALLENGE,
-      keyEscrow: { recipient: recipient } }],
+      keyEscrow: { recipient: { publicKey: kp.publicKey, ecPublicKey: kp.ecPublicKey } } }],
     ocsp:    { stapling: false },
     audit:   false,
   });
   var threw = null;
   try { await mgr.start(); } catch (e) { threw = e; }
   finally { await mgr.stop(); restore(); }
-  var msg = (threw && (threw.message || String(threw))) || "";
-  check("keyEscrow write path currently throws (encryptEnvelope not exported)",
-    threw && /encryptEnvelope is not a function/.test(msg));
+  check("keyEscrow write path no longer throws", threw === null);
+
+  var escrowPath = path.join(tmp, "m", "key.pem.escrow");
+  check("keyEscrow: escrow envelope written to <name>/key.pem.escrow",
+    fs.existsSync(escrowPath));
+
+  // Break-glass recovery: the offline operator decrypts the escrow with
+  // the recipient private key(s) and gets a usable private-key PEM back.
+  var envelope = fs.readFileSync(escrowPath, "utf8").trim();
+  var recovered = b.crypto.decrypt(envelope,
+    { privateKey: kp.privateKey, ecPrivateKey: kp.ecPrivateKey });
+  var recoveredPem = Buffer.isBuffer(recovered) ? recovered.toString("utf8") : recovered;
+  check("keyEscrow: recovered plaintext is a PEM private key",
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(recoveredPem));
+
+  // An unrecognized recipient shape is refused at config time.
+  var badThrew = null;
+  try {
+    b.cert.create({
+      storage: { type: "sealed-disk", rootDir: _tmpDir(), vault: _ephemeralVault() },
+      acme:    { directory: "https://example/", accountKey: "auto" },
+      certs:   [{ name: "b", domains: ["b.example"], challenge: GOOD_CHALLENGE,
+        keyEscrow: { recipient: 123 } }],
+    });
+  } catch (e) { badThrew = e; }
+  check("keyEscrow: non-string / non-object recipient refused at config time",
+    badThrew && badThrew.code === "cert/bad-key-escrow");
+
+  // An object-form recipient with an empty publicKey is refused too: the
+  // object path must require a non-empty key like the string path does, or a
+  // "" key slips through config and fails deeper at b.crypto.encrypt time.
+  var emptyKeyThrew = null;
+  try {
+    b.cert.create({
+      storage: { type: "sealed-disk", rootDir: _tmpDir(), vault: _ephemeralVault() },
+      acme:    { directory: "https://example/", accountKey: "auto" },
+      certs:   [{ name: "c", domains: ["c.example"], challenge: GOOD_CHALLENGE,
+        keyEscrow: { recipient: { publicKey: "" } } }],
+    });
+  } catch (e) { emptyKeyThrew = e; }
+  check("keyEscrow: object recipient with empty publicKey refused at config time",
+    emptyKeyThrew && emptyKeyThrew.code === "cert/bad-key-escrow");
+
+  // A present-but-empty ecPublicKey (the optional P-384 hybrid leg) is refused
+  // too — an empty hybrid key must not silently downgrade to ML-KEM-only.
+  var emptyEcThrew = null;
+  try {
+    b.cert.create({
+      storage: { type: "sealed-disk", rootDir: _tmpDir(), vault: _ephemeralVault() },
+      acme:    { directory: "https://example/", accountKey: "auto" },
+      certs:   [{ name: "d", domains: ["d.example"], challenge: GOOD_CHALLENGE,
+        keyEscrow: { recipient: { publicKey: "ml-kem-pem", ecPublicKey: "" } } }],
+    });
+  } catch (e) { emptyEcThrew = e; }
+  check("keyEscrow: object recipient with empty ecPublicKey refused at config time",
+    emptyEcThrew && emptyEcThrew.code === "cert/bad-key-escrow");
 }
 
 // ---- Corrupt sealed cert that unseals but won't parse → re-issue ----
@@ -1533,7 +1583,7 @@ async function run() {
   await testIssueFlowHappyPath();
   await testIssueNoMatchingChallenge();
   await testIssueValidAuthSkipsProvision();
-  await testKeyEscrowWritePathIsBroken();
+  await testKeyEscrowSealsRecoverableEnvelope();
   await testUnparseableSealedCertReissues();
   await testReadSealedStringUnseal();
   await testCertMetaNoSubjectAltName();
