@@ -6429,6 +6429,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "cryptoField.sealRow must skip only null/undefined; an empty string is sealed (via _encodeTyped of the empty string -> a non-empty typed E: marker) so it becomes a real authenticated envelope. Re-adding an empty-string arm to the seal-skip (=== null || out[field] === empty) stores a bare plaintext empty string that unsealRow's falsy skip would accept, letting a DB-write attacker replace any sealed ciphertext with empty undetected (the sealed-column tamper-evidence hole). Fires if the empty-string skip returns to the seal path.",
   },
   {
+    id: "guard-css-danger-check-must-fold-url-whitespace",
+    primitive: "a guard's CSS-danger check must fold the URL-scheme whitespace a browser strips inside url(...) -- tab/lf/cr -- after entity-decoding (codepointClass.stripUrlSchemeWhitespace); a decode-only check misses an entity-hidden tab in a CSS URL scheme like url(java&Tab;script:)",
+    scanScope: "lib",
+    regex: /decodeMarkupEntities\(value\)\s*;/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "guard-html / guard-svg _isCssDangerous entity-decode a style value, but a browser also strips tab/lf/cr from a URL inside url(...) before resolving its scheme, so url(java&Tab;script:) -> url(java<TAB>script:) must be folded with stripUrlSchemeWhitespace before matching the contiguous javascript: danger pattern. A decode-only codepointClass.decodeMarkupEntities(value); with no whitespace fold re-opens the CSS whitespace-scheme bypass. Fires if the fold is dropped.",
+  },
+  {
     // Vault keypair rotation stages every output file (the re-encrypted
     // db, resealed vault/db keys, additional sealed files, derived-hash
     // material, and the transient PLAINTEXT db) inside opts.stagingDir.

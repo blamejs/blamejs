@@ -408,6 +408,13 @@ function testGuardSvgCssEntityBypass() {
      '<svg><rect style="background:url(&#106;avascript:alert(1))"/></svg>'],
     ["named &colon; -> : (behavior:)",
      '<svg><rect style="behavior&colon;url(evil.htc)"/></svg>'],
+    // Whitespace-hidden scheme inside url(): a browser strips tab/lf/cr from a URL
+    // before resolving its scheme, so url(java<TAB>script:) navigates as
+    // javascript:. The decoded CSS value must also fold that URL whitespace.
+    ["named &Tab; -> tab (url(java<TAB>script:))",
+     '<svg><rect style="background:url(java&Tab;script:alert(1))"/></svg>'],
+    ["numeric &#9; -> tab (url(java<TAB>script:))",
+     '<svg><rect style="background:url(java&#9;script:alert(1))"/></svg>'],
   ];
   for (var i = 0; i < vectors.length; i++) {
     var rv = b.guardSvg.validate(vectors[i][1], { profile: "balanced" });

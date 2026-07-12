@@ -178,6 +178,11 @@ function testGuardHtmlCssInjection() {
     'style="width:ex&#x70;ression(alert(1))"',
     'style="background:url(&#x6A;avascript:alert(1))"',
     'style="behavior&colon;url(x.htc)"',
+    // Whitespace-hidden scheme inside url(): a browser strips tab/lf/cr from a URL
+    // before resolving its scheme, so url(java<TAB>script:) navigates as
+    // javascript:. The decoded CSS value must also fold that whitespace.
+    'style="background:url(java&Tab;script:alert(1))"',
+    'style="background:url(java&#9;script:alert(1))"',
   ];
   for (var i = 0; i < payloads.length; i++) {
     var rv = b.guardHtml.validate("<div " + payloads[i] + ">x</div>",
