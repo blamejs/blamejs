@@ -462,6 +462,18 @@ async function testStorageCapLifecycle() {
         columns: { _id: "TEXT PRIMARY KEY", tenantId: "TEXT", note: "TEXT" },
         indexes: ["tenantId"],
       },
+      {
+        // A table whose tenantField ("tid") is itself a SEALED column with a
+        // derived hash. On disk "tid" holds a vault envelope, so a plaintext
+        // `WHERE tid = ?` matches nothing; the byte sum must filter by the
+        // derived-hash blind index (as db.from().where() does) or the cap
+        // silently counts zero for these tenants.
+        name: "sealed_tenant",
+        columns: { _id: "TEXT PRIMARY KEY", tid: "TEXT", tidHash: "TEXT", note: "TEXT" },
+        sealedFields:  ["tid"],
+        derivedHashes: { tidHash: { from: "tid" } },
+        indexes: ["tidHash"],
+      },
     ]);
 
     b.db.from("docs").insertOne({ _id: "d1", tenantId: "t-acme", body: "hello", blob: Buffer.from("ABCD") });
@@ -578,6 +590,26 @@ async function testStorageCapLifecycle() {
     check("snapshot does not throw on a reserved-word table name", rwThrew === null);
     check("reserved-word table rows counted correctly",
       rwSnap && rwSnap.bytesUsed === 3 + 4 + 2);
+
+    // A sealed tenantField: "tid" is sealed on disk, so a plaintext WHERE
+    // never matches. snapshot must filter by the derived-hash blind index
+    // (as db.from().where() does) — otherwise the cap silently counts zero.
+    b.db.from("sealed_tenant").insertOne({ _id: "st1", tid: "tenant-x", note: "data" });
+    var sealedTenantQuota = b.tenantQuota.create({
+      db:               b.db,
+      tenantField:      "tid",
+      tables:           ["sealed_tenant"],
+      defaultBytesCap:  b.constants.BYTES.gib(1),
+      audit:            false,
+    });
+    var stSnap = await sealedTenantQuota.snapshot("tenant-x");
+    check("sealed tenantField resolves via derived hash (rows are found, not zero)",
+      stSnap.bytesUsed > 0);
+    // The row's raw cells: _id "st1" + the sealed "tid" envelope + the tidHash
+    // digest + note "data" — comfortably over 40 bytes; the buggy plaintext
+    // filter would match nothing and report 0.
+    check("sealed-tenantField storage counted (envelope + hash + plaintext cells)",
+      stSnap.bytesUsed > 40);
 
     // instrumentQuery audit-on path with a live audit chain (real safeEmit).
     var audited = b.tenantQuota.instrumentQuery({
