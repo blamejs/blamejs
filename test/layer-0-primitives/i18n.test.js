@@ -804,6 +804,19 @@ async function run() {
   testLazyLoadRejectsInlineTranslations();
   testEagerLocalesValidation();
   testLocaleChain();
+
+  // Adversarial / defensive branch coverage + bug guards
+  testDirCustomRtlCaseInsensitive();
+  testNamespaceShadowFallsBack();
+  testKeyValidation();
+  testGetTranslationsFor();
+  testSetLocaleNonConfigured();
+  testFormatterCallSiteThrows();
+  testMessageFormatViaT();
+  testMessageFormatNamespaceSurface();
+  testInterpolationSameDelimiter();
+  testMiddlewareResolver();
+  testLocaleChainFallbackValidation();
 }
 
 function testLocaleChain() {
@@ -1003,7 +1016,307 @@ function testEagerLocalesValidation() {
   check("eagerLocales: must be subset of locales", threw);
 }
 
-module.exports = { run: run };
+// ---- Adversarial / defensive branch coverage ----
+
+// dir() folds the requested locale's primary subtag to lower case before
+// the RTL-membership test. A custom rtlLanguages list must be folded the
+// same way — otherwise an operator-supplied entry like "AR" or "CKB"
+// silently never matches and an RTL language renders left-to-right.
+function testDirCustomRtlCaseInsensitive() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    rtlLanguages:  ["AR", "ckb", "KU"],   // mixed / upper-case custom entries
+  });
+  check("dir(ar) rtl even when custom list entry is upper-case 'AR'",
+        i.dir({ locale: "ar" }) === "rtl");
+  check("dir(AR-EG) rtl (subtag-stripped + case-folded)",
+        i.dir({ locale: "AR-EG" }) === "rtl");
+  check("dir(ku) rtl even when custom list entry is upper-case 'KU'",
+        i.dir({ locale: "ku" }) === "rtl");
+  check("dir(ckb) rtl (lower-case custom entry)",
+        i.dir({ locale: "ckb" }) === "rtl");
+  check("dir(en) ltr (not in custom rtl list)",
+        i.dir({ locale: "en" }) === "ltr");
+}
+
+// A key that resolves to a nested namespace object in the requested locale
+// must NOT shadow a real leaf translation defined in a fallback locale —
+// the lookup should skip the non-renderable namespace and keep walking the
+// fallback chain instead of leaking the raw key into the UI.
+function testNamespaceShadowFallsBack() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "fr"],
+    translations: {
+      en: { title: "English Title", greet: "Hello" },
+      fr: { title: { sub: "Sous-titre" }, greet: "Bonjour" },
+    },
+  });
+  check("namespace in requested locale falls through to fallback leaf",
+        i.t("title", null, { locale: "fr" }) === "English Title");
+  check("fr's own leaf still resolves normally",
+        i.t("greet", null, { locale: "fr" }) === "Bonjour");
+  check("has() reports true when a fallback locale supplies the leaf",
+        i.has("title", { locale: "fr" }) === true);
+
+  // Subtag-strip variant: pt-BR has a namespace, pt has the leaf.
+  var i2 = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "pt", "pt-BR"],
+    translations: {
+      en:      { menu: "Menu" },
+      pt:      { menu: "Menu PT" },
+      "pt-BR": { menu: { file: "Arquivo" } },   // namespace shadows the leaf
+    },
+  });
+  check("subtag-strip skips namespace shadow and resolves parent leaf",
+        i2.t("menu", null, { locale: "pt-BR" }) === "Menu PT");
+
+  // A namespace key with no leaf anywhere in the chain is still a miss.
+  var i3 = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { nav: { home: "Home" } } },
+  });
+  check("namespace key with no leaf in chain is a miss (returns key)",
+        i3.t("nav") === "nav");
+  check("has() false for a pure namespace key",
+        i3.has("nav") === false);
+}
+
+function testKeyValidation() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { greet: "Hello" } },
+  });
+  var threwNonString = false;
+  try { i.t(123); } catch (_e) { threwNonString = true; }
+  check("t() rejects non-string key", threwNonString);
+
+  var threwEmpty = false;
+  try { i.t(""); } catch (_e) { threwEmpty = true; }
+  check("t() rejects empty-string key", threwEmpty);
+
+  check("has() returns false for non-string key (no throw)",
+        i.has(123) === false);
+  check("has() returns false for empty key (no throw)",
+        i.has("") === false);
+}
+
+function testGetTranslationsFor() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { greet: "Hello" } },
+  });
+  var threw = false;
+  try { i.translations(123); } catch (_e) { threw = true; }
+  check("translations() rejects non-string locale", threw);
+  check("translations() returns null for an unloaded locale",
+        i.translations("zz") === null);
+  check("translations() returns the loaded tree for a known locale",
+        i.translations("en") && i.translations("en").greet === "Hello");
+}
+
+// setLocale permits a valid-but-unconfigured tag (operators experiment);
+// it emits i18n.miss.locale and still resolves through the fallback chain.
+function testSetLocaleNonConfigured() {
+  var events = [];
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    observability: { event: function (name, _v, l) { events.push({ name: name, labels: l || {} }); } },
+    translations:  { en: { greet: "Hello" } },
+  });
+  i.setLocale("de");   // valid BCP 47, not in configured locales
+  check("setLocale accepts a valid non-configured tag", i.locale === "de");
+  check("setLocale emits i18n.miss.locale for a non-configured tag",
+        events.some(function (e) { return e.name === "i18n.miss.locale" && e.labels.requested === "de"; }));
+  check("t() under the non-configured locale falls through to defaultLocale",
+        i.t("greet") === "Hello");
+}
+
+// The formatter helpers throw a typed I18nError on the inputs they screen
+// (empty / non-array / bad enum) — the call-site-throw validation tier.
+function testFormatterCallSiteThrows() {
+  var i = b.i18n.create({ defaultLocale: "en", locales: ["en"] });
+
+  var threwUnit = false;
+  try { i.formatRelative(5, ""); } catch (_e) { threwUnit = true; }
+  check("formatRelative rejects empty unit", threwUnit);
+
+  var threwRelVal = false;
+  try { i.formatRelative(Infinity, "day"); } catch (_e) { threwRelVal = true; }
+  check("formatRelative rejects non-finite value", threwRelVal);
+
+  var threwList = false;
+  try { i.formatList("not-an-array"); } catch (_e) { threwList = true; }
+  check("formatList rejects non-array", threwList);
+
+  var threwCode = false;
+  try { i.displayName("", "language"); } catch (_e) { threwCode = true; }
+  check("displayName rejects empty code", threwCode);
+
+  var threwDateNull = false;
+  try { i.formatDate(null); } catch (_e) { threwDateNull = true; }
+  check("formatDate rejects null value", threwDateNull);
+}
+
+// ICU MessageFormat is auto-detected by t() when the entry carries
+// {arg, plural|select|selectordinal ...} syntax, or forced with
+// { messageFormat: true }. Drive the real t() consumer path.
+function testMessageFormatViaT() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations: {
+      en: {
+        role:  "{role, select, admin {Administrator} other {Member}}",
+        inbox: "You have {n, plural, =0 {no messages} one {# message} other {# messages}}.",
+        rank:  "{pos, selectordinal, one {#st} two {#nd} few {#rd} other {#th}} place",
+      },
+    },
+  });
+  check("t() auto-detects select and renders the matched case",
+        i.t("role", { role: "admin" }) === "Administrator");
+  check("t() select falls to 'other' for an unmatched case",
+        i.t("role", { role: "editor" }) === "Member");
+  check("t() plural exact =0 case",
+        i.t("inbox", { n: 0 }) === "You have no messages.");
+  check("t() plural 'one' with # placeholder",
+        i.t("inbox", { n: 1 }) === "You have 1 message.");
+  check("t() plural 'other' with # placeholder",
+        i.t("inbox", { n: 5 }) === "You have 5 messages.");
+  check("t() selectordinal renders ordinal category",
+        i.t("rank", { pos: 3 }) === "3rd place");
+  check("t() selectordinal teen-boundary (21 → 21st)",
+        i.t("rank", { pos: 21 }) === "21st place");
+
+  // Forcing messageFormat on a malformed template surfaces a typed error.
+  var iBad = b.i18n.create({
+    defaultLocale: "en", locales: ["en"],
+    translations:  { en: { broken: "{x, plural, one {a}}" } },   // missing 'other'
+  });
+  var threw = false;
+  try { iBad.t("broken", { x: 1 }, { messageFormat: true }); } catch (_e) { threw = true; }
+  check("t() with messageFormat:true throws on a malformed template", threw);
+}
+
+function testMessageFormatNamespaceSurface() {
+  var mf = b.i18n.messageFormat;
+  check("messageFormat namespace exposes format", typeof mf.format === "function");
+  check("messageFormat namespace exposes parse", typeof mf.parse === "function");
+  check("messageFormat namespace exposes looksLikeMessageFormat",
+        typeof mf.looksLikeMessageFormat === "function");
+  check("looksLikeMessageFormat true for plural syntax",
+        mf.looksLikeMessageFormat("{n, plural, other {x}}") === true);
+  check("looksLikeMessageFormat false for plain interpolation",
+        mf.looksLikeMessageFormat("Hello {name}") === false);
+  check("mf.format select matched case",
+        mf.format("{g, select, male {He} other {They}}", { g: "male" }) === "He");
+  check("mf.format select unmatched → other",
+        mf.format("{g, select, male {He} other {They}}", { g: "x" }) === "They");
+
+  // Prototype-pollution: an operator/end-user select value that names an
+  // Object.prototype member must fall through to the `other` case, not return
+  // an inherited member (which renders garbage, or throws when rendered as a
+  // non-array — a request DoS). Every case-map lookup is own-property only.
+  var protoKeys = ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"];
+  for (var pk = 0; pk < protoKeys.length; pk++) {
+    var out;
+    try { out = mf.format("{g, select, male {He} other {They}}", { g: protoKeys[pk] }); }
+    catch (e3) { out = "THREW:" + (e3 && e3.message); }
+    check("mf.format select proto-key '" + protoKeys[pk] + "' falls to other (no proto leak / DoS)",
+          out === "They");
+  }
+  check("mf.format plural resolves its own `other` (no proto leak)",
+        mf.format("{n, plural, other {N items}}", { n: 5 }) === "N items");
+
+  // Malformed templates fail as typed errors, never a raw crash.
+  var threwUnclosed = false;
+  try { mf.parse("{x, plural, other {a"); } catch (e) {
+    threwUnclosed = (e && e.name === "I18nMessageFormatError");
+  }
+  check("mf.parse throws typed I18nMessageFormatError on unclosed body",
+        threwUnclosed);
+  var threwDeep = false;
+  try {
+    var deep = "";
+    for (var d = 0; d < 300; d++) deep += "{a,select,x{";
+    deep += "Z";
+    for (var d2 = 0; d2 < 300; d2++) deep += "}}";
+    mf.parse(deep);
+  } catch (e2) { threwDeep = (e2 && e2.name === "I18nMessageFormatError"); }
+  check("mf.parse caps nesting depth with a typed error (no stack overflow)",
+        threwDeep);
+}
+
+function testInterpolationSameDelimiter() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    interpolation: { start: "%", end: "%" },
+    translations:  { en: { a: "%x% and %y%", stray: "50% done" } },
+  });
+  check("same-delimiter interpolation replaces both placeholders",
+        i.t("a", { x: "1", y: "2" }) === "1 and 2");
+  check("same-delimiter: a lone unmatched delimiter is left literal",
+        i.t("stray") === "50% done");
+}
+
+function testMiddlewareResolver() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "es"],
+    translations:  { en: { greet: "Hello" }, es: { greet: "Hola" } },
+  });
+
+  // Resolver wins over Accept-Language.
+  var mw = i.middleware({ resolver: function (req) { return req.myLang; } });
+  var req = _mockReq();
+  req.headers = { "accept-language": "en" };
+  req.myLang = "es";
+  mw(req, _mockRes(), function () {});
+  check("resolver return value wins over Accept-Language", req.locale === "es");
+
+  // Resolver returning an invalid / non-configured tag falls through.
+  var mw2 = i.middleware({ resolver: function () { return "zz-not-configured"; } });
+  var req2 = _mockReq();
+  req2.headers = { "accept-language": "es" };
+  mw2(req2, _mockRes(), function () {});
+  check("resolver invalid value falls through to header negotiation",
+        req2.locale === "es");
+
+  // Resolver throwing must not crash the request.
+  var mw3 = i.middleware({ resolver: function () { throw new Error("resolver bug"); } });
+  var req3 = _mockReq();
+  req3.headers = { "accept-language": "es" };
+  var nextCalled = false;
+  mw3(req3, _mockRes(), function () { nextCalled = true; });
+  check("resolver throw is swallowed; next() still called", nextCalled === true);
+  check("resolver throw falls through to header negotiation", req3.locale === "es");
+}
+
+function testLocaleChainFallbackValidation() {
+  var threwBadFallback = false;
+  try { b.i18n.localeChain("fr", { defaultLocale: "en", fallbackLocale: "not_a_tag" }); }
+  catch (_e) { threwBadFallback = true; }
+  check("localeChain rejects an invalid fallbackLocale tag", threwBadFallback);
+
+  var threwFallbackNotConfigured = false;
+  try {
+    b.i18n.localeChain("fr", { defaultLocale: "en", locales: ["en", "fr"], fallbackLocale: "de" });
+  } catch (_e) { threwFallbackNotConfigured = true; }
+  check("localeChain enforces fallbackLocale membership in configured locales",
+        threwFallbackNotConfigured);
+
+  var threwBadDefault = false;
+  try { b.i18n.localeChain("fr", { defaultLocale: "not_a_tag" }); }
+  catch (_e) { threwBadDefault = true; }
+  check("localeChain rejects an invalid defaultLocale tag", threwBadDefault);
+}
 
 if (require.main === module) {
   run().then(
