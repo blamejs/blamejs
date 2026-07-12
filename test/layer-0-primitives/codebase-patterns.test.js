@@ -6438,6 +6438,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "guard-html / guard-svg _isCssDangerous entity-decode a style value, but a browser also strips tab/lf/cr from a URL inside url(...) before resolving its scheme, so url(java&Tab;script:) -> url(java<TAB>script:) must be folded with stripUrlSchemeWhitespace before matching the contiguous javascript: danger pattern. A decode-only codepointClass.decodeMarkupEntities(value); with no whitespace fold re-opens the CSS whitespace-scheme bypass. Fires if the fold is dropped.",
   },
   {
+    id: "i18n-messageformat-case-lookup-must-be-own-property",
+    primitive: "the MessageFormat renderer must look up a select/plural case via _ownCase (own-property only), never a bare node.cases[key] -- a select value is end-user supplied, so String(sv) can be __proto__ / constructor / toString and a bare index returns a truthy INHERITED Object.prototype member, bypassing the other fallback (output corruption or a _renderSequence-of-non-array request DoS)",
+    scanScope: "lib",
+    regex: /node\.cases\[/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "lib/i18n-messageformat.js resolves a MessageFormat case by an end-user-controlled select key; a bare node.cases[key] reaches the prototype chain for __proto__ / constructor / toString and returns an inherited member, corrupting output or throwing a request DoS on render. Every case lookup must route through _ownCase (Object.prototype.hasOwnProperty guarded). Fires if a bare node.cases[...] index returns to the code.",
+  },
+  {
     // Vault keypair rotation stages every output file (the re-encrypted
     // db, resealed vault/db keys, additional sealed files, derived-hash
     // material, and the transient PLAINTEXT db) inside opts.stagingDir.
