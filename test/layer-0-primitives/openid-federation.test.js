@@ -320,6 +320,180 @@ function testPolicyMultiNodeNarrowing() {
     eff.grant_types[0] === "authorization_code" && eff.scopes[0] === "openid");
 }
 
+// The chain levels' policies are MERGED (OIDF 1.0 §6.1.5.3) so a subordinate can
+// only narrow a superior's constraint, never override it — the pre-merge
+// sequential apply let a leaf-ward `value` silently overwrite the anchor's.
+function testPolicyMergeCrossLevel() {
+  var K = "openid_relying_party";
+  function chainOf(anchorPolicy, subPolicy) {
+    // leaf-first: chain[0].subordinate = the intermediate's policy on the leaf
+    // (lower); chain[1].subordinate = the anchor's policy on the intermediate.
+    return [
+      { subordinate: { metadata_policy: { "openid_relying_party": subPolicy } } },
+      { subordinate: { metadata_policy: { "openid_relying_party": anchorPolicy } } },
+      { claims: { iss: "https://anchor.example" } },
+    ];
+  }
+  _throws("policy merge: conflicting cross-level value refused (trust downgrade)",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({},
+        chainOf({ token_endpoint_auth_method: { value: "private_key_jwt" } },
+                { token_endpoint_auth_method: { value: "none" } }), K);
+    }, /policy-merge-conflict/);
+  var same = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ token_endpoint_auth_method: { value: "x" } },
+            { token_endpoint_auth_method: { value: "x" } }), K);
+  check("policy merge: identical cross-level value applies", same.token_endpoint_auth_method === "x");
+  _throws("policy merge: one_of intersects (subordinate narrows the anchor's set)",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({ grant_types: "a" },
+        chainOf({ grant_types: { one_of: ["a", "b", "c"] } },
+                { grant_types: { one_of: ["b", "c"] } }), K);
+    }, /one-of/);
+  var u = b.auth.openidFederation.applyMetadataPolicy({ scope: [] },
+    chainOf({ scope: { add: ["x"] } }, { scope: { add: ["y"] } }), K);
+  check("policy merge: add unions across levels",
+    u.scope.indexOf("x") !== -1 && u.scope.indexOf("y") !== -1);
+
+  // Cross-operator downgrades: a subordinate must not escape a superior's
+  // constraint by expressing an override with a DIFFERENT operator. The merged
+  // constraint is enforced against the FINAL value at apply time, so each is
+  // refused -- a value outside the merged one_of, an add widening past the
+  // merged subset_of, a value dropping a superset_of-mandated member.
+  _throws("policy merge: subordinate value cannot override a superior one_of",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({},
+        chainOf({ token_endpoint_auth_method: { one_of: ["private_key_jwt"] } },
+                { token_endpoint_auth_method: { value: "none" } }), K);
+    }, /policy-one-of-failed/);
+  _throws("policy merge: subordinate add cannot widen past a superior subset_of",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({ scope: ["read"] },
+        chainOf({ scope: { subset_of: ["read"] } },
+                { scope: { add: ["write"] } }), K);
+    }, /policy-subset-of-failed/);
+  _throws("policy merge: subordinate value cannot drop a superior superset_of member",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({ grant_types: ["authorization_code"] },
+        chainOf({ grant_types: { superset_of: ["authorization_code"] } },
+                { grant_types: { value: ["implicit"] } }), K);
+    }, /policy-superset-of-failed/);
+
+  // Consistent cross-operator combinations remain valid narrowings.
+  var withinSub = b.auth.openidFederation.applyMetadataPolicy({ scope: [] },
+    chainOf({ scope: { subset_of: ["read", "write"] } }, { scope: { add: ["read"] } }), K);
+  check("policy merge: add within subset_of applies", withinSub.scope[0] === "read");
+  var defOneOf = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ subject_type: { one_of: ["public", "pairwise"] } },
+            { subject_type: { default: "public" } }), K);
+  check("policy merge: default consistent with one_of applies", defOneOf.subject_type === "public");
+  // A subordinate MAY pin an exact `value` INSIDE the superior's one_of set (a
+  // valid narrowing, OIDF 6.1.3.1.1); only a value OUTSIDE it is the downgrade.
+  var vInSet = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ token_endpoint_auth_method: { one_of: ["private_key_jwt", "self_signed_tls_client_auth"] } },
+            { token_endpoint_auth_method: { value: "private_key_jwt" } }), K);
+  check("policy merge: value consistent with a superior one_of applies",
+    vInSet.token_endpoint_auth_method === "private_key_jwt");
+  // A subordinate cannot WIDEN an anchor's exact `value` with `add` (the union
+  // would escape the pin) nor pair it with `default` -- value combines with a
+  // constraint, never with another modifier.
+  _throws("policy merge: subordinate add cannot widen an anchor pinned value",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({ grant_types: ["authorization_code"] },
+        chainOf({ grant_types: { value: ["authorization_code"] } },
+                { grant_types: { add: ["implicit"] } }), K);
+    }, /policy-merge-conflict/);
+  // `value` + `add` is a no-op (allowed) when `add` is already within the pin;
+  // `value` + `default` is a no-op (the pinned value wins) -- neither widens.
+  var vAddNoop = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ grant_types: { value: ["authorization_code", "refresh_token"] } },
+            { grant_types: { add: ["refresh_token"] } }), K);
+  check("policy merge: value + add within the pin is a no-op",
+    vAddNoop.grant_types.length === 2 && vAddNoop.grant_types.indexOf("refresh_token") !== -1);
+  var vDefault = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ subject_type: { value: "public" } },
+            { subject_type: { default: "pairwise" } }), K);
+  check("policy merge: value + default applies the pinned value", vDefault.subject_type === "public");
+  // `superset_of` is satisfied by the FINAL value, so a co-present `add` need not
+  // itself supply the mandated member when the leaf already carries it.
+  var addSuperLeaf = b.auth.openidFederation.applyMetadataPolicy({ grant_types: ["authorization_code"] },
+    chainOf({ grant_types: { superset_of: ["authorization_code"] } },
+            { grant_types: { add: ["refresh_token"] } }), K);
+  check("policy merge: add + superset_of satisfied by leaf metadata applies",
+    addSuperLeaf.grant_types.indexOf("authorization_code") !== -1 &&
+    addSuperLeaf.grant_types.indexOf("refresh_token") !== -1);
+  // A space-delimited scope value is validated as a subset of the merged subset_of.
+  var scopeVal = b.auth.openidFederation.applyMetadataPolicy({},
+    chainOf({ scope: { subset_of: ["openid", "email"] } },
+            { scope: { value: "openid email" } }), K);
+  check("policy merge: scope-string value within subset_of applies", scopeVal.scope === "openid email");
+  // Disjoint one_of across levels intersects to the empty set -> refused (no
+  // value could ever satisfy the chain), not silently accepted when absent.
+  _throws("policy merge: disjoint one_of across levels refused",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy({},
+        chainOf({ subject_type: { one_of: ["public"] } },
+                { subject_type: { one_of: ["pairwise"] } }), K);
+    }, /policy-merge-conflict/);
+}
+
+// subset_of constrains an array-valued claim; a leaf that self-declares the
+// claim as a scalar (or object) must NOT skip the anchor's allow-list -- it
+// fails closed, symmetric with superset_of. A leaf controls its own base
+// metadata, so a type-confused scalar would otherwise smuggle a forbidden value.
+function testPolicySubsetOfArrayType() {
+  var K = "openid_relying_party";
+  function apply(meta, pol) { return b.auth.openidFederation.applyMetadataPolicy(meta, _policyChain(pol, K), K); }
+  // A space-delimited string claim (OAuth `scope`, OIDF 6.1.3.1.8) is processed
+  // as an array: a subset passes; the string type is preserved on the result.
+  var okScope = apply({ scope: "openid email" }, { scope: { subset_of: ["openid", "email", "profile"] } });
+  check("policy subset_of: scope string within allow-list passes", okScope.scope === "openid email");
+  _throws("policy subset_of: scope string with a forbidden token refused",
+    function () { apply({ scope: "openid admin" }, { scope: { subset_of: ["openid", "email"] } }); },
+    /policy-subset-of-failed/);
+  // A claim the leaf type-confuses into a scalar cannot smuggle a forbidden value
+  // past the allow-list -- the split tokens are each checked.
+  _throws("policy subset_of: scalar with a forbidden token refused (no allow-list bypass)",
+    function () { apply({ grant_types: "authorization_code implicit" }, { grant_types: { subset_of: ["authorization_code"] } }); },
+    /policy-subset-of-failed/);
+  // A genuine non-array, non-string value (object/number) is malformed -> refused.
+  _throws("policy subset_of: non-array object claim fails closed",
+    function () { apply({ grant_types: { x: 1 } }, { grant_types: { subset_of: ["authorization_code"] } }); },
+    /policy-subset-of-failed/);
+  // An absent claim under subset_of stays absent -- subset_of does not require
+  // presence (that is `essential`), it only constrains a value that IS present.
+  var absent = apply({}, { grant_types: { subset_of: ["authorization_code"] } });
+  check("policy subset_of: absent claim stays absent", absent.grant_types === undefined);
+}
+
+// A metadata_policy claim name, or a base-metadata key, of __proto__ /
+// constructor / prototype must be refused (prototype-pollution guard) and must
+// never write Object.prototype -- the policy and metadata arrive as
+// attacker-influenced JSON, and the merge accumulates into a shared object.
+function testPolicyPrototypePollution() {
+  var K = "openid_relying_party";
+  function chain(pol) {
+    return [{ subordinate: { metadata_policy: { "openid_relying_party": pol } } }, { claims: { iss: "https://a" } }];
+  }
+  delete Object.prototype.polluted;
+  delete Object.prototype.value;
+  // A poisoned CLAIM name in a policy block (JSON wire path -> own __proto__ key).
+  _throws("policy: __proto__ claim name refused (no prototype pollution)",
+    function () { b.auth.openidFederation.applyMetadataPolicy({}, chain(JSON.parse('{"__proto__":{"value":"x"}}')), K); },
+    /poisoned-policy-key/);
+  _throws("policy: constructor claim name refused",
+    function () { b.auth.openidFederation.applyMetadataPolicy({}, chain(JSON.parse('{"constructor":{"value":"x"}}')), K); },
+    /poisoned-policy-key/);
+  // A poisoned key in the leaf's base metadata.
+  _throws("policy: __proto__ base-metadata key refused",
+    function () {
+      b.auth.openidFederation.applyMetadataPolicy(JSON.parse('{"__proto__":{"polluted":true}}'),
+        chain({ client_name: { value: "x" } }), K);
+    }, /poisoned-metadata-key/);
+  check("policy: Object.prototype left unpolluted",
+    ({}).polluted === undefined && ({}).value === undefined);
+}
+
 // ---- buildTrustChain: input validation -----------------------------------
 
 async function testChainValidation() {
@@ -745,6 +919,9 @@ async function run() {
   testPolicyGuards();
   testPolicyOperators();
   testPolicyMultiNodeNarrowing();
+  testPolicyMergeCrossLevel();
+  testPolicySubsetOfArrayType();
+  testPolicyPrototypePollution();
   await testChainValidation();
   await testChainHappyAndResolve();
   await testChainSelfStatement();
