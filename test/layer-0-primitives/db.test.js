@@ -1212,7 +1212,170 @@ async function testRollbackDetection() {
   }
 }
 
+// --- json-schema type mapping across the remaining DDL heads ---------------
+async function testJsonSchemaTypeAliases() {
+  var tmpDir = _mkTmp("db-cov-jsontypes2-");
+  try {
+    await _plainInit(tmpDir, [{
+      name: "aliased",
+      columns: {
+        _id:      "TEXT PRIMARY KEY",
+        i1:       "INT",
+        i2:       "BIGINT",
+        f1:       "FLOAT",
+        f2:       "DOUBLE",
+        f3:       "NUMERIC",
+        b1:       "BOOL",
+        s1:       "VARCHAR",
+        s2:       "CHAR",
+        reqInt:   "INT NOT NULL",
+      },
+    }], { frameworkTables: false, auditSigning: false });
+
+    var js = b.db.getTableMetadata({ table: "aliased", format: "json-schema-2020-12" });
+    check("json-schema maps INT → integer", js.properties.i1.anyOf[0].type === "integer");
+    check("json-schema maps BIGINT → integer", js.properties.i2.anyOf[0].type === "integer");
+    check("json-schema maps FLOAT → number", js.properties.f1.anyOf[0].type === "number");
+    check("json-schema maps DOUBLE → number", js.properties.f2.anyOf[0].type === "number");
+    check("json-schema maps NUMERIC → number", js.properties.f3.anyOf[0].type === "number");
+    check("json-schema maps BOOL → boolean", js.properties.b1.anyOf[0].type === "boolean");
+    check("json-schema maps VARCHAR → string", js.properties.s1.anyOf[0].type === "string");
+    check("json-schema maps CHAR → string", js.properties.s2.anyOf[0].type === "string");
+    // A NOT NULL integer-alias column keeps the bare type (no null union) and
+    // lands in `required`.
+    check("json-schema NOT NULL INT is a bare integer", js.properties.reqInt.type === "integer");
+    check("json-schema NOT NULL column is required", js.required.indexOf("reqInt") !== -1);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- getTableMetadata explicit blamejs format + posture-after-init ----------
+async function testMetadataBlamejsFormatAndPosture() {
+  var tmpDir = _mkTmp("db-cov-blamejsfmt-");
+  try {
+    await _plainInit(tmpDir, [{
+      name: "acct", columns: { _id: "TEXT PRIMARY KEY", note: "TEXT" }, sealedFields: ["note"],
+    }], { frameworkTables: false, auditSigning: false });
+
+    // Explicit format: "blamejs" takes the structuredClone snapshot branch
+    // (distinct from the string-arg and json-schema branches).
+    var meta = b.db.getTableMetadata({ table: "acct", format: "blamejs" });
+    check("getTableMetadata({format:'blamejs'}) returns the native snapshot",
+      meta && meta.sealedFields.indexOf("note") !== -1);
+
+    // applyPosture WHILE the db is open reports dbInitialized:true (the other
+    // suite exercises the pre-init false branch).
+    var res = b.db.applyPosture("gdpr");
+    check("applyPosture after init reports dbInitialized:true",
+      res.posture === "gdpr" && res.dbInitialized === true);
+    check("getActivePosture reflects the posture set after init",
+      b.db.getActivePosture() === "gdpr");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- exportCsv: qualified/quoted table + empty projection + out-of-range ts --
+async function testExportCsvAdversarialInput() {
+  var tmpDir = _mkTmp("db-cov-csvadv-");
+  try {
+    await _plainInit(tmpDir, [{
+      name: "evts",
+      columns: { _id: "TEXT PRIMARY KEY", region: "TEXT", when: "INTEGER" },
+    }], { frameworkTables: false, auditSigning: false });
+
+    // A schema-qualified / quote-bearing table name is rejected by the
+    // identifier quoter BEFORE the registered-table lookup — refuses the
+    // injection surface rather than passing it into SQL.
+    var qualified = await _catch(function () { return b.db.exportCsv({ table: "main.evts" }); });
+    check("exportCsv on a schema-qualified table name is refused",
+      qualified && qualified.code === "sql/bad-shape");
+    var quoted = await _catch(function () { return b.db.exportCsv({ table: 'ev"ts' }); });
+    check("exportCsv on a quote-bearing table name is refused",
+      quoted && quoted.code === "sql/bad-shape");
+
+    b.db.from("evts").insertOne({ _id: "e1", region: "eu", when: Date.now() });
+    // An empty explicit column projection falls back to the full declared set
+    // (length-0 array is treated as "no projection", not "select nothing").
+    var allOut = b.db.exportCsv({ table: "evts", columns: [] });
+    check("exportCsv with an empty columns array projects all columns",
+      allOut.csv.indexOf("region") !== -1 && allOut.csv.indexOf("when") !== -1);
+
+    // A finite ms value outside JS Date's representable range (>8.64e15) makes
+    // new Date(v).toISOString() throw RangeError. exportCsv must degrade to the
+    // raw numeric string, not crash the whole export.
+    b.db.from("evts").insertOne({ _id: "e2", region: "us", when: 9e15 });
+    var crashed = null, tsOut = null;
+    try { tsOut = b.db.exportCsv({ table: "evts", timestampFields: ["when"] }); }
+    catch (e) { crashed = e; }
+    check("exportCsv does not crash on an out-of-range timestamp value", crashed === null);
+    check("exportCsv still returns every row past the bad timestamp",
+      tsOut && tsOut.rowCount === 2);
+    check("an out-of-range timestamp degrades to its raw numeric string",
+      tsOut && tsOut.csv.indexOf("9000000000000000") !== -1);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- declareWorm / dual-control empty-string posture rejection --------------
+async function testDeclareEmptyPosture() {
+  var tmpDir = _mkTmp("db-cov-emptyposture-");
+  try {
+    await helpers.setupTestDb(tmpDir, [
+      { name: "book", columns: { _id: "TEXT PRIMARY KEY", sym: "TEXT" } },
+    ]);
+
+    // An empty-string posture is a distinct branch from a non-string posture:
+    // typeof === "string" but length 0 must still be refused.
+    var wormEmpty = await _catch(function () {
+      return b.db.declareWorm({ tables: ["book"], posture: "" });
+    });
+    check("declareWorm empty-string posture is refused",
+      wormEmpty && wormEmpty.name === "WormViolationError");
+
+    var dcEmpty = await _catch(function () {
+      return b.db.declareRequireDualControl({ tables: ["book"], m: 2, n: 3, posture: "" });
+    });
+    check("declareRequireDualControl empty-string posture throws db/dual-control-bad-posture",
+      dcEmpty && dcEmpty.code === "db/dual-control-bad-posture");
+
+    // A null posture is explicitly allowed (recorded as null) — the pass-through
+    // branch of the same guard.
+    var okNull = b.db.declareWorm({ tables: ["book"], posture: null });
+    check("declareWorm accepts a null posture", okNull.posture === null);
+  } finally {
+    await helpers.teardownTestDb(tmpDir);
+  }
+}
+
+// --- stream(): a Buffer positional binding is a param, not an opts bag -------
+async function testStreamBufferParam() {
+  var tmpDir = _mkTmp("db-cov-streambuf-");
+  try {
+    await _plainInit(tmpDir, [{
+      name: "rows", columns: { _id: "TEXT PRIMARY KEY", blobcol: "BLOB" },
+    }], { frameworkTables: false, auditSigning: false });
+    b.db.from("rows").insertOne({ _id: "r1", blobcol: Buffer.from("AA") });
+    b.db.from("rows").insertOne({ _id: "r2", blobcol: Buffer.from("BB") });
+
+    // A trailing Buffer is a SQL binding, not an options object — the last-arg
+    // opts sniff excludes Buffers, so this binds as a parameter.
+    var res = await _drain(b.db.stream("SELECT * FROM rows WHERE blobcol = ?", Buffer.from("AA")));
+    check("stream binds a trailing Buffer as a parameter (not opts)",
+      res.error === null && res.rows.length === 1 && res.rows[0]._id === "r1");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
 async function run() {
+  await testJsonSchemaTypeAliases();
+  await testMetadataBlamejsFormatAndPosture();
+  await testExportCsvAdversarialInput();
+  await testDeclareEmptyPosture();
+  await testStreamBufferParam();
   await testInitArgValidation();
   await testNotInitializedGuard();
   await testReservedTableNames();
