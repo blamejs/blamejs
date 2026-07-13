@@ -1856,6 +1856,222 @@ async function testH2PreAbortAndTeardown() {
   b.httpClient._resetForTest();
 }
 
+// ---- additional request() validation branches ---------------------
+//
+// Covers the download-side transform reject (the upload side is probed
+// above), the array-form transform normalization (valid + a bad entry
+// inside the array), and a `before` hook that returns nothing (the
+// running opts stay unchanged — the `if (ret && typeof ret === object)`
+// false arm).
+
+async function testMoreArgValidation() {
+  await _expectReject("request: downloadTransform non-Transform rejects",
+    b.httpClient.request({ url: "https://x.example/", downloadTransform: 7 }), /Transform/);
+  // Array form with a bad entry — the loop inside _coerceTransforms rejects.
+  await _expectReject("request: array uploadTransform with a bad entry rejects",
+    b.httpClient.request({ url: "https://x.example/",
+      uploadTransform: [new nodeStream.PassThrough(), 5] }), /Transform/);
+
+  // Valid array-form download transform (two PassThroughs) + a before hook
+  // that returns undefined (opts unchanged) both drive the real wire path.
+  var payload = Buffer.from("ARRAY-TRANSFORM-AND-VOID-BEFORE");
+  await _withServer(function (req, res) { res.writeHead(200); res.end(payload); },
+    async function (base) {
+      var beforeRan = 0;
+      var r = await b.httpClient.request({ url: base + "/x",
+        before: [function () { beforeRan += 1; /* returns undefined — opts unchanged */ }],
+        downloadTransform: [
+          function () { return new nodeStream.PassThrough(); },
+          new nodeStream.PassThrough(),
+        ],
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("before: a hook returning undefined leaves opts unchanged (request still fires)",
+        beforeRan === 1 && r.statusCode === 200);
+      check("downloadTransform: array of stages passes the body through intact",
+        r.body.equals(payload));
+    });
+}
+
+// ---- HTTP_ERROR permanent-flag classification (RFC 9110 §15.5) ------
+//
+// _isPermanentStatus: 408 / 425 / 429 are retryable 4xx (permanent=false);
+// any other 4xx is permanent; 5xx is not permanent. The buffered non-2xx
+// path stamps err.permanent from this — an operator's retry policy keys
+// off it, so a wrong flag silently changes retry behaviour.
+
+async function testPermanentFlag() {
+  async function _permFor(status) {
+    var err = null;
+    await _withServer(function (req, res) { res.writeHead(status); res.end("s" + status); },
+      async function (base) {
+        try {
+          await b.httpClient.request({ url: base + "/e",
+            allowedProtocols: ALLOW, allowInternal: true });
+        } catch (e) { err = e; }
+      });
+    return err;
+  }
+  var e403 = await _permFor(403);
+  check("permanent: 403 is a permanent HTTP_ERROR (statusCode + permanent true)",
+    e403 && e403.code === "HTTP_ERROR" && e403.statusCode === 403 && e403.permanent === true);
+  var e429 = await _permFor(429);
+  check("permanent: 429 (too-many-requests) is NOT permanent (retryable)",
+    e429 && e429.statusCode === 429 && e429.permanent === false);
+  var e408 = await _permFor(408);
+  check("permanent: 408 (request-timeout) is NOT permanent (retryable)",
+    e408 && e408.statusCode === 408 && e408.permanent === false);
+  var e503 = await _permFor(503);
+  check("permanent: 503 (5xx) is NOT permanent (retryable)",
+    e503 && e503.statusCode === 503 && e503.permanent === false);
+}
+
+// ---- maxRedirects: 0 — the explicit no-follow branch ---------------
+//
+// Distinct from undefined/null: `maxRedirects === 0` short-circuits to the
+// single-shot path (request(), line ~1038 `=== 0` disjunct) so a 3xx is NOT
+// followed. always-resolve surfaces the 3xx structurally.
+
+async function testMaxRedirectsZero() {
+  await _withServer(function (req, res) { res.writeHead(302, { Location: "/next" }); res.end(); },
+    async function (base) {
+      var r = await b.httpClient.request({ url: base + "/a", maxRedirects: 0,
+        responseMode: "always-resolve", allowedProtocols: ALLOW, allowInternal: true });
+      check("maxRedirects 0: 3xx not followed, returned structurally in always-resolve",
+        r.statusCode === 302);
+      // Default buffer mode with maxRedirects:0 surfaces the 3xx as HTTP_ERROR
+      // carrying the status (the operator inspects err.statusCode).
+      var err = await _expectReject("maxRedirects 0: buffer-mode 3xx rejects HTTP_ERROR",
+        b.httpClient.request({ url: base + "/a", maxRedirects: 0,
+          allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+      check("maxRedirects 0: HTTP_ERROR carries the 3xx status", err && err.statusCode === 302);
+    });
+}
+
+// ---- 301/302 method coercion + HEAD preservation -------------------
+//
+// RFC 9110 §15.4.{2,3}: historical clients coerce a non-GET/HEAD 301/302 to
+// GET and drop the body; a HEAD is preserved. The 303 case is covered
+// elsewhere — this pins the 301/302 arm of the same branch (line ~1329).
+
+async function test301302Coercion() {
+  // 302 + POST → coerced to GET, body dropped.
+  await _withServer(function (req, res) {
+    if (req.url === "/p") { res.writeHead(302, { Location: "/landing" }); res.end(); return; }
+    var chunks = []; req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      res.writeHead(200, { "x-method": req.method, "x-body-len": String(Buffer.concat(chunks).length) });
+      res.end("ok");
+    });
+  }, async function (base) {
+    var r = await b.httpClient.request({ url: base + "/p", method: "POST", body: "dropme",
+      maxRedirects: 2, allowedProtocols: ALLOW, allowInternal: true });
+    check("redirect 302: POST coerced to GET", r.headers["x-method"] === "GET");
+    check("redirect 302: request body dropped on coercion", r.headers["x-body-len"] === "0");
+  });
+
+  // 301 + PUT → coerced to GET as well.
+  await _withServer(function (req, res) {
+    if (req.url === "/one") { res.writeHead(301, { Location: "/landed" }); res.end(); return; }
+    res.writeHead(200, { "x-method": req.method }); res.end("ok");
+  }, async function (base) {
+    var r = await b.httpClient.request({ url: base + "/one", method: "PUT", body: "x",
+      maxRedirects: 2, allowedProtocols: ALLOW, allowInternal: true });
+    check("redirect 301: non-GET coerced to GET", r.headers["x-method"] === "GET");
+  });
+
+  // 302 + HEAD → method preserved (HEAD is exempt from the coercion).
+  await _withServer(function (req, res) {
+    if (req.url === "/h") { res.writeHead(302, { Location: "/done" }); res.end(); return; }
+    res.writeHead(200, { "x-method": req.method }); res.end();
+  }, async function (base) {
+    var r = await b.httpClient.request({ url: base + "/h", method: "HEAD",
+      maxRedirects: 2, allowedProtocols: ALLOW, allowInternal: true });
+    check("redirect 302: HEAD method preserved (not coerced)", r.headers["x-method"] === "HEAD");
+  });
+}
+
+// ---- allowedHosts edge branches ------------------------------------
+//
+// The empty allowedHosts array is a no-op (gate skipped); an empty-string
+// entry is skipped (continue); an object entry with no `methods` allows any
+// method. All three are branch arms the happy-path allow tests don't reach.
+
+async function testAllowedHostsEdges() {
+  await _withServer(function (req, res) { res.writeHead(200); res.end("ok"); },
+    async function (base) {
+      // Empty array → gate not applied at all (length > 0 false).
+      var r0 = await b.httpClient.request({ url: base + "/", allowedHosts: [],
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("allowedHosts: empty array is a no-op (request allowed)", r0.statusCode === 200);
+
+      // An empty-string entry is skipped; a later valid entry still matches.
+      var r1 = await b.httpClient.request({ url: base + "/",
+        allowedHosts: ["", { host: "" }, "127.0.0.1"],
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("allowedHosts: empty entries skipped, a valid later entry matches", r1.statusCode === 200);
+
+      // Object entry WITHOUT a methods array → any method allowed.
+      var r2 = await b.httpClient.request({ url: base + "/", method: "DELETE",
+        allowedHosts: [{ host: "127.0.0.1" }],
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("allowedHosts: object entry without methods allows any method (DELETE)", r2.statusCode === 200);
+    });
+}
+
+// ---- uploadMultipartStream: explicit filename + default contentType ----
+//
+// The happy-path lifecycle test passes an explicit contentType and lets the
+// filename default; this pins the opposite arms — an explicit file.filename
+// wins over path.basename, and an omitted contentType defaults to
+// application/octet-stream on the emitted part header.
+
+async function testUploadStreamFilenameDefaults() {
+  var dir = b.testing.tempDir("httpclient-cov-upnm");
+  try {
+    var src = helpers.path.join(dir.path, "on-disk-name.bin");
+    helpers.fs.writeFileSync(src, "NAMED-UPLOAD-BODY");
+    var body = null;
+    await _withServer(function (req, res) {
+      var chunks = []; req.on("data", function (c) { chunks.push(c); });
+      req.on("end", function () { body = Buffer.concat(chunks).toString("utf8"); res.writeHead(200); res.end("ok"); });
+    }, async function (base) {
+      var r = await b.httpClient.uploadMultipartStream({
+        url: base + "/up",
+        file: { path: src, fieldName: "artifact", filename: "override.dat" },  // explicit filename, no contentType
+        allowedProtocols: ALLOW, allowInternal: true });
+      check("uploadMultipartStream: explicit filename overrides path.basename",
+        r.statusCode === 200 && /filename="override\.dat"/.test(body || "") &&
+        (body || "").indexOf("on-disk-name.bin") === -1);
+      check("uploadMultipartStream: omitted contentType defaults to application/octet-stream",
+        /Content-Type:\s*application\/octet-stream/i.test(body || ""));
+    });
+  } finally {
+    dir.cleanup();
+  }
+}
+
+// ---- download progress when upstream omits Content-Length ----------
+//
+// dlTotal is null when the response carries no Content-Length; the progress
+// callback still fires with loaded byte counts and total === null (the
+// chunked-response arm the Content-Length happy-path test doesn't reach).
+
+async function testDownloadProgressNoContentLength() {
+  var payload = Buffer.alloc(2048, 0x77);
+  await _withServer(function (req, res) {
+    // No Content-Length — Node frames this as chunked transfer.
+    res.writeHead(200, { "Content-Type": "application/octet-stream" });
+    res.end(payload);
+  }, async function (base) {
+    var last = null;
+    var r = await b.httpClient.request({ url: base + "/nc",
+      onDownloadProgress: function (p) { last = p; },
+      allowedProtocols: ALLOW, allowInternal: true });
+    check("download progress (no Content-Length): total is null, loaded summed to body",
+      r.body.equals(payload) && last != null && last.total === null && last.loaded === payload.length);
+  });
+}
+
 // Destroy the httpClient transport pool and wait for every TCP handle to
 // close, so the async teardown completes inside run() rather than in the
 // forked worker's post-run grace window. Poll, don't sleep.
@@ -1906,6 +2122,13 @@ async function run() {
     testDefaultPortKeys();
     await testThrottledUploadBodyError();
     await testH2PreAbortAndTeardown();
+    await testMoreArgValidation();
+    await testPermanentFlag();
+    await testMaxRedirectsZero();
+    await test301302Coercion();
+    await testAllowedHostsEdges();
+    await testUploadStreamFilenameDefaults();
+    await testDownloadProgressNoContentLength();
   } finally {
     await _drainTcpHandles();
   }

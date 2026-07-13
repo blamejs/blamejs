@@ -1595,6 +1595,440 @@ async function sectionTopUnknownCommand() {
   check("unknown top-level command: prints top usage", /blamejs <command>/.test(c.out()));
 }
 
+// ---------------------------------------------------------------------------
+// top-level dispatch — the option-default fallbacks in main(), the non-array
+// argv guard, the `--version` (long) + `version` command paths, and the
+// per-command `help <topic>` fan-out block (one line per subcommand USAGE).
+// ---------------------------------------------------------------------------
+async function sectionTopLevelDispatch2() {
+  // main() with a NON-ARRAY (undefined) argv AND no opts object at all.
+  // Exercises `if (!Array.isArray(argv)) argv = []`, every `opts.<x> ||
+  // process.<x>` default, and the `cmd === undefined` top-help early return.
+  // Output goes to the real process.stdout (no ctx supplied) — a single
+  // usage block, harmless to the check tally.
+  var rcUndef = await cli.main(undefined);
+  check("main(undefined) → exit 0 (non-array guard + opts defaults + cmd-undefined)", rcUndef === 0);
+
+  // `--version` (long flag) → the LEFT operand of `args.flags.version ||
+  // args.flags.v`; only `-v` (the right operand) was covered before.
+  var cVer = _captureCtx();
+  var rcVer = await cli.main(["--version"], cVer);
+  check("--version long flag → exit 0", rcVer === 0);
+  check("--version long flag → prints version", /\d+\.\d+\.\d+/.test(cVer.out()));
+
+  // `version` positional command → the dedicated `cmd === "version"` branch
+  // (distinct from the top-level --version/-v flag handling above).
+  var cVerCmd = _captureCtx();
+  var rcVerCmd = await cli.main(["version"], cVerCmd);
+  check("version command → exit 0", rcVerCmd === 0);
+  check("version command → prints version", /\d+\.\d+\.\d+/.test(cVerCmd.out()));
+
+  // `help <topic>` for every reporter-/writeLine-backed subcommand → the
+  // per-topic dispatch block (each prints that command's USAGE, exit 0).
+  var topics = [
+    ["dev",          /Usage: blamejs dev/],
+    ["api-snapshot", /Usage: blamejs api-snapshot/],
+    ["api-key",      /Usage: blamejs api-key/],
+    ["audit",        /Usage: blamejs audit/],
+    ["backup",       /Usage: blamejs backup/],
+    ["restore",      /Usage: blamejs restore/],
+    ["mtls",         /Usage: blamejs mtls/],
+    ["vault",        /Usage: blamejs vault/],
+    ["security",     /Usage: blamejs security/],
+    ["config-drift", /Usage: blamejs config-drift/],
+    ["file-type",    /Usage: blamejs file-type/],
+    ["password",     /Usage: blamejs password/],
+    ["retention",    /Usage: blamejs retention/],
+  ];
+  for (var i = 0; i < topics.length; i++) {
+    var ctx = _captureCtx();
+    var rc = await cli.main(["help", topics[i][0]], ctx);
+    check("help " + topics[i][0] + " → exit 0", rc === 0);
+    check("help " + topics[i][0] + " → prints its USAGE", topics[i][1].test(ctx.out()));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// migrate — default --dir (omitted) + adversarial --steps values (fractional /
+// non-numeric). The fractional guard mirrors the sibling `verify-chain
+// --max-rows 2.5` refusal: the message promises "a positive integer", so 2.5
+// must be refused at the entry point, never floored-and-run.
+// ---------------------------------------------------------------------------
+async function sectionMigrateMore() {
+  var dir = _tmpDir("blamejs-cli-migrate-more");
+  try {
+    var dbPath = path.join(dir, "mig.db");
+    // status with --db but NO --dir → the `args.flags.dir || DEFAULT_MIG_DIR`
+    // default arm (resolves ./migrations relative to cwd). Whether that dir
+    // exists or not, dispatch gets past arg-validation into the runner.
+    var cdef = _captureCtx();
+    var rcdef = await cli.main(["migrate", "status", "--db", dbPath], cdef);
+    check("migrate status (default --dir): not a bad-invocation", rcdef !== 2);
+
+    // --steps 2.5 → fractional → positive-integer guard → exit 2. Before this,
+    // migrate only exercised --steps 0 (the `< 1` clause); the non-integer
+    // clause (`Math.floor(steps) !== steps`) went untested for migrate.
+    var cfrac = _captureCtx();
+    var rcfrac = await cli.main(["migrate", "down", "--db", dbPath, "--steps", "2.5"], cfrac);
+    check("migrate down --steps 2.5 → exit 2", rcfrac === 2);
+    check("migrate down --steps 2.5 → message", /--steps must be a positive integer/.test(cfrac.err()));
+
+    // --steps not-a-number → NaN → !Number.isFinite clause → exit 2.
+    var cnan = _captureCtx();
+    var rcnan = await cli.main(["migrate", "down", "--db", dbPath, "--steps", "not-a-number"], cnan);
+    check("migrate down --steps non-numeric → exit 2", rcnan === 2);
+    check("migrate down --steps non-numeric → message", /--steps must be a positive integer/.test(cnan.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// api-key — the post-boot REQUIRED-flag guards for revoke / list / rotate /
+// verify (each fires only after a successful boot, mirroring the issue guards
+// already covered) + rotate WITH --grace-ms (the Number(graceMs) arm) + an
+// adversarial non-numeric --expires-ms (downstream validation rejects it).
+// ---------------------------------------------------------------------------
+async function sectionApiKeyMore() {
+  var dataDir = _tmpDir("blamejs-cli-apikey3");
+  try {
+    var base = ["--data-dir", dataDir, "--vault-mode", "plaintext", "--namespace", "api"];
+
+    // revoke with no --id (post-boot) → exit 2
+    var crv = _captureCtx();
+    var rcrv = await cli.main(["api-key", "revoke"].concat(base), crv);
+    check("apikey revoke no --id (post-boot) → exit 2", rcrv === 2);
+    check("apikey revoke no --id → message", /--id <idHex> is required/.test(crv.err()));
+
+    // list with no --owner-id (post-boot) → exit 2
+    var cls = _captureCtx();
+    var rcls = await cli.main(["api-key", "list"].concat(base), cls);
+    check("apikey list no --owner-id (post-boot) → exit 2", rcls === 2);
+    check("apikey list no --owner-id → message", /--owner-id <id> is required/.test(cls.err()));
+
+    // rotate with no --id (post-boot) → exit 2
+    var crt = _captureCtx();
+    var rcrt = await cli.main(["api-key", "rotate"].concat(base), crt);
+    check("apikey rotate no --id (post-boot) → exit 2", rcrt === 2);
+    check("apikey rotate no --id → message", /--id <idHex> is required/.test(crt.err()));
+
+    // verify with no --token (post-boot) → exit 2
+    var cvt = _captureCtx();
+    var rcvt = await cli.main(["api-key", "verify"].concat(base), cvt);
+    check("apikey verify no --token (post-boot) → exit 2", rcvt === 2);
+    check("apikey verify no --token → message", /--token <key> is required/.test(cvt.err()));
+
+    // issue a key, then rotate WITH --grace-ms → the `Number(graceMs)` arm of
+    // the gracePeriodMs ternary (the default `: 0` arm is covered elsewhere).
+    var ci = _captureCtx();
+    var rci = await cli.main(["api-key", "issue"].concat(base).concat(
+      ["--owner-id", "gm", "--scopes", "a:read"]), ci);
+    check("apikey issue (for grace rotate): exit 0", rci === 0);
+    var idMatch = ci.out().match(/^id:\s+([a-f0-9]+)/m);
+    if (idMatch) {
+      var cgr = _captureCtx();
+      var rcgr = await cli.main(["api-key", "rotate"].concat(base).concat(
+        ["--id", idMatch[1], "--grace-ms", "60000"]), cgr);
+      check("apikey rotate --grace-ms → exit 0", rcgr === 0);
+      check("apikey rotate --grace-ms → prints new key", /key \(new\):/.test(cgr.out()));
+    }
+
+    // issue a key then revoke it by id → the revoke SUCCESS arm
+    // (`revoked ? report.ok("revoked: ...") : ...`); the no-op/false arm is
+    // covered by sectionBootedApiKey.
+    var ck = _captureCtx();
+    await cli.main(["api-key", "issue"].concat(base).concat(
+      ["--owner-id", "rv", "--scopes", "a:read"]), ck);
+    var rvId = ck.out().match(/^id:\s+([a-f0-9]+)/m);
+    if (rvId) {
+      var crvk = _captureCtx();
+      var rcrvk = await cli.main(["api-key", "revoke"].concat(base).concat(["--id", rvId[1]]), crvk);
+      check("apikey revoke (real key) → exit 0", rcrvk === 0);
+      check("apikey revoke (real key) → revoked message", /revoked: /.test(crvk.out()));
+    }
+
+    // adversarial: --expires-ms with a non-numeric value → Number() → NaN →
+    // apiKey.issue's downstream numeric validation rejects (exit 1, not a
+    // silently-stored NaN expiry). Drives the real consumer reject path.
+    var cbad = _captureCtx();
+    var rcbad = await cli.main(["api-key", "issue"].concat(base).concat(
+      ["--owner-id", "nanx", "--scopes", "a:read", "--expires-ms", "not-ms"]), cbad);
+    check("apikey issue --expires-ms non-numeric → rejected (exit 1)", rcbad === 1);
+    check("apikey issue --expires-ms non-numeric → validation message",
+      /expiresAt must be a non-negative finite number/.test(cbad.err()));
+  } finally { _rm(dataDir); }
+}
+
+// ---------------------------------------------------------------------------
+// security — assert WITHOUT --no-vault / --no-db-at-rest / --no-audit-signing
+// negations toggled off for two of the three postures, so the default posture
+// arms ("wrapped" / "encrypted") are chosen, plus --no-vault selected so the
+// `false` (skip) arm of the vault ternary is taken. The plaintext boot fails
+// the asserted postures → FAIL summary, exit 1.
+// ---------------------------------------------------------------------------
+async function sectionSecurityMore() {
+  var dataDir = _tmpDir("blamejs-cli-sec3");
+  try {
+    var ctx = _captureCtx();
+    var rc = await cli.main(
+      ["security", "assert", "--data-dir", dataDir, "--vault-mode", "plaintext",
+       "--no-vault", "--no-ntp-strict"], ctx);
+    // --no-vault → vault:false (skip); dbAtRest defaults to "encrypted" and
+    // auditSigning to "wrapped" (both asserted against the plaintext boot) →
+    // the assertion fails → exit 1 with a FAIL summary.
+    check("security assert (default postures) → exit 1", rc === 1);
+    check("security assert (default postures) → FAIL summary", /FAIL:/.test(ctx.out()));
+  } finally { _rm(dataDir); }
+}
+
+// ---------------------------------------------------------------------------
+// misc cheap arg-guards that fire before any boot:
+//   file-type detect with NO file positional  → "file path is required"
+//   erase with no --table / no --row-id        → the two ordered guards
+//   retention with no --table / no --age-field → the two ordered guards
+//   vault status with NO --data-dir            → the "./data" default arm
+//   password check --json on a WEAK plaintext  → the json arm's `? 0 : 1`
+// ---------------------------------------------------------------------------
+async function sectionCheapGuards() {
+  // file-type detect with no positional file → exit 2
+  var cft = _captureCtx();
+  var rcft = await cli.main(["file-type", "detect"], cft);
+  check("file-type detect (no file) → exit 2", rcft === 2);
+  check("file-type detect (no file) → message", /file path is required/.test(cft.err()));
+
+  // erase with nothing → the --table guard fires first (before --row-id) → 2
+  var cet = _captureCtx();
+  var rcet = await cli.main(["erase"], cet);
+  check("erase (no --table) → exit 2", rcet === 2);
+  check("erase (no --table) → message", /--table <name> is required/.test(cet.err()));
+
+  // erase --table present, no --row-id → the --row-id guard → 2
+  var cer = _captureCtx();
+  var rcer = await cli.main(["erase", "--table", "t"], cer);
+  check("erase (no --row-id) → exit 2", rcer === 2);
+  check("erase (no --row-id) → message", /--row-id <id> is required/.test(cer.err()));
+
+  // retention --data-dir present, no --table → the --table guard → 2
+  var crt = _captureCtx();
+  var rcrt = await cli.main(["retention", "preview", "--data-dir", "/tmp/x"], crt);
+  check("retention (no --table) → exit 2", rcrt === 2);
+  check("retention (no --table) → message", /--table <name> is required/.test(crt.err()));
+
+  // retention --table present, no --age-field → the --age-field guard → 2
+  var cra = _captureCtx();
+  var rcra = await cli.main(["retention", "preview", "--data-dir", "/tmp/x", "--table", "t"], cra);
+  check("retention (no --age-field) → exit 2", rcra === 2);
+  check("retention (no --age-field) → message", /--age-field <col> is required/.test(cra.err()));
+
+  // vault status with NO --data-dir → the `args.flags["data-dir"] || "./data"`
+  // default arm is resolved before the status block runs (covers that arm
+  // regardless of whether ./data exists in the cwd).
+  var cvd = _captureCtx();
+  var rcvd = await cli.main(["vault", "status"], cvd);
+  check("vault status (default ./data) → resolved default, no throw", rcvd === 0 || rcvd === 1);
+
+  // BUG (fixed in cli.js): `vault status` against a NON-EXISTENT data-dir must
+  // surface the standard clean reporter error (exit 1) — NOT reject main()
+  // with an uncaught VaultPassphraseError (which the bin shim would render as
+  // a stack trace). preflightSealable/preflightUnsealable throw when the dir
+  // is absent; the status block now catches it exactly like seal/unseal/rotate.
+  var missingDir = path.join(os.tmpdir(), "blamejs-cli-vault-nonexistent-" + Date.now());
+  var cvm = _captureCtx();
+  var threwVaultStatus = false;
+  var rcvm;
+  try { rcvm = await cli.main(["vault", "status", "--data-dir", missingDir], cvm); }
+  catch (_e) { threwVaultStatus = true; }
+  check("vault status (missing data-dir) → never rejects main()", threwVaultStatus === false);
+  check("vault status (missing data-dir) → clean exit 1", rcvm === 1);
+  check("vault status (missing data-dir) → data-dir-does-not-exist message",
+    /does not exist/.test(cvm.err()));
+
+  // password check --json on a WEAK plaintext → the json arm returns
+  // `verdict.ok ? 0 : 1`; the strong-json case (0) was covered, this is the 1.
+  var cpj = _captureCtx();
+  var rcpj = await cli.main(["password", "check", "--plaintext", "x", "--json"], cpj);
+  check("password check --json (weak) → exit 1", rcpj === 1);
+  check("password check --json (weak) → JSON ok:false", /"ok":false/.test(cpj.out()));
+}
+
+// ---------------------------------------------------------------------------
+// mtls — post-boot required-flag guards (issue / issue-p12 missing --subject /
+// --password, checked BEFORE cert generation) + a --sealed-mode disabled init
+// (the plaintext-key-on-disk path, distinct from the default "required" seal).
+// ---------------------------------------------------------------------------
+async function sectionMtlsMore() {
+  var dataDir = _tmpDir("blamejs-cli-mtls3");
+  try {
+    var base = ["--data-dir", dataDir, "--vault-mode", "plaintext"];
+
+    // issue with no --subject (post-boot) → exit 2
+    var cis = _captureCtx();
+    var rcis = await cli.main(["mtls", "issue"].concat(base), cis);
+    check("mtls issue no --subject (post-boot) → exit 2", rcis === 2);
+    check("mtls issue no --subject → message", /--subject <CN> is required/.test(cis.err()));
+
+    // issue-p12 with no --subject → exit 2
+    var cps = _captureCtx();
+    var rcps = await cli.main(["mtls", "issue-p12"].concat(base), cps);
+    check("mtls issue-p12 no --subject → exit 2", rcps === 2);
+    check("mtls issue-p12 no --subject → message", /--subject <CN> is required/.test(cps.err()));
+
+    // issue-p12 with --subject but no --password → exit 2
+    var cpp = _captureCtx();
+    var rcpp = await cli.main(["mtls", "issue-p12"].concat(base).concat(["--subject", "cn"]), cpp);
+    check("mtls issue-p12 no --password → exit 2", rcpp === 2);
+    check("mtls issue-p12 no --password → message", /--password <pkcs12-passphrase> is required/.test(cpp.err()));
+
+    // init with --sealed-mode disabled → the CA key is written PLAINTEXT to
+    // disk (ca.paths.caKey), the non-default arm of the init key-path report.
+    var cin = _captureCtx();
+    var rcin = await cli.main(["mtls", "init"].concat(base).concat(["--sealed-mode", "disabled"]), cin);
+    check("mtls init --sealed-mode disabled → exit 0", rcin === 0);
+    check("mtls init --sealed-mode disabled → reports plaintext ca-key", /ca-key:\s+\S+/.test(cin.out()));
+
+    // status against the disabled-mode CA → exercises the exists-true + paths
+    // block once more under the plaintext-key layout.
+    var cst = _captureCtx();
+    var rcst = await cli.main(["mtls", "status"].concat(base).concat(["--sealed-mode", "disabled"]), cst);
+    check("mtls status (disabled CA) → exit 0", rcst === 0);
+    check("mtls status (disabled CA) → CA exists yes", /CA exists:\s+yes/.test(cst.out()));
+  } finally { _rm(dataDir); }
+}
+
+// ---------------------------------------------------------------------------
+// restore — the success-side list / list-rollbacks loop bodies (which only run
+// when storage / rollback-root actually contain entries) + an apply that gets
+// PAST the max-pulled-* numeric gates with valid values and a --rollback-root,
+// building the restore engine before run() rejects on the absent bundle.
+// The storage + rollback fixtures are crafted directly on disk in the exact
+// shapes b.backup.diskStorage.listBundles + b.restoreRollback.list read
+// (a timestamp+suffix bundle dir; a non-"discarded-" rollback point dir).
+// ---------------------------------------------------------------------------
+async function sectionRestoreMore() {
+  var dir = _tmpDir("blamejs-cli-restore3");
+  try {
+    // --- list with a bundle present → the "bundles in <root>: N" + per-bundle
+    // row loop (only reached when listBundles() returns > 0). ---
+    var store = path.join(dir, "store");
+    var bundleId = "2026-05-24T15-00-00-000Z-aabb1100"; // valid timestamp+suffix
+    fs.mkdirSync(path.join(store, bundleId), { recursive: true });
+    fs.writeFileSync(path.join(store, bundleId, "manifest.json"), "{}");
+    var cl = _captureCtx();
+    var rcl = await cli.main(["restore", "list", "--storage-root", store], cl);
+    check("restore list (populated) → exit 0", rcl === 0);
+    check("restore list (populated) → bundle-count header", /bundles in .*: 1/.test(cl.out()));
+    check("restore list (populated) → lists the bundle id", new RegExp(bundleId).test(cl.out()));
+
+    // --- list-rollbacks with a point present → the "rollback points at ...: N"
+    // + per-point row loop (only reached when list() returns > 0). ---
+    var dd = path.join(dir, "dd");
+    fs.mkdirSync(dd, { recursive: true });
+    var rbRoot = path.join(dir, "rbroot");
+    fs.mkdirSync(path.join(rbRoot, "point-0001"), { recursive: true });
+    // A sibling <point>.marker.json carries the operator metadata the listing
+    // annotates each point with (bundleId / reason on marker.operator, swappedAt
+    // top-level) -- the row previously read a non-existent recordedAt/bundleId.
+    fs.writeFileSync(path.join(rbRoot, "point-0001.marker.json"),
+      JSON.stringify({ swappedAt: "2026-05-24T15:00:00.000Z", operator: { bundleId: "bk-test-123", reason: "unit-test" } }));
+    var clr = _captureCtx();
+    var rclr = await cli.main(
+      ["restore", "list-rollbacks", "--data-dir", dd, "--rollback-root", rbRoot], clr);
+    check("restore list-rollbacks (populated) → exit 0", rclr === 0);
+    check("restore list-rollbacks (populated) → point-count header", /rollback points at .*: 1/.test(clr.out()));
+    check("restore list-rollbacks (populated) → lists the point", /point-0001/.test(clr.out()));
+    check("restore list-rollbacks (populated) → renders swappedAt from the marker",
+      /swappedAt=2026-05-24T15:00:00\.000Z/.test(clr.out()));
+    check("restore list-rollbacks (populated) → renders bundleId from marker.operator",
+      /bundleId=bk-test-123/.test(clr.out()));
+
+    // --- apply past the numeric gates: valid --max-pulled-bytes / -files +
+    // --rollback-root build the restore engine; run() then rejects because the
+    // bundle can't be pulled → the catch returns non-zero (exit 1). This
+    // covers the Number(maxBytes)/Number(maxFiles) opt-mapping arms and the
+    // rollback-root resolution arm, distinct from the earlier bad-value gates. ---
+    var ca = _captureCtx();
+    var rca = await cli.main(
+      ["restore", "apply", "--data-dir", path.join(dir, "dd2"),
+       "--bundle", path.join(store, bundleId), "--passphrase", "p",
+       "--max-pulled-bytes", "1048576", "--max-pulled-files", "100",
+       "--rollback-root", path.join(dir, "rb2")], ca);
+    check("restore apply (valid gates, unpullable bundle) → exit 1", rca === 1);
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// audit — drive each of archive / export / verify-bundle / purge with ALL of
+// its required flags present, so dispatch gets PAST the arg-validation returns
+// and into the auditTools.* call (and its surrounding try/catch). Against a
+// fresh process with no live audit chain the call fails and the catch reports
+// it — but the point is coverage of the operation body + its error path, which
+// the existing tests (each omitting one required flag) never reach. Assert
+// only that we got past validation (exit != 2), robust to whether an ambient
+// booted db makes the call succeed or fail.
+// ---------------------------------------------------------------------------
+async function sectionAuditOps() {
+  var dir = _tmpDir("blamejs-cli-auditops");
+  try {
+    // archive: passphrase + out + before all present → into auditTools.archive
+    var ca = _captureCtx();
+    var rca = await cli.main(
+      ["audit", "archive", "--passphrase", "p", "--out", path.join(dir, "arc-out"),
+       "--before", "2000-01-01"], ca);
+    check("audit archive (all flags) → past validation (exit != 2)", rca !== 2);
+
+    // export: passphrase + out + a range flag present → into exportSlice
+    var ce = _captureCtx();
+    var rce = await cli.main(
+      ["audit", "export", "--passphrase", "p", "--out", path.join(dir, "exp-out"),
+       "--from", "2000-01-01"], ce);
+    check("audit export (all flags) → past validation (exit != 2)", rce !== 2);
+
+    // verify-bundle: passphrase + in present → into verifyBundle
+    var cv = _captureCtx();
+    var rcv = await cli.main(
+      ["audit", "verify-bundle", "--passphrase", "p", "--in", path.join(dir, "no-bundle")], cv);
+    check("audit verify-bundle (all flags) → past validation (exit != 2)", rcv !== 2);
+
+    // purge: passphrase + archive + confirm present → into purge
+    var cp = _captureCtx();
+    var rcp = await cli.main(
+      ["audit", "purge", "--passphrase", "p", "--archive", path.join(dir, "no-arc"), "--confirm"], cp);
+    check("audit purge (all flags) → past validation (exit != 2)", rcp !== 2);
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// retention — a booted PREVIEW (dry-run) with non-JSON text output against a
+// real table, plus an explicit valid --batch-size, so the "DRY-RUN " summary
+// prefix arm and the Number(batchSize) opt arm are both exercised (the JSON
+// arm + the non-preview text arm are covered by sectionBootedRawTable).
+// ---------------------------------------------------------------------------
+async function sectionRetentionPreviewText() {
+  var dir = _tmpDir("blamejs-cli-ret3");
+  try {
+    // First plaintext boot (missing table) materialises blamejs.db.
+    await cli.main(
+      ["retention", "preview", "--data-dir", dir, "--vault-mode", "plaintext",
+       "--table", "seed_missing", "--age-field", "ts", "--ttl-ms", "1", "--action", "delete"],
+      _captureCtx());
+    var dbFile = path.join(dir, "blamejs.db");
+    check("ret-preview-text: db file materialised", fs.existsSync(dbFile));
+
+    var h = new sqlite.DatabaseSync(dbFile);
+    h.exec("CREATE TABLE ret_prev (_id TEXT PRIMARY KEY, ts INTEGER)");
+    h.prepare("INSERT INTO ret_prev (_id, ts) VALUES (?, ?)").run("p-old", 1);
+    h.close();
+
+    // preview (dry-run) non-JSON + explicit --batch-size → DRY-RUN text arm +
+    // Number(batchSize) arm.
+    var cp = _captureCtx();
+    var rcp = await cli.main(
+      ["retention", "preview", "--data-dir", dir, "--vault-mode", "plaintext",
+       "--table", "ret_prev", "--age-field", "ts", "--ttl-ms", "1", "--action", "delete",
+       "--batch-size", "250"], cp);
+    check("retention preview (text): exit 0", rcp === 0);
+    check("retention preview (text): DRY-RUN prefix", /DRY-RUN rule:/.test(cp.out()));
+  } finally { _rm(dir); }
+}
+
 async function run() {
   var dir = _tmpDir("blamejs-cli");
   try {
@@ -1749,6 +2183,17 @@ async function run() {
     check("api-snapshot capture custom --module reports version",
           /frameworkVersion 9\.9\.9/.test(cModOk.out()));
 
+    // capture with a RELATIVE --module path → the `nodePath.resolve(ctx.cwd,
+    // modulePath)` arm of _resolveTargetModule (the absolute-path arm is what
+    // every other --module test exercises). ctx.cwd is the repo root, so a
+    // repo-relative module path resolves.
+    var relSnap = path.join(dir, "rel-snap.json");
+    var cRel = _captureCtx();
+    var rcRel = await cli.main(
+      ["api-snapshot", "capture", "--file", relSnap, "--module", "lib/constants.js"], cRel);
+    check("api-snapshot capture relative --module → exit 0", rcRel === 0);
+    check("api-snapshot capture relative --module wrote file", fs.existsSync(relSnap));
+
     // compare where the saved snapshot reads fine but capturing the CURRENT
     // surface fails (bad --module) → "cannot capture current surface", exit 1
     var cCmpBad = _captureCtx();
@@ -1818,6 +2263,20 @@ async function run() {
   await sectionApiKeyEdges();
   await sectionBootedRawTable();
   await sectionTopUnknownCommand();
+
+  // Additional branch coverage: top-level dispatch defaults + per-command
+  // help fan-out, adversarial migrate --steps, post-boot required-flag guards
+  // (api-key / mtls), default-arg arms, and the operation-body + error paths
+  // (audit ops / restore populated-list loops) the omit-one-flag tests miss.
+  await sectionTopLevelDispatch2();
+  await sectionMigrateMore();
+  await sectionApiKeyMore();
+  await sectionSecurityMore();
+  await sectionCheapGuards();
+  await sectionMtlsMore();
+  await sectionRestoreMore();
+  await sectionAuditOps();
+  await sectionRetentionPreviewText();
 }
 
 module.exports = { run: run };
