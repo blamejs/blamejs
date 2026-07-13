@@ -301,6 +301,15 @@ function testComparatorDefaultCaseInsensitive() {
   try { b.mail.sieve.runScript('if header :comparator :is "Subject" "x" { discard; }', { headers: [] }); }
   catch (e) { badComp = /parse-error/.test(e.code || e.message); }
   check("explicit :comparator without a value is refused at parse", badComp);
+  // An unsupported comparator name is refused at parse (like the
+  // require ["comparator-<name>"] capability guard), not silently treated as
+  // octet exact-matching -- otherwise it would bypass the capability guard.
+  var badCompName = false;
+  try {
+    b.mail.sieve.runScript('if header :comparator "i;unicode-casemap" :is "Subject" "HELLO" { discard; }',
+      { headers: [{ name: "Subject", value: "HELLO" }] });
+  } catch (e) { badCompName = /unknown-capability|unimplemented-capability/.test(e.code || e.message); }
+  check("explicit :comparator with an unsupported name is refused (no capability-guard bypass)", badCompName);
 }
 
 function testWildcardEscaping() {
