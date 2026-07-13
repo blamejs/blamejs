@@ -445,6 +445,10 @@ function testCookieJarParseStore() {
     function () { CJ.create({ persist: "file" }); }, "BAD_OPT");
   _cjExpectThrow("cj.create: persist 'file' with a relative path throws BAD_OPT",
     function () { CJ.create({ persist: "file", file: "rel/jar.json" }); }, "BAD_OPT");
+  // A vault is optional for file mode, but a supplied half-shaped one is refused
+  // up front (config-time), not silently at a later flush.
+  _cjExpectThrow("cj.create: persist 'file' with a half-shaped vault (missing seal) throws BAD_OPT",
+    function () { CJ.create({ persist: "file", file: "/tmp/cj-badvault.json", vault: { unseal: function () {} } }); }, "BAD_OPT");
   _cjExpectThrow("cj.create: flushDebounceMs negative throws BAD_OPT",
     function () { CJ.create({ flushDebounceMs: -1 }); }, "BAD_OPT");
   _cjExpectThrow("cj.create: flushDebounceMs non-integer throws BAD_OPT",
