@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.29",
+  "date": "2026-07-13",
+  "headline": "Reject a tampered backup manifest's absolute, drive-letter, or NTFS-stream path at both validation and the restore sink, and stop a bound-key auth middleware from hanging when a required peer certificate is absent",
+  "summary": "Two defects surfaced while covering the backup/restore path handling and the bound-key auth middleware. A backup manifest's file paths were checked only for a leading separator and .., so a Windows drive-letter path such as C:\\Windows\\evil passed b.backupManifest.validate, and the restore step joined the manifest-declared relativePath and encryptedPath directly, without the framework's path-safety primitive -- so a tampered bundle could aim a restored file (or a blob read) outside the staging directory. validate now also rejects a drive-letter prefix, and restore resolves both paths through b.safePath (which refuses traversal, absolute, drive-letter, UNC, NTFS alternate-data-stream, and reserved-name paths), so the restore destination is contained even if a manifest slips past the first-line check. Separately, b.middleware.requireBoundKey dereferenced req.peerCert.raw in its peer-certificate pinning branch when a fingerprint had been pre-attached by upstream mTLS but the certificate object was absent, throwing an uncaught TypeError that rejected the middleware promise -- the request hung with no response instead of a clean fail-closed denial; the branch now guards the certificate and denies.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "b.backupManifest / b.restoreBundle reject an absolute, drive-letter, or NTFS-stream path in a manifest and contain the restore destination",
+          "body": "A backup manifest's per-file relativePath and encryptedPath were validated only against .. and a leading / or \\, so a Windows drive-absolute path (C:\\... or C:relative) passed b.backupManifest.validate, and the restore step built the read and write paths with a plain path join of the manifest-declared values -- meaning a tampered or attacker-supplied bundle manifest could point a decrypted-file write, or an encrypted-blob read, outside the intended directory. validate() now also rejects a drive-letter prefix, and b.restoreBundle resolves both the encrypted-blob source and the restore destination through b.safePath, which refuses traversal, absolute, drive-letter, UNC, NTFS alternate-data-stream, and Windows reserved-name components -- so the sink is contained even for a manifest that evades the first-line check. Legitimate relative paths restore unchanged."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.middleware.requireBoundKey fails closed instead of hanging when a required peer certificate is absent",
+          "body": "In the peer-certificate pinning branch, the middleware read req.peerCert.raw without checking that req.peerCert was present. When an upstream mTLS layer had pre-attached a peer fingerprint (req.peerFingerprint) but no certificate object, that read threw an uncaught TypeError, which rejected the middleware's promise -- the request received no response and hung, rather than a clean fail-closed 401/403. The branch now checks for the certificate before dereferencing it and denies when it is missing, so a peer-cert-pinned key without a usable certificate is refused, not stalled."
+        }
+      ]
+    }
+  ]
+}
