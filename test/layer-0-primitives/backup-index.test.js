@@ -592,6 +592,23 @@ async function testFsAdapterTraversalRefused() {
     try { await adapter.writeFile("../escape", Buffer.from("x")); } catch (e) { t = e; }
     check("fsAdapter.writeFile: traversal key refused with bad-key",
       t && t.code === "backup/bad-key");
+
+    // A '..'-only pre-screen missed the absolute / drive-letter / NTFS-stream
+    // class the key resolves through under root. Each must be refused so a key
+    // built from untrusted input can't escape root or write a file's data
+    // stream. Sibling of the manifest.validate / bundle.create path checks.
+    var badKeys = {
+      "absolute key":     "/etc/shadow",
+      "drive-letter key": "C:" + "\\" + "Windows" + "\\" + "evil",
+      "NTFS-ADS key":     "blob.enc:evil",
+    };
+    for (var label in badKeys) {
+      if (!Object.prototype.hasOwnProperty.call(badKeys, label)) continue;
+      var te = null;
+      try { await adapter.writeFile(badKeys[label], Buffer.from("x")); } catch (e) { te = e; }
+      check("fsAdapter.writeFile: " + label + " refused with bad-key",
+        te && te.code === "backup/bad-key");
+    }
   } finally { _rm(root); }
 }
 
