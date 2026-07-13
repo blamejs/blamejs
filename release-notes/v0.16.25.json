@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.25",
+  "date": "2026-07-12",
+  "headline": "Correct the OTLP protobuf span encoder's dropped_links_count field number so a future non-zero count cannot corrupt the Status field",
+  "summary": "The OTLP/protobuf span encoder wrote the dropped_links_count placeholder on proto field 15, which is the Span's status field, instead of field 14 (dropped_links_count) per the OpenTelemetry trace proto. The emitted bytes are identical today because the count is always zero and proto3 omits zero-valued scalars, so no exported span is affected; but if a non-zero dropped-links count were ever emitted it would place a bare varint on the status field number and corrupt the Status message for a strict OTLP collector. The field number is corrected to 14. This surfaced while covering the OTLP exporter's previously-untested wire-format branches; a field-layout assertion now pins the span message's field numbers so a regression onto the status field is caught.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.observability OTLP protobuf span encoder emits dropped_links_count on the correct proto field",
+          "body": "In the protobuf span serializer, the dropped_links_count placeholder was encoded on field 15 -- the Span's status field, a length-delimited message -- rather than field 14, its correct number in the OpenTelemetry trace proto schema (the code's own inline comment already named field 14). Because the count is hardcoded to zero and proto3 omits zero-valued scalar fields, the serialized bytes are byte-identical today and no exported trace is affected. Were the placeholder ever set to a non-zero value (for example when span-link counting is added), each protobuf-encoded span would carry a wire-type-0 varint on the status field number and corrupt the Status message for a strict OTLP collector. The field number is now 14, and a wire-layout test pins the span message's field numbers (dropped_attributes_count at 10, dropped_events_count at 12, status length-delimited at 15) so this cannot regress silently."
+        }
+      ]
+    }
+  ]
+}

@@ -3142,6 +3142,327 @@ async function testIprevIpv6ForwardConfirmCanonicalizes() {
         rv.result === "pass" && rv.fcrdns === true);
 }
 
+// ---- SPF: malformed CIDR masks in ip4 / ip6 mechanisms never match ----
+
+async function testSpfMalformedCidrMasksNoMatch() {
+  // ip4 with an out-of-range prefix (/40 > 32) MUST NOT match — the
+  // connecting IP falls through to -all → fail. A prefix parse that
+  // silently clamped would over-authorize.
+  var d40 = _txtOnly({ "s.example": [["v=spf1 ip4:192.0.2.0/40 -all"]] });
+  var r40 = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: d40 });
+  check("spf ip4:.../40 (mask > 32) → no match → fail (-all)", r40.result === "fail");
+
+  // ip4 with an unparsable network literal (octet > 255) → no match.
+  var dBadNet = _txtOnly({ "s.example": [["v=spf1 ip4:300.1.1.1/24 -all"]] });
+  var rBadNet = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dBadNet });
+  check("spf ip4 with an unparsable network literal → no match → fail", rBadNet.result === "fail");
+
+  // ip4 with no prefix at all (single-host) — exact match branch.
+  var dHost = _txtOnly({ "s.example": [["v=spf1 ip4:192.0.2.5 -all"]] });
+  var rHost = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dHost });
+  check("spf ip4 single-host (no /prefix) → exact match → pass", rHost.result === "pass");
+
+  // ip6 with an out-of-range prefix (/200 > 128) MUST NOT match.
+  var d200 = _txtOnly({ "s.example": [["v=spf1 ip6:2001:db8::/200 -all"]] });
+  var r200 = await b.mail.spf.verify({ ip: "2001:db8::5", mailFrom: "a@s.example", dnsLookup: d200 });
+  check("spf ip6:.../200 (mask > 128) → no match → fail (-all)", r200.result === "fail");
+
+  // ip6 with an unparsable network literal (non-hex group) → no match.
+  var dBad6 = _txtOnly({ "s.example": [["v=spf1 ip6:zzzz::/64 -all"]] });
+  var rBad6 = await b.mail.spf.verify({ ip: "2001:db8::5", mailFrom: "a@s.example", dnsLookup: dBad6 });
+  check("spf ip6 with an unparsable network literal → no match → fail", rBad6.result === "fail");
+
+  // ip6 single-host (no /prefix) exact match branch.
+  var dHost6 = _txtOnly({ "s.example": [["v=spf1 ip6:2001:db8::5 -all"]] });
+  var rHost6 = await b.mail.spf.verify({ ip: "2001:db8::5", mailFrom: "a@s.example", dnsLookup: dHost6 });
+  check("spf ip6 single-host (no /prefix) → exact match → pass", rHost6.result === "pass");
+}
+
+// ---- SPF: TXT records present but none is a v=spf1 record → none ----
+
+async function testSpfTxtPresentButNoSpf1IsNone() {
+  // The domain publishes TXT records (e.g. a verification token) but no
+  // v=spf1 record. RFC 7208 §4.6 — the check result is "none", not a
+  // fail/permerror; the receiver has no SPF policy to apply.
+  var dns = _txtOnly({ "s.example": [
+    ["google-site-verification=abc123"],
+    ["v=spf2.0/pra ~all"],
+  ] });
+  var rv = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: dns });
+  check("spf.verify: TXT present but no v=spf1 record → none", rv.result === "none");
+}
+
+// ---- SPF: %{h} HELO macro expands into an exists: domain-spec ----
+
+async function testSpfHeloMacroExpansion() {
+  // RFC 7208 §7.2 — %{h} is the HELO/EHLO domain. An exists: policy using
+  // it must A-query the expanded name that embeds the HELO identity.
+  var queried = [];
+  var dns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 exists:%{h}.probe.example -all"]];
+    if (type === "A") { queried.push(host); return ["127.0.0.2"]; }
+    var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+  };
+  var rv = await b.mail.spf.verify({
+    ip: "192.0.2.9", mailFrom: "alice@s.example", helo: "relay.helo.example", dnsLookup: dns,
+  });
+  check("spf %{h} HELO macro → A-query embeds the HELO domain → pass",
+        rv.result === "pass" && queried.indexOf("relay.helo.example.probe.example") !== -1);
+}
+
+// ---- DMARC: alignment against a missing / uncanonicalizable auth domain ----
+
+async function testDmarcAlignmentMissingAndGarbageAuthDomain() {
+  var dns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=reject; aspf=r; adkim=r"]] });
+
+  // SPF passed but carries no domain (spf.domain absent). The alignment
+  // check must fail closed on a null auth domain — not throw, not align.
+  var rvNoDomain = await b.mail.dmarc.evaluate({
+    from: "alice@example.com",
+    spf:  { result: "pass" },                 // note: no `domain`
+    dkim: [],
+    dnsLookup: dns,
+  });
+  check("dmarc.evaluate: SPF pass with no auth domain → not aligned → fail",
+        rvNoDomain.result === "fail" && rvNoDomain.alignment.spf === false);
+
+  // DKIM passed but its d= canonicalizes to the empty string (leading-dot
+  // hostname) — alignment must reject it rather than treat "" as a match.
+  var rvGarbage = await b.mail.dmarc.evaluate({
+    from: "alice@example.com",
+    spf:  { result: "fail" },
+    dkim: [{ result: "pass", domain: ".example.com" }],
+    dnsLookup: dns,
+  });
+  check("dmarc.evaluate: DKIM pass whose domain canonicalizes to empty → not aligned → fail",
+        rvGarbage.result === "fail" && rvGarbage.alignment.dkim === false &&
+        rvGarbage.recommendedAction === "reject");
+}
+
+// ---- DMARC: pct out of range clamps to 100 (full application) ----
+
+async function testDmarcPctOutOfRangeClampsTo100() {
+  // A published pct greater than 100 is nonsensical; RFC 7489 §6.3 bounds
+  // it to [0,100]. An out-of-range value clamps to 100 → the policy is
+  // applied to every failing message (no sampling downgrade).
+  var dns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=quarantine; pct=250; aspf=r; adkim=r"]] });
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@example.com",
+    spf:  { result: "fail" },
+    dkim: [],
+    dnsLookup: dns,
+  });
+  check("dmarc.evaluate: pct > 100 clamps to 100 → unaligned fail applies policy (quarantine)",
+        rv.result === "fail" && rv.recommendedAction === "quarantine");
+}
+
+// ---- DMARC: no dkim argument at all → empty dkim-results list ----
+
+async function testDmarcEvaluateNoDkimArgument() {
+  // Omitting the dkim opt entirely (not even an empty array) must not
+  // crash — the evaluator treats it as zero DKIM results and can still
+  // pass on an aligned SPF authenticator.
+  var dns = _txtOnly({ "_dmarc.example.com": [["v=DMARC1; p=reject; aspf=r; adkim=r"]] });
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@example.com",
+    spf:  { result: "pass", domain: "example.com" },
+    dnsLookup: dns,
+  });
+  check("dmarc.evaluate: dkim opt omitted → treated as [] → aligned SPF still passes",
+        rv.result === "pass" && rv.alignment.spf === true && rv.alignment.dkim === false);
+}
+
+// ---- DMARC: domainExists callback that throws is treated as existing ----
+
+async function testDmarcDomainExistsCallbackThrows() {
+  // DMARCbis §4.8 np= path — when the operator's domainExists callback
+  // throws, the evaluator must fail SAFE by treating the domain as
+  // existing (np= NOT applied), never crash the evaluation.
+  var dns = async function (host) {
+    if (host === "_dmarc.example.com") return [["v=DMARC1; p=quarantine; np=reject; aspf=r; adkim=r"]];
+    var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+  };
+  var threw = null, rv = null;
+  try {
+    rv = await b.mail.dmarc.evaluate({
+      from: "user@sub.example.com",           // subdomain → org-domain policy applies
+      spf:  { result: "fail" },
+      dkim: [],
+      dnsLookup: dns,
+      domainExists: function () { throw new Error("resolver boom"); },
+    });
+  } catch (e) { threw = e; }
+  check("dmarc.evaluate: throwing domainExists → no crash, org policy applied",
+        threw === null && rv !== null && rv.orgDomainPolicyApplied === true);
+  check("dmarc.evaluate: throwing domainExists → np= NOT applied (fails safe to existing)",
+        rv && rv.npPolicyApplied === false);
+}
+
+// ---- ARC: ARC-Seal t=/x= time faults (not just AMS) ----
+
+async function testArcSealTimeFaults() {
+  var now = Math.floor(Date.now() / 1000);
+  var keyDns = async function (qname) {
+    if (qname === "arc._domainkey.example.com") {
+      var nc = require("crypto");
+      var pair = nc.generateKeyPairSync("rsa", { modulusLength: 2048 });
+      return [["v=DKIM1; k=rsa; p=" +
+        pair.publicKey.export({ type: "spki", format: "der" }).toString("base64")]];
+    }
+    var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+  };
+
+  // ARC-Seal with a future t= — the seal's signing timestamp is ahead of
+  // now, a RFC 8617 §5.2 time fault that fails the hop closed.
+  var futureSeal =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; t=" + (now + 999999) + "; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+    "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rvT = await b.mail.arc.verify(futureSeal, { dnsLookup: keyDns, clockSkewMs: 1000 });
+  var tErrs = ((rvT.hops[0] && rvT.hops[0].asErrors) || []).join(" ; ");
+  check("arc.verify: ARC-Seal future t= → as-t-future time fault (hop fails closed)",
+        rvT.chainStatus === "fail" && /as-t-future/.test(tErrs));
+
+  // ARC-Seal with an expired x= — the seal's expiry is in the past.
+  var expiredSeal =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; x=" + (now - 999999) + "; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+    "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rvX = await b.mail.arc.verify(expiredSeal, { dnsLookup: keyDns });
+  var xErrs = ((rvX.hops[0] && rvX.hops[0].asErrors) || []).join(" ; ");
+  check("arc.verify: ARC-Seal expired x= → as-x-expired time fault (hop fails closed)",
+        rvX.chainStatus === "fail" && /as-x-expired/.test(xErrs));
+}
+
+// ---- ARC: key TXT lookup returning ENODATA → permerror (not temperror) ----
+
+async function testArcKeyEnodataIsPermerror() {
+  // A definitive "no such key record" answer (ENODATA) on the signing-key
+  // lookup is a permanent failure per RFC 8617 §5.1.1, distinct from a
+  // transient (temperror) resolver fault.
+  var dns = async function () {
+    var e = new Error("ENODATA"); e.code = "ENODATA"; throw e;
+  };
+  var msg =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; example.com; spf=pass\r\n" +
+    "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(msg, { dnsLookup: dns });
+  var errs = ((rv.hops[0] && rv.hops[0].asErrors) || [])
+    .concat((rv.hops[0] && rv.hops[0].amsErrors) || []).join(" ; ");
+  check("arc.verify: signing-key ENODATA → permerror hop verdict (fail chain)",
+        rv.chainStatus === "fail" && /key lookup failed/.test(errs));
+}
+
+// ---- iprev: PTR names with oversize labels / oversize total length ----
+
+async function testIprevOversizePtrShapePermerror() {
+  // A PTR whose single label exceeds 63 octets is not a valid DNS name
+  // (RFC 1035 §2.3.4) — refuse as permerror before the forward query.
+  var longLabel = "a";
+  for (var i = 0; i < 64; i += 1) longLabel += "a";            // 65-octet label
+  var forwardQueried = false;
+  var dnsLabel = async function (qname, type) {
+    if (type === "PTR") return [longLabel + ".example."];
+    if (type === "A") { forwardQueried = true; return ["203.0.113.5"]; }
+    var e = new Error("ENODATA"); e.code = "ENODATA"; throw e;
+  };
+  var rvLabel = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dnsLabel });
+  check("iprev.verify: PTR label > 63 octets → permerror, forward not attempted",
+        rvLabel.result === "permerror" && forwardQueried === false);
+
+  // A PTR whose total length exceeds 253 octets is likewise refused.
+  var longName = "";
+  for (var j = 0; j < 6; j += 1) longName += "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz.";  // 6 * 51 = 306
+  var dnsName = async function (qname, type) {
+    if (type === "PTR") return [longName + "example."];
+    var e = new Error("ENODATA"); e.code = "ENODATA"; throw e;
+  };
+  var rvName = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dnsName });
+  check("iprev.verify: PTR total length > 253 octets → permerror",
+        rvName.result === "permerror");
+}
+
+// ---- iprev: forward lookup rejecting with a code-less error → temperror ----
+
+async function testIprevForwardCodelessErrorIsTemperror() {
+  // The forward-confirm lookup rejects with a plain Error (no `.code`).
+  // The verifier must still RETURN a temperror verdict (never throw), and
+  // surface the error message in the explanation.
+  var dns = async function (qname, type) {
+    if (type === "PTR") return ["host.example."];
+    throw new Error("upstream boom");           // no .code on the forward fault
+  };
+  var threw = null, rv = null;
+  try { rv = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: dns }); }
+  catch (e) { threw = e; }
+  check("iprev.verify: code-less forward fault → temperror VERDICT (no throw)",
+        threw === null && rv !== null && rv.result === "temperror" &&
+        /boom/.test(rv.explanation || ""));
+}
+
+// ---- DMARC aggregate report: minimal / sparse shapes fall back cleanly ----
+
+function testDmarcAggregateMinimalShape() {
+  // A pre-parsed <feedback> with a single empty record and no metadata /
+  // policy blocks must shape to all-null leaves rather than crash — every
+  // absent field maps to null / [] and the totals are zero.
+  var shaped = b.mail.dmarc.parseAggregateReport({ feedback: { record: [{}] } });
+  check("dmarc.parseAggregateReport: sparse report shapes metadata leaves to null",
+        shaped.reportMetadata.orgName === null &&
+        shaped.reportMetadata.dateRange.begin === null &&
+        shaped.policyPublished.domain === null && shaped.policyPublished.pct === null);
+  check("dmarc.parseAggregateReport: empty record shapes to null leaves + zero totals",
+        shaped.records.length === 1 &&
+        shaped.records[0].sourceIp === null && shaped.records[0].count === null &&
+        shaped.records[0].dispositions.disposition === null &&
+        shaped.records[0].authResults.dkim.length === 0 &&
+        shaped.totals.messages === 0);
+}
+
+// ---- DMARC aggregate report builder: minimal shape serializes valid XML ----
+
+function testDmarcAggregateBuildMinimalShape() {
+  // The builder must accept a minimal shape (empty metadata / policy, one
+  // record with no dispositions / identifiers / auth_results) and still
+  // emit a well-formed <feedback> document.
+  var xml = b.mail.dmarc.buildAggregateReport({
+    reportMetadata: {},
+    policyPublished: {},
+    records: [{}],
+  });
+  check("dmarc.buildAggregateReport: minimal shape → well-formed <feedback> XML",
+        typeof xml === "string" &&
+        xml.indexOf("<feedback>") !== -1 &&
+        xml.indexOf("<record>") !== -1 &&
+        xml.indexOf("<auth_results>") !== -1);
+  // And it round-trips back through the parser without throwing.
+  var reparsed = b.mail.dmarc.parseAggregateReport(xml);
+  check("dmarc.buildAggregateReport: minimal build round-trips through the parser",
+        reparsed && Array.isArray(reparsed.records) && reparsed.records.length === 1);
+}
+
+// ---- inbound.verify: DKIM tuning opts are threaded to the DKIM verifier ----
+
+async function testInboundVerifyDkimTuningOpts() {
+  // clockSkewMs / maxSignatures / minRsaBits are forwarded to the DKIM
+  // verifier when supplied. An unsigned message still verifies (dkim
+  // none) and the call must not crash while threading the opts.
+  var dns = async function () {
+    var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+  };
+  var msg = "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nhello\r\n";
+  var v = await b.mail.inbound.verify({
+    ip: "192.0.2.1", helo: "mail.example", message: msg,
+    dnsLookup: dns, clockSkewMs: 60000, maxSignatures: 5, minRsaBits: 1024,
+  });
+  check("inbound.verify: DKIM tuning opts threaded → unsigned message dkim none, no crash",
+        Array.isArray(v.dkim) && v.dkim.length === 1 && v.dkim[0].result === "none");
+}
+
 async function run() {
   testByteCapMultibyte();
   testSurface();
@@ -3281,6 +3602,20 @@ async function run() {
   await testSpfExistsExpandsEmpty();
   await testSpfRedirectDepthLimit();
   await testArcKeyNonArrayTxt();
+  await testSpfMalformedCidrMasksNoMatch();
+  await testSpfTxtPresentButNoSpf1IsNone();
+  await testSpfHeloMacroExpansion();
+  await testDmarcAlignmentMissingAndGarbageAuthDomain();
+  await testDmarcPctOutOfRangeClampsTo100();
+  await testDmarcEvaluateNoDkimArgument();
+  await testDmarcDomainExistsCallbackThrows();
+  await testArcSealTimeFaults();
+  await testArcKeyEnodataIsPermerror();
+  await testIprevOversizePtrShapePermerror();
+  await testIprevForwardCodelessErrorIsTemperror();
+  testDmarcAggregateMinimalShape();
+  testDmarcAggregateBuildMinimalShape();
+  await testInboundVerifyDkimTuningOpts();
 }
 
 module.exports = { run: run };
