@@ -601,6 +601,12 @@ async function testFsAdapterTraversalRefused() {
       "absolute key":     "/etc/shadow",
       "drive-letter key": "C:" + "\\" + "Windows" + "\\" + "evil",
       "NTFS-ADS key":     "blob.enc:evil",
+      // Cross-platform: a backslash-traversal key is a harmless literal filename
+      // under POSIX path semantics but climbs out of root when the portable
+      // store is later read on Windows, so it is gated under win32 semantics on
+      // every host. A host-only resolve would accept these on POSIX.
+      "backslash-parent key":    ".." + "\\" + "evil",
+      "backslash-traversal key": "a" + "\\" + ".." + "\\" + ".." + "\\" + "evil",
     };
     for (var label in badKeys) {
       if (!Object.prototype.hasOwnProperty.call(badKeys, label)) continue;
