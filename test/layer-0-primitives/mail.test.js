@@ -1660,6 +1660,281 @@ async function testSmtpBinaryMimeFromNulBuffer(certPair) {
 }
 
 // ---------------------------------------------------------------------------
+// _isValidEmail — EAI / length edge branches driven through the send path
+// (guardDomain:false isolates the recipient-shape validator).
+// ---------------------------------------------------------------------------
+
+async function testEaiAndLengthValidationEdges() {
+  var captured = [];
+  var m = b.mail.create({
+    transport: function (msg) { captured.push(msg); return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false,
+  });
+  async function reject(label, to, code) {
+    var e = await _sendErr(m, { to: to, from: "f@x.com", text: "hi" });
+    check(label, e && e.code === code);
+  }
+  // EAI local part empty (atIdx <= 0) — non-ASCII forces the EAI branch.
+  await reject("eai: '@münchen.de' (empty local) → invalid-recipient",
+    "@münchen.de", "mail/invalid-recipient");
+  // EAI trailing '@' (atIdx === length-1).
+  await reject("eai: 'bü@' (trailing @) → invalid-recipient",
+    "bü@", "mail/invalid-recipient");
+  // IDN domain with NO dot: punycodes to a label the ASCII EMAIL_RE rejects
+  // (needs a '.'), so the re-test of the ACE domain fails closed.
+  await reject("eai: IDN domain without a dot → invalid-recipient",
+    "bü@münchen", "mail/invalid-recipient");
+  // Pure-ASCII address beyond the RFC 5321 §4.5.3.1.3 254-octet forward-path
+  // bound is refused before the regex ever runs.
+  await reject("eai: >254-octet ASCII address → invalid-recipient",
+    "x".repeat(250) + "@x.com", "mail/invalid-recipient");
+
+  // Counterpart: a well-formed EAI address (unicode local + IDN domain that
+  // punycodes to a dotted ACE form) is accepted through the same path.
+  captured.length = 0;
+  await m.send({ to: "bü@münchen.de", from: "f@x.com", text: "hi" });
+  check("eai: unicode-local + dotted IDN domain accepted", captured.length === 1);
+}
+
+// ---------------------------------------------------------------------------
+// create() — guardDomain profile fallback chain + custom footerSeparator
+// ---------------------------------------------------------------------------
+
+async function testCreateGuardDomainProfileFallback() {
+  // guardDomain:{} (object, no .profile) falls back to opts.profile.
+  var m1 = b.mail.create({
+    transport: b.mail.transports.memory(), guardDomain: {}, profile: "permissive",
+  });
+  var r1 = await m1.send({ to: "a@192.168.1.1", from: "s@example.org", subject: "t", text: "hi" });
+  check("create: guardDomain:{} + profile:'permissive' allows bare-IP (opts.profile fallback)",
+    r1 && r1.transport === "memory");
+
+  // No guardDomain opt at all → opts.profile drives the default-on gate.
+  var m2 = b.mail.create({ transport: b.mail.transports.memory(), profile: "permissive" });
+  var r2 = await m2.send({ to: "a@192.168.1.1", from: "s@example.org", subject: "t", text: "hi" });
+  check("create: bare profile:'permissive' (no guardDomain opt) allows bare-IP",
+    r2 && r2.transport === "memory");
+}
+
+async function testCommercialCustomFooterSeparator() {
+  // footerSeparator overrides the default "\n\n----\n" / "<hr>" on both parts.
+  var addr = { street: "1 St", city: "Springfield", region: "IL", postalCode: "62701", country: "US" };
+  var captured = [];
+  var m = b.mail.create({
+    transport: function (msg) { captured.push(msg); return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false, commercial: true, postalAddress: addr,
+    footerSeparator: "\n==SEP==\n",
+  });
+  await m.send({
+    to: "a@x.com", from: "f@x.com", text: "body", html: "<p>body</p>",
+    unsubscribe: { url: "https://x.test/u" },
+  });
+  var sent = captured[0];
+  check("commercial: custom footerSeparator applied to text part",
+    sent.text.indexOf("\n==SEP==\n") !== -1);
+  check("commercial: custom footerSeparator applied to html part",
+    sent.html.indexOf("\n==SEP==\n") !== -1);
+}
+
+// ---------------------------------------------------------------------------
+// consoleTransport — single (non-array) cc branch
+// ---------------------------------------------------------------------------
+
+async function testConsoleSingleCc() {
+  var s = _fakeStream();
+  var t = b.mail.transports.console({ stream: s });
+  await t.send({ to: "solo@x.com", from: "f@x.com", cc: "one-cc@x.com", text: "hi" });
+  check("console: single (non-array) cc printed verbatim",
+    s.data.indexOf("Cc: one-cc@x.com") !== -1);
+}
+
+// ---------------------------------------------------------------------------
+// httpTransport — custom method + verdict-ok-without-id branch
+// ---------------------------------------------------------------------------
+
+async function testHttpMethodAndVerdictNoId() {
+  var seenMethod = { v: null };
+  var server = http.createServer(function (req, res) {
+    seenMethod.v = req.method;
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  var base = {
+    endpoint: "http://127.0.0.1:" + port + "/send", name: "vend",
+    allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+  };
+  try {
+    // Custom method (PUT) reaches the wire.
+    var tPut = b.mail.transports.http(Object.assign({}, base, {
+      method: "put",
+      serialize: function () { return { body: "{}" }; },
+    }));
+    var rPut = await tPut.send({ to: "a@x.com", from: "f@x.com" });
+    check("http: custom method upper-cased + sent (PUT)", seenMethod.v === "PUT" && rPut.transport === "vend");
+
+    // interpret returns a truthy verdict with ok:true but no id / no extra →
+    // info returned unchanged (neither id nor extra merged).
+    var tOk = b.mail.transports.http(Object.assign({}, base, {
+      serialize: function () { return { body: "{}" }; },
+      interpret: function () { return { ok: true }; },
+    }));
+    var rOk = await tOk.send({ to: "a@x.com", from: "f@x.com" });
+    check("http: verdict ok w/o id → info has no id", rOk.id === undefined && rOk.statusCode === 200);
+  } finally {
+    await new Promise(function (r) { server.close(function () { r(); }); });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resendTransport — minimal serialize (no optional fields) + no-id/no-message
+// rejection (reason falls back to JSON.stringify(data))
+// ---------------------------------------------------------------------------
+
+async function testResendMinimalAndNoMessageReason() {
+  var lastBody = { v: null };
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      lastBody.v = Buffer.concat(chunks).toString("utf8");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url.indexOf("emptyobj") !== -1) { res.end("{}"); return; }
+      res.end(JSON.stringify({ id: "re_min" }));
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    // Minimal message: only from/to → serialize omits cc/bcc/replyTo/html/
+    // attachments (all the false branches) and subject defaults to "".
+    var tMin = b.mail.transports.resend({
+      apiKey: "k", endpoint: "http://127.0.0.1:" + port + "/emails",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    var rMin = await tMin.send({ from: "f@x.com", to: "a@x.com" });
+    check("resend: minimal send → id", rMin.id === "re_min");
+    var payload = JSON.parse(lastBody.v);
+    check("resend: minimal serialize omits cc/bcc/replyTo/html/attachments",
+      payload.cc === undefined && payload.bcc === undefined && payload.reply_to === undefined &&
+      payload.html === undefined && payload.attachments === undefined && payload.subject === "");
+
+    // Response {} → no id AND no message field → reason = JSON.stringify(data).
+    var tEmpty = b.mail.transports.resend({
+      apiKey: "k", endpoint: "http://127.0.0.1:" + port + "/emptyobj",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    var eEmpty = await _sendErr(tEmpty, { from: "f@x.com", to: "a@x.com" });
+    check("resend: no-id no-message body → rejected with JSON.stringify reason",
+      eEmpty && eEmpty.code === "mail/resend-rejected" && /\{\}/.test(eEmpty.message));
+  } finally {
+    await new Promise(function (r) { server.close(function () { r(); }); });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// smtpTransport — config-time option permutations (no socket)
+// ---------------------------------------------------------------------------
+
+function testSmtpOptionPermutations() {
+  // implicitTls:true on a non-465 port, plus TLS-shape opts (ecdhCurve / ca /
+  // minTlsVersion) and a forced IPv6 family preference — all wired at build.
+  var t1 = b.mail.transports.smtp({
+    host: "mx.example.test", port: 2525, implicitTls: true,
+    ecdhCurve: "X25519MLKEM768", ca: "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
+    minTlsVersion: "TLSv1.3", preferFamily: "6",
+  });
+  check("smtp: implicitTls + ecdhCurve/ca/minTlsVersion + preferFamily:'6' builds",
+    typeof t1.send === "function");
+
+  // Bare-IP host → SNI servername must be omitted (Node rejects SNI to an IP);
+  // the transport still constructs.
+  var t2 = b.mail.transports.smtp({ host: "127.0.0.1", port: 587 });
+  check("smtp: bare-IPv4 host builds (servername auto-omitted)", typeof t2.send === "function");
+
+  // Colon-bearing (IPv6-shaped) host also omits SNI.
+  var t3 = b.mail.transports.smtp({ host: "2001:db8::1", port: 587 });
+  check("smtp: IPv6-shaped host builds (servername auto-omitted)", typeof t3.send === "function");
+
+  // Explicit chunkSize:0 is a positive-finite-int violation → refused.
+  var threw = null;
+  try { b.mail.transports.smtp({ host: "h", chunkSize: 0 }); } catch (e) { threw = e; }
+  check("smtp: chunkSize:0 refused (positive-finite-int gate)",
+    threw && threw.code === "mail/smtp-misconfigured");
+}
+
+// ---------------------------------------------------------------------------
+// SMTP wire — _parsePeerSize no-cap ('SIZE' alone) + junk-arg ('SIZE abc')
+// ---------------------------------------------------------------------------
+
+async function testSmtpParsePeerSizeNoCapAndJunk(certPair) {
+  // 'SIZE' advertised with no argument → peerSizeCap 0 (no enforced cap): the
+  // pre-check is skipped BUT MAIL FROM still carries SIZE= (peerSizeCap !== -1).
+  var stNoCap = startTlsSmtp(certPair, { ext: ["8BITMIME", "SIZE"] });
+  await listen(stNoCap);
+  try {
+    var t = tlsTransport(certPair, stNoCap.port);
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "body bytes" });
+    check("smtp-size-nocap: delivered (no enforced cap)", r.code === 250);
+    check("smtp-size-nocap: MAIL FROM still carries SIZE=", /SIZE=\d+/.test(stNoCap.mailFromLine || ""));
+  } finally { await closeServer(stNoCap); }
+
+  // 'SIZE abc' (non-numeric argument) → peerSizeCap -1 (treated as unadvertised):
+  // no pre-check and NO SIZE= keyword on MAIL FROM.
+  var stJunk = startTlsSmtp(certPair, { ext: ["8BITMIME", "SIZE abc"] });
+  await listen(stJunk);
+  try {
+    var t2 = tlsTransport(certPair, stJunk.port);
+    var r2 = await t2.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "body bytes" });
+    check("smtp-size-junk: delivered (junk SIZE arg ignored)", r2.code === 250);
+    check("smtp-size-junk: MAIL FROM omits SIZE=", !/SIZE=/.test(stJunk.mailFromLine || ""));
+  } finally { await closeServer(stJunk); }
+}
+
+// ---------------------------------------------------------------------------
+// SMTP wire — 8BITMIME triggered by a non-ASCII calendar body, and SMTPUTF8
+// triggered by a non-ASCII cc recipient (the cc/bcc list branch of the
+// _messageRequiresSmtpUtf8 detector).
+// ---------------------------------------------------------------------------
+
+async function testSmtp8BitMimeCalendarBody(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({
+      from: "s@a.test", to: "r@b.test", subject: "invite",
+      calendar: { method: "REQUEST", icalText: "BEGIN:VCALENDAR\r\nSUMMARY:grüße café ☕\r\nEND:VCALENDAR" },
+    });
+    check("smtp-8bit-cal: delivered", r.code === 250);
+    check("smtp-8bit-cal: non-ASCII calendar body → BODY=8BITMIME",
+      /BODY=8BITMIME/.test(st.mailFromLine || ""));
+  } finally { await closeServer(st); }
+}
+
+async function testSmtpSmtpUtf8FromCcRecipient(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["SMTPUTF8", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    // ASCII from / to / subject; only the cc carries non-ASCII → the cc/bcc
+    // scan in _messageRequiresSmtpUtf8 must flip the transaction to SMTPUTF8.
+    var r = await t.send({
+      from: "s@a.test", to: "r@b.test", cc: "grüße@münchen.de", subject: "hi", text: "hello",
+    });
+    check("smtp-utf8-cc: delivered", r.code === 250);
+    check("smtp-utf8-cc: non-ASCII cc recipient → MAIL FROM carried SMTPUTF8",
+      /SMTPUTF8/.test(st.mailFromLine || ""));
+    check("smtp-utf8-cc: cc added to RCPT set", st.rcptLines.length === 2);
+  } finally { await closeServer(st); }
+}
+
+// ---------------------------------------------------------------------------
 
 async function run() {
   testSmtpTransportAcceptsChunkingOpts();
@@ -1715,6 +1990,15 @@ async function run() {
   await testMergeMessageHeaderMerge();
   testSmtpRejectUnauthorizedAudits();
 
+  // Additional error / edge / permutation branches.
+  await testEaiAndLengthValidationEdges();
+  await testCreateGuardDomainProfileFallback();
+  await testCommercialCustomFooterSeparator();
+  await testConsoleSingleCc();
+  await testHttpMethodAndVerdictNoId();
+  await testResendMinimalAndNoMessageReason();
+  testSmtpOptionPermutations();
+
   // SMTP state machine over loopback TLS — mint one cert pair, reuse.
   var ca = await b.mtlsEngine.generateCa({ generation: 1 });
   var leaf = await b.mtlsEngine.signClientCert({
@@ -1738,6 +2022,9 @@ async function run() {
   await testSmtpStarttlsHappyPath(certPair);
   await testSmtpStarttlsRejected(certPair);
   await testSmtpBinaryMimeFromNulBuffer(certPair);
+  await testSmtpParsePeerSizeNoCapAndJunk(certPair);
+  await testSmtp8BitMimeCalendarBody(certPair);
+  await testSmtpSmtpUtf8FromCcRecipient(certPair);
 }
 
 module.exports = { run: run };
