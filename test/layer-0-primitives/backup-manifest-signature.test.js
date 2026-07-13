@@ -168,6 +168,14 @@ async function run() {
     function (o) { o.files[0].relativePath = covDrive; }, /relativePath/);
   _covValidateErr("validate refuses drive-absolute encryptedPath",
     function (o) { o.files[0].encryptedPath = covDrive; }, /encryptedPath/);
+  // An NTFS alternate-data-stream marker (a colon anywhere, not just a leading
+  // drive letter) is refused at validate() too, matching the safePath sink so a
+  // caller pre-screening a tampered manifest with validate()/inspect() also
+  // fails closed rather than deferring the rejection to restore.
+  _covValidateErr("validate refuses an NTFS-ADS relativePath (colon)",
+    function (o) { o.files[0].relativePath = "db.enc:evil"; }, /relativePath/);
+  _covValidateErr("validate refuses an NTFS-ADS encryptedPath (colon)",
+    function (o) { o.files[0].encryptedPath = "files/db.enc.bin:stream"; }, /encryptedPath/);
 
   // serialize() on a tampered-invalid manifest fails closed too.
   _covRefuses("serialize refuses an invalid manifest", function () {

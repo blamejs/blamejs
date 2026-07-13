@@ -6278,6 +6278,34 @@ async function testBackupBundlePathTraversalRejected() {
       });
     } catch (e) { threw = e; }
     check("absolute path in relativePath rejected", threw && threw.code === "backup-bundle/bad-include");
+
+    // A Windows drive-letter prefix is absolute (path.resolve honors it) and a
+    // colon anywhere is also an NTFS alternate-data-stream marker -- both must
+    // be refused so a relativePath built from untrusted input can't read a file
+    // outside dataDir. Sibling of the manifest.validate / restore-sink checks.
+    threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir:      fx.dataDir,
+        outDir:       path.join(fx.root, "bundle3"),
+        passphrase:   Buffer.from("p"),
+        vaultKeyJson: "{}",
+        files: [{ relativePath: "C:" + "\\" + "Windows" + "\\" + "evil", kind: "raw", required: true }],
+      });
+    } catch (e) { threw = e; }
+    check("drive-letter path in relativePath rejected", threw && threw.code === "backup-bundle/bad-include");
+
+    threw = null;
+    try {
+      await b.backupBundle.create({
+        dataDir:      fx.dataDir,
+        outDir:       path.join(fx.root, "bundle4"),
+        passphrase:   Buffer.from("p"),
+        vaultKeyJson: "{}",
+        files: [{ relativePath: "db.enc:evil", kind: "raw", required: true }],
+      });
+    } catch (e) { threw = e; }
+    check("NTFS-ADS (colon) in relativePath rejected", threw && threw.code === "backup-bundle/bad-include");
   } finally { fx.cleanup(); }
 }
 
