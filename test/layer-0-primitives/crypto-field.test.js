@@ -286,13 +286,285 @@ async function testConsumerPathEmptyAndKRow() {
   }
 }
 
+// ---- accessor / guard branches (no vault needed) ----
+
+function testAccessorAndGuardBranches() {
+  // isRowSealed — the K_row-prefix router the read path uses to pick the
+  // K_row decrypt over the vault-root unseal. A non-string or a plain
+  // vault: cell must NOT be routed as row-keyed.
+  check("isRowSealed true for a vault.row: cell", b.cryptoField.isRowSealed("vault.row:AAAA") === true);
+  check("isRowSealed false for a plain vault: cell", b.cryptoField.isRowSealed("vault:AAAA") === false);
+  check("isRowSealed false for null", b.cryptoField.isRowSealed(null) === false);
+  check("isRowSealed false for a number", b.cryptoField.isRowSealed(42) === false);
+
+  // getSchema returns null (not undefined) for an unregistered table so a
+  // backend can branch on it directly.
+  check("getSchema returns null for an unregistered table",
+    b.cryptoField.getSchema("cf_cov_never_registered_schema") === null);
+
+  // sealRow / unsealRow are no-ops when the row is falsy or the table was
+  // never registered — the storage backend calls them unconditionally.
+  check("sealRow(null) returns the falsy row unchanged", b.cryptoField.sealRow("cf_cov_x", null) === null);
+  check("unsealRow(null) returns the falsy row unchanged", b.cryptoField.unsealRow("cf_cov_x", null) === null);
+  var passthruIn = { a: 1, b: "vault:whatever" };
+  var sealedPassthru = b.cryptoField.sealRow("cf_cov_unregistered_table_zzz", passthruIn);
+  check("sealRow on an unregistered table returns the row unchanged",
+    sealedPassthru === passthruIn);
+  var unsealPassthru = b.cryptoField.unsealRow("cf_cov_unregistered_table_zzz", passthruIn);
+  check("unsealRow on an unregistered table returns the row unchanged",
+    unsealPassthru === passthruIn);
+
+  // applyPosture is a defensive guard: empty / non-string returns null WITHOUT
+  // recording a posture (so it can't accidentally arm the erase-vacuum cascade).
+  check("applyPosture('') returns null (no-op)", b.cryptoField.applyPosture("") === null);
+  check("applyPosture(non-string) returns null (no-op)", b.cryptoField.applyPosture(42) === null);
+  var posture = b.cryptoField.getActivePosture();
+  check("getActivePosture is read-only (null or a string)",
+    posture === null || typeof posture === "string");
+
+  // registerTable rejects an unknown derived-hash mode at config time so a
+  // typo can't silently index under a malformed digest.
+  var badMode = _try(function () {
+    return b.cryptoField.registerTable("cf_cov_badmode", { derivedHashMode: "md5" });
+  });
+  check("registerTable throws on an unknown derivedHashMode",
+    badMode.ok === false && badMode.err && badMode.err.code === "crypto-field/bad-derived-hash-mode");
+  var badColMode = _try(function () {
+    return b.cryptoField.registerTable("cf_cov_badcolmode", {
+      derivedHashes: { h: { from: "x", mode: "sha1" } },
+    });
+  });
+  check("registerTable throws on an unknown per-column derived-hash mode",
+    badColMode.ok === false && badColMode.err &&
+    badColMode.err.code === "crypto-field/bad-derived-hash-col-mode");
+}
+
+// ---- column-residency write gate (CWE-178 case-insensitivity) ----
+
+function testColumnResidencyGate() {
+  b.cryptoField.declareColumnResidency("cf_cov_res", {
+    columnResidency: { addressLine1: "eu", name: "global" },
+  });
+  check("getColumnResidency returns the declared map",
+    JSON.stringify(b.cryptoField.getColumnResidency("cf_cov_res")) ===
+    JSON.stringify({ addressLine1: "eu", name: "global" }));
+  check("getColumnResidency returns null for an undeclared table",
+    b.cryptoField.getColumnResidency("cf_cov_res_none") === null);
+
+  // A region-bound column on a mismatched backend is refused with the full
+  // want/got refusal shape the storage backend wraps in its own error.
+  var refuse = b.cryptoField.assertColumnResidency("cf_cov_res",
+    { id: 1, addressLine1: "10 Rue de Rivoli" }, { backendTag: "us" });
+  check("assertColumnResidency refuses an eu column landing on a us backend",
+    refuse && refuse.error === "column-residency-mismatch" && refuse.column === "addressLine1" &&
+    refuse.want === "eu" && refuse.got === "us");
+
+  // The matching backend passes.
+  check("assertColumnResidency passes an eu column on an eu backend",
+    b.cryptoField.assertColumnResidency("cf_cov_res",
+      { id: 1, addressLine1: "10 Rue de Rivoli" }, { backendTag: "eu" }) === null);
+
+  // A "global" column and an "unrestricted" backend both pass any backend.
+  check("assertColumnResidency passes a global column on any backend",
+    b.cryptoField.assertColumnResidency("cf_cov_res",
+      { id: 1, name: "Alice" }, { backendTag: "us" }) === null);
+  check("assertColumnResidency passes an eu column on an unrestricted backend",
+    b.cryptoField.assertColumnResidency("cf_cov_res",
+      { id: 1, addressLine1: "x" }, { backendTag: "unrestricted" }) === null);
+
+  // CWE-178: a raw-SQL-parsed row can differ in column case; the gate resolves
+  // case-insensitively so a differently-cased column cannot skip the check.
+  var refuseCase = b.cryptoField.assertColumnResidency("cf_cov_res",
+    { id: 1, ADDRESSLINE1: "10 Rue de Rivoli" }, { backendTag: "us" });
+  check("assertColumnResidency resolves the mapped column case-insensitively (CWE-178)",
+    refuseCase && refuseCase.error === "column-residency-mismatch" && refuseCase.column === "addressLine1");
+
+  // A null / absent cell is skipped (nothing to place).
+  check("assertColumnResidency skips a null cell",
+    b.cryptoField.assertColumnResidency("cf_cov_res",
+      { id: 1, addressLine1: null }, { backendTag: "us" }) === null);
+  check("assertColumnResidency returns null for an undeclared table",
+    b.cryptoField.assertColumnResidency("cf_cov_res_none", { addressLine1: "x" }, { backendTag: "us" }) === null);
+
+  // Config-time fail-loud on malformed declarations.
+  check("declareColumnResidency throws on an empty table name",
+    _try(function () { return b.cryptoField.declareColumnResidency("", { columnResidency: {} }); })
+      .err.code === "crypto-field/residency-table-empty");
+  check("declareColumnResidency throws when opts is not an object",
+    _try(function () { return b.cryptoField.declareColumnResidency("cf_cov_res2", null); })
+      .err.code === "crypto-field/residency-opts-not-object");
+  check("declareColumnResidency throws when columnResidency is not an object",
+    _try(function () { return b.cryptoField.declareColumnResidency("cf_cov_res2", { columnResidency: 5 }); })
+      .err.code === "crypto-field/residency-map-not-object");
+  check("declareColumnResidency throws on an empty residency tag",
+    _try(function () { return b.cryptoField.declareColumnResidency("cf_cov_res2", { columnResidency: { c: "" } }); })
+      .err.code === "crypto-field/residency-tag-empty");
+}
+
+// ---- per-row residency + per-row-key config guards, eraseRow tombstone ----
+
+function testPerRowConfigGuardsAndErase() {
+  // Per-row residency: the residency tag column must stay plaintext, so
+  // declaring it on top of a sealed column is refused at config time.
+  b.cryptoField.registerTable("cf_cov_prr", { sealedFields: ["region", "ssn"] });
+  check("declarePerRowResidency refuses a sealed residency column",
+    _try(function () {
+      return b.cryptoField.declarePerRowResidency("cf_cov_prr", {
+        residencyColumn: "region", allowedTags: ["eu", "global"],
+      });
+    }).err.code === "crypto-field/per-row-residency-sealed-conflict");
+  check("declarePerRowResidency refuses an empty allowedTags array",
+    _try(function () {
+      return b.cryptoField.declarePerRowResidency("cf_cov_prr2", {
+        residencyColumn: "dataRegion", allowedTags: [],
+      });
+    }).err.code === "crypto-field/per-row-residency-tags-invalid");
+
+  var prrSpec = b.cryptoField.declarePerRowResidency("cf_cov_prr3", {
+    residencyColumn: "dataRegion", allowedTags: ["eu-west-1", "global"],
+  });
+  check("declarePerRowResidency returns the declared spec",
+    prrSpec.residencyColumn === "dataRegion" && prrSpec.allowedTags.length === 2);
+  check("getPerRowResidency returns a copy of the spec",
+    b.cryptoField.getPerRowResidency("cf_cov_prr3").residencyColumn === "dataRegion");
+  check("getPerRowResidency returns null for an undeclared table",
+    b.cryptoField.getPerRowResidency("cf_cov_prr_none") === null);
+  var listed = b.cryptoField.listPerRowResidency();
+  check("listPerRowResidency includes the declared table",
+    Array.isArray(listed) && listed.some(function (e) {
+      return e.table === "cf_cov_prr3" && e.residencyColumn === "dataRegion";
+    }));
+
+  // declarePerRowKey validation — config-time fail-loud on bad sizing.
+  check("declarePerRowKey throws on an empty table name",
+    _try(function () { return b.cryptoField.declarePerRowKey("", {}); })
+      .err.code === "crypto-field/per-row-key-table-empty");
+  check("declarePerRowKey throws on a keySize below the 16-byte minimum",
+    _try(function () { return b.cryptoField.declarePerRowKey("cf_cov_pk", { keySize: 8 }); })
+      .err.code === "crypto-field/per-row-key-bad-size");
+  check("declarePerRowKey throws on a non-integer keySize",
+    _try(function () { return b.cryptoField.declarePerRowKey("cf_cov_pk", { keySize: 16.5 }); })
+      .err.code === "crypto-field/per-row-key-bad-size");
+  check("declarePerRowKey throws on a non-numeric keySize",
+    _try(function () { return b.cryptoField.declarePerRowKey("cf_cov_pk", { keySize: "32" }); })
+      .err.code === "crypto-field/per-row-key-bad-size");
+  check("declarePerRowKey throws on a non-string info label",
+    _try(function () { return b.cryptoField.declarePerRowKey("cf_cov_pk", { info: 123 }); })
+      .err.code === "crypto-field/per-row-key-info-empty");
+
+  check("hasPerRowKey false before declaration", b.cryptoField.hasPerRowKey("cf_cov_pk_ok") === false);
+  var pkSpec = b.cryptoField.declarePerRowKey("cf_cov_pk_ok");   // default keySize 32
+  check("declarePerRowKey defaults keySize to 32", pkSpec.keySize === 32);
+  check("declarePerRowKey defaults the info label to the table namespace",
+    pkSpec.info === "blamejs-per-row-key:cf_cov_pk_ok");
+  check("hasPerRowKey true after declaration", b.cryptoField.hasPerRowKey("cf_cov_pk_ok") === true);
+
+  // materialize / destroy require a db handle — the guard branches throw or
+  // no-op WITHOUT touching crypto when the table isn't keyed or no handle is
+  // passed.
+  check("materializePerRowKey returns null for a non-keyed table",
+    b.cryptoField.materializePerRowKey("cf_cov_not_keyed", "r1", {}) === null);
+  check("materializePerRowKey throws when no db handle is supplied",
+    _try(function () { return b.cryptoField.materializePerRowKey("cf_cov_pk_ok", "r1"); })
+      .err.code === "crypto-field/materialize-per-row-key-no-db");
+  check("destroyPerRowKey no-ops (destroyed:0) for a non-keyed table",
+    b.cryptoField.destroyPerRowKey("cf_cov_not_keyed", "r1", {}).destroyed === 0);
+  check("destroyPerRowKey throws when no db handle is supplied",
+    _try(function () { return b.cryptoField.destroyPerRowKey("cf_cov_pk_ok", "r1"); })
+      .err.code === "crypto-field/destroy-per-row-key-no-db");
+
+  // eraseRow tombstone: sealed columns + derived-hash mirrors NULLed, a
+  // 1-day-bucketed __erasedAt stamped, non-sealed columns preserved.
+  b.cryptoField.registerTable("cf_cov_erase", {
+    sealedFields: ["ssn"], derivedHashes: { ssnHash: { from: "ssn" } },
+  });
+  check("eraseRow(null) returns the falsy row", b.cryptoField.eraseRow("cf_cov_erase", null) === null);
+  var eraseInput = { id: 7, ssn: "vault:whatever", ssnHash: "deadbeef", keep: "retained" };
+  var erased = b.cryptoField.eraseRow("cf_cov_erase", eraseInput);
+  check("eraseRow NULLs the sealed column", erased.ssn === null);
+  check("eraseRow NULLs the derived-hash mirror", erased.ssnHash === null);
+  check("eraseRow preserves non-sealed columns", erased.keep === "retained");
+  check("eraseRow stamps a numeric __erasedAt", typeof erased.__erasedAt === "number");
+  check("eraseRow buckets __erasedAt to a 1-day floor (UTC ms)", erased.__erasedAt % (24 * 60 * 60 * 1000) === 0);
+  check("eraseRow does not mutate the input row", eraseInput.ssn === "vault:whatever");
+  check("eraseRow on an unregistered table returns the row unchanged",
+    b.cryptoField.eraseRow("cf_cov_erase_none", eraseInput) === eraseInput);
+}
+
+// ---- malformed envelopes + Uint8Array type fidelity (vault-backed) ----
+
+async function testMalformedEnvelopesFailClosed() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cf-malformed-"));
+  try {
+    try { b.vault._resetForTest(); } catch (_e) { /* fresh init below */ }
+    await b.vault.init({ dataDir: tmp, mode: "plaintext" });
+    b.cryptoField.clearRateCapForTest();
+
+    // A DB-write attacker forges a garbage vault: payload into a sealed
+    // column. unsealRow must fail closed (null the cell), never crash the
+    // read and never surface the attacker-crafted string.
+    b.cryptoField.registerTable("cf_cov_malformed", { sealedFields: ["x"] });
+    var garbage = _try(function () {
+      return b.cryptoField.unsealRow("cf_cov_malformed",
+        { id: 1, x: "vault:not-valid-base64-@@@" }, "seam");
+    });
+    check("unsealRow does not throw on a malformed vault: envelope", garbage.ok === true);
+    check("unsealRow nulls a malformed vault: envelope (fail closed, never surfaced)",
+      garbage.value.x === null);
+
+    // A malformed vault.aad: envelope on an aad table likewise fails closed.
+    b.cryptoField.registerTable("cf_cov_malformed_aad", {
+      aad: true, sealedFields: ["x"], rowIdField: "id",
+    });
+    var garbageAad = _try(function () {
+      return b.cryptoField.unsealRow("cf_cov_malformed_aad",
+        { id: "rowA", x: "vault.aad:garbage-not-a-real-envelope" }, "seam");
+    });
+    check("unsealRow does not throw on a malformed vault.aad: envelope", garbageAad.ok === true);
+    check("unsealRow nulls a malformed vault.aad: envelope (fail closed)", garbageAad.value.x === null);
+
+    // AAD-downgrade refusal: a plain (unbound) vault: cell on an aad table is a
+    // relocatable-seal downgrade — refused (nulled), not surfaced. Build a real
+    // plain vault: cell on a separate plain table, then read it through the aad
+    // table's context.
+    b.cryptoField.registerTable("cf_cov_plainsrc", { sealedFields: ["x"] });
+    var plainCell = b.cryptoField.sealRow("cf_cov_plainsrc", { x: "leaked" }).x;
+    check("control: the source plain cell is a vault: (unbound) envelope",
+      typeof plainCell === "string" && plainCell.indexOf("vault:") === 0);
+    var downgrade = b.cryptoField.unsealRow("cf_cov_malformed_aad",
+      { id: "rowA", x: plainCell }, "seam");
+    check("unsealRow refuses a plain vault: cell on an aad table (downgrade nulled)",
+      downgrade.x === null);
+
+    // Type fidelity: a plain Uint8Array (not a Buffer) round-trips as bytes —
+    // the distinct _encodeTyped Uint8Array branch, separate from Buffer.
+    b.cryptoField.registerTable("cf_cov_u8", { sealedFields: ["bytes"] });
+    var u8 = new Uint8Array([0, 9, 250, 255, 1]);
+    var sealedU8 = b.cryptoField.sealRow("cf_cov_u8", { bytes: u8 });
+    check("a Uint8Array sealed field is stored as a vault: envelope",
+      typeof sealedU8.bytes === "string" && sealedU8.bytes.indexOf("vault:") === 0);
+    var readU8 = b.cryptoField.unsealRow("cf_cov_u8", Object.assign({}, sealedU8), "seam");
+    check("a Uint8Array round-trips byte-for-byte (as a Buffer) through a sealed column",
+      Buffer.isBuffer(readU8.bytes) && readU8.bytes.equals(Buffer.from(u8)));
+
+    b.cryptoField.clearRateCapForTest();
+  } finally {
+    try { b.vault._resetForTest(); } catch (_e) { /* leave vault state clean for siblings */ }
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
   testReturnsDeclaredSealedFields();
   testUnregisteredTableIsEmpty();
   testTableWithNoSealedColumns();
   testPreservesDeclarationOrder();
+  testAccessorAndGuardBranches();
+  testColumnResidencyGate();
+  testPerRowConfigGuardsAndErase();
   await testSealUnsealSeams();
   await testConsumerPathEmptyAndKRow();
+  await testMalformedEnvelopesFailClosed();
 }
 
 module.exports = { run: run };
