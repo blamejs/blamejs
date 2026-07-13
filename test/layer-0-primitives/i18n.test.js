@@ -817,6 +817,235 @@ async function run() {
   testInterpolationSameDelimiter();
   testMiddlewareResolver();
   testLocaleChainFallbackValidation();
+
+  // Deeper adversarial / defensive branch coverage
+  testValidationDeepBranches();
+  testResolveLocaleBadOverride();
+  testTnNonFiniteCount();
+  testPluralCategoryFallsToOther();
+  testNegotiateReverseMatch();
+  testMiddlewareEdgeCases();
+  testLoadDirReadFailure();
+  testDisplayNameCurrencyScript();
+  testFormatDateNumberAndString();
+  testInterpolationUnclosedDefault();
+}
+
+// create() must reject every malformed sub-opt shape at boot (the
+// config-time throw tier), not just the ones the happy-path tests touch.
+function testValidationDeepBranches() {
+  function throwsCreate(opts) {
+    try { b.i18n.create(opts); return false; } catch (_e) { return true; }
+  }
+  var base = { defaultLocale: "en", locales: ["en"] };
+  function withBase(extra) { return Object.assign({}, base, extra); }
+
+  check("interpolation as a non-object throws",
+        throwsCreate(withBase({ interpolation: 42 })));
+  check("interpolation.end empty string throws",
+        throwsCreate(withBase({ interpolation: { end: "" } })));
+  check("interpolation.escape non-function throws",
+        throwsCreate(withBase({ interpolation: { escape: 42 } })));
+  check("interpolation.strict non-boolean throws",
+        throwsCreate(withBase({ interpolation: { strict: "yes" } })));
+
+  check("rtlLanguages non-array throws",
+        throwsCreate(withBase({ rtlLanguages: "ar" })));
+  check("rtlLanguages with an empty-string entry throws",
+        throwsCreate(withBase({ rtlLanguages: ["ar", ""] })));
+  check("rtlLanguages with a non-string entry throws",
+        throwsCreate(withBase({ rtlLanguages: ["ar", 42] })));
+
+  check("translations as an array throws",
+        throwsCreate(withBase({ translations: [] })));
+  check("translations as null throws",
+        throwsCreate(withBase({ translations: null })));
+
+  check("fallbackLocale with an invalid BCP 47 tag throws",
+        throwsCreate({ defaultLocale: "en", locales: ["en", "es"], fallbackLocale: "not_a_tag" }));
+  check("fallbackLocale not present in locales throws",
+        throwsCreate({ defaultLocale: "en", locales: ["en", "es"], fallbackLocale: "fr" }));
+
+  // Translation-tree leaf that is neither a string nor a nested object.
+  check("translation leaf that is a number throws at load",
+        throwsCreate(withBase({ translations: { en: { count: 5 } } })));
+  check("translation leaf that is an array throws at load",
+        throwsCreate(withBase({ translations: { en: { list: [1, 2] } } })));
+
+  check("eagerLocales as a non-array throws",
+        throwsCreate({ defaultLocale: "en", locales: ["en"], lazyLoad: true, dir: "/x", eagerLocales: "en" }));
+}
+
+// A caller-supplied locale override of the wrong type or a malformed tag
+// throws BAD_LOCALE at the call site (not silently coerced) — the same
+// _resolveLocale guard for every t / formatter / dir entry point.
+function testResolveLocaleBadOverride() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { greet: "Hello" } },
+  });
+  function throwsAt(fn) { try { fn(); return false; } catch (_e) { return true; } }
+
+  check("t() with a non-string locale override throws",
+        throwsAt(function () { i.t("greet", null, { locale: 42 }); }));
+  check("t() with a malformed locale override tag throws",
+        throwsAt(function () { i.t("greet", null, { locale: "not_a_tag" }); }));
+  check("formatNumber() with a malformed locale override throws",
+        throwsAt(function () { i.formatNumber(5, undefined, { locale: "not_a_tag" }); }));
+  check("dir() with a non-string locale override throws",
+        throwsAt(function () { i.dir({ locale: 42 }); }));
+  check("has() with a malformed locale override throws",
+        throwsAt(function () { i.has("greet", { locale: "not_a_tag" }); }));
+
+  // A null/undefined override resolves the current locale (no throw).
+  check("t() with a null locale override uses the current locale",
+        i.t("greet", null, { locale: null }) === "Hello");
+}
+
+function testTnNonFiniteCount() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { items: { one: "{count} item", other: "{count} items" } } },
+  });
+  function throwsAt(fn) { try { fn(); return false; } catch (_e) { return true; } }
+  check("tn() rejects NaN count",       throwsAt(function () { i.tn("items", NaN); }));
+  check("tn() rejects Infinity count",  throwsAt(function () { i.tn("items", Infinity); }));
+  check("tn() rejects a non-number count",
+        throwsAt(function () { i.tn("items", "5"); }));
+}
+
+// When Intl.PluralRules selects a CLDR category the translation entry does
+// not declare, _selectPlural falls back to the mandatory `other` key rather
+// than rendering undefined.
+function testPluralCategoryFallsToOther() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "ru"],
+    translations: {
+      en: { items: { one: "{count} item", other: "{count} items" } },
+      // Russian selects "few" for 2 and "many" for 5, but this entry only
+      // declares one + other — both must fall through to `other`.
+      ru: { items: { one: "{count} штука", other: "{count} (other)" } },
+    },
+  });
+  check("ru count=2 (selects 'few', not declared) → falls to other",
+        i.tn("items", 2, null, { locale: "ru" }) === "2 (other)");
+  check("ru count=5 (selects 'many', not declared) → falls to other",
+        i.tn("items", 5, null, { locale: "ru" }) === "5 (other)");
+}
+
+// Reverse negotiation: a broad requested tag ("pt") resolves to a more
+// specific configured tag ("pt-BR") when no exact / prefix match exists.
+function testNegotiateReverseMatch() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "pt-BR"],
+    translations:  { en: { greet: "Hello" }, "pt-BR": { greet: "Oi" } },
+  });
+  var mw = i.middleware();
+  var req = _mockReq();
+  req.headers = { "accept-language": "pt" };
+  mw(req, _mockRes(), function () {});
+  check("broad requested 'pt' reverse-matches configured 'pt-BR'",
+        req.locale === "pt-BR");
+  check("req.t bound to the reverse-matched locale",
+        req.t("greet") === "Oi");
+}
+
+function testMiddlewareEdgeCases() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "es"],
+    translations:  { en: { greet: "Hello" }, es: { greet: "Hola" } },
+  });
+
+  // res is null (next-only pipelines): must bind req.* and not crash.
+  var mwNoRes = i.middleware();
+  var reqNoRes = _mockReq();
+  reqNoRes.headers = { "accept-language": "es" };
+  var nextCalled = false;
+  var crashed = false;
+  try { mwNoRes(reqNoRes, null, function () { nextCalled = true; }); }
+  catch (_e) { crashed = true; }
+  check("middleware with res=null does not crash", crashed === false);
+  check("middleware with res=null still binds req.locale + calls next",
+        reqNoRes.locale === "es" && nextCalled === true);
+
+  // cookieName configured but the request carries no cookies → falls through
+  // to header negotiation without crashing.
+  var mwCookie = i.middleware({ cookieName: "lang" });
+  var reqCookie = _mockReq();
+  reqCookie.headers = { "accept-language": "es" };
+  // no reqCookie.cookies at all
+  mwCookie(reqCookie, _mockRes(), function () {});
+  check("cookieName set but no cookies present → header negotiation",
+        reqCookie.locale === "es");
+
+  // Explicit query value that is not a configured locale falls through.
+  var mwQuery = i.middleware();
+  var reqQuery = _mockReq();
+  reqQuery.headers = { "accept-language": "es" };
+  reqQuery.query = { lang: "zz-not-configured" };
+  mwQuery(reqQuery, _mockRes(), function () {});
+  check("query lang not in configured set → header negotiation",
+        reqQuery.locale === "es");
+}
+
+// _loadFromDir surfaces a read failure (not just missing/parse) as a typed
+// LOAD_FAILED — a path that exists but cannot be read as a file (a directory
+// standing where <locale>.json is expected) exercises the read-error branch.
+function testLoadDirReadFailure() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-i18n-readfail-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "en.json"), JSON.stringify({ greet: "Hello" }));
+    // Create a DIRECTORY named de.json so existsSync() is true but reading
+    // it as a file throws EISDIR.
+    fs.mkdirSync(path.join(tmpDir, "de.json"));
+    var threw = false;
+    try {
+      b.i18n.create({ defaultLocale: "en", locales: ["en", "de"], dir: tmpDir });
+    } catch (_e) { threw = true; }
+    check("unreadable locale file (directory) throws LOAD_FAILED", threw);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+function testDisplayNameCurrencyScript() {
+  var i = b.i18n.create({ defaultLocale: "en", locales: ["en"] });
+  var cur = i.displayName("USD", "currency");
+  check("displayName currency type returns a non-empty string",
+        typeof cur === "string" && cur.length > 0);
+  var scr = i.displayName("Latn", "script");
+  check("displayName script type returns a non-empty string",
+        typeof scr === "string" && scr.length > 0);
+}
+
+// formatDate accepts a Date, a numeric epoch, or a parseable string — the
+// two non-Date branches beyond the happy-path Date input.
+function testFormatDateNumberAndString() {
+  var i = b.i18n.create({ defaultLocale: "en-US", locales: ["en-US"] });
+  var epoch = Date.UTC(2024, 0, 15);
+  var fromNum = i.formatDate(epoch, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+  check("formatDate from a numeric epoch renders 2024",
+        /2024/.test(fromNum) && /January/.test(fromNum));
+  var fromStr = i.formatDate("2024-01-15T00:00:00Z", { year: "numeric", timeZone: "UTC" });
+  check("formatDate from a parseable string renders 2024",
+        /2024/.test(fromStr));
+}
+
+// An unclosed default {var} delimiter is rendered literally (never crashes,
+// never drops the tail of the template).
+function testInterpolationUnclosedDefault() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { partial: "Hello {name" } },
+  });
+  check("unclosed {var} delimiter renders literally",
+        i.t("partial", { name: "Bob" }) === "Hello {name");
 }
 
 function testLocaleChain() {

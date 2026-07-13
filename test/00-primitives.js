@@ -1966,6 +1966,223 @@ async function testAuthDpopPqcMlDsa() {
   check("ML-DSA-87 jwk.alg=ML-DSA-87",          rv.header.jwk.alg === "ML-DSA-87");
 }
 
+// DPoP verify/buildProof adversarial + error-branch coverage. These drive
+// the public b.auth.dpop surface an operator calls (buildProof / verify /
+// thumbprint) through every documented failure mode: malformed / oversize /
+// omitted-required-opt input, header-level refusals (typ / alg / jwk / crit),
+// signature tampering, payload-claim omissions, nonce binding, replay-store
+// shape, buildProof input validation, and thumbprint kty gating.
+
+function _dpopB64url(x) {
+  return Buffer.from(x).toString("base64")
+    .replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+// Craft a proof segment triple with a caller-supplied header/payload and a
+// throwaway signature — for the verify branches that run BEFORE the signature
+// is checked (typ / alg / jwk / crit / structural malformation).
+function _dpopCraft(header, payload, sig) {
+  return _dpopB64url(JSON.stringify(header)) + "." +
+         _dpopB64url(JSON.stringify(payload)) + "." + (sig || "AA");
+}
+
+// Sign a caller-supplied header+payload with a real P-256 key (ES256,
+// ieee-p1363 like the framework emits) — for the payload-claim branches that
+// run AFTER signature verification, so they must reach a genuinely valid sig.
+function _dpopSignES256(privateKey, header, payload) {
+  var nodeCrypto = require("crypto");
+  var si = _dpopB64url(JSON.stringify(header)) + "." + _dpopB64url(JSON.stringify(payload));
+  var sig = nodeCrypto.sign("sha256", Buffer.from(si, "ascii"),
+    { key: privateKey, dsaEncoding: "ieee-p1363" });
+  return si + "." + _dpopB64url(sig);
+}
+
+async function testAuthDpopVerifyMalformedInputs() {
+  var d = b.auth.dpop;
+  var o = { htm: "GET", htu: "https://x/y" };
+  async function code(proof, opts) {
+    try { await d.verify(proof, opts); return null; }
+    catch (e) { return e && e.code; }
+  }
+
+  check("dpop.verify: empty proof → auth-dpop/no-proof",
+        (await code("", o)) === "auth-dpop/no-proof");
+  check("dpop.verify: non-string proof → auth-dpop/no-proof",
+        (await code(null, o)) === "auth-dpop/no-proof");
+  check("dpop.verify: oversize proof → auth-dpop/proof-too-large",
+        (await code("x".repeat(96 * 1024 + 1), o)) === "auth-dpop/proof-too-large");
+  check("dpop.verify: omitted opts.htm → auth-dpop/bad-htm",
+        (await code("a.b.c", { htu: "https://x/y" })) === "auth-dpop/bad-htm");
+  check("dpop.verify: omitted opts.htu → auth-dpop/bad-htu",
+        (await code("a.b.c", { htm: "GET" })) === "auth-dpop/bad-htu");
+  check("dpop.verify: iatWindowSec<=0 → auth-dpop/bad-iat-window",
+        (await code("a.b.c", { htm: "GET", htu: "https://x/y", iatWindowSec: 0 })) === "auth-dpop/bad-iat-window");
+  check("dpop.verify: non-finite iatWindowSec → auth-dpop/bad-iat-window",
+        (await code("a.b.c", { htm: "GET", htu: "https://x/y", iatWindowSec: Infinity })) === "auth-dpop/bad-iat-window");
+  check("dpop.verify: wrong dot-part count → auth-dpop/malformed",
+        (await code("a.b", o)) === "auth-dpop/malformed");
+  check("dpop.verify: header not base64url-JSON → auth-dpop/malformed",
+        (await code(_dpopB64url("not json") + "." + _dpopB64url("{}") + ".AA", o)) === "auth-dpop/malformed");
+  check("dpop.verify: payload not base64url-JSON → auth-dpop/malformed",
+        (await code(_dpopB64url(JSON.stringify({ typ: "dpop+jwt", alg: "ES256", jwk: {} })) + "." +
+                    _dpopB64url("nope}") + ".AA", o)) === "auth-dpop/malformed");
+  check("dpop.verify: header is JSON null (not object) → auth-dpop/malformed",
+        (await code(_dpopB64url("null") + "." + _dpopB64url("{}") + ".AA", o)) === "auth-dpop/malformed");
+  check("dpop.verify: payload is JSON null (not object) → auth-dpop/malformed",
+        (await code(_dpopB64url(JSON.stringify({ typ: "dpop+jwt", alg: "ES256", jwk: {} })) + "." +
+                    _dpopB64url("null") + ".AA", o)) === "auth-dpop/malformed");
+}
+
+async function testAuthDpopVerifyHeaderChecks() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var pubJwk = ec.publicKey.export({ format: "jwk" });
+  var o = { htm: "GET", htu: "https://x/y" };
+  var payload = { jti: "j", htm: "GET", htu: "https://x/y", iat: Math.floor(Date.now() / 1000) };
+  async function code(proof, opts) {
+    try { await d.verify(proof, opts || o); return null; }
+    catch (e) { return e && e.code; }
+  }
+
+  check("dpop.verify: header.typ != dpop+jwt → auth-dpop/bad-typ",
+        (await code(_dpopCraft({ typ: "JWT", alg: "ES256", jwk: pubJwk }, payload))) === "auth-dpop/bad-typ");
+  check("dpop.verify: non-string header.alg → auth-dpop/malformed",
+        (await code(_dpopCraft({ typ: "dpop+jwt", alg: 123, jwk: pubJwk }, payload))) === "auth-dpop/malformed");
+  check("dpop.verify: token alg absent from allowlist → auth-dpop/alg-not-allowed",
+        (await code(_dpopCraft({ typ: "dpop+jwt", alg: "ES384", jwk: pubJwk }, payload),
+                    { htm: "GET", htu: "https://x/y", algorithms: ["ES256"] })) === "auth-dpop/alg-not-allowed");
+  check("dpop.verify: unsupported alg in opts.algorithms → auth-dpop/unsupported-alg",
+        (await code("a.b.c", { htm: "GET", htu: "https://x/y", algorithms: ["FOO"] })) === "auth-dpop/unsupported-alg");
+  check("dpop.verify: missing header.jwk → auth-dpop/missing-jwk",
+        (await code(_dpopCraft({ typ: "dpop+jwt", alg: "ES256" }, payload))) === "auth-dpop/missing-jwk");
+  check("dpop.verify: non-object header.jwk → auth-dpop/missing-jwk",
+        (await code(_dpopCraft({ typ: "dpop+jwt", alg: "ES256", jwk: "nope" }, payload))) === "auth-dpop/missing-jwk");
+  check("dpop.verify: 'crit' header declared → auth-dpop/unknown-crit",
+        (await code(_dpopCraft({ typ: "dpop+jwt", alg: "ES256", jwk: pubJwk, crit: ["b64"] }, payload))) === "auth-dpop/unknown-crit");
+}
+
+async function testAuthDpopVerifyBadSignature() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var proof = await d.buildProof({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey });
+  var parts = proof.split(".");
+  // Flip a byte of the (validly base64url) signature → decodes fine, verifies
+  // false → invalid-signature (NOT a base64url-decode malformed error).
+  var sigBuf = Buffer.from(parts[2].replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  sigBuf[0] = sigBuf[0] ^ 0xff;
+  parts[2] = sigBuf.toString("base64").replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  var threw = null;
+  try { await d.verify(parts.join("."), { htm: "GET", htu: "https://x/y" }); }
+  catch (e) { threw = e; }
+  check("dpop.verify: tampered signature → auth-dpop/invalid-signature",
+        threw && threw.code === "auth-dpop/invalid-signature");
+}
+
+async function testAuthDpopVerifyPayloadChecks() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var hdr = { typ: "dpop+jwt", alg: "ES256", jwk: ec.publicKey.export({ format: "jwk" }) };
+  var now = Math.floor(Date.now() / 1000);
+  var o = { htm: "GET", htu: "https://x/y" };
+  async function code(payload, opts) {
+    try { await d.verify(_dpopSignES256(ec.privateKey, hdr, payload), opts || o); return null; }
+    catch (e) { return e && e.code; }
+  }
+
+  check("dpop.verify: missing payload.jti → auth-dpop/missing-jti",
+        (await code({ htm: "GET", htu: "https://x/y", iat: now })) === "auth-dpop/missing-jti");
+  check("dpop.verify: missing payload.htm → auth-dpop/bad-htm",
+        (await code({ jti: "j", htu: "https://x/y", iat: now })) === "auth-dpop/bad-htm");
+  check("dpop.verify: missing payload.htu → auth-dpop/bad-htu",
+        (await code({ jti: "j", htm: "GET", iat: now })) === "auth-dpop/bad-htu");
+  check("dpop.verify: non-number payload.iat → auth-dpop/bad-iat",
+        (await code({ jti: "j", htm: "GET", htu: "https://x/y", iat: "soon" })) === "auth-dpop/bad-iat");
+}
+
+async function testAuthDpopNonceBinding() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+
+  var withNonce = await d.buildProof({
+    htm: "GET", htu: "https://x/y", privateKey: ec.privateKey, nonce: "srv-nonce-1",
+  });
+  var ok = await d.verify(withNonce, { htm: "GET", htu: "https://x/y", nonce: "srv-nonce-1" });
+  check("dpop.verify: matching nonce accepted", ok.payload.nonce === "srv-nonce-1");
+
+  var threwMis = null;
+  try { await d.verify(withNonce, { htm: "GET", htu: "https://x/y", nonce: "srv-nonce-2" }); }
+  catch (e) { threwMis = e; }
+  check("dpop.verify: nonce mismatch → auth-dpop/nonce-mismatch",
+        threwMis && threwMis.code === "auth-dpop/nonce-mismatch");
+
+  var noNonce = await d.buildProof({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey });
+  var threwMissing = null;
+  try { await d.verify(noNonce, { htm: "GET", htu: "https://x/y", nonce: "srv-nonce-1" }); }
+  catch (e) { threwMissing = e; }
+  check("dpop.verify: expected nonce absent from proof → auth-dpop/missing-nonce",
+        threwMissing && threwMissing.code === "auth-dpop/missing-nonce");
+}
+
+async function testAuthDpopVerifyBadReplayStore() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var proof = await d.buildProof({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey });
+  var threw = null;
+  // An object lacking checkAndInsert must be refused at the opts tier, not
+  // silently skip replay defense.
+  try { await d.verify(proof, { htm: "GET", htu: "https://x/y", replayStore: {} }); }
+  catch (e) { threw = e; }
+  check("dpop.verify: replayStore without checkAndInsert → auth-dpop/bad-replay-store",
+        threw && threw.code === "auth-dpop/bad-replay-store");
+}
+
+async function testAuthDpopBuildProofValidation() {
+  var d = b.auth.dpop;
+  var nodeCrypto = require("crypto");
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  async function code(opts) {
+    try { await d.buildProof(opts); return null; }
+    catch (e) { return e && e.code; }
+  }
+
+  check("dpop.buildProof: omitted htm → auth-dpop/bad-htm",
+        (await code({ htu: "https://x/y", privateKey: ec.privateKey })) === "auth-dpop/bad-htm");
+  check("dpop.buildProof: omitted htu → auth-dpop/bad-htu",
+        (await code({ htm: "GET", privateKey: ec.privateKey })) === "auth-dpop/bad-htu");
+  check("dpop.buildProof: omitted privateKey → auth-dpop/missing-private-key",
+        (await code({ htm: "GET", htu: "https://x/y" })) === "auth-dpop/missing-private-key");
+  check("dpop.buildProof: unparseable PEM → auth-dpop/bad-private-key",
+        (await code({ htm: "GET", htu: "https://x/y",
+                      privateKey: "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----" })) === "auth-dpop/bad-private-key");
+  check("dpop.buildProof: wrong-type privateKey → auth-dpop/bad-private-key",
+        (await code({ htm: "GET", htu: "https://x/y", privateKey: 12345 })) === "auth-dpop/bad-private-key");
+  check("dpop.buildProof: unsupported algorithm → auth-dpop/unsupported-alg",
+        (await code({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey, algorithm: "FOO" })) === "auth-dpop/unsupported-alg");
+  check("dpop.buildProof: non-http(s) htu scheme → auth-dpop/bad-htu",
+        (await code({ htm: "GET", htu: "ftp://host/path", privateKey: ec.privateKey })) === "auth-dpop/bad-htu");
+  check("dpop.buildProof: explicit jwk with refused kty → auth-dpop/refused-kty",
+        (await code({ htm: "GET", htu: "https://x/y", privateKey: ec.privateKey,
+                      jwk: { kty: "oct", k: "AAAA" } })) === "auth-dpop/refused-kty");
+}
+
+function testAuthDpopThumbprintErrors() {
+  var d = b.auth.dpop;
+  function code(jwkVal) {
+    try { d.thumbprint(jwkVal); return null; }
+    catch (e) { return e && e.code; }
+  }
+  check("dpop.thumbprint: null → auth-dpop/bad-jwk", code(null) === "auth-dpop/bad-jwk");
+  check("dpop.thumbprint: non-object → auth-dpop/bad-jwk", code("nope") === "auth-dpop/bad-jwk");
+  check("dpop.thumbprint: missing kty → auth-dpop/bad-jwk", code({ x: "y" }) === "auth-dpop/bad-jwk");
+  check("dpop.thumbprint: symmetric oct kty refused → auth-dpop/refused-kty",
+        code({ kty: "oct", k: "AAAA" }) === "auth-dpop/refused-kty");
+}
+
 // ---- AAL — NIST SP 800-63-4 authentication assurance levels ----
 
 function testAuthAalSurface() {
@@ -18950,6 +19167,14 @@ async function run() {
   await testAuthDpopJwkPrivateLeakRefused();
   await testAuthDpopThumbprint();
   await testAuthDpopPqcMlDsa();
+  await testAuthDpopVerifyMalformedInputs();
+  await testAuthDpopVerifyHeaderChecks();
+  await testAuthDpopVerifyBadSignature();
+  await testAuthDpopVerifyPayloadChecks();
+  await testAuthDpopNonceBinding();
+  await testAuthDpopVerifyBadReplayStore();
+  await testAuthDpopBuildProofValidation();
+  testAuthDpopThumbprintErrors();
   testAuthAalSurface();
   testAuthAalFromMethods();
   testAuthAalMeets();
@@ -19213,6 +19438,14 @@ module.exports = {
   testAuthDpopJwkPrivateLeakRefused:         testAuthDpopJwkPrivateLeakRefused,
   testAuthDpopThumbprint:                    testAuthDpopThumbprint,
   testAuthDpopPqcMlDsa:                      testAuthDpopPqcMlDsa,
+  testAuthDpopVerifyMalformedInputs:         testAuthDpopVerifyMalformedInputs,
+  testAuthDpopVerifyHeaderChecks:            testAuthDpopVerifyHeaderChecks,
+  testAuthDpopVerifyBadSignature:            testAuthDpopVerifyBadSignature,
+  testAuthDpopVerifyPayloadChecks:           testAuthDpopVerifyPayloadChecks,
+  testAuthDpopNonceBinding:                  testAuthDpopNonceBinding,
+  testAuthDpopVerifyBadReplayStore:          testAuthDpopVerifyBadReplayStore,
+  testAuthDpopBuildProofValidation:          testAuthDpopBuildProofValidation,
+  testAuthDpopThumbprintErrors:              testAuthDpopThumbprintErrors,
   testAuthAalSurface:                        testAuthAalSurface,
   testAuthAalFromMethods:                    testAuthAalFromMethods,
   testAuthAalMeets:                          testAuthAalMeets,

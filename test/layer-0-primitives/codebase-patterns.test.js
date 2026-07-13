@@ -953,6 +953,18 @@ function testParserPrimitivesHaveFuzzHarness() {
     "lib/parsers/safe-env.js":        ".env file loader takes a filepath (not adversarial in-process bytes); operator controls the file boundary, schema-validation gates the values",
     "lib/safe-path.js":               "operator-supplied path-segment validator over the existing guardFilename codepoint tables (reserved-name + bidi + overlong-UTF-8 inherited transitively); the per-segment regex set is deterministic + anchored + length-bounded by the caller-supplied rel, no adversarial-bytes parser surface",
   };
+  // Untrusted-BYTE parsers that are NOT named safe-*/guard-* (so the name walk
+  // below skips them) but consume adversarial bytes off the network / disk and
+  // need the same fuzz discipline -- the INPUT SURFACE is what matters, not the
+  // filename. asn1-der parses DER from peer TLS certificates, S/MIME, BIMI VMCs,
+  // CMS, ACME and TSA responses; cms-codec (b.cms) parses CMS on top of it;
+  // link-header (b.linkHeader.parse) parses an untrusted HTTP Link response
+  // header (RFC 8288) a server / SSRF-reachable origin controls.
+  var FUZZ_REQUIRED_EXTRA = [
+    "lib/asn1-der.js",
+    "lib/cms-codec.js",
+    "lib/link-header.js",
+  ];
   var fs   = require("node:fs");
   var path = require("node:path");
   var repoRoot = path.resolve(__dirname, "..", "..");
@@ -973,6 +985,9 @@ function testParserPrimitivesHaveFuzzHarness() {
     });
   }
   _walk(libDir);
+  FUZZ_REQUIRED_EXTRA.forEach(function (rel) {
+    if (libFiles.indexOf(rel) === -1) libFiles.push(rel);
+  });
   var hits = [];
   libFiles.forEach(function (rel) {
     if (FUZZ_NOT_REQUIRED[rel]) return;
@@ -1015,7 +1030,28 @@ function testParserPrimitivesHaveFuzzHarness() {
     // mutator-only exploration. We DON'T report on it here; the
     // build script just skips the zip step when the dir is missing.
   });
-  _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED)",
+  // The FUZZ_REQUIRED_EXTRA parsers are not name-matched by the cflite CI
+  // matrices (which are curated safe-*/guard-* subsets), so a harness for one
+  // would be BUILT but never RUN in-repo -- coverage claimed, not delivered.
+  // Require each to be listed in BOTH cflite matrices so the continuous-coverage
+  // claim is real. (OSS-Fuzz auto-discovers every harness via build.sh; this
+  // guards the in-repo PR + nightly signal for the parsers we explicitly promote.)
+  var cflitePr    = "";
+  var cfliteBatch = "";
+  try { cflitePr    = fs.readFileSync(path.join(repoRoot, ".github/workflows/cflite_pr.yml"), "utf8"); }    catch (_e1) { cflitePr = ""; }
+  try { cfliteBatch = fs.readFileSync(path.join(repoRoot, ".github/workflows/cflite_batch.yml"), "utf8"); } catch (_e2) { cfliteBatch = ""; }
+  FUZZ_REQUIRED_EXTRA.forEach(function (rel) {
+    var target = path.basename(rel).replace(/\.js$/, "");
+    var reEntry = new RegExp("^\\s*-\\s*" + target + "\\s*$", "m");
+    if (!reEntry.test(cflitePr) || !reEntry.test(cfliteBatch)) {
+      hits.push({
+        file: rel, line: 1,
+        content: "untrusted-byte parser has a fuzz harness + FUZZ_REQUIRED_EXTRA entry but its target `" + target +
+          "` is missing from a cflite matrix (.github/workflows/cflite_pr.yml AND cflite_batch.yml) -- the harness would be built but never run in-repo (add the target to both matrices)",
+      });
+    }
+  });
+  _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator (plus the untrusted-byte parsers in FUZZ_REQUIRED_EXTRA) has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED), and each FUZZ_REQUIRED_EXTRA parser is wired into both cflite CI matrices",
     hits);
 }
 

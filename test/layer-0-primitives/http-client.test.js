@@ -400,6 +400,383 @@ async function testCookieJar() {
   });
 }
 
+// ---- cookie jar parse / store / match branch coverage --------------
+//
+// Drives the public jar object (b.httpClient.cookieJar.create()) directly:
+// setFromResponse / cookieHeaderFor / getAll / clear / size /
+// setFromSerialized are the documented operator surface for a hand-wired
+// jar, and are the real consumer path for the RFC 6265 parse+store logic
+// that the request()-driven happy-path tests above don't exercise. No
+// network — the jar is a pure in-memory state machine here, with a
+// deterministic injected clock for the expiry branches.
+
+function _cjExpectThrow(label, fn, code) {
+  var err = null;
+  try { fn(); } catch (e) { err = e; }
+  check(label, err != null && err.code === code);
+  return err;
+}
+
+// Minimal seal/unseal contract stand-in for the vault-persist path — the
+// jar only requires { seal, unseal } (validateOpts.requireMethods). Kept
+// reversible + tagged so the no-plaintext assertion is checkable.
+function _cjFakeVault() {
+  return {
+    seal: function (s) { return "SEAL[" + Buffer.from(String(s), "utf8").toString("base64") + "]"; },
+    unseal: function (blob) {
+      var m = /^SEAL\[(.*)\]$/.exec(String(blob));
+      if (!m) throw new Error("cj fake vault: not a sealed blob");
+      return Buffer.from(m[1], "base64").toString("utf8");
+    },
+  };
+}
+
+function testCookieJarParseStore() {
+  var CJ = b.httpClient.cookieJar;
+
+  // ---- create() config-time validation (throws, no network) ----
+  _cjExpectThrow("cj.create: invalid persist throws BAD_OPT",
+    function () { CJ.create({ persist: "redis" }); }, "BAD_OPT");
+  _cjExpectThrow("cj.create: persist 'vault' without a vault throws BAD_OPT",
+    function () { CJ.create({ persist: "vault" }); }, "BAD_OPT");
+  _cjExpectThrow("cj.create: persist 'vault' with a half-shaped vault throws BAD_OPT",
+    function () { CJ.create({ persist: "vault", vault: { seal: function () {} } }); }, "BAD_OPT");
+  _cjExpectThrow("cj.create: persist 'file' without opts.file throws BAD_OPT",
+    function () { CJ.create({ persist: "file" }); }, "BAD_OPT");
+  _cjExpectThrow("cj.create: persist 'file' with a relative path throws BAD_OPT",
+    function () { CJ.create({ persist: "file", file: "rel/jar.json" }); }, "BAD_OPT");
+  // A vault is optional for file mode, but a supplied half-shaped one is refused
+  // up front (config-time), not silently at a later flush.
+  _cjExpectThrow("cj.create: persist 'file' with a half-shaped vault (missing seal) throws BAD_OPT",
+    function () { CJ.create({ persist: "file", file: "/tmp/cj-badvault.json", vault: { unseal: function () {} } }); }, "BAD_OPT");
+  _cjExpectThrow("cj.create: flushDebounceMs negative throws BAD_OPT",
+    function () { CJ.create({ flushDebounceMs: -1 }); }, "BAD_OPT");
+  _cjExpectThrow("cj.create: flushDebounceMs non-integer throws BAD_OPT",
+    function () { CJ.create({ flushDebounceMs: 1.5 }); }, "BAD_OPT");
+  _cjExpectThrow("cj.create: flushDebounceMs non-number throws BAD_OPT",
+    function () { CJ.create({ flushDebounceMs: "soon" }); }, "BAD_OPT");
+  check("cj.create: defaults to memory persist", CJ.create().persist === "memory");
+
+  // ---- _parseSetCookie pure-null / edge branches ----
+  check("cj.parse: non-string line → null", CJ._parseSetCookie(123) === null);
+  check("cj.parse: empty line → null", CJ._parseSetCookie("") === null);
+  check("cj.parse: no '=' (bare token) → null", CJ._parseSetCookie("justname") === null);
+  check("cj.parse: leading '=' (empty name) → null", CJ._parseSetCookie("=novalue") === null);
+  check("cj.parse: no attributes (no ';') parses name/value",
+    (function () { var p = CJ._parseSetCookie("a=b"); return p && p.name === "a" && p.value === "b"; })());
+  check("cj.parse: bare attribute (no '=') recorded as empty-string value",
+    (function () { var p = CJ._parseSetCookie("a=b; Secure; HttpOnly"); return p && p.attrs.secure === "" && p.attrs.httponly === ""; })());
+  check("cj.parse: quoted attribute value is unquoted",
+    (function () { var p = CJ._parseSetCookie('a=b; SameSite="Lax"'); return p && p.attrs.samesite === "Lax"; })());
+  check("cj.parse: empty value after '=' is allowed",
+    (function () { var p = CJ._parseSetCookie("a=; Path=/"); return p && p.name === "a" && p.value === ""; })());
+
+  // ---- basic store + defaults via the consumer surface ----
+  var jar = CJ.create();
+  jar.setFromResponse("http://example.com/app/page", "sid=abc; HttpOnly");
+  var all = jar.getAll();
+  check("cj.store: one row stored", all.length === 1);
+  check("cj.store: hostOnly defaults true (no Domain attr)", all[0].hostOnly === true);
+  check("cj.store: domain defaults to request host", all[0].domain === "example.com");
+  check("cj.store: default path derived from request path", all[0].path === "/app");
+  check("cj.store: httpOnly flag captured", all[0].httpOnly === true);
+  check("cj.store: secure flag absent by default", all[0].secure === false);
+  check("cj.store: session cookie has null expiresAt", all[0].expiresAt === null);
+
+  // setFromResponse guards: falsy header + array-of-lines + malformed lines skipped.
+  var jar2 = CJ.create();
+  jar2.setFromResponse("http://example.com/", null);
+  jar2.setFromResponse("http://example.com/", undefined);
+  check("cj.store: falsy Set-Cookie header is a no-op", jar2.size() === 0);
+  jar2.setFromResponse("http://example.com/", ["one=1", "justtoken", "two=2"]);
+  check("cj.store: array of Set-Cookie lines stores the valid ones, skips garbage", jar2.size() === 2);
+
+  // Unparseable request URL → _setOne swallows and stores nothing.
+  var jarBad = CJ.create();
+  jarBad.setFromResponse("http://[not a url", "x=1");
+  check("cj.store: unparseable request URL stores nothing (no throw)", jarBad.size() === 0);
+
+  // ---- Domain attribute handling ----
+  var jarDom = CJ.create();
+  // Domain the request host does NOT belong to → rejected.
+  jarDom.setFromResponse("http://example.com/", "bad=1; Domain=other.example.org");
+  check("cj.domain: Domain the host doesn't match is rejected", jarDom.size() === 0);
+  // Leading-dot stripped + subdomain accepted from a matching host.
+  jarDom.setFromResponse("http://api.example.com/", "ok=1; Domain=.example.com");
+  var domRow = jarDom.getAll()[0];
+  check("cj.domain: leading dot stripped from Domain", domRow.domain === "example.com");
+  check("cj.domain: Domain attr sets hostOnly false", domRow.hostOnly === false);
+
+  // ---- Path attribute handling (explicit vs default derivation) ----
+  var jarPath = CJ.create();
+  jarPath.setFromResponse("http://example.com/a/b/c", "p=1; Path=/api");
+  check("cj.path: explicit Path attribute honored", jarPath.getAll()[0].path === "/api");
+  var jarPath2 = CJ.create();
+  // Path not starting with "/" is ignored → default-path derivation runs.
+  jarPath2.setFromResponse("http://example.com/a/b/c", "p=1; Path=nope");
+  check("cj.path: non-'/' Path falls back to default path ('/a/b')", jarPath2.getAll()[0].path === "/a/b");
+  var jarPath3 = CJ.create();
+  jarPath3.setFromResponse("http://example.com/onlyfile", "p=1");
+  check("cj.path: single-segment request path defaults to '/'", jarPath3.getAll()[0].path === "/");
+  var jarPath4 = CJ.create();
+  jarPath4.setFromResponse("http://example.com/", "p=1");
+  check("cj.path: root request path defaults to '/'", jarPath4.getAll()[0].path === "/");
+
+  // ---- SameSite normalization (case-insensitive; invalid → null) ----
+  var jarSS = CJ.create();
+  jarSS.setFromResponse("http://example.com/", "a=1; SameSite=strict");
+  jarSS.setFromResponse("http://example.com/", "b=2; SameSite=LAX");
+  jarSS.setFromResponse("http://example.com/", "c=3; SameSite=none");
+  jarSS.setFromResponse("http://example.com/", "d=4; SameSite=bogus");
+  jarSS.setFromResponse("http://example.com/", "e=5");
+  var ssByName = {};
+  jarSS.getAll().forEach(function (r) { ssByName[r.name] = r.sameSite; });
+  check("cj.samesite: 'strict' → 'Strict'", ssByName.a === "Strict");
+  check("cj.samesite: 'LAX' → 'Lax'", ssByName.b === "Lax");
+  check("cj.samesite: 'none' → 'None'", ssByName.c === "None");
+  check("cj.samesite: unrecognized value → null", ssByName.d === null);
+  check("cj.samesite: absent → null", ssByName.e === null);
+
+  // ---- Expiry: Max-Age / Expires / precedence / deletion ----
+  var nowRef = { t: 1600000000000 };
+  var clockJar = CJ.create({ clock: function () { return nowRef.t; } });
+  clockJar.setFromResponse("http://example.com/", "ma=1; Max-Age=100");
+  check("cj.expiry: Max-Age sets expiresAt = now + seconds",
+    clockJar.getAll()[0].expiresAt === nowRef.t + 100000);
+  // Max-Age wins over Expires when both present.
+  var precJar = CJ.create({ clock: function () { return nowRef.t; } });
+  precJar.setFromResponse("http://example.com/", "p=1; Max-Age=50; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+  check("cj.expiry: Max-Age takes precedence over Expires",
+    precJar.getAll()[0].expiresAt === nowRef.t + 50000);
+  // Max-Age=0 deletes / never stores.
+  var zeroJar = CJ.create({ clock: function () { return nowRef.t; } });
+  zeroJar.setFromResponse("http://example.com/", "z=1");
+  check("cj.expiry: session cookie present before Max-Age=0", zeroJar.size() === 1);
+  zeroJar.setFromResponse("http://example.com/", "z=1; Max-Age=0");
+  check("cj.expiry: Max-Age=0 deletes the matching row", zeroJar.size() === 0);
+  // Negative Max-Age also expires immediately.
+  var negJar = CJ.create({ clock: function () { return nowRef.t; } });
+  negJar.setFromResponse("http://example.com/", "n=1; Max-Age=-5");
+  check("cj.expiry: negative Max-Age never stores", negJar.size() === 0);
+  // Non-numeric Max-Age → ignored → session cookie.
+  var nanJar = CJ.create({ clock: function () { return nowRef.t; } });
+  nanJar.setFromResponse("http://example.com/", "x=1; Max-Age=abc");
+  check("cj.expiry: non-numeric Max-Age → session cookie (null expiresAt)",
+    nanJar.getAll()[0].expiresAt === null);
+  // Past Expires deletes an existing row.
+  var expJar = CJ.create({ clock: function () { return nowRef.t; } });
+  expJar.setFromResponse("http://example.com/", "s=1");
+  expJar.setFromResponse("http://example.com/", "s=1; Expires=Wed, 01 Jan 2020 00:00:00 GMT");
+  check("cj.expiry: past Expires deletes the existing row", expJar.size() === 0);
+  // Unparseable Expires → ignored → session cookie.
+  var badExpJar = CJ.create({ clock: function () { return nowRef.t; } });
+  badExpJar.setFromResponse("http://example.com/", "s=1; Expires=not-a-date");
+  check("cj.expiry: unparseable Expires → session cookie", badExpJar.getAll()[0].expiresAt === null);
+
+  // ---- update preserves createdAt, bumps updatedAt ----
+  var upJar = CJ.create({ clock: function () { return nowRef.t; } });
+  upJar.setFromResponse("http://example.com/", "u=1");
+  var created = upJar.getAll()[0].createdAt;
+  nowRef.t += 5000;
+  upJar.setFromResponse("http://example.com/", "u=2");
+  var afterRow = upJar.getAll()[0];
+  check("cj.update: same key replaces value", afterRow.value === "2");
+  check("cj.update: createdAt preserved across update", afterRow.createdAt === created);
+  check("cj.update: updatedAt advanced", afterRow.updatedAt === created + 5000);
+  check("cj.update: size unchanged after in-place replace", upJar.size() === 1);
+  nowRef.t = 1600000000000;
+
+  // ---- cookieHeaderFor matching branches ----
+  check("cj.header: unparseable URL → null", jar.cookieHeaderFor("::::bad") === null);
+  var noMatchJar = CJ.create();
+  noMatchJar.setFromResponse("http://example.com/", "a=1");
+  check("cj.header: no matching cookie → null",
+    noMatchJar.cookieHeaderFor("http://other.com/") === null);
+
+  // hostOnly: attaches on exact host only, NOT on subdomains.
+  var hoJar = CJ.create();
+  hoJar.setFromResponse("http://example.com/", "ho=1");
+  check("cj.header: hostOnly attaches on exact host",
+    /ho=1/.test(hoJar.cookieHeaderFor("http://example.com/") || ""));
+  check("cj.header: hostOnly does NOT attach on a subdomain",
+    hoJar.cookieHeaderFor("http://sub.example.com/") === null);
+
+  // Domain cookie: attaches to host + subdomains, not to a look-alike suffix.
+  var dmJar = CJ.create();
+  dmJar.setFromResponse("http://api.example.com/", "dm=1; Domain=example.com");
+  check("cj.header: Domain cookie attaches on the parent host",
+    /dm=1/.test(dmJar.cookieHeaderFor("http://example.com/") || ""));
+  check("cj.header: Domain cookie attaches on a subdomain",
+    /dm=1/.test(dmJar.cookieHeaderFor("http://api.example.com/") || ""));
+  check("cj.header: Domain cookie does NOT attach to a suffix look-alike host",
+    dmJar.cookieHeaderFor("http://notexample.com/") === null);
+
+  // Path matching: exact, path-below with '/', trailing-slash cookie path, non-match.
+  var pmJar = CJ.create();
+  pmJar.setFromResponse("http://example.com/app", "pm=1; Path=/app");
+  check("cj.header: path exact match attaches",
+    /pm=1/.test(pmJar.cookieHeaderFor("http://example.com/app") || ""));
+  check("cj.header: path-below (boundary '/') attaches",
+    /pm=1/.test(pmJar.cookieHeaderFor("http://example.com/app/sub") || ""));
+  check("cj.header: sibling prefix (no '/' boundary) does NOT attach",
+    pmJar.cookieHeaderFor("http://example.com/application") === null);
+  var pmTrail = CJ.create();
+  pmTrail.setFromResponse("http://example.com/dir/", "pt=1; Path=/dir/");
+  check("cj.header: trailing-slash cookie path attaches to a path below",
+    /pt=1/.test(pmTrail.cookieHeaderFor("http://example.com/dir/x") || ""));
+
+  // Secure: only attaches over https.
+  var secJar = CJ.create();
+  secJar.setFromResponse("https://example.com/", "sec=1; Secure");
+  check("cj.header: Secure cookie withheld over http",
+    secJar.cookieHeaderFor("http://example.com/") === null);
+  check("cj.header: Secure cookie attaches over https",
+    /sec=1/.test(secJar.cookieHeaderFor("https://example.com/") || ""));
+
+  // Expired cookies never attach.
+  var expHdrJar = CJ.create({ clock: function () { return nowRef.t; } });
+  expHdrJar.setFromResponse("http://example.com/", "eh=1; Max-Age=10");
+  check("cj.header: unexpired cookie attaches",
+    /eh=1/.test(expHdrJar.cookieHeaderFor("http://example.com/") || ""));
+  nowRef.t += 20000;
+  check("cj.header: expired cookie no longer attaches",
+    expHdrJar.cookieHeaderFor("http://example.com/") === null);
+  check("cj.header: getAll() also filters the expired row", expHdrJar.getAll().length === 0);
+  check("cj.header: size() also filters the expired row", expHdrJar.size() === 0);
+  nowRef.t = 1600000000000;
+
+  // Sort order: longer path first, then earlier createdAt on tie.
+  var sortJar = CJ.create({ clock: function () { return nowRef.t; } });
+  sortJar.setFromResponse("http://example.com/", "root1=1; Path=/");
+  nowRef.t += 1000;
+  sortJar.setFromResponse("http://example.com/", "root2=1; Path=/");
+  sortJar.setFromResponse("http://example.com/deep", "deep=1; Path=/deep");
+  var hdr = sortJar.cookieHeaderFor("http://example.com/deep/x");
+  check("cj.sort: longer path sorts before shorter", hdr.indexOf("deep=1") < hdr.indexOf("root1=1"));
+  check("cj.sort: equal-length paths break ties by createdAt (earlier first)",
+    hdr.indexOf("root1=1") < hdr.indexOf("root2=1"));
+  nowRef.t = 1600000000000;
+
+  // ---- clear() branches ----
+  var clrJar = CJ.create();
+  clrJar.setFromResponse("http://example.com/", "a=1");
+  clrJar.setFromResponse("http://example.com/x", "b=1; Path=/x");
+  clrJar.setFromResponse("http://other.com/", "a=1");
+  _cjExpectThrow("cj.clear: non-object filter throws BAD_OPT",
+    function () { clrJar.clear("everything"); }, "BAD_OPT");
+  check("cj.clear: filter by domain removes only that domain",
+    clrJar.clear({ domain: "other.com" }) === 1 && clrJar.size() === 2);
+  check("cj.clear: filter by name + path removes the targeted row",
+    clrJar.clear({ name: "b", path: "/x" }) === 1 && clrJar.size() === 1);
+  check("cj.clear: filter matching nothing returns 0", clrJar.clear({ name: "zzz" }) === 0);
+  check("cj.clear: no filter clears all and returns the prior count",
+    clrJar.clear() === 1 && clrJar.size() === 0);
+
+  // ---- setFromSerialized() branches ----
+  var serJar = CJ.create({ clock: function () { return nowRef.t; } });
+  _cjExpectThrow("cj.serialized: non-array throws BAD_OPT",
+    function () { serJar.setFromSerialized({ name: "x" }); }, "BAD_OPT");
+  serJar.setFromSerialized([
+    null,                                                        // skipped
+    { name: "x" },                                               // missing domain/path → skipped
+    { name: "ok", domain: "example.com", path: "/", value: "1" },
+    { name: "gone", domain: "example.com", path: "/", value: "2", expiresAt: nowRef.t - 1 }, // expired → skipped
+    { name: "ss", domain: "example.com", path: "/", value: "3", sameSite: "Bogus" },        // invalid sameSite → null
+    { name: "ss2", domain: "example.com", path: "/", value: "4", sameSite: "Lax" },
+  ]);
+  var serRows = {};
+  serJar.getAll().forEach(function (r) { serRows[r.name] = r; });
+  check("cj.serialized: valid row restored", serRows.ok && serRows.ok.value === "1");
+  check("cj.serialized: null / underspecified rows skipped", !serRows.x);
+  check("cj.serialized: already-expired row skipped", !serRows.gone);
+  check("cj.serialized: invalid sameSite coerced to null", serRows.ss && serRows.ss.sameSite === null);
+  check("cj.serialized: valid sameSite preserved", serRows.ss2 && serRows.ss2.sameSite === "Lax");
+  check("cj.serialized: createdAt defaults to now when absent", serRows.ok.createdAt === nowRef.t);
+
+  // Round-trip getAll() → setFromSerialized() into a fresh jar.
+  var rtSrc = CJ.create();
+  rtSrc.setFromResponse("https://example.com/app", "rt=99; Secure; Path=/app; SameSite=Strict");
+  var rtDst = CJ.create();
+  rtDst.setFromSerialized(rtSrc.getAll());
+  check("cj.serialized: round-trip preserves the attaching cookie",
+    /rt=99/.test(rtDst.cookieHeaderFor("https://example.com/app") || ""));
+
+  // ---- vault persist: values sealed at rest, unsealed on read ----
+  var vJar = CJ.create({ persist: "vault", vault: _cjFakeVault() });
+  vJar.setFromResponse("http://example.com/", "secret=topsecretvalue");
+  var rawRows = vJar._storeForTest();
+  check("cj.vault: stored value is sealed (no plaintext at rest)",
+    rawRows.length === 1 && rawRows[0].valueRaw.indexOf("topsecretvalue") === -1 &&
+    /^SEAL\[/.test(rawRows[0].valueRaw));
+  check("cj.vault: getAll() unseals the value",
+    vJar.getAll()[0].value === "topsecretvalue");
+  check("cj.vault: cookieHeaderFor unseals the value",
+    /secret=topsecretvalue/.test(vJar.cookieHeaderFor("http://example.com/") || ""));
+}
+
+// ---- cookie jar file persistence (real tmp dir, no network) --------
+
+function testCookieJarFilePersist() {
+  var CJ = b.httpClient.cookieJar;
+  var fs = helpers.fs, os = helpers.os, path = helpers.path;
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cj-"));
+  var jars = [];
+  try {
+    var file = path.join(dir, "jar.json");
+
+    // Missing file on first construct is fine (no throw).
+    var j1 = CJ.create({ persist: "file", file: file });
+    jars.push(j1);
+    check("cj.file: missing file → empty jar on first run", j1.size() === 0);
+    j1.setFromResponse("http://example.com/", "fsid=filevalue; Path=/");
+    j1.flush();  // force the synchronous write (bypasses the debounce)
+    check("cj.file: flush() writes the persist file", fs.existsSync(file));
+
+    // A fresh jar over the same file loads the persisted cookie.
+    var j2 = CJ.create({ persist: "file", file: file });
+    jars.push(j2);
+    check("cj.file: reopened jar loads the persisted cookie",
+      /fsid=filevalue/.test(j2.cookieHeaderFor("http://example.com/") || ""));
+
+    // close() also flushes pending state.
+    var closeFile = path.join(dir, "close.json");
+    var j3 = CJ.create({ persist: "file", file: closeFile });
+    j3.setFromResponse("http://example.com/", "cs=1; Path=/");
+    j3.close();
+    check("cj.file: close() flushes to disk", fs.existsSync(closeFile));
+    var j3b = CJ.create({ persist: "file", file: closeFile });
+    jars.push(j3b);
+    check("cj.file: state persisted by close() reloads", j3b.size() === 1);
+
+    // Corrupt (non-JSON) persist file → LOAD_FAILED at construct.
+    var corruptFile = path.join(dir, "corrupt.json");
+    fs.writeFileSync(corruptFile, "{ this is not json", "utf8");
+    var loadErr = _cjExpectThrow("cj.file: corrupt persist file → LOAD_FAILED",
+      function () { CJ.create({ persist: "file", file: corruptFile }); }, "LOAD_FAILED");
+    check("cj.file: LOAD_FAILED names the offending file",
+      loadErr != null && loadErr.message.indexOf(corruptFile) !== -1);
+
+    // Vault-sealed persist file round-trips with the same vault; opening
+    // the sealed bytes without a vault fails to parse → LOAD_FAILED.
+    var sealedFile = path.join(dir, "sealed.json");
+    var vault = _cjFakeVault();
+    var sj = CJ.create({ persist: "file", file: sealedFile, vault: vault });
+    sj.setFromResponse("http://example.com/", "sk=sealed; Path=/");
+    sj.flush();
+    var onDisk = fs.readFileSync(sealedFile, "utf8");
+    check("cj.file: vault-sealed persist file has no plaintext cookie value",
+      onDisk.indexOf("sealed") === -1 && /^SEAL\[/.test(onDisk));
+    var sj2 = CJ.create({ persist: "file", file: sealedFile, vault: vault });
+    jars.push(sj2);
+    check("cj.file: vault-sealed file reloads with the same vault", sj2.size() === 1);
+    _cjExpectThrow("cj.file: sealed file opened without a vault → LOAD_FAILED",
+      function () { CJ.create({ persist: "file", file: sealedFile }); }, "LOAD_FAILED");
+  } finally {
+    for (var i = 0; i < jars.length; i++) { try { jars[i].close(); } catch (_e) {} }
+    try { helpers.fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 // ---- redirect following (h1) ---------------------------------------
 
 async function testRedirects() {
@@ -1504,6 +1881,8 @@ async function run() {
     await testTimeoutAbortConnError();
     await testRequestBodyStreamError();
     await testCookieJar();
+    testCookieJarParseStore();
+    testCookieJarFilePersist();
     await testRedirects();
     await testCrossOriginStrip();
     await testProxyMetadataBlock();
