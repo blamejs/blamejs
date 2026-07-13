@@ -592,6 +592,29 @@ async function testFsAdapterTraversalRefused() {
     try { await adapter.writeFile("../escape", Buffer.from("x")); } catch (e) { t = e; }
     check("fsAdapter.writeFile: traversal key refused with bad-key",
       t && t.code === "backup/bad-key");
+
+    // A '..'-only pre-screen missed the absolute / drive-letter / NTFS-stream
+    // class the key resolves through under root. Each must be refused so a key
+    // built from untrusted input can't escape root or write a file's data
+    // stream. Sibling of the manifest.validate / bundle.create path checks.
+    var badKeys = {
+      "absolute key":     "/etc/shadow",
+      "drive-letter key": "C:" + "\\" + "Windows" + "\\" + "evil",
+      "NTFS-ADS key":     "blob.enc:evil",
+      // Cross-platform: a backslash-traversal key is a harmless literal filename
+      // under POSIX path semantics but climbs out of root when the portable
+      // store is later read on Windows, so it is gated under win32 semantics on
+      // every host. A host-only resolve would accept these on POSIX.
+      "backslash-parent key":    ".." + "\\" + "evil",
+      "backslash-traversal key": "a" + "\\" + ".." + "\\" + ".." + "\\" + "evil",
+    };
+    for (var label in badKeys) {
+      if (!Object.prototype.hasOwnProperty.call(badKeys, label)) continue;
+      var te = null;
+      try { await adapter.writeFile(badKeys[label], Buffer.from("x")); } catch (e) { te = e; }
+      check("fsAdapter.writeFile: " + label + " refused with bad-key",
+        te && te.code === "backup/bad-key");
+    }
   } finally { _rm(root); }
 }
 
