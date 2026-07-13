@@ -829,6 +829,27 @@ async function run() {
   testDisplayNameCurrencyScript();
   testFormatDateNumberAndString();
   testInterpolationUnclosedDefault();
+
+  // Bulk feature-path coverage
+  testFallbackLocaleDistinctFromDefault();
+  testEmptyAndDottedThroughLeaf();
+  testPluralWithoutCount();
+  testTnToWithExtraVars();
+  testFormatNumberStyles();
+  testFormatDateStyles();
+  testFormatRelativeNumeric();
+  testFormatListStyles();
+  testDisplayNameLocaleOverride();
+  testLocalesGetterCopy();
+  testChainThroughUnpopulatedLocale();
+  testNegotiationEdgeBranches();
+  testLazyLoadDefaultEagerOnly();
+  testObservabilitySinkThrowSwallowed();
+  testMiddlewareBoundHelpers();
+  testMiddlewareCatchNeverCrashes();
+  testMiddlewareCustomHeaderName();
+  testMessageFormatFeaturePathsViaT();
+  testLocaleChainFalsyOpts();
 }
 
 // create() must reject every malformed sub-opt shape at boot (the
@@ -1545,6 +1566,394 @@ function testLocaleChainFallbackValidation() {
   try { b.i18n.localeChain("fr", { defaultLocale: "not_a_tag" }); }
   catch (_e) { threwBadDefault = true; }
   check("localeChain rejects an invalid defaultLocale tag", threwBadDefault);
+}
+
+// ---- Bulk feature-path coverage: formatters, negotiation, fallback,
+// ICU message format, lazy load, middleware binding ----
+
+// A fallbackLocale distinct from defaultLocale must appear in the resolved
+// chain AFTER the requested locale and its parents, with defaultLocale as the
+// final baseline — both cross-locale hops fire, de-duplicated.
+function testFallbackLocaleDistinctFromDefault() {
+  var i = b.i18n.create({
+    defaultLocale:  "fr",
+    fallbackLocale: "en",
+    locales:        ["en", "fr", "es"],
+    translations: {
+      en: { only_en: "EN", shared: "EN shared" },
+      fr: { greet: "Bonjour" },
+    },
+  });
+  check("chain for es is [es, en (fallback), fr (default)]",
+        JSON.stringify(i._localeChain("es")) === JSON.stringify(["es", "en", "fr"]));
+  check("miss in es resolves via fallbackLocale en before default fr",
+        i.t("only_en", null, { locale: "es" }) === "EN");
+  check("requested locale then fallback then default, de-duplicated",
+        i._localeChain("en").indexOf("fr") === i._localeChain("en").length - 1);
+}
+
+// An empty-string translation value renders as empty (the early-return path in
+// the interpolator), and a dotted key that walks THROUGH a string leaf returns
+// the key (never crashes descending into a non-object).
+function testEmptyAndDottedThroughLeaf() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { empty: "", greet: "Hello", ns: {} } },
+  });
+  check("empty-string translation renders as empty string",
+        i.t("empty") === "");
+  check("has() true for an empty-string leaf",
+        i.has("empty") === true);
+  check("dotted key walking through a string leaf returns the key",
+        i.t("greet.deeper.leaf") === "greet.deeper.leaf");
+  check("an empty-object entry loads (not a plural shape) and is a namespace miss",
+        i.t("ns") === "ns");
+}
+
+// t() on a plural-shaped entry with no numeric count in vars defaults the count
+// to 0 and selects the corresponding category (en: 0 → other).
+function testPluralWithoutCount() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { items: { one: "{count} item", other: "{count} items" } } },
+  });
+  check("plural entry with no count in vars → count 0 → other",
+        i.t("items") === "{count} items");
+  check("plural entry with explicit count in vars renders one",
+        i.t("items", { count: 1 }) === "1 item");
+}
+
+// tn / to called WITH a caller vars object merge count into a copy (rather than
+// the count-only fast path), so extra interpolation vars survive.
+function testTnToWithExtraVars() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  {
+      en: {
+        items: { one: "{name}: {count} item", other: "{name}: {count} items" },
+        place: { one: "{who} {count}st", two: "{who} {count}nd", few: "{who} {count}rd", other: "{who} {count}th" },
+      },
+    },
+  });
+  check("tn() merges caller vars alongside count",
+        i.tn("items", 3, { name: "Cart" }) === "Cart: 3 items");
+  check("tn() singular with caller vars",
+        i.tn("items", 1, { name: "Cart" }) === "Cart: 1 item");
+  check("to() merges caller vars alongside ordinal count",
+        i.to("place", 2, { who: "Runner" }) === "Runner 2nd");
+}
+
+// formatNumber across styles/locales — percent, currency, unit, notation — the
+// bulk Intl.NumberFormat surface an operator drives.
+function testFormatNumberStyles() {
+  var i = b.i18n.create({
+    defaultLocale: "en-US",
+    locales:       ["en-US", "de-DE", "ja-JP"],
+  });
+  check("formatNumber percent",
+        i.formatNumber(0.25, { style: "percent" }) === "25%");
+  check("formatNumber currency EUR under de-DE",
+        i.formatNumber(1234.5, { style: "currency", currency: "EUR" }, { locale: "de-DE" }).indexOf("€") !== -1);
+  check("formatNumber currency JPY has no fraction digits",
+        i.formatNumber(1234, { style: "currency", currency: "JPY" }, { locale: "ja-JP" }).indexOf("1,234") !== -1);
+  check("formatNumber unit (kilometer)",
+        typeof i.formatNumber(5, { style: "unit", unit: "kilometer" }) === "string" &&
+        i.formatNumber(5, { style: "unit", unit: "kilometer" }).indexOf("5") !== -1);
+  check("formatNumber compact notation",
+        i.formatNumber(1200000, { notation: "compact" }).length > 0);
+  check("formatNumber minimumFractionDigits pads",
+        i.formatNumber(5, { minimumFractionDigits: 2 }) === "5.00");
+  check("formatNumber -0 is finite and formats",
+        i.formatNumber(-0) === "-0" || i.formatNumber(-0) === "0");
+}
+
+// formatDate across dateStyle/timeStyle presets and the no-formatOpts branch
+// (falls to the locale default formatter).
+function testFormatDateStyles() {
+  var i = b.i18n.create({ defaultLocale: "en-US", locales: ["en-US", "ja-JP"] });
+  var d = new Date(Date.UTC(2024, 0, 15, 13, 30, 0));
+  check("formatDate with no formatOpts returns a non-empty string",
+        typeof i.formatDate(d) === "string" && i.formatDate(d).length > 0);
+  check("formatDate dateStyle:full contains 2024",
+        /2024/.test(i.formatDate(d, { dateStyle: "full", timeZone: "UTC" })));
+  check("formatDate timeStyle:short renders a time",
+        /\d/.test(i.formatDate(d, { timeStyle: "short", timeZone: "UTC" })));
+  check("formatDate ja-JP dateStyle:long contains 年",
+        /年/.test(i.formatDate(d, { dateStyle: "long", timeZone: "UTC" }, { locale: "ja-JP" })));
+}
+
+// formatRelative with the `numeric` opt threads it into the formatter — "auto"
+// yields word forms ("today" / "tomorrow"), "always" keeps the numeric form.
+function testFormatRelativeNumeric() {
+  var i = b.i18n.create({ defaultLocale: "en", locales: ["en"] });
+  check("formatRelative numeric:auto 0 day → 'today'",
+        i.formatRelative(0, "day", { numeric: "auto" }) === "today");
+  check("formatRelative numeric:auto -1 day → 'yesterday'",
+        i.formatRelative(-1, "day", { numeric: "auto" }) === "yesterday");
+  check("formatRelative numeric:always 0 day keeps numeric form",
+        i.formatRelative(0, "day", { numeric: "always" }) === "in 0 days");
+  check("formatRelative default (no numeric) uses numeric form",
+        i.formatRelative(0, "day") === "in 0 days");
+}
+
+// formatList across type + style — conjunction/disjunction/unit and short/narrow.
+function testFormatListStyles() {
+  var i = b.i18n.create({ defaultLocale: "en", locales: ["en"] });
+  check("formatList unit type joins without 'and'",
+        i.formatList(["5 min", "30 sec"], { type: "unit" }).indexOf("5 min") !== -1);
+  check("formatList disjunction short style",
+        typeof i.formatList(["A", "B"], { type: "disjunction", style: "short" }) === "string");
+  check("formatList single item returns that item",
+        i.formatList(["Only"]) === "Only");
+  check("formatList two items conjunction",
+        i.formatList(["A", "B"]) === "A and B");
+}
+
+// displayName currency/script honor a caller locale override.
+function testDisplayNameLocaleOverride() {
+  var i = b.i18n.create({ defaultLocale: "en", locales: ["en", "fr"] });
+  check("displayName region under fr locale is localized",
+        typeof i.displayName("US", "region", { locale: "fr" }) === "string");
+  check("displayName currency under a locale override renders",
+        i.displayName("EUR", "currency", { locale: "fr" }).length > 0);
+  check("displayName script under a locale override renders",
+        i.displayName("Latn", "script", { locale: "fr" }).length > 0);
+}
+
+// i.locales() returns a defensive copy of the configured set.
+function testLocalesGetterCopy() {
+  var i = b.i18n.create({ defaultLocale: "en", locales: ["en", "es", "fr"] });
+  var l1 = i.locales();
+  check("locales() returns the configured set",
+        JSON.stringify(l1) === JSON.stringify(["en", "es", "fr"]));
+  l1.push("zz");
+  check("locales() returns a copy — mutating it does not affect the instance",
+        i.locales().indexOf("zz") === -1);
+}
+
+// A non-lazy instance whose fallback chain includes a configured locale with no
+// inline translations tree still resolves (the load-ensure no-ops, chain walks on).
+function testChainThroughUnpopulatedLocale() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "es", "fr"],
+    translations:  { en: { greet: "Hello" } },   // es + fr have no tree
+  });
+  check("lookup under es (no tree) falls through to en",
+        i.t("greet", null, { locale: "es" }) === "Hello");
+  check("lookup under fr (no tree) falls through to en",
+        i.t("greet", null, { locale: "fr" }) === "Hello");
+  check("translations() returns null for a configured-but-unpopulated locale",
+        i.translations("es") === null);
+}
+
+// Accept-Language negotiation edge branches: an all-q=0 list excludes every
+// entry and falls to the default; a multi-level requested tag prefix-matches a
+// broader configured tag by stripping subtags one at a time.
+function testNegotiationEdgeBranches() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "zh", "pt"],
+    translations:  { en: { g: "Hello" }, zh: { g: "你好" }, pt: { g: "Olá" } },
+  });
+  function loc(header) {
+    var req = _mockReq();
+    req.headers = { "accept-language": header };
+    i.middleware()(req, _mockRes(), function () {});
+    return req.locale;
+  }
+  check("all-q=0 Accept-Language excludes everything → defaultLocale",
+        loc("zh;q=0,pt;q=0") === "en");
+  check("multi-level tag zh-Hant-TW prefix-matches configured zh",
+        loc("zh-Hant-TW") === "zh");
+  check("single q=0 entry → defaultLocale",
+        loc("pt;q=0") === "en");
+}
+
+// lazyLoad with no eagerLocales loads only the defaultLocale at create; other
+// locales stream in on first lookup.
+function testLazyLoadDefaultEagerOnly() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-i18n-lazydef-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "en.json"), JSON.stringify({ greet: "Hello" }));
+    fs.writeFileSync(path.join(tmpDir, "es.json"), JSON.stringify({ greet: "Hola" }));
+    var i = b.i18n.create({
+      defaultLocale: "en",
+      locales:       ["en", "es"],
+      lazyLoad:      true,        // no eagerLocales → defaults to [defaultLocale]
+      dir:           tmpDir,
+    });
+    check("lazyLoad w/o eagerLocales: default locale available immediately",
+          i.t("greet") === "Hello");
+    check("lazyLoad w/o eagerLocales: other locale streams in on demand",
+          i.t("greet", null, { locale: "es" }) === "Hola");
+    // A valid-but-unconfigured locale override on a lazy instance: the
+    // load-ensure sees it is not in the configured set and no-ops, so the
+    // lookup falls through the chain to the default locale (no file read,
+    // no crash).
+    check("lazy instance: unconfigured locale override falls through to default",
+          i.t("greet", null, { locale: "de" }) === "Hello");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
+// An observability sink that throws must never break a translation call — the
+// emit is wrapped drop-silent.
+function testObservabilitySinkThrowSwallowed() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    observability: { event: function () { throw new Error("sink boom"); } },
+    translations:  { en: { greet: "Hello" } },
+  });
+  var v;
+  var crashed = false;
+  try { v = i.t("does.not.exist"); } catch (_e) { crashed = true; }
+  check("throwing observability sink does not crash t()", crashed === false);
+  check("t() still returns the key when the sink throws", v === "does.not.exist");
+}
+
+// The middleware binds req.t / req.tn / req.to / req.dir and mirrors them onto
+// res.locals; the bound helpers default the locale to the negotiated one while
+// still honoring an explicit override.
+function testMiddlewareBoundHelpers() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "es"],
+    translations:  {
+      en: { greet: "Hello", items: { one: "{count} item", other: "{count} items" },
+            rank: { one: "{count}st", two: "{count}nd", few: "{count}rd", other: "{count}th" } },
+      es: { greet: "Hola", items: { one: "{count} artículo", other: "{count} artículos" },
+            rank: { one: "{count}º", two: "{count}º", few: "{count}º", other: "{count}º" } },
+    },
+  });
+  var req = _mockReq();
+  req.headers = { "accept-language": "es" };
+  var res = _mockRes();
+  i.middleware()(req, res, function () {});
+
+  check("req.tn bound to the negotiated locale",
+        req.tn("items", 5) === "5 artículos");
+  check("req.to bound to the negotiated locale",
+        req.to("rank", 1) === "1º");
+  check("req.to honors an explicit locale override in callerOpts",
+        req.to("rank", 1, null, { locale: "en" }) === "1st");
+  check("req.t honors an explicit locale override over the negotiated one",
+        req.t("greet", null, { locale: "en" }) === "Hello");
+  check("req.tn honors an explicit locale override",
+        req.tn("items", 1, null, { locale: "en" }) === "1 item");
+  check("req.dir returns a direction for the negotiated locale",
+        req.dir() === "ltr");
+  check("res.locals.to bound",     typeof res.locals.to === "function");
+  check("res.locals.tn bound",     typeof res.locals.tn === "function");
+  check("res.locals.t via res.locals resolves the negotiated locale",
+        res.locals.t("greet") === "Hola");
+}
+
+// The middleware never lets an i18n error escape onto the request path: if
+// reading a request field throws, it swallows, sets req.locale to the current
+// default, and still calls next().
+function testMiddlewareCatchNeverCrashes() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations:  { en: { greet: "Hello" } },
+  });
+  var req = _mockReq();
+  req.headers = {};
+  // A query getter that throws forces the try/catch guard in the middleware.
+  Object.defineProperty(req, "query", {
+    get: function () { throw new Error("query access boom"); },
+    configurable: true,
+  });
+  var res = _mockRes();
+  var nextCalled = false;
+  var crashed = false;
+  try { i.middleware()(req, res, function () { nextCalled = true; }); }
+  catch (_e) { crashed = true; }
+  check("middleware swallows a throwing request field", crashed === false);
+  check("middleware still calls next() after swallowing", nextCalled === true);
+  check("middleware falls back to the current default locale on error",
+        req.locale === "en");
+}
+
+// A custom headerName reads the negotiation source from a non-standard header.
+function testMiddlewareCustomHeaderName() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en", "es"],
+    translations:  { en: { greet: "Hello" }, es: { greet: "Hola" } },
+  });
+  var req = _mockReq();
+  req.headers = { "x-locale": "es" };
+  i.middleware({ headerName: "X-Locale" })(req, _mockRes(), function () {});
+  check("custom headerName negotiates from the named header",
+        req.locale === "es");
+}
+
+// ICU MessageFormat feature surface driven through t(): nested plural inside
+// select, plural offset, selectordinal, and the # placeholder.
+function testMessageFormatFeaturePathsViaT() {
+  var i = b.i18n.create({
+    defaultLocale: "en",
+    locales:       ["en"],
+    translations: {
+      en: {
+        nested: "{tier, select, pro {{n, plural, one {# pro seat} other {# pro seats}}} other {{n, plural, one {# seat} other {# seats}}}}",
+        party:  "{n, plural, offset:1 =0 {nobody} one {you and # other} other {you and # others}}",
+        medal:  "{p, selectordinal, one {#st} two {#nd} few {#rd} other {#th}} place",
+        exact:  "{n, plural, =0 {no items} =1 {a single item} other {# items}}",
+      },
+    },
+  });
+  check("nested select→plural (pro, one)",
+        i.t("nested", { tier: "pro", n: 1 }) === "1 pro seat");
+  check("nested select→plural (pro, other)",
+        i.t("nested", { tier: "pro", n: 4 }) === "4 pro seats");
+  check("nested select falls to other branch",
+        i.t("nested", { tier: "free", n: 2 }) === "2 seats");
+  check("plural offset =0 exact case",
+        i.t("party", { n: 0 }) === "nobody");
+  check("plural offset one case subtracts the offset in #",
+        i.t("party", { n: 2 }) === "you and 1 other");
+  check("plural offset other case subtracts the offset in #",
+        i.t("party", { n: 4 }) === "you and 3 others");
+  check("selectordinal few (3rd)",
+        i.t("medal", { p: 3 }) === "3rd place");
+  check("selectordinal other (11th)",
+        i.t("medal", { p: 11 }) === "11th place");
+  check("plural exact =1 literal case beats the 'one' category",
+        i.t("exact", { n: 1 }) === "a single item");
+  check("plural exact falls to other for a non-literal count",
+        i.t("exact", { n: 7 }) === "7 items");
+
+  // messageFormat: true forces the ICU path even for a plain-looking entry.
+  var i2 = b.i18n.create({
+    defaultLocale: "en", locales: ["en"],
+    translations: { en: { plain: "just text {x}" } },
+  });
+  check("messageFormat:true on a plain entry renders the literal placeholder text",
+        typeof i2.t("plain", { x: "v" }, { messageFormat: true }) === "string");
+}
+
+// localeChain called with a falsy opts argument still validates (and throws on
+// the now-missing defaultLocale) rather than dereferencing undefined.
+function testLocaleChainFalsyOpts() {
+  var threw = false;
+  try { b.i18n.localeChain("fr", null); } catch (_e) { threw = true; }
+  check("localeChain('fr', null) throws (defaultLocale required)", threw);
+
+  // A configured-set that DOES include the members passes membership validation
+  // and returns the chain (the happy path through the membership guard).
+  var chain = b.i18n.localeChain("fr-CA", {
+    defaultLocale: "en", fallbackLocale: "en", locales: ["en", "fr", "fr-CA"],
+  });
+  check("localeChain with a valid configured set returns the chain",
+        JSON.stringify(chain) === JSON.stringify(["fr-CA", "fr", "en"]));
 }
 
 if (require.main === module) {
