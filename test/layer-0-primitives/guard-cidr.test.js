@@ -41,6 +41,17 @@ function testValidate() {
   check("guardCidr.validate address-shape kind",
     _kinds(badShape).indexOf("address-shape") !== -1);
 
+  // RFC 4291 §2.2 — a "::" adjacent to a full 8 explicit groups compresses zero
+  // groups and is malformed IPv6 (net.isIP rejects it). The parser must not
+  // admit the non-canonical spelling into CIDR matching as a valid address.
+  ["1:2:3:4:5:6:7:8::/64", "::1:2:3:4:5:6:7:8/64", "1:2:3:4:5:6:7::8/64"]
+    .forEach(function (c) {
+      var zc = b.guardCidr.validate(c, { profile: "strict" });
+      check("guardCidr.validate rejects zero-group '::' " + c, zc.ok === false);
+      check("guardCidr.validate zero-group '::' is address-shape " + c,
+        _kinds(zc).indexOf("address-shape") !== -1);
+    });
+
   // Host bits set under the mask — network-misaligned (common typo class).
   var misaligned = b.guardCidr.validate("10.0.0.1/24", { profile: "strict" });
   check("guardCidr.validate misaligned refused",    misaligned.ok === false);

@@ -1,0 +1,63 @@
+# Socket.dev supply-chain policy for @blamejs/core.
+#
+# blamejs ships ZERO npm runtime dependencies — package.json "dependencies" is
+# empty. All third-party code is vendored under lib/vendor/ as upstream
+# distribution bundles, each pinned with a SHA-256 (plus a SHA3-512 hash and an
+# SLH-DSA signature) recorded in lib/vendor/MANIFEST.json, and reviewed on every
+# refresh by diffing the published upstream tarball and re-verifying the pinned
+# hash before the vendored copy is updated.
+#
+# The alert classes disabled below are inherent to what this package IS — a
+# server-side framework that makes network calls and vendors reputable minified
+# crypto/PKI bundles and standard data files. They fire identically on every
+# release for the same benign reasons, so they carry no per-release signal here
+# and are dispositioned once, with rationale, rather than re-triaged each time.
+# A genuinely new eval / network / minified surface can only enter through a
+# vendored-bundle refresh, which is gated by the full tarball-diff + hash
+# verification above — so it is caught at vendor review, not by this scanner.
+
+version: 2
+
+issueRules:
+  # Network access — blamejs is a network framework: the HTTP client, SMTP /
+  # IMAP / POP3 mail stack, DNS-over-TLS, NTP, ACME, OCSP, and webhook dispatch
+  # all perform egress. Network access is the product, not an anomaly.
+  networkAccess: false
+
+  # Environment variable access — configuration reads process.env (NODE_ENV,
+  # listen port, data directory, feature flags). Expected configuration surface.
+  envVars: false
+
+  # URL strings — RFC reference URLs in documentation plus endpoint defaults
+  # (ACME directory, OCSP responders, publicsuffix.org, BIMI trust-anchor roots).
+  # Nothing is fetched at runtime beyond the operator-configured endpoints.
+  urlStrings: false
+
+  # Minified code — lib/vendor/*.cjs are upstream distribution bundles
+  # (@noble/ciphers, @noble/curves, @noble/post-quantum, pkijs, simplewebauthn)
+  # shipped as their published minified builds. Provenance and per-file hashes
+  # are tracked in lib/vendor/MANIFEST.json and verified on every refresh.
+  minifiedFile: false
+
+  # Uses eval — confined to the vendored pkijs and simplewebauthn distribution
+  # bundles, where it is the standard bundler global-object shim
+  # (`Function("return this")()` / indirect `(0, eval)("(...")` used to locate
+  # globalThis). It is not dynamic execution of untrusted input; confirmed at
+  # vendor review. blamejs's own source contains no eval.
+  usesEval: false
+
+  # Dynamic require — operator-extensibility entry points only: CLI plugins,
+  # database migrations, and operator-supplied modules loaded by explicit path.
+  # Each call site is annotated in source; none loads a network- or
+  # attacker-controlled module id.
+  dynamicRequire: false
+
+  # Copyleft License — the Public Suffix List is vendored verbatim under MPL-2.0
+  # (a data file, not code). It is attributed in NOTICE with its canonical source
+  # URL, satisfying MPL-2.0 §3.2 source availability. Known and reviewed.
+  copyleftLicense: false
+
+  # Non-permissive License — the SecLists common-password list is vendored under
+  # CC-BY-3.0 (a data file). It is attributed in NOTICE with copyright and source.
+  # Known and reviewed.
+  nonpermissiveLicense: false

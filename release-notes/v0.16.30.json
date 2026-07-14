@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.30",
+  "date": "2026-07-13",
+  "headline": "Reject a malformed IPv6 address whose '::' compresses no groups (and a leading-zero embedded-IPv4 tail) in the shared IP validator and the CIDR guard, and complete third-party license attribution for the vendored elliptic-curve library and the Public Suffix List",
+  "summary": "The shared IPv6 text parser accepted an address where a '::' sat next to a full eight explicit groups (for example 1:2:3:4:5:6:7:8::, ::1:2:3:4:5:6:7:8, or 1:2:3:4:5:6:7::8). RFC 4291 §2.2 defines '::' as an abbreviation for one or more all-zero groups, so those forms compress nothing and are not valid IPv6 text -- Node's built-in net.isIP rejects every one of them. The parser computed the number of groups to insert but only rejected a negative count, so a zero-insert '::' passed. Because each accepted spelling still normalizes to the same address as its canonical form, no allow/deny decision was bypassed, but the validator disagreed with net.isIP and with any strict peer parser on a whole class of inputs. b.mail (SPF/DMARC/RBL/greylist/HELO) and b.guardCidr both parse IPv6 through the affected code, so both now reject these forms. The embedded IPv4 tail of an IPv4-mapped address is also now validated with the framework's strict dotted-quad check, so a leading-zero, octal-ambiguous octet such as ::ffff:01.2.3.4 is refused rather than silently reinterpreted. Separately, the third-party NOTICE file was missing two vendored components that ship in the package -- the @noble/curves elliptic-curve library (MIT, used by the OPRF primitive) and the Mozilla Public Suffix List (MPL-2.0) -- both are now attributed, and a repository supply-chain policy records why the framework's inherent network, configuration, vendored-bundle, and data-file characteristics are expected.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "b.mail and b.guardCidr reject a malformed IPv6 address whose '::' compresses zero groups, matching RFC 4291 and net.isIP",
+          "body": "The shared IPv6 text parser inserted 8 - (left groups) - (right groups) zero groups for a '::' and rejected only a negative result, so an address with a full eight explicit groups adjacent to a '::' -- 1:2:3:4:5:6:7:8::, ::1:2:3:4:5:6:7:8, 1:2:3:4:5:6:7::8, 1:2:3:4::5:6:7:8 -- was accepted even though RFC 4291 §2.2 requires '::' to stand for at least one all-zero group and net.isIP rejects all of them. The parser now requires a '::' to insert at least one group. Every affected spelling normalized to the same address as its canonical form, so no CIDR or SPF/DMARC allow/deny decision was bypassed; the fix removes a parser divergence from the platform and peer parsers on a whole class of inputs. The same zero-group check was applied to the separate IPv6 parser inside b.guardCidr, and the embedded IPv4 tail of an IPv4-mapped IPv6 address is now validated with the framework's strict dotted-quad check so a leading-zero / octal-ambiguous octet (for example ::ffff:01.2.3.4) is refused instead of reinterpreted. Legitimate compressed and IPv4-mapped addresses are unchanged."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Complete third-party license attribution for the vendored @noble/curves library and the Public Suffix List, and refresh the vendored Public Suffix List",
+          "body": "The NOTICE file, which attributes every third-party component vendored under lib/vendor/, was missing two that ship in the package: the @noble/curves elliptic-curve library (MIT, used by the OPRF primitive) and the Mozilla Public Suffix List (MPL-2.0, used for organizational-domain derivation in DMARC alignment, BIMI scoping, and cookie-scope confinement). Both are now attributed; the Public Suffix List entry records that it is vendored verbatim under MPL-2.0 with its canonical source URL, satisfying MPL-2.0 §3.2. A stale vendored-library version in the same file was also corrected. The vendored Public Suffix List itself was refreshed to the current upstream snapshot so organizational-domain derivation reflects the latest registry delegations. A repository supply-chain policy also documents why the framework's inherent network egress, configuration reads, vendored minified bundles, and permissively- or open-data-licensed data files are expected characteristics rather than findings."
+        }
+      ]
+    }
+  ]
+}
