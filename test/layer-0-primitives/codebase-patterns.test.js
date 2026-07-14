@@ -6084,6 +6084,51 @@ function testVendorBundlesReviewable() {
     bad);
 }
 
+// ---- Pattern 46: scanner policy covers the shipped data-carrier shape ----
+
+function testScannerPolicyCoversVendorDataCarriers() {
+  // Package scanners' minified-code detectors fire on high-density files
+  // and compressed/embedded assets, not only on minified CODE. The signed
+  // vendored data carriers (lib/vendor/*.data.js) are exactly that shape
+  // by design: a 76-char-wrapped base64 payload plus one multi-KB
+  // signatureB64 line. While such carriers ship, socket.yml must keep the
+  // minifiedFile class dispositioned (`minifiedFile: false`) — omitted
+  // issueRules fall back to dashboard defaults, so dropping the entry
+  // re-reports the known-benign artifacts on every routine scan. The
+  // unminified property of CODE bundles is enforced by
+  // testVendorBundlesReviewable above; the scanner class is not the guard
+  // for that property.
+  var vendorDir = path.join(__dirname, "..", "..", "lib", "vendor");
+  var names = fs.readdirSync(vendorDir).sort();
+  var carriers = [];
+  for (var i = 0; i < names.length; i++) {
+    if (!/\.data\.js$/.test(names[i])) continue;
+    var content = fs.readFileSync(path.join(vendorDir, names[i]), "utf8");
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (lines[li].length > 4096) { carriers.push(names[i]); break; }
+    }
+  }
+  var bad = [];
+  if (carriers.length > 0) {
+    var socketYml = "";
+    try {
+      socketYml = fs.readFileSync(path.join(__dirname, "..", "..", "socket.yml"), "utf8");
+    } catch (_e) { /* missing socket.yml handled below as a violation */ }
+    if (!/^\s*minifiedFile:\s*false\b/m.test(socketYml)) {
+      bad.push({
+        file:    "socket.yml",
+        line:    1,
+        content: "minifiedFile disposition missing while high-density data " +
+                 "carriers ship: " + carriers.join(", "),
+      });
+    }
+  }
+  _report("socket.yml keeps minifiedFile dispositioned while lib/vendor " +
+          "*.data.js payload carriers ship",
+    bad);
+}
+
 // ---- Pattern 42: state-stamps in user-facing docs (smoke test the wiki) ----
 
 function testStateStampScanningDeferred() {
@@ -14573,6 +14618,7 @@ async function run() {
   testNoUncappedSearchParamsObject();
   testNoDeniedVendors();
   testVendorBundlesReviewable();
+  testScannerPolicyCoversVendorDataCarriers();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
   testTrimBeforeControlByteScan();

@@ -18,13 +18,15 @@
 # refresh, which is gated by the full tarball-diff + hash verification above —
 # so it is caught at vendor review, not by this scanner.
 #
-# Classes that are NOT inherent are deliberately left enabled. The package
-# contains no minified code and no eval / Function-constructor construct
-# outside the documented worker-thread sandbox compiler (lib/sandbox-worker.js,
-# which compiles operator-submitted source inside a stripped worker_threads
-# isolate), and a codebase-patterns gate enforces both properties for every
-# lib/vendor/ artifact — so a future minified-code or eval alert is a real
-# regression signal, not noise.
+# The eval class is deliberately left enabled. The package contains no eval /
+# Function-constructor construct outside the documented worker-thread sandbox
+# compiler (lib/sandbox-worker.js, which compiles operator-submitted source
+# inside a stripped worker_threads isolate), and a codebase-patterns gate
+# enforces that for every lib/vendor/ artifact — so a future eval alert is a
+# real regression signal, not noise. The code bundles are likewise enforced
+# unminified by the same gate; the minifiedFile class below stays
+# dispositioned only because that detector also fires on high-density
+# embedded-asset files, which the signed data payload carriers are by design.
 
 version: 2
 
@@ -63,6 +65,17 @@ issueRules:
   # their ASN.1 schema serializers, reviewed at the pinned versions. That is
   # reflection over their own class metadata, not dynamic code execution.
   debugAccess: false
+
+  # Minified code — the esbuild code bundles under lib/vendor/ ship unminified
+  # (enforced by the repository's codebase-patterns gate), but this detector
+  # also fires on high-density / compressed-or-embedded-asset files. The
+  # signed vendored data carriers (lib/vendor/*.data.js) are that shape by
+  # design: a 76-char-wrapped base64 payload plus one multi-KB SLH-DSA
+  # signatureB64 line. Their integrity is verified at every load (SHA-256 +
+  # SHA3-512 + SLH-DSA signature + in-payload canary; lib/vendor-data.js) and
+  # the plain-format companions (.dat / .txt / .pem) ship alongside for
+  # inspection. Known and reviewed.
+  minifiedFile: false
 
   # Dynamic require — operator-extensibility entry points only: CLI plugins,
   # database migrations, and operator-supplied modules loaded by explicit path.
