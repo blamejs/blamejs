@@ -9,7 +9,10 @@
 #
 # What it does:
 #   1. installs the package(s) temporarily via npm
-#   2. bundles with esbuild (CJS, server-side)
+#   2. bundles with esbuild (CJS, server-side, unminified — vendored
+#      bundles ship as reviewable source so operators can diff them
+#      against upstream; esbuild still tree-shakes and keeps upstream
+#      license comments)
 #   3. copies native prebuilds where applicable (argon2)
 #   4. updates lib/vendor/MANIFEST.json (version + bundledAt)
 #   5. removes the temporarily-installed npm package
@@ -128,8 +131,9 @@ fi
 case "$PKG" in
   "@noble/ciphers")
     echo 'export { xchacha20poly1305 } from "@noble/ciphers/chacha.js";' > _entry.mjs
-    npx esbuild _entry.mjs --bundle --format=cjs --minify --platform=node --outfile=lib/vendor/noble-ciphers.cjs
+    npx esbuild _entry.mjs --bundle --format=cjs --platform=node --outfile=lib/vendor/noble-ciphers.cjs
     rm _entry.mjs
+    BUNDLER_DESC="esbuild --format=cjs --platform=node"
     sed -i "1s|^|// XChaCha20-Poly1305 — vendored from @noble/ciphers v${INSTALLED_VER} by Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-ciphers\n// Bundled with esbuild. Exports: xchacha20poly1305\n|" lib/vendor/noble-ciphers.cjs
     ;;
 
@@ -138,8 +142,9 @@ case "$PKG" in
 export { ristretto255_oprf } from "@noble/curves/ed25519.js";
 export { p256_oprf, p384_oprf, p521_oprf } from "@noble/curves/nist.js";
 ENTRY
-    npx esbuild _entry.mjs --bundle --format=cjs --minify --platform=node --outfile=lib/vendor/noble-curves.cjs
+    npx esbuild _entry.mjs --bundle --format=cjs --platform=node --outfile=lib/vendor/noble-curves.cjs
     rm _entry.mjs
+    BUNDLER_DESC="esbuild --format=cjs --platform=node"
     sed -i "1s|^|// @noble/curves v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-curves\n// Bundled with esbuild. Exports the RFC 9497 OPRF suites:\n//   ristretto255_oprf (ristretto255-SHA512), p256_oprf (P-256-SHA256),\n//   p384_oprf (P-384-SHA384), p521_oprf (P-521-SHA512) — each with\n//   oprf / voprf / poprf modes. Backs b.crypto.oprf.\n|" lib/vendor/noble-curves.cjs
     ;;
 
@@ -149,15 +154,22 @@ export { ml_kem512, ml_kem768, ml_kem1024 } from "@noble/post-quantum/ml-kem.js"
 export { ml_dsa44, ml_dsa65, ml_dsa87 } from "@noble/post-quantum/ml-dsa.js";
 export { slh_dsa_sha2_128f, slh_dsa_sha2_192f, slh_dsa_sha2_256f, slh_dsa_shake_128f, slh_dsa_shake_192f, slh_dsa_shake_256f } from "@noble/post-quantum/slh-dsa.js";
 ENTRY
-    npx esbuild _entry.mjs --bundle --format=cjs --minify --platform=node --outfile=lib/vendor/noble-post-quantum.cjs
+    npx esbuild _entry.mjs --bundle --format=cjs --platform=node --outfile=lib/vendor/noble-post-quantum.cjs
     rm _entry.mjs
+    BUNDLER_DESC="esbuild --format=cjs --platform=node"
     sed -i "1s|^|// @noble/post-quantum v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-post-quantum\n// Bundled with esbuild. Exports: ml_kem512 / ml_kem768 / ml_kem1024 (FIPS 203 KEM),\n//   ml_dsa44 / ml_dsa65 / ml_dsa87 (FIPS 204 lattice signatures),\n//   slh_dsa_sha2_*f / slh_dsa_shake_*f (FIPS 205 hash signatures).\n|" lib/vendor/noble-post-quantum.cjs
     ;;
 
   "@simplewebauthn/server")
+    # reflect-metadata (pulled in via @peculiar/x509) resolves to its upstream
+    # ./lite entry: identical metadata API and cross-copy registry, but built
+    # for runtimes with native globalThis / Map / Set / WeakMap — it has none
+    # of the legacy global-object probes (Function("return this") / indirect
+    # eval) that can never execute on the Node versions the framework supports.
     echo "module.exports = require(\"@simplewebauthn/server\");" > _entry.cjs
-    npx esbuild _entry.cjs --bundle --format=cjs --platform=node --minify --external:crypto --external:node:crypto --outfile=lib/vendor/simplewebauthn-server.cjs
+    npx esbuild _entry.cjs --bundle --format=cjs --platform=node --alias:reflect-metadata=reflect-metadata/lite --external:crypto --external:node:crypto --outfile=lib/vendor/simplewebauthn-server.cjs
     rm _entry.cjs
+    BUNDLER_DESC="esbuild --format=cjs --platform=node --alias:reflect-metadata=reflect-metadata/lite --external:crypto --external:node:crypto"
     sed -i "1s|^|// @simplewebauthn/server v${INSTALLED_VER} — vendored. License: MIT\n// https://github.com/MasterKale/SimpleWebAuthn\n|" lib/vendor/simplewebauthn-server.cjs
     ;;
 
@@ -174,11 +186,25 @@ ENTRY
     # ASN.1 schema package, packed into one CJS file. lib/mtls-ca.js loads the
     # bundle via the default engine in lib/mtls-engine-default.js for CA gen,
     # client-cert signing, and PKCS#12 packaging — no openssl CLI at runtime.
+    #
+    # Version argument: "latest" (default) bundles the newest @peculiar/x509 +
+    # pkijs; the MANIFEST version form "<x509ver>+pkijs-<pkijsver>" (e.g.
+    # "2.0.0+pkijs-3.4.0") rebundles those exact component versions.
+    X509_REQ="latest"
+    PKIJS_REQ="latest"
+    if [ "$VER" != "latest" ]; then
+      X509_REQ="${VER%%+pkijs-*}"
+      PKIJS_REQ="${VER##*+pkijs-}"
+      if [ -z "$X509_REQ" ] || [ -z "$PKIJS_REQ" ] || [ "$X509_REQ" = "$VER" ]; then
+        echo "ERROR: peculiar-pki version must be 'latest' or '<x509ver>+pkijs-<pkijsver>' (e.g. 2.0.0+pkijs-3.4.0)"
+        exit 1
+      fi
+    fi
     npm install --no-save --ignore-scripts \
       reflect-metadata \
       pvutils pvtsutils asn1js \
       "@peculiar/asn1-schema" "@peculiar/asn1-x509" "@peculiar/asn1-ecc" "@peculiar/asn1-rsa" \
-      "@peculiar/x509" pkijs 2>/dev/null
+      "@peculiar/x509@${X509_REQ}" "pkijs@${PKIJS_REQ}" 2>/dev/null
     X509_VER=$(node -e "console.log(require('./node_modules/@peculiar/x509/package.json').version)")
     PKIJS_VER=$(node -e "console.log(require('./node_modules/pkijs/package.json').version)")
     echo "Installed: @peculiar/x509@$X509_VER, pkijs@$PKIJS_VER"
@@ -197,10 +223,17 @@ export const pkijs = pkijsLib;
 export const x509 = x509Lib;
 export const crypto = webcrypto;
 ENTRY
-    npx esbuild _pki-entry.mjs --bundle --format=cjs --platform=node --minify \
+    # reflect-metadata resolves to its upstream ./lite entry: identical
+    # metadata API and cross-copy registry, but built for runtimes with native
+    # globalThis / Map / Set / WeakMap — it has none of the legacy
+    # global-object probes (Function("return this") / indirect eval) that can
+    # never execute on the Node versions the framework supports.
+    npx esbuild _pki-entry.mjs --bundle --format=cjs --platform=node \
+      --alias:reflect-metadata=reflect-metadata/lite \
       --external:node:crypto --external:crypto \
       --outfile=lib/vendor/pki.cjs
     rm _pki-entry.mjs
+    BUNDLER_DESC="esbuild --format=cjs --platform=node --alias:reflect-metadata=reflect-metadata/lite --external:node:crypto --external:crypto"
     sed -i "1s|^|// Peculiar PKI — vendored @peculiar/x509 v${X509_VER} + pkijs v${PKIJS_VER}\n// License: MIT. Bundled with esbuild.\n// Exports: { pkijs, x509, crypto (node:webcrypto bound) }\n// Includes: reflect-metadata, pvutils, pvtsutils, asn1js, @peculiar/asn1-*\n// Used by lib/mtls-engine-default.js for pure-JS CA + PKCS#12 operations.\n|" lib/vendor/pki.cjs
     INSTALLED_VER="${X509_VER}+pkijs-${PKIJS_VER}"
     # Structured SBOM component versions, derived from the ACTUALLY-INSTALLED
@@ -222,14 +255,17 @@ esac
 # Update MANIFEST.json. COMPONENT_VERSIONS_JSON (set only for meta-bundles that
 # carry a structured components[] sub-object, e.g. peculiar-pki) is passed via
 # the environment so its JSON braces/quotes don't fight the bash interpolation
-# into the inline node script.
-COMPONENT_VERSIONS_JSON="${COMPONENT_VERSIONS_JSON:-}" node -e "
+# into the inline node script. BUNDLER_DESC records the esbuild invocation that
+# actually produced the artifact, so the manifest's bundler field can never
+# drift from the command in the case-block above.
+COMPONENT_VERSIONS_JSON="${COMPONENT_VERSIONS_JSON:-}" BUNDLER_DESC="${BUNDLER_DESC:-}" node -e "
 var fs = require('fs');
 var m = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
 var pkg = '$PKG';
 if (m.packages[pkg]) {
   m.packages[pkg].version = '$INSTALLED_VER';
   m.packages[pkg].bundledAt = '$DATE';
+  if (process.env.BUNDLER_DESC) { m.packages[pkg].bundler = process.env.BUNDLER_DESC; }
   // Derive structured SBOM component versions from the ACTUALLY-INSTALLED
   // packages (issue #366) so components[].version — the field CycloneDX / Trivy
   // / Grype key on — can never drift from the bundled version string.
