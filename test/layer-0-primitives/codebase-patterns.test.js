@@ -6129,6 +6129,100 @@ function testScannerPolicyCoversVendorDataCarriers() {
     bad);
 }
 
+// ---- Pattern 47: documented script flags must exist in the script ----
+
+function testDocumentedScriptFlagsExist() {
+  // Error messages, file headers, and operator docs point people at
+  // maintenance commands like `vendor-update.sh --refresh-data`. A
+  // referenced flag the target script never implements strands the
+  // operator at the exact moment the reference fires (a verification
+  // failure, a stale-data gate). Every `<script>.sh --flag` /
+  // `<script>.js --flag` reference whose basename resolves into
+  // scripts/ must appear, whole-token, on a NON-COMMENT line of that
+  // script — a usage-header comment alone does not count as an
+  // implementation, and `--refresh` must not pass because
+  // `--refresh-data` exists. References to basenames not present in
+  // scripts/ are external tools and skipped, as is a script-shaped
+  // token that is itself the VALUE of a preceding flag (`--arg
+  // ./server.js --watch` is not a `server.js --watch` reference).
+  // Known coverage bounds: only the flag directly adjacent to the
+  // script name is checked (a `script.js subcommand --flag` or
+  // second-flag reference is out of matcher reach), and a flag quoted
+  // in a non-comment string of the target (an echo, an error message)
+  // satisfies the check.
+  var root = path.resolve(__dirname, "..", "..");
+  var scriptsDir = path.join(root, "scripts");
+  var vendorDir = path.join(root, "lib", "vendor");
+  var sources = _libFiles();
+  var i;
+  var vendorNames = fs.readdirSync(vendorDir).sort();
+  for (i = 0; i < vendorNames.length; i++) {
+    if (/\.data\.js$/.test(vendorNames[i])) sources.push(path.join(vendorDir, vendorNames[i]));
+  }
+  var scriptNames = fs.readdirSync(scriptsDir).sort();
+  for (i = 0; i < scriptNames.length; i++) {
+    if (/\.(js|sh)$/.test(scriptNames[i])) sources.push(path.join(scriptsDir, scriptNames[i]));
+  }
+  var docNames = ["README.md", "SECURITY.md", "CONTRIBUTING.md", "MIGRATING.md"];
+  for (i = 0; i < docNames.length; i++) {
+    var docPath = path.join(root, docNames[i]);
+    if (fs.existsSync(docPath)) sources.push(docPath);
+  }
+
+  var refRe = /\b([a-z0-9][a-z0-9-]*\.(?:sh|js))\s+(--[a-z][a-z0-9-]*)/g;
+  // The implementation surface of a target script: every line that is
+  // not a whole-line comment (# for .sh, // or a block-comment
+  // continuation * for .js).
+  var targetCache = {};
+  function targetImplLines(basename) {
+    if (!(basename in targetCache)) {
+      var full = path.join(scriptsDir, basename);
+      var raw;
+      try { raw = fs.readFileSync(full, "utf8"); }
+      catch (_e) { targetCache[basename] = null; return null; }
+      var commentRe = /\.sh$/.test(basename) ? /^\s*#/ : /^\s*(\/\/|\*|\/\*)/;
+      targetCache[basename] = raw.split(/\r?\n/).filter(function (l) {
+        return !commentRe.test(l);
+      }).join("\n");
+    }
+    return targetCache[basename];
+  }
+  function implementsFlag(implText, flag) {
+    var esc = flag.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    return new RegExp("(^|[^A-Za-z0-9-])" + esc + "(?![A-Za-z0-9-])").test(implText);
+  }
+
+  var bad = [];
+  for (i = 0; i < sources.length; i++) {
+    var content;
+    try { content = fs.readFileSync(sources[i], "utf8"); }
+    catch (_e) { continue; }
+    var rel = path.relative(root, sources[i]).replace(/\\/g, "/");
+    var m;
+    refRe.lastIndex = 0;
+    while ((m = refRe.exec(content)) !== null) {
+      // Skip script-shaped tokens sitting in a flag's VALUE position
+      // (`--command node --arg ./server.js --watch`): the token is an
+      // argument to the preceding flag, not a command being invoked.
+      var before = content.slice(Math.max(0, m.index - 40), m.index);
+      if (/--[a-z][a-z0-9-]*(=|\s+)(\.\/)?$/.test(before)) continue;
+      var impl = targetImplLines(m[1]);
+      if (impl === null) continue;
+      if (implementsFlag(impl, m[2])) continue;
+      var line = content.slice(0, m.index).split("\n").length;
+      bad.push({
+        file:    rel,
+        line:    line,
+        content: "references `" + m[1] + " " + m[2] + "` but scripts/" +
+                 m[1] + " has no non-comment occurrence of " + m[2],
+      });
+    }
+  }
+  _report("script flags referenced from lib/, scripts/, and operator docs " +
+          "exist outside comments in the target script",
+    bad);
+}
+
 // ---- Pattern 42: state-stamps in user-facing docs (smoke test the wiki) ----
 
 function testStateStampScanningDeferred() {
@@ -14619,6 +14713,7 @@ async function run() {
   testNoDeniedVendors();
   testVendorBundlesReviewable();
   testScannerPolicyCoversVendorDataCarriers();
+  testDocumentedScriptFlagsExist();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
   testTrimBeforeControlByteScan();
