@@ -1,0 +1,43 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.31",
+  "date": "2026-07-13",
+  "headline": "Vendored library bundles ship as unminified, reviewable source at the same pinned versions, removing the last dynamic-code-execution shims from the package",
+  "summary": "The five vendored library bundles -- @noble/ciphers 2.2.0, @noble/curves 2.2.0, @noble/post-quantum 0.6.1, @simplewebauthn/server 13.3.2, and the @peculiar/x509 2.0.0 + pkijs 3.4.0 PKI meta-bundle -- now ship as unminified esbuild output of the same pinned upstream versions, so an operator can open any lib/vendor/*.cjs and read it, or diff it against upstream at the MANIFEST-pinned version, instead of auditing multi-hundred-KB minified lines. Their reflect-metadata dependency now resolves to upstream's lite build, which drops the legacy global-object probes (Function(\"return this\") and indirect eval) that could never execute on supported Node versions -- the published package now contains no eval or Function-constructor construct outside the documented worker-thread sandbox compiler. The vendor pipeline records the exact build invocation in MANIFEST.json, can rebuild the PKI meta-bundle at pinned component versions, and a codebase-patterns gate refuses any future refresh that reintroduces minified or dynamic-execution output under lib/vendor/. The repository supply-chain policy adds audited dispositions for shell, filesystem, and debug access, re-enables the eval alert class now that the package contains none, and narrows the minified-code disposition to the signed data payload carriers -- the code bundles themselves are enforced unminified by an in-repo gate.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored bundles are unminified, reviewable esbuild output at the same pinned upstream versions",
+          "body": "lib/vendor/noble-ciphers.cjs, noble-curves.cjs, noble-post-quantum.cjs, simplewebauthn-server.cjs, and pki.cjs are rebuilt without minification from the same pinned upstream versions recorded in lib/vendor/MANIFEST.json (@noble/ciphers 2.2.0, @noble/curves 2.2.0, @noble/post-quantum 0.6.1, @simplewebauthn/server 13.3.2, @peculiar/x509 2.0.0 + pkijs 3.4.0). Exports, versions, and runtime behavior are unchanged; upstream license headers and esbuild's bundled-license footers are preserved. The five bundles grow from roughly 1.2 MB to 2.7 MB on disk (the npm tarball transfers compressed), in exchange for source an operator or scanner can actually review and diff against upstream."
+        },
+        {
+          "title": "reflect-metadata inside the WebAuthn and PKI bundles resolves to upstream's lite build, removing Function(\"return this\") and indirect-eval global probes",
+          "body": "The @simplewebauthn/server and PKI meta-bundles pull in reflect-metadata (decorator metadata for their ASN.1 schema serializers). The bundles now resolve it to the package's own ./lite entry at the same pinned version: an identical metadata API with the same cross-copy registry protocol, built for runtimes with native globalThis -- it contains none of the legacy global-object probes (Function(\"return this\") / indirect eval) that were unreachable dead code on the framework's Node floor anyway. With this change the published package contains no eval, indirect eval, or Function-constructor construct outside b.sandbox's worker-thread compiler, which is the documented isolation boundary for operator-submitted code."
+        },
+        {
+          "title": "Vendor pipeline: pinned PKI meta-bundle rebuilds, and the manifest bundler field derives from the actual build invocation",
+          "body": "scripts/vendor-update.sh now accepts the PKI meta-bundle's manifest version form directly (for example: vendor-update.sh peculiar-pki \"2.0.0+pkijs-3.4.0\") and installs exactly those @peculiar/x509 and pkijs component versions, where previously it could only bundle latest. The bundler field in lib/vendor/MANIFEST.json is now written by the script from the esbuild invocation that actually produced the artifact, so the recorded build command can no longer drift from the real one."
+        },
+        {
+          "title": "Package-scanner policy adds shell, filesystem, and debug access dispositions and re-enables the eval alert class",
+          "body": "socket.yml documents why shell access (all process execution goes through b.processSpawn -- fixed binary, argument array, never shell:true), filesystem access, and debug access (no debugger statements or node:inspector in first-party code; Reflect metadata in the vendored ASN.1 serializers is reflection, not code execution) are inherent to a server framework. The eval alert class is deliberately no longer suppressed: the package contains no eval or Function-constructor construct outside the documented sandbox worker, so a future occurrence is a genuine regression signal rather than recurring noise. The minified-code class stays dispositioned, narrowed to the signed data payload carriers (lib/vendor/*.data.js): minified-code detectors also fire on high-density embedded-asset files, which those carriers are by design -- a 76-char-wrapped base64 payload plus a multi-KB signature line, verified at every load. The unminified property of the code bundles is enforced by the repository's own gate, not by the scanner class."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Vendored bundles must stay unminified and free of dynamic-code-execution constructs",
+          "body": "A codebase-patterns gate walks every JS artifact under lib/vendor/ and refuses minified bundle output (whole-file average line length, with wide margins around the measured unminified and minified populations) and any eval, indirect-eval, Function-constructor, createRequire, or process.binding token. A vendor refresh that reintroduces --minify or an upstream global-object eval probe fails the gate before it can ship."
+        },
+        {
+          "title": "Scanner policy keeps the minified-code class dispositioned while signed data carriers ship",
+          "body": "A companion gate refuses removing socket.yml's minifiedFile disposition while lib/vendor/*.data.js payload carriers ship: minified-code detectors match the carriers' high-density base64-plus-signature shape, and an omitted issue rule falls back to dashboard defaults, so dropping the entry would re-report the known-benign artifacts on every routine scan."
+        }
+      ]
+    }
+  ]
+}

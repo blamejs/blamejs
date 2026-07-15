@@ -6013,6 +6013,122 @@ function testNoDeniedVendors() {
     bad);
 }
 
+// ---- Pattern 45: vendored bundles ship reviewable — unminified + eval-free ----
+
+// Dynamic-code-execution constructs a vendored artifact must never carry:
+// direct eval, indirect `(x, eval)` aliasing, the Function constructor,
+// module.createRequire, and process.binding. The only such tokens upstream
+// libraries ever shipped here were legacy global-object probes
+// (`Function("return this")` / indirect eval) that cannot execute on
+// supported Node versions; scripts/vendor-update.sh resolves
+// reflect-metadata to its `lite` entry so none remain in the bundles.
+var VENDOR_DYNAMIC_EXEC_RE =
+  /\beval\s*\(|,\s*eval\s*\)|\bnew\s+Function\b|\bFunction\s*\(|\bcreateRequire\b|process\.binding/;
+
+function testVendorBundlesReviewable() {
+  // lib/vendor/*.cjs are esbuild bundles of MANIFEST-pinned upstream
+  // libraries (scripts/vendor-update.sh). They ship UNMINIFIED so an
+  // operator can read them and diff them against upstream at the pinned
+  // version, and every vendored JS artifact must stay free of
+  // dynamic-code-execution constructs. This gate refuses a regression
+  // arriving through a future vendor refresh (e.g. --minify creeping
+  // back into a build command, or an upstream bump reintroducing a
+  // global-object eval probe).
+  //
+  // Minification check: average line length, .cjs bundles only.
+  // Unminified esbuild output of the current inputs measures 31-39
+  // chars/line; minified output of the same inputs measures 1223-3796.
+  // The 200 threshold has ~5x headroom above the unminified population
+  // and ~6x below the minified one, and is a whole-file statistic —
+  // not a layout-coupled bound on any single construct. The .data.js
+  // payload carriers are exempt from this leg (their signatureB64
+  // field is legitimately one multi-KB base64 line) but covered by the
+  // dynamic-exec leg on top of their four-layer load-time verification.
+  var vendorDir = path.join(__dirname, "..", "..", "lib", "vendor");
+  var bad = [];
+  var names = fs.readdirSync(vendorDir).sort();
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i];
+    if (!/\.(cjs|js|mjs)$/.test(name)) continue;
+    var full = path.join(vendorDir, name);
+    if (!fs.statSync(full).isFile()) continue;
+    var content = fs.readFileSync(full, "utf8");
+    var lines = content.split(/\r?\n/);
+    var total = 0;
+    for (var li = 0; li < lines.length; li++) {
+      total += lines[li].length;
+      if (VENDOR_DYNAMIC_EXEC_RE.test(lines[li])) {
+        bad.push({
+          file:    "lib/vendor/" + name,
+          line:    li + 1,
+          content: "dynamic-code-execution construct in vendored artifact: " +
+                   lines[li].trim().slice(0, 80),
+        });
+      }
+    }
+    if (/\.cjs$/.test(name)) {
+      var avg = lines.length ? total / lines.length : 0;
+      if (avg > 200) {
+        bad.push({
+          file:    "lib/vendor/" + name,
+          line:    1,
+          content: "bundle looks minified (avg " + Math.round(avg) +
+                   " chars/line; unminified output measures 31-39) — rebuild " +
+                   "via scripts/vendor-update.sh, which bundles without --minify",
+        });
+      }
+    }
+  }
+  _report("vendored bundles ship reviewable — unminified .cjs + no " +
+          "dynamic-code-execution constructs in lib/vendor JS",
+    bad);
+}
+
+// ---- Pattern 46: scanner policy covers the shipped data-carrier shape ----
+
+function testScannerPolicyCoversVendorDataCarriers() {
+  // Package scanners' minified-code detectors fire on high-density files
+  // and compressed/embedded assets, not only on minified CODE. The signed
+  // vendored data carriers (lib/vendor/*.data.js) are exactly that shape
+  // by design: a 76-char-wrapped base64 payload plus one multi-KB
+  // signatureB64 line. While such carriers ship, socket.yml must keep the
+  // minifiedFile class dispositioned (`minifiedFile: false`) — omitted
+  // issueRules fall back to dashboard defaults, so dropping the entry
+  // re-reports the known-benign artifacts on every routine scan. The
+  // unminified property of CODE bundles is enforced by
+  // testVendorBundlesReviewable above; the scanner class is not the guard
+  // for that property.
+  var vendorDir = path.join(__dirname, "..", "..", "lib", "vendor");
+  var names = fs.readdirSync(vendorDir).sort();
+  var carriers = [];
+  for (var i = 0; i < names.length; i++) {
+    if (!/\.data\.js$/.test(names[i])) continue;
+    var content = fs.readFileSync(path.join(vendorDir, names[i]), "utf8");
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      if (lines[li].length > 4096) { carriers.push(names[i]); break; }
+    }
+  }
+  var bad = [];
+  if (carriers.length > 0) {
+    var socketYml = "";
+    try {
+      socketYml = fs.readFileSync(path.join(__dirname, "..", "..", "socket.yml"), "utf8");
+    } catch (_e) { /* missing socket.yml handled below as a violation */ }
+    if (!/^\s*minifiedFile:\s*false\b/m.test(socketYml)) {
+      bad.push({
+        file:    "socket.yml",
+        line:    1,
+        content: "minifiedFile disposition missing while high-density data " +
+                 "carriers ship: " + carriers.join(", "),
+      });
+    }
+  }
+  _report("socket.yml keeps minifiedFile dispositioned while lib/vendor " +
+          "*.data.js payload carriers ship",
+    bad);
+}
+
 // ---- Pattern 42: state-stamps in user-facing docs (smoke test the wiki) ----
 
 function testStateStampScanningDeferred() {
@@ -14501,6 +14617,8 @@ async function run() {
   testNoDenseWildcardRunsInLib();
   testNoUncappedSearchParamsObject();
   testNoDeniedVendors();
+  testVendorBundlesReviewable();
+  testScannerPolicyCoversVendorDataCarriers();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
   testTrimBeforeControlByteScan();
