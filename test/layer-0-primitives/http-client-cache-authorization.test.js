@@ -178,6 +178,37 @@ async function testLegacyEntryWithoutAuthFlagFailsClosedOn304() {
   });
 }
 
+// A still-FRESH legacy entry (positive freshness, no hadAuthorization) is
+// served directly on a HIT without ever reaching the 304 refresh. In a shared
+// cache it could be a pre-upgrade authenticated response, so the lookup itself
+// must fail closed and evict it rather than serve a cached body across
+// principals.
+async function testLegacyFreshEntryNotServedOnHit() {
+  var hits = { n: 0 };
+  await _withServer(_echoAuthHandler("max-age=60", hits), async function (baseUrl) {
+    var cache = b.httpClient.cache.create({ store: _legacyStrippingStore(), sharedCache: true });
+    // Seed a fresh entry via an UNAUTHENTICATED request (the store-time gate
+    // stores it); the legacy store then strips hadAuthorization so it presents
+    // as a record written before the field existed.
+    var r0 = await b.httpClient.request({
+      url: baseUrl + "/legacy-fresh", cache: cache,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("legacy-fresh: seed request MISS", r0.headers["x-blamejs-cache"] === "MISS");
+    // A principal now requests the same URL. The stored entry has no
+    // hadAuthorization (legacy), so it must NOT be served on a fresh HIT.
+    var r1 = await b.httpClient.request({
+      url: baseUrl + "/legacy-fresh", cache: cache,
+      headers: { Authorization: "Bearer USER-BBB" },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("legacy-fresh: a legacy entry is not served on a HIT (evicted at lookup)",
+          r1.headers["x-blamejs-cache"] === "MISS");
+    check("legacy-fresh: caller receives its own fresh response, not the legacy cached body",
+          r1.body.toString("utf8") === "secret-for:Bearer USER-BBB");
+  });
+}
+
 // ---- The leak: shared cache must not cross Authorization principals ----
 
 async function testAuthNotSharedAcrossUsersSharedCache() {
@@ -289,6 +320,7 @@ async function run() {
     await testAuthNotSharedAcrossUsersSharedCache();
     await testAuthOptInDroppedOn304EvictsNotShares();
     await testLegacyEntryWithoutAuthFlagFailsClosedOn304();
+    await testLegacyFreshEntryNotServedOnHit();
     await testPublicPermitsSharedAuthReuse();
     await testSmaxagePermitsSharedAuthReuse();
     await testPrivateCacheCachesAuthedResponse();
