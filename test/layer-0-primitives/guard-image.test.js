@@ -141,6 +141,29 @@ function testValidateSvgRoutedEveryProfile() {
   }
 }
 
+// ---- BUG A follow-up (RED-first): the BOM skip must NOT extend to binary
+// rasters. A UTF-8 BOM is legal only before XML/SVG text; a PNG/JPEG/etc.
+// signature must sit at its real offset. Shifting every signature by the BOM
+// width let a `EF BB BF`-prefixed PNG masquerade as a valid raster (ok:true
+// under strict), bypassing strict magic validation. The shift is now gated on
+// the text-family SVG/XML entries only. ----
+function testBomDoesNotBypassRasterMagic() {
+  var pngMagic = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  var bomPng = Buffer.concat([BOM, pngMagic]);
+  // BOM-prefixed PNG is NOT a valid PNG (signature not at offset 0) — it must
+  // NOT be detected as image/png, and strict validate must refuse it.
+  check("inspectMagic: BOM + PNG magic NOT detected as image/png",
+    b.guardImage.inspectMagic(bomPng).indexOf("image/png") === -1);
+  var rv = b.guardImage.validate({ bytes: bomPng, declaredMime: "image/png" }, { profile: "strict" });
+  check("strict: BOM-prefixed PNG refused (not accepted as a raster)", rv.ok === false);
+  check("strict: BOM-prefixed PNG raises unknown-magic (signature not at offset 0)",
+    _hasKind(rv.issues, "unknown-magic"));
+  // Control: a genuine PNG (no BOM) still validates as a raster.
+  var rvReal = b.guardImage.validate({ bytes: pngMagic }, { profile: "strict" });
+  check("strict: real PNG magic detected as image/png",
+    b.guardImage.inspectMagic(pngMagic).indexOf("image/png") !== -1 && !_hasKind(rvReal.issues, "unknown-magic"));
+}
+
 // ---- BUG B (RED-first): validate must never throw on hostile metadata ----
 //
 // The @primitive block promises validate is "pure inspection — never mutates
@@ -597,6 +620,7 @@ async function run() {
   testInspectMagicAllFormats();
   testInspectMagicBomSvg();
   testValidateSvgRoutedEveryProfile();
+  testBomDoesNotBypassRasterMagic();
   testValidateNeverThrowsHostileMetadata();
   testValidateMismatchAndPolyglot();
   testValidatePolyglot();

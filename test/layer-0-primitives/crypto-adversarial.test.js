@@ -160,12 +160,31 @@ function testTruncationNeverLeaksRangeError() {
   for (var s = 0; s < suites.length; s += 1) {
     var suite = suites[s];
     var full = suite.full;
+    // Every truncation offset must reject either with the typed
+    // "Invalid envelope"/"Invalid packed" contract (a truncation in the header,
+    // a length-prefixed KEM ciphertext / ephemeral key, or the nonce/tag
+    // region) or with the genuine AEAD "invalid tag" authentication failure (a
+    // truncation inside the ciphertext body, where the structure is intact but
+    // Poly1305 fails) — NEVER a raw low-level crypto leak: a noble RangeError
+    // ("nonce" length) or a Node "Failed to perform decapsulation" / key-parse
+    // error from handing an under-length component to Node crypto. The agent's
+    // original test caught only RangeError, so the decapsulation leak (a
+    // truncation inside the length-prefixed KEM ciphertext, reaching
+    // nodeCrypto.decapsulate before the trailing bounds check) slipped through.
     var leaked = null;
     for (var n = full.length - 1; n >= 1 && leaked === null; n -= 1) {
       try { b.crypto.decrypt(full.subarray(0, n).toString("base64"), suite.key); }
-      catch (e) { if (e instanceof RangeError) leaked = { n: n, msg: e.message }; }
+      catch (e) {
+        var msg = (e && e.message) || String(e);
+        if (e instanceof RangeError || !/Invalid envelope|Invalid packed|invalid tag/i.test(msg)) {
+          leaked = { n: n, msg: msg };
+        }
+      }
     }
-    check("decrypt never leaks a raw RangeError on a truncated " + suite.name + " envelope",
+    check("decrypt rejects every truncation of a " + suite.name +
+      " envelope with the typed contract or a genuine AEAD tag failure " +
+      "(no raw RangeError / decapsulation error): " +
+      (leaked ? leaked.n + "→" + leaked.msg : "clean"),
       leaked === null);
 
     // A truncation landing inside the nonce/tag region rejects with the
