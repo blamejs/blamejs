@@ -255,7 +255,12 @@ async function run() {
   var lstNotStringToken = await signSL({ bits: 1, lst: 123 });
   var badBitsToken      = await signSL({ bits: 3, lst: bCrypto.toBase64Url(zlib.deflateRawSync(Buffer.alloc(4))) });
   var badBase64Token    = await signSL({ bits: 1, lst: "@@@not-base64@@@" });
-  var garbageInflateToken = await signSL({ bits: 1, lst: bCrypto.toBase64Url(nodeCrypto.randomBytes(64)) });
+  // A DETERMINISTIC non-deflate payload: an all-0xFF buffer's first byte has
+  // deflate BTYPE=3 (the reserved/invalid block type), so inflateRawSync always
+  // rejects it. (Random bytes are NOT safe here — ~0.5% of random 64-byte
+  // sequences are a valid-enough raw-deflate stream to inflate, which flaked
+  // this check on CI.)
+  var garbageInflateToken = await signSL({ bits: 1, lst: bCrypto.toBase64Url(Buffer.alloc(64, 0xff)) });
   // Decompression bomb: a tiny compressed payload that inflates past the 8x cap
   // (MAX_LIST_BYTES * 8) — zeros compress to a few KB but inflate to >8 MiB.
   var bombToken = await signSL({
