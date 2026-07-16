@@ -477,6 +477,372 @@ async function testGuardSvgGateFailOpen() {
         rvCss.action !== "serve");
 }
 
+function testGuardSvgBadInput() {
+  // Non-string / non-Buffer input → a single bad-input issue; validate never
+  // throws on hostile input (callers inspect the issue list themselves).
+  [123, null, undefined, {}, ["<svg/>"], true].forEach(function (bad, idx) {
+    var rv = b.guardSvg.validate(bad, { profile: "strict" });
+    check("validate(bad-input #" + idx + ") → ok=false + single bad-input issue",
+          rv.ok === false &&
+          rv.issues.length === 1 &&
+          rv.issues[0].kind === "bad-input" &&
+          rv.issues[0].severity === "high");
+  });
+  // sanitize refuses non-string/non-Buffer at the entry point (throws, since a
+  // sanitizer has nothing to serialize back).
+  var threw = null;
+  try { b.guardSvg.sanitize(123, { profile: "strict" }); }
+  catch (e) { threw = e; }
+  check("sanitize(number) throws svg.bad-input",
+        threw && /string or Buffer/.test(threw.message));
+}
+
+function testGuardSvgShortInput() {
+  // A sub-2-byte input can't be SVGZ (the gzip signature is 2 bytes) — the
+  // length<2 guard must return false, not read past the buffer.
+  var rv = b.guardSvg.validate("x", { profile: "strict" });
+  check("1-char input NOT mis-detected as SVGZ",
+        !rv.issues.some(function (i) { return i.kind === "svgz-compressed"; }));
+  var rvBuf = b.guardSvg.validate(Buffer.from([0x1F]), { profile: "strict" });
+  check("1-byte 0x1F Buffer NOT mis-detected as SVGZ (needs both magic bytes)",
+        !rvBuf.issues.some(function (i) { return i.kind === "svgz-compressed"; }));
+}
+
+function testGuardSvgImageDataUrl() {
+  // allowImageData (balanced / permissive): a data:image/<raster>; URL on
+  // <image> is the ONE permitted use of the otherwise-denylisted data: scheme.
+  var okData = '<svg><image href="data:image/png;base64,iVBORw0KGgo="/></svg>';
+  var rv = b.guardSvg.validate(okData, { profile: "balanced" });
+  check("balanced: data:image/png on <image> allowed (no dangerous-url-scheme)",
+        rv.ok === true &&
+        !rv.issues.some(function (i) { return i.kind === "dangerous-url-scheme"; }));
+  var san = b.guardSvg.sanitize(okData, { profile: "balanced" });
+  check("balanced sanitize: data:image/png survives on <image>",
+        san.indexOf("data:image/png") !== -1);
+
+  // The exact same data URL on a NON-image element stays denied — the
+  // exception is <image>-scoped, not a blanket data:-image allow.
+  var rvA = b.guardSvg.validate(
+    '<svg><a xlink:href="data:image/png;base64,iVBORw0KGgo=">x</a></svg>',
+    { profile: "balanced" });
+  check("balanced: data:image/png on <a> still flagged dangerous-url-scheme",
+        rvA.issues.some(function (i) { return i.kind === "dangerous-url-scheme"; }));
+
+  // A non-raster data: MIME on <image> (text/html) is NOT the image exception.
+  var rvHtml = b.guardSvg.validate(
+    '<svg><image href="data:text/html;base64,PHNjcmlwdD4="/></svg>',
+    { profile: "balanced" });
+  check("balanced: data:text/html on <image> flagged dangerous-url-scheme",
+        rvHtml.issues.some(function (i) { return i.kind === "dangerous-url-scheme"; }));
+
+  // strict has allowImageData:false — even a raster data URL on <image> is
+  // refused there.
+  var rvStrict = b.guardSvg.validate(okData, { profile: "strict" });
+  check("strict: data:image/png on <image> refused (allowImageData false)",
+        rvStrict.issues.some(function (i) { return i.kind === "dangerous-url-scheme"; }));
+}
+
+function testGuardSvgNonAllowlistedScheme() {
+  // A scheme that is neither dangerous NOR in the profile's urlSchemes
+  // allowlist (ftp under strict) → non-allowlisted-url-scheme (sanitize-class),
+  // distinct from the dangerous-scheme denylist hit.
+  var svg = '<svg><path href="ftp://host/x" d="M0 0"/></svg>';
+  var rv = b.guardSvg.validate(svg, { profile: "strict" });
+  check("strict: ftp scheme flagged non-allowlisted-url-scheme (not dangerous)",
+        rv.issues.some(function (i) { return i.kind === "non-allowlisted-url-scheme"; }) &&
+        !rv.issues.some(function (i) { return i.kind === "dangerous-url-scheme"; }));
+  var san = b.guardSvg.sanitize(svg, { profile: "strict" });
+  check("strict sanitize: ftp href dropped, benign d preserved",
+        san.indexOf("ftp") === -1 && san.indexOf('d="M0 0"') !== -1);
+
+  // ftp IS in the balanced profile's urlSchemes → not flagged there.
+  var rvBal = b.guardSvg.validate('<svg><a xlink:href="ftp://host/x">y</a></svg>',
+                                  { profile: "balanced" });
+  check("balanced: ftp scheme allowed (in profile urlSchemes)",
+        !rvBal.issues.some(function (i) { return i.kind === "non-allowlisted-url-scheme" ||
+                                                 i.kind === "dangerous-url-scheme"; }));
+}
+
+function testGuardSvgStructuralCaps() {
+  // element-count-cap: total token count over maxElementCount → high issue.
+  var manyTokens = "<g></g>".repeat(20);
+  var rvEl = b.guardSvg.validate(manyTokens, { profile: "strict", maxElementCount: 5 });
+  check("element-count-cap fires when token count exceeds maxElementCount",
+        rvEl.issues.some(function (i) { return i.kind === "element-count-cap"; }));
+
+  // attr-count-cap: attribute count on one tag over maxAttrsPerTag → high issue.
+  var manyAttrs = "<circle";
+  for (var i = 0; i < 10; i += 1) manyAttrs += ' a' + i + '="1"';
+  manyAttrs += "/>";
+  var rvAttr = b.guardSvg.validate("<svg>" + manyAttrs + "</svg>",
+                                   { profile: "balanced", maxAttrsPerTag: 3 });
+  check("attr-count-cap fires when attribute count exceeds maxAttrsPerTag",
+        rvAttr.issues.some(function (i) { return i.kind === "attr-count-cap"; }));
+}
+
+function testGuardSvgStandaloneEntityDeclaration() {
+  // A bare <!ENTITY ...> OUTSIDE a DOCTYPE (tokenized as a declaration, not a
+  // doctype) is still an entity-expansion / XXE vector and must be flagged.
+  var rv = b.guardSvg.validate('<!ENTITY xxe "payload"><svg><circle r="1"/></svg>',
+                               { profile: "strict" });
+  check("standalone <!ENTITY> declaration flagged entity-declaration",
+        rv.ok === false &&
+        rv.issues.some(function (i) { return i.kind === "entity-declaration"; }));
+
+  // A benign non-ENTITY declaration (<!ATTLIST>) is dropped, no entity flag.
+  var rvAttlist = b.guardSvg.validate('<!ATTLIST x y CDATA><svg><circle r="1"/></svg>',
+                                      { profile: "strict" });
+  check("non-ENTITY <!ATTLIST> declaration raises no entity-declaration",
+        !rvAttlist.issues.some(function (i) { return i.kind === "entity-declaration"; }));
+}
+
+function testGuardSvgCdataPiAuditSeverity() {
+  // Under balanced, cdataPolicy is "audit" → warn severity (not critical), and
+  // ok stays true (warn does not flip ok).
+  var rvCdata = b.guardSvg.validate('<svg><![CDATA[x]]><circle r="1"/></svg>',
+                                    { profile: "balanced" });
+  check("balanced CDATA → warn severity (audit policy), ok stays true",
+        rvCdata.ok === true &&
+        rvCdata.issues.some(function (i) {
+          return i.kind === "cdata" && i.severity === "warn";
+        }));
+
+  // Under permissive, processingInstrPolicy is "audit" → warn severity.
+  var rvPi = b.guardSvg.validate('<?xml-stylesheet href="x"?><svg/>',
+                                 { profile: "permissive" });
+  check("permissive processing-instruction → warn severity (audit policy)",
+        rvPi.issues.some(function (i) {
+          return i.kind === "processing-instruction" && i.severity === "warn";
+        }));
+}
+
+function testGuardSvgTruncatedTokens() {
+  // Truncated / unterminated markup must not silently smuggle content: the
+  // tokenizer treats each open-without-close as a token running to EOF.
+  var rvCdata = b.guardSvg.validate('<svg><![CDATA[unterminated payload',
+                                    { profile: "strict" });
+  check("unterminated CDATA still flagged (scans to EOF)",
+        rvCdata.issues.some(function (i) { return i.kind === "cdata"; }));
+
+  var rvPi = b.guardSvg.validate('<svg><?xml-stylesheet type="text/css"',
+                                 { profile: "strict" });
+  check("unterminated processing-instruction still flagged",
+        rvPi.issues.some(function (i) { return i.kind === "processing-instruction"; }));
+
+  // Unterminated DOCTYPE with an internal-subset '[' and no closing ']' / '>'
+  // — still detected as a doctype plus its embedded <!ENTITY>.
+  var rvDoc = b.guardSvg.validate('<!DOCTYPE svg [<!ENTITY x "y"',
+                                  { profile: "strict" });
+  check("unterminated DOCTYPE-with-subset still flags doctype + entity",
+        rvDoc.issues.some(function (i) { return i.kind === "doctype"; }) &&
+        rvDoc.issues.some(function (i) { return i.kind === "entity-declaration"; }));
+
+  // Unterminated (no closing '>') start tag for a DANGEROUS element is still
+  // caught — the tokenizer scans to EOF and names the tag.
+  var rvTag = b.guardSvg.validate('<svg><script', { profile: "strict" });
+  check("unterminated <script (no >) still flagged dangerous-tag",
+        rvTag.issues.some(function (i) { return i.kind === "dangerous-tag"; }));
+
+  // Unterminated benign start tag validates clean (no spurious issue) — covers
+  // the raw-without-trailing-'>' reconstruction path.
+  var rvBenign = b.guardSvg.validate('<svg><circle r="1"', { profile: "strict" });
+  check("unterminated benign <circle validates clean", rvBenign.ok === true);
+
+  // Unterminated quoted attribute value (no closing quote, EOF) — parser must
+  // clamp to EOF without crashing.
+  var rvQuote = b.guardSvg.validate('<svg><circle r="unterminated', { profile: "strict" });
+  check("unterminated quoted attr value handled without error",
+        rvQuote && Array.isArray(rvQuote.issues));
+
+  // Unterminated end tag (no '>') is dropped without error.
+  var rvEnd = b.guardSvg.validate('<svg><circle r="1"/></circle', { profile: "strict" });
+  check("unterminated end tag handled without error", rvEnd.ok === true);
+
+  // Unterminated comment (no terminator, runs to EOF) — the hidden text stays
+  // inert (not smuggled as a live element).
+  var rvComment = b.guardSvg.validate('<svg><circle r="1"/><!-- <script>alert(1)',
+                                      { profile: "strict" });
+  check("unterminated comment swallows trailing markup (no dangerous-tag)",
+        !rvComment.issues.some(function (i) { return i.kind === "dangerous-tag"; }));
+
+  // Unterminated DOCTYPE WITHOUT an internal subset '[' and no closing '>' —
+  // still flagged as a doctype.
+  var rvDocPlain = b.guardSvg.validate('<!DOCTYPE svg PUBLIC "id"', { profile: "strict" });
+  check("unterminated bracket-less DOCTYPE still flagged doctype",
+        rvDocPlain.issues.some(function (i) { return i.kind === "doctype"; }));
+
+  // Unterminated generic declaration (no '>') — dropped without error, no
+  // spurious entity flag.
+  var rvDecl = b.guardSvg.validate('<svg><circle r="1"/></svg><!ATTLIST foo',
+                                   { profile: "strict" });
+  check("unterminated <!ATTLIST declaration handled without error",
+        rvDecl && Array.isArray(rvDecl.issues) &&
+        !rvDecl.issues.some(function (i) { return i.kind === "entity-declaration"; }));
+}
+
+function testGuardSvgComment() {
+  // A comment's contents are NOT parsed as markup — a <script> hidden inside a
+  // comment is inert and must be dropped, not tokenized as a live element.
+  var withComment = '<svg><!-- <script>alert(1)</script> --><circle r="1"/></svg>';
+  var rv = b.guardSvg.validate(withComment, { profile: "strict" });
+  check("comment-wrapped <script> not flagged (comment content inert)",
+        rv.ok === true &&
+        !rv.issues.some(function (i) { return i.kind === "dangerous-tag"; }));
+  var san = b.guardSvg.sanitize(withComment, { profile: "strict" });
+  check("sanitize strips the comment entirely (no smuggled script)",
+        san.indexOf("<!--") === -1 && san.indexOf("script") === -1);
+}
+
+function testGuardSvgSanitizeStructural() {
+  // Structural noise (DOCTYPE / declaration / CDATA / PI / comment) is dropped
+  // by sanitize, leaving only the allowlisted element.
+  var noisy = '<!DOCTYPE svg><!ENTITY z "z"><svg><![CDATA[x]]>' +
+              '<?xml-stylesheet href="x"?><!--c--><circle r="1"/></svg>';
+  var san = b.guardSvg.sanitize(noisy, { profile: "strict" });
+  check("sanitize drops doctype/declaration/cdata/pi/comment structural tokens",
+        san.indexOf("DOCTYPE") === -1 && san.indexOf("ENTITY") === -1 &&
+        san.indexOf("CDATA") === -1 && san.indexOf("xml-stylesheet") === -1 &&
+        san.indexOf("<!--") === -1 && /<circle r="1"\/?>/.test(san));
+
+  // Nested same-name dangerous element: the body-drop scan must balance the
+  // inner <script> against the outer so ALL nested content is removed.
+  var nested = '<svg><script>a<script>b</script>c</script><circle r="1"/></svg>';
+  var sanNest = b.guardSvg.sanitize(nested, { profile: "strict" });
+  check("sanitize body-drop balances nested <script> (no leaked payload)",
+        sanNest.indexOf("script") === -1 &&
+        sanNest.indexOf(">a") === -1 && sanNest.indexOf("b<") === -1 &&
+        sanNest.indexOf("c<") === -1);
+
+  // Over-cap attribute value is dropped while its element is kept.
+  var bigAttr = '<svg><circle foo="' + "a".repeat(100) + '" r="1"/></svg>';
+  var sanBig = b.guardSvg.sanitize(bigAttr, { profile: "balanced", maxAttrValueBytes: 20 });
+  check("sanitize drops an over-cap attribute value but keeps the element",
+        sanBig.indexOf("foo") === -1 && /<circle[^>]*r="1"/.test(sanBig));
+
+  // External-ref on <use> under allowExternalRefs:false → href stripped, the
+  // <use> element itself kept.
+  var extUse = '<svg><use xlink:href="icons.svg#x"/></svg>';
+  var sanUse = b.guardSvg.sanitize(extUse, { profile: "balanced", allowExternalRefs: false });
+  check("sanitize strips external <use> href when allowExternalRefs:false",
+        sanUse.indexOf("icons.svg") === -1 && /<use\/?>/.test(sanUse));
+
+  // Single-quoted + unquoted attribute values are parsed and re-emitted
+  // double-quoted (re-serialization normalizes quoting).
+  var mixed = "<svg><rect fill='red' width=10 height=10/></svg>";
+  var sanMixed = b.guardSvg.sanitize(mixed, { profile: "balanced" });
+  check("sanitize normalizes single-quoted + unquoted attrs to double-quoted",
+        sanMixed.indexOf('fill="red"') !== -1 &&
+        sanMixed.indexOf('width="10"') !== -1 &&
+        sanMixed.indexOf('height="10"') !== -1);
+}
+
+function testGuardSvgSvgzSanitizeThrows() {
+  // sanitize refuses gzipped SVGZ bytes — a text sanitizer must never run on
+  // compressed input (operator ungzips + re-sanitizes the inner SVG).
+  var threw = null;
+  try {
+    b.guardSvg.sanitize(Buffer.from([0x1F, 0x8B, 0x08, 0x00, 0x00]), { profile: "strict" });
+  } catch (e) { threw = e; }
+  check("sanitize(SVGZ magic bytes) throws svg.svgz",
+        threw && /SVGZ|ungzip/i.test(threw.message));
+}
+
+function testGuardSvgAttrEdgeCases() {
+  // Empty URL-bearing attribute value → treated as a fragment (no scheme),
+  // never flagged. Exercises the empty-string extraction / fragment paths.
+  var rvEmpty = b.guardSvg.validate('<svg><a xlink:href="">x</a></svg>',
+                                    { profile: "balanced" });
+  check("empty xlink:href value not flagged as a dangerous scheme",
+        !rvEmpty.issues.some(function (i) { return i.kind === "dangerous-url-scheme"; }));
+
+  // Spaced attribute (name = value) — whitespace around the '=' is skipped.
+  var rvSpaced = b.guardSvg.validate('<svg><circle r = "1" /></svg>', { profile: "strict" });
+  check("spaced attribute (name = value) parsed cleanly", rvSpaced.ok === true);
+
+  // Malformed attribute source (leading '=' with no name) must not crash — the
+  // scanner breaks out cleanly.
+  var rvMal = b.guardSvg.validate('<svg><circle  = r="1" /></svg>', { profile: "strict" });
+  check("malformed attribute source (leading =) parsed without error",
+        rvMal && Array.isArray(rvMal.issues));
+
+  // Trailing intra-tag whitespace before '>' exercises the whitespace-run break.
+  var rvWs = b.guardSvg.validate('<svg><circle r="1"   ></circle></svg>', { profile: "strict" });
+  check("trailing intra-tag whitespace parsed cleanly", rvWs.ok === true);
+}
+
+async function testGuardSvgGateDispositions() {
+  // Each disposition class the gate maps, exercised through the real
+  // gate().check() consumer path (verdict.action is the observable contract).
+  var bidi  = String.fromCharCode(0x202E);
+  var gStrict = b.guardSvg.gate({ profile: "strict" });
+  var gBal    = b.guardSvg.gate({ profile: "balanced" });
+  var gPerm   = b.guardSvg.gate({ profile: "permissive" });
+
+  // char-threat (bidi) under permissive (bidiPolicy "audit") → audit-only.
+  var rvBidi = await gPerm.check({
+    bytes: Buffer.from("<svg><title>x" + bidi + "y</title></svg>", "utf8"),
+  });
+  check("gate: permissive bidi (audit policy) → audit-only",
+        rvBidi.action === "audit-only");
+
+  // doctype (reject policy in every profile) → refuse.
+  var rvDoc = await gStrict.check({ bytes: Buffer.from('<!DOCTYPE svg><svg/>', "utf8") });
+  check("gate: doctype → refuse", rvDoc.action === "refuse");
+
+  // cdata under balanced (audit policy) → audit-only.
+  var rvCdata = await gBal.check({ bytes: Buffer.from('<svg><![CDATA[x]]></svg>', "utf8") });
+  check("gate: balanced cdata (audit policy) → audit-only",
+        rvCdata.action === "audit-only");
+
+  // processing-instruction under permissive (audit policy) → audit-only.
+  var rvPi = await gPerm.check({ bytes: Buffer.from('<?xml-stylesheet href="x"?><svg/>', "utf8") });
+  check("gate: permissive processing-instruction (audit policy) → audit-only",
+        rvPi.action === "audit-only");
+
+  // non-allowlisted (benign) tag → sanitize.
+  var rvNal = await gBal.check({ bytes: Buffer.from('<svg><foobar/></svg>', "utf8") });
+  check("gate: non-allowlisted benign tag → sanitize", rvNal.action === "sanitize");
+
+  // tokenize-failed (input over maxBytes) → refuse.
+  var rvTok = await b.guardSvg.gate({ profile: "strict", maxBytes: 10 }).check({
+    bytes: Buffer.from('<svg><circle r="10"/></svg>', "utf8"),
+  });
+  check("gate: tokenize-failed (over maxBytes) → refuse", rvTok.action === "refuse");
+
+  // element-count-cap → refuse.
+  var rvEl = await b.guardSvg.gate({ profile: "strict", maxElementCount: 3 }).check({
+    bytes: Buffer.from("<g></g>".repeat(10), "utf8"),
+  });
+  check("gate: element-count-cap → refuse", rvEl.action === "refuse");
+
+  // attr-count-cap → refuse.
+  var manyAttrs = "<circle";
+  for (var i = 0; i < 10; i += 1) manyAttrs += ' a' + i + '="1"';
+  manyAttrs += "/>";
+  var rvAttrCap = await b.guardSvg.gate({ profile: "balanced", maxAttrsPerTag: 3 }).check({
+    bytes: Buffer.from("<svg>" + manyAttrs + "</svg>", "utf8"),
+  });
+  check("gate: attr-count-cap → refuse", rvAttrCap.action === "refuse");
+
+  // use-depth-cap → refuse.
+  var deep = "";
+  for (var j = 0; j < 10; j += 1) deep += "<use>";
+  var rvUse = await b.guardSvg.gate({ profile: "balanced", maxUseDepth: 3 }).check({
+    bytes: Buffer.from("<svg>" + deep + "</svg>", "utf8"),
+  });
+  check("gate: use-depth-cap → refuse", rvUse.action === "refuse");
+
+  // attr-value-too-large → refuse.
+  var rvBig = await b.guardSvg.gate({ profile: "balanced", maxAttrValueBytes: 10 }).check({
+    bytes: Buffer.from('<svg><circle foo="' + "a".repeat(50) + '"/></svg>', "utf8"),
+  });
+  check("gate: attr-value-too-large → refuse", rvBig.action === "refuse");
+
+  // bad-input (ctx.bytes is neither Buffer nor string) → refuse.
+  var rvBad = await gStrict.check({ bytes: 12345 });
+  check("gate: non-Buffer bytes (bad-input) → refuse", rvBad.action === "refuse");
+}
+
 async function run() {
   testGuardSvgSurface();
   testGuardSvgRegistryParity();
@@ -499,8 +865,21 @@ async function run() {
   testGuardSvgSchemeWhitespaceBypass();
   testGuardSvgCssEntityBypass();
   testGuardSvgSanitizeAnimationPreserved();
+  testGuardSvgBadInput();
+  testGuardSvgShortInput();
+  testGuardSvgImageDataUrl();
+  testGuardSvgNonAllowlistedScheme();
+  testGuardSvgStructuralCaps();
+  testGuardSvgStandaloneEntityDeclaration();
+  testGuardSvgCdataPiAuditSeverity();
+  testGuardSvgTruncatedTokens();
+  testGuardSvgComment();
+  testGuardSvgSanitizeStructural();
+  testGuardSvgSvgzSanitizeThrows();
+  testGuardSvgAttrEdgeCases();
   await testGuardSvgGate();
   await testGuardSvgGateFailOpen();
+  await testGuardSvgGateDispositions();
 }
 
 if (require.main === module) {

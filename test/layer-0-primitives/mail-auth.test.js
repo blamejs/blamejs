@@ -3616,6 +3616,356 @@ async function run() {
   testDmarcAggregateMinimalShape();
   testDmarcAggregateBuildMinimalShape();
   await testInboundVerifyDkimTuningOpts();
+  // Branch-coverage round — verifier error/edge arms driven through the
+  // exported b.mail.* consumer paths (offline via the dnsLookup DI seam +
+  // real node:crypto ARC/DKIM fixtures).
+  await testArcTimeFaultUnparseableArms();
+  await testArcCvFailTerminalChain();
+  await testArcKeyLookupTemperrorArm();
+  await testArcEd25519RoundtripPass();
+  await testArcVerifyBareLfMessageVerifies();
+  await testSpfDnsFaultMessagelessErrors();
+  await testSpfEmptyArgAndBadRedirectMacro();
+  await testDmarcMultiRecordAndNoMatchAreNone();
+  await testIprevRootDotPtrAndBareFaults();
+  await testInboundBareLfMessageProducesVerdict();
+  await testInboundHeadersOnlyProducesVerdict();
+  await testInboundFromEscapeAndInvalidHostname();
+}
+
+// A resolver error object with an empty .message — exercises the
+// `(e && e.message) || String(e)` fallback in every DNS-fault classifier,
+// proving the fault surfaces as a fail-closed verdict even when the error is
+// degenerate (never an uncaught throw).
+function _bareErr(code) { var e = new Error(); e.code = code; return e; }
+
+// ---- ARC: time-fault fail-closed arms (RFC 8617 §5.2) ----
+
+async function testArcTimeFaultUnparseableArms() {
+  // A PRESENT-but-unparseable t=/x= on the AMS or AS must FAIL CLOSED (a time
+  // fault), never silently skip the future/expiry gate. b= is a dummy: the
+  // time-fault check runs BEFORE any signature verify, so a malformed
+  // timestamp sinks the chain on structure alone (no key needed).
+  var synthetic =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=relay.example; s=arc; t=abc; x=abc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=relay.example; s=arc; t=abc; h=from; bh=AAAA; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; relay.example; spf=pass\r\n" +
+    "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(synthetic, { dnsLookup: async function () { return _enotfound(); } });
+  var faultErrs = ((rv.hops[0] || {}).amsErrors || []).concat((rv.hops[0] || {}).asErrors || []).join(" ; ");
+  check("arc.verify: unparseable t=/x= on AMS+AS → chain fails closed (no signature ever checked)",
+        rv.chainStatus === "fail" && /unparseable/.test(faultErrs));
+}
+
+// ---- ARC: cv=fail terminal chain (RFC 8617 §5.2) ----
+
+async function testArcCvFailTerminalChain() {
+  // A chain whose LAST hop seals cv=fail is a terminal failure
+  // ("last-as-cv=fail"): every AMS/AS signature verifies and no hop rule is
+  // violated, yet the sealer itself attested the chain broke — so the
+  // verifier MUST report chainStatus=fail, not pass on the valid signatures.
+  // Unique sealer domain — the DKIM public-key cache (lib/mail-dkim.js) is
+  // process-local + keyed by <selector>._domainkey.<domain>, so a qname reused
+  // across tests would return an earlier test's key.
+  var arcKey = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var arcKeyPem = arcKey.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = arcKey.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var keyDns = _arcKeyDns("arc._domainkey.relay-cvfail.test", [["v=DKIM1; k=rsa; p=" + spkiB64]]);
+  var rfc822 =
+    "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: cvfail\r\n" +
+    "Date: Wed, 06 May 2026 12:00:00 +0000\r\nMessage-ID: <cvf-1@example.com>\r\n\r\nbody body\r\n";
+  var hop1 = b.mail.arc.sign({ rfc822: rfc822, instance: 1, authservId: "relay-cvfail.test",
+    domain: "relay-cvfail.test", selector: "arc", privateKey: arcKeyPem, algorithm: "rsa-sha256",
+    cv: "none", authResults: "spf=pass smtp.mailfrom=alice@example.com",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"] });
+  var hop2 = b.mail.arc.sign({ rfc822: hop1.rfc822, instance: 2, authservId: "relay-cvfail.test",
+    domain: "relay-cvfail.test", selector: "arc", privateKey: arcKeyPem, algorithm: "rsa-sha256",
+    cv: "fail", authResults: "spf=pass smtp.mailfrom=alice@example.com",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"] });
+  var rv = await b.mail.arc.verify(hop2.rfc822, { dnsLookup: keyDns });
+  var allSigsPass = rv.hops.length === 2 &&
+    rv.hops.every(function (h) { return h.amsResult === "pass" && h.asResult === "pass"; });
+  check("arc.verify: cv=fail terminal seal → chainStatus fail even though every signature verifies",
+        rv.chainStatus === "fail" && rv.reason === "last-as-cv=fail" &&
+        rv.cv === "fail" && allSigsPass);
+}
+
+// ---- ARC: transient key-lookup fault → temperror (RFC 8617 §5.1.2) ----
+
+async function testArcKeyLookupTemperrorArm() {
+  // A TRANSIENT key-record DNS fault (SERVFAIL/timeout, not the definitive
+  // ENOTFOUND/ENODATA) is a temperror, not a permerror: permanently refusing
+  // a sealed chain on a resolver blip would drop legitimate mail. Both AMS
+  // (via the DKIM key lookup) and AS surface temperror.
+  // Unique d= so the DKIM key cache can't shadow the transient dnsLookup.
+  var fullHop =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=temperror-rt.test; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=temperror-rt.test; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; temperror-rt.test; spf=pass\r\n" +
+    "From: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody\r\n";
+  var rv = await b.mail.arc.verify(fullHop, { dnsLookup: _transientDns() });
+  check("arc.verify: transient key-lookup fault → temperror (not permerror)",
+        rv.chainStatus === "fail" &&
+        (rv.hops[0] || {}).asResult === "temperror" &&
+        (rv.hops[0] || {}).amsResult === "temperror");
+
+  // A degenerate resolver error with no .message still classifies as a
+  // temperror verdict (String(e) fallback), never an uncaught throw.
+  var bareDns = async function () { throw _bareErr("ESERVFAIL"); };
+  var rv2 = await b.mail.arc.verify(fullHop, { dnsLookup: bareDns });
+  check("arc.verify: message-less transient key error → temperror verdict",
+        (rv2.hops[0] || {}).asResult === "temperror");
+}
+
+// ---- ARC: Ed25519 roundtrip verify (null-digest AS path) ----
+
+async function testArcEd25519RoundtripPass() {
+  // Ed25519 seal: the AS verifies through the node null-digest Ed25519 path
+  // (a=ed25519-sha256 maps to a null hash algorithm). Prior ARC roundtrip
+  // coverage was RSA-only, so the Ed25519 AS verify arm never ran.
+  var edKey = nodeCrypto.generateKeyPairSync("ed25519");
+  var edKeyPem = edKey.privateKey.export({ format: "pem", type: "pkcs8" });
+  var edSpki = edKey.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var edDns = _arcKeyDns("arc._domainkey.relay-ed-rt.test", [["v=DKIM1; k=ed25519; p=" + edSpki]]);
+  var rfc822 =
+    "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: ed\r\n" +
+    "Date: Wed, 06 May 2026 12:00:00 +0000\r\nMessage-ID: <ed-1@example.com>\r\n\r\nbody body\r\n";
+  var hop = b.mail.arc.sign({ rfc822: rfc822, instance: 1, authservId: "relay-ed-rt.test",
+    domain: "relay-ed-rt.test", selector: "arc", privateKey: edKeyPem, algorithm: "ed25519-sha256",
+    cv: "none", authResults: "spf=pass smtp.mailfrom=alice@example.com",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"] });
+  var rv = await b.mail.arc.verify(hop.rfc822, { dnsLookup: edDns });
+  check("arc.verify: Ed25519 single-hop chain → pass (AS verifies via null-digest path)",
+        rv.chainStatus === "pass" && rv.hops[0].asResult === "pass" && rv.hops[0].amsResult === "pass");
+}
+
+// ---- ARC: bare-LF message reaches a chain verdict (not a thrown DkimError) ----
+
+async function testArcVerifyBareLfMessageVerifies() {
+  // arc.verify's own header scan accepts bare-LF, but the AMS step reuses the
+  // DKIM verifier (CRLF-only split) — a bare-LF ARC message threw an uncaught
+  // DkimError out of arc.verify instead of producing a chain result. A chain
+  // signed over CRLF and transported as bare-LF must still verify (the LF→CRLF
+  // normalization restores the sealer's canonical bytes).
+  var arcKey = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var arcKeyPem = arcKey.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = arcKey.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var keyDns = _arcKeyDns("arc._domainkey.relay-arclf.test", [["v=DKIM1; k=rsa; p=" + spkiB64]]);
+  var rfc822 =
+    "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: arclf\r\n" +
+    "Date: Wed, 06 May 2026 12:00:00 +0000\r\nMessage-ID: <arclf-1@example.com>\r\n\r\nbody body\r\n";
+  var hop = b.mail.arc.sign({ rfc822: rfc822, instance: 1, authservId: "relay-arclf.test",
+    domain: "relay-arclf.test", selector: "arc", privateKey: arcKeyPem, algorithm: "rsa-sha256",
+    cv: "none", authResults: "spf=pass smtp.mailfrom=alice@example.com",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"] });
+  var lf = hop.rfc822.replace(/\r\n/g, "\n");
+  var rv = await b.mail.arc.verify(lf, { dnsLookup: keyDns });
+  check("arc.verify: CRLF-signed chain transported as bare-LF → pass (verdict, not a thrown DkimError)",
+        rv.chainStatus === "pass" && rv.hops[0].amsResult === "pass" && rv.hops[0].asResult === "pass");
+}
+
+// ---- SPF: message-less DNS faults still fail closed to temperror ----
+
+async function testSpfDnsFaultMessagelessErrors() {
+  // RFC 7208 §4.6.4 / §5 — every SPF a/mx/exists/include DNS fault that is
+  // not a definitive negative answer is a temperror (fail-closed). A
+  // degenerate resolver that throws an error with no .message must STILL
+  // yield a temperror VERDICT via the String(e) fallback — never an uncaught
+  // throw a pipeline could mis-handle as accept.
+  var aDns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 a -all"]];
+    if (type === "A") throw _bareErr("ESERVFAIL");
+    return _enotfound();
+  };
+  check("spf a: message-less A fault → temperror verdict",
+        (await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: aDns })).result === "temperror");
+
+  var mxDns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") throw _bareErr("ESERVFAIL");
+    return _enotfound();
+  };
+  check("spf mx: message-less MX fault → temperror verdict",
+        (await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxDns })).result === "temperror");
+
+  var mxHostDns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 mx -all"]];
+    if (type === "MX") return [{ exchange: "mx1.s.example", preference: 10 }];
+    if (type === "A") throw _bareErr("ESERVFAIL");
+    return _enotfound();
+  };
+  check("spf mx-host: message-less forward fault → temperror verdict",
+        (await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: mxHostDns })).result === "temperror");
+
+  var existsDns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 exists:p.%{d} -all"]];
+    if (type === "A") throw _bareErr("ESERVFAIL");
+    return _enotfound();
+  };
+  check("spf exists: message-less A fault → temperror verdict",
+        (await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: existsDns })).result === "temperror");
+
+  var incDns = async function (host, type) {
+    if (type === "TXT" && host === "s.example") return [["v=spf1 include:inner.example -all"]];
+    if (type === "TXT" && host === "inner.example") throw _bareErr("ESERVFAIL");
+    return _enotfound();
+  };
+  check("spf include: message-less inner TXT fault → temperror verdict",
+        (await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: incDns })).result === "temperror");
+}
+
+// ---- SPF: empty-arg mechanisms + bad redirect macro ----
+
+async function testSpfEmptyArgAndBadRedirectMacro() {
+  // RFC 7208 §5.2/§5.7 — an `include:` / `exists:` with an empty argument
+  // carries no target; the mechanism is skipped rather than matching, so
+  // evaluation falls through to the trailing `-all` → fail (fail-closed).
+  var emptyArg = _txtOnly({ "s.example": [["v=spf1 include: exists: -all"]] });
+  var rEmpty = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: emptyArg });
+  check("spf: empty-arg include:/exists: are skipped → falls through to -all fail",
+        rEmpty.result === "fail");
+
+  // RFC 7208 §6.1 / §7 — a redirect= target is a macro-string; an invalid
+  // macro-letter in it is a permanent syntax error → permerror.
+  var badRedir = _txtOnly({ "s.example": [["v=spf1 redirect=%{z}"]] });
+  var rRedir = await b.mail.spf.verify({ ip: "192.0.2.5", mailFrom: "a@s.example", dnsLookup: badRedir });
+  check("spf: redirect= with an invalid macro-letter → permerror",
+        rRedir.result === "permerror" && /not a valid macro-letter/.test(rRedir.explanation || ""));
+}
+
+// ---- DMARC: ambiguous / absent record → none (RFC 7489 §6.6.3) ----
+
+async function testDmarcMultiRecordAndNoMatchAreNone() {
+  // When a domain publishes MORE THAN ONE v=DMARC1 record the receiver MUST
+  // treat it as having no DMARC record (the policy is ambiguous).
+  var multi = async function (host, type) {
+    if (type === "TXT" && host === "_dmarc.example.com")
+      return [["v=DMARC1; p=reject"], ["v=DMARC1; p=none"]];
+    return _enotfound();
+  };
+  var rMulti = await b.mail.dmarc.evaluate({ from: "a@example.com",
+    spf: { result: "pass", domain: "example.com" }, dkim: [], dnsLookup: multi });
+  check("dmarc.evaluate: two v=DMARC1 records → none (ambiguous, RFC 7489 §6.6.3)",
+        rMulti.result === "none");
+
+  // TXT present at _dmarc but no record begins with v=DMARC1 → no policy → none.
+  var noV = async function (host, type) {
+    if (type === "TXT" && host === "_dmarc.example.com")
+      return [["some=unrelated txt"], ["v=spf1 nope"]];
+    return _enotfound();
+  };
+  var rNoV = await b.mail.dmarc.evaluate({ from: "a@example.com",
+    spf: { result: "pass", domain: "example.com" }, dkim: [], dnsLookup: noV });
+  check("dmarc.evaluate: _dmarc TXT with no v=DMARC1 record → none",
+        rNoV.result === "none");
+}
+
+// ---- iprev: degenerate PTR + message-less faults (RFC 8601 §3) ----
+
+async function testIprevRootDotPtrAndBareFaults() {
+  // A PTR answer that is only the root label (".") collapses to an empty name
+  // after the trailing-dot strip — RFC 8601 §3 has no usable PTR, so iprev
+  // returns fail (no PTR record), never a crash on the empty name.
+  var rootDot = async function (qname, type) {
+    if (type === "PTR") return ["."];
+    return _enotfound();
+  };
+  var rRoot = await b.mail.iprev.verify("203.0.113.5", { dnsLookup: rootDot });
+  check("iprev.verify: root-only PTR answer → fail (no usable PTR name)",
+        rRoot.result === "fail" && rRoot.ptr === null);
+
+  // Message-less transient reverse fault → temperror verdict (String(e)).
+  var revBare = async function (qname, type) {
+    if (type === "PTR") throw _bareErr("ESERVFAIL");
+    return _enotfound();
+  };
+  check("iprev.verify: message-less reverse fault → temperror verdict",
+        (await b.mail.iprev.verify("203.0.113.5", { dnsLookup: revBare })).result === "temperror");
+
+  // Code-less AND message-less forward fault → temperror verdict (String(e)
+  // fallback in the forward-lookup explanation).
+  var fwdBare = async function (qname, type) {
+    if (type === "PTR") return ["mail.example.com"];
+    if (type === "A") throw new Error("");
+    return _enotfound();
+  };
+  check("iprev.verify: code-less/message-less forward fault → temperror verdict",
+        (await b.mail.iprev.verify("203.0.113.5", { dnsLookup: fwdBare })).result === "temperror");
+}
+
+// ---- inbound.verify: bare-LF + headers-only messages reach a verdict ----
+
+async function testInboundBareLfMessageProducesVerdict() {
+  // inbound.verify documents that bare-LF input is accepted defensively
+  // (operator tooling that lost CRs). The DKIM verifier's header/body split
+  // REQUIRES CRLF CRLF and threw an uncaught DkimError on bare-LF, crashing
+  // the pipeline instead of producing a verdict. A bare-LF message must reach
+  // a verdict.
+  var lfPlain = "From: alice@example.com\nTo: bob@x\nSubject: hi\n\nbody\n";
+  var vPlain = await b.mail.inbound.verify({ ip: "203.0.113.5", message: lfPlain,
+    dnsLookup: async function () { return _enotfound(); } });
+  check("inbound.verify: bare-LF message → verdict, not a thrown DkimError",
+        vPlain.from.domain === "example.com" && Array.isArray(vPlain.dkim) &&
+        vPlain.dmarc.result === "none");
+
+  // Stronger: a message SIGNED over CRLF but transported as bare-LF must
+  // still DKIM-verify (the LF→CRLF normalization restores the signed form),
+  // not merely avoid the throw.
+  var pair = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  // Unique selector — the DKIM key cache is keyed by <selector>._domainkey.<d>.
+  var signer = b.mail.dkim.create({ domain: "example.com", selector: "lfrt", privateKey: pair.privateKey });
+  var signed = signer.sign(
+    "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n" +
+    "Date: Mon, 5 May 2026 10:00:00 +0000\r\nMessage-ID: <lf@example.com>\r\n\r\nHello world.\r\n");
+  var spkiB64 = nodeCrypto.createPublicKey(pair.publicKey)
+    .export({ type: "spki", format: "der" }).toString("base64");
+  var keyDns = async function (qname) {
+    if (qname === "lfrt._domainkey.example.com") return [["v=DKIM1; k=rsa; p=" + spkiB64]];
+    if (qname === "_dmarc.example.com") return [["v=DMARC1; p=reject; adkim=s; aspf=s"]];
+    return _enotfound();
+  };
+  var lfSigned = signed.replace(/\r\n/g, "\n");
+  var vSigned = await b.mail.inbound.verify({ ip: "203.0.113.5", mailFrom: "alice@example.com",
+    message: lfSigned, authservId: "mx.receiver.example", dnsLookup: keyDns });
+  check("inbound.verify: CRLF-signed message transported as bare-LF still DKIM-passes",
+        vSigned.dkim.length === 1 && vSigned.dkim[0].result === "pass" &&
+        vSigned.dmarc.result === "pass");
+}
+
+async function testInboundHeadersOnlyProducesVerdict() {
+  // A headers-only message with no blank-line separator — _splitHeaderBlock
+  // treats it as headers + empty body; the pipeline must produce a verdict
+  // (DKIM none) rather than throwing on the missing CRLF CRLF separator.
+  var headersOnly = "From: alice@example.com\r\nTo: bob@x\r\nSubject: hi";
+  var v = await b.mail.inbound.verify({ ip: "203.0.113.5", message: headersOnly,
+    dnsLookup: async function () { return _enotfound(); } });
+  check("inbound.verify: headers-only message (no separator) → verdict (dkim none)",
+        v.from.domain === "example.com" &&
+        v.dkim.length >= 1 && v.dkim[0].result === "none");
+}
+
+async function testInboundFromEscapeAndInvalidHostname() {
+  var absent = async function () { return _enotfound(); };
+
+  // Quoted-pair (\") inside a display-name is one author, not a break — the
+  // escape walk must consume the escaped quote and keep the angle-addr whole.
+  var escMsg = 'From: "a\\"b" <u@good.example.com>\r\nTo: bob@x\r\nSubject: hi\r\n\r\nbody\r\n';
+  var vEsc = await b.mail.inbound.verify({ ip: "203.0.113.5", message: escMsg, dnsLookup: absent });
+  check("inbound.verify: From with a quoted-pair display-name → single author extracted",
+        vEsc.from.count === 1 && vEsc.from.address === "u@good.example.com" &&
+        vEsc.from.domain === "good.example.com");
+
+  // A single-label From domain (no dot) is not a valid DNS hostname for a
+  // DMARC lookup → domain treated as unparsable → fail-closed permerror.
+  var singleLabel = "From: alice@localhost\r\nTo: bob@x\r\nSubject: hi\r\n\r\nbody\r\n";
+  var vSingle = await b.mail.inbound.verify({ ip: "203.0.113.5", message: singleLabel, dnsLookup: absent });
+  check("inbound.verify: single-label From domain → unparsable → dmarc permerror (reject)",
+        vSingle.from.domain === null && vSingle.dmarc.result === "permerror" &&
+        vSingle.dmarc.recommendedAction === "reject");
 }
 
 module.exports = { run: run };

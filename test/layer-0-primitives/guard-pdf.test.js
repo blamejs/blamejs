@@ -118,6 +118,22 @@ function run() {
   testSanitizeForcesEncryptedReject();
   testSanitizeBadInput();
   testInspectMagic();
+  testValidateNeverThrowsOnArrayLikeBytes();
+}
+
+// ---- validate must never throw on hostile metadata (sibling of the guard-image
+// array-like crash: byteLengthOf was called for any numeric-.length value, but
+// it only accepts string/Buffer/Uint8Array and threw TypeError on a plain Array
+// / array-like bag, crashing a direct validate/sanitize caller). ----
+function testValidateNeverThrowsOnArrayLikeBytes() {
+  check("validate does not throw on Array-typed bytes",
+    _code(function () { b.guardPdf.validate({ bytes: [0x25, 0x50, 0x44, 0x46] }, { profile: "balanced" }); }) === null);
+  check("validate does not throw on array-like-object bytes",
+    _code(function () { b.guardPdf.validate({ bytes: { length: 1e9 } }, { profile: "strict" }); }) === null);
+  // The unrecognized array-like content is still refused (unknown-magic under
+  // strict), not served — never-throw does not mean fail-open.
+  var rv = b.guardPdf.validate({ bytes: [1, 2, 3] }, { profile: "strict" });
+  check("array-like bytes → refused (ok:false), not a crash", rv.ok === false);
 }
 
 module.exports = { run: run };
