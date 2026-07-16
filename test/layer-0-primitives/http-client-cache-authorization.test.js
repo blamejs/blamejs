@@ -125,6 +125,59 @@ async function testAuthOptInDroppedOn304EvictsNotShares() {
   });
 }
 
+// A store that strips `hadAuthorization` from every entry it returns —
+// simulating a persistent shared store (Redis / filesystem) whose records were
+// written by a version before that field existed. Such a legacy entry must be
+// treated as Authorization-bearing (fail closed), not unauthenticated, so the
+// §3.5 gate still applies on its 304 refresh.
+function _legacyStrippingStore() {
+  var inner = b.httpClient.cache.memoryStore({ maxBytes: 1024 * 1024, maxEntries: 64 });
+  return {
+    get: function (k) {
+      var e = inner.get(k);
+      if (e && typeof e === "object" && !e.__varyMarker) {
+        var copy = Object.assign({}, e);
+        delete copy.hadAuthorization;
+        return copy;
+      }
+      return e;
+    },
+    set:    function (k, v) { return inner.set(k, v); },
+    delete: function (k)    { return inner.delete(k); },
+    clear:  function ()     { return inner.clear(); },
+  };
+}
+
+// A legacy entry (no hadAuthorization metadata) must fail closed on a 304 that
+// drops the opt-in: the refresh cannot assume it was unauthenticated, so it
+// re-applies the §3.5 gate and evicts rather than leaving a previously-stored
+// authenticated response shareable across the version upgrade.
+async function testLegacyEntryWithoutAuthFlagFailsClosedOn304() {
+  var hits = { n: 0 };
+  await _withServer(_optInThenDropOn304Handler(hits), async function (baseUrl) {
+    var cache = b.httpClient.cache.create({ store: _legacyStrippingStore(), sharedCache: true });
+    await b.httpClient.request({
+      url: baseUrl + "/legacy", cache: cache,
+      headers: { Authorization: "Bearer USER-AAA" },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    await b.httpClient.request({
+      url: baseUrl + "/legacy", cache: cache,
+      headers: { Authorization: "Bearer USER-AAA" },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    var r3 = await b.httpClient.request({
+      url: baseUrl + "/legacy", cache: cache,
+      headers: { Authorization: "Bearer USER-BBB" },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("legacy-entry: a pre-field entry fails closed — BBB does NOT receive AAA's body",
+          r3.body.toString("utf8") !== "secret-for:Bearer USER-AAA");
+    check("legacy-entry: BBB receives its own response",
+          r3.body.toString("utf8") === "secret-for:Bearer USER-BBB");
+  });
+}
+
 // ---- The leak: shared cache must not cross Authorization principals ----
 
 async function testAuthNotSharedAcrossUsersSharedCache() {
@@ -235,6 +288,7 @@ async function run() {
   try {
     await testAuthNotSharedAcrossUsersSharedCache();
     await testAuthOptInDroppedOn304EvictsNotShares();
+    await testLegacyEntryWithoutAuthFlagFailsClosedOn304();
     await testPublicPermitsSharedAuthReuse();
     await testSmaxagePermitsSharedAuthReuse();
     await testPrivateCacheCachesAuthedResponse();
