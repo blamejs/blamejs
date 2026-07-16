@@ -1027,6 +1027,39 @@ async function testDkimSimpleCanonRoundTrips() {
   }
 }
 
+async function testDkimSimpleCanonHonorsWireFieldName() {
+  // Simple header canon is verbatim, INCLUDING the DKIM-Signature field-name
+  // casing exactly as it appears on the wire — the verifier must canonicalize
+  // with the parsed field name, not a hardcoded "DKIM-Signature". So a peer that
+  // signs and sends `dkim-signature:` (lowercase) verifies, and a message whose
+  // field name was altered after signing no longer matches. Proven here by
+  // altering the on-wire casing after signing: the signature was computed over
+  // "DKIM-Signature", so the lowercased wire must NOT verify. (Before the fix
+  // the verifier ignored the on-wire name and this passed spuriously.)
+  var kp = _rsaKeypair();
+  b.mail.dkim._resetDkimKeyCacheForTest();
+  var signer = b.mail.dkim.create({
+    domain: "wirename.example", selector: "wn",
+    privateKey: kp.privateKey, canonicalization: "simple/simple",
+  });
+  var msg =
+    "From: alice@wirename.example\r\nTo: bob@example.org\r\n" +
+    "Subject: Wire name\r\nDate: Mon, 5 May 2026 12:00:00 +0000\r\n" +
+    "Message-ID: <wn@example.com>\r\n\r\nBody.\r\n";
+  var signed = signer.sign(msg);
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
+  var rvUpper = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("simple-canon verify: canonical DKIM-Signature casing verifies",
+        rvUpper[0] && rvUpper[0].result === "pass");
+  // Alter ONLY the field-name casing on the wire (the signed bytes used
+  // "DKIM-Signature"), leaving everything else intact.
+  var loweredWire = signed.replace(/^DKIM-Signature:/, "dkim-signature:");
+  var rvLower = await b.mail.dkim.verify(loweredWire, { dnsLookup: dnsLookup });
+  check("simple-canon verify: honors the on-wire field-name casing (altered name does not verify)",
+        rvLower[0] && rvLower[0].result === "fail");
+}
+
 // ---- verify(): input + option-default guards ----
 
 async function testDkimVerifyBadInputAndOptions() {
@@ -1456,6 +1489,7 @@ async function run() {
   await testDkimEd25519VerifyRoundTrip();
   testDkimSimpleCanonDirect();
   await testDkimSimpleCanonRoundTrips();
+  await testDkimSimpleCanonHonorsWireFieldName();
   await testDkimVerifyBadInputAndOptions();
   await testDkimVerifyNoSignatureHeaders();
   await testDkimVerifyBadVersion();
