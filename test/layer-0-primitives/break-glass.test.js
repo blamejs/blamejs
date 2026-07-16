@@ -453,6 +453,55 @@ async function testGrantExhaustion() {
   }
 }
 
+// ---- Concurrent unsealRow — a 1-row grant must not double-claim ----
+
+async function testConcurrentUnsealRowDoubleClaim() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    // Two distinct rows in the glass-locked table.
+    var j1 = await b.queue.enqueue("bg-dc-q", { secret: "row-one-secret" });
+    var j2 = await b.queue.enqueue("bg-dc-q", { secret: "row-two-secret" });
+
+    await b.breakGlass.policy.set("_blamejs_jobs", {
+      columns:         ["payload"],
+      factors:         ["totp"],
+      maxRowsPerGrant: 1,   // row-by-row auth: ONE PHI read per grant
+    });
+    var totp = _validTotp();
+    var grant = await b.breakGlass.grant({
+      req:    _fakeReq(),
+      table:  "_blamejs_jobs",
+      reason: "concurrent double-claim regression on a 1-row grant",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+
+    // Two concurrent redemptions of the SAME 1-row grant against DIFFERENT
+    // rows. The claim is an atomic compare-and-increment; exactly ONE caller
+    // may win the single row slot. The loser must be refused as exhausted —
+    // inferring the claim from a re-read of rowsConsumed (a concurrent
+    // winner's increment is visible to the loser) let BOTH pass, unsealing two
+    // rows under a maxRowsPerGrant:1 grant and defeating row-by-row auth.
+    var results = await Promise.allSettled([
+      b.breakGlass.unsealRow(grant, "_blamejs_jobs", j1.jobId, { req: _fakeReq() }),
+      b.breakGlass.unsealRow(grant, "_blamejs_jobs", j2.jobId, { req: _fakeReq() }),
+    ]);
+    var ok  = results.filter(function (r) { return r.status === "fulfilled"; });
+    var bad = results.filter(function (r) { return r.status === "rejected"; });
+    check("concurrent unsealRow: exactly one row unsealed under a 1-row grant",
+          ok.length === 1);
+    check("concurrent unsealRow: the losing read is refused as exhausted",
+          bad.length === 1 &&
+          /breakglass\/grant-exhausted/.test((bad[0].reason && bad[0].reason.code) || ""));
+
+    try { await b.queue.shutdown({ timeoutMs: 200 }); } catch (_e) {}
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- Revoke ----
 
 async function testGrantRevoke() {
@@ -1805,6 +1854,7 @@ async function run() {
   await testConcurrentTotpGrantReplay();
   await testUnsealRowLifecycle();
   await testGrantExhaustion();
+  await testConcurrentUnsealRowDoubleClaim();
   await testGrantRevoke();
   await testTableMismatch();
   await testSweepExpiredGrants();

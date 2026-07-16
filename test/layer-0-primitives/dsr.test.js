@@ -1757,6 +1757,93 @@ async function testMemoryStoreListBySubjectId() {
         byId.length === 1 && byId[0].id === "S1");
 }
 
+// A subject filter that carries none of the store's indexable keys (email /
+// subjectId) — a phone-only subject, an empty subject, or one keyed only on
+// an alias — must match NOTHING, never every ticket. Fail-open here makes
+// listBySubject leak every subject's tickets (GDPR Art. 15 cross-subject
+// disclosure) and lets the erasure-completion purge delete them
+// (cross-subject destruction). Both ticket stores must fail closed.
+async function testMemoryStoreSubjectFilterFailClosed() {
+  var store = b.dsr.memoryTicketStore();
+  await store.insert({ id: "P1", subject: { phone: "+15550000001" }, status: "pending" });
+  await store.insert({ id: "P2", subject: { phone: "+15550000002" }, status: "pending" });
+
+  var phoneOnly = await store.list({ subject: { phone: "+15550000001" } });
+  check("memoryStore.list: phone-only subject filter matches nothing (fail-closed)",
+        phoneOnly.length === 0);
+
+  var emptySubj = await store.list({ subject: {} });
+  check("memoryStore.list: empty subject filter matches nothing (fail-closed)",
+        emptySubj.length === 0);
+
+  // Regression guard: an indexable key still matches, and the AND across
+  // both keys still holds.
+  await store.insert({ id: "P3", subject: { subjectId: "u-9", email: "e9@x.com" }, status: "pending" });
+  var byId = await store.list({ subject: { subjectId: "u-9" } });
+  check("memoryStore.list: indexable subjectId still matches after fail-closed guard",
+        byId.length === 1 && byId[0].id === "P3");
+}
+
+async function testMemoryStoreErasurePurgeScopedToSubject() {
+  // Two DIFFERENT phone-only subjects. Subject A's erasure-completion purge
+  // lists the store by A's subject and deletes the "other" tickets it finds.
+  // Because a phone-only subject is unindexable, the fail-open list returned
+  // EVERY ticket — so the purge wiped Subject B's data. B's ticket must
+  // survive A's erasure.
+  var store = b.dsr.memoryTicketStore();
+  var dsr = b.dsr.create({
+    ticketStore: store,
+    posture: "ccpa",
+    identityResolver: async function (input) { return { phone: input.phone }; },
+    sources: [{
+      name:  "users",
+      query: async function () { return []; },
+      erase: async function () { return { deletedIds: [] }; },
+    }],
+  });
+  var tB = await dsr.submit({ type: "access", subject: { phone: "+15550000002" } });
+  var tAerase = await dsr.submit({
+    type: "erasure", subject: { phone: "+15550000001" }, verificationLevel: "secondary",
+  });
+  await dsr.process(tAerase.id, { actor: "compliance@", verificationLevel: "secondary" });
+  var bStill = await store.get(tB.id);
+  check("dsr erasure purge: subject B's ticket survives subject A's erasure (no cross-subject delete)",
+        bStill !== null);
+}
+
+async function testDbStoreSubjectFilterFailClosed() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    var store = b.dsr.dbTicketStore({ db: b.db });
+    var now = Date.now();
+    await store.insert({ id: "DB-P1", type: "access", status: "pending",
+      subject: { phone: "+15550000001" }, submittedAt: now, deadlineAt: now + 1000,
+      retentionUntil: now + 1000 });
+    await store.insert({ id: "DB-P2", type: "access", status: "pending",
+      subject: { phone: "+15550000002" }, submittedAt: now, deadlineAt: now + 1000,
+      retentionUntil: now + 1000 });
+
+    var phoneOnly = await store.list({ subject: { phone: "+15550000001" } });
+    check("dbStore.list: phone-only subject filter matches nothing (fail-closed)",
+          phoneOnly.length === 0);
+
+    var emptySubj = await store.list({ subject: {} });
+    check("dbStore.list: empty subject filter matches nothing (fail-closed)",
+          emptySubj.length === 0);
+
+    // Regression guard: an indexable subject still round-trips.
+    await store.insert({ id: "DB-U1", type: "access", status: "pending",
+      subject: { subjectId: "u-9", email: "e9@x.com" }, submittedAt: now,
+      deadlineAt: now + 1000, retentionUntil: now + 1000 });
+    var byEmail = await store.list({ subject: { email: "e9@x.com" } });
+    check("dbStore.list: indexable email still matches after fail-closed guard",
+          byEmail.length === 1 && byEmail[0].id === "DB-U1");
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 function testDbStoreNoArgs() {
   // dbTicketStore() with no opts → opts || {} → requireMethods refuses the
   // absent db handle.
@@ -1905,6 +1992,9 @@ async function run() {
   await testReceiptSignerPartialResult();
   await testPortabilityCancelled();
   await testMemoryStoreListBySubjectId();
+  await testMemoryStoreSubjectFilterFailClosed();
+  await testMemoryStoreErasurePurgeScopedToSubject();
+  await testDbStoreSubjectFilterFailClosed();
   testDbStoreNoArgs();
   await testResealNoArgsAndNonSealedRows();
 
