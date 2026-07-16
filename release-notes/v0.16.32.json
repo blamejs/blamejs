@@ -1,0 +1,36 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.32",
+  "date": "2026-07-15",
+  "headline": "The vendored Public Suffix List is refreshed to the current upstream snapshot, and vendor-update.sh gains the --refresh-data mode its file headers and verifier messages have always pointed at",
+  "summary": "The vendored Mozilla Public Suffix List is updated to the latest upstream build, so organizational-domain derivation for DMARC alignment, BIMI issuer scoping, cookie-scope confinement, and same-site policy reflects the current registry delegations; the data module is regenerated and re-signed (SHA-256 + SHA3-512 + SLH-DSA), the manifest hashes refreshed, and the NOTICE attribution date updated. The refresh itself now runs through scripts/vendor-update.sh --refresh-data — the maintenance command that every vendored data file's header and lib/vendor-data.js's tamper-error messages reference — which fetches the upstream where one exists, sanity-checks the body before anything reaches the signer, re-appends the in-payload integrity canary, regenerates and re-signs the .data.js carrier, updates the manifest and NOTICE dates, and verifies all four integrity layers. A codebase-patterns gate now refuses any script flag referenced from error messages, file headers, or operator docs that the target script does not implement.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "scripts/vendor-update.sh --refresh-data — fetch, canary, re-sign, and verify the vendored data files in one command",
+          "body": "The mode that vendored data-file headers and lib/vendor-data.js tamper-error messages direct operators to now exists. `vendor-update.sh --refresh-data [entry]` refreshes the Public Suffix List and the SecLists common-password corpus from their upstreams (refusing a truncated or error body before it can reach the signer), re-appends each file's in-payload integrity canary, regenerates and re-signs the .data.js carrier with the operator-local SLH-DSA key whenever the raw file changed OR the carrier fails four-layer verification (so a corrupted signature block or a stripped provenance header is repairable through the documented path), updates the MANIFEST bundledAt and NOTICE attribution dates, refreshes the manifest hashes, and finishes by running the four-layer verifier (SHA-256 + SHA3-512 + SLH-DSA signature + canary) over every vendored data file. The operator-managed BIMI trust-anchor bundle is never fetched — it is re-signed only when the local .pem was edited per its file-header procedure. A Public Suffix List fetch whose VERSION timestamp is older than the vendored one is refused rather than signed (the list is CDN-served, and a lagging edge can return an older snapshot than the one already vendored). Entries whose upstream is unchanged are left byte-identical, so a no-op refresh produces a clean working tree; in-flight downloads live in gitignored *.refresh-tmp files that are removed on exit."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored Public Suffix List refreshed to the current upstream snapshot",
+          "body": "The vendored Mozilla Public Suffix List is updated to the latest upstream build (2026-07-15), so organizational-domain derivation for DMARC alignment, BIMI issuer scoping, cookie-scope confinement, and same-site policy reflects the current registry delegations. The data module is regenerated and re-signed (SHA-256 + SHA3-512 + SLH-DSA), the manifest hashes refreshed, and the NOTICE attribution date updated."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Script flags referenced from error messages, file headers, and operator docs must exist in the target script",
+          "body": "A codebase-patterns gate resolves every `<script>.sh --flag` / `<script>.js --flag` reference in lib/, scripts/, and the operator docs against the scripts/ directory and refuses any flag with no whole-token occurrence outside comment lines in the target script — a usage-header comment alone does not count as an implementation. A maintenance command recommended by a verification-failure message or a stale-data gate must work when the operator reaches for it."
+        }
+      ]
+    }
+  ]
+}

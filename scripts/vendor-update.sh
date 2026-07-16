@@ -6,6 +6,10 @@
 #   ./scripts/vendor-update.sh --check                # show outdated vendored packages
 #   ./scripts/vendor-update.sh --diff <package>       # show vendored vs latest + changelog url
 #   ./scripts/vendor-update.sh --diff-all             # diff every outdated package
+#   ./scripts/vendor-update.sh --refresh-data [entry] # refresh + re-sign vendored data files
+#                                                     # (publicsuffix-list, SecLists-common-
+#                                                     # passwords-top-10000, bimi-trust-anchors;
+#                                                     # default: all)
 #
 # What it does:
 #   1. installs the package(s) temporarily via npm
@@ -113,6 +117,250 @@ if [ "${1:-}" = "--diff-all" ]; then
     fi
   done
   [ "$any" = false ] && echo "All vendored packages are up to date."
+  exit 0
+fi
+
+# ---- refresh-data mode ----
+#
+# Vendored DATA files (not code bundles): fetch the upstream where one
+# exists, re-append the in-payload integrity canary, and regenerate +
+# re-sign the .data.js carrier via scripts/vendor-data-gen.js whenever
+# the raw file changed. bimi-trust-anchors is operator-managed (no
+# upstream to fetch) — it is re-signed only when the local .pem was
+# edited per its file-header procedure. Runs of the CI vendor-currency
+# gate that report the publicsuffix-list entry as stale are resolved by
+# this mode. Requires the operator-local SLH-DSA signing key
+# (.keys/vendor-data-private.pem; see scripts/vendor-data-keygen.js).
+
+DATA_SIGNING_KEY=".keys/vendor-data-private.pem"
+REFRESH_DATA_ANY_REGEN=false
+
+fetch_upstream_raw() {
+  # $1 url, $2 dest tmp path, $3.. fixed strings that must all appear
+  # in the body (sanity gate — a truncated or error body must never
+  # reach the signer).
+  #
+  # NOTE for this function and everything refresh_data_entry calls:
+  # the entry functions run as `refresh_data_entry ... || exit 1`, and
+  # bash suspends errexit inside a function invoked under || — every
+  # state-changing command here must carry its own explicit failure
+  # handling; none may rely on `set -e`.
+  local url="$1" tmp="$2"
+  shift 2
+  if ! curl -fsSL --connect-timeout 30 --max-time 300 "$url" -o "$tmp"; then
+    echo "ERROR: fetch failed: $url"
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ ! -s "$tmp" ]; then
+    echo "ERROR: fetched $url is empty — refusing to sign it"
+    rm -f "$tmp"
+    return 1
+  fi
+  local needle
+  for needle in "$@"; do
+    if ! grep -qF -- "$needle" "$tmp"; then
+      echo "ERROR: fetched $url failed the sanity check (missing '$needle') — refusing to sign it"
+      rm -f "$tmp"
+      return 1
+    fi
+  done
+  return 0
+}
+
+regen_data_module_if_changed() {
+  # $1 manifest key, $2 raw file, $3 .data.js carrier, $4 generator
+  # --name, $5 --source-url, $6 --license, $7 --canary ("" = none),
+  # $8 NOTICE component match string ("" = no dated NOTICE stamp)
+  #
+  # Regenerates when the raw payload no longer matches the carrier's
+  # recorded SHA-256 OR when the carrier itself fails four-layer
+  # verification (a payload-identical carrier with a corrupted
+  # signature block, a stripped header, or a signature from a rotated
+  # key must be re-signable through this documented path, not by
+  # reverse-engineering a manual generator invocation).
+  local key="$1" raw="$2" datajs="$3" name="$4" srcurl="$5" license="$6" canary="$7" noticekey="$8"
+  local rawsha datasha carrier_ok
+  rawsha=$(node -e "var c=require('node:crypto'),f=require('node:fs');console.log(c.createHash('sha256').update(f.readFileSync(process.argv[1])).digest('hex'))" "$raw" 2>/dev/null) || rawsha=""
+  if [ -z "$rawsha" ]; then
+    echo "ERROR: cannot hash $raw — file missing or unreadable"
+    return 1
+  fi
+  # Empty datasha (carrier missing, or its provenance header stripped)
+  # is a regeneration trigger, never a match.
+  datasha=$(node -e "var f=require('node:fs');var m=f.readFileSync(process.argv[1],'utf8').match(/^\/\/ SHA-256:\s+([0-9a-f]{64})/m);console.log(m?m[1]:'')" "$datajs" 2>/dev/null) || datasha=""
+  carrier_ok=$(BLAMEJS_VENDOR_DATA_DEFER_BOOT_VERIFY=1 \
+    BLAMEJS_VENDOR_DATA_DEFER_BOOT_VERIFY_REASON="vendor-update:per-entry-refresh-probe" \
+    node -e "try { require('./lib/vendor-data.js').get(process.argv[1]); console.log('ok'); } catch (e) { console.log('bad'); }" "$name" 2>/dev/null) || carrier_ok="bad"
+  if [ -n "$datasha" ] && [ "$rawsha" = "$datasha" ] && [ "$carrier_ok" = "ok" ]; then
+    echo "  $name: carrier verified and matches the raw file — nothing to re-sign"
+    return 0
+  fi
+  if [ -n "$datasha" ] && [ "$rawsha" = "$datasha" ]; then
+    echo "  $name: carrier fails verification — regenerating + re-signing"
+  else
+    echo "  $name: raw file changed — regenerating + re-signing the carrier"
+  fi
+  local gen_args=(--src "$raw" --dst "$datajs" --name "$name" --source-url "$srcurl" --license "$license" --signing-key "$DATA_SIGNING_KEY")
+  if [ -n "$canary" ]; then gen_args+=(--canary "$canary"); fi
+  node scripts/vendor-data-gen.js "${gen_args[@]}" || return 1
+  node -e "
+var fs = require('fs');
+var m = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
+var key = process.argv[1];
+if (m.packages[key]) {
+  m.packages[key].bundledAt = process.argv[2] + 'T00:00:00Z';
+  fs.writeFileSync('$MANIFEST', JSON.stringify(m, null, 2) + '\n');
+  console.log('  MANIFEST.json: ' + key + ' bundledAt -> ' + process.argv[2]);
+}
+" "$key" "$DATE" || { echo "ERROR: MANIFEST.json bundledAt update failed for $key"; return 1; }
+  if [ -n "$noticekey" ]; then
+    node -e "
+var fs = require('fs');
+var sep = Array(81).join('-');
+var noticeKey = process.argv[1];
+var date = process.argv[2];
+var blocks = fs.readFileSync('NOTICE', 'utf8').split(sep);
+var touched = false;
+for (var i = 0; i < blocks.length; i++) {
+  if (blocks[i].indexOf('Component:') === -1 || blocks[i].indexOf(noticeKey) === -1) continue;
+  var next = blocks[i].replace(/\(bundled \d{4}-\d{2}-\d{2}\)/, '(bundled ' + date + ')');
+  if (next !== blocks[i]) { blocks[i] = next; touched = true; }
+}
+if (touched) {
+  fs.writeFileSync('NOTICE', blocks.join(sep));
+  console.log('  NOTICE: ' + noticeKey + ' bundled date -> ' + date);
+}
+" "$noticekey" "$DATE" || { echo "ERROR: NOTICE date update failed for $noticekey"; return 1; }
+  fi
+  REFRESH_DATA_ANY_REGEN=true
+  return 0
+}
+
+refresh_data_entry() {
+  local key="$1" tmp
+  case "$key" in
+    publicsuffix-list)
+      tmp="lib/vendor/public-suffix-list.dat.refresh-tmp"
+      fetch_upstream_raw "https://publicsuffix.org/list/public_suffix_list.dat" "$tmp" \
+        "===END PRIVATE DOMAINS===" "// VERSION:" "// COMMIT:" || return 1
+      { printf '\n// ===BEGIN blamejs canary===\n'
+        printf '// Honeytoken — vendor-data integrity defense (lib/vendor-data.js).\n'
+        printf '_blamejs_canary_v0_9_8_.local\n'
+        printf '// ===END blamejs canary===\n'; } >> "$tmp"
+      # Directional freshness guard: the list is CDN-served and an edge
+      # can return an OLDER cached copy than the snapshot already
+      # vendored (publication reaches edges at different times). The
+      # VERSION header is a sortable UTC timestamp — never replace the
+      # local file with a fetch whose VERSION is older than the local
+      # one; a genuinely newer local copy is what the CI currency gate
+      # already treats as current.
+      local fetchv localv
+      fetchv=$(grep -m1 '^// VERSION:' "$tmp" | awk '{print $3}') || fetchv=""
+      localv=$(grep -m1 '^// VERSION:' "lib/vendor/public-suffix-list.dat" 2>/dev/null | awk '{print $3}') || localv=""
+      if [ -n "$fetchv" ] && [ -n "$localv" ] && [[ "$fetchv" < "$localv" ]]; then
+        echo "  public-suffix-list: fetched copy ($fetchv) is older than the vendored one ($localv) — lagging CDN edge; keeping the local file"
+        rm -f "$tmp"
+      elif cmp -s "$tmp" "lib/vendor/public-suffix-list.dat"; then
+        echo "  public-suffix-list: upstream unchanged"
+        rm -f "$tmp"
+      else
+        mv "$tmp" "lib/vendor/public-suffix-list.dat" || { echo "ERROR: could not replace lib/vendor/public-suffix-list.dat"; return 1; }
+        echo "  public-suffix-list: raw file refreshed from upstream"
+      fi
+      regen_data_module_if_changed "publicsuffix-list" \
+        "lib/vendor/public-suffix-list.dat" \
+        "lib/vendor/public-suffix-list.data.js" \
+        "public-suffix-list" \
+        "https://publicsuffix.org/list/public_suffix_list.dat" \
+        "MPL-2.0 (Mozilla Public Suffix List)" \
+        "_blamejs_canary_v0_9_8_.local" \
+        "publicsuffix-list"
+      ;;
+    SecLists-common-passwords-top-10000)
+      tmp="lib/vendor/common-passwords-top-10000.txt.refresh-tmp"
+      fetch_upstream_raw "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt" "$tmp" \
+        "password" || return 1
+      if [ "$(grep -c . "$tmp")" -lt 9000 ]; then
+        echo "ERROR: fetched password list has fewer than 9000 lines — refusing to sign it"
+        rm -f "$tmp"
+        return 1
+      fi
+      printf '\n_blamejs_canary_password_2026_05_13_blamejs_internal_\n' >> "$tmp"
+      if cmp -s "$tmp" "lib/vendor/common-passwords-top-10000.txt"; then
+        echo "  common-passwords-top-10000: upstream unchanged"
+        rm -f "$tmp"
+      else
+        mv "$tmp" "lib/vendor/common-passwords-top-10000.txt" || { echo "ERROR: could not replace lib/vendor/common-passwords-top-10000.txt"; return 1; }
+        echo "  common-passwords-top-10000: raw file refreshed from upstream"
+      fi
+      regen_data_module_if_changed "SecLists-common-passwords-top-10000" \
+        "lib/vendor/common-passwords-top-10000.txt" \
+        "lib/vendor/common-passwords-top-10000.data.js" \
+        "common-passwords-top-10000" \
+        "https://github.com/danielmiessler/SecLists/blob/master/Passwords/Common-Credentials/10k-most-common.txt" \
+        "CC-BY-3.0 (SecLists / Daniel Miessler)" \
+        "_blamejs_canary_password_2026_05_13_blamejs_internal_" \
+        "SecLists"
+      ;;
+    bimi-trust-anchors)
+      # Operator-managed — never fetched. Re-signs only when the local
+      # .pem was edited per the refresh procedure in its file header.
+      regen_data_module_if_changed "bimi-trust-anchors" \
+        "lib/vendor/bimi-trust-anchors.pem" \
+        "lib/vendor/bimi-trust-anchors.data.js" \
+        "bimi-trust-anchors" \
+        "https://bimigroup.org/resources/vmc-trust-anchors.pem" \
+        "Public domain (BIMI Group VMC trust anchors)" \
+        "" \
+        ""
+      ;;
+    *)
+      echo "ERROR: unknown data entry: $key"
+      echo "       valid: publicsuffix-list, SecLists-common-passwords-top-10000, bimi-trust-anchors"
+      return 1
+      ;;
+  esac
+}
+
+if [ "${1:-}" = "--refresh-data" ]; then
+  if [ ! -f "$DATA_SIGNING_KEY" ]; then
+    echo "ERROR: $DATA_SIGNING_KEY not found — the vendored-data SLH-DSA signing"
+    echo "       key is operator-local. Generate a keypair with"
+    echo "       scripts/vendor-data-keygen.js (shipping a new PUBLIC key is a"
+    echo "       lib/vendor-data.js change and a breaking data-integrity event)."
+    exit 1
+  fi
+  # A Ctrl-C'd or failed fetch must not leave a partial download inside
+  # the shipped lib/vendor/ tree (the printed next step is `git add
+  # lib/vendor/`). Belt: this trap. Braces: *.refresh-tmp is gitignored.
+  trap 'rm -f lib/vendor/*.refresh-tmp' EXIT
+  echo "=== Refreshing vendored data files ==="
+  if [ -n "${2:-}" ]; then
+    refresh_data_entry "$2" || exit 1
+  else
+    refresh_data_entry "publicsuffix-list" || exit 1
+    refresh_data_entry "SecLists-common-passwords-top-10000" || exit 1
+    refresh_data_entry "bimi-trust-anchors" || exit 1
+  fi
+  if [ "$REFRESH_DATA_ANY_REGEN" = true ]; then
+    echo ""
+    echo "=== Refreshing MANIFEST.json sha256 hashes ==="
+    node scripts/refresh-vendor-manifest.js || { echo "Manifest hash refresh failed."; exit 1; }
+  fi
+  echo ""
+  echo "=== Verifying vendored data (dual-hash + SLH-DSA + canary) ==="
+  node -e "require('./lib/vendor-data.js').verifyAll(); console.log('  vendor-data verifyAll: OK');" || exit 1
+  if [ "$REFRESH_DATA_ANY_REGEN" = true ]; then
+    echo ""
+    echo "Next steps:"
+    echo "  1. node scripts/check-vendor-currency.js"
+    echo "  2. node test/smoke.js"
+    echo "  3. git add lib/vendor/ lib/vendor/MANIFEST.json NOTICE && git commit"
+  else
+    echo ""
+    echo "Nothing changed — every vendored data file already matches upstream."
+  fi
   exit 0
 fi
 
