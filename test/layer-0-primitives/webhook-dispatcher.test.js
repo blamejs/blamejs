@@ -146,6 +146,7 @@ async function _runAll() {
   await testTransientFailureBacksOff();
   await testThrownTransportErrorBacksOff();
   await testTransientDnsRevalidationRetries();
+  await testPermanentDnsRevalidationDeadLetters();
   await testDeliveryTimeSsrfRebindDeadLetters();
   await testMysqlSchemaNoPartialIndex();
   await testInlineDeliveryNotDoubleClaimed();
@@ -329,6 +330,32 @@ async function testTransientDnsRevalidationRetries() {
   var rows = await wd.deliveries.list({ endpointId: "td" });
   check("transient DNS delivery stays pending for retry", rows.length === 1 && rows[0].status === "pending");
   check("transient DNS resolver error recorded", /EAI_AGAIN/.test(rows[0].lastError || ""));
+}
+
+async function testPermanentDnsRevalidationDeadLetters() {
+  // A PERMANENT resolver failure at the SSRF re-check — a host with no
+  // addresses / a removed DNS record — carries the framework DnsError verdict
+  // err.permanent === true. It must dead-letter immediately, NOT burn every
+  // retry attempt on a name that will never resolve. (Distinct from a transient
+  // DNS blip, which retries.)
+  var xdb = _sqliteExternalDb();
+  var HOST_URL = "https://gone.example.test/hooks";
+  var calls = 0;
+  var dnsLookup = function (host) {
+    calls += 1;
+    if (calls === 1) return Promise.resolve([{ address: "93.184.216.34", family: 4 }]); // register: public
+    var e = new Error("dns lookup of '" + host + "' returned no addresses");             // deliver: permanent
+    e.code = "dns/no-result"; e.permanent = true;
+    return Promise.reject(e);
+  };
+  var wd = _newDispatcher(xdb, _stubTransport(), { dnsLookup: dnsLookup });
+  await wd.declareSchema();
+  await wd.registerEndpoint({ endpointId: "gone", url: HOST_URL, eventTypes: ["e"], secret: "s" });
+  var res = await wd.dispatch("e", { n: 1 });
+  check("permanent DNS failure not delivered", res.delivered === 0 && res.failed === 1);
+  check("permanent DNS failure is dead-lettered (not retried)", res.deliveries[0].dead === true);
+  var rows = await wd.deliveries.list({ endpointId: "gone" });
+  check("permanent DNS delivery status is dead", rows.length === 1 && rows[0].status === "dead");
 }
 
 async function testDeliveryTimeSsrfRebindDeadLetters() {
