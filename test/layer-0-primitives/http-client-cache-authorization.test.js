@@ -58,6 +58,73 @@ function _echoAuthHandler(cacheControl, hitsRef) {
   };
 }
 
+// A handler whose FIRST 200 carries the `must-revalidate` §3.5 opt-in (with
+// max-age=0 so the entry is immediately stale), then answers the conditional
+// revalidation with a 304 that DROPS must-revalidate and substitutes a plain
+// max-age=60. A shared cache that refreshes the entry from that 304 without
+// re-applying the Authorization gate would retain a now-freely-shareable
+// authed response.
+function _optInThenDropOn304Handler(hitsRef) {
+  return function (req, res) {
+    hitsRef.n += 1;
+    if (req.headers["if-none-match"]) {
+      res.writeHead(304, {
+        "Cache-Control": "max-age=60",
+        "ETag":          '"v1"',
+        "Date":          _httpDate(Date.now()),
+      });
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type":  "text/plain",
+      "Cache-Control": "must-revalidate, max-age=0",
+      "ETag":          '"v1"',
+      "Date":          _httpDate(Date.now()),
+    });
+    res.end("secret-for:" + (req.headers["authorization"] || "anon"));
+  };
+}
+
+// A 304 can replace Cache-Control: an authed entry first stored under the
+// must-revalidate opt-in can be revalidated into a plain max-age=60 response.
+// The refresh must re-apply RFC 9111 §3.5 and EVICT the entry (it lost its
+// opt-in) rather than retain it as a freely-shareable authed response served
+// to a different principal.
+async function testAuthOptInDroppedOn304EvictsNotShares() {
+  var hits = { n: 0 };
+  await _withServer(_optInThenDropOn304Handler(hits), async function (baseUrl) {
+    var cache = _newCache({ sharedCache: true });
+    var r1 = await b.httpClient.request({
+      url: baseUrl + "/acct", cache: cache,
+      headers: { Authorization: "Bearer USER-AAA" },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("304-optin: AAA first request MISS", r1.headers["x-blamejs-cache"] === "MISS");
+    check("304-optin: AAA body", r1.body.toString("utf8") === "secret-for:Bearer USER-AAA");
+    // AAA again — entry is stale (max-age=0), revalidates, gets the 304 that
+    // drops must-revalidate for max-age=60.
+    var r2 = await b.httpClient.request({
+      url: baseUrl + "/acct", cache: cache,
+      headers: { Authorization: "Bearer USER-AAA" },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("304-optin: AAA revalidated serve is still AAA's body",
+          r2.body.toString("utf8") === "secret-for:Bearer USER-AAA");
+    // BBB (a different principal) must NOT receive AAA's body — the entry must
+    // have been evicted on the opt-in-dropping 304.
+    var r3 = await b.httpClient.request({
+      url: baseUrl + "/acct", cache: cache,
+      headers: { Authorization: "Bearer USER-BBB" },
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("304-optin: BBB does NOT receive AAA's body after the 304 dropped the opt-in",
+          r3.body.toString("utf8") !== "secret-for:Bearer USER-AAA");
+    check("304-optin: BBB receives its own response",
+          r3.body.toString("utf8") === "secret-for:Bearer USER-BBB");
+  });
+}
+
 // ---- The leak: shared cache must not cross Authorization principals ----
 
 async function testAuthNotSharedAcrossUsersSharedCache() {
@@ -167,6 +234,7 @@ async function testPrivateCacheCachesAuthedResponse() {
 async function run() {
   try {
     await testAuthNotSharedAcrossUsersSharedCache();
+    await testAuthOptInDroppedOn304EvictsNotShares();
     await testPublicPermitsSharedAuthReuse();
     await testSmaxagePermitsSharedAuthReuse();
     await testPrivateCacheCachesAuthedResponse();
