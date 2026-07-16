@@ -1019,10 +1019,11 @@ async function testDkimSimpleCanonRoundTrips() {
     var b64 = _spkiPemToB64(kp.publicKey);
     var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
     var rv = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
-    // documents current behavior — folded simple-header signatures do not
-    // self-verify (fold/unfold mismatch in signature computation).
-    check("simple-header verify: folded " + canon + " self-verify is 'fail' (documents current behavior)",
-          rv[0] && rv[0].result === "fail");
+    // Simple header canonicalization signs and verifies the DKIM-Signature
+    // header verbatim (folded, one space after the colon) per RFC 6376 §3.4.1,
+    // so a folded simple-header signature now round-trips.
+    check("simple-header verify: folded " + canon + " self-verify passes",
+          rv[0] && rv[0].result === "pass");
   }
 }
 
