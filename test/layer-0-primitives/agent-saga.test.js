@@ -272,6 +272,7 @@ async function run() {
   await testFailedCompStepNameCorrect();
   await testSagaStatePersistedAcrossRun();
   await testResumeCompensatesPreCrashSteps();
+  await testResumeRefusesTerminalSaga();
   await testRefusesBadConfig();
 }
 
@@ -304,6 +305,33 @@ async function testResumeCompensatesPreCrashSteps() {
   check("resume compensates pre-crash s1 second",               compensated[1] === "s1");
   check("resume compensates BOTH pre-crash steps",              compensated.length === 2);
   check("the failing s3 is not compensated",                    compensated.indexOf("s3") === -1);
+}
+
+async function testResumeRefusesTerminalSaga() {
+  // A saga that already reached a terminal state (failed-and-compensated, or
+  // completed) must not be resumed — replaying it would re-invoke the completed
+  // steps' compensators, which are not required to be idempotent (a double
+  // refund). A stateStore that marks the saga terminal (resumePoint.terminal)
+  // gets the resume refused rather than replayed.
+  var compensated = [];
+  var stateStore = {
+    saveStep:        async function () {},
+    loadResumePoint: async function () { return { stepIndex: 2, state: {}, terminal: true }; },
+    markFailed:      async function () {},
+  };
+  var saga = b.agent.saga.create({
+    name:       "test.terminal-resume",
+    stateStore: stateStore,
+    steps: [
+      { name: "s1", run: async function () {}, compensate: async function () { compensated.push("s1"); } },
+      { name: "s2", run: async function () {}, compensate: async function () { compensated.push("s2"); } },
+      { name: "s3", run: async function () {}, compensate: async function () { compensated.push("s3"); } },
+    ],
+  });
+  var threw = null;
+  try { await saga.resume("saga-terminal", {}, {}); } catch (e) { threw = e; }
+  check("resume of a terminal saga is refused", threw && /agent-saga\/not-resumable/.test(threw.code || ""));
+  check("a refused terminal resume runs no compensators", compensated.length === 0);
 }
 
 module.exports = { run: run };
