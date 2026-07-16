@@ -6129,6 +6129,60 @@ function testScannerPolicyCoversVendorDataCarriers() {
     bad);
 }
 
+// ---- Pattern 48: every vendored MANIFEST component is attributed in NOTICE ----
+
+function testVendorComponentsAttributedInNotice() {
+  // A third-party component vendored under lib/vendor/ ships with license and
+  // attribution obligations. lib/vendor/MANIFEST.json is the authoritative list
+  // of what ships; NOTICE is the attribution surface. A component added to the
+  // manifest without a NOTICE entry (the exact drift that shipped @noble/curves
+  // and the Public Suffix List un-attributed until a downstream scanner flagged
+  // it) must fail here, before publish. Each manifest package key (and each
+  // components[] sub-key) must appear in NOTICE, unless it is a documented
+  // no-third-party-content exception.
+  var root = path.resolve(__dirname, "..", "..");
+  var manifest, notice;
+  try { manifest = JSON.parse(fs.readFileSync(path.join(root, "lib", "vendor", "MANIFEST.json"), "utf8")); }
+  catch (_e) { _report("NOTICE attributes every vendored MANIFEST component",
+    [{ file: "lib/vendor/MANIFEST.json", line: 1, content: "unreadable / not JSON" }]); return; }
+  try { notice = fs.readFileSync(path.join(root, "NOTICE"), "utf8"); }
+  catch (_e) { _report("NOTICE attributes every vendored MANIFEST component",
+    [{ file: "NOTICE", line: 1, content: "NOTICE file missing" }]); return; }
+
+  // Documented exceptions: a vendored entry that ships NO third-party content.
+  var NO_ATTRIBUTION_NEEDED = {
+    "bimi-trust-anchors": "operator-managed VMC/CMC trust anchors — the shipped default is empty-of-PEM, so there is no third-party content to attribute (operators populate per the file-header procedure)",
+  };
+  // NOTICE names a component differently from its manifest key.
+  var NOTICE_ALIAS = {
+    "SecLists-common-passwords-top-10000": "SecLists",
+  };
+
+  var pkgs = manifest.packages || {};
+  var bad = [];
+  Object.keys(pkgs).forEach(function (key) {
+    if (NO_ATTRIBUTION_NEEDED[key]) return;
+    var needles = [NOTICE_ALIAS[key] || key];
+    // Meta-bundle sub-components each carry their own attribution obligation.
+    var comps = pkgs[key].components;
+    if (comps && typeof comps === "object") {
+      Object.keys(comps).forEach(function (c) { needles.push(NOTICE_ALIAS[c] || c); });
+    }
+    needles.forEach(function (needle) {
+      if (notice.indexOf(needle) === -1) {
+        bad.push({
+          file:    "NOTICE",
+          line:    1,
+          content: "vendored component '" + needle + "' (from lib/vendor/MANIFEST.json" +
+                   (needle === key ? "" : " package '" + key + "'") +
+                   ") has no attribution entry in NOTICE",
+        });
+      }
+    });
+  });
+  _report("NOTICE attributes every vendored MANIFEST component", bad);
+}
+
 // ---- Pattern 47: documented script flags must exist in the script ----
 
 function testDocumentedScriptFlagsExist() {
@@ -6279,12 +6333,12 @@ var KNOWN_ANTIPATTERNS = [
   },
   {
     id: "byte-cap-must-vet-type-before-measuring",
-    primitive: "b.safeBuffer.byteLengthOf",
+    primitive: "b.safeBuffer.byteLengthOfIfMeasurable",
     scanScope: "lib",
     skipCommentLines: true,
     regex: /typeof\s+\w+\.length\s*===\s*["']number["']\s*&&[^\n]*byteLengthOf\s*\(/,
     allowlist: [],
-    reason: "A byte-size cap over untrusted metadata (the guard-family `{ bytes }` bag) must confirm the value is a string / Buffer / Uint8Array before measuring it. safeBuffer.byteLengthOf accepts only those and THROWS on anything else, so gating the measurement on `typeof X.length === 'number'` admits a plain Array / array-like object — which crashes the guard's documented never-throw-on-hostile-metadata inspection contract (the gate path fails closed, but a direct validate/sanitize caller throws). This shape shipped in BOTH guard-image and guard-pdf; fixed by vetting `Buffer.isBuffer(x) || typeof x === 'string' || x instanceof Uint8Array` before the byteLengthOf call. Any new guard measuring a metadata bag must vet the type first (magic detection reads only the leading bytes, so skipping the cap for an unmeasurable array-like cannot DoS). Empty allowlist — no legitimate instance of this coupling exists.",
+    reason: "A byte-size cap over untrusted metadata (the guard-family `{ bytes }` bag) must not gate safeBuffer.byteLengthOf on a hand-rolled `typeof X.length === 'number'` check: byteLengthOf accepts only string / Buffer / Uint8Array and THROWS on anything else, so that check admits a plain Array / array-like object and crashes the guard's documented never-throw-on-hostile-metadata inspection contract (the gate path fails closed, but a direct validate/sanitize caller throws). This shipped in BOTH guard-image and guard-pdf. The primitive is `safeBuffer.byteLengthOfIfMeasurable(x)` — it returns the byte length for a measurable value or `null` for a non-byte-carrier — so a guard writes `var n = safeBuffer.byteLengthOfIfMeasurable(bytes); if (n !== null && n > cap) refuse`; guard-image + guard-pdf compose it. Any new guard measuring a metadata bag must compose it instead of the raw typeof-length shape (magic detection reads only the leading bytes, so skipping the cap for an unmeasurable array-like cannot DoS). Empty allowlist — no legitimate instance of this coupling exists.",
   },
   {
     id: "html-comment-scan-must-use-htmlCommentEnd",
@@ -14722,6 +14776,7 @@ async function run() {
   testNoDeniedVendors();
   testVendorBundlesReviewable();
   testScannerPolicyCoversVendorDataCarriers();
+  testVendorComponentsAttributedInNotice();
   testDocumentedScriptFlagsExist();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.

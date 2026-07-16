@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.16.35",
-  "createdAt": "2026-07-16T14:19:18.632Z",
+  "frameworkVersion": "0.16.36",
+  "createdAt": "2026-07-16T16:29:09.085Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -50031,6 +50031,10 @@
         "byteLengthOf": {
           "type": "function",
           "arity": 2
+        },
+        "byteLengthOfIfMeasurable": {
+          "type": "function",
+          "arity": 1
         },
         "collectStream": {
           "type": "function",
