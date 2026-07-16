@@ -493,6 +493,86 @@ function testHistogramExemplarsRendered() {
     out.indexOf('op_seconds_bucket{le="0.5",op="b"} 1 #  0.2\n') !== -1);
 }
 
+// Exemplar labels reach the OpenMetrics scrape stream verbatim, the same
+// egress surface regular labels do — so a credential-shaped value an operator
+// attaches to an exemplar (e.g. tapping a raw header alongside trace context)
+// must be scrubbed the same way _resolveLabels scrubs regular labels. Redacting
+// only the regular labels left the exemplar-label path raw (CWE-532). RED before
+// the fix: the raw bearer / issuer / JWT / high-entropy tokens appear in the
+// exposition; GREEN after: the marker replaces them and the trace context
+// survives.
+function testHistogramExemplarLabelsRedacted() {
+  var m = b.metrics.create({ namespace: "exred" });
+  var h = m.histogram("op_seconds", { labelNames: ["op"], buckets: [0.5, 1] });
+  var bearerBody = "abcdefghijklmnop";                            // "Bearer <body>"
+  var issuerTok  = "sk-abcdefghijklmnop";                         // issuer-prefixed
+  var jwtTok     = "aaaaaaaa.bbbbbbbb.cccccccc";                  // JWT shape
+  var entropyTok = "abcdef0123456789abcdef0123456789abcdef01";   // 40 hex chars
+  h.observe({ op: "a" }, 0.1, {
+    labels: {
+      trace_id: "trace-keepme",
+      authorization: "Bearer " + bearerBody,
+      api_key: issuerTok,
+      jwt: jwtTok,
+      opaque: entropyTok,
+    },
+    value: 0.1,
+  });
+  var out = m.exposition({ format: "openmetrics" });
+  check("exemplar-redact: bearer body never reaches the scrape stream",
+    out.indexOf(bearerBody) === -1);
+  check("exemplar-redact: issuer token absent", out.indexOf(issuerTok) === -1);
+  check("exemplar-redact: JWT absent", out.indexOf(jwtTok) === -1);
+  check("exemplar-redact: high-entropy token absent", out.indexOf(entropyTok) === -1);
+  check("exemplar-redact: credential marker present on the exemplar line",
+    out.indexOf("[REDACTED-CREDENTIAL]") !== -1);
+  check("exemplar-redact: non-credential trace_id survives verbatim",
+    out.indexOf('trace_id="trace-keepme"') !== -1);
+}
+
+// Exemplar VALUE and TIMESTAMP are appended to the exposition line RAW — unlike
+// labels, which _escapeLabelValue quotes — so a non-numeric operator-supplied
+// value ("0.1\n# forged 999") would inject a forged metric line into every
+// scrape (the same root as the exemplar-label leak, on the two numeric fields
+// the label redactor doesn't cover). Both are coerced to a finite number
+// (value falls back to the observation, timestamp to none) so only a bare
+// number ever reaches the wire. RED before the fix: the forged line appears;
+// GREEN after: it is gone and the observed value renders.
+function testHistogramExemplarValueTimestampNotInjectable() {
+  var m = b.metrics.create({ namespace: "exinj" });
+  var h = m.histogram("op_seconds", { labelNames: ["op"], buckets: [0.5, 1] });
+  h.observe({ op: "a" }, 0.1, {
+    labels: { trace_id: "T1" },
+    value: '0.1\n# forged_bucket{le="9"} 999',
+    timestamp: "1717000000\n# ts_forged 1",
+  });
+  var out = m.exposition({ format: "openmetrics" });
+  check("exemplar-inject: a forged bucket line in exemplar.value never renders",
+    out.indexOf("forged_bucket") === -1);
+  check("exemplar-inject: a forged line in exemplar.timestamp never renders",
+    out.indexOf("ts_forged") === -1);
+  check("exemplar-inject: exemplar renders the observed numeric value (fallback), no timestamp",
+    out.indexOf('# {trace_id="T1"} 0.1\n') !== -1);
+  // A clean numeric string still coerces to a number (OpenMetrics values are
+  // numeric) — the guard rejects only non-finite input, it doesn't require a
+  // native number.
+  var m2 = b.metrics.create({ namespace: "exinj2" });
+  var h2 = m2.histogram("op_seconds", { labelNames: ["op"], buckets: [0.5, 1] });
+  h2.observe({ op: "a" }, 0.9, { labels: { trace_id: "T2" }, value: "0.5", timestamp: "1717000000" });
+  var out2 = m2.exposition({ format: "openmetrics" });
+  check("exemplar-inject: a clean numeric-string value coerces and renders",
+    out2.indexOf('# {trace_id="T2"} 0.5 1717000000') !== -1);
+  // A valid zero (Unix-epoch) timestamp must survive: present-vs-missing is a
+  // numeric check, not truthiness, so 0 renders rather than being dropped as
+  // falsy (the regression the coercion would otherwise introduce).
+  var m3 = b.metrics.create({ namespace: "exts0" });
+  var h3 = m3.histogram("op_seconds", { labelNames: ["op"], buckets: [0.5, 1] });
+  h3.observe({ op: "a" }, 0.9, { labels: { trace_id: "T3" }, value: 0.9, timestamp: "0" });
+  var out3 = m3.exposition({ format: "openmetrics" });
+  check("exemplar-inject: a valid zero (epoch) timestamp is preserved, not dropped as falsy",
+    out3.indexOf('# {trace_id="T3"} 0.9 0\n') !== -1);
+}
+
 // ---- requestMiddleware exemplar wiring + method fallback ----
 
 function testRequestMiddlewareExemplarFromSpan() {
@@ -1072,6 +1152,8 @@ function run() {
   testCredentialRedaction();
   testExpositionOpenMetricsCounterSuffixAndUnit();
   testHistogramExemplarsRendered();
+  testHistogramExemplarLabelsRedacted();
+  testHistogramExemplarValueTimestampNotInjectable();
   testRequestMiddlewareExemplarFromSpan();
   testRequestMiddlewareExemplarFromTraceFallback();
   testRequestMiddlewareMethodFallback();

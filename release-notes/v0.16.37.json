@@ -1,0 +1,26 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.37",
+  "date": "2026-07-16",
+  "headline": "Three fail-open / injection fixes: the age gate no longer admits a user whose age fails to compute, the query builder's OFFSET-without-LIMIT runs on every backend, and metrics exemplars can no longer carry an unsanitized value into the scrape stream",
+  "summary": "Three defects, each in a class the framework treats as security-relevant. b.middleware.ageGate classified a non-finite age (a NaN or Infinity returned by getAge when a birth field fails to parse) as an adult -- admitting the request with none of the child-safety privacy defaults -- instead of treating an uncomputable age as unknown. b.sql (and b.db.from / b.db.collection over it) emitted a bare OFFSET with no LIMIT, which is valid only on Postgres and is a syntax error on SQLite -- the framework's own backend -- and MySQL, so a valid builder chain failed to run on two of three dialects. And b.metrics exemplars rendered their labels, value, and timestamp into the OpenMetrics scrape surface without the credential-scrub and numeric-coercion regular labels receive, so an operator-supplied exemplar could leak a credential-shaped label or inject a forged metric line through exemplar.value / exemplar.timestamp.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Age gate treats a non-finite age as unknown, not as an adult",
+          "body": "b.middleware.ageGate now classifies a non-finite age (NaN or +/-Infinity, the shape getAge returns when a birth field fails to parse or date math goes wrong) as \"unknown\" rather than letting it fall through to \"above-threshold\". Because typeof NaN === \"number\" and every comparison against NaN is false, an uncomputable age previously bypassed the below-threshold branch and was admitted as a confirmed adult -- with none of the child-safety privacy defaults (Cache-Control: private, no-store; Referrer-Policy: no-referrer; the privacy-posture header) the unknown path applies. When the birth value is request-derived this is attacker-influenced. A non-finite age is now handled exactly like a null return: the request is classified unknown and the privacy defaults are applied."
+        },
+        {
+          "title": "Query builder OFFSET without LIMIT runs on SQLite and MySQL, not only Postgres",
+          "body": "b.sql SELECT (and the b.db.from / b.db.collection consumers built on it) emitted a bare \"OFFSET n\" when .offset() was set without .limit(). A bare OFFSET is valid only on Postgres; SQLite (the framework's own node:sqlite backend) and MySQL both reject it as a syntax error, so a valid builder chain produced SQL that failed to prepare on two of the three supported dialects, including the default one. The builder now emits the dialect's unbounded-limit sentinel before the OFFSET -- SQLite LIMIT -1, MySQL the maximum unsigned BIGINT, Postgres LIMIT ALL -- so one query text runs unchanged across all three. Statements that set an explicit LIMIT are byte-for-byte unchanged."
+        },
+        {
+          "title": "Metrics exemplars are sanitized on the scrape surface the same way regular labels are",
+          "body": "b.metrics histogram exemplars rendered their labels, value, and timestamp into the OpenMetrics /metrics exposition -- the same broadly-readable scrape surface regular labels reach -- without the sanitization regular labels receive. Exemplar label values bypassed the credential scrubber, so a credential-shaped value an operator attached to an exemplar (e.g. tapping a raw header alongside trace context) egressed in cleartext (CWE-532); and exemplar.value / exemplar.timestamp were appended to the exposition line raw, so a non-numeric operator-supplied value such as \"1.0\\n# forged 999\" could inject a forged metric line. Exemplar labels now flow through the same credential scrubber as regular labels, and exemplar value and timestamp are coerced to a finite number (value falling back to the observed value, timestamp to none) at store time, so only sanitized labels and bare numbers ever reach the wire. Trace context (trace_id / span_id) and numeric values pass through unchanged."
+        }
+      ]
+    }
+  ]
+}
