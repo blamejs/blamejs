@@ -587,6 +587,60 @@ async function testTakenAtMismatchRefused() {
     ok && ok.snapshotId === s2.snapshotId);
 }
 
+// A backend whose list() can be forged independently of get() — the deeper
+// threat model where list() and get() are separately tamperable.
+function _listForgingBackend() {
+  var map = new Map();
+  var forge = null;   // when set: { field, value } applied to list() entries only
+  return {
+    put:    function (k, v) { map.set(k, v); return Promise.resolve(); },
+    get:    function (k)    { return Promise.resolve(map.get(k) || null); },
+    delete: function (k)    { map.delete(k); return Promise.resolve(); },
+    list:   function () {
+      var out = [];
+      map.forEach(function (v) {
+        if (forge) { var c = Object.assign({}, v); c[forge.field] = forge.value; out.push(c); }
+        else out.push(v);
+      });
+      return Promise.resolve(out);
+    },
+    forgeList: function (field, value) { forge = { field: field, value: value }; },
+  };
+}
+
+async function testListOnlyTenantForgeryRefused() {
+  // Deeper than a get() wrapper relabel: list() and get() are independently
+  // tamperable. A backend that relabels tenant A's LIST entry as tenant B while
+  // leaving A's get() row honest passes the wrapper/body cross-check in
+  // _unwrapAndVerify (the honest row agrees with its own body), yet
+  // loadLatest({ tenantId:'tenant-b' }) selects it via the forged list filter
+  // and would return A's authentic snapshot for a tenant-B query. The requested
+  // tenantId must be bound to the loaded snapshot's authenticated tenantId.
+  var backend = _listForgingBackend();
+  var snapshot = _signedSnapshot({ backend: backend });
+  var s = await snapshot.takeSnapshot({ tenantId: "tenant-a" });
+  await snapshot.persist(s);
+  backend.forgeList("tenantId", "tenant-b");   // list() now claims tenant-b; get() stays tenant-a
+  await expectRejection("loadLatest refuses a list()-only tenant forgery (requested vs authenticated)",
+    snapshot.loadLatest({ tenantId: "tenant-b" }),
+    "agent-snapshot/tenant-id-mismatch");
+}
+
+async function testListOnlyTakenAtForgeryRefused() {
+  // list() sort metadata is likewise untrusted: a backend that inflates a row's
+  // list() takenAt to win the "latest" sort, while get() returns the honest
+  // (older) body, is caught by binding the selection sort key to the loaded
+  // snapshot's authenticated takenAt.
+  var backend = _listForgingBackend();
+  var snapshot = _signedSnapshot({ backend: backend });
+  var s = await snapshot.takeSnapshot({ tenantId: "tenant-a" });
+  await snapshot.persist(s);
+  backend.forgeList("takenAt", 99999999999999);   // list() claims a far-future age; get() stays honest
+  await expectRejection("loadLatest refuses a list()-only takenAt sort-key forgery",
+    snapshot.loadLatest({ tenantId: "tenant-a" }),
+    "agent-snapshot/taken-at-mismatch");
+}
+
 async function testTenantMismatchTamperDirections() {
   // Both directions of a wrapper/body tenant divergence are refused: a
   // hostile backend that ADDS a tenant to a no-tenant body, and one that
@@ -987,6 +1041,8 @@ async function run() {
   await testSnapshotIdMismatchRefused();
   await testTenantMismatchRefused();
   await testTakenAtMismatchRefused();
+  await testListOnlyTenantForgeryRefused();
+  await testListOnlyTakenAtForgeryRefused();
   await testTenantMismatchTamperDirections();
   await testTopologySameCountRemap();
   await testPlaintextForgedSignatureRefused();
