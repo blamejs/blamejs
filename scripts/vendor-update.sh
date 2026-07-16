@@ -248,7 +248,20 @@ refresh_data_entry() {
         printf '// Honeytoken — vendor-data integrity defense (lib/vendor-data.js).\n'
         printf '_blamejs_canary_v0_9_8_.local\n'
         printf '// ===END blamejs canary===\n'; } >> "$tmp"
-      if cmp -s "$tmp" "lib/vendor/public-suffix-list.dat"; then
+      # Directional freshness guard: the list is CDN-served and an edge
+      # can return an OLDER cached copy than the snapshot already
+      # vendored (publication reaches edges at different times). The
+      # VERSION header is a sortable UTC timestamp — never replace the
+      # local file with a fetch whose VERSION is older than the local
+      # one; a genuinely newer local copy is what the CI currency gate
+      # already treats as current.
+      local fetchv localv
+      fetchv=$(grep -m1 '^// VERSION:' "$tmp" | awk '{print $3}') || fetchv=""
+      localv=$(grep -m1 '^// VERSION:' "lib/vendor/public-suffix-list.dat" 2>/dev/null | awk '{print $3}') || localv=""
+      if [ -n "$fetchv" ] && [ -n "$localv" ] && [[ "$fetchv" < "$localv" ]]; then
+        echo "  public-suffix-list: fetched copy ($fetchv) is older than the vendored one ($localv) — lagging CDN edge; keeping the local file"
+        rm -f "$tmp"
+      elif cmp -s "$tmp" "lib/vendor/public-suffix-list.dat"; then
         echo "  public-suffix-list: upstream unchanged"
         rm -f "$tmp"
       else
