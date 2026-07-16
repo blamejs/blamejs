@@ -1,0 +1,48 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.33",
+  "date": "2026-07-16",
+  "headline": "Agent-snapshot restore now authenticates a sealed snapshot's tenant and capture-time against its signature, closing a cross-tenant restore path, alongside fail-closed and never-throw hardening across the DKIM/ARC, crypto-envelope, and image/PDF verifiers",
+  "summary": "A sealed agent snapshot's authenticated envelope binds its table, snapshot id, and schema version, but the decorative wrapper fields a hostile or compromised storage backend can rewrite -- the tenant id that loadLatest filters on and the capture time it sorts on -- were trusted without being checked against the signed body. b.agent.snapshot restore now cross-checks both wrapper fields against the signature-covered values and refuses a mismatch, so a relabelled row can no longer surface one tenant's authentic snapshot to another (cross-tenant restore) or misrepresent when the restored state was captured. The release also hardens several verifiers that a valid-but-unusual or hostile input could push off their documented contract: the DKIM, inbound-authentication, and ARC verifiers now accept a bare-LF (Unix line-ending) message and return an authentication verdict instead of throwing; the crypto envelope and packed-secret decoders reject a truncated ciphertext with their typed error instead of leaking a raw cipher exception; the image guard routes a byte-order-mark-prefixed SVG to refusal at every profile instead of serving it as unknown content; and the image and PDF guards no longer throw on a hostile metadata bag whose bytes field is an array-like object, honoring their never-throw inspection contract.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Agent-snapshot restore binds the requested tenant and capture-time to the sealed snapshot's signature",
+          "body": "b.agent.snapshot seals each snapshot under an authenticated envelope whose AAD binds the table, snapshot id, and schema version. The metadata a backend stores alongside the sealed blob -- the tenant id that loadLatest({ tenantId }) filters on and the takenAt it sorts on to pick the latest -- is not covered by that AAD, and a hostile or compromised backend can return independently tampered list() and get() results. A backend could therefore relabel tenant A's list() entry as tenant B (leaving A's get() row honest) so that loadLatest({ tenantId: 'tenant-b' }) selected and returned tenant A's authentic snapshot -- a cross-tenant restore of in-flight sagas, streams, and idempotency state -- or inflate a row's list() age to serve an older snapshot as the latest. loadLatest now binds the requested selection criteria to the loaded snapshot's signature-covered values: the authenticated tenant id must equal the requested tenant id, and the list() sort key that selected a row must equal that row's authenticated capture time; a divergence is refused (agent-snapshot/tenant-id-mismatch, agent-snapshot/taken-at-mismatch), and the load path additionally cross-checks the get() wrapper against the signed body. The fix is at load time and does not change the seal format, so previously persisted snapshots remain restorable. A hostile backend can still withhold snapshots it never reveals, but every snapshot returned is authentic and bound to the requested tenant."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "DKIM, inbound-authentication, and ARC verifiers accept bare-LF messages instead of throwing",
+          "body": "b.mail.dkim.verify, b.mail.inbound.verify, and b.mail.arc.verify canonicalize over CRLF and split the header block on a CRLF-CRLF separator. A message read from a Unix file or mbox, or passed through operator tooling that stripped carriage returns, arrives with bare-LF line endings and previously raised an uncaught error out of the verifier rather than returning an authentication verdict. The header/body split now normalizes bare-LF to canonical CRLF before locating the separator (a no-op on a proper CRLF message), so a bare-LF message produces a verdict -- and a message signed on the CRLF wire but transported bare-LF now verifies correctly rather than failing. inbound.verify and arc.verify additionally treat a message with no separator at all as headers-only, returning a verdict in keeping with their always-return-a-verdict contract."
+        },
+        {
+          "title": "Crypto envelope and packed-secret decoders reject truncated ciphertext with a typed error",
+          "body": "b.crypto.decryptEnvelope and b.crypto.decryptPacked verify that each declared component of an untrusted ciphertext -- the length-prefixed KEM ciphertext and hybrid ephemeral public key, and the trailing nonce and authentication tag -- fits within the envelope before handing it to the cipher or the key-agreement step. A ciphertext truncated inside any of those components previously reached Node crypto as an under-length value and surfaced as a raw exception (a cipher RangeError on the nonce, or a Failed to perform decapsulation / key-parse error on the KEM ciphertext or ephemeral key), escaping the documented Invalid envelope error contract and leaking implementation detail. Both decoders now reject a truncated input with their typed Invalid envelope / Invalid packed format error, while a truncation inside the ciphertext body still surfaces as the genuine authentication-tag failure; a well-formed input is never affected."
+        },
+        {
+          "title": "Image guard routes a BOM-prefixed SVG to refusal at every profile",
+          "body": "b.guardImage detects SVG by its leading markup so it can route it to the SVG guard or refuse it. A UTF-8 byte-order-mark before the markup previously defeated the offset-anchored signature scan, so a BOM-prefixed SVG fell through as unknown content -- served rather than refused under the balanced and permissive profiles. The magic-byte scanner now skips a leading BOM when matching the SVG and XML signatures, so a BOM-prefixed SVG is detected and refused at every profile. The BOM skip applies only to those text-family signatures: a binary raster's magic must sit at its real offset, so a BOM-prefixed PNG or JPEG is still refused as unknown content rather than accepted as a valid raster."
+        },
+        {
+          "title": "Image and PDF guards no longer throw on a hostile array-like metadata bag",
+          "body": "b.guardImage.validate and b.guardPdf.validate document pure inspection that never throws on hostile metadata. Their byte-size cap measured any value carrying a numeric length, but the measurement primitive accepts only strings, Buffers, and Uint8Arrays and threw on a plain Array or array-like object -- crashing a direct validate or sanitize caller (the gate path already fails closed). The cap now measures only those byte-carrying types and passes an unmeasurable array-like through to magic detection, which reads only the leading bytes and refuses unrecognized content, so validate returns a refusal instead of throwing."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "A byte-size cap must vet its input type before measuring it",
+          "body": "A codebase-patterns gate refuses a guard that measures a metadata bag's byte length gated only on a numeric length property -- the shape that let an array-like bytes field crash the image and PDF guards. A byte-size cap over untrusted metadata must confirm the value is a string, Buffer, or Uint8Array before measuring it, so a future guard cannot reintroduce the never-throw-contract violation."
+        }
+      ]
+    }
+  ]
+}

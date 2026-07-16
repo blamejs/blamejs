@@ -353,6 +353,31 @@ async function testDkimVerifyHappyPath() {
   check("verify: warnings array on pass", Array.isArray(rv[0].warnings));
 }
 
+async function testDkimVerifyBareLfMessage() {
+  // A message signed on the CRLF wire but read back from a Unix file /
+  // mbox (CRs stripped) arrives bare-LF. The public verifier must
+  // normalize it to canonical CRLF and verify — not throw an uncaught
+  // dkim/missing-body-separator out of the header/body split. RED before
+  // the _splitHeadersBody LF->CRLF normalization: verify() threw.
+  // Reset the process-local DKIM key cache: a prior test cached a different
+  // key under the same example.com/s1 selector, which would otherwise shadow
+  // this message's key (the cache is consulted before the injected dnsLookup).
+  b.mail.dkim._resetDkimKeyCacheForTest();
+  var kp = _rsaKeypair();
+  var signed = await _signedMessage(kp);
+  var bareLf = signed.replace(/\r\n/g, "\n");
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
+  var threw = null;
+  var rv = null;
+  try { rv = await b.mail.dkim.verify(bareLf, { dnsLookup: dnsLookup }); }
+  catch (e) { threw = e; }
+  check("verify: bare-LF message does not throw", threw === null);
+  check("verify: bare-LF message returns a verdict array", Array.isArray(rv));
+  check("verify: CRLF-signed message transported bare-LF verifies pass",
+        rv && rv[0] && rv[0].result === "pass");
+}
+
 async function testDkimVerifyKeyCacheHit() {
   // Same selector/domain twice → second fetch must hit cache.
   b.mail.dkim._resetDkimKeyCacheForTest();
@@ -1403,6 +1428,7 @@ async function run() {
   testDkimSignerRejectsBadInput();
   testDkimRejectsLTagBodyLength();
   await testDkimVerifyHappyPath();
+  await testDkimVerifyBareLfMessage();
   await testDkimVerifyKeyCacheHit();
   await testDkimVerifySmallKeyRejected();
   await testCalendarValidation();

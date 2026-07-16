@@ -6278,6 +6278,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "v0.15.0 #103 — the guard sanitize/parse refuse-on-critical|high throw (err(issue.ruleId || '<x>.refused', 'guard<Name>.<op>: ' + issue.snippet)) is owned by gateContract.throwOnRefusalSeverity; 18 guards reuse it (this was the failing STRONG-DUP fp:f349a8d1f51b before extraction). A hand-rolled `issues[i].ruleId || '<x>.refused'` throw re-implements it. lib/guard-auth.js is the one genuine holdout (its message embeds issues[i].source: 'guardAuth.sanitize [<source>]:') pending task #104; the primitive itself uses a `fallback` variable (no .refused literal) so it does not match. Any other lib file with this shape must call gateContract.throwOnRefusalSeverity (the severities / op options cover the critical-only + parse variants).",
   },
   {
+    id: "byte-cap-must-vet-type-before-measuring",
+    primitive: "b.safeBuffer.byteLengthOf",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /typeof\s+\w+\.length\s*===\s*["']number["']\s*&&[^\n]*byteLengthOf\s*\(/,
+    allowlist: [],
+    reason: "A byte-size cap over untrusted metadata (the guard-family `{ bytes }` bag) must confirm the value is a string / Buffer / Uint8Array before measuring it. safeBuffer.byteLengthOf accepts only those and THROWS on anything else, so gating the measurement on `typeof X.length === 'number'` admits a plain Array / array-like object — which crashes the guard's documented never-throw-on-hostile-metadata inspection contract (the gate path fails closed, but a direct validate/sanitize caller throws). This shape shipped in BOTH guard-image and guard-pdf; fixed by vetting `Buffer.isBuffer(x) || typeof x === 'string' || x instanceof Uint8Array` before the byteLengthOf call. Any new guard measuring a metadata bag must vet the type first (magic detection reads only the leading bytes, so skipping the cap for an unmeasurable array-like cannot DoS). Empty allowlist — no legitimate instance of this coupling exists.",
+  },
+  {
     id: "html-comment-scan-must-use-htmlCommentEnd",
     primitive: "b.markupTokenizer.htmlCommentEnd",
     scanScope: "lib",
