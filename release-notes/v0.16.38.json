@@ -1,0 +1,26 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.38",
+  "date": "2026-07-16",
+  "headline": "Three fixes to data-subject scoping, break-glass grant limits, and idempotent-retry replay: a data-subject filter no longer matches every subject when it has no indexable key, a single-row break-glass grant can no longer be spent twice concurrently, and an idempotent retry returns its cached result under a vault",
+  "summary": "b.dsr's subject-scoped ticket filter failed open: a subject carrying none of the indexable keys (email / subjectId) -- a phone-only, alias-only, or empty subject -- matched EVERY ticket instead of none, so listBySubject returned other subjects' tickets and the erasure-completion purge deleted them. Both ticket stores now fail closed. b.breakGlass's per-row grant limit could be exceeded under concurrency: two simultaneous unseals of a one-row grant against different rows both succeeded, because the claim was decided from a re-read of the shared counter that already reflected the other caller's increment; the claim is now decided from the atomic update's affected-row count. And b.agent.idempotency's putIfAbsent replay parsed the sealed result blob without unsealing it, so under a vault (the production default) every idempotent retry that landed on a completed key threw instead of returning the cached result -- and get() on a pending claim threw on a null result blob rather than reporting no cached result.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Data-subject request filter fails closed when a subject has no indexable key",
+          "body": "b.dsr's subject-scoped ticket filter matched on the indexable keys email and subjectId. When the supplied subject carried neither -- a phone-only subject (a legitimate SMS-first identity), an alias-only subject, or an empty object -- the filter added no predicate and returned every ticket in the store instead of none. Through the exported API this meant listBySubject(subject) disclosed every subject's tickets, and the erasure-completion purge (which lists a subject's other tickets and deletes them) deleted every other subject's tickets. Both the in-memory and database ticket stores now fail closed: a subject filter that produces no usable predicate matches nothing, so an unindexable subject can neither read nor delete another subject's data. Filters that supply an indexable key are unchanged."
+        },
+        {
+          "title": "A single-row break-glass grant can no longer be spent twice under concurrency",
+          "body": "b.breakGlass.unsealRow enforces a per-grant row limit with an atomic compare-and-increment (update the consumed counter where it is still below the cap). It then decided whether the caller won the slot by re-reading the counter and comparing it to the caller's own stale pre-value -- but a concurrent winner's increment is visible to the loser's re-read, so both callers saw a change and both proceeded, unsealing two rows under a one-row grant. The claim is now decided from the atomic update's affected-row count: exactly one caller's compare-and-increment modifies the row, and the loser (zero rows modified) is refused with grant-exhausted. The re-read is retained only for the audit's remaining-rows hint."
+        },
+        {
+          "title": "Idempotent retries return their cached result under a vault, and a pending-claim read reports absent",
+          "body": "b.agent.idempotency seals the cached result at rest via b.cryptoField when a vault is configured (the production default). putIfAbsent's replay branch parsed the stored result blob as JSON without unsealing it first, so a retry that landed on an already-completed key threw a corrupt-result error instead of returning the cached result -- breaking the primitive's exactly-once replay guarantee exactly where operators run it. It now unseals before parsing, mirroring get(). Separately, get() on a pending claim (whose result blob is null because no result has been written yet) fed null to the JSON parser and threw the same corrupt-result error; it now reports no cached result, so a concurrent status check during another worker's in-flight claim no longer throws."
+        }
+      ]
+    }
+  ]
+}
