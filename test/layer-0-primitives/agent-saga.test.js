@@ -271,7 +271,39 @@ async function run() {
   await testErrorCauseAttached();
   await testFailedCompStepNameCorrect();
   await testSagaStatePersistedAcrossRun();
+  await testResumeCompensatesPreCrashSteps();
   await testRefusesBadConfig();
+}
+
+async function testResumeCompensatesPreCrashSteps() {
+  // A saga that crashed after step 2, resumed, then FAILS at step 3 must
+  // compensate the FULL completed set — the pre-crash steps (s1, s2) included,
+  // in reverse order. Regression: _runFrom reset completedSteps=[] on resume,
+  // so a post-resume failure compensated only this run's steps, leaving the
+  // pre-crash work (e.g. a committed charge) uncompensated.
+  var compensated = [];
+  var stateStore = {
+    saveStep:        async function () {},
+    loadResumePoint: async function () { return { stepIndex: 2, state: { s1: "done", s2: "done" } }; },
+    markFailed:      async function () {},
+  };
+  var saga = b.agent.saga.create({
+    name:       "test.resume-compensate",
+    stateStore: stateStore,
+    steps: [
+      { name: "s1", run: async function () {}, compensate: async function () { compensated.push("s1"); } },
+      { name: "s2", run: async function () {}, compensate: async function () { compensated.push("s2"); } },
+      { name: "s3", run: async function () { throw new Error("s3 boom"); },
+        compensate: async function () { compensated.push("s3"); } },
+    ],
+  });
+  var threw = null;
+  try { await saga.resume("saga-X", {}, {}); } catch (e) { threw = e; }
+  check("resume-then-fail rejects with agent-saga/failed", threw && /agent-saga\/failed/.test(threw.code || ""));
+  check("resume compensates pre-crash s2 first (reverse order)", compensated[0] === "s2");
+  check("resume compensates pre-crash s1 second",               compensated[1] === "s1");
+  check("resume compensates BOTH pre-crash steps",              compensated.length === 2);
+  check("the failing s3 is not compensated",                    compensated.indexOf("s3") === -1);
 }
 
 module.exports = { run: run };

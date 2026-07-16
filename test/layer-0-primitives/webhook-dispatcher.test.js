@@ -145,6 +145,8 @@ async function _runAll() {
   await testEventTypeAndWildcardMatching();
   await testTransientFailureBacksOff();
   await testThrownTransportErrorBacksOff();
+  await testTransientDnsRevalidationRetries();
+  await testDeliveryTimeSsrfRebindDeadLetters();
   await testMysqlSchemaNoPartialIndex();
   await testInlineDeliveryNotDoubleClaimed();
   await testPostgresClaimUsesSkipLockedDisjoint();
@@ -302,6 +304,54 @@ async function testThrownTransportErrorBacksOff() {
   check("thrown transport error stays pending (transient, not dead)",
         rows.length === 1 && rows[0].status === "pending");
   check("thrown transport error not dead-lettered", res.deliveries[0].dead !== true);
+}
+
+async function testTransientDnsRevalidationRetries() {
+  // The delivery-time SSRF re-validation resolves the destination host. A
+  // TRANSIENT resolver fault (EAI_AGAIN) during that lookup must be treated as
+  // transient — rescheduled — NOT dead-lettered. Regression: the re-validation
+  // catch marked EVERY throw permanent, so a DNS blip dead-lettered a delivery.
+  var xdb = _sqliteExternalDb();
+  var HOST_URL = "https://hook.example.test/hooks";
+  var calls = 0;
+  var dnsLookup = function (host) {
+    calls += 1;
+    if (calls === 1) return Promise.resolve([{ address: "93.184.216.34", family: 4 }]); // register: public
+    var e = new Error("getaddrinfo EAI_AGAIN " + host); e.code = "EAI_AGAIN";              // deliver: transient
+    return Promise.reject(e);
+  };
+  var wd = _newDispatcher(xdb, _stubTransport(), { dnsLookup: dnsLookup });
+  await wd.declareSchema();
+  await wd.registerEndpoint({ endpointId: "td", url: HOST_URL, eventTypes: ["e"], secret: "s" });
+  var res = await wd.dispatch("e", { n: 1 });
+  check("transient DNS in SSRF re-validation not delivered", res.delivered === 0 && res.failed === 1);
+  check("transient DNS not dead-lettered", res.deliveries[0].dead !== true);
+  var rows = await wd.deliveries.list({ endpointId: "td" });
+  check("transient DNS delivery stays pending for retry", rows.length === 1 && rows[0].status === "pending");
+  check("transient DNS resolver error recorded", /EAI_AGAIN/.test(rows[0].lastError || ""));
+}
+
+async function testDeliveryTimeSsrfRebindDeadLetters() {
+  // The control: a destination that was public at registration but REBINDS to a
+  // loopback IP by delivery time is a genuine SSRF refusal — PERMANENT — and is
+  // dead-lettered immediately (a WebhookDispatcherError, not a raw resolver fault).
+  var xdb = _sqliteExternalDb();
+  var HOST_URL = "https://hook.example.test/hooks";
+  var calls = 0;
+  var dnsLookup = function () {
+    calls += 1;
+    if (calls === 1) return Promise.resolve([{ address: "93.184.216.34", family: 4 }]); // register: public
+    return Promise.resolve([{ address: "127.0.0.1", family: 4 }]);                        // deliver: rebound internal
+  };
+  var wd = _newDispatcher(xdb, _stubTransport(), { dnsLookup: dnsLookup });
+  await wd.declareSchema();
+  await wd.registerEndpoint({ endpointId: "rb", url: HOST_URL, eventTypes: ["e"], secret: "s" });
+  var res = await wd.dispatch("e", { n: 1 });
+  check("SSRF-rebind at delivery not delivered", res.delivered === 0 && res.failed === 1);
+  check("SSRF-rebind at delivery is dead-lettered (permanent)", res.deliveries[0].dead === true);
+  var rows = await wd.deliveries.list({ endpointId: "rb" });
+  check("SSRF-rebind delivery status is dead", rows.length === 1 && rows[0].status === "dead");
+  check("SSRF-refused error recorded", /ssrf-refused|resolves to/.test(rows[0].lastError || ""));
 }
 
 async function testMysqlSchemaNoPartialIndex() {
