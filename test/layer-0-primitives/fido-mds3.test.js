@@ -28,36 +28,50 @@ var check = helpers.check;
 
 var fwkErr = require("../../lib/framework-error");
 
-// Mint an RSA self-signed cert + matching private-key PEM via the
-// vendored pki bundle. RS256 keeps the JWS verification path simple
-// and matches the real FIDO Alliance BLOB shape. The same cert is
-// used as both the JWS leaf (x5c[0]) and the trust root passed via
-// caCertificate so the chain anchors against itself — this is the
-// operator escape-hatch path the primitive itself documents.
-async function _makeSelfSignedRsaCert() {
+// Mint a self-signed cert + matching private-key PEM via the vendored pki
+// bundle. `opts.algo` selects the key type ("RSA" default / "EC" P-256 /
+// "Ed25519") so a single builder drives the RS256 / ES256 / alg-mismatch JWS
+// verify branches; `opts.ca` toggles basicConstraints cA (false exercises the
+// fingerprint-anchor fallback, which accepts a pinned non-CA leaf only on an
+// exact fingerprint match); `opts.notBefore` / `opts.notAfter` drive the
+// not-yet-valid / expired validity-window refusals. The cert is used as both
+// the JWS leaf (x5c[0]) and the trust root passed via caCertificate so the
+// chain anchors against itself — the operator escape-hatch the primitive docs.
+async function _makeCert(opts) {
+  opts = opts || {};
   var pki = require("../../lib/vendor/pki.cjs");
   var x509 = pki.x509;
-  var keys = await nodeCrypto.webcrypto.subtle.generateKey(
-    { name:           "RSASSA-PKCS1-v1_5",
-      modulusLength:  2048,                                                        // allow:raw-byte-literal — RSA modulus bits
-      publicExponent: new Uint8Array([1, 0, 1]),                                   // allow:raw-byte-literal — RSA F4 exponent
-      hash:           "SHA-256" },
-    true, ["sign", "verify"]);
+  var algo = opts.algo || "RSA";
+  var isCa = opts.ca === undefined ? true : opts.ca;
   var now = new Date();
-  var notAfter = new Date(now.getTime() + 7 * 86400000);                           // allow:raw-byte-literal — fixture validity ms
+  var notBefore = opts.notBefore || now;
+  var notAfter  = opts.notAfter  || new Date(now.getTime() + 7 * 86400000);        // allow:raw-byte-literal — fixture validity ms
+  var genAlg, signAlg;
+  if (algo === "EC") {
+    genAlg  = { name: "ECDSA", namedCurve: "P-256" };
+    signAlg = { name: "ECDSA", hash: "SHA-256" };
+  } else if (algo === "Ed25519") {
+    genAlg  = { name: "Ed25519" };
+    signAlg = { name: "Ed25519" };
+  } else {
+    genAlg  = { name:           "RSASSA-PKCS1-v1_5",
+                modulusLength:  2048,                                              // allow:raw-byte-literal — RSA modulus bits
+                publicExponent: new Uint8Array([1, 0, 1]),                         // allow:raw-byte-literal — RSA F4 exponent
+                hash:           "SHA-256" };
+    signAlg = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
+  }
+  var keys = await nodeCrypto.webcrypto.subtle.generateKey(genAlg, true, ["sign", "verify"]);
+  var exts = [ new x509.BasicConstraintsExtension(isCa, 0, true) ];
+  if (isCa) exts.push(new x509.KeyUsagesExtension(
+    x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.digitalSignature, true));
   var cert = await x509.X509CertificateGenerator.createSelfSigned({
-    serialNumber:     "01",
-    name:             "CN=blamejs-mds3-test-root",
-    notBefore:        now,
+    serialNumber:     opts.serial || "01",
+    name:             "CN=" + (opts.cn || "blamejs-mds3-test-root"),
+    notBefore:        notBefore,
     notAfter:         notAfter,
-    signingAlgorithm: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    signingAlgorithm: signAlg,
     keys:             keys,
-    extensions:       [
-      new x509.BasicConstraintsExtension(true, 0, true),
-      new x509.KeyUsagesExtension(
-        x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.digitalSignature,
-        true),
-    ],
+    extensions:       exts,
   });
   var pkcs8 = await nodeCrypto.webcrypto.subtle.exportKey("pkcs8", keys.privateKey);
   var pkB64 = Buffer.from(pkcs8).toString("base64").match(/.{1,64}/g).join("\n");  // allow:raw-byte-literal — RFC 7468 line width
@@ -65,27 +79,35 @@ async function _makeSelfSignedRsaCert() {
   return { keyPem: keyPem, certPem: cert.toString("pem") };
 }
 
+// RS256 self-signed cert — the common case, matching the real FIDO Alliance
+// BLOB shape. Thin wrapper over the general builder.
+async function _makeSelfSignedRsaCert() {
+  return _makeCert({});
+}
+
 function _b64url(buf) {
   return Buffer.from(buf).toString("base64url");
+}
+
+// Assemble the compact JWS from a caller-supplied header + payload, signing the
+// signing-input with `hashAlgo` + `signOpts` (node:crypto.sign options). One
+// core so the RS256 / ES256 / PS256 / Ed25519 fixture builders don't each
+// re-roll the base64url-segment-then-sign body.
+function _makeBlobSig(header, payload, keyPem, hashAlgo, signOpts) {
+  var headerB64  = _b64url(JSON.stringify(header));
+  var payloadB64 = _b64url(JSON.stringify(payload));
+  var signingInput = headerB64 + "." + payloadB64;
+  var sig = nodeCrypto.sign(hashAlgo, Buffer.from(signingInput, "ascii"),
+                            Object.assign({ key: keyPem }, signOpts || {}));
+  return signingInput + "." + _b64url(sig);
 }
 
 // Build a synthetic JWS-signed MDS3 BLOB. payload is the inner JSON;
 // keyPem signs it with RS256; certPem is the leaf x5c entry.
 function _makeBlob(payload, keyPem, certPem) {
-  // Strip PEM markers + whitespace from cert to get DER-base64.
-  var derB64 = certPem
-    .replace(/-----BEGIN CERTIFICATE-----/g, "")
-    .replace(/-----END CERTIFICATE-----/g, "")
-    .replace(/\s+/g, "");
-  var header = { alg: "RS256", typ: "JWT", x5c: [derB64] };
-  var headerB64  = _b64url(JSON.stringify(header));
-  var payloadB64 = _b64url(JSON.stringify(payload));
-  var signingInput = headerB64 + "." + payloadB64;
-  var sig = nodeCrypto.sign("sha256", Buffer.from(signingInput, "ascii"), {
-    key:     keyPem,
-    padding: nodeCrypto.constants.RSA_PKCS1_PADDING,
-  });
-  return signingInput + "." + _b64url(sig);
+  var header = { alg: "RS256", typ: "JWT", x5c: [_certDerB64(certPem)] };
+  return _makeBlobSig(header, payload, keyPem, "sha256",
+                      { padding: nodeCrypto.constants.RSA_PKCS1_PADDING });
 }
 
 // In-future date (YYYY-MM-DD) so nextUpdate parsing succeeds. A negative
@@ -109,14 +131,8 @@ function _certDerB64(certPem) {
 // non-empty base64url even when the header advertises a different alg — the
 // verifier reaches its alg check before the signature check.
 function _makeBlobRaw(header, payload, keyPem) {
-  var headerB64  = _b64url(JSON.stringify(header));
-  var payloadB64 = _b64url(JSON.stringify(payload));
-  var signingInput = headerB64 + "." + payloadB64;
-  var sig = nodeCrypto.sign("sha256", Buffer.from(signingInput, "ascii"), {
-    key:     keyPem,
-    padding: nodeCrypto.constants.RSA_PKCS1_PADDING,
-  });
-  return signingInput + "." + _b64url(sig);
+  return _makeBlobSig(header, payload, keyPem, "sha256",
+                      { padding: nodeCrypto.constants.RSA_PKCS1_PADDING });
 }
 
 // Mock httpClient.request with `handler`, reload fido-mds3 so it re-resolves
@@ -143,6 +159,26 @@ function _respondWith(token) {
   return async function () {
     return { statusCode: 200, headers: {}, body: Buffer.from(token, "ascii") };    // allow:raw-byte-literal — HTTP success
   };
+}
+
+// Patch the vendored SettingsService.getRootCertificates (the DEFAULT-trust-root
+// resolver used when no caCertificate override is supplied), run fn, restore.
+// `fakeGetter` receives the { identifier } arg fido-mds3 passes and returns the
+// PEM array (or throws) so the no-trust-root fail-closed branch and the
+// default-roots stale refusal can be driven without a live vendored bundle
+// edit. fido-mds3 reads _wa.SettingsService.getRootCertificates dynamically at
+// resolve time, so no module reload is needed — the same cached vendor object
+// backs both this test and the primitive.
+async function _withMockedRoots(fakeGetter, fn) {
+  var wa = require("../../lib/vendor/simplewebauthn-server.cjs");
+  var svc = wa.SettingsService;
+  var orig = svc.getRootCertificates;
+  svc.getRootCertificates = fakeGetter;
+  try {
+    return await fn();
+  } finally {
+    svc.getRootCertificates = orig;
+  }
 }
 
 // ---- surface ----
@@ -777,6 +813,473 @@ async function testInternalVerifyRejectsBadJws() {
         threw && /bad-jws/.test(threw.code || ""));
 }
 
+// ---- fetch: x5c chain validity + anchoring adversarial branches ----
+
+async function testFetchExpiredSigningCert() {
+  // A signed BLOB whose leaf certificate has already expired must be refused,
+  // even though the JWS signature itself would verify. An attacker replaying an
+  // ancient BLOB signed under a now-expired cert must not slip past the validity
+  // window (fail-open would pin operators to a frozen, possibly-revoked list).
+  var expired = await _makeCert({
+    notBefore: new Date(Date.now() - 30 * 86400000),                               // allow:raw-byte-literal — fixture days
+    notAfter:  new Date(Date.now() - 10 * 86400000),                               // allow:raw-byte-literal — fixture days
+  });
+  var token = _makeBlob({
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, expired.keyPem, expired.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://expired.invalid/mds3", caCertificate: expired.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a BLOB whose leaf signing cert has expired",
+        threw && /cert-expired/.test(threw.code || ""));
+}
+
+async function testFetchNotYetValidCert() {
+  // A leaf certificate whose notBefore is in the future is not yet valid and
+  // must be refused — a pre-dated / clock-skew forgery must not validate.
+  var future = await _makeCert({
+    notBefore: new Date(Date.now() + 20 * 86400000),                               // allow:raw-byte-literal — fixture days
+    notAfter:  new Date(Date.now() + 40 * 86400000),                               // allow:raw-byte-literal — fixture days
+  });
+  var token = _makeBlob({
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, future.keyPem, future.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://notyet.invalid/mds3", caCertificate: future.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a BLOB whose leaf signing cert is not yet valid",
+        threw && /cert-not-yet-valid/.test(threw.code || ""));
+}
+
+async function testFetchBrokenChain() {
+  // A two-cert x5c where the leaf is NOT validly issued by the second link must
+  // be refused with chain-broken — a cert spliced into the chain that did not
+  // sign the leaf cannot bridge it to the root, even when that second cert is
+  // itself the pinned trust anchor.
+  var leaf  = await _makeCert({ cn: "blamejs-leaf" });
+  var other = await _makeCert({ cn: "blamejs-other-ca" });
+  var header = { alg: "RS256", typ: "JWT",
+                 x5c: [_certDerB64(leaf.certPem), _certDerB64(other.certPem)] };
+  var token = _makeBlobRaw(header, {
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, leaf.keyPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://broken.invalid/mds3", caCertificate: other.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a two-cert chain whose leaf is not issued by the next link",
+        threw && /chain-broken/.test(threw.code || ""));
+}
+
+async function testFetchGarbageRootInArrayStillAnchors() {
+  // caCertificate as an ARRAY exercises the array-of-PEMs override path; a
+  // garbage PEM among the roots must be skipped (parse-fail -> continue), and a
+  // valid trailing root still anchors the chain.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 5, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+                metadataStatement: { description: "arr" }, statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var garbageRoot = "-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----\n";
+  var blob = null, threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      blob = await fm.fetch({ url: "https://arrroot.invalid/mds3",
+                             caCertificate: [garbageRoot, pair.certPem], force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch skips an unparseable root in the caCertificate array and anchors on a valid one",
+        !threw && blob && blob.no === 5);                                          // allow:raw-byte-literal — fixture identifier
+}
+
+async function testFetchFingerprintAnchorsPinnedNonCaLeaf() {
+  // A self-signed, NON-CA leaf pinned as the trust root anchors via the exact
+  // fingerprint256-match fallback: issuerValidlyIssued fails because the pinned
+  // cert asserts basicConstraints cA:FALSE, but an operator pinning that exact
+  // cert as their root trusts it by identity. Covers the CAs-ship-root-in-x5c
+  // convenience branch (a SHA-256 collision would be needed to abuse it).
+  var leaf = await _makeCert({ ca: false });
+  var token = _makeBlob({
+    no: 6, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, leaf.keyPem, leaf.certPem);
+  var blob = null, threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      blob = await fm.fetch({ url: "https://fp.invalid/mds3", caCertificate: leaf.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch anchors a pinned non-CA leaf via exact fingerprint match",
+        !threw && blob && blob.no === 6);                                          // allow:raw-byte-literal — fixture identifier
+}
+
+// ---- fetch: JWS alg verify branches (ES256 / PS256 / alg-key mismatch) ----
+
+async function testFetchEs256() {
+  // An ES256 (ECDSA P-256) BLOB exercises the dsaEncoding verify branch. MDS3 is
+  // RS256 in practice, but the shared alg table lists ES256; a real ES256 BLOB
+  // must validate without a code edit.
+  var ec = await _makeCert({ algo: "EC" });
+  var header = { alg: "ES256", typ: "JWT", x5c: [_certDerB64(ec.certPem)] };
+  var token = _makeBlobSig(header, {
+    no: 7, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+                metadataStatement: { description: "ec" }, statusReports: [] }],
+  }, ec.keyPem, "sha256", { dsaEncoding: "ieee-p1363" });
+  var blob = null, threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      blob = await fm.fetch({ url: "https://es256.invalid/mds3", caCertificate: ec.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch verifies an ES256 (ECDSA) BLOB",
+        !threw && blob && blob.no === 7);                                          // allow:raw-byte-literal — fixture identifier
+}
+
+async function testFetchPs256() {
+  // A PS256 (RSASSA-PSS) BLOB exercises the saltLength verify branch. The
+  // signer's RSA_PSS_SALTLEN_DIGEST salt equals the SHA-256 digest length, which
+  // is exactly the salt length the shared verifier expects for PS256.
+  var rsa = await _makeSelfSignedRsaCert();
+  var header = { alg: "PS256", typ: "JWT", x5c: [_certDerB64(rsa.certPem)] };
+  var token = _makeBlobSig(header, {
+    no: 8, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, rsa.keyPem, "sha256", {
+    padding:    nodeCrypto.constants.RSA_PKCS1_PSS_PADDING,
+    saltLength: nodeCrypto.constants.RSA_PSS_SALTLEN_DIGEST,
+  });
+  var blob = null, threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      blob = await fm.fetch({ url: "https://ps256.invalid/mds3", caCertificate: rsa.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch verifies a PS256 (RSASSA-PSS) BLOB",
+        !threw && blob && blob.no === 8);                                          // allow:raw-byte-literal — fixture identifier
+}
+
+async function testFetchAlgKeyTypeMismatch() {
+  // A header advertising RS256 (a hash + RSA-padding verify) over a leaf carrying
+  // an Ed25519 key makes node:crypto.verify throw ("invalid digest"); the
+  // verifier must CATCH it and refuse as bad-signature rather than let the
+  // exception crash the request. Alg/key-type confusion is refused, not
+  // propagated.
+  var ed = await _makeCert({ algo: "Ed25519" });
+  var header = { alg: "RS256", typ: "JWT", x5c: [_certDerB64(ed.certPem)] };
+  var token = _makeBlobSig(header, {
+    no: 9, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, ed.keyPem, null, {});
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://algmix.invalid/mds3", caCertificate: ed.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses (not crashes) when the leaf key type cannot satisfy the header alg",
+        threw && /bad-signature/.test(threw.code || ""));
+}
+
+// ---- fetch: JWS parse-segment adversarial branches ----
+
+async function testFetchBadJwsSegment() {
+  // A JWS whose SIGNATURE segment carries a non-base64url character is refused at
+  // decode (bad-jws-segment). The header/payload segments are decoded inside a
+  // try that rewraps any decode failure as bad-jws-json, so the signature
+  // segment — decoded outside that try — is the one that surfaces the raw
+  // segment error; a mangled sig can't be quietly coerced to empty bytes.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var parts = token.split(".");
+  var mangled = parts[0] + "." + parts[1] + "." + parts[2] + "#bad";   // '#' is not base64url
+  var threw = null;
+  await _withMockedHttp(_respondWith(mangled), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://seg.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a JWS signature segment with a non-base64url character",
+        threw && /bad-jws-segment/.test(threw.code || ""));
+}
+
+async function testFetchBadJwsJson() {
+  // A header segment that is valid base64url but decodes to invalid JSON is
+  // refused as bad-jws-json (the decode succeeds, the parse fails).
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var parts = token.split(".");
+  var mangled = _b64url("{ not valid json ") + "." + parts[1] + "." + parts[2];
+  var threw = null;
+  await _withMockedHttp(_respondWith(mangled), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://json.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a base64url header that is not valid JSON",
+        threw && /bad-jws-json/.test(threw.code || ""));
+}
+
+async function testFetchBadX5cElements() {
+  // x5c array present but the element itself is unusable. An empty-string and a
+  // non-string element are refused as bad-x5c (inside chain validation); an
+  // EMPTY x5c array is refused earlier as bad-jws-header (the header-shape gate).
+  var pair = await _makeSelfSignedRsaCert();
+  var goodPayload = {
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  };
+  var emptyStr  = _makeBlobRaw({ alg: "RS256", typ: "JWT", x5c: [""]  }, goodPayload, pair.keyPem);
+  var nonString = _makeBlobRaw({ alg: "RS256", typ: "JWT", x5c: [123] }, goodPayload, pair.keyPem);  // allow:raw-byte-literal — bad x5c type
+  var emptyArr  = _makeBlobRaw({ alg: "RS256", typ: "JWT", x5c: []    }, goodPayload, pair.keyPem);
+  async function fetchExpect(token, codeRe, label) {
+    var threw = null;
+    await _withMockedHttp(_respondWith(token), async function (fm) {
+      try {
+        await fm.fetch({ url: "https://x5c.invalid/mds3", caCertificate: pair.certPem, force: true });
+      } catch (e) { threw = e; }
+    });
+    check(label, threw && codeRe.test(threw.code || ""));
+  }
+  await fetchExpect(emptyStr,  /bad-x5c/,        "fetch rejects an empty-string x5c element");
+  await fetchExpect(nonString, /bad-x5c/,        "fetch rejects a non-string x5c element");
+  await fetchExpect(emptyArr,  /bad-jws-header/, "fetch rejects an empty x5c array");
+}
+
+// ---- fetch: payload-shape + nextUpdate adversarial branches ----
+
+async function testFetchPayloadMissingEntries() {
+  // A validly-signed, anchored BLOB whose payload lacks an entries array is
+  // refused as bad-payload.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({ no: 1, nextUpdate: _futureDateString(7) }, pair.keyPem, pair.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://noentries.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a payload with no entries array",
+        threw && /bad-payload/.test(threw.code || ""));
+}
+
+async function testFetchPayloadMissingNo() {
+  // A payload with entries but no numeric 'no' sequence number is refused.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({ nextUpdate: _futureDateString(7), entries: [] }, pair.keyPem, pair.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      await fm.fetch({ url: "https://nono.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch refuses a payload missing the numeric 'no'",
+        threw && /bad-payload/.test(threw.code || ""));
+}
+
+async function testFetchBadNextUpdateShapes() {
+  // nextUpdate must be a real YYYY-MM-DD calendar date. A non-string value, a
+  // non-date string, and an out-of-range month each parse to null and are
+  // refused as bad-payload (a malformed nextUpdate must not masquerade as a
+  // valid future timestamp and influence the cache-TTL clamp).
+  var pair = await _makeSelfSignedRsaCert();
+  function payload(nu) {
+    return { no: 1, nextUpdate: nu,
+             entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }] };
+  }
+  var numberNu = _makeBlob(payload(20260101), pair.keyPem, pair.certPem);          // allow:raw-byte-literal — non-string nextUpdate
+  var wordNu   = _makeBlob(payload("not-a-date"),  pair.keyPem, pair.certPem);
+  var badMonth = _makeBlob(payload("2026-13-15"),  pair.keyPem, pair.certPem);
+  async function fetchExpect(token, label) {
+    var threw = null;
+    await _withMockedHttp(_respondWith(token), async function (fm) {
+      try {
+        await fm.fetch({ url: "https://nu.invalid/mds3", caCertificate: pair.certPem, force: true });
+      } catch (e) { threw = e; }
+    });
+    check(label, threw && /bad-payload/.test(threw.code || ""));
+  }
+  await fetchExpect(numberNu, "fetch refuses a non-string nextUpdate");
+  await fetchExpect(wordNu,   "fetch refuses a nextUpdate that is not a date");
+  await fetchExpect(badMonth, "fetch refuses a nextUpdate with an out-of-range month");
+}
+
+async function testFetchFarFutureNextUpdateClampsTtl() {
+  // A nextUpdate far beyond the 30-day cache ceiling is still accepted; the TTL
+  // clamp caps the cached lifetime at the ceiling so a runaway nextUpdate can't
+  // freeze trust indefinitely.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 11, nextUpdate: _futureDateString(45),                                     // allow:raw-byte-literal — beyond 30-day ceiling
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var blob = null, threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try {
+      blob = await fm.fetch({ url: "https://farfuture.invalid/mds3", caCertificate: pair.certPem, force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch accepts a far-future nextUpdate (TTL clamped to the ceiling)",
+        !threw && blob && blob.no === 11);                                         // allow:raw-byte-literal — fixture identifier
+}
+
+// ---- fetch / parse: default-trust-root resolution branches ----
+
+async function testFetchNoTrustRootWhenVendorEmpty() {
+  // When the DEFAULT trust-root resolver yields no anchors, fetch must fail
+  // closed with no-trust-root rather than proceed against an empty root set
+  // (which would let any chain "anchor" against nothing). Driven for an empty
+  // return, a null return, and a throwing resolver.
+  async function expectNoRoot(getter, label) {
+    var threw = null;
+    await _withMockedRoots(getter, async function () {
+      try { await b.auth.fidoMds3.fetch({ url: "https://noroot.invalid/mds3" }); }
+      catch (e) { threw = e; }
+    });
+    check(label, threw && /no-trust-root/.test(threw.code || ""));
+  }
+  await expectNoRoot(function () { return []; },
+                     "fetch fails closed when the default root set is empty");
+  await expectNoRoot(function () { return null; },
+                     "fetch fails closed when the default root resolver returns null");
+  await expectNoRoot(function () { throw new Error("vendor boom"); },
+                     "fetch fails closed when the default root resolver throws");
+}
+
+async function testParsePathRefusesStaleBlob() {
+  // The internal parse path (_verifyAndParseBlob, DEFAULT vendored roots) must
+  // enforce the same stale-BLOB refusal as fetch — both route through the one
+  // shared verifier. Pinning the default root to a self-signed cert lets the
+  // parse path reach the stale check on an anchoring chain and confirms it
+  // refuses a nextUpdate-in-the-past BLOB (the v0.16.18 fail-open class, on the
+  // non-fetch path).
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 1, nextUpdate: _futureDateString(-7),   // 7 days in the PAST — stale
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var threw = null;
+  await _withMockedRoots(function () { return [pair.certPem]; }, async function () {
+    try { b.auth.fidoMds3._verifyAndParseBlob(token); }
+    catch (e) { threw = e; }
+  });
+  check("_verifyAndParseBlob (default-roots parse path) refuses a stale BLOB",
+        threw && /blob-stale/.test(threw.code || ""));
+}
+
+async function testFetchNoArgUsesDefaultRoots() {
+  // fetch() with no argument object exercises the opts-defaulting path and the
+  // real vendored default-root resolution. A synthetic BLOB signed by a test
+  // cert cannot anchor to the genuine FIDO root, so it is refused — proving
+  // fetch() reaches root resolution + chain anchoring even with no opts passed.
+  var pair = await _makeSelfSignedRsaCert();
+  var token = _makeBlob({
+    no: 1, nextUpdate: _futureDateString(7),
+    entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
+  }, pair.keyPem, pair.certPem);
+  var threw = null;
+  await _withMockedHttp(_respondWith(token), async function (fm) {
+    try { await fm.fetch(); }
+    catch (e) { threw = e; }
+  });
+  check("fetch() with no opts resolves default roots and refuses an unanchored BLOB",
+        threw && /chain-not-anchored/.test(threw.code || ""));
+}
+
+async function testFetchNetworkFailureNonError() {
+  // The transport rejection is normalized to fido-mds3/network even when it is
+  // not a well-formed Error (a message-less value); the network wrapper falls
+  // back to String(e) rather than surfacing "undefined" in the audit + message.
+  var threw = null;
+  await _withMockedHttp(async function () {
+    var rejection = new Error("");   // Error with an empty message
+    throw rejection;
+  }, async function (fm) {
+    try {
+      await fm.fetch({ url: "https://nonerr.invalid/mds3", caCertificate: "ca-not-reached", force: true });
+    } catch (e) { threw = e; }
+  });
+  check("fetch normalizes a message-less transport rejection to fido-mds3/network",
+        threw && /fido-mds3\/network/.test(threw.code || ""));
+}
+
+// ---- lookupAaguid / certifiedLevel malformed-entry branches ----
+
+function testLookupAaguidSkipsMalformedEntries() {
+  // Entries that are null or whose aaguid is non-string are skipped during
+  // lookup; a valid later entry still resolves.
+  var blob = {
+    entries: [
+      null,
+      { aaguid: 12345, metadataStatement: { description: "non-string aaguid" } },  // allow:raw-byte-literal — malformed entry
+      { aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+        metadataStatement: { description: "good" }, statusReports: [] },
+    ],
+  };
+  var hit = b.auth.fidoMds3.lookupAaguid(blob, "01234567-89ab-cdef-0123-456789abcdef");
+  check("lookupAaguid skips null + non-string-aaguid entries and still finds the match",
+        hit && hit.metadataStatement.description === "good");
+}
+
+function testCertifiedLevelSkipsMalformedReports() {
+  // A null report, a non-string status, and an over-64-char status token are all
+  // skipped when resolving the certified level; only the well-formed grant
+  // counts. Guards the length-bound-before-regex convention (an unbounded status
+  // must never reach the CERT_LEVEL_RE test).
+  var blob = {
+    entries: [{
+      aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+      statusReports: [
+        null,
+        { status: 42 },                                                            // allow:raw-byte-literal — non-string status
+        { status: "A".repeat(65) },                                                // allow:raw-byte-literal — over-64-char status
+        { status: "FIDO_CERTIFIED_L1" },
+      ],
+    }],
+  };
+  var rv = b.auth.fidoMds3.verifyAuthenticator(blob, {
+    aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+  });
+  check("certifiedLevel ignores null / non-string / over-long status reports",
+        rv.certifiedLevel.level === 1 && rv.ok === true);
+}
+
+function testVerifyAuthenticatorEntryWithoutStatusReports() {
+  // An entry that omits statusReports (a non-array) is treated as an empty report
+  // list: ok=true, certifiedLevel 0. Exercises the non-array coercion in
+  // verifyAuthenticator.
+  var blob = {
+    entries: [{
+      aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+      metadataStatement: { description: "no reports" },
+    }],
+  };
+  var rv = b.auth.fidoMds3.verifyAuthenticator(blob, {
+    aaguid: "01234567-89ab-cdef-0123-456789abcdef",
+  });
+  check("verifyAuthenticator treats a missing statusReports as empty (ok=true, level 0)",
+        rv.ok === true && rv.certifiedLevel.level === 0 &&
+        rv.statement && rv.statement.description === "no reports");
+}
+
 // ---- run ----
 
 // fido-mds3.fetch dials the MDS3 endpoint through the shared httpClient
@@ -823,6 +1326,28 @@ async function run() {
     await testFetchRejectsEmptyUrl();
     await testFetchRejectsBadTimeout();
     await testInternalVerifyRejectsBadJws();
+    await testFetchExpiredSigningCert();
+    await testFetchNotYetValidCert();
+    await testFetchBrokenChain();
+    await testFetchGarbageRootInArrayStillAnchors();
+    await testFetchFingerprintAnchorsPinnedNonCaLeaf();
+    await testFetchEs256();
+    await testFetchPs256();
+    await testFetchAlgKeyTypeMismatch();
+    await testFetchBadJwsSegment();
+    await testFetchBadJwsJson();
+    await testFetchBadX5cElements();
+    await testFetchPayloadMissingEntries();
+    await testFetchPayloadMissingNo();
+    await testFetchBadNextUpdateShapes();
+    await testFetchFarFutureNextUpdateClampsTtl();
+    await testFetchNoTrustRootWhenVendorEmpty();
+    await testParsePathRefusesStaleBlob();
+    await testFetchNoArgUsesDefaultRoots();
+    await testFetchNetworkFailureNonError();
+    testLookupAaguidSkipsMalformedEntries();
+    testCertifiedLevelSkipsMalformedReports();
+    testVerifyAuthenticatorEntryWithoutStatusReports();
   } finally {
     await _drainTcpHandles();
   }

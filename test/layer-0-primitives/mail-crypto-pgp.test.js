@@ -956,6 +956,120 @@ async function testPgpWkdFetchStubbed() {
     badMax && badMax.code === "mail-crypto/pgp/bad-max-key-bytes");
 }
 
+// ---- verify: global invariants over a hostile signature-MPI corpus --------
+//
+// Two properties must hold for EVERY structurally-hostile signature the parser
+// lets through to the crypto stage: verify() NEVER throws on signature content
+// (the v0.16.12 truncated-MPI regression class — untrusted bytes return a
+// verdict, they don't escape as an exception), and verify() NEVER returns
+// ok:true for anything but the genuine signature (no fail-open). The real
+// signatures supply valid framing (issuer fingerprint + leading-hash), so each
+// mutated MPI tail reaches the MPI-decode + asymmetric-verify branches rather
+// than short-circuiting at an earlier structural check.
+
+function testVerifyFailsClosedOnHostileMpiCorpus() {
+  var msg     = "hostile-mpi-corpus";
+  var edReal  = pgp.sign({ message: msg, privateKeyPem: _edKp.privateKey });
+  var rsaReal = pgp.sign({ message: msg, privateKeyPem: _rsaKp.privateKey });
+  var edD     = _dissect(edReal.armored);
+  var rsaD    = _dissect(rsaReal.armored);
+
+  var tails = [
+    Buffer.alloc(0),                                                    // no MPI at all
+    Buffer.from([0x00]),                                               // MPI length header truncated
+    Buffer.from([0xff]),                                               // 1-byte high tail
+    Buffer.from([0x01, 0x00]),                                         // header claims 1 bit, no value
+    Buffer.from([0x01, 0x00, 0x00]),                                   // header vs value length mismatch
+    Buffer.from([0x00, 0x08]),                                         // zero-bit MPI header
+    Buffer.concat([Buffer.from([0x01, 0x00]), Buffer.alloc(32, 0x00)]), // 32-byte all-zero component
+    Buffer.concat([Buffer.from([0x01, 0x00]), Buffer.alloc(32, 0xff)]), // 32-byte all-ones component
+    Buffer.concat([Buffer.from([0xff, 0xff]), Buffer.alloc(4, 0xaa)]),  // 65535-bit header, 4-byte value
+    Buffer.concat([Buffer.from([0x09, 0x00]), Buffer.alloc(288, 0x33)]), // over-modulus RSA-sized value
+  ];
+
+  var fixtures = [
+    { d: edD,  key: _edKp.publicKey },
+    { d: rsaD, key: _rsaKp.publicKey },
+  ];
+  var cases = 0, threw = 0, failOpen = 0;
+  for (var fi = 0; fi < fixtures.length; fi += 1) {
+    for (var ti = 0; ti < tails.length; ti += 1) {
+      cases += 1;
+      var armored = _rebuild(fixtures[fi].d.headerToHashLeft, tails[ti]);
+      try {
+        var r = pgp.verify({ message: msg, armored: armored, publicKeyPem: fixtures[fi].key });
+        if (r && r.ok === true) failOpen += 1;
+      } catch (_e) { threw += 1; }
+    }
+  }
+  check("verify: hostile MPI-tail corpus never throws (v0.16.12 class holds)", threw === 0);
+  check("verify: hostile MPI-tail corpus never fails open", failOpen === 0);
+  check("verify: hostile MPI-tail corpus swept both algorithms fully",
+    cases === tails.length * fixtures.length);
+}
+
+// ---- decrypt: only typed MailCryptoError escapes on hostile envelopes ------
+//
+// Every attacker-controlled length field in the envelope (recipient count,
+// ridLen, ct/wrapped-key/body lengths) must be bounds-checked before the read
+// so a truncated envelope surfaces as a typed mail-crypto/pgp/* refusal, never
+// a raw RangeError leaking out of decrypt(). Sweeps the truncation boundary at
+// each field plus the decapsulate-reject and no-matching-recipient exits.
+
+function testDecryptTypedThrowsOnHostileEnvelopeCorpus() {
+  var MAGIC = Buffer.from("BJ-PGP-PQ", "ascii");
+  var rid   = Buffer.from([0xaa]);
+  var kp    = pq.ml_kem_1024.keygen();
+
+  var envs = [
+    Buffer.concat([MAGIC, Buffer.from([1, 1])]),                                   // count=1, no recipient
+    Buffer.concat([MAGIC, Buffer.from([1, 1, 5])]),                                // ridLen=5, no rid
+    Buffer.concat([MAGIC, Buffer.from([1, 1, 1, 0xaa])]),                          // rid ok, no ctLen
+    Buffer.concat([MAGIC, Buffer.from([1, 1, 1, 0xaa, 0x00, 0x05])]),              // ctLen=5, no ct
+    Buffer.concat([MAGIC, Buffer.from([1, 1, 1, 0xaa, 0x00, 0x01, 0x00])]),        // ct ok, no wkLen
+    Buffer.concat([MAGIC, Buffer.from([1, 1, 1, 0xaa, 0x00, 0x01, 0x00, 0x00, 0x05])]), // wkLen=5, no wk
+    Buffer.concat([MAGIC, Buffer.from([1, 1, 1, 0xaa, 0x00, 0x01, 0x11, 0x00, 0x01, 0x22])]), // matches → decap-reject
+    Buffer.concat([MAGIC, Buffer.from([1, 1, 1, 0xbb, 0x00, 0x01, 0x11, 0x00, 0x01, 0x22, 0x00, 0x00, 0x00, 0x00])]), // rid mismatch → no-match
+  ];
+
+  var cases = 0, untyped = 0;
+  for (var i = 0; i < envs.length; i += 1) {
+    cases += 1;
+    try { pgp.decrypt({ envelope: envs[i], recipientId: rid, secretKey: kp.secretKey }); }
+    catch (e) {
+      if (!(e && typeof e.code === "string" && e.code.indexOf("mail-crypto/pgp/") === 0)) untyped += 1;
+    }
+  }
+  check("decrypt: hostile-envelope corpus surfaces only typed MailCryptoError", untyped === 0);
+  check("decrypt: hostile-envelope corpus swept every length boundary", cases === envs.length);
+}
+
+// ---- verify: the hash-algorithm octet is signed (confusion defense) --------
+//
+// The signature's hash-algorithm octet sits inside the signed section, so any
+// substitution changes both the recomputed hash input and (for RSA) the
+// EMSA-PKCS1 DigestInfo. Swapping it for the OTHER supported algorithm — a
+// value the parser still accepts — must be rejected by the hash binding, not
+// silently tolerated (hash-algorithm-confusion per the module threat model).
+
+function testVerifyHashAlgorithmBinding() {
+  var msg = "hash-binding-probe";
+
+  var edSig = pgp.sign({ message: msg, privateKeyPem: _edKp.privateKey });
+  var ed    = _dissect(edSig.armored);
+  var edHdr = Buffer.from(ed.headerToHashLeft);
+  edHdr[3]  = 8;   // module Ed25519 signs under SHA-512 (10); swap to SHA-256 (8)
+  var rvE = pgp.verify({ message: msg, armored: _rebuild(edHdr, ed.sigMpis), publicKeyPem: _edKp.publicKey });
+  check("verify: Ed25519 hash-algorithm octet is bound (10→8 rejected)", rvE.ok === false);
+
+  var rsaSig = pgp.sign({ message: msg, privateKeyPem: _rsaKp.privateKey });
+  var rs     = _dissect(rsaSig.armored);
+  var rsHdr  = Buffer.from(rs.headerToHashLeft);
+  rsHdr[3]   = 10;  // module RSA signs under SHA-256 (8); swap to SHA-512 (10)
+  var rvR = pgp.verify({ message: msg, armored: _rebuild(rsHdr, rs.sigMpis), publicKeyPem: _rsaKp.publicKey });
+  check("verify: RSA hash-algorithm octet is bound (8→10 rejected)", rvR.ok === false);
+}
+
 // ---- Run ----
 
 async function run() {
@@ -994,6 +1108,11 @@ async function run() {
   testPgpDecryptArmoredErrorPaths();
   testPgpWkdComputeUrlErrorBranches();
   await testPgpWkdFetchStubbed();
+
+  // Verifier / decryptor global-invariant regression locks (fuzz-derived).
+  testVerifyFailsClosedOnHostileMpiCorpus();
+  testDecryptTypedThrowsOnHostileEnvelopeCorpus();
+  testVerifyHashAlgorithmBinding();
 }
 
 module.exports = { run: run };

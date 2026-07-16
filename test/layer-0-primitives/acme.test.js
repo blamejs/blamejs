@@ -640,63 +640,88 @@ function _acme(opts) {
 
 function _utcTime(s) { return asn1.writeNode(0x17, Buffer.from(s, "ascii")); }
 
-function _buildCert(keyIdBytes) {
-  var pair    = _newKey();
-  var spkiDer = pair.publicKey.export({ type: "spki", format: "der" });
-  var sigAlg  = asn1.writeSequence([asn1.writeOid("1.2.840.10045.4.3.2")]);   // ecdsa-with-SHA256
+// A default 4-byte serial; individual tests override it (e.g. a serial of 0
+// to drive the odd-length-hex guard in _extractAkiAndSerial).
+var _DEFAULT_SERIAL = Buffer.from([0x12, 0x34, 0x56, 0x78]);
 
-  var cnAttr = asn1.writeSequence([
-    asn1.writeOid("2.5.4.3"),
-    asn1.writePrintableString("acme-ari-test"),
-  ]);
-  var name = asn1.writeSequence([asn1.writeSet([cnAttr])]);
-
-  var validity = asn1.writeSequence([
-    _utcTime("250101000000Z"),
-    _utcTime("350101000000Z"),
-  ]);
-
-  var tbsChildren = [
-    asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2]))),          // version v3
-    asn1.writeInteger(Buffer.from([0x12, 0x34, 0x56, 0x78])),                   // serialNumber
-    sigAlg,
-    name,
-    validity,
-    name,
-    spkiDer,
-  ];
-  // A realistic cert carries several extensions; place a non-AKI one first
-  // so the AKI walker exercises its "skip this extension" path before the
-  // match. BasicConstraints with all-default fields is an empty SEQUENCE.
-  var bcExt = asn1.writeSequence([
+// BasicConstraints with all-default fields — an empty SEQUENCE. Placing a
+// non-AKI extension first lets the AKI walker exercise its skip path.
+function _bcExt() {
+  return asn1.writeSequence([
     asn1.writeOid("2.5.29.19"),                                                // id-ce-basicConstraints
     asn1.writeOctetString(asn1.writeSequence([])),
   ]);
-  if (keyIdBytes) {
-    var akiInner = asn1.writeContextImplicit(0, keyIdBytes);                    // [0] keyIdentifier
-    var akiExt   = asn1.writeSequence([
-      asn1.writeOid("2.5.29.35"),                                              // id-ce-authorityKeyIdentifier
-      asn1.writeOctetString(asn1.writeSequence([akiInner])),
-    ]);
-    tbsChildren.push(asn1.writeContextExplicit(3, asn1.writeSequence([bcExt, akiExt])));
-  } else {
-    tbsChildren.push(asn1.writeContextExplicit(3, asn1.writeSequence([bcExt])));
-  }
-  var tbs = asn1.writeSequence(tbsChildren);
+}
 
+// An AuthorityKeyIdentifier extension whose extnValue OCTET STRING wraps
+// `innerOctetContent` verbatim. A well-formed AKI passes a SEQUENCE
+// containing the keyIdentifier [0]; the malformed-shape tests pass raw
+// non-SEQUENCE bytes to drive the walker's reject branches.
+function _akiExt(innerOctetContent) {
+  return asn1.writeSequence([
+    asn1.writeOid("2.5.29.35"),                                               // id-ce-authorityKeyIdentifier
+    asn1.writeOctetString(innerOctetContent),
+  ]);
+}
+
+// Build a self-signed cert from an explicit serial + extension list. `exts`
+// false/null omits the extensions [3] field entirely. Node's
+// X509Certificate parses structure without verifying the chain, so the
+// self-signed shape is sufficient to drive AKI + serial extraction.
+function _buildCertGeneric(serial, exts) {
+  var pair    = _newKey();
+  var spkiDer = pair.publicKey.export({ type: "spki", format: "der" });
+  var sigAlg  = asn1.writeSequence([asn1.writeOid("1.2.840.10045.4.3.2")]);   // ecdsa-with-SHA256
+  var cnAttr  = asn1.writeSequence([asn1.writeOid("2.5.4.3"), asn1.writePrintableString("acme-ari-test")]);
+  var name    = asn1.writeSequence([asn1.writeSet([cnAttr])]);
+  var validity = asn1.writeSequence([_utcTime("250101000000Z"), _utcTime("350101000000Z")]);
+  var tbsChildren = [
+    asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2]))),          // version v3
+    asn1.writeInteger(serial),                                                  // serialNumber
+    sigAlg, name, validity, name, spkiDer,
+  ];
+  if (exts) tbsChildren.push(asn1.writeContextExplicit(3, asn1.writeSequence(exts)));
+  var tbs = asn1.writeSequence(tbsChildren);
   var signer = nodeCrypto.createSign("SHA256");
   signer.update(tbs);
   var sig = signer.sign(pair.privateKey);
-
   var cert = asn1.writeSequence([tbs, sigAlg, asn1.writeBitString(sig, 0)]);
   return "-----BEGIN CERTIFICATE-----\n" +
     cert.toString("base64").match(/.{1,64}/g).join("\n") +
     "\n-----END CERTIFICATE-----\n";
 }
 
+// A well-formed cert: BasicConstraints followed (optionally) by an AKI
+// carrying keyIdentifier [0]. keyIdBytes null -> no AKI extension.
+function _buildCert(keyIdBytes) {
+  var exts = [_bcExt()];
+  if (keyIdBytes) {
+    exts.push(_akiExt(asn1.writeSequence([asn1.writeContextImplicit(0, keyIdBytes)])));   // [0] keyIdentifier
+  }
+  return _buildCertGeneric(_DEFAULT_SERIAL, exts);
+}
+
 // A cert WITH an AKI keyIdentifier; built once, reused across ARI tests.
 var CERT_WITH_AKI = _buildCert(Buffer.from("0102030405060708090a0b0c0d0e0f1011121314", "hex"));
 var CERT_NO_AKI   = _buildCert(null);
+
+// Adversarial cert variants driving _extractAkiAndSerial + the AKI walker.
+//   - serial 0 renders as odd-length hex ("0") -> malformed-serial guard.
+//   - no extensions [3] field -> the walker finds no extensions node.
+//   - AKI with only authorityCertSerialNumber [2] -> no keyIdentifier [0].
+//   - AKI OCTET STRING that is an un-parseable TLV / a primitive (NULL) /
+//     a SEQUENCE with a truncated inner body -> the walker's parse-guard
+//     continue branches.
+var CERT_SERIAL_ZERO           = _buildCertGeneric(Buffer.from([0x00]), [_bcExt()]);
+var CERT_NO_EXTENSIONS         = _buildCertGeneric(_DEFAULT_SERIAL, null);
+var CERT_AKI_NO_KEYID          = _buildCertGeneric(_DEFAULT_SERIAL,
+  [_bcExt(), _akiExt(asn1.writeSequence([asn1.writeContextImplicit(2, Buffer.from([0x01, 0x02]))]))]);
+var CERT_AKI_OCTET_UNPARSEABLE = _buildCertGeneric(_DEFAULT_SERIAL,
+  [_bcExt(), _akiExt(Buffer.from([0x30, 0x82, 0xff, 0xff]))]);
+var CERT_AKI_OCTET_NOT_SEQ     = _buildCertGeneric(_DEFAULT_SERIAL,
+  [_bcExt(), _akiExt(Buffer.from([0x05, 0x00]))]);
+var CERT_AKI_INNER_BAD         = _buildCertGeneric(_DEFAULT_SERIAL,
+  [_bcExt(), _akiExt(Buffer.from([0x30, 0x02, 0x30, 0x05]))]);
 
 // ---- directory shapes ---------------------------------------------------
 
@@ -1582,6 +1607,163 @@ async function testAuditThrowIsSwallowed() {
   });
 }
 
+// ---- cert-variant driven _extractAkiAndSerial + AKI-walker rejections ----
+
+async function testFetchAriSerialZeroCert() {
+  // A serial of 0 renders as an odd-length hex string ("0"); the serial
+  // guard in _extractAkiAndSerial refuses it before any network call.
+  var acme = _acme();
+  check("fetchAri on a serial-0 cert (odd-length hex serial) -> acme/bad-cert",
+        (await _acode(acme.fetchAri({ certPem: CERT_SERIAL_ZERO }))) === "acme/bad-cert");
+}
+
+async function testFetchAriAkiWalkerRejections() {
+  // Every malformed-AKI shape resolves to acme/no-aki (fail-closed) — the
+  // walker never surfaces a truncated/garbage keyIdentifier as valid.
+  var acme = _acme();
+  check("fetchAri on a cert with no extensions field -> acme/no-aki",
+        (await _acode(acme.fetchAri({ certPem: CERT_NO_EXTENSIONS }))) === "acme/no-aki");
+  check("fetchAri on an AKI lacking keyIdentifier [0] -> acme/no-aki",
+        (await _acode(acme.fetchAri({ certPem: CERT_AKI_NO_KEYID }))) === "acme/no-aki");
+  check("fetchAri on an AKI whose octet content is an un-parseable TLV -> acme/no-aki",
+        (await _acode(acme.fetchAri({ certPem: CERT_AKI_OCTET_UNPARSEABLE }))) === "acme/no-aki");
+  check("fetchAri on an AKI whose octet content is a primitive (not a SEQUENCE) -> acme/no-aki",
+        (await _acode(acme.fetchAri({ certPem: CERT_AKI_OCTET_NOT_SEQ }))) === "acme/no-aki");
+  check("fetchAri on an AKI SEQUENCE with a truncated inner body -> acme/no-aki",
+        (await _acode(acme.fetchAri({ certPem: CERT_AKI_INNER_BAD }))) === "acme/no-aki");
+}
+
+// ---- accountKeyRollover: auto-fetch, key-material failures, success ------
+
+async function testRolloverAutoFetchesDirectory() {
+  // A fresh handle (directory not yet fetched) must fetch it inside
+  // accountKeyRollover before the no-account guard fires.
+  var acme = _acme();
+  await _withHttp(_orderHandler(_fullDir(), { status: 201 }), async function () {
+    check("accountKeyRollover on a fresh handle fetches the directory then trips no-account",
+          (await _acode(acme.accountKeyRollover(_newKey().privateKey))) === "acme/no-account");
+    check("accountKeyRollover populated the directory cache during the auto-fetch",
+          acme.directory() && acme.directory().keyChange === CA + "/key-change");
+  });
+}
+
+async function testRolloverBadKeyMaterial() {
+  var acme = _acme();
+  await _withHttp(_accountHandler(_fullDir(), { status: 201, headers: { location: CA + "/acct/1" } }), async function () {
+    await acme.newAccount();
+    // A DH KeyObject exposes export() but export({format:"jwk"}) throws;
+    // _publicJwkFromKeyObject surfaces acme/bad-account-key.
+    var dh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
+    check("accountKeyRollover with a non-EC key (jwk export throws) -> acme/bad-account-key",
+          (await _acode(acme.accountKeyRollover(dh.privateKey))) === "acme/bad-account-key");
+    // A P-256 *public* KeyObject passes the JWK shape check but cannot sign
+    // the inner JWS -> the ES256 signer throws acme/sign-failed.
+    var pub = _newKey().publicKey;
+    check("accountKeyRollover with a public KeyObject (cannot sign) -> acme/sign-failed",
+          (await _acode(acme.accountKeyRollover(pub))) === "acme/sign-failed");
+  });
+}
+
+async function testRolloverSuccessSwapsKey() {
+  var sink = _auditSink();
+  var acme = _acme({ audit: sink });
+  var captured = { keyChangeBody: null };
+  var nonce = _nonceState();
+  var handler = function (req) {
+    var h = nonce();
+    if (req.method === "GET" && req.url.indexOf("/directory") !== -1) return Promise.resolve(_resp(200, h, _fullDir()));
+    if (req.method === "HEAD") return Promise.resolve(_resp(200, h, ""));
+    if (req.method === "POST" && req.url.indexOf("/new-account") !== -1) { h.location = CA + "/acct/roll"; return Promise.resolve(_resp(201, h, { status: "valid" })); }
+    if (req.method === "POST" && req.url.indexOf("/key-change") !== -1) { captured.keyChangeBody = req.body; return Promise.resolve(_resp(200, h, { status: "valid" })); }
+    return Promise.resolve(_resp(404, h, ""));
+  };
+  var newKey = _newKey();
+  var newJwk = newKey.publicKey.export({ format: "jwk" });
+  var oldX;
+  await _withHttp(handler, async function () {
+    await acme.newAccount();
+    oldX = acme.publicJwk().x;
+    var ok = await acme.accountKeyRollover(newKey.privateKey);
+    check("accountKeyRollover success resolves true", ok === true);
+    check("accountKeyRollover swaps publicJwk() to the new key",
+          acme.publicJwk().x === newJwk.x && acme.publicJwk().y === newJwk.y && acme.publicJwk().x !== oldX);
+  });
+  // RFC 8555 §7.3.5 — the inner JWS is signed by the NEW key and commits
+  // { account, oldKey } as its payload.
+  var outer = JSON.parse(captured.keyChangeBody);
+  var innerJws = JSON.parse(Buffer.from(outer.payload, "base64url").toString("utf8"));
+  var innerProt = JSON.parse(Buffer.from(innerJws.protected, "base64url").toString("utf8"));
+  var innerPayload = JSON.parse(Buffer.from(innerJws.payload, "base64url").toString("utf8"));
+  check("rollover inner JWS protected header carries the NEW key jwk", innerProt.jwk && innerProt.jwk.x === newJwk.x);
+  check("rollover inner JWS payload commits the OLD key + account url",
+        innerPayload.oldKey && innerPayload.oldKey.x === oldX && innerPayload.account === CA + "/acct/roll");
+  check("accountKeyRollover success emits acme.account.key_rotated success audit",
+        sink.events.some(function (e) { return e.action === "acme.account.key_rotated" && e.outcome === "success"; }));
+}
+
+// ---- newOrder capitalized Location header --------------------------------
+
+async function testNewOrderCapitalLocationHeader() {
+  // A CA returning only a capitalized "Location" header still yields the
+  // order URL (case-insensitive header read).
+  var acme = _acme();
+  await _withHttp(_orderHandler(_fullDir(), { status: 201, headers: { "Location": CA + "/order/cap" }, body: { status: "pending", finalize: CA + "/finalize/cap" } }), async function () {
+    await acme.newAccount();
+    var order = await acme.newOrder({ identifiers: [{ type: "dns", value: "cap.com" }] });
+    check("newOrder reads a capitalized Location header for order.url", order.url === CA + "/order/cap");
+  });
+}
+
+// ---- waitForAuthorization timeout using the client-default pollMaxMs -----
+
+async function testWaitForAuthorizationDefaultTimeout() {
+  var acme = _acme({ pollIntervalMs: 5, pollMaxMs: 30 });
+  await _withHttp(_authHandler({ "/auth/pending": function () { return { status: 200, body: { status: "pending" } }; } }), async function () {
+    await acme.fetchDirectory();
+    check("waitForAuthorization with no opts times out via the client pollMaxMs -> acme/auth-timeout",
+          (await _acode(acme.waitForAuthorization(CA + "/auth/pending"))) === "acme/auth-timeout");
+  });
+}
+
+// ---- _parseJsonBody empty-body + Buffer-body branches --------------------
+
+async function testParseJsonBodyEmptyAndBufferBranches() {
+  var acme = _acme();
+  var nonce = _nonceState();
+  var handler = function (req) {
+    var h = nonce();
+    if (req.method === "GET" && req.url.indexOf("/directory") !== -1) return Promise.resolve(_resp(200, h, _fullDir()));
+    if (req.method === "HEAD") return Promise.resolve(_resp(200, h, ""));
+    if (req.method === "POST" && req.url.indexOf("/chal/empty-str") !== -1) return Promise.resolve({ statusCode: 200, headers: h, body: "" });
+    if (req.method === "POST" && req.url.indexOf("/chal/buffer") !== -1) return Promise.resolve({ statusCode: 200, headers: h, body: Buffer.from(JSON.stringify({ status: "processing" }), "utf8") });
+    if (req.method === "POST" && req.url.indexOf("/chal/empty-buf") !== -1) return Promise.resolve({ statusCode: 200, headers: h, body: Buffer.alloc(0) });
+    return Promise.resolve(_resp(404, h, ""));
+  };
+  await _withHttp(handler, async function () {
+    await acme.fetchDirectory();
+    var emptyStr = await acme.notifyChallengeReady(CA + "/chal/empty-str");
+    check("notifyChallengeReady with an empty-string body parses to {}", emptyStr && typeof emptyStr === "object" && emptyStr.status === undefined);
+    var bufBody = await acme.notifyChallengeReady(CA + "/chal/buffer");
+    check("notifyChallengeReady with a Buffer body parses the JSON", bufBody.status === "processing");
+    var emptyBuf = await acme.notifyChallengeReady(CA + "/chal/empty-buf");
+    check("notifyChallengeReady with an empty Buffer body parses to {}", emptyBuf && typeof emptyBuf === "object" && emptyBuf.status === undefined);
+  });
+}
+
+// ---- _extractProblemReason with no recognized fields ---------------------
+
+async function testExtractProblemReasonNoRecognizedFields() {
+  var sink = _auditSink();
+  var acme = _acme({ audit: sink });
+  await _withHttp(_orderHandler(_fullDir(), { status: 400, body: { instance: "urn:x", extra: 7 } }), async function () {
+    await acme.newAccount();
+    check("newOrder failure with no type/detail/title still -> acme/neworder",
+          (await _acode(acme.newOrder({ identifiers: [{ type: "dns", value: "x.com" }] }))) === "acme/neworder");
+  });
+  check("newOrder failure audit reason is null when the problem doc has no type/detail/title",
+        sink.events.some(function (e) { return e.action === "acme.order.created" && e.outcome === "failure" && e.metadata.reason === null; }));
+}
+
 async function run() {
   testCreateRefusesBadOpts();
   testCreateRefusesNonHttpsDirectory();
@@ -1618,6 +1800,8 @@ async function run() {
   await testDeactivateAccountNeedsAccount();
   await testChallengeUrlValidation();
   await testFetchAriRejectsUnparseableCert();
+  await testFetchAriSerialZeroCert();
+  await testFetchAriAkiWalkerRejections();
 
   // acme's internal poll uses an unref'd timer (it must not pin a host
   // process). Standalone, that means the event loop can empty mid-poll and
@@ -1659,6 +1843,13 @@ async function run() {
     await testDnsAccount01Success();
     await testListProfiles();
     await testAuditThrowIsSwallowed();
+    await testRolloverAutoFetchesDirectory();
+    await testRolloverBadKeyMaterial();
+    await testRolloverSuccessSwapsKey();
+    await testNewOrderCapitalLocationHeader();
+    await testWaitForAuthorizationDefaultTimeout();
+    await testParseJsonBodyEmptyAndBufferBranches();
+    await testExtractProblemReasonNoRecognizedFields();
   } finally {
     clearInterval(keepAlive);
   }
