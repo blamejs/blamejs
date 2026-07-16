@@ -562,6 +562,15 @@ function testHistogramExemplarValueTimestampNotInjectable() {
   var out2 = m2.exposition({ format: "openmetrics" });
   check("exemplar-inject: a clean numeric-string value coerces and renders",
     out2.indexOf('# {trace_id="T2"} 0.5 1717000000') !== -1);
+  // A valid zero (Unix-epoch) timestamp must survive: present-vs-missing is a
+  // numeric check, not truthiness, so 0 renders rather than being dropped as
+  // falsy (the regression the coercion would otherwise introduce).
+  var m3 = b.metrics.create({ namespace: "exts0" });
+  var h3 = m3.histogram("op_seconds", { labelNames: ["op"], buckets: [0.5, 1] });
+  h3.observe({ op: "a" }, 0.9, { labels: { trace_id: "T3" }, value: 0.9, timestamp: "0" });
+  var out3 = m3.exposition({ format: "openmetrics" });
+  check("exemplar-inject: a valid zero (epoch) timestamp is preserved, not dropped as falsy",
+    out3.indexOf('# {trace_id="T3"} 0.9 0\n') !== -1);
 }
 
 // ---- requestMiddleware exemplar wiring + method fallback ----
