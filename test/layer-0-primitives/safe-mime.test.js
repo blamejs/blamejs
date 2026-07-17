@@ -567,6 +567,44 @@ function testFilenameFromContentTypeName() {
   check("name-fallback: null when neither present", a2.length === 1 && a2[0].filename === null);
 }
 
+function testRfc2231MalformedFilenameNoThrow() {
+  // A hostile `filename*=<charset>'<lang>'<pct>` whose percent-escape is
+  // malformed (truncated `%`, non-hex digits) or decodes to invalid UTF-8
+  // must NOT crash extractAttachments with a raw URIError — the parser
+  // family's contract is that only typed SafeMimeError escapes, and every
+  // other decodeURIComponent site in the framework guards this. Degrade to
+  // the still-encoded segment (best-effort; downstream filename guards own
+  // the raw form) rather than throwing.
+  function attFor(fnParam) {
+    var msg = [
+      "Content-Type: multipart/mixed; boundary=B", "",
+      "--B",
+      "Content-Type: application/octet-stream",
+      "Content-Disposition: attachment; filename*=" + fnParam,
+      "Content-Transfer-Encoding: base64", "",
+      "AAAA",
+      "--B--",
+    ].join("\r\n");
+    return b.safeMime.extractAttachments(b.safeMime.parse(msg));
+  }
+  // Truncated `%` with no following hex — decodeURIComponent throws URIError.
+  var a1 = attFor("UTF-8''%");
+  check("rfc2231 malformed: truncated % does not crash",
+    a1.length === 1 && a1[0].filename === "%");
+  // `%ZZ` — non-hex escape digits.
+  var a2 = attFor("UTF-8''bad%ZZname.pdf");
+  check("rfc2231 malformed: non-hex % escape does not crash",
+    a2.length === 1 && a2[0].filename === "bad%ZZname.pdf");
+  // `%FF%FE` — well-formed escapes that decode to invalid UTF-8.
+  var a3 = attFor("UTF-8''%FF%FE");
+  check("rfc2231 malformed: invalid-UTF-8 % escape does not crash",
+    a3.length === 1 && a3[0].filename === "%FF%FE");
+  // Regression guard — a valid ext-value still percent-decodes.
+  var a4 = attFor("UTF-8''r%65port.pdf");
+  check("rfc2231 valid: still decodes after guard",
+    a4.length === 1 && a4[0].filename === "report.pdf");
+}
+
 // ---- Transfer-encoding allowlist edges -------------------------------------
 
 function testCustomTransferEncodingAllowlist() {
@@ -797,6 +835,7 @@ async function run() {
   testCharsetDecodingBranches();
   testRfc2231ExtendedFilename();
   testFilenameFromContentTypeName();
+  testRfc2231MalformedFilenameNoThrow();
   testCustomTransferEncodingAllowlist();
   testCharsetAliasNormalization();
   testExtractTextExtraBranches();
