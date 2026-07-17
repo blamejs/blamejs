@@ -1045,6 +1045,64 @@ async function testRelayAllowed() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
 }
 
+// ---- relayAllowedFor enforces the entry CIDR against the peer address ---
+// A peer OUTSIDE every allowlisted range must be relay-refused; only a peer
+// INSIDE a range is admitted. Regression guard for the open-relay class where
+// a non-empty relayAllowedFor admitted every peer regardless of source
+// address (the entry `cidr` was ignored).
+async function testRelayCidrEnforced() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("relay CIDR enforcement (skipped)", true); return; }
+
+  // (a) Peer 127.0.0.1 is OUTSIDE 10.0.0.0/8 → relay refused with 550.
+  var denySrv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    relayAllowedFor: [{ cidr: "10.0.0.0/8", scope: "internal" }],
+  });
+  var denyInfo = await denySrv.listen({ port: 0, address: "127.0.0.1" });
+  var denySock;
+  try {
+    denySock = await _connectTo(denyInfo);
+    await _sendCommand(denySock, "EHLO sender.example.com");
+    await _sendCommand(denySock, "MAIL FROM:<attacker@evil.com>");
+    check("out-of-CIDR peer relay-refused → 550 (no open relay)",
+      /^550 5\.7\.1/.test(await _sendCommand(denySock, "RCPT TO:<victim@notlocal.example>")));
+    denySock.destroy();
+  } finally { await denySrv.close({ timeoutMs: 1000 }); }                              // allow:raw-time-literal — test-only short drain
+
+  // (b) Peer 127.0.0.1 is INSIDE 127.0.0.0/8 → relay admitted with 250.
+  var allowSrv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    relayAllowedFor: [{ cidr: "127.0.0.0/8", scope: "loopback" }],
+  });
+  var allowInfo = await allowSrv.listen({ port: 0, address: "127.0.0.1" });
+  var allowSock;
+  try {
+    allowSock = await _connectTo(allowInfo);
+    await _sendCommand(allowSock, "EHLO sender.example.com");
+    await _sendCommand(allowSock, "MAIL FROM:<s@external.com>");
+    check("in-CIDR peer relay admitted → 250",
+      /^250 /.test(await _sendCommand(allowSock, "RCPT TO:<bob@notlocal.example>")));
+    allowSock.destroy();
+  } finally { await allowSrv.close({ timeoutMs: 1000 }); }                             // allow:raw-time-literal — test-only short drain
+
+  // (c) Config-time: a malformed / mask-less relay CIDR is refused at boot.
+  function bootRejects(label, entry) {
+    var threw = null;
+    try {
+      b.mail.server.mx.create({
+        tlsContext: {}, relayAllowedFor: [entry],
+      });
+    } catch (e) { threw = e; }
+    check(label, threw && threw.code === "mail-server-mx/bad-relay-cidr");
+  }
+  bootRejects("malformed relay CIDR refused at boot", { cidr: "not-a-cidr", scope: "x" });
+  bootRejects("mask-less relay CIDR refused at boot", { cidr: "203.0.113.5", scope: "x" });
+  bootRejects("out-of-range prefix refused at boot", { cidr: "10.0.0.0/40", scope: "x" });
+  bootRejects("non-object relay entry refused at boot", "10.0.0.0/8");
+}
+
 // ---- Agent handoff failure surfaces a 451 transient error ---------------
 async function testAgentHandoffFailure() {
   var ctx;
@@ -1315,6 +1373,7 @@ async function run() {
   await testConnectionRateLimit();
   await testWireSmuggling();
   await testRelayAllowed();
+  await testRelayCidrEnforced();
   await testAgentHandoffFailure();
   await testGateThrows();
   await testIdleTimeout();
