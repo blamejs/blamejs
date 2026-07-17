@@ -748,6 +748,20 @@ async function _runParseNotificationErrors() {
     check("parseNotification: JSON string body parsed + surfaced",
           info && info.authReqId === "req-strbody" && info.accessToken === "str-at");
 
+    // RFC 7235 §2.1 — the auth-scheme token is ASCII case-insensitive. A
+    // spec-compliant sender using a lowercase or mixed-case "bearer" scheme
+    // with the correct token must authenticate, not be refused as missing.
+    var lowerScheme = await ciba.parseNotification(
+      { headers: { authorization: "bearer " + CNT } },
+      { body: { auth_req_id: "req-lower" } });
+    check("parseNotification: lowercase 'bearer' scheme authenticates (RFC 7235 case-insensitive)",
+          lowerScheme && lowerScheme.authReqId === "req-lower");
+    var mixedScheme = await ciba.parseNotification(
+      { headers: { authorization: "BeArEr " + CNT } },
+      { body: { auth_req_id: "req-mixed" } });
+    check("parseNotification: mixed-case 'BeArEr' scheme authenticates",
+          mixedScheme && mixedScheme.authReqId === "req-mixed");
+
     // Push body carrying a forged (unverifiable) id_token → fail-closed.
     var forged = null;
     try {
