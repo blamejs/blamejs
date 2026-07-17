@@ -1,0 +1,26 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.16.40",
+  "date": "2026-07-16",
+  "headline": "Four request-path fixes: the router no longer lets the Host header steer which route runs, per-route rate limits can no longer be evaded with a rotating query string, and the message-format and URI-template expanders no longer leak inherited object properties",
+  "summary": "b.router derived the dispatch path from the client-controlled Host header, so a path-like Host value bled into the parsed pathname and could steer a request to a different route than its request line named -- a path-ACL bypass in front-proxied deployments. b.middleware.rateLimit in per-route scope fell back to the full request URL (query string included) when the router had not populated the path, letting a rotating throwaway query parameter mint a fresh bucket per request. And b.i18n message-format and b.uriTemplate resolved a template-derived variable name with a bare property read, so a name like {toString} or {constructor} returned an inherited Object.prototype member (or a prototype-polluted value) instead of treating the variable as absent.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "The Host header can no longer influence which route is dispatched",
+          "body": "b.router derived the request path it matches routes against (req.pathname) by parsing the Host header concatenated with the request URL. WHATWG URL parsing folds any path-like characters in the Host value into the parsed pathname, so a request whose request line was /x but whose Host header was trusted/admin dispatched as /admin/x while req.url stayed /x. Because req.pathname is what the route matcher and every path-scoped guard (auth, CSRF, mTLS) compare against, a client could steer which handler runs -- and a front proxy or WAF that authorizes on the visible request path is bypassed. The router now derives the path and query from the request URL alone, resolved against a fixed internal authority, so the Host header cannot perturb routing; absolute-form and protocol-relative request targets fail closed to no match. The request's real scheme and host remain available to the consumers (canonical URL, CORS, host allowlist) that legitimately need them."
+        },
+        {
+          "title": "Per-route rate limits key on the path only, not the query string",
+          "body": "b.middleware.rateLimit with scope: \"per-route\" composed its bucket key from req.pathname, falling back to the full request URL when pathname was absent (a raw Node request handed to the middleware without the router populating it). The fallback included the query string, which is not part of route identity, so an attacker could rotate a throwaway parameter (?nonce=1, ?nonce=2, ...) to mint a fresh bucket per request from the same client and evade the limit. The per-route key now strips the query in the fallback, matching the path-normalization the other request-scoped guards already apply."
+        },
+        {
+          "title": "Message-format and URI-template variable lookups are own-property only",
+          "body": "b.i18n message-format ({arg}, {n, plural, ...}, {s, select, ...}) and b.uriTemplate ({var} expansion) resolved a variable name parsed from the template with a bare property read of the caller's variables object. A template naming an inherited member -- {toString}, {constructor}, {valueOf}, {__proto__} -- therefore returned the Object.prototype member (a function's source, or a prototype-polluted value) instead of treating the variable as absent, leaking it into rendered output or an expanded URI. Both now resolve variables through an own-property check, so an inherited or polluted name renders empty (message-format argument) or is omitted per RFC 6570 (URI template), matching the own-property discipline the HTML template engine and the simple interpolator already enforce."
+        }
+      ]
+    }
+  ]
+}
