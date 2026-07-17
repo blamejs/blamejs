@@ -1087,6 +1087,22 @@ async function testRelayCidrEnforced() {
     allowSock.destroy();
   } finally { await allowSrv.close({ timeoutMs: 1000 }); }                             // allow:raw-time-literal — test-only short drain
 
+  // (b2) IPv4-mapped fold the relay gate relies on. An IPv4 client on the
+  // common dual-stack `::` listener is reported by Node as ::ffff:a.b.c.d;
+  // cidrContains refuses a cross-family compare, so the gate folds the mapped
+  // peer via ssrfGuard.canonicalizeHost before matching (otherwise every IPv4
+  // client on a `::` listener would be denied against a documented IPv4 CIDR).
+  // Asserted at the composed-primitive level — deterministic and hang-free,
+  // where an end-to-end `::` bind + IPv4 dialog is runtime/dual-stack dependent.
+  check("relay fold: a mapped peer canonicalizes to its IPv4 dotted form",
+    b.ssrfGuard.canonicalizeHost("::ffff:127.0.0.1") === "127.0.0.1");
+  check("relay fold: the raw mixed-family compare does NOT match (fold is required)",
+    b.ssrfGuard.cidrContains("127.0.0.0/8", "::ffff:127.0.0.1") === false);
+  check("relay fold: the folded IPv4 peer matches the IPv4 relay CIDR",
+    b.ssrfGuard.cidrContains("127.0.0.0/8", b.ssrfGuard.canonicalizeHost("::ffff:127.0.0.1")) === true);
+  check("relay fold: an out-of-CIDR mapped peer stays refused after folding (no fail-open)",
+    b.ssrfGuard.cidrContains("127.0.0.0/8", b.ssrfGuard.canonicalizeHost("::ffff:10.9.9.9")) === false);
+
   // (c) Config-time: a malformed / mask-less relay CIDR is refused at boot.
   function bootRejects(label, entry) {
     var threw = null;
