@@ -273,6 +273,20 @@ async function run() {
   check("HEAD: deferred upload advertises Upload-Defer-Length:1",
     defHead.status === 200 && defHead.headers["upload-defer-length"] === "1");
 
+  // creation-with-upload: the RFC 7231 media type is case-insensitive and may
+  // carry parameters. An exact-string compare skipped the append path for a
+  // compliant `Application/Offset+Octet-Stream` (or `...; charset` variant),
+  // creating the upload but silently ignoring the body. Both variants must
+  // append in the same request (Upload-Offset advances to the body length).
+  var cwUpper = await _drive(tus, _sreq("POST", "/uploads",
+    { "tus-resumable": VER, "upload-length": "5", "content-type": "Application/Offset+Octet-Stream" }, "hello"));
+  check("POST creation-with-upload: mixed-case Content-Type appends the body",
+    cwUpper.status === 201 && cwUpper.headers["upload-offset"] === "5");
+  var cwParam = await _drive(tus, _sreq("POST", "/uploads",
+    { "tus-resumable": VER, "upload-length": "5", "content-type": "application/offset+octet-stream; charset=binary" }, "world"));
+  check("POST creation-with-upload: Content-Type with a parameter appends the body",
+    cwParam.status === 201 && cwParam.headers["upload-offset"] === "5");
+
   // ---------------------------------------------------------------
   // F. HEAD refusals
   // ---------------------------------------------------------------
