@@ -172,7 +172,8 @@ async function testEndToEndRawSocketHostInjection() {
 async function testNonOriginFormTargetRejected() {
   var r = b.router.create();
   var reachedSeg = null;
-  r.get("/:seg", function (req, res) { reachedSeg = req.params.seg; res.writeHead(200); res.end("SEG:" + req.params.seg); });
+  var seenReqUrl = null;
+  r.get("/:seg", function (req, res) { reachedSeg = req.params.seg; seenReqUrl = req.url; res.writeHead(200); res.end("SEG:" + req.params.seg); });
 
   // Bare relative target (no leading slash) — pre-fix this was prefixed to
   // "/foo" and matched the /:seg route.
@@ -186,10 +187,18 @@ async function testNonOriginFormTargetRejected() {
   await r.handle(_req("http://evil.example/admin", "localhost"), res2);
   check("an absolute-form request target is rejected 400", res2.statusCode === 400);
 
-  // Network-path reference (//host/path).
+  // A "/"-leading target with a redundant leading slash (//seg) is a valid
+  // absolute-path (empty first segment), NOT rejected. But left intact it stays
+  // a network-path reference, so a downstream `new URL(req.url, base)` reader
+  // would parse the first segment as an AUTHORITY (Host bleed). The router
+  // collapses the leading slash run to a single "/" and writes it back to
+  // req.url, so it routes as an ordinary path and every req.url reader sees a
+  // pure path — never a host.
   var res3 = _res();
-  await r.handle(_req("//evil.example/x", "localhost"), res3);
-  check("a network-path-reference target (//...) is rejected 400", res3.statusCode === 400);
+  await r.handle(_req("//evil.example", "localhost"), res3);
+  check("a //-leading target is accepted (not 400) and normalized to a single leading slash",
+    res3.statusCode !== 400 && reachedSeg === "evil.example" && seenReqUrl === "/evil.example");
+  reachedSeg = null; seenReqUrl = null;
 
   // Asterisk-form (OPTIONS *).
   var res4 = _res();
