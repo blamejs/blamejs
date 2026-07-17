@@ -182,6 +182,25 @@ function run() {
   check("transparency.htmlBanner: HTML element",        html.indexOf('<div ') === 0);
   check("transparency.htmlBanner: data attr",           html.indexOf('data-blamejs-aiAct="Art. 50(2)"') !== -1);
 
+  // htmlBanner serializes the operator-supplied `lang` into a double-quoted
+  // HTML attribute. lang is free-form (a request locale / Accept-Language /
+  // query param in a server-rendered banner), so a value carrying a double
+  // quote must be entity-escaped or it breaks out of the attribute and injects
+  // active content (reflected XSS). Only the element TEXT was escaped before;
+  // the attribute values were concatenated raw.
+  var xssLang = t.htmlBanner({ kind: "ai-interaction", lang: '"><script>alert(1)</script><x y="' });
+  check("transparency.htmlBanner: lang cannot break out of attribute",
+        xssLang.indexOf("<script>alert(1)</script>") === -1);
+  check("transparency.htmlBanner: lang quote is entity-escaped",
+        xssLang.indexOf("&quot;") !== -1);
+  var xssHandler = t.htmlBanner({ kind: "ai-interaction", lang: 'en" onmouseover=alert(document.cookie) x="' });
+  // The handler substring survives as inert text INSIDE the quoted value; the
+  // invariant is that no RAW quote precedes it (which would close the attribute
+  // and make onmouseover a real event handler).
+  check("transparency.htmlBanner: lang cannot inject an event handler",
+        xssHandler.indexOf('"en" onmouseover') === -1 &&
+        xssHandler.indexOf('en&quot; onmouseover') !== -1);
+
   var w = t.watermark({ mediaKind: "image", modelId: "myco/img-gen-3", modelVersion: "v3.1" });
   check("transparency.watermark: manifest",             w.aiActArticle === "Art. 50(2)");
   check("transparency.watermark: modelId",              w.modelId === "myco/img-gen-3");
@@ -192,6 +211,24 @@ function run() {
 
   var jl = t.jsonLdDisclosure({ mediaKind: "audio", modelId: "myco/voice-gen-2" });
   check("transparency.jsonLdDisclosure: tag",            jl.indexOf('<script type="application/ld+json"') === 0);
+
+  // jsonLdDisclosure embeds the operator-supplied watermark manifest via
+  // JSON.stringify inside a <script> element. Raw JSON.stringify does not
+  // escape "</script>" (or "<"), so a model id / deployer name carrying that
+  // sequence terminates the script block early and injects active markup. The
+  // HTML parser ends a <script> at the first "</script>" regardless of the
+  // type="application/ld+json" attribute, so the injected element executes.
+  var jlXss = t.jsonLdDisclosure({
+    mediaKind: "image",
+    modelId:   "x</script><script>alert(document.domain)</script>",
+  });
+  check("transparency.jsonLdDisclosure: cannot break out of <script>",
+        jlXss.indexOf("</script><script>alert(document.domain)</script>") === -1);
+  check("transparency.jsonLdDisclosure: '<' is unicode-escaped in the payload",
+        jlXss.indexOf("\\u003c/script\\u003e") !== -1);
+  // Exactly one real closing </script> tag (the element terminator) survives.
+  check("transparency.jsonLdDisclosure: single real closing tag",
+        jlXss.split("</script>").length === 2);
 
   var meta = t.metaTags({ kind: "deep-fake", policyUri: "https://example.com/ai-policy" });
   check("transparency.metaTags: notice",                meta.indexOf('<meta name="ai-act-notice"') !== -1);
