@@ -1117,6 +1117,26 @@ async function testRelayCidrEnforced() {
   bootRejects("mask-less relay CIDR refused at boot", { cidr: "203.0.113.5", scope: "x" });
   bootRejects("out-of-range prefix refused at boot", { cidr: "10.0.0.0/40", scope: "x" });
   bootRejects("non-object relay entry refused at boot", "10.0.0.0/8");
+
+  // (c2) A dotted IPv4-mapped IPv6 relay CIDR (::ffff:10.0.0.0/104) is a valid
+  // spelling that cidrContains accepts; the config validation folds it to the
+  // plain IPv4 CIDR (10.0.0.0/8) so it is accepted at boot (rather than refused
+  // as bad-relay-cidr) and then matches BOTH a genuine IPv4 peer and a mapped
+  // peer via the gate's peer fold — not just the mapped form.
+  function bootAccepts(label, entry) {
+    var ok = true;
+    try { b.mail.server.mx.create({ tlsContext: {}, relayAllowedFor: [entry] }); }
+    catch (_e) { ok = false; }
+    check(label, ok);
+  }
+  bootAccepts("dotted IPv4-mapped relay CIDR accepted at boot (folded to IPv4)",
+    { cidr: "::ffff:10.0.0.0/104", scope: "internal" });
+  bootAccepts("hex-group IPv4-mapped relay CIDR accepted at boot",
+    { cidr: "::ffff:0a00:0/104", scope: "internal" });
+  check("the ::ffff:10.0.0.0/104 fold (10.0.0.0/8) matches a genuine IPv4 peer",
+    b.ssrfGuard.cidrContains("10.0.0.0/8", "10.2.3.4") === true);
+  check("the ::ffff:10.0.0.0/104 fold (10.0.0.0/8) matches an IPv4-mapped peer",
+    b.ssrfGuard.cidrContains("10.0.0.0/8", b.ssrfGuard.canonicalizeHost("::ffff:10.2.3.4")) === true);
 }
 
 // ---- Agent handoff failure surfaces a 451 transient error ---------------
