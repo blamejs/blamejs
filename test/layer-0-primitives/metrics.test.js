@@ -573,6 +573,51 @@ function testHistogramExemplarValueTimestampNotInjectable() {
     out3.indexOf('# {trace_id="T3"} 0.9 0\n') !== -1);
 }
 
+// Exemplar label KEYS reach the OpenMetrics exposition through the same
+// verbatim renderer (_renderLabels) as regular labels — and, unlike a label
+// VALUE, a label NAME cannot be quoted or escaped in the Prometheus wire
+// format. Regular label keys are gated (LABEL_NAME_RE at registration +
+// _resolveLabels' undeclared-label refusal), but the exemplar path stored the
+// operator-supplied key verbatim, so a key carrying a newline forged a whole
+// metric line into every scrape (CWE-93 / OpenMetrics line-injection — the
+// exemplar-KEY sibling of the exemplar-VALUE injection above). RED before the
+// fix: a `forged_metric` line appears in the exposition; GREEN after: the
+// invalid key is dropped and the valid trace_id survives.
+function testHistogramExemplarLabelKeyNotInjectable() {
+  var m = b.metrics.create({ namespace: "exkey" });
+  var h = m.histogram("op_seconds", { labelNames: ["op"], buckets: [0.5, 1] });
+  // Hostile exemplar label name: closes the exemplar brace, injects a newline,
+  // and opens a forged metric family. Built from char codes so the lib source
+  // stays pure-ASCII-literal-free of the attack bytes. A valid trace_id rides
+  // alongside it in the SAME exemplar so the assertion proves selective
+  // key-dropping (invalid name gone, valid name kept) rather than a blanket
+  // exemplar drop.
+  var forgedKey = 'x"} 0.1' + NEWLINE + 'forged_metric{a="b';
+  var lbl = {};
+  lbl.trace_id = "keepme";
+  lbl[forgedKey] = "v";
+  h.observe({ op: "a" }, 0.1, { labels: lbl, value: 0.1 });
+  var out = m.exposition({ format: "openmetrics" });
+  check("exemplar-key: a forged metric line via a hostile exemplar label name never renders",
+    out.indexOf(NEWLINE + "forged_metric") === -1);
+  check("exemplar-key: the raw attack newline never reaches the exposition",
+    out.indexOf(forgedKey) === -1);
+  check("exemplar-key: a valid exemplar label name survives verbatim",
+    out.indexOf('trace_id="keepme"') !== -1);
+  // Every exemplar comment segment (the ` # {...} value` tail) must stay on
+  // one physical line — no injected key can split it across the newline the
+  // scraper uses as its record separator.
+  var lines = out.split(NEWLINE);
+  var okShape = true;
+  for (var i = 0; i < lines.length; i++) {
+    var hashIdx = lines[i].indexOf(" # {");
+    if (hashIdx === -1) continue;
+    // The exemplar tail must contain a closing `}` on the SAME line.
+    if (lines[i].indexOf("}", hashIdx) === -1) okShape = false;
+  }
+  check("exemplar-key: every exemplar comment stays on one exposition line", okShape);
+}
+
 // ---- requestMiddleware exemplar wiring + method fallback ----
 
 function testRequestMiddlewareExemplarFromSpan() {
@@ -1154,6 +1199,7 @@ function run() {
   testHistogramExemplarsRendered();
   testHistogramExemplarLabelsRedacted();
   testHistogramExemplarValueTimestampNotInjectable();
+  testHistogramExemplarLabelKeyNotInjectable();
   testRequestMiddlewareExemplarFromSpan();
   testRequestMiddlewareExemplarFromTraceFallback();
   testRequestMiddlewareMethodFallback();
