@@ -249,6 +249,40 @@ async function run() {
     b.db.runSql("WITH s AS (SELECT 'hi' AS b) INSERT INTO notes (_id, body) SELECT 'n1', b FROM s");
     check("writable-CTE write to a NON-residency table still persists (no over-reject)",
       (b.db.from("notes").where({ _id: "n1" }).first() || {}).body === "hi");
+
+    // RAW PATH 9: the abut boundary is TWO-SIDED. A quoted identifier abuts the
+    // next token with no whitespace when a word char FOLLOWS the closing quote
+    // (`UPDATE"residents"SET ...`), the mirror of RAW PATH 8's before-quote case.
+    // The write-detection needs whitespace before SET, so a one-sided normalizer
+    // that only separated the opening quote left `"residents"SET` fused and the
+    // gate skipped — including behind a writable CTE, which SQLite executes.
+    var quoteWordUpdateCode = codeOf(function () {
+      b.db.runSql("UPDATE\"residents\"SET dataRegion='us-east-1' WHERE _id='raw-eu'");
+    });
+    check("quoted-table abutting SET (UPDATE\"residents\"SET) cross-border write is refused",
+      quoteWordUpdateCode === "db-query/row-residency-local-mismatch");
+    check("quoted-table-abutting-SET update did not move the row cross-border",
+      (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).dataRegion === "eu-west-1");
+
+    // Behind a writable CTE the whole statement starts with WITH, so once the
+    // target is detected the ^-anchored value-extraction can't parse the tag and
+    // the gate fails CLOSED (raw-unparseable) rather than mismatch — either way
+    // the write is refused. Pre-fix the target was never detected (the abut hid
+    // it), so the gate skipped entirely and the row moved cross-border.
+    var cteQuoteWordCode = codeOf(function () {
+      b.db.runSql(
+        "WITH t AS (SELECT 1) UPDATE\"residents\"SET dataRegion='us-east-1' WHERE _id='raw-eu'");
+    });
+    check("writable-CTE with a quoted-table abutting SET cross-border write is refused",
+      typeof cteQuoteWordCode === "string" && cteQuoteWordCode.indexOf("db-query/row-residency") === 0);
+    check("writable-CTE quoted-abut update did not move the row cross-border",
+      (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).dataRegion === "eu-west-1");
+
+    // An in-region write in the same quote-abutting shape still persists (the
+    // two-sided boundary does not over-reject a non-cross-border update).
+    b.db.runSql("UPDATE\"residents\"SET name='qw-ok' WHERE _id='raw-eu'");
+    check("in-region quoted-abut update still persists (gate does not over-reject)",
+      (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).name === "qw-ok");
   } finally {
     b.compliance.clear();
     b.cryptoField.clearResidencyForTest();
