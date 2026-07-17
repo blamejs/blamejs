@@ -54,6 +54,28 @@ function run() {
   });
   check("prohibited.classify: social-scoring caught",  hits1.indexOf("social-scoring") !== -1);
 
+  // Art. 5(1)(c) of the ADOPTED Regulation (EU) 2024/1689 prohibits social
+  // scoring by ANY actor. The "by public authorities or on their behalf"
+  // limitation present in the 2021 Commission proposal was removed from the
+  // final text; the catalog's own description already reflects that (it does
+  // not mention public authorities). A private-company social-scoring system
+  // must therefore classify as prohibited, not fall through to minimal-risk.
+  var hitsPriv = aiAct.prohibited.classify({
+    purpose: "social-scoring", deployerType: "private-company",
+  });
+  check("prohibited.classify: private-actor social-scoring caught",
+        hitsPriv.indexOf("social-scoring") !== -1);
+  var hitsNoDeployer = aiAct.prohibited.classify({ purpose: "social-scoring" });
+  check("prohibited.classify: social-scoring caught without deployerType",
+        hitsNoDeployer.indexOf("social-scoring") !== -1);
+  var assessPrivSocial = aiAct.classify({
+    purpose: "social-scoring", deployerType: "private-company",
+  });
+  check("classify: private-actor social-scoring → prohibited",
+        assessPrivSocial.tier === "prohibited");
+  check("classify: private-actor social-scoring cites Art. 5",
+        assessPrivSocial.legalReference[0] && assessPrivSocial.legalReference[0].indexOf("Art. 5") !== -1);
+
   var hits2 = aiAct.prohibited.classify({
     builds: "facial-recognition-db", scrapesUntargeted: true,
   });
