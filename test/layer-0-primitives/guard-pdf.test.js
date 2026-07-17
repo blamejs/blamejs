@@ -77,6 +77,42 @@ function testSanitizeForcesEncryptedReject() {
     _code(function () { b.guardPdf.sanitize({ bytes: _PDF, isEncrypted: true }, { profile: "permissive" }); }) === "pdf.encrypted");
 }
 
+// An operator-supplied permissive policy opt must NOT let sanitize hand back a
+// PDF that still carries an RCE-class action. sanitize is disarm-by-refusal and
+// forces the active-content policies to reject; the forced set previously
+// covered open-action / embedded-file / encrypted but OMITTED the three classes
+// the guard "refuses to negotiate" on — JavaScript, Launch, and polyglot — so
+// `sanitize(bag, { javascriptPolicy: "allow" })` returned the live PDF. Each of
+// these drives the same override object and must refuse regardless of the opt.
+function testSanitizeForcesJavaScriptRejectOverOperatorAllow() {
+  check("javascript refused under sanitize even when javascriptPolicy:allow",
+    _code(function () {
+      b.guardPdf.sanitize({ bytes: _PDF, hasJavaScript: true },
+        { profile: "strict", javascriptPolicy: "allow" });
+    }) === "pdf.javascript-action");
+  check("javascript refused under sanitize even when javascriptPolicy:audit",
+    _code(function () {
+      b.guardPdf.sanitize({ bytes: _PDF, hasJavaScript: true },
+        { profile: "permissive", javascriptPolicy: "audit" });
+    }) === "pdf.javascript-action");
+}
+
+function testSanitizeForcesLaunchRejectOverOperatorAllow() {
+  check("launch refused under sanitize even when launchActionPolicy:allow",
+    _code(function () {
+      b.guardPdf.sanitize({ bytes: _PDF, hasLaunchAction: true },
+        { profile: "strict", launchActionPolicy: "allow" });
+    }) === "pdf.launch-action");
+}
+
+function testSanitizeForcesPolyglotRejectOverOperatorAllow() {
+  check("polyglot refused under sanitize even when polyglotPolicy:allow",
+    _code(function () {
+      b.guardPdf.sanitize({ bytes: _PDF, polyglotDetected: true },
+        { profile: "strict", polyglotPolicy: "allow" });
+    }) === "pdf.polyglot");
+}
+
 function testSanitizeBadInput() {
   check("bad input refused",
     _code(function () { b.guardPdf.sanitize(null, { profile: "balanced" }); }) === "pdf.bad-input");
@@ -116,6 +152,9 @@ function run() {
   testSanitizeForcesOpenActionReject();
   testSanitizeForcesEmbeddedFileReject();
   testSanitizeForcesEncryptedReject();
+  testSanitizeForcesJavaScriptRejectOverOperatorAllow();
+  testSanitizeForcesLaunchRejectOverOperatorAllow();
+  testSanitizeForcesPolyglotRejectOverOperatorAllow();
   testSanitizeBadInput();
   testInspectMagic();
   testValidateNeverThrowsOnArrayLikeBytes();

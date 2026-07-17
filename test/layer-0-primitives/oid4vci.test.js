@@ -44,6 +44,21 @@ var _nsCounter = 0;
 function _ns(prefix) { _nsCounter += 1; return prefix + "." + _nsCounter + "." + Date.now(); }
 function _cache() { return b.cache.create({ namespace: _ns("oid4vci.test"), ttlMs: 60000 }); }
 
+// A conforming get/set/del store that signals a MISS with `null` rather
+// than `undefined` — the shape a Map / Redis / SQL-row-backed store
+// commonly returns. A framework b.cache returns `undefined` on a miss;
+// this store is a plausible operator implementation the issuer accepts via
+// the documented `cNonceStore` opt. Used to prove the c_nonce replay check
+// fails CLOSED regardless of the store's miss sentinel.
+function _nullMissStore() {
+  var m = new Map();
+  return {
+    get: async function (k) { return m.has(k) ? m.get(k) : null; },
+    set: async function (k, v) { m.set(k, v); },
+    del: async function (k) { var had = m.has(k); m.delete(k); return had; },
+  };
+}
+
 // ---- proof-JWT crafting ----
 
 function _b64uJson(o) {
@@ -638,6 +653,45 @@ async function testProofWrongNonce() {
     function () { return _issue(s2, numeric); });
 }
 
+// A c_nonce store that signals a miss with `null` (not `undefined`) MUST
+// still fail closed. Before the fix, a null store-miss fell through the
+// nonce compare entirely: a forged proof carrying ANY nonce was accepted
+// and a credential minted bound to the attacker's key. Batch mode
+// (accessTokenSingleUse: false) keeps the access token valid past the
+// c_nonce's shorter TTL, so an attacker who lets the c_nonce expire can
+// reach /credential with a live token and no valid nonce.
+async function testProofCNonceNullStoreMissFailsClosed() {
+  var cNonceStore = _nullMissStore();
+  var issuer = _create({ cNonceStore: cNonceStore, accessTokenSingleUse: false });
+  var offer  = await issuer.createCredentialOffer({ subject: "user-9", credentialIds: ["id-card-1"] });
+  var tokens = await issuer.exchangePreAuthorizedCode({ preAuthCode: offer.preAuthCode });
+
+  // A valid c_nonce present → issuance succeeds (the store's null-miss
+  // sentinel must not break the happy path).
+  var good = _makeProof({ aud: ISSUER_URL, nonce: tokens.c_nonce });
+  var cred = await issuer.issueCredential({
+    accessToken: tokens.access_token, credentialIdentifier: "id-card-1",
+    proof: good.jwt, claims: { given_name: "Alice" },
+  });
+  check("null-miss store: valid c_nonce still issues", cred.format === "vc+sd-jwt");
+
+  // Simulate the c_nonce expiring while the access token is still live —
+  // the store now returns null on get(). A forged proof with a garbage
+  // nonce (never issued) MUST be refused, not accepted.
+  await cNonceStore.del(tokens.access_token);
+  check("null-miss store: get() returns null on miss",
+        (await cNonceStore.get(tokens.access_token)) === null);
+  var forged = _makeProof({ aud: ISSUER_URL, nonce: "attacker-garbage-nonce-not-issued" });
+  await _expectThrow("null-miss store: absent c_nonce refuses forged proof (fail-closed)",
+    "auth-oid4vci/c-nonce-expired",
+    function () {
+      return issuer.issueCredential({
+        accessToken: tokens.access_token, credentialIdentifier: "id-card-1",
+        proof: forged.jwt, claims: { given_name: "Mallory" },
+      });
+    });
+}
+
 async function testProofNoIat() {
   var s = await _issued();
   var proof = _craftProof({ jwk: _ecJwk }, { aud: ISSUER_URL, nonce: s.cNonce, iat: undefined });
@@ -925,6 +979,7 @@ async function run() {
   await testProofWrongAud();
   await testProofCNonceExpired();
   await testProofWrongNonce();
+  await testProofCNonceNullStoreMissFailsClosed();
   await testProofNoIat();
   await testProofIatFuture();
   await testProofIatTooOld();
