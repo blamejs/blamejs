@@ -94,9 +94,54 @@ function testSanitize() {
     err instanceof b.guardCidr.GuardCidrError);
 }
 
+function testIpv6ReservedNibbleMisaligned() {
+  // IPv6 reserved-range membership is a bit-prefix relation, not a hex-nibble
+  // one. ULA fc00::/7 (7 bits) and link-local fe80::/10 (10 bits) do not fall
+  // on a 4-bit nibble boundary, so a hex-string startsWith("fc") / ("fe8")
+  // match silently misses every reserved address whose partial nibble differs
+  // — most importantly fd00::/8, the HALF of fc00::/7 that real deployments
+  // actually assign (RFC 4193 L=1). Under strict, reservedRangesPolicy is
+  // "reject", so a missed reserved range fails OPEN: a private/link-local
+  // range validates as clean and can be added to an allowlist as if public.
+  var strict = { profile: "strict" };
+
+  // fc00::/7 ULA — BOTH halves must be caught. fd00::/8 is the assigned one.
+  ["fc00::/8", "fd00::/8", "fdab:cd12::/32"].forEach(function (c) {
+    var rv = b.guardCidr.validate(c, strict);
+    check("guardCidr ULA " + c + " refused", rv.ok === false);
+    check("guardCidr ULA " + c + " reserved-range kind",
+      _kinds(rv).indexOf("reserved-range") !== -1);
+  });
+
+  // fe80::/10 link-local — the whole /10 must be caught, not just fe8x.
+  ["fe80::/16", "fe90::/16", "fea0::/16", "feb0::/16"].forEach(function (c) {
+    var rv = b.guardCidr.validate(c, strict);
+    check("guardCidr link-local " + c + " refused", rv.ok === false);
+    check("guardCidr link-local " + c + " reserved-range kind",
+      _kinds(rv).indexOf("reserved-range") !== -1);
+  });
+
+  // Regression — the fix must not OVER-match. fec0::/10 (deprecated site-local)
+  // is NOT in the reserved table and shares only the fe8x visual prefix's
+  // sibling nibble; it must stay clean, as must genuine public space.
+  ["fec0::/16", "2606:4700::/32", "2001:4860::/32"].forEach(function (c) {
+    var rv = b.guardCidr.validate(c, strict);
+    check("guardCidr public/site-local " + c + " clean", rv.ok === true);
+  });
+
+  // Regression — nibble-aligned reserved prefixes stay caught.
+  ["ff02::1/128", "2001:db8::/32", "::1/128"].forEach(function (c) {
+    var rv = b.guardCidr.validate(c, strict);
+    check("guardCidr aligned-reserved " + c + " refused", rv.ok === false);
+    check("guardCidr aligned-reserved " + c + " reserved-range kind",
+      _kinds(rv).indexOf("reserved-range") !== -1);
+  });
+}
+
 async function run() {
   testValidate();
   testSanitize();
+  testIpv6ReservedNibbleMisaligned();
 }
 
 module.exports = { run: run };
