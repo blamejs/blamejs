@@ -12,6 +12,7 @@
  */
 
 var http = require("node:http");
+var crypto = require("node:crypto");
 var helpers = require("../helpers");
 var b      = helpers.b;
 var fs     = helpers.fs;
@@ -830,6 +831,46 @@ async function testContentSafetySanitize() {
   } finally { ctx.close(); }
 }
 
+async function testContentSafetySanitizeIntegrityHeaders() {
+  // When the content-safety gate REPLACES the served bytes (sanitize), the
+  // strong ETag and the SRI X-Integrity header must describe the bytes
+  // ACTUALLY DELIVERED — not the on-disk original the meta cache hashed.
+  // Otherwise a consumer verifying the served body against the advertised
+  // X-Integrity fails, and a strong-validator / If-None-Match cache is keyed
+  // to a representation the client never receives (RFC 7232 §2.3 strong
+  // validator; W3C SRI).
+  var sanitized = Buffer.from("SAFE-BYTES");
+  var gate = {
+    check: async function () {
+      return { ok: true, action: "sanitize", sanitized: sanitized };
+    },
+  };
+  var ctx = await _ctx({ contentSafety: { ".csv": gate } },
+    { "rows.csv": "a,b\n1,2,ORIGINAL-BYTES-THAT-DIFFER-FROM-SANITIZED" });
+  try {
+    var r = await _get(ctx.port, "/rows.csv");
+    var expectEtag = '"' +
+      crypto.createHash("sha3-512").update(sanitized).digest("hex").slice(0, 32) + '"';
+    var expectSri = "sha384-" +
+      crypto.createHash("sha384").update(sanitized).digest("base64");
+    check("content-safety: sanitized ETag hashes the DELIVERED bytes, not the original",
+          r.headers["etag"] === expectEtag);
+    check("content-safety: sanitized X-Integrity (SRI) hashes the DELIVERED bytes",
+          r.headers["x-integrity"] === expectSri);
+    // A consumer that verifies the served body against the advertised
+    // X-Integrity must succeed.
+    var deliveredSri = "sha384-" +
+      crypto.createHash("sha384").update(r.body).digest("base64");
+    check("content-safety: served body verifies against its advertised X-Integrity",
+          deliveredSri === r.headers["x-integrity"]);
+    // Conditional revalidation with the advertised ETag round-trips to 304
+    // (the strong validator names the representation that is actually served).
+    var r304 = await _get(ctx.port, "/rows.csv", { "If-None-Match": r.headers["etag"] });
+    check("content-safety: If-None-Match with the advertised (sanitized) ETag → 304",
+          r304.statusCode === 304);
+  } finally { ctx.close(); }
+}
+
 async function testContentSafetyThrows() {
   var gate = { check: async function () { throw new Error("gate exploded"); } };
   var ctx = await _ctx({ contentSafety: { ".csv": gate } }, { "rows.csv": "a,b\n1,2" });
@@ -1378,6 +1419,7 @@ async function run() {
     await testOnServeThrows();
     await testContentSafetyRefuse();
     await testContentSafetySanitize();
+    await testContentSafetySanitizeIntegrityHeaders();
     await testContentSafetyThrows();
     await testContentSafetyTooLarge();
     await testMimeAllowlistSuccess();
