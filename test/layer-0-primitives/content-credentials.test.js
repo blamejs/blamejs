@@ -288,6 +288,17 @@ async function runErrorPaths() {
     (e = _err(function () { cc.signCose(manifest, { privateKeyPem: pair.privateKey, timestamp: { token: Buffer.from([1]), signature: "" } }); })) &&
     e.code === "content-credentials/bad-reuse-signature");
 
+  // An inherited Object.prototype member as the alg must not slip the COSE
+  // alg-registry check. `constructor` / `__proto__` survive `.toLowerCase()`
+  // and are truthy prototype-chain lookups, so an `in`-based guard would
+  // accept them and emit a signature under a bogus COSE alg id (fail-open).
+  check("signCose alg 'constructor' rejected (inherited member, not fail-open)",
+    (e = _err(function () { cc.signCose(manifest, { privateKeyPem: pair.privateKey, alg: "constructor", timestamp: false, timestampOptOutReason: "x" }); })) &&
+    e.code === "content-credentials/bad-alg");
+  check("signCose alg '__proto__' rejected (inherited member, not fail-open)",
+    (e = _err(function () { cc.signCose(manifest, { privateKeyPem: pair.privateKey, alg: "__proto__", timestamp: false, timestampOptOutReason: "x" }); })) &&
+    e.code === "content-credentials/bad-alg");
+
   // Reused (pinned) signature that does not verify against this manifest+key
   // is refused — a stale or foreign signature can't be re-embedded.
   check("signCose reuse-signature that does not verify is refused",

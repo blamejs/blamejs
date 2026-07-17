@@ -283,6 +283,16 @@ function testBuildRequest() {
   var badAlg = null;
   try { b.tsa.buildRequest(Buffer.from("z"), { hashAlg: "MD5" }); } catch (e) { badAlg = e; }
   check("buildRequest rejects unknown hashAlg", badAlg && badAlg.code === "tsa/bad-hash-alg");
+  // An inherited Object.prototype member must get the typed refusal, not a
+  // raw createHash(undefined) ERR_INVALID_ARG_TYPE: the hashAlg indexes the
+  // IMPRINT_HASHES lookup, and every such member is a truthy prototype-chain
+  // hit that a `!IMPRINT_HASHES[hashAlg]` guard would let slip.
+  ["constructor", "__proto__", "toString", "valueOf"].forEach(function (m) {
+    var inh = null;
+    try { b.tsa.buildRequest(Buffer.from("z"), { hashAlg: m }); } catch (e) { inh = e; }
+    check("buildRequest rejects inherited-member hashAlg '" + m + "' with typed error",
+      inh && inh.code === "tsa/bad-hash-alg");
+  });
 }
 
 // buildRequest: opts omitted entirely, a requested policy OID, an

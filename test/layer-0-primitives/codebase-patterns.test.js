@@ -3681,6 +3681,27 @@ async function testNoDuplicateCodeBlocks() {
   // shape.
   var KNOWN_CLUSTERS = [
     {
+      // Own-property lookup guard — a JS language idiom, not shared behaviour.
+      // `if (!Object.prototype.hasOwnProperty.call(TABLE, key)) throw XError(
+      // code, msg + key); var v = TABLE[key];` is the framework's canonical way
+      // to reject an untrusted key before indexing a plain-object lookup table
+      // (the prototype-pollution / algorithm-confusion guard). mail-helo.evaluate
+      // and mail-rbl.create resolve a guard-family gate PROFILE
+      // (gateContract.resolveProfileName over the PROFILES table); sd-jwt-vc.present
+      // guards a HASH-ALG table (SUPPORTED_HASH_ALGS) against an attacker-controlled
+      // `_sd_alg`. The 50-token overlap is the guard idiom's skeleton, not shared
+      // logic — the three functions are in unrelated domains (SMTP HELO policy /
+      // DNSBL config / SD-JWT presentation) with no extractable 3-way primitive.
+      // (A dedicated own-property-lookup helper across the crypto alg-table sites
+      // is tracked as a deliberate follow-up, not forced by this coincidence.)
+      mode:  "family-subset",
+      files: [
+        "lib/auth/sd-jwt-vc.js:present",
+        "lib/mail-helo.js:evaluate",
+        "lib/mail-rbl.js:create",
+      ],
+    },
+    {
       // Opts-passthrough / allow-list token run — shape-only. A run of
       // `<ident>: <ident>.<ident>,` assignments (jar.parse forwarding its
       // verify options to verifyExternal) and the parallel `validateOpts(opts,

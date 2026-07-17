@@ -876,6 +876,70 @@ async function testBombPolicyEdges() {
   check("archive-read: expansion-ratio cap trips", _hasCode(e2, "archive-read/expansion-ratio"));
 }
 
+// Deterministic, effectively incompressible bytes (sha256 chain off a fixed
+// seed) so the entry's real deflate ratio is stable across runs.
+function _incompressibleBytes(nBytes) {
+  var crypto = require("node:crypto");
+  var out = Buffer.alloc(nBytes);
+  var block = crypto.createHash("sha256").update("blamejs-archive-ratio-fixture").digest();
+  var pos = 0;
+  while (pos < nBytes) {
+    block = crypto.createHash("sha256").update(block).digest();
+    var n = Math.min(block.length, nBytes - pos);
+    block.copy(out, pos, 0, n);
+    pos += n;
+  }
+  return out;
+}
+
+// The per-entry inflate must honor the operator's bombPolicy.maxExpansionRatio,
+// not a stricter hardcoded default buried in the safeDecompress composition.
+// A ~55:1 entry sits far under the reader's own default cap (100) and under an
+// operator-raised cap (1000), yet the DEFLATE decode refused it because
+// _decompressEntry composed b.safeDecompress WITHOUT forwarding maxRatio, so
+// safeDecompress fell back to its own DEFAULT_MAX_RATIO (50) — silently
+// overriding the operator's policy for every entry that compresses better than
+// 50:1 (logs / JSON / zero-padded binaries). Root: archive-read/_decompressEntry.
+async function testExpansionRatioHonorsPolicy() {
+  var payload = Buffer.concat([_incompressibleBytes(1000), Buffer.alloc(60000, 0)]);
+  var deflated = zlib.deflateRawSync(payload);
+  var ratio = payload.length / deflated.length;
+  // Precondition: the fixture ratio must sit in (50, 100] — above safe-decompress's
+  // hardcoded 50 default, below the reader's own default policy cap of 100.
+  check("archive-read: ratio fixture lands in (50, 100]", ratio > 50 && ratio <= 100);
+
+  var bytes = buildClassicZip([{
+    name: "log.txt", data: deflated, method: 8,
+    usize: payload.length, csize: deflated.length,
+  }]);
+
+  // Operator RAISES the ratio cap to 1000 — comfortably above the ~55:1 entry.
+  var generous = {
+    maxEntries: 1000, maxExpansionRatio: 1000,
+    maxEntryDecompressedBytes: 128 * 1024 * 1024,
+    maxTotalDecompressedBytes: 4 * 1024 * 1024 * 1024,
+  };
+  var got = [];
+  for await (var e of b.archive.read.zip(b.archive.adapters.buffer(bytes),
+      { bombPolicy: generous, guardProfile: false }).extractEntries()) {
+    got.push(e);
+  }
+  check("archive-read: entry within operator maxExpansionRatio extracts (policy honored)",
+    got.length === 1 && got[0].bytes.equals(payload));
+
+  // Operator LOWERS the ratio cap below the entry's real ratio — still refused,
+  // proving the enforced cap tracks the operator value (not a hardcoded 50).
+  var strict = Object.assign({}, generous, { maxExpansionRatio: 30 });
+  var refused = null;
+  try {
+    var r2 = b.archive.read.zip(b.archive.adapters.buffer(bytes),
+      { bombPolicy: strict, guardProfile: false });
+    for await (var x of r2.extractEntries()) { void x; }
+  } catch (err) { refused = err; }
+  check("archive-read: entry above operator maxExpansionRatio refused",
+    _hasCode(refused, "archive-read/expansion-ratio"));
+}
+
 // STORE + DEFLATE + unsupported-method decode paths + inspect() method labels.
 async function testDecompressPaths() {
   var opts = { guardProfile: false };
@@ -1238,6 +1302,7 @@ async function run() {
   await testMalformedRefusals();
   await testLfhCdSkewRefusals();
   await testBombPolicyEdges();
+  await testExpansionRatioHonorsPolicy();
   await testDecompressPaths();
   await testZipFactoryAdapterGuards();
   await testEntryTypeClassification();

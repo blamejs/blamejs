@@ -849,6 +849,14 @@ function testHashDisclosureBadAlg() {
   _expectThrowSync("_hashDisclosure: unsupported alg throws bad-hash",
     "auth-sd-jwt-vc/bad-hash",
     function () { return sdJwtVc._hashDisclosure("some-disclosure", "md5"); });
+  // An inherited Object.prototype member (a truthy prototype-chain hit on
+  // the SUPPORTED_HASH_ALGS lookup) must get the typed bad-hash refusal, not
+  // a raw createHash(<function>) ERR_INVALID_ARG_TYPE.
+  ["constructor", "__proto__", "toString", "valueOf"].forEach(function (m) {
+    _expectThrowSync("_hashDisclosure: inherited-member alg '" + m + "' throws bad-hash",
+      "auth-sd-jwt-vc/bad-hash",
+      function () { return sdJwtVc._hashDisclosure("x", m); });
+  });
   // A supported alg returns a base64url digest.
   var d = sdJwtVc._hashDisclosure("x", "sha-256");
   check("_hashDisclosure: supported alg returns base64url digest",
@@ -982,6 +990,20 @@ function testPresentBadSdAlg() {
     function () {
       sdJwtVc.present({ sdJwt: jwt + "~", disclosedClaimNames: [] });
     });
+  // An inherited Object.prototype member as `_sd_alg` (read from the
+  // unsigned issuer payload, attacker-controlled) must be refused with the
+  // typed error. Each such member is a truthy prototype-chain hit that a
+  // `!SUPPORTED_HASH_ALGS[_sdAlg]` guard would let slip, silently building a
+  // presentation against an unsupported hash (fail-open).
+  ["constructor", "__proto__", "toString", "valueOf"].forEach(function (m) {
+    var inhJwt = "aGVhZGVy" + "." +
+      _b64uJson({ iss: "https://i", vct: "x", _sd: [], _sd_alg: m }) + "." + "c2ln";
+    _expectThrowSync("present: inherited-member issuer _sd_alg '" + m + "' rejected",
+      "auth-sd-jwt-vc/bad-hash",
+      function () {
+        sdJwtVc.present({ sdJwt: inhJwt + "~", disclosedClaimNames: [] });
+      });
+  });
 }
 
 function testPresentSdAlgFallbackOnMalformedPayload() {

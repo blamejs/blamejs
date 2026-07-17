@@ -106,6 +106,18 @@ async function testRefusals() {
   try { await b.vc.verify(noneTok, { algorithms: ["ES256"], publicKey: EC.publicKey }); } catch (e) { e3 = e; }
   check("verify: JOSE alg 'none' refused", e3 && e3.code === "vc/bad-alg");
 
+  // issue()/present() must not let an inherited Object.prototype member as
+  // `alg` slip the JOSE alg lookup on the sign side. `constructor` (etc.) is
+  // a truthy prototype-chain hit that a `!JOSE_ALGS[opts.alg]` guard would
+  // accept, then emit a JWS carrying that bogus `alg` header (fail-open).
+  var inhAlgs = ["constructor", "__proto__", "toString", "valueOf"];
+  for (var ia = 0; ia < inhAlgs.length; ia++) {
+    var eInh = null;
+    try { await b.vc.issue(_cred(), { securing: "jose", alg: inhAlgs[ia], privateKey: ED.privateKey }); } catch (e) { eInh = e; }
+    check("issue: inherited-member JOSE alg '" + inhAlgs[ia] + "' refused (not fail-open)",
+      eInh && eInh.code === "vc/bad-alg");
+  }
+
   // expectedIssuer mismatch
   var e4 = null;
   try { await b.vc.verify(jws, { algorithms: ["ES256"], publicKey: EC.publicKey, expectedIssuer: "did:other" }); } catch (e) { e4 = e; }
