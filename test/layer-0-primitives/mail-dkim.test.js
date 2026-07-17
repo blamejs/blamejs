@@ -1060,6 +1060,72 @@ async function testDkimSimpleCanonHonorsWireFieldName() {
         rvLower[0] && rvLower[0].result === "fail");
 }
 
+// ---- Cross-implementation conformance: openssl-signed simple/simple vector ----
+//
+// The signature bytes below were produced by an INDEPENDENT implementation:
+// OpenSSL (`openssl dgst -sha256 -sign` — RSASSA-PKCS1-v1_5) over
+// hand-constructed RFC 6376 simple/simple canonicalization. bh= is the
+// SHA-256 of the verbatim CRLF body (section 3.4.3); b= signs the four h=
+// headers verbatim (each with its CRLF) followed by the DKIM-Signature
+// header with an empty b= value and no trailing CRLF (sections 3.4.1 and
+// 3.7). No framework code participated in producing the fixture, so a pass
+// here proves cross-implementation ACCEPTANCE of simple canonicalization —
+// a self-round-trip alone stays green when sign and verify share the same
+// canonicalization bug. The tampered-body / tampered-header controls prove
+// the pass is cryptographic, not vacuous.
+async function testDkimOpensslSimpleCanonInteropVector() {
+  var BH = "AD876huuF731JvLItVmRCvApI83P8LTA8/xaXm2Hu8Y=";
+  var SIG =
+    "i62Ti4k531wo/A2u2rk8G5J8JpgM0+MBj6vJbmwzz6MiMYEwS6XfO1GAOL0rUtM3TSNeWjKg" +
+    "ul2XjS4C5bVMjRQma1W+TzcJh3aHL8UXTc8K64DQ8isZ61BsN8v/iaIf/z5/6MZIOxlnaAbn" +
+    "CVWm/1OU3qvhKxyFOU9aCl+EaHuHGlvF1EM/bBpPpu9jmjRzSvj6Nyojw1tFl/g4HfOaCvpv" +
+    "wVmOBo49O1voWHC3CHDHK5rbURzf/dVC37aviTkjTgbh5I8QTcRVllBAMOs5LYl5zHAr1Jop" +
+    "h+8omZwednKI/Inj//S0EsyZeM6iKkuNX1nP3c460DH65jexsLj49Q==";
+  var PUB_B64 =
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0VM3DGY3FSvXw58NTv2nMzJ149kB" +
+    "Q6KuTQBaRjjQfrYxRAbLhCSgatNz55GbZlBR0Uj7sYmGzte18sef5AqCWY4lXrD/+97S0GjH" +
+    "jUMHzQhp9Tk1m4yVnfqJp2MgXyMi31yrRvRkmNM7XD/EC07HuugHcKGnPRsHQV6kyGUkeuHt" +
+    "lQYRx058jTOWja6mcc0/nVQa08GM4703QYl6j3ZgSiu90fFnw77uswcuaKgwPIw3V66uPNPS" +
+    "VhqxGLyuXF4fw1DvYtRyJ/3liMNhqClEqDSwKfSEK6Z8nE/4M8Nv3BZA0OOzitDmqzyXkcdY" +
+    "At3XbaUHc0Gpbs5MYV7k2YXKWQIDAQAB";
+
+  var message =
+    "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; " +
+      "d=openssl-interop.example; s=oss1; h=from:to:subject:date; " +
+      "bh=" + BH + "; b=" + SIG + "\r\n" +
+    "From: interop@openssl-interop.example\r\n" +
+    "To: rcpt@blamejs.example\r\n" +
+    "Subject: DKIM simple canonicalization interop\r\n" +
+    "Date: Thu, 01 Jan 2026 00:00:00 +0000\r\n" +
+    "\r\n" +
+    "Interop body line one.\r\nInterop body line two.\r\n";
+
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + PUB_B64]]; };
+
+  b.mail.dkim._resetDkimKeyCacheForTest();
+  var rv = await b.mail.dkim.verify(message, { dnsLookup: dnsLookup });
+  check("openssl interop: independently-signed simple/simple vector passes",
+        Array.isArray(rv) && rv.length === 1 && rv[0].result === "pass");
+  check("openssl interop: pass verdict carries zero errors",
+        rv[0] && Array.isArray(rv[0].errors) && rv[0].errors.length === 0);
+  check("openssl interop: verdict identifies the signing domain and selector",
+        rv[0] && rv[0].d === "openssl-interop.example" && rv[0].s === "oss1");
+
+  // Control 1: one flipped body byte breaks the simple body hash.
+  var bodyTampered = message.replace("Interop body line two.", "Interop body line 2wo.");
+  var rvBody = await b.mail.dkim.verify(bodyTampered, { dnsLookup: dnsLookup });
+  check("openssl interop: tampered body fails (body hash mismatch)",
+        rvBody[0] && rvBody[0].result === "fail" &&
+        /body hash mismatch/.test((rvBody[0].errors || []).join(",")));
+
+  // Control 2: one flipped byte in a signed header breaks the signature.
+  var hdrTampered = message.replace("Subject: DKIM simple", "Subject: DKIM Simple");
+  var rvHdr = await b.mail.dkim.verify(hdrTampered, { dnsLookup: dnsLookup });
+  check("openssl interop: tampered signed header fails signature verification",
+        rvHdr[0] && rvHdr[0].result === "fail" &&
+        /signature verification failed/.test((rvHdr[0].errors || []).join(",")));
+}
+
 // ---- verify(): input + option-default guards ----
 
 async function testDkimVerifyBadInputAndOptions() {
@@ -1490,6 +1556,7 @@ async function run() {
   testDkimSimpleCanonDirect();
   await testDkimSimpleCanonRoundTrips();
   await testDkimSimpleCanonHonorsWireFieldName();
+  await testDkimOpensslSimpleCanonInteropVector();
   await testDkimVerifyBadInputAndOptions();
   await testDkimVerifyNoSignatureHeaders();
   await testDkimVerifyBadVersion();
