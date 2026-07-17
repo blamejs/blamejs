@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.17.3",
-  "createdAt": "2026-07-17T09:09:52.208Z",
+  "frameworkVersion": "0.17.4",
+  "createdAt": "2026-07-17T11:12:04.737Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -51678,6 +51678,10 @@
           "arity": 2
         },
         "countPlaceholders": {
+          "type": "function",
+          "arity": 1
+        },
+        "normalizeForScan": {
           "type": "function",
           "arity": 1
         },

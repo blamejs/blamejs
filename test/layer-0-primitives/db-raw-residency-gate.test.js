@@ -201,6 +201,49 @@ async function run() {
     check("case-bypass UPDATE did not move the row cross-border",
       (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).dataRegion === "eu-west-1");
 
+    // RAW PATH 8: the write-detection regexes hand-roll SQL tokenization with
+    // whitespace-separated token boundaries, but SQL lets two tokens abut with NO
+    // whitespace whenever a comment OR a quoted-identifier boundary separates
+    // them. SQLite executes each of these as a real write, yet the whitespace-
+    // anchored gate saw no write target and skipped the residency check entirely
+    // (CWE-863 / GDPR Art. 44-46 transfer-restriction bypass).
+    //
+    //   a) `INSERT INTO"residents"(...)`  — INTO abuts a quoted table, no space
+    //   b) `INSERT/**/INTO residents ...` — a comment separates INSERT and INTO
+    //   c) `UPDATE/**/residents SET ...`  — a comment separates UPDATE and table
+    var abutInsertCode = codeOf(function () {
+      b.db.prepare(
+        "INSERT INTO\"residents\"(_id, name, dataRegion) VALUES (?, ?, ?)")
+        .run("raw-abut", "x", "us-east-1");
+    });
+    check("no-whitespace INTO\"table\" cross-border write is refused (no abut bypass)",
+      abutInsertCode === "db-query/row-residency-local-mismatch");
+    check("no-whitespace INTO\"table\" cross-border row did not persist",
+      b.db.from("residents").where({ _id: "raw-abut" }).first() === null);
+
+    var commentInsertCode = codeOf(function () {
+      b.db.runSql(
+        "INSERT/**/INTO residents (_id, name, dataRegion) VALUES ('raw-cmt', 'x', 'us-east-1')");
+    });
+    check("comment-between-keywords INSERT/**/INTO write is refused (no internal-comment bypass)",
+      commentInsertCode === "db-query/row-residency-local-mismatch");
+    check("comment-between-keywords INSERT cross-border row did not persist",
+      b.db.from("residents").where({ _id: "raw-cmt" }).first() === null);
+
+    var commentUpdateCode = codeOf(function () {
+      b.db.runSql("UPDATE/**/residents SET dataRegion='us-east-1' WHERE _id='raw-eu'");
+    });
+    check("comment-between-keywords UPDATE/**/residents write is refused (no internal-comment bypass)",
+      commentUpdateCode === "db-query/row-residency-local-mismatch");
+    check("comment-between-keywords UPDATE did not move the row cross-border",
+      (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).dataRegion === "eu-west-1");
+
+    // An in-region write in the same abutting/comment shape still persists (the
+    // normalizer must not over-reject a valid write).
+    b.db.runSql("INSERT/**/INTO residents (_id, name, dataRegion) VALUES ('raw-cmt-ok', 'z', 'eu-west-1')");
+    check("in-region comment-between-keywords write still persists (gate does not over-reject)",
+      (b.db.from("residents").where({ _id: "raw-cmt-ok" }).first() || {}).dataRegion === "eu-west-1");
+
     // A writable-CTE write to a NON-residency table is not over-rejected.
     b.db.runSql("CREATE TABLE IF NOT EXISTS notes (_id TEXT PRIMARY KEY, body TEXT)");
     b.db.runSql("WITH s AS (SELECT 'hi' AS b) INSERT INTO notes (_id, body) SELECT 'n1', b FROM s");
