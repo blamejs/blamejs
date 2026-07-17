@@ -164,11 +164,51 @@ async function testEndToEndRawSocketHostInjection() {
     responseText.indexOf("ADMIN-REACHED") === -1);
 }
 
+// A request target that is not origin-form (a single leading "/") must be
+// rejected with 400, never coerced into a routable path. Prefixing a bare or
+// absolute-form target with "/" would let it match a param/catch-all route
+// ("foo" -> "/foo" matches "/:seg"; "http://evil/admin" -> "/http://evil/admin")
+// — the opposite of failing closed.
+async function testNonOriginFormTargetRejected() {
+  var r = b.router.create();
+  var reachedSeg = null;
+  r.get("/:seg", function (req, res) { reachedSeg = req.params.seg; res.writeHead(200); res.end("SEG:" + req.params.seg); });
+
+  // Bare relative target (no leading slash) — pre-fix this was prefixed to
+  // "/foo" and matched the /:seg route.
+  var res1 = _res();
+  await r.handle(_req("foo", "localhost"), res1);
+  check("a bare (non-slash) request target is rejected 400, not coerced to /foo",
+    res1.statusCode === 400 && reachedSeg === null);
+
+  // Absolute-form (the reviewer's example).
+  var res2 = _res();
+  await r.handle(_req("http://evil.example/admin", "localhost"), res2);
+  check("an absolute-form request target is rejected 400", res2.statusCode === 400);
+
+  // Network-path reference (//host/path).
+  var res3 = _res();
+  await r.handle(_req("//evil.example/x", "localhost"), res3);
+  check("a network-path-reference target (//...) is rejected 400", res3.statusCode === 400);
+
+  // Asterisk-form (OPTIONS *).
+  var res4 = _res();
+  await r.handle({ method: "OPTIONS", url: "*", headers: { host: "localhost" } }, res4);
+  check("an asterisk-form target (OPTIONS *) is rejected 400", res4.statusCode === 400);
+
+  // Sanity: a normal origin-form target still routes.
+  var res5 = _res();
+  await r.handle(_req("/hello", "localhost"), res5);
+  check("a normal origin-form target still routes to /:seg",
+    reachedSeg === "hello" && res5._body === "SEG:hello");
+}
+
 async function run() {
   await testHostHeaderDoesNotSteerRoute();
   await testHostHeaderDoesNotSteerScopedGate();
   await testHostTraversalShapeIgnored();
   await testNoHostStillRoutes();
+  await testNonOriginFormTargetRejected();
   await testEndToEndRawSocketHostInjection();
 }
 
