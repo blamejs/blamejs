@@ -1329,6 +1329,70 @@ function testBysetposWeeklySundayAnchor() {
   check("first Sunday is the start (May 3)", insts[0] === "2026-05-03T09:00:00Z");
 }
 
+function testBysetposUnboundedIntervalTerminates() {
+  // Adversarial DoS — a BYSETPOS rule whose FREQ interval is large
+  // enough that the SECOND period's Date.UTC overflows to NaN (year
+  // 2026 + 300000 is beyond the representable ECMAScript date range).
+  // A NaN period runs the day-enumeration loop zero times, so it never
+  // decrements the shared step budget, and the untilMs / toMs window
+  // breaks are NaN-comparison no-ops — the BYSETPOS expander would
+  // otherwise spin forever. Every accepted recurrenceRule MUST make
+  // expandRecurrence terminate. Driven in a child process with a hard
+  // wall-clock kill so a regression manifests as a killed child rather
+  // than hanging this suite.
+  var childProc = require("child_process");
+  var fs   = require("fs");
+  var os   = require("os");
+  var path = require("path");
+  var calPath = path.resolve(__dirname, "../../lib/calendar");
+  var ev = {
+    "@type":  "Event",
+    uid:      "bysetpos-dos",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-06-15T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "yearly",
+                        interval: 300000, byDay: ["FR"], bySetPos: [1] }],       // allow:raw-byte-literal — interval large enough to overflow Date.UTC on period 2
+  };
+  var target = path.join(os.tmpdir(),
+    "blamejs-cal-bysetpos-dos-" + process.pid + "-" + Date.now() + ".js");
+  var src =
+    "\"use strict\";\n" +
+    "var cal = require(" + JSON.stringify(calPath) + ");\n" +
+    "cal.expandRecurrence(" + JSON.stringify(ev) + ", {});\n" +
+    "process.stdout.write(\"DONE\");\n";
+  fs.writeFileSync(target, src);
+  var r;
+  try {
+    r = childProc.spawnSync(process.execPath, [target],
+      { timeout: 5000, killSignal: "SIGKILL", encoding: "utf8" });          // allow:raw-byte-literal — child wall-clock kill budget; a fixed tree returns in <100ms
+  } finally {
+    try { fs.unlinkSync(target); } catch (_e) { /* best-effort cleanup */ }
+  }
+  check("BYSETPOS + unbounded interval terminates (no infinite loop)",
+        r.status === 0 && !r.signal && /DONE/.test(r.stdout || ""));
+
+  // Same root, non-BYSETPOS manifestation: the plain step loop does not
+  // hang (it decrements the budget every iteration) but a large interval
+  // makes _advance overflow to NaN, which _msToIsoZ then throws on
+  // (uncaught TimeError → the request crashes). This runs in-process
+  // because it terminates; it must return a bounded array, not throw.
+  var evPlain = {
+    "@type":  "Event",
+    uid:      "interval-dos",
+    updated:  "2026-05-21T10:00:00Z",
+    start:    "2026-06-15T09:00:00",
+    timeZone: "Etc/UTC",
+    recurrenceRules: [{ "@type": "RecurrenceRule", frequency: "yearly",
+                        interval: 300000 }],                                     // allow:raw-byte-literal — interval large enough to overflow Date.UTC on the first advance
+  };
+  var threwPlain = null, instsPlain = null;
+  try { instsPlain = b.calendar.expandRecurrence(evPlain, {}); }
+  catch (e) { threwPlain = e; }
+  check("unbounded interval does not crash the expander (no NaN date throw)",
+        threwPlain === null && Array.isArray(instsPlain));
+}
+
 function run() {
   testSurface();
   testValidateHappyPath();
@@ -1406,6 +1470,7 @@ function run() {
   testFromIcalMalformedRruleSegmentSkipped();
   testFromIcalBareVtodoAndVjournalDefaults();
   testBysetposWeeklySundayAnchor();
+  testBysetposUnboundedIntervalTerminates();
 }
 
 module.exports = { run: run };
