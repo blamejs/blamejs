@@ -92,10 +92,46 @@ function testSafeSqlError() {
   check("SafeSqlError defaults .code to sql/invalid", bare.code === "sql/invalid");
 }
 
+// ---- normalizeForScan ----
+
+function testNormalizeForScan() {
+  // A quoted table/identifier abutting a keyword with NO whitespace gets a
+  // separating space so a whitespace-anchored tokenizer sees the boundary
+  // (the residency write-gate evasion this primitive was extracted to close).
+  check("normalizeForScan inserts a space where a quoted token abuts a word",
+        b.safeSql.normalizeForScan('INSERT INTO"t"(a) VALUES(?)') === 'INSERT INTO "t"(a) VALUES(?)');
+
+  // A slash-star block comment wedged between two keywords collapses to a
+  // single space so the token boundary survives.
+  var blockComment = "UPDATE" + "/*x*/" + "t SET a = ?";
+  check("normalizeForScan collapses an internal block comment to a space",
+        b.safeSql.normalizeForScan(blockComment) === "UPDATE t SET a = ?");
+
+  // A line comment collapses to a single space.
+  check("normalizeForScan collapses a line comment to a space",
+        b.safeSql.normalizeForScan("SELECT 1-- note") === "SELECT 1 ");
+
+  // Quote-aware: a comment marker INSIDE a string literal is copied verbatim,
+  // never treated as a comment (doubled-quote escape respected).
+  var litWithMarker = "SELECT '-- not a comment' AS x";
+  check("normalizeForScan leaves a comment marker inside a string literal intact",
+        b.safeSql.normalizeForScan(litWithMarker) === litWithMarker);
+
+  // Already-whitespace-delimited SQL is returned unchanged (no spurious spaces).
+  var clean = 'INSERT INTO "t" (a) VALUES (?)';
+  check("normalizeForScan is a no-op on already-normalized SQL",
+        b.safeSql.normalizeForScan(clean) === clean);
+
+  // A backtick-quoted (MySQL) identifier abutting a word is also separated.
+  check("normalizeForScan separates a backtick-quoted identifier abutting a word",
+        b.safeSql.normalizeForScan("UPDATE`t` SET a = ?") === "UPDATE `t` SET a = ?");
+}
+
 async function run() {
   testDefaultIdentifierRe();
   testMaxIdentifierLength();
   testSafeSqlError();
+  testNormalizeForScan();
 }
 
 module.exports = { run: run };
