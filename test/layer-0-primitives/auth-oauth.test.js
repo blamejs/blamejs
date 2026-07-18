@@ -405,6 +405,17 @@ async function scenarioTokenFlows(base, routes) {
     scTok && scTok.scope.length === 1 && scTok.scope[0] === "admin\u0085read" &&
     scTok.scope.indexOf("admin") === -1 && scTok.scope.indexOf("read") === -1);
 
+  // RFC 6749 \u00a73.3 \u2014 a PRESENT but malformed `scope` ({ "scope": null }) is NOT
+  // an omitted scope. Only a truly ABSENT property mirrors the requested set;
+  // treating null as absent would copy the full requested scope (openid email)
+  // and report a grant the AS never made. A malformed scope falls through to
+  // zero (fail closed).
+  routes["/token"] = { json: { access_token: "at-null-scope", scope: null } };
+  var nullScTok = await aresolves("exchangeCode: null scope is malformed, not absent",
+    function () { return oa.exchangeCode({ code: "c", verifier: "v", skipNonceCheck: true }); });
+  check("exchangeCode: null scope grants ZERO scopes, not the requested set",
+    nullScTok && Array.isArray(nullScTok.scope) && nullScTok.scope.length === 0);
+
   // _postForm backend-failure branches.
   routes["/token"] = { status: 400, json: { error: "invalid_grant" } };
   await athrows("exchangeCode: token endpoint non-2xx surfaces token-error-400",
