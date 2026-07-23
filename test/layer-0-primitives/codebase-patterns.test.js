@@ -924,6 +924,7 @@ function testParserPrimitivesHaveFuzzHarness() {
   var FUZZ_NOT_REQUIRED = {
     "lib/safe-async.js":     "runtime-control wrapper (not input-parsing)",
     "lib/safe-buffer.js":    "byte-level helper consumed only by other primitives, no operator-facing parse path",
+    "lib/safe-object.js":    "own-property get/set over an in-memory JS object; no bytes/string parser, no adversarial-input parse path",
     "lib/safe-redirect.js":  "post-validation redirect builder; the validation lives in safe-url which is fuzzed",
     "lib/safe-schema.js":    "schema-builder fluent API; takes operator-authored schema, not adversarial input",
     "lib/safe-sql.js":       "tagged-template helper; takes operator-authored fragments, not adversarial input",

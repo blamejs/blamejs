@@ -360,6 +360,26 @@ async function testExportCsv() {
   }
 }
 
+// --- #452 exportCsv parity on a reserved-word table name ------------------
+
+async function testExportCsvReservedWordTable() {
+  // #452 — a schema-valid table whose name is a SQL keyword (b.db.from()
+  // accepts it via allowReserved) must export too; the validate-only guard in
+  // exportCsv used to reject it stricter than db.from() (sql/reserved-word).
+  var tmpDir = _mkTmp("db-cov-csv-kw-");
+  try {
+    await helpers.setupTestDb(tmpDir, [{
+      name: "select",                         // SQL keyword table name
+      columns: { _id: "TEXT PRIMARY KEY", note: "TEXT" },
+    }]);
+    var err = await _catch(function () { return b.db.exportCsv({ table: "select" }); });
+    check("#452: exportCsv on a keyword-named table is not rejected as reserved-word",
+      err === null || err.code !== "sql/reserved-word");
+  } finally {
+    await helpers.teardownTestDb(tmpDir);
+  }
+}
+
 // --- stream() error + limit branches --------------------------------------
 
 async function testStream() {
@@ -1383,6 +1403,7 @@ async function run() {
   await testMetadataAndAccessors();
   await testTransaction();
   await testExportCsv();
+  await testExportCsvReservedWordTable();
   await testStream();
   await testPrepareCache();
   await testRunSql();
