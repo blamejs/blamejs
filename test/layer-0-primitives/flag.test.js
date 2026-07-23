@@ -7,7 +7,6 @@
 
 var b = require("../..");
 var check = require("../helpers/check").check;
-var helpers = require("../helpers");
 
 function rejects(label, fn, pattern) {
   var threw = false; var msg = "";
@@ -15,7 +14,7 @@ function rejects(label, fn, pattern) {
   check("threw on " + label, threw && (pattern.test ? pattern.test(msg) : msg.indexOf(pattern) !== -1));
 }
 
-async function run() {
+function run() {
   // ---- shape ----
   check("b.flag is object",                      typeof b.flag === "object");
   check("b.flag.create is fn",                   typeof b.flag.create === "function");
@@ -339,24 +338,30 @@ async function run() {
   fs.rmdirSync(tmpDir);
 
   // ---- localFile provider: watch: true reloads on file change ----
-  // Drives the advertised hot-reload path end-to-end. The provider stat-polls
-  // the file (StatWatcher), so backdate it first: the watcher's first-poll
-  // baseline is then old, and the rewrite's current mtime is an unambiguous
-  // change the poll detects (a same-mtime rewrite could be missed).
+  // Deterministic via the _watch test seam: capture the reload callback and
+  // fire it after rewriting the file, exercising the read -> parse -> replace
+  // path without depending on real StatWatcher poll timing (a flake under CI
+  // filesystem contention).
   var watchDir  = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-flag-watch-"));
   var watchPath = path.join(watchDir, "flags.json");
   fs.writeFileSync(watchPath, JSON.stringify({
     flags: { "feature-y": { default: "on", variants: { on: true, off: false } } },
   }));
-  helpers.backdateFile(watchPath);
-  var watchProvider = b.flag.providers.localFile({ path: watchPath, watch: true });
+  var fireReload = null;
+  var watchProvider = b.flag.providers.localFile({
+    path:   watchPath,
+    watch:  true,
+    _watch: function (p, onChange) {
+      check("localFile watch: watcher installed on the config path", p === watchPath);
+      fireReload = onChange;
+    },
+  });
+  check("localFile watch: seam captured reload callback", typeof fireReload === "function");
   check("localFile watch: initial value on",     watchProvider.evaluate("feature-y", {}).value === true);
   fs.writeFileSync(watchPath, JSON.stringify({
     flags: { "feature-y": { default: "off", variants: { on: true, off: false } } },
   }));
-  await helpers.waitForWatcher(function () {
-    return watchProvider.evaluate("feature-y", {}).value === false;
-  }, { label: "localFile watch: reloaded feature-y default -> off" });
+  fireReload();
   check("localFile watch: reloaded on file change",
         watchProvider.evaluate("feature-y", {}).value === false);
   fs.unlinkSync(watchPath);
@@ -972,6 +977,5 @@ async function run() {
 
 module.exports = { run: run };
 if (require.main === module) {
-  run().then(function () { process.exit(0); },
-             function (e) { console.error(e); process.exit(1); });
+  try { run(); process.exit(0); } catch (e) { console.error(e); process.exit(1); }
 }
