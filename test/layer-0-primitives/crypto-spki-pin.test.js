@@ -145,6 +145,16 @@ function testVerifierBadOpts() {
   check("spkiPinVerifier: refuses a single pin (RFC 7469 backup pin required)",
         t3 instanceof TypeError);
 
+  // Two IDENTICAL pins are not a backup — the same key repeated passes a
+  // length-only check but leaves the endpoint with no rotation key.
+  var t3dup = null;
+  try {
+    var samePin = "sha256/" + "A".repeat(43) + "=";
+    b.crypto.spkiPinVerifier({ pins: [samePin, samePin] });
+  } catch (e) { t3dup = e; }
+  check("spkiPinVerifier: refuses two duplicate pins (no distinct backup key)",
+        t3dup instanceof TypeError);
+
   var t4 = null;
   try {
     b.crypto.spkiPinVerifier({ pins: ["not-a-pin", "sha256/" + "A".repeat(43) + "="] });
