@@ -5,8 +5,8 @@
 // Please pull this list from, and only from https://publicsuffix.org/list/public_suffix_list.dat,
 // rather than any other VCS sites. Pulling from any other URL is not guaranteed to be supported.
 
-// VERSION: 2026-07-23_05-57-33_UTC
-// COMMIT: 438c5e02a9db7870300cb3108258aeefc8467c36
+// VERSION: 2026-07-23_18-24-27_UTC
+// COMMIT: 93b4eb174b2da9ee3f6effc363b579a96a65c93a
 
 // Instructions on pulling and using this list can be found at https://publicsuffix.org/list/.
 
@@ -15204,6 +15204,10 @@ eu.platform.sh
 us.platform.sh
 *.platformsh.site
 *.tst.site
+
+// Playcode : https://playcode.io
+// Submitted by Ruslan Ianberdin <security@playcode.io>
+playcode.site
 
 // Pley AB : https://www.pley.com/
 // Submitted by Henning Pohl <infra@pley.com>

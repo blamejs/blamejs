@@ -19,6 +19,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Public Suffix List refreshed to the current upstream snapshot",
+          "body": "The vendored Mozilla Public Suffix List is updated to the current upstream snapshot, so organizational-domain derivation reflects the latest registry delegations wherever the framework draws a registrable-domain boundary -- DMARC identifier alignment, BIMI issuer scoping, cookie-scope confinement, and same-site policy. The .data.js carrier is regenerated and re-signed across all four integrity layers."
+        }
+      ]
+    },
+    {
       "heading": "Detectors",
       "items": [
         {
