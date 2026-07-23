@@ -63,6 +63,15 @@
           "body": "b.watcher exports its ignore-pattern length and wildcard caps so a consumer pre-filter aligns with what create() enforces. b.selfUpdate gains a post-install probation lifecycle (beginProbation / confirmHealthy / evaluateOnBoot) that distinguishes a clean stop from a crash and decides a next-boot rollback. b.daemon gains a read-only status() PID-probe and, on Windows, a cooperative stop-request channel so stop() can drain the graceful-shutdown orchestration instead of a hard terminate. b.crypto adds spkiPin / spkiPinVerifier (above). b.ssrfGuard adds isLoopbackHost / isExactLoopbackName (above). b.redact adds redactText (above). And b.safeObject.ownProp / ownSet provide one prototype-pollution-safe own-property get/set that the framework's interpolators compose instead of re-rolling a guarded read."
         }
       ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Public Suffix List refreshed to the current upstream snapshot",
+          "body": "The vendored Mozilla Public Suffix List is updated to the current upstream snapshot, so organizational-domain derivation reflects the latest registry delegations wherever the framework draws a registrable-domain boundary -- DMARC identifier alignment, BIMI issuer scoping, cookie-scope confinement, and same-site policy. The .data.js carrier is regenerated and re-signed across all four integrity layers."
+        }
+      ]
     }
   ]
 }

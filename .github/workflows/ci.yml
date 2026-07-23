@@ -105,8 +105,11 @@ jobs:
           # also hands each file a fresh process, so per-file memory does
           # not accumulate toward the heap ceiling. 4 keeps the 3-core
           # macOS runner from thrashing the pattern-catalog's own worker
-          # pool; the publish gate uses 8 on its ubuntu-only runner.
-          SMOKE_PARALLEL: "4"
+          # pool; the publish gate uses 8 on its ubuntu-only runner. The 2-vCPU
+          # windows-latest runner drops to 2: four concurrent forked worker
+          # heaps exhaust its process/commit budget, so fork() of a late worker
+          # throws EAGAIN/ENOMEM ("fork failed") as the suite grows.
+          SMOKE_PARALLEL: ${{ matrix.os == 'windows-latest' && '2' || '4' }}
           # Defensive libuv threadpool headroom: under parallel smoke
           # several async Argon2id key-stretch calls can queue onto the
           # pool (default 4) at once; a larger pool avoids contention

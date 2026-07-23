@@ -310,11 +310,29 @@ function _runFileForked(modulePath, displayName, timeoutMs) {
     var fileStart = Date.now();
     var workerScript = path.join(__dirname, "_smoke-worker.js");
     _sampleActiveHandles();
-    var child = fork(workerScript, [modulePath], {
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env: Object.assign({}, process.env, { HS_WORKER: "1" }),
-      execArgv: ["--max-old-space-size=8192"],
-    });
+    var child;
+    try {
+      child = fork(workerScript, [modulePath], {
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+        env: Object.assign({}, process.env, { HS_WORKER: "1" }),
+        execArgv: ["--max-old-space-size=8192"],
+      });
+    } catch (forkErr) {
+      // fork() threw SYNCHRONOUSLY (EMFILE / EAGAIN / ENOMEM at spawn) on a
+      // resource-starved runner — before the child object or its 'error' event
+      // exist. Log the parent handle count and resolve as a retriable
+      // process-level transient so the run reports it by name, not a hang.
+      var _nSync = (typeof process._getActiveHandles === "function") ? process._getActiveHandles().length : -1;
+      console.log("  [smoke] SYNC fork throw for '" + displayName + "': " +
+        ((forkErr && forkErr.code) || (forkErr && forkErr.message) || forkErr) +
+        " (parent active-handles=" + _nSync + ", peak=" + _peakActiveHandles + ")");
+      resolve({
+        ok: false, ms: Date.now() - fileStart, checks: 0,
+        error: displayName + ": fork threw " + ((forkErr && forkErr.code) || (forkErr && forkErr.message) || forkErr),
+        stderr: "", displayName: displayName, retriable: true,
+      });
+      return;
+    }
     var stdoutBuf = "";
     var stderrBuf = "";
     // Single-resolve guard: close / error / watchdog can all fire; the
