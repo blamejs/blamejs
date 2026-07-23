@@ -226,6 +226,15 @@ var SOLO_TIMEOUT_MS = FILE_TIMEOUT_MS * SOLO_TIMEOUT_MULT;
 // full budget. The retry recovers the transient-runner case without hiding a
 // real one (a deterministic failure fails again).
 var FORK_RETRIES = parseInt(process.env.SMOKE_FORK_RETRIES || "1", 10);
+// Peak parent-process active-handle count across the run — surfaced at the end
+// so a resource-starved runner's fork-fail (EMFILE/EAGAIN) can be correlated
+// with handle accumulation (windows-latest hit this on the larger suite).
+var _peakActiveHandles = 0;
+function _sampleActiveHandles() {
+  if (typeof process._getActiveHandles !== "function") return;
+  var n = process._getActiveHandles().length;
+  if (n > _peakActiveHandles) _peakActiveHandles = n;
+}
 if (!Number.isFinite(FORK_RETRIES) || FORK_RETRIES < 0) FORK_RETRIES = 1;
 
 // Opt-in leaked-handle audit (SMOKE_AUDIT_HANDLES=1). The worker always
@@ -300,6 +309,7 @@ function _runFileForked(modulePath, displayName, timeoutMs) {
   return new Promise(function (resolve) {
     var fileStart = Date.now();
     var workerScript = path.join(__dirname, "_smoke-worker.js");
+    _sampleActiveHandles();
     var child = fork(workerScript, [modulePath], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
       env: Object.assign({}, process.env, { HS_WORKER: "1" }),
@@ -315,6 +325,16 @@ function _runFileForked(modulePath, displayName, timeoutMs) {
       if (settled) return;
       settled = true;
       clearTimeout(watchdog);
+      // Release the worker's handles (2 stdio pipes + the IPC channel fork()
+      // always opens — the worker reports via stdout JSON and never uses IPC)
+      // as soon as it settles, so they can't accumulate across a long run and
+      // exhaust the fd/handle limit on a tight-limit runner (windows-latest
+      // fork-fails a late worker with EMFILE/EAGAIN otherwise).
+      try { if (child.connected) child.disconnect(); } catch (_e) { /* best-effort */ }
+      try { if (child.stdout) { child.stdout.removeAllListeners(); child.stdout.destroy(); } } catch (_e) { /* best-effort */ }
+      try { if (child.stderr) { child.stderr.removeAllListeners(); child.stderr.destroy(); } } catch (_e) { /* best-effort */ }
+      try { child.removeAllListeners(); } catch (_e) { /* best-effort */ }
+      try { child.unref(); } catch (_e) { /* best-effort */ }
       resolve(result);
     }
     var watchdog = setTimeout(function () {
@@ -342,6 +362,13 @@ function _runFileForked(modulePath, displayName, timeoutMs) {
       // fork() itself failed (ENOENT / EMFILE / spawn error) — without
       // this handler the Promise would never resolve and hang the run. A
       // spawn failure under load (EAGAIN / EMFILE) is transient → retriable.
+      // Log the parent's active-handle count AT the failure so a fork-fail on a
+      // resource-starved runner can be diagnosed (handle accumulation vs other).
+      try {
+        var _nAtErr = (typeof process._getActiveHandles === "function") ? process._getActiveHandles().length : -1;
+        console.log("  [smoke] fork error for '" + displayName + "': " + ((e && e.code) || (e && e.message) || e) +
+          " (parent active-handles=" + _nAtErr + ", peak=" + _peakActiveHandles + ")");
+      } catch (_le) { /* diagnostic only */ }
       settle({
         ok:     false,
         ms:     Date.now() - fileStart,
@@ -614,6 +641,7 @@ function _checkChangelogInSync() {
   console.log("Layer 5");
   await _runLayer(5, path.join(__dirname, "50-integration.js"), "Layer 5");
 
+  console.log("  [smoke] peak parent active-handles across the run: " + _peakActiveHandles);
   console.log("OK — " + helpers.getChecks() + " checks passed (" + (Date.now() - smokeStart) + "ms total)");
 
   // Deterministic exit on success. The .catch() below exits 1 on
