@@ -130,22 +130,22 @@ function testCrossPlatformBackslashTraversalRefused() {
 }
 
 // confineToBase is the lexical-containment core resolve() layers its
-// user-input strictness on top of, and the barrier b.staticServe composes to
-// confine an OPERATOR-PLACED tree. It must contain traversal (escape → null)
-// while STILL admitting a name resolve() legitimately refuses for user input —
-// a POSIX file whose name carries a `:` (ISO-timestamp logs). That divergence
-// is the whole reason the primitive exists.
-function testConfineToBaseContainsButKeepsOperatorFileNames() {
+// user-input strictness on top of. It contains traversal (escape → null)
+// while NOT pre-judging segment content — so a consumer that wants only
+// containment and runs its own, separately-calibrated filename validation
+// (b.staticServe, with a per-file b.guardFilename basename gate) composes it
+// instead of resolve. That layering divergence is why the primitive exists.
+function testConfineToBaseContainsWithoutUserInputStrictness() {
   var inRoot = b.safePath.confineToBase("/srv/www", "docs/a.html", { platform: "linux" });
   check("confineToBase resolves an in-base path",
     typeof inRoot === "string" && inRoot.indexOf("docs/a.html") !== -1);
   check("confineToBase refuses a `..` escape (→ null)",
     b.safePath.confineToBase("/srv/www", "../etc/passwd", { platform: "linux" }) === null);
-  // A POSIX filename with a colon (ISO timestamp) is a real served file:
-  // confineToBase admits it, while resolve() refuses it as a user-input ADS
-  // marker — the calibration difference between the two entry points.
+  // The two entry points diverge on a colon-bearing segment: confineToBase
+  // (pure containment) admits it; resolve() refuses it as a user-input ADS
+  // marker. The consumer decides how to validate segment content separately.
   var colon = "2026-07-24T12:00:00.log";
-  check("confineToBase admits a POSIX colon filename (operator-placed file)",
+  check("confineToBase admits a colon-bearing segment (no user-input strictness)",
     typeof b.safePath.confineToBase("/srv/www", colon, { platform: "linux" }) === "string");
   check("resolve() still refuses the same colon name (user-input strictness)",
     b.safePath.resolveOrNull("/srv/www", colon, { platform: "linux" }) === null);
@@ -167,7 +167,7 @@ function run() {
   testErrorClassExported();
   testCrossPlatformContainment();
   testCrossPlatformBackslashTraversalRefused();
-  testConfineToBaseContainsButKeepsOperatorFileNames();
+  testConfineToBaseContainsWithoutUserInputStrictness();
 }
 
 if (require.main === module) run();
