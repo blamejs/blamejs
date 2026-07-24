@@ -26,7 +26,7 @@
 # oss-fuzz/projects/blamejs/ copy is intentionally left on the floating tag —
 # OSS-Fuzz's own build infra expects projects to track the latest base-builder,
 # so pinning there would diverge from upstream convention.
-FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:649105c8df1de6b5e752aaad2c944198aba5cb79481b9ccbcaa189854d9f50d2
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:1d3371c4a473551731a34bf5d4b0fecc4579a2f50da2e0645dfd72734d3ea364
 
 # Copy the framework source. ClusterFuzzLite mounts the repo at
 # $SRC/blamejs, so we COPY everything (including fuzz/) into one
