@@ -1549,6 +1549,32 @@ async function testDkimVerifyEd25519RawKeyRfc8463() {
         Array.isArray(rv) && rv[0] && rv[0].result === "pass");
 }
 
+// A record `p=<raw-32-byte-key>` with NO k= is an RSA record (RFC 6376 §3.6.1
+// default). It must NOT verify an a=ed25519-sha256 signature just because the
+// key is 32 bytes long — a key-family confusion the record never authorized.
+async function testDkimEd25519KFamilyConfusionRefused() {
+  var kp = _ed25519Keypair();
+  var rawB64 = nodeCrypto.createPublicKey(kp.publicKey)
+    .export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+  // Distinct selectors so the per-qname key cache does not carry one record's
+  // key into the other's lookup.
+  function signWith(sel) {
+    return b.mail.dkim.create({
+      domain: "example.com", selector: sel, privateKey: kp.privateKey, algorithm: "ed25519-sha256",
+    }).sign("From: a@example.com\r\nTo: b@example.org\r\nSubject: x\r\n\r\nbody\r\n");
+  }
+  // (negative) record omits k= (defaults rsa) → the ed25519 signature is refused.
+  var rvNo = await b.mail.dkim.verify(signWith("edkconfno"),
+    { dnsLookup: async function () { return [["v=DKIM1; p=" + rawB64]]; } });
+  check("ed25519 sig against a k=-absent (RSA-default) raw-key record is refused",
+        Array.isArray(rvNo) && rvNo[0] && rvNo[0].result === "permerror");
+  // (positive control) with k=ed25519 it verifies.
+  var rvOk = await b.mail.dkim.verify(signWith("edkconfok"),
+    { dnsLookup: async function () { return [["v=DKIM1; k=ed25519; p=" + rawB64]]; } });
+  check("ed25519 sig against a k=ed25519 raw-key record verifies pass",
+        Array.isArray(rvOk) && rvOk[0] && rvOk[0].result === "pass");
+}
+
 // bootstrap must PUBLISH the raw 32-byte ed25519 key (44 base64 chars), not
 // SPKI DER (60 chars) — the SPKI form does not verify at a conformant receiver,
 // so the framework's own default-algorithm signatures would be undeliverable.
@@ -1574,6 +1600,7 @@ async function run() {
   testDkimRejectsLTagBodyLength();
   await testDkimVerifyHappyPath();
   await testDkimVerifyEd25519RawKeyRfc8463();
+  await testDkimEd25519KFamilyConfusionRefused();
   testDkimBootstrapEd25519PublishesRawKey();
   await testDkimVerifyBareLfMessage();
   await testDkimVerifyKeyCacheHit();
