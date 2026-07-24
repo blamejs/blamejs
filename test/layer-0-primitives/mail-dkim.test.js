@@ -1519,6 +1519,51 @@ function testBootstrapMoreValidation() {
     /dkim\/bad-rsa-bits/);
 }
 
+// RFC 8463 §3-4 — an ed25519 DKIM key is published as the RAW 32-byte key,
+// base64'd (44 chars), the form every conformant sender uses. The verifier must
+// accept it; it previously SPKI-wrapped the raw bytes so createPublicKey threw
+// and a valid ed25519 signature returned permerror.
+async function testDkimVerifyEd25519RawKeyRfc8463() {
+  var kp = _ed25519Keypair();
+  var signer = b.mail.dkim.create({
+    domain:     "example.com",
+    selector:   "ed1",
+    privateKey: kp.privateKey,
+    algorithm:  "ed25519-sha256",
+  });
+  var rfc822 =
+    "From: alice@example.com\r\n" +
+    "To: bob@example.org\r\n" +
+    "Subject: Test ed raw\r\n" +
+    "Date: Mon, 5 May 2026 12:00:00 +0000\r\n" +
+    "Message-ID: <ed-raw@example.com>\r\n" +
+    "\r\n" +
+    "Hello raw ed25519.\r\n";
+  var signed = signer.sign(rfc822);
+  var rawB64 = nodeCrypto.createPublicKey(kp.publicKey)
+    .export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+  check("ed25519 raw key is the 44-char RFC 8463 form (not 60-char SPKI)", rawB64.length === 44);
+  var dnsLookup = async function () { return [["v=DKIM1; k=ed25519; p=" + rawB64]]; };
+  var rv = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("ed25519 raw-key (RFC 8463) DKIM signature verifies pass",
+        Array.isArray(rv) && rv[0] && rv[0].result === "pass");
+}
+
+// bootstrap must PUBLISH the raw 32-byte ed25519 key (44 base64 chars), not
+// SPKI DER (60 chars) — the SPKI form does not verify at a conformant receiver,
+// so the framework's own default-algorithm signatures would be undeliverable.
+function testDkimBootstrapEd25519PublishesRawKey() {
+  var bs = b.mail.dkim.bootstrap({ domain: "example.com", selector: "ed1", algorithm: "ed25519-sha256" });
+  var m = /p=([A-Za-z0-9+/=]+)/.exec(bs.dnsTxtValue);
+  check("bootstrap ed25519: p= present", m !== null);
+  check("bootstrap ed25519: p= is the 44-char raw key (RFC 8463), not 60-char SPKI",
+        m !== null && m[1].length === 44);
+  // And the published raw key round-trips: a signature from bootstrap's signer
+  // verifies against the published p=.
+  var rawB64 = m ? m[1] : "";
+  check("bootstrap ed25519: published p= is a 32-byte key", Buffer.from(rawB64, "base64").length === 32);
+}
+
 async function run() {
   testDkimSurfaceAndValidation();
   testDkimCanonicalization();
@@ -1528,6 +1573,8 @@ async function run() {
   testDkimSignerRejectsBadInput();
   testDkimRejectsLTagBodyLength();
   await testDkimVerifyHappyPath();
+  await testDkimVerifyEd25519RawKeyRfc8463();
+  testDkimBootstrapEd25519PublishesRawKey();
   await testDkimVerifyBareLfMessage();
   await testDkimVerifyKeyCacheHit();
   await testDkimVerifySmallKeyRejected();
