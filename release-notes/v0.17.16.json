@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.17.16",
+  "date": "2026-07-23",
+  "headline": "A shared path-containment primitive backs both the strict resolver and static file serving",
+  "summary": "b.safePath.resolve and b.staticServe each hand-rolled the same lexical traversal-containment check -- resolve a request path against a base and confirm it stays strictly inside. That core is now one primitive, b.safePath.confineToBase, which both compose: resolve layers its user-input strictness (reserved names, NTFS ADS markers, bidi, control chars) on top, while static serving uses the bare containment so it still serves an operator-placed file whose name legitimately carries a ':' (ISO-timestamp logs) or a Windows reserved word -- names resolve refuses by design for untrusted input. Static serving also inherits the resolver's cross-platform-aware containment, which the runtime path module missed for a backslash traversal on a POSIX host.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.safePath.confineToBase -- the lexical traversal-containment core",
+          "body": "b.safePath.confineToBase(base, rel, opts?) resolves rel against base using the target platform's path semantics and returns the confined absolute path, or null if it escapes. It is the containment barrier b.safePath.resolve layers its user-input strictness on top of, exposed for a consumer confining an OPERATOR-PLACED tree that must still admit filenames resolve refuses for untrusted input (a ':' in a POSIX name, a Windows reserved word, a trailing dot). opts.platform forces windows path semantics on any host."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Static file serving composes the shared containment primitive",
+          "body": "b.staticServe's path-traversal barrier now composes b.safePath.confineToBase for its final lexical containment instead of a hand-rolled join + base-prefix check, so both the strict resolver and static serving route through one implementation. Static serving gains the cross-platform-aware containment (the runtime path module treats the other platform's separator as an ordinary filename character and missed a backslash traversal on a POSIX host); serve behavior is otherwise unchanged, and it deliberately does NOT adopt the resolver's user-input strictness, which would refuse legitimately-named operator files."
+        }
+      ]
+    }
+  ]
+}

@@ -129,6 +129,35 @@ function testCrossPlatformBackslashTraversalRefused() {
     typeof ok === "string" && ok.indexOf("c.txt") !== -1);
 }
 
+// confineToBase is the lexical-containment core resolve() layers its
+// user-input strictness on top of, and the barrier b.staticServe composes to
+// confine an OPERATOR-PLACED tree. It must contain traversal (escape → null)
+// while STILL admitting a name resolve() legitimately refuses for user input —
+// a POSIX file whose name carries a `:` (ISO-timestamp logs). That divergence
+// is the whole reason the primitive exists.
+function testConfineToBaseContainsButKeepsOperatorFileNames() {
+  var inRoot = b.safePath.confineToBase("/srv/www", "docs/a.html", { platform: "linux" });
+  check("confineToBase resolves an in-base path",
+    typeof inRoot === "string" && inRoot.indexOf("docs/a.html") !== -1);
+  check("confineToBase refuses a `..` escape (→ null)",
+    b.safePath.confineToBase("/srv/www", "../etc/passwd", { platform: "linux" }) === null);
+  // A POSIX filename with a colon (ISO timestamp) is a real served file:
+  // confineToBase admits it, while resolve() refuses it as a user-input ADS
+  // marker — the calibration difference between the two entry points.
+  var colon = "2026-07-24T12:00:00.log";
+  check("confineToBase admits a POSIX colon filename (operator-placed file)",
+    typeof b.safePath.confineToBase("/srv/www", colon, { platform: "linux" }) === "string");
+  check("resolve() still refuses the same colon name (user-input strictness)",
+    b.safePath.resolveOrNull("/srv/www", colon, { platform: "linux" }) === null);
+  // Windows-target backslash traversal is contained by the target-platform
+  // resolve, same as resolve()'s core.
+  var BS = String.fromCharCode(92);
+  check("confineToBase refuses a windows-target backslash traversal",
+    b.safePath.confineToBase("/srv/www", "ok" + BS + ".." + BS + ".." + BS + "x", { platform: "windows" }) === null);
+  check("confineToBase bad-input → null (empty base / non-string rel)",
+    b.safePath.confineToBase("", "x") === null && b.safePath.confineToBase("/srv", 5) === null);
+}
+
 function run() {
   testHappyPath();
   testRefusalClasses();
@@ -138,6 +167,7 @@ function run() {
   testErrorClassExported();
   testCrossPlatformContainment();
   testCrossPlatformBackslashTraversalRefused();
+  testConfineToBaseContainsButKeepsOperatorFileNames();
 }
 
 if (require.main === module) run();
