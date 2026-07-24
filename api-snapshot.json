@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.17.15",
-  "createdAt": "2026-07-24T01:23:30.100Z",
+  "frameworkVersion": "0.17.16",
+  "createdAt": "2026-07-24T03:11:57.802Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -51238,6 +51238,10 @@
         "SafePathError": {
           "type": "function",
           "arity": 4
+        },
+        "confineToBase": {
+          "type": "function",
+          "arity": 3
         },
         "resolve": {
           "type": "function",
