@@ -12420,6 +12420,114 @@ function testGitleaksTrippingPatternsAllowlisted() {
     bad);
 }
 
+// ---- Pattern: release notes must not claim the shipped tarball is
+//      identical / unchanged across a version ----
+//
+// class: release-notes-unchanged-tarball-claim
+//
+// Every release bumps package.json's version and adds a CHANGELOG.md
+// entry, and both files ship inside the published npm tarball (the
+// package.json `files` allowlist includes CHANGELOG.md, and package.json
+// itself always ships). So a release note that tells operators the
+// published package / shipped files are "identical" or "unchanged"
+// relative to the prior version is categorically false and misleads
+// anyone auditing release-artifact diffs (reproducible-build /
+// provenance checks). Even a dev-only change (a fuzz-harness dependency
+// bump, a doc fix) still produces a materially different tarball. State
+// what did NOT change precisely instead ("no shipped library or runtime
+// code changes"), never that the artifact is the same.
+function testReleaseNotesNoUnchangedTarballClaim() {
+  var REPO_ROOT = path.resolve(__dirname, "..", "..");
+  var dir = path.resolve(REPO_ROOT, "release-notes");
+  var entries;
+  try { entries = fs.readdirSync(dir); }
+  catch (_e) { return; }
+  // The {0,50} gap is tempered to stop at a clause boundary (period,
+  // semicolon, newline) so the two tokens sit in the SAME clause —
+  // otherwise "excluded from the published tarball; the zero-npm-deps
+  // rule is unchanged" (two independent clauses) false-positives.
+  //
+  // "identical" / "byte-for-byte identical" essentially never describes
+  // behaviour or an API, so the artifact-noun gap can be permissive for
+  // those. "unchanged", by contrast, legitimately describes runtime
+  // behaviour / the public API / a policy ("the published library's
+  // runtime behaviour and public API are unchanged" is TRUE and must not
+  // trip), so the "unchanged" form is tight: the artifact noun must be
+  // directly followed by an optional linking verb and then "unchanged",
+  // with no qualifier noun in between. A possessive right after the
+  // artifact noun ("the published package's API", "the shipped library's
+  // runtime behaviour") is a claim about an ASPECT, not the artifact
+  // itself, so the identical/no-change forms exclude a trailing 's via a
+  // negative lookahead. Reproducible-build phrasings ("match the published
+  // tarball's sha256 byte-for-byte", "build.sh mirrors X byte-for-byte")
+  // stay silent because they never assert "... identical".
+  //
+  // The "identical" forms only fire for a CROSS-VERSION comparison: the
+  // predicate must be trailed (same clause) by a version reference — a
+  // version number, or prior/previous/earlier/last/preceding. A same-
+  // release provenance claim ("the scanned and published artifacts are
+  // byte-for-byte identical", "re-pack to confirm the published tarball is
+  // byte-for-byte identical to your local build") compares two artifacts
+  // of ONE release, carries no version reference, and stays silent. The
+  // "unchanged" / "no change to the published X" forms are inherently
+  // cross-version by phrasing and need no anchor.
+  var CLAIMS = [
+    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)(?!['’]s)\b[^.;\n]{0,50}\b(identical|byte-identical|byte-for-byte\s+identical)\b[^.;\n]{0,25}(?:\d+\.\d+|\b(?:prior|previous|earlier|last|preceding)\b)/i,
+    /\bthis\s+release\s+is\b[^.;\n]{0,30}\b(identical|byte-identical|byte-for-byte\s+identical)\b[^.;\n]{0,25}(?:\d+\.\d+|\b(?:prior|previous|earlier|last|preceding)\b)/i,
+    /\bframework\s+package\b[^.;\n]{0,40}\b(identical|byte-identical|byte-for-byte\s+identical)\b[^.;\n]{0,25}(?:\d+\.\d+|\b(?:prior|previous|earlier|last|preceding)\b)/i,
+    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)\s+(?:is\s+|are\s+|remains\s+|stays\s+|itself\s+is\s+)?unchanged\b/i,
+    /\bno\s+change\s+to\s+the\s+(published|shipped)\s+(package|tarball|files?|artifacts?|librar(?:y|ies))(?!['’]s)\b/i,
+  ];
+  function walkStrings(node, sink) {
+    if (typeof node === "string") { sink.push(node); return; }
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i += 1) walkStrings(node[i], sink);
+      return;
+    }
+    if (node && typeof node === "object") {
+      var keys = Object.keys(node);
+      for (var k = 0; k < keys.length; k += 1) {
+        if (keys[k] === "$schema") continue;
+        walkStrings(node[keys[k]], sink);
+      }
+    }
+  }
+  var bad = [];
+  for (var e = 0; e < entries.length; e += 1) {
+    if (!/\.json$/.test(entries[e])) continue;
+    var rel = "release-notes/" + entries[e];
+    var raw;
+    try { raw = fs.readFileSync(path.join(dir, entries[e]), "utf8"); }
+    catch (_e2) { continue; }
+    var doc;
+    try { doc = JSON.parse(raw); }
+    catch (_e3) { continue; }
+    var strings = [];
+    walkStrings(doc, strings);
+    for (var s = 0; s < strings.length; s += 1) {
+      for (var c = 0; c < CLAIMS.length; c += 1) {
+        if (CLAIMS[c].test(strings[s])) {
+          bad.push({
+            file:    rel,
+            line:    1,
+            content: "release note claims the published/shipped artifact is " +
+                     "identical or unchanged across a version — but every " +
+                     "release bumps package.json + CHANGELOG.md, both shipped " +
+                     "in the tarball, so the artifact always differs. State " +
+                     "what did NOT change ('no shipped library or runtime code " +
+                     "changes'): \"" + strings[s].slice(0, 60) + "...\"",
+          });
+          break;
+        }
+      }
+    }
+  }
+  _report("release-notes/*.json must not claim the published package / " +
+          "shipped files are identical or unchanged across a version — a " +
+          "version bump + CHANGELOG entry always change the shipped tarball",
+    bad);
+}
+
 // ---- Pattern: inline require() inside setImmediate / process.nextTick ----
 //
 // class: inline-require-in-deferred
@@ -14834,6 +14942,7 @@ async function run() {
   testNoNaiveSuffixAlignment();
   testGunzipBombDistinguished();
   testGitleaksTrippingPatternsAllowlisted();
+  testReleaseNotesNoUnchangedTarballClaim();
   // v0.9.58 bug-class detectors — derived from the CRYPTO-1 / CRYPTO-15 /
   // CRYPTO-21 / CRYPTO-22 fixes + CVE-2026-21713 HMAC compare class.
   testNoInlineRequireInDeferred();
