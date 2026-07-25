@@ -539,6 +539,20 @@ async function testRotateUpdateDataEnforceFloor() {
     await _ageAll(store, { lastActivity: Date.now(), createdAt: Date.now() - TIME.hours(13) });   // absolute floor breached
     check("rotate on an absolute-floor-breached session returns null",
       (await b.session.rotate(s3.token)) === null);
+
+    // The floor policy is per-call: a deployment disabling the idle floor via
+    // idleTimeoutMs:0 must have that honored by rotate/updateData too, exactly
+    // as verify() does — a long-idle session is NOT purged when the override is
+    // passed.
+    var s4 = await b.session.create({ userId: "u-ov-rot" });
+    await _ageAll(store, { lastActivity: Date.now() - TIME.minutes(45) });
+    check("rotate with idleTimeoutMs:0 keeps a long-idle session (override respected)",
+      (await b.session.rotate(s4.token, { idleTimeoutMs: 0, absoluteTimeoutMs: 0 })) !== null);
+
+    var s5 = await b.session.create({ userId: "u-ov-upd" });
+    await _ageAll(store, { lastActivity: Date.now() - TIME.minutes(45) });
+    check("updateData with idleTimeoutMs:0 keeps a long-idle session (override respected)",
+      (await b.session.updateData(s5.token, { x: 1 }, { idleTimeoutMs: 0, absoluteTimeoutMs: 0 })) === true);
   } finally {
     b.session.useStore(null);
     try { store.close(); } catch (_e) { /* best-effort */ }
