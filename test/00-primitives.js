@@ -11749,7 +11749,14 @@ async function testDevStopWaitsForLiveChildKillFailure() {
   await new Promise(function (r) { setImmediate(r); });
   check("dev.stop() does NOT settle while a live child's kill was rejected (no exit yet)", settled === false);
 
-  // The child finally exits → stop() settles.
+  // A kill 'error' on a STILL-LIVE child (EPERM) must not complete shutdown
+  // either — the process is still running.
+  live._emit("error", Object.assign(new Error("kill EPERM"), { code: "EPERM" }));
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("dev.stop() does NOT settle on an 'error' from a still-live child", settled === false);
+
+  // Only a real exit completes it.
   live._emit("exit", 0, null);
   await new Promise(function (r) { setImmediate(r); });
   await new Promise(function (r) { setImmediate(r); });
