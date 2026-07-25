@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.17.24",
+  "date": "2026-07-25",
+  "headline": "The coverage-guided fuzz harness pins its `tar` dependency to 7.5.22, clearing a recursion-based denial-of-service advisory in dev-only tooling",
+  "summary": "A maintenance update to development tooling with no change to the published package. The fuzz harness (jazzer.js, under fuzz/) pulled tar transitively at 7.5.19, which is affected by an advisory: uncontrolled recursion in tar's mapHas / filesFilter path lets a crafted entry set trigger an uncatchable stack overflow (fixed upstream in 7.5.21; 7.5.22 is the current release, which caps mapHas recursion at 100 levels and hardens the decompressor teardown). The harness now pins tar to ^7.5.22 via an npm override so the resolved version cannot regress below the patched line. This tooling is not part of the @blamejs/core tarball -- the published files are unchanged from 0.17.23 -- so operators need take no action; the update exists to keep the repository's development dependencies free of known advisories.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Fuzz harness pins tar to 7.5.22 (dev-only; published package unchanged)",
+          "body": "The coverage-guided fuzz harness (fuzz/, jazzer.js) resolved tar transitively at 7.5.19, affected by an uncontrolled-recursion advisory in the mapHas / filesFilter path that permits an uncatchable stack overflow. An npm override pins tar to ^7.5.22 (the patched line caps recursion depth and hardens decompressor teardown), so the harness lockfile cannot resolve a vulnerable tar. fuzz/ is not included in the published @blamejs/core package, so this changes only development tooling; the shipped files are identical to 0.17.23."
+        }
+      ]
+    }
+  ]
+}
