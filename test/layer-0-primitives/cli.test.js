@@ -88,6 +88,19 @@ async function sectionTopLevel() {
   check("leading -v + subcommand → dispatches subcommand (migrate usage, not version)",
         rcVLead2 === 2 && /Usage: blamejs migrate/.test(cVLead2.err()));
 
+  // A version token AFTER the `--` option terminator is literal positional
+  // data (a file NAMED --version), not a version flag — it must reach the
+  // command unstripped.
+  var vTermDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cli-verterm-"));
+  fs.writeFileSync(path.join(vTermDir, "--version"),
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+  var cVTerm = _captureCtx();
+  cVTerm.cwd = vTermDir;
+  var rcVTerm = await cli.main(["file-type", "detect", "--", "--version"], cVTerm);
+  check("version token after -- is a literal file arg, not stripped (detects the file)",
+        rcVTerm === 0 && /mime:\s+image\/png/.test(cVTerm.out()));
+  try { fs.rmSync(vTermDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+
   // `migrate help` positional → _runMigrate's own help branch (distinct from
   // the top-level `migrate --help` synth, which never enters _runMigrate).
   var cMh = _captureCtx();
