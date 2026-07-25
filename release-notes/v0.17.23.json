@@ -6,6 +6,15 @@
   "summary": "Two session-security fixes and one audit-signing robustness fix. b.session.rotate and b.session.updateData reset a session's activity clock but did not re-check the idle/absolute timeout floor that verify() and touch() enforce, so a session already past its idle timeout (default 30 min) -- which verify() would reject -- could be resurrected with a fresh idle window by rotating it or writing session data, defeating the idle timeout (OWASP ASVS 5.0 §3.3 / NIST SP 800-63B-4). Both now enforce the same floor and fail closed. Separately, verify() gated its strict fingerprint controls (requireFingerprintMatch / maxAnomalyScore) on a request being supplied, so passing the strict flag WITHOUT a req silently skipped the check and admitted the session from any device; a strict policy with no way to compute the device fingerprint now fails closed. Finally, b.auditSign.verify honored its documented never-throw contract only for well-formed keys -- a malformed publicKeyPem made it throw; it now returns false.",
   "sections": [
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored Public Suffix List refreshed to the current snapshot",
+          "body": "The bundled Public Suffix List that backs domain classification (registrable-domain and public-suffix checks across URL, cookie, and SSRF handling) is updated to the latest upstream publicsuffix.org snapshot, so newly delegated public suffixes and updated private-domain entries are recognized."
+        }
+      ]
+    },
+    {
       "heading": "Security",
       "items": [
         {
