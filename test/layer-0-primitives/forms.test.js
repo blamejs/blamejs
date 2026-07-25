@@ -484,9 +484,29 @@ function testValidateNumericBoundConfig() {
   check("validate: Infinity bound throws (must be finite)",
         _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", max: Infinity }] }, { n: "5" }); }));
 
-  // Numeric-string bounds are fine — Number("1") is finite.
+  // Number()-coercible junk (null / "" / whitespace / boolean / array) must
+  // NOT be accepted as a bound of 0/1 — those are malformed specs, and
+  // silently treating them as numeric diverges from the rendered constraint.
+  check("validate: null bound throws (not coerced to 0)",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", min: null }] }, { n: "5" }); }));
+  check("validate: empty-string bound throws",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", min: "" }] }, { n: "5" }); }));
+  check("validate: whitespace-string bound throws",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", min: " " }] }, { n: "5" }); }));
+  check("validate: boolean bound throws",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", max: false }] }, { n: "5" }); }));
+  check("validate: array bound throws",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", min: [] }] }, { n: "5" }); }));
+  check("validate: minlength null throws (string control)",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "text", name: "s", minlength: null }] }, { s: "abc" }); }));
+  check("validate: over-long numeric-literal bound throws (length-capped before regex)",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", min: "1".repeat(50) }] }, { n: "5" }); }));
+
+  // Genuine numeric literals — number and clean numeric string — are fine.
   var okStr = b.forms.validate({ fields: [{ type: "number", name: "n", min: "1", max: "10" }] }, { n: "5" });
   check("validate: numeric-string bounds accepted", okStr.valid === true);
+  var okFloat = b.forms.validate({ fields: [{ type: "number", name: "n", min: "-2.5", max: "1e3" }] }, { n: "5" });
+  check("validate: signed/decimal/exponent numeric strings accepted", okFloat.valid === true);
 }
 
 function testValidateSpecValidatedUpFront() {
