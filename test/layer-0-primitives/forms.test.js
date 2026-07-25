@@ -382,8 +382,11 @@ function testValidateCheckboxCoercion() {
   check("checkbox: empty string → false", chk({ c: "" }) === false);
   check("checkbox: 'false' string → false", chk({ c: "false" }) === false);
   check("checkbox: '0' string → false", chk({ c: "0" }) === false);
+  check("checkbox: JSON boolean false → false", chk({ c: false }) === false);
+  check("checkbox: JSON numeric 0 → false", chk({ c: 0 }) === false);
   check("checkbox: 'on' → true", chk({ c: "on" }) === true);
   check("checkbox: boolean true → true", chk({ c: true }) === true);
+  check("checkbox: JSON numeric 1 → true", chk({ c: 1 }) === true);
 }
 
 function testValidateRequiredCheckbox() {
@@ -399,6 +402,16 @@ function testValidateRequiredCheckbox() {
   var falseStr = b.forms.validate({ fields: [{ type: "checkbox", name: "tos", required: true }] }, { tos: "false" });
   check("checkbox: required + 'false' string → invalid",
         falseStr.valid === false && falseStr.errors.tos === "tos is required");
+
+  // JSON bodies deliver an unchecked box as boolean false / numeric 0 — a
+  // non-browser caller must not bypass the required check with either.
+  var jsonFalse = b.forms.validate({ fields: [{ type: "checkbox", name: "tos", required: true }] }, { tos: false });
+  check("checkbox: required + JSON boolean false → invalid",
+        jsonFalse.valid === false && jsonFalse.errors.tos === "tos is required");
+
+  var jsonZero = b.forms.validate({ fields: [{ type: "checkbox", name: "tos", required: true }] }, { tos: 0 });
+  check("checkbox: required + JSON numeric 0 → invalid",
+        jsonZero.valid === false && jsonZero.errors.tos === "tos is required");
 
   var checked = b.forms.validate({ fields: [{ type: "checkbox", name: "tos", required: true }] }, { tos: "on" });
   check("checkbox: required + checked → valid", checked.valid === true && checked.values.tos === true);
@@ -496,6 +509,32 @@ function testValidateSpecValidatedUpFront() {
   // up-front pass only rejects malformed specs, never valid ones.
   var okAbsent = b.forms.validate({ fields: [{ type: "number", name: "n", min: 1, max: 10 }, { type: "text", name: "s", pattern: /^[a-z]+$/ }] }, {});
   check("spec: well-formed spec with absent values validates without throwing", okAbsent.valid === true);
+}
+
+function testValidateDateTimeBounds() {
+  // date / time / datetime-local / month / week controls carry ISO-string
+  // min/max bounds. Those are render-only attributes validate() never
+  // compares numerically, so a string bound must NOT be treated as a
+  // malformed numeric bound — it must not throw at the spec-validation pass.
+  var d = b.forms.validate({ fields: [{ type: "date", name: "d", min: "2026-01-01", max: "2026-12-31" }] }, { d: "2026-06-15" });
+  check("date: ISO-string min/max does not throw and validates", d.valid === true && d.values.d === "2026-06-15");
+
+  var t = b.forms.validate({ fields: [{ type: "time", name: "t", min: "09:00", max: "17:00" }] }, { t: "12:00" });
+  check("time: ISO-string min/max does not throw", t.valid === true);
+
+  var dtlAbsent = b.forms.validate({ fields: [{ type: "datetime-local", name: "dt", min: "2026-01-01T00:00" }] }, {});
+  check("datetime-local: ISO-string min with absent value does not throw", dtlAbsent.valid === true);
+
+  var wk = b.forms.validate({ fields: [{ type: "week", name: "w", max: "2026-W52" }] }, { w: "2026-W10" });
+  check("week: ISO-string max does not throw", wk.valid === true);
+
+  var mo = b.forms.validate({ fields: [{ type: "month", name: "m", min: "2026-01" }] }, { m: "2026-05" });
+  check("month: ISO-string min does not throw", mo.valid === true);
+
+  // The numeric guard is intact for the controls it applies to: a number
+  // field with a non-finite min still throws regardless of body.
+  check("number: non-finite min still throws (numeric control)",
+        _throws(function () { return b.forms.validate({ fields: [{ type: "number", name: "n", min: "abc" }] }, {}); }));
 }
 
 function testValidateMiscCoercion() {
@@ -660,6 +699,7 @@ async function run() {
   testValidateNumberCoercionAndBounds();
   testValidateNumericBoundConfig();
   testValidateSpecValidatedUpFront();
+  testValidateDateTimeBounds();
   testValidateMiscCoercion();
   testValidateEmail();
   testValidateUrl();
