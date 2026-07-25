@@ -88,6 +88,15 @@ async function sectionTopLevel() {
   check("leading -v + subcommand → dispatches subcommand (migrate usage, not version)",
         rcVLead2 === 2 && /Usage: blamejs migrate/.test(cVLead2.err()));
 
+  // ...and BETWEEN a command and its subcommand: `--version` must not swallow
+  // the subcommand, and the subcommand must keep its position after the
+  // command (audit purge, not the unknown top-level command "purge").
+  var cVMid = _captureCtx();
+  var rcVMid = await cli.main(["audit", "--version", "purge"], cVMid);
+  check("mid-argv --version → command keeps its subcommand (audit purge dispatched, not version)",
+        rcVMid === 2 && /blamejs audit purge:/.test(cVMid.err()) &&
+        !/unknown/.test(cVMid.err()) && !/^\d+\.\d+\.\d+\s*$/.test(cVMid.out().trim()));
+
   // A version token AFTER the `--` option terminator is literal positional
   // data (a file NAMED --version), not a version flag — it must reach the
   // command unstripped.
