@@ -207,6 +207,12 @@ async function testMetadataAndAccessors() {
       columns: { _id: "TEXT PRIMARY KEY", note: "TEXT", total: "INTEGER NOT NULL", totalHash: "TEXT" },
       sealedFields: ["note"],
       derivedHashes: { totalHash: { from: "total" } },
+    }, {
+      // A table declaring a structured foreignKeys array — its metadata
+      // snapshot must carry the FK relationship through for RoPA / tooling.
+      name: "line_items",
+      columns: { _id: "TEXT PRIMARY KEY", orderId: "TEXT NOT NULL", qty: "INTEGER NOT NULL" },
+      foreignKeys: [{ column: "orderId", references: "orders._id", onDelete: "CASCADE" }],
     }]);
 
     check("getMode() returns encrypted", b.db.getMode() === "encrypted");
@@ -229,6 +235,19 @@ async function testMetadataAndAccessors() {
       b.db.getTableMetadata(123) === null);
     check("getTableMetadata({ table: unknown }) returns null",
       b.db.getTableMetadata({ table: "nope" }) === null);
+
+    // Object form without a `format` key falls back to the native blamejs
+    // snapshot (the `format || "blamejs"` default).
+    var noFmt = b.db.getTableMetadata({ table: "orders" });
+    check("getTableMetadata({ table }) with no format returns the native snapshot",
+      noFmt && Array.isArray(noFmt.sealedFields) && noFmt.columns._id === "TEXT PRIMARY KEY");
+
+    // A declared foreignKeys array rides through into the metadata snapshot.
+    var fkMeta = b.db.getTableMetadata("line_items");
+    check("getTableMetadata surfaces a declared foreignKeys relationship",
+      Array.isArray(fkMeta.foreignKeys) && fkMeta.foreignKeys.length === 1 &&
+      fkMeta.foreignKeys[0].column === "orderId" &&
+      fkMeta.foreignKeys[0].references === "orders._id");
 
     var badArg = await _catch(function () { return b.db.getTableMetadata({ table: "" }); });
     check("getTableMetadata({ table: '' }) throws db/bad-table-arg",
@@ -587,6 +606,15 @@ async function testDualControl() {
 
     var row = b.db._checkDualControlGate("charts");
     check("_checkDualControlGate returns the registered gate", row && row.m === 2 && row.n === 3);
+
+    // Declaring a gate WITHOUT a posture drives the `posture || null`
+    // fallback on the registry write, the audit metadata, and the return
+    // tuple — the omitted posture normalizes to null everywhere.
+    var noPosture = b.db.declareRequireDualControl({ tables: ["charts"], m: 2, n: 4 });
+    check("declareRequireDualControl without a posture returns posture:null",
+      noPosture.posture === null && noPosture.m === 2 && noPosture.n === 4);
+    check("_checkDualControlGate reflects the re-declared (null-posture) gate",
+      b.db._checkDualControlGate("charts").posture === null);
   } finally {
     await helpers.teardownTestDb(tmpDir);
   }
@@ -617,6 +645,11 @@ async function testEraseHard() {
     check("eraseHard reports a numeric durationMs", typeof ok.durationMs === "number");
     check("eraseHard actually removed the row",
       !b.db.from("plainrows").where({ _id: "r1" }).first());
+
+    // Erasing a row that isn't present deletes nothing — the `changes || 0`
+    // fallback reports zero rather than a falsy changes value.
+    var absent = b.db.eraseHard("plainrows", "no-such-row", { reason: "idempotent erasure sweep" });
+    check("eraseHard on an absent row reports rowsDeleted === 0", absent.rowsDeleted === 0);
 
     // Gated table: refused without a grant.
     b.db.declareRequireDualControl({ tables: ["gated"], m: 2, n: 3, posture: "hipaa" });
@@ -699,6 +732,12 @@ async function testIntegrity() {
     mon.stop();
     mon.stop();   // idempotent second stop
     check("integrityMonitor stop() is idempotent", true);
+
+    // No-opts call exercises the `opts || {}` + default 24h-interval
+    // fallbacks; stop it immediately so the timer never fires.
+    var defMon = b.db.integrityMonitor();
+    check("integrityMonitor() with no opts returns a handle", typeof defMon.stop === "function");
+    defMon.stop();
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -1390,6 +1429,97 @@ async function testStreamBufferParam() {
   }
 }
 
+// --- storage-headroom probe: fault-injected + non-encrypted short-circuit --
+
+async function testStorageProbeFaults() {
+  // A statfs reader that THROWS must never flip the refuse-writes flag — a
+  // stat error is not grounds for a self-inflicted write outage.
+  var dirThrow = _mkTmp("db-cov-probe-throw-");
+  try {
+    await _freshVault(dirThrow);
+    await b.db.init({
+      dataDir: dirThrow, tmpDir: path.join(dirThrow, "tmpfs"), allowNonTmpfsTmpDir: true,
+      frameworkTables: false, auditSigning: false, minFreeBytes: C.BYTES.mib(16),
+      _statfsForTest: function () { throw new Error("statfs-eio"); },
+      schema: [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+    });
+    check("storage probe swallows a throwing statfs (writes stay allowed)",
+      b.db._probeStorageForTest().writesRefused === false);
+  } finally { _teardownPlain(dirThrow); }
+
+  // A non-finite free-space reading (e.g. an overflowing bavail*bsize) is
+  // ignored rather than trusted.
+  var dirInf = _mkTmp("db-cov-probe-inf-");
+  try {
+    await _freshVault(dirInf);
+    await b.db.init({
+      dataDir: dirInf, tmpDir: path.join(dirInf, "tmpfs"), allowNonTmpfsTmpDir: true,
+      frameworkTables: false, auditSigning: false, minFreeBytes: C.BYTES.mib(16),
+      _statfsForTest: function () { return { bavail: Infinity, bsize: 1 }; },
+      schema: [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+    });
+    check("storage probe ignores a non-finite free-space reading",
+      b.db._probeStorageForTest().writesRefused === false);
+  } finally { _teardownPlain(dirInf); }
+
+  // Plain at-rest mode short-circuits the probe entirely — the tmpfs
+  // headroom guard is an encrypted-working-copy concern only.
+  var dirPlain = _mkTmp("db-cov-probe-plain-");
+  try {
+    await _plainInit(dirPlain, [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+      { frameworkTables: false, auditSigning: false });
+    var p = b.db._probeStorageForTest();
+    check("storage probe is a no-op under atRest:plain",
+      p.writesRefused === false && p.minFreeBytes === 0);
+  } finally { _teardownPlain(dirPlain); }
+}
+
+// --- init() with an explicit auditSigning { mode, algorithm } --------------
+
+async function testAuditSigningExplicitOpts() {
+  var tmpDir = _mkTmp("db-cov-signopts-");
+  try {
+    // Passing an explicit auditSigning { mode, algorithm } drives the
+    // opts-present arms of the signing-mode + algorithm resolution — the
+    // other fixtures leave both unset and take the env / default fallbacks.
+    await _freshVault(tmpDir);
+    await b.db.init({
+      dataDir: tmpDir, atRest: "plain",
+      auditSigning: { mode: "wrapped", algorithm: "ml-dsa-65" },
+      schema: [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+    });
+    check("init with explicit auditSigning { mode, algorithm } boots",
+      b.db.getMode() === "plain");
+    check("audit signing is live after explicit-opts boot",
+      typeof b.auditSign.getPublicKeyFingerprint() === "string");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- init() on an already-initialized handle is an early-return no-op ------
+
+async function testDoubleInit() {
+  var tmpDir = _mkTmp("db-cov-reinit-");
+  try {
+    await _plainInit(tmpDir, [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+      { frameworkTables: false, auditSigning: false });
+    var pathBefore = b.db.getDbPath();
+    // A second init() while initialized returns immediately — it neither
+    // re-opens the handle nor reconciles the new schema.
+    await b.db.init({
+      dataDir: tmpDir, atRest: "plain", frameworkTables: false, auditSigning: false,
+      schema: [{ name: "other", columns: { _id: "TEXT PRIMARY KEY" } }],
+    });
+    check("second init() leaves the db path unchanged (early return)",
+      b.db.getDbPath() === pathBefore);
+    check("second init() did not provision the new schema table",
+      b.db.getTableMetadata("other") === null);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
 async function run() {
   await testJsonSchemaTypeAliases();
   await testMetadataBlamejsFormatAndPosture();
@@ -1417,6 +1547,9 @@ async function run() {
   await testApplyPosture();
   await testCloseAndGeneration();
   await testStorageGuard();
+  await testStorageProbeFaults();
+  await testAuditSigningExplicitOpts();
+  await testDoubleInit();
   await testTmpfsResolution();
   await testTablePrefixAndResidency();
   await testEncryptedRoundTrip();

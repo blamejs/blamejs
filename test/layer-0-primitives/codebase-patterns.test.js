@@ -361,6 +361,7 @@ var VALID_ALLOW_CLASSES = {
   "silent-catch-stream-teardown": 1,
   "slsa-framework-action-not-sha-pinned": 1,
   "timer-no-unref-unrefed-below": 1,
+  "timer-no-unref-process-pinning": 1,
   "wildcard-suffix-match-without-single-label-check": 1,
 };
 
@@ -2813,6 +2814,13 @@ function testTimersUnref() {
     }
   }
   bad = _filterMarkers(bad, "timer-no-unref-unrefed-below");
+  // A timer whose deliberate JOB is to pin the process — a long-running
+  // supervisor / daemon that must outlive its children until an operator
+  // signal — is the message's advertised "process-pinning intent" exception:
+  // unref'ing it would defeat the primitive (e.g. `blamejs dev` must stay up
+  // across a watched-child crash). Such a timer carries this marker + the
+  // reason it must NOT unref.
+  bad = _filterMarkers(bad, "timer-no-unref-process-pinning");
   _report("setInterval timers call .unref() (or have allow marker for " +
           "process-pinning intent)",
     bad);
