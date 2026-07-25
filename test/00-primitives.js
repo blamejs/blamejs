@@ -11668,6 +11668,48 @@ async function testDevDebouncesBurstOfEventsToOneRestart() {
   await d.stop();
 }
 
+async function testDevStopSettlesAfterSpawnError() {
+  // A command that cannot be spawned (ENOENT) emits 'error' + 'close' but
+  // NEVER 'exit', and kill() returns false (no live OS process). stop() must
+  // still settle so the supervisor can shut down — otherwise a ref'd
+  // keep-alive in the CLI would hang and a single Ctrl-C could not terminate.
+  function makeSpawnErrorChild() {
+    var listeners = {};
+    return {
+      pid:  undefined,
+      kill: function () { return false; },   // no live process to signal
+      on:   function (ev, cb) { (listeners[ev] = listeners[ev] || []).push(cb); return this; },
+      once: function (ev, cb) {
+        var wrap = function (a, b) {
+          listeners[ev] = (listeners[ev] || []).filter(function (x) { return x !== wrap; });
+          cb(a, b);
+        };
+        return this.on(ev, wrap);
+      },
+      _emit: function (ev, a, b) { (listeners[ev] || []).slice().forEach(function (cb) { cb(a, b); }); },
+    };
+  }
+  var errChild = makeSpawnErrorChild();
+  var d = b.dev.create({
+    command: "does-not-exist",
+    cwd:     "/repo",
+    _spawn:        function () { return errChild; },
+    _watch:        function () { return { on: function () { return this; }, close: function () {} }; },
+    _setTimeout:   function () { return { unref: function () { return this; } }; },   // never fires
+    _clearTimeout: function () {},
+  });
+  await d.start();
+  // Simulate the spawn failure: 'error' then 'close', no 'exit'.
+  errChild._emit("error", Object.assign(new Error("spawn does-not-exist ENOENT"), { code: "ENOENT" }));
+  errChild._emit("close", null, null);
+
+  var settled = false;
+  d.stop().then(function () { settled = true; }, function () { settled = true; });
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("dev.stop() settles after a spawn-error child (no 'exit' event)", settled === true);
+}
+
 async function testDevIgnoresMatchingPaths() {
   var h = _makeDevHarness();
   var d = b.dev.create({
@@ -19311,6 +19353,7 @@ async function run() {
   await testDevRestartCoalescesQueuedRestart();
   await testDevStopKillsAndDisarms();
   await testDevUnexpectedExitDoesNotRespawn();
+  await testDevStopSettlesAfterSpawnError();
   // cli — `blamejs <cmd>` dispatch + migrate subcommand
   testCliSurface();
   testCliArgParser();
