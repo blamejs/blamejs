@@ -12420,6 +12420,87 @@ function testGitleaksTrippingPatternsAllowlisted() {
     bad);
 }
 
+// ---- Pattern: release notes must not claim the shipped tarball is
+//      identical / unchanged across a version ----
+//
+// class: release-notes-unchanged-tarball-claim
+//
+// Every release bumps package.json's version and adds a CHANGELOG.md
+// entry, and both files ship inside the published npm tarball (the
+// package.json `files` allowlist includes CHANGELOG.md, and package.json
+// itself always ships). So a release note that tells operators the
+// published package / shipped files are "identical" or "unchanged"
+// relative to the prior version is categorically false and misleads
+// anyone auditing release-artifact diffs (reproducible-build /
+// provenance checks). Even a dev-only change (a fuzz-harness dependency
+// bump, a doc fix) still produces a materially different tarball. State
+// what did NOT change precisely instead ("no shipped library or runtime
+// code changes"), never that the artifact is the same.
+function testReleaseNotesNoUnchangedTarballClaim() {
+  var REPO_ROOT = path.resolve(__dirname, "..", "..");
+  var dir = path.resolve(REPO_ROOT, "release-notes");
+  var entries;
+  try { entries = fs.readdirSync(dir); }
+  catch (_e) { return; }
+  // The {0,50} gap is tempered to stop at a clause boundary (period,
+  // semicolon, newline) so the two tokens must sit in the SAME clause —
+  // otherwise "excluded from the published tarball; the zero-npm-deps
+  // rule is unchanged" (two independent clauses) false-positives.
+  var CLAIMS = [
+    /\b(published|shipped|packaged)\s+(files?|artifacts?|package|tarball|contents?)\b[^.;\n]{0,50}\b(identical|unchanged|byte-identical)\b/i,
+    /\bno\s+change\s+to\s+the\s+(published|shipped)\s+(package|tarball|files?|artifacts?)/i,
+    /\b(tarball|published\s+package)\b[^.;\n]{0,50}\b(identical|unchanged)\b/i,
+  ];
+  function walkStrings(node, sink) {
+    if (typeof node === "string") { sink.push(node); return; }
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i += 1) walkStrings(node[i], sink);
+      return;
+    }
+    if (node && typeof node === "object") {
+      var keys = Object.keys(node);
+      for (var k = 0; k < keys.length; k += 1) {
+        if (keys[k] === "$schema") continue;
+        walkStrings(node[keys[k]], sink);
+      }
+    }
+  }
+  var bad = [];
+  for (var e = 0; e < entries.length; e += 1) {
+    if (!/\.json$/.test(entries[e])) continue;
+    var rel = "release-notes/" + entries[e];
+    var raw;
+    try { raw = fs.readFileSync(path.join(dir, entries[e]), "utf8"); }
+    catch (_e2) { continue; }
+    var doc;
+    try { doc = JSON.parse(raw); }
+    catch (_e3) { continue; }
+    var strings = [];
+    walkStrings(doc, strings);
+    for (var s = 0; s < strings.length; s += 1) {
+      for (var c = 0; c < CLAIMS.length; c += 1) {
+        if (CLAIMS[c].test(strings[s])) {
+          bad.push({
+            file:    rel,
+            line:    1,
+            content: "release note claims the published/shipped artifact is " +
+                     "identical or unchanged across a version — but every " +
+                     "release bumps package.json + CHANGELOG.md, both shipped " +
+                     "in the tarball, so the artifact always differs. State " +
+                     "what did NOT change ('no shipped library or runtime code " +
+                     "changes'): \"" + strings[s].slice(0, 60) + "...\"",
+          });
+          break;
+        }
+      }
+    }
+  }
+  _report("release-notes/*.json must not claim the published package / " +
+          "shipped files are identical or unchanged across a version — a " +
+          "version bump + CHANGELOG entry always change the shipped tarball",
+    bad);
+}
+
 // ---- Pattern: inline require() inside setImmediate / process.nextTick ----
 //
 // class: inline-require-in-deferred
@@ -14834,6 +14915,7 @@ async function run() {
   testNoNaiveSuffixAlignment();
   testGunzipBombDistinguished();
   testGitleaksTrippingPatternsAllowlisted();
+  testReleaseNotesNoUnchangedTarballClaim();
   // v0.9.58 bug-class detectors — derived from the CRYPTO-1 / CRYPTO-15 /
   // CRYPTO-21 / CRYPTO-22 fixes + CVE-2026-21713 HMAC compare class.
   testNoInlineRequireInDeferred();
