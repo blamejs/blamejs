@@ -304,6 +304,32 @@ function testPkixQuotedSanNoBypass() {
   var nodeErr = tls.checkServerIdentity(host, cert);
   check("quoted-blob SAN does not smuggle a hostname (rejects, matching Node)",
         !!bjsErr && !!nodeErr);
+
+  // Decoded control whitespace in a quoted dNSName must NOT be trimmed away:
+  // a quoted value that is a newline-escape then victim.com decodes to a
+  // leading LF + victim.com; a trim would reduce it to a bare victim.com that
+  // matches a name the certificate never asserts. The value is preserved
+  // verbatim, so it fails the exact match — as it does in Node. (Node may
+  // throw ERR_TLS_CERT_ALTNAME_FORMAT; either way it does not ACCEPT.)
+  function _nodeAccepts(h, c) { try { return tls.checkServerIdentity(h, c) === undefined; } catch (_e) { return false; } }
+  var leadCtl = _cert('DNS:"\\u000avictim.com"', "attacker");
+  check("leading control-char in quoted SAN is not trimmed into a match",
+        b.network.tls.checkServerIdentity9525("victim.com", leadCtl) !== undefined &&
+        _nodeAccepts("victim.com", leadCtl) === false);
+  var trailCtl = _cert('DNS:"victim.com\\u000a"', "attacker");
+  check("trailing control-char in quoted SAN is not trimmed into a match",
+        b.network.tls.checkServerIdentity9525("victim.com", trailCtl) !== undefined &&
+        _nodeAccepts("victim.com", trailCtl) === false);
+
+  // Same class on the IP path: a smuggled quoted IP value with a control char
+  // must not normalize (via a trim) into a clean IP that matches.
+  var ipCtl = _cert('IP Address:"198.51.100.1\\u000a"', "attacker");
+  check("control-char in quoted IP SAN does not match a clean IP",
+        b.network.tls.checkServerIdentity9525("198.51.100.1", ipCtl) !== undefined);
+  // Legitimate IP + bracketed IPv6 still match (no trim was needed for those).
+  check("legit IPv4 SAN still matches",
+        b.network.tls.checkServerIdentity9525("198.51.100.1",
+          _cert("IP Address:198.51.100.1")) === undefined);
   // The genuine (whole-blob) dNSName is still matchable exactly.
   var okErr = b.network.tls.checkServerIdentity9525("x, DNS:victim.com, y", cert);
   check("the actual quoted dNSName value matches exactly", okErr === undefined);
