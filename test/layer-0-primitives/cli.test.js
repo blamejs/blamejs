@@ -2740,15 +2740,21 @@ async function sectionDevSupervisor() {
     stop:  function () { stopCalls += 1; return stopDone; },
   };
   var shutdownFn = null;
+  var capturedOpts = null;
   var c = _captureCtx();
-  c._dev = function () { return fakeDev; };
+  c._dev = function (opts) { capturedOpts = opts; return fakeDev; };
   c._onDevRunning = function (fn) { shutdownFn = fn; };
 
-  var runP = cli.main(["dev", "--command", "node", "--arg", "-e", "--arg", "0"], c);
+  // `-v` here is the VALUE of --arg (run `node -v`), NOT the top-level
+  // version flag — it must reach the command, not be mistaken for --version.
+  var runP = cli.main(["dev", "--command", "node", "--arg", "-v"], c);
   await helpers.waitUntil(function () { return shutdownFn !== null; }, {
     timeoutMs: 5000, label: "cli dev: supervisor started + running",
   });
   check("dev: start() called once", startCalls === 1);
+  check("dev: -v as an --arg value reaches the command (not stripped as version)",
+        !!capturedOpts && Array.isArray(capturedOpts.args) &&
+        capturedOpts.args.length === 1 && capturedOpts.args[0] === "-v");
 
   var resolved = false;
   runP.then(function () { resolved = true; });
