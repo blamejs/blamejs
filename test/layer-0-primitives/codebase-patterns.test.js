@@ -12454,15 +12454,19 @@ function testReleaseNotesNoUnchangedTarballClaim() {
   // runtime behaviour and public API are unchanged" is TRUE and must not
   // trip), so the "unchanged" form is tight: the artifact noun must be
   // directly followed by an optional linking verb and then "unchanged",
-  // with no qualifier noun in between. Reproducible-build phrasings ("match
-  // the published tarball's sha256 byte-for-byte", "build.sh mirrors X
-  // byte-for-byte") stay silent because they never assert "... identical".
+  // with no qualifier noun in between. A possessive right after the
+  // artifact noun ("the published package's API", "the shipped library's
+  // runtime behaviour") is a claim about an ASPECT, not the artifact
+  // itself, so the identical/no-change forms exclude a trailing 's via a
+  // negative lookahead. Reproducible-build phrasings ("match the published
+  // tarball's sha256 byte-for-byte", "build.sh mirrors X byte-for-byte")
+  // stay silent because they never assert "... identical".
   var CLAIMS = [
-    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)\b[^.;\n]{0,50}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
+    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)(?!['’]s)\b[^.;\n]{0,50}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
     /\bthis\s+release\s+is\b[^.;\n]{0,30}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
     /\bframework\s+package\b[^.;\n]{0,40}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
-    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)(?:'s)?\s+(?:is\s+|are\s+|remains\s+|stays\s+|itself\s+is\s+)?unchanged\b/i,
-    /\bno\s+change\s+to\s+the\s+(published|shipped)\s+(package|tarball|files?|artifacts?|librar)/i,
+    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)\s+(?:is\s+|are\s+|remains\s+|stays\s+|itself\s+is\s+)?unchanged\b/i,
+    /\bno\s+change\s+to\s+the\s+(published|shipped)\s+(package|tarball|files?|artifacts?|librar(?:y|ies))(?!['’]s)\b/i,
   ];
   function walkStrings(node, sink) {
     if (typeof node === "string") { sink.push(node); return; }
