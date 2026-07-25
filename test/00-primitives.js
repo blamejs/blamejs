@@ -11710,6 +11710,52 @@ async function testDevStopSettlesAfterSpawnError() {
   check("dev.stop() settles after a spawn-error child (no 'exit' event)", settled === true);
 }
 
+async function testDevStopWaitsForLiveChildKillFailure() {
+  // A LIVE child (has a pid) whose kill() fails — the signal was not
+  // delivered, e.g. EPERM after the child changed credentials — must NOT
+  // settle stop() immediately: the process may still be running. stop()
+  // completes only when an exit/close actually arrives, never on a false
+  // kill() return alone (which would falsely report termination).
+  function makeLiveUnkillableChild() {
+    var listeners = {};
+    return {
+      pid:  4242,                             // a real, live process
+      kill: function () { return false; },    // signal not delivered (EPERM)
+      on:   function (ev, cb) { (listeners[ev] = listeners[ev] || []).push(cb); return this; },
+      once: function (ev, cb) {
+        var wrap = function (a, b) {
+          listeners[ev] = (listeners[ev] || []).filter(function (x) { return x !== wrap; });
+          cb(a, b);
+        };
+        return this.on(ev, wrap);
+      },
+      _emit: function (ev, a, b) { (listeners[ev] || []).slice().forEach(function (cb) { cb(a, b); }); },
+    };
+  }
+  var live = makeLiveUnkillableChild();
+  var d = b.dev.create({
+    command: "x",
+    cwd:     "/repo",
+    _spawn:        function () { return live; },
+    _watch:        function () { return { on: function () { return this; }, close: function () {} }; },
+    _setTimeout:   function () { return { unref: function () { return this; } }; },   // killTimer never fires
+    _clearTimeout: function () {},
+  });
+  await d.start();
+
+  var settled = false;
+  d.stop().then(function () { settled = true; }, function () { settled = true; });
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("dev.stop() does NOT settle while a live child's kill was rejected (no exit yet)", settled === false);
+
+  // The child finally exits → stop() settles.
+  live._emit("exit", 0, null);
+  await new Promise(function (r) { setImmediate(r); });
+  await new Promise(function (r) { setImmediate(r); });
+  check("dev.stop() settles once the live child finally exits", settled === true);
+}
+
 async function testDevIgnoresMatchingPaths() {
   var h = _makeDevHarness();
   var d = b.dev.create({
@@ -19354,6 +19400,7 @@ async function run() {
   await testDevStopKillsAndDisarms();
   await testDevUnexpectedExitDoesNotRespawn();
   await testDevStopSettlesAfterSpawnError();
+  await testDevStopWaitsForLiveChildKillFailure();
   // cli — `blamejs <cmd>` dispatch + migrate subcommand
   testCliSurface();
   testCliArgParser();
