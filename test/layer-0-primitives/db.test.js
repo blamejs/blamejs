@@ -316,9 +316,12 @@ async function testExportCsv() {
       name: "orders",
       columns: {
         _id: "TEXT PRIMARY KEY", note: "TEXT", total: "INTEGER NOT NULL",
-        createdAt: "INTEGER NOT NULL", raw: "BLOB",
+        createdAt: "INTEGER NOT NULL", raw: "BLOB", sealedRaw: "BLOB",
       },
-      sealedFields: ["note"],
+      // `raw` is a plain BLOB (reads back as a Uint8Array); `sealedRaw` is a
+      // SEALED BLOB — cryptoField unseals it to a real Node Buffer, so the CSV
+      // projector takes the Buffer→base64 arm rather than the String() arm.
+      sealedFields: ["note", "sealedRaw"],
     }]);
 
     var noOpts = await _catch(function () { return b.db.exportCsv(); });
@@ -365,7 +368,7 @@ async function testExportCsv() {
       throwingSigner && throwingSigner.code === "db/sign-failed");
 
     // Success path: BOM + ISO timestamp cast + Buffer base64 + null → "".
-    b.db.from("orders").insertOne({ _id: "o1", note: "hi", total: 100, createdAt: Date.now(), raw: Buffer.from("AB") });
+    b.db.from("orders").insertOne({ _id: "o1", note: "hi", total: 100, createdAt: Date.now(), raw: Buffer.from("AB"), sealedRaw: Buffer.from("AB") });
     b.db.from("orders").insertOne({ _id: "o2", note: null, total: 200, createdAt: Date.now() });
     var out = b.db.exportCsv({
       table: "orders", bom: true, timestampFields: ["createdAt"], signWith: b.auditSign,
@@ -374,6 +377,11 @@ async function testExportCsv() {
     check("exportCsv emits a SHA3-512 (128 hex chars)", out.sha3_512.length === 128);
     check("exportCsv text carries the UTF-8 BOM", out.csv.charCodeAt(0) === 0xFEFF);
     check("exportCsv attaches a signature block", !!out.signature && typeof out.signature.value === "string");
+    // The sealed BLOB's unsealed Buffer takes the Buffer.isBuffer→base64 arm;
+    // Buffer.from("AB").toString("base64") === "QUI=". (The plain-BLOB `raw`
+    // column reads back as a Uint8Array and stringifies to "65,66" instead.)
+    check("exportCsv base64-encodes a sealed BLOB column's Buffer value",
+      out.csv.indexOf("QUI=") !== -1);
   } finally {
     await helpers.teardownTestDb(tmpDir);
   }
@@ -545,6 +553,13 @@ async function testDeclareWorm() {
     var noTables = await _catch(function () { return b.db.declareWorm({}); });
     check("declareWorm missing tables throws", noTables !== null && noTables.name === "WormViolationError");
 
+    // Called with the args object omitted entirely — the `args = args || {}`
+    // normalization must still land on the tables-required throw (not a
+    // TypeError reading .tables off undefined).
+    var bareWorm = await _catch(function () { return b.db.declareWorm(); });
+    check("declareWorm() with no args at all throws WormViolationError",
+      bareWorm && bareWorm.name === "WormViolationError" && bareWorm.code === "BAD_OPT");
+
     var empty = await _catch(function () { return b.db.declareWorm({ tables: [] }); });
     check("declareWorm empty tables throws", empty !== null);
 
@@ -584,6 +599,12 @@ async function testDualControl() {
     var noTables = await _catch(function () { return b.db.declareRequireDualControl({}); });
     check("declareRequireDualControl no tables throws db/dual-control-bad-tables",
       noTables && noTables.code === "db/dual-control-bad-tables");
+
+    // Called with the args object omitted entirely — the `args = args || {}`
+    // normalization must reach the same bad-tables throw.
+    var bareDc = await _catch(function () { return b.db.declareRequireDualControl(); });
+    check("declareRequireDualControl() with no args at all throws db/dual-control-bad-tables",
+      bareDc && bareDc.code === "db/dual-control-bad-tables");
 
     var badId = await _catch(function () { return b.db.declareRequireDualControl({ tables: ["bad;name"] }); });
     check("declareRequireDualControl bad identifier throws", badId !== null);
@@ -637,6 +658,13 @@ async function testEraseHard() {
     var noReason = await _catch(function () { return b.db.eraseHard("plainrows", "r1", {}); });
     check("eraseHard missing reason throws db/erase-hard-no-reason",
       noReason && noReason.code === "db/erase-hard-no-reason");
+
+    // Called with the opts argument omitted entirely — the `opts = opts || {}`
+    // normalization must reach the missing-reason throw rather than a
+    // TypeError reading .reason off undefined.
+    var bareErase = await _catch(function () { return b.db.eraseHard("plainrows", "r1"); });
+    check("eraseHard(table, rowId) with no opts arg throws db/erase-hard-no-reason",
+      bareErase && bareErase.code === "db/erase-hard-no-reason");
 
     // Non-gated, non-WORM table: success.
     b.db.from("plainrows").insertOne({ _id: "r1", ssn: "111-11-1111" });
@@ -1271,6 +1299,23 @@ async function testRollbackDetection() {
   }
 }
 
+// --- _writeAuditTip is a no-op before init (dataDir guard) -----------------
+async function testWriteAuditTipGuard() {
+  // Fully reset so module-level dataDir is null, then the rollback-sidecar
+  // writer must early-return rather than throw or attempt a write against a
+  // null path — the audit.checkpoint caller relies on this being safe when
+  // no db is open.
+  b.db._resetForTest();
+  var threw = null, ret;
+  try {
+    ret = b.db._writeAuditTip({
+      atMonotonicCounter: 1, rowHash: "x", signedAt: new Date().toISOString(),
+    });
+  } catch (e) { threw = e; }
+  check("_writeAuditTip before init is a silent no-op (dataDir guard)",
+    threw === null && ret === undefined);
+}
+
 // --- json-schema type mapping across the remaining DDL heads ---------------
 async function testJsonSchemaTypeAliases() {
   var tmpDir = _mkTmp("db-cov-jsontypes2-");
@@ -1563,6 +1608,7 @@ async function run() {
   await testChainBreakDetection();
   await testRollbackDetection();
   await testWormPostureAssertion();
+  await testWriteAuditTipGuard();
 }
 
 module.exports = { run: run };
