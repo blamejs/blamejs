@@ -12443,13 +12443,26 @@ function testReleaseNotesNoUnchangedTarballClaim() {
   try { entries = fs.readdirSync(dir); }
   catch (_e) { return; }
   // The {0,50} gap is tempered to stop at a clause boundary (period,
-  // semicolon, newline) so the two tokens must sit in the SAME clause —
+  // semicolon, newline) so the two tokens sit in the SAME clause —
   // otherwise "excluded from the published tarball; the zero-npm-deps
   // rule is unchanged" (two independent clauses) false-positives.
+  //
+  // "identical" / "byte-for-byte identical" essentially never describes
+  // behaviour or an API, so the artifact-noun gap can be permissive for
+  // those. "unchanged", by contrast, legitimately describes runtime
+  // behaviour / the public API / a policy ("the published library's
+  // runtime behaviour and public API are unchanged" is TRUE and must not
+  // trip), so the "unchanged" form is tight: the artifact noun must be
+  // directly followed by an optional linking verb and then "unchanged",
+  // with no qualifier noun in between. Reproducible-build phrasings ("match
+  // the published tarball's sha256 byte-for-byte", "build.sh mirrors X
+  // byte-for-byte") stay silent because they never assert "... identical".
   var CLAIMS = [
-    /\b(published|shipped|packaged)\s+(files?|artifacts?|package|tarball|contents?)\b[^.;\n]{0,50}\b(identical|unchanged|byte-identical)\b/i,
-    /\bno\s+change\s+to\s+the\s+(published|shipped)\s+(package|tarball|files?|artifacts?)/i,
-    /\b(tarball|published\s+package)\b[^.;\n]{0,50}\b(identical|unchanged)\b/i,
+    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)\b[^.;\n]{0,50}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
+    /\bthis\s+release\s+is\b[^.;\n]{0,30}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
+    /\bframework\s+package\b[^.;\n]{0,40}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
+    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)(?:'s)?\s+(?:is\s+|are\s+|remains\s+|stays\s+|itself\s+is\s+)?unchanged\b/i,
+    /\bno\s+change\s+to\s+the\s+(published|shipped)\s+(package|tarball|files?|artifacts?|librar)/i,
   ];
   function walkStrings(node, sink) {
     if (typeof node === "string") { sink.push(node); return; }
