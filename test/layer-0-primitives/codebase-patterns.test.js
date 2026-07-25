@@ -12461,10 +12461,20 @@ function testReleaseNotesNoUnchangedTarballClaim() {
   // negative lookahead. Reproducible-build phrasings ("match the published
   // tarball's sha256 byte-for-byte", "build.sh mirrors X byte-for-byte")
   // stay silent because they never assert "... identical".
+  //
+  // The "identical" forms only fire for a CROSS-VERSION comparison: the
+  // predicate must be trailed (same clause) by a version reference — a
+  // version number, or prior/previous/earlier/last/preceding. A same-
+  // release provenance claim ("the scanned and published artifacts are
+  // byte-for-byte identical", "re-pack to confirm the published tarball is
+  // byte-for-byte identical to your local build") compares two artifacts
+  // of ONE release, carries no version reference, and stays silent. The
+  // "unchanged" / "no change to the published X" forms are inherently
+  // cross-version by phrasing and need no anchor.
   var CLAIMS = [
-    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)(?!['’]s)\b[^.;\n]{0,50}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
-    /\bthis\s+release\s+is\b[^.;\n]{0,30}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
-    /\bframework\s+package\b[^.;\n]{0,40}\b(identical|byte-identical|byte-for-byte\s+identical)\b/i,
+    /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)(?!['’]s)\b[^.;\n]{0,50}\b(identical|byte-identical|byte-for-byte\s+identical)\b[^.;\n]{0,25}(?:\d+\.\d+|\b(?:prior|previous|earlier|last|preceding)\b)/i,
+    /\bthis\s+release\s+is\b[^.;\n]{0,30}\b(identical|byte-identical|byte-for-byte\s+identical)\b[^.;\n]{0,25}(?:\d+\.\d+|\b(?:prior|previous|earlier|last|preceding)\b)/i,
+    /\bframework\s+package\b[^.;\n]{0,40}\b(identical|byte-identical|byte-for-byte\s+identical)\b[^.;\n]{0,25}(?:\d+\.\d+|\b(?:prior|previous|earlier|last|preceding)\b)/i,
     /\b(published|shipped|packaged)\s+(librar(?:y|ies)|files?|artifacts?|package|tarball|contents?)\s+(?:is\s+|are\s+|remains\s+|stays\s+|itself\s+is\s+)?unchanged\b/i,
     /\bno\s+change\s+to\s+the\s+(published|shipped)\s+(package|tarball|files?|artifacts?|librar(?:y|ies))(?!['’]s)\b/i,
   ];
