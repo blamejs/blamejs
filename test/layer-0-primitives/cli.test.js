@@ -76,6 +76,18 @@ async function sectionTopLevel() {
   var rcVerBare = await cli.main(["--version"], cVerBare);
   check("bare --version → exit 0 + version",  rcVerBare === 0 && /\d+\.\d+\.\d+/.test(cVerBare.out()));
 
+  // ...and version BEFORE the subcommand: _parseArgs treats --version as a
+  // value flag and swallows the subcommand as its value, so the stray flag is
+  // stripped from the raw argv and the command still dispatches.
+  var cVLead = _captureCtx();
+  var rcVLead = await cli.main(["--version", "audit"], cVLead);
+  check("leading --version + subcommand → dispatches subcommand (exit 2 usage, not version)",
+        rcVLead === 2 && /Usage: blamejs audit/.test(cVLead.err()) && !/^\d+\.\d+\.\d+\s*$/.test(cVLead.out().trim()));
+  var cVLead2 = _captureCtx();
+  var rcVLead2 = await cli.main(["-v", "migrate"], cVLead2);
+  check("leading -v + subcommand → dispatches subcommand (migrate usage, not version)",
+        rcVLead2 === 2 && /Usage: blamejs migrate/.test(cVLead2.err()));
+
   // `migrate help` positional → _runMigrate's own help branch (distinct from
   // the top-level `migrate --help` synth, which never enters _runMigrate).
   var cMh = _captureCtx();
