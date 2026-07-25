@@ -377,14 +377,19 @@ function testValidateCheckboxCoercion() {
   function chk(body) {
     return b.forms.validate({ fields: [{ type: "checkbox", name: "c" }] }, body).values.c;
   }
+  // Unchecked: the field is absent (undefined / null) or, from a typed
+  // (JSON) body, an explicit boolean false / numeric 0.
   check("checkbox: unchecked (absent) → false", chk({}) === false);
   check("checkbox: null → false", chk({ c: null }) === false);
-  check("checkbox: empty string → false", chk({ c: "" }) === false);
-  check("checkbox: 'false' string → false", chk({ c: "false" }) === false);
-  check("checkbox: '0' string → false", chk({ c: "0" }) === false);
   check("checkbox: JSON boolean false → false", chk({ c: false }) === false);
   check("checkbox: JSON numeric 0 → false", chk({ c: 0 }) === false);
+  // Checked: any PRESENT string (a urlencoded checkbox submits its value
+  // string only when ticked — the value's content is irrelevant), plus a
+  // typed truthy value.
   check("checkbox: 'on' → true", chk({ c: "on" }) === true);
+  check("checkbox: empty-string value (present) → true", chk({ c: "" }) === true);
+  check("checkbox: custom value 'false' string (present) → true", chk({ c: "false" }) === true);
+  check("checkbox: custom value '0' string (present) → true", chk({ c: "0" }) === true);
   check("checkbox: boolean true → true", chk({ c: true }) === true);
   check("checkbox: JSON numeric 1 → true", chk({ c: 1 }) === true);
 }
@@ -399,9 +404,11 @@ function testValidateRequiredCheckbox() {
   check("checkbox: required + unchecked (absent) → invalid",
         unchecked.valid === false && unchecked.errors.tos === "Terms is required");
 
-  var falseStr = b.forms.validate({ fields: [{ type: "checkbox", name: "tos", required: true }] }, { tos: "false" });
-  check("checkbox: required + 'false' string → invalid",
-        falseStr.valid === false && falseStr.errors.tos === "tos is required");
+  // A checkbox rendered with a custom value (even "false") submits that
+  // literal only when ticked, so presence satisfies the requirement.
+  var customValChecked = b.forms.validate({ fields: [{ type: "checkbox", name: "tos", required: true }] }, { tos: "false" });
+  check("checkbox: required + present string value (checked) → valid",
+        customValChecked.valid === true && customValChecked.values.tos === true);
 
   // JSON bodies deliver an unchecked box as boolean false / numeric 0 — a
   // non-browser caller must not bypass the required check with either.

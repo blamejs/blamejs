@@ -32,6 +32,10 @@
         {
           "title": "b.forms.validate option reference corrected",
           "body": "The validate() reference described length bounds as minLength/maxLength, but the option keys are the HTML-attribute spellings minlength/maxlength (the same keys the renderer reads); the reference and its example are corrected, and the example now uses a numeric min bound on its number field."
+        },
+        {
+          "title": "Vendored Public Suffix List refreshed to the current snapshot",
+          "body": "The bundled Public Suffix List that backs domain classification (registrable-domain and public-suffix checks in URL, cookie, and SSRF handling) is updated to the latest upstream publicsuffix.org snapshot, so newly delegated public suffixes and private-domain entries are recognized."
         }
       ]
     }
