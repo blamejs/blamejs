@@ -469,6 +469,35 @@ function testValidateNumericBoundConfig() {
   check("validate: numeric-string bounds accepted", okStr.valid === true);
 }
 
+function testValidateSpecValidatedUpFront() {
+  // A malformed field spec is a config error surfaced deterministically at
+  // the entry point — the throw must NOT depend on whether the submitted
+  // body happens to carry a value that reaches the bound. Each malformed
+  // spec throws whether the field is absent, empty, or present.
+  function throwsForAllBodies(field, name) {
+    var spec = { fields: [field] };
+    return _throws(function () { return b.forms.validate(spec, {}); }) &&                 // absent
+           _throws(function () { return b.forms.validate(spec, _emptyBody(name)); }) &&    // empty
+           _throws(function () { return b.forms.validate(spec, _presentBody(name)); });    // present
+  }
+  function _emptyBody(name) { var o = {}; o[name] = ""; return o; }
+  function _presentBody(name) { var o = {}; o[name] = "5"; return o; }
+
+  check("spec: non-finite min throws regardless of body (absent/empty/present)",
+        throwsForAllBodies({ type: "number", name: "n", min: "abc" }, "n"));
+  check("spec: non-finite maxlength throws regardless of body",
+        throwsForAllBodies({ type: "text", name: "s", maxlength: NaN }, "s"));
+  check("spec: string pattern throws regardless of body",
+        throwsForAllBodies({ type: "text", name: "p", pattern: "^abc$" }, "p"));
+  check("spec: ReDoS-prone pattern throws regardless of body",
+        throwsForAllBodies({ type: "text", name: "p", pattern: /(a+)+$/ }, "p"));
+
+  // A well-formed spec with an absent optional value does NOT throw — the
+  // up-front pass only rejects malformed specs, never valid ones.
+  var okAbsent = b.forms.validate({ fields: [{ type: "number", name: "n", min: 1, max: 10 }, { type: "text", name: "s", pattern: /^[a-z]+$/ }] }, {});
+  check("spec: well-formed spec with absent values validates without throwing", okAbsent.valid === true);
+}
+
 function testValidateMiscCoercion() {
   var d = b.forms.validate({ fields: [{ type: "date", name: "d" }] }, { d: "2026-01-15" });
   check("date: string passes through", d.values.d === "2026-01-15");
@@ -630,6 +659,7 @@ async function run() {
   testValidateRequiredCheckbox();
   testValidateNumberCoercionAndBounds();
   testValidateNumericBoundConfig();
+  testValidateSpecValidatedUpFront();
   testValidateMiscCoercion();
   testValidateEmail();
   testValidateUrl();
