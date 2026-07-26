@@ -25,13 +25,20 @@ var check = helpers.check;
 var fs   = require("fs");
 var os   = require("os");
 var path = require("path");
-var pki  = require("../../lib/vendor/pki.cjs");
+var pki  = require("../../lib/vendor/blamejs-pki.cjs");
 
-function _normHex(s) { return String(s || "").replace(/^0x/i, "").replace(/[:\-\s]/g, "").toLowerCase(); }
+// Canonicalize a serial to its numeric hex: drop any 0x prefix, separators, and
+// leading zeros. The DER INTEGER encoding of a serial whose high bit is set
+// carries a 0x00 sign byte (RFC 5280 §5.1 serials are keyed as integers), so the
+// parsed CRL hex ("00c5..") and the framework's canonical serial ("c5..") differ
+// by that padding — and a serial whose own leading nibble is zero differs the
+// other way. Comparing numerically (both sides through this helper) makes the
+// serial-equality check exact regardless of sign-byte padding.
+function _normHex(s) { return String(s || "").replace(/^0x/i, "").replace(/[:\-\s]/g, "").toLowerCase().replace(/^0+(?=.)/, ""); }
 
 function _crlSerials(crlPem) {
-  var crl = new pki.x509.X509Crl(crlPem);
-  return (crl.entries || []).map(function (e) { return _normHex(e.serialNumber); });
+  var crl = pki.schema.crl.parse(crlPem);
+  return (crl.revokedCertificates || []).map(function (e) { return _normHex(e.serialNumberHex); });
 }
 
 async function run() {
