@@ -1309,6 +1309,15 @@ async function testRollbackMaxBytesRestoresLargeBackup() {
   } catch (e) { threw = e; }
   check("rollback: backup over an explicit maxBytes → selfupdate/rollback-failed",
         threw && /selfupdate\/rollback-failed/.test(threw.code || ""));
+  // RED before the fix: the copy failed AFTER `to` was moved aside to the
+  // quarantine, and the catch only threw — leaving `to` ABSENT (the bad binary
+  // stranded at `to.rollback-bad`), so a failed rollback became a next-launch
+  // outage with no binary at all. rollback now restores the quarantined image
+  // back over `to` before surfacing the error.
+  check("rollback: a failed restore-copy puts the pre-rollback binary back at `to` (no outage)",
+        fs.existsSync(to) && fs.readFileSync(to, "utf8") === "BAD-NEW-BINARY");
+  check("rollback: the restore leaves no orphaned quarantine",
+        !fs.existsSync(to + ".rollback-bad"));
 
   try { fs.unlinkSync(to); fs.unlinkSync(backupTo); } catch (_e) { /* best-effort */ }
   try { fs.unlinkSync(to + ".rollback-bad"); } catch (_e) { /* best-effort */ }

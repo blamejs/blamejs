@@ -64,6 +64,16 @@ function testDaemonStartRejectsBadOpts() {
   try { b.daemon.start({ pidFile: "/tmp/x.pid", args: ["a"] }); } catch (e) { threw = e; }
   check("daemon.start rejects args without command",
         threw && /daemon\/bad-args/.test(threw.code || ""));
+
+  threw = null;
+  try { b.daemon.start({ pidFile: "/tmp/x.pid", bootDeathWindowMs: -1 }); } catch (e) { threw = e; }
+  check("daemon.start rejects a negative bootDeathWindowMs",
+        threw && /daemon\/bad-boot-window/.test(threw.code || ""));
+
+  threw = null;
+  try { b.daemon.start({ pidFile: "/tmp/x.pid", bootDeathWindowMs: "soon" }); } catch (e) { threw = e; }
+  check("daemon.start rejects a non-number bootDeathWindowMs",
+        threw && /daemon\/bad-boot-window/.test(threw.code || ""));
 }
 
 function testDaemonStopRejectsBadOpts() {
@@ -589,6 +599,66 @@ async function testDaemonStartDetachedBootDeathReapsPidfile() {
       captured.some(function (e) {
         return e && e.action === "daemon.spawn_failed" && e.outcome === "failure" &&
                e.metadata && e.metadata.pidFile === pidFile && e.metadata.exitCode === 1;
+      }));
+  } finally {
+    b.audit.safeEmit = origSafeEmit;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// A detached child that exits CLEANLY (code 0) is a normal completion, not a
+// boot failure: the one-shot exit handler still reaps the stale sidecar, but must
+// NOT emit daemon.spawn_failed. A clean exit (or a graceful stop() that exits 0)
+// is not a spawn failure, and auditing it as one emits a contradictory failure
+// alongside the daemon.stopped record.
+async function testDaemonStartDetachedCleanExitNoSpawnFailed() {
+  var pidFile = _tmpFile("cleanexit.pid");
+  var captured = [];
+  var origSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (e) { captured.push(e); };
+  try {
+    var r = b.daemon.start({
+      pidFile: pidFile, command: process.execPath, args: ["-e", "process.exit(0)"],
+    });
+    check("clean-exit: detached start returned a live pid",
+      typeof r.pid === "number" && r.pid > 0);
+    await helpers.waitUntil(function () { return !fs.existsSync(pidFile); }, {
+      timeoutMs: 5000, label: "clean-exit: child exit reaps the stale pidfile",
+    });
+    check("clean-exit: pidfile still reaped after a clean exit", !fs.existsSync(pidFile));
+    check("clean-exit: no daemon.spawn_failed audit for a code-0 exit",
+      !captured.some(function (e) {
+        return e && e.action === "daemon.spawn_failed" &&
+               e.metadata && e.metadata.pidFile === pidFile;
+      }));
+  } finally {
+    b.audit.safeEmit = origSafeEmit;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// An abnormal child exit AFTER the boot window is a normal run/crash, not a spawn
+// failure. bootDeathWindowMs:0 puts every exit past the window, so even an
+// immediate abnormal exit is NOT audited as a boot death (the sidecar is still
+// reaped). This is the operator-tunable knob for a slow-booting child.
+async function testDaemonStartDetachedAbnormalPastBootWindow() {
+  var pidFile = _tmpFile("pastwindow.pid");
+  var captured = [];
+  var origSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (e) { captured.push(e); };
+  try {
+    b.daemon.start({
+      pidFile: pidFile, command: process.execPath, args: ["-e", "process.exit(1)"],
+      bootDeathWindowMs: 0,
+    });
+    await helpers.waitUntil(function () { return !fs.existsSync(pidFile); }, {
+      timeoutMs: 5000, label: "past-window: child exit reaps the stale pidfile",
+    });
+    check("past-window: pidfile reaped even for an out-of-window exit", !fs.existsSync(pidFile));
+    check("past-window: no daemon.spawn_failed for an abnormal exit past the boot window",
+      !captured.some(function (e) {
+        return e && e.action === "daemon.spawn_failed" &&
+               e.metadata && e.metadata.pidFile === pidFile;
       }));
   } finally {
     b.audit.safeEmit = origSafeEmit;
@@ -1426,6 +1496,8 @@ async function run() {
   await testDaemonStartDetachedSpawnFailureUndefinedPid();
   await testDaemonStartDetachedSubscribesErrorHandler();
   await testDaemonStartDetachedBootDeathReapsPidfile();
+  await testDaemonStartDetachedCleanExitNoSpawnFailed();
+  await testDaemonStartDetachedAbnormalPastBootWindow();
   await testDaemonStopWin32CooperativeStop();
   await testDaemonStartWin32CooperativeStopWatcher();
   await testDaemonReapStaleLivePidDifferentProcess();

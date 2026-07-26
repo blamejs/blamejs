@@ -57,7 +57,7 @@
         },
         {
           "title": "b.daemon detached start reports a boot-time death instead of unconditional success",
-          "body": "b.daemon.start in detached mode reported success even when the spawned child died at boot, leaving a stale pidfile a later daemon.stop could misread. A one-shot exit handler now reaps the stale pidfile (only when it still records that child's pid) and emits a spawn-failed audit."
+          "body": "b.daemon.start in detached mode reported success even when the spawned child died at boot, leaving a stale pidfile a later daemon.stop could misread. A one-shot exit handler now reaps the stale pidfile (only when it still records that child's pid) and audits a spawn failure ONLY for a boot death -- an abnormal exit (non-zero code or a terminating signal) within a boot window while the pidfile is still the child's. A clean exit or an operator stop() is no longer mislabeled as a spawn failure. The boot window is tunable via daemon.start({ bootDeathWindowMs }) (default 5s)."
         }
       ]
     },
@@ -70,7 +70,7 @@
         },
         {
           "title": "b.selfUpdate.rollback replaces a running Windows executable and honors a maxBytes override",
-          "body": "b.selfUpdate.rollback could not replace a locked/running Windows image (unlike swap) and had no way to raise the 64 MiB copy cap for a large binary. rollback now moves the outgoing file aside via a rename before restoring the backup, and accepts a maxBytes override. Separately, selfUpdate.poll no longer mispairs a lone, name-unrelated signature sidecar with the runtime asset."
+          "body": "b.selfUpdate.rollback could not replace a locked/running Windows image (unlike swap) and had no way to raise the 64 MiB copy cap for a large binary. rollback now moves the outgoing file aside via a rename before restoring the backup, and accepts a maxBytes override. If the restore copy then fails (over maxBytes, unreadable source, write error), the moved-aside image is put back over the target so a failed rollback never leaves the target absent -- no next-launch outage. Separately, selfUpdate.poll no longer mispairs a lone, name-unrelated signature sidecar with the runtime asset."
         }
       ]
     }
