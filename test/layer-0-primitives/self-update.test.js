@@ -536,21 +536,42 @@ async function testPollSignaturePairsWithAsset() {
 }
 
 async function testPollSignaturePairingEdgeCases() {
-  // A lone signature-shaped asset (not asset+suffix) is accepted as THE sig
-  // (single-sig release) — keeps the common one-asset-one-sig case green.
+  // A lone signature-shaped asset that REFERENCES the asset stem (an algorithm-
+  // suffixed sidecar like `asset.ed25519.sig`, not one of the three exact
+  // suffixes step (a) derives) is accepted as THE sig — keeps the common
+  // one-asset-one-sig case green.
   var s1 = _serveJson({
     tag_name: "v2.0.0",
     assets: [
-      { name: "runtime.tar.gz",       browser_download_url: "https://example.invalid/rt.tgz" },
-      { name: "runtime.detached.sig", browser_download_url: "https://example.invalid/rt.sig" },
+      { name: "runtime.tar.gz",             browser_download_url: "https://example.invalid/rt.tgz" },
+      { name: "runtime.tar.gz.ed25519.sig", browser_download_url: "https://example.invalid/rt.sig" },
     ],
   });
   var p1 = await b.testing.listenOnRandomPort(s1);
   try {
     var r1 = await _pollLocal(p1);
-    check("poll pairing: lone signature-shaped asset accepted",
-          r1.signature && r1.signature.name === "runtime.detached.sig");
+    check("poll pairing: lone stem-referencing signature accepted",
+          r1.signature && r1.signature.name === "runtime.tar.gz.ed25519.sig");
   } finally { s1.close(); }
+
+  // #497 — a lone signature-shaped sidecar whose name is UNRELATED to the asset
+  // must NOT be paired: nothing guarantees it signs the returned asset. Before the
+  // fix, step (c) accepted any single sig-shaped entry (first-match-wins over the
+  // asset list), so this mispaired the binary with a foreign sidecar; it now fails
+  // closed (signature null).
+  var s1b = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "runtime.tar.gz",     browser_download_url: "https://example.invalid/rt.tgz" },
+      { name: "signing-notes.sig",  browser_download_url: "https://example.invalid/notes.sig" },
+    ],
+  });
+  var p1b = await b.testing.listenOnRandomPort(s1b);
+  try {
+    var r1b = await _pollLocal(p1b);
+    check("poll pairing: lone name-unrelated sidecar → signature null (fail closed)",
+          r1b.asset && r1b.asset.name === "runtime.tar.gz" && r1b.signature === null);
+  } finally { s1b.close(); }
 
   // Two unrelated sigs, neither derived from the asset name — ambiguous, so the
   // signature is null (fail closed) rather than guessing one that may not sign
@@ -765,15 +786,16 @@ async function testSwapRollbackOptValidation() {
   check("swap: bad maxBytes -> selfupdate/bad-max-bytes (declared opt, matches verify)",
         t3b && /selfupdate\/bad-max-bytes/.test(t3b.code || ""));
 
-  // maxBytes is NOT a rollback opt (rollback re-reads nothing), so it stays
-  // unknown there — the declaration is swap-only.
+  // maxBytes IS a declared rollback opt (rollback reads backupTo under it to
+  // restore a large prior binary): a bad value is refused with the specific
+  // bad-max-bytes code, not the generic unknown-opt bad-opts.
   var t3c = null;
   try {
     await b.selfUpdate.rollback({ to: path.join(dir, "to.bin"),
-      backupTo: path.join(dir, "to.bak"), maxBytes: 999 });
+      backupTo: path.join(dir, "to.bak"), maxBytes: -1 });
   } catch (e) { t3c = e; }
-  check("rollback: maxBytes is not a rollback opt -> selfupdate/bad-opts",
-        t3c && /selfupdate\/bad-opts/.test(t3c.code || ""));
+  check("rollback: bad maxBytes -> selfupdate/bad-max-bytes (declared opt)",
+        t3c && /selfupdate\/bad-max-bytes/.test(t3c.code || ""));
 
   var t4 = null;
   try {
@@ -1206,24 +1228,91 @@ async function testSwapReplacesLockedTargetWin32() {
 }
 
 async function testRollbackCopyFailure() {
-  // rollback fails closed when the restore copy cannot be written — here `to`
-  // is an existing directory, so the atomic write of the restored bytes fails
-  // and rollback surfaces selfupdate/rollback-failed.
+  // rollback fails closed when the restore copy cannot be written. An unwritable
+  // target path (embedded NUL) forces the atomic write to fail deterministically
+  // on every platform — and, being unopenable, it is never present, so rollback's
+  // move-aside is skipped and the copy itself is what fails (rollback-failed).
   var dir = _tmp("dir-rbcopyfail");
   fs.mkdirSync(dir, { recursive: true });
   var backupTo = path.join(dir, "app.bak");
   fs.writeFileSync(backupTo, Buffer.from("BACKUP-BYTES"));
-  var toDir = path.join(dir, "to-is-a-directory");
-  fs.mkdirSync(toDir);
+  var badTo = path.join(dir, "bad" + String.fromCharCode(0) + "name.bin");   // embedded NUL — never openable
 
   var threw = null;
   try {
-    await b.selfUpdate.rollback({ to: toDir, backupTo: backupTo });
+    await b.selfUpdate.rollback({ to: badTo, backupTo: backupTo });
   } catch (e) { threw = e; }
   check("rollback: unwritable restore target → selfupdate/rollback-failed",
         threw && /selfupdate\/rollback-failed/.test(threw.code || ""));
 
   try { fs.unlinkSync(backupTo); } catch (_e) { /* best-effort */ }
+  try { fs.rmdirSync(dir);       } catch (_e) { /* best-effort */ }
+}
+
+async function testRollbackReplacesLockedTargetWin32() {
+  // #494 — restoring over a running Windows image must succeed. Windows refuses an
+  // in-place replace (write-temp-then-rename ONTO it) of a locked / read-only
+  // target but allows a RENAME of the file away. rollback now moves the outgoing
+  // bad `to` ASIDE with a rename (freeing the path) and copies the backup to the
+  // freed path (a create, not a replace). chmod 0o400 reproduces the
+  // replace-onto-locked failure the old copy-onto-`to` path hit; rename-away
+  // sidesteps it. Windows-only: POSIX rename ignores the target mode, so the
+  // failure can't be forced there without privileged setup.
+  if (process.platform !== "win32") {
+    check("rollback: locked-target restore test skipped (non-win32)", true);
+    return;
+  }
+  var dir = _tmp("dir-rb-locked");
+  fs.mkdirSync(dir, { recursive: true });
+  var to       = path.join(dir, "app.bin");
+  var backupTo = path.join(dir, "app.bak");
+  fs.writeFileSync(backupTo, Buffer.from("KNOWN-GOOD-BACKUP"));
+  fs.writeFileSync(to, Buffer.from("BAD-NEW-BINARY"));
+  fs.chmodSync(to, 0o400);   // read-only → in-place replace onto `to` fails; rename-away does not
+
+  var rr = await b.selfUpdate.rollback({ to: to, backupTo: backupTo });
+  check("rollback: locked target still restores (rename-away)", rr && rr.ok === true);
+  check("rollback: backup bytes restored at target", fs.readFileSync(to, "utf8") === "KNOWN-GOOD-BACKUP");
+
+  try { fs.chmodSync(to, 0o600); fs.unlinkSync(to); } catch (_e) { /* best-effort */ }
+  try { fs.chmodSync(to + ".rollback-bad", 0o600); fs.unlinkSync(to + ".rollback-bad"); } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(backupTo); } catch (_e) { /* best-effort */ }
+  try { fs.rmdirSync(dir);       } catch (_e) { /* best-effort */ }
+}
+
+async function testRollbackMaxBytesRestoresLargeBackup() {
+  // #526 — a real self-update backup is a prior application binary (a Node SEA is
+  // 100+ MiB). rollback restores via atomicFile.copy, whose read defaulted to the
+  // 64 MiB atomicFile cap with no override, so a backup over 64 MiB was refused
+  // before the restore began — defeating auto-rollback on every platform. rollback
+  // now defaults its copy cap to 1 GiB and honors an explicit maxBytes override.
+  var dir = _tmp("dir-rb-cap");
+  fs.mkdirSync(dir, { recursive: true });
+  var to       = path.join(dir, "app.bin");
+  var backupTo = path.join(dir, "app.bin.bak");
+  // A backup ONE byte over the old 64 MiB copy default — refused before the fix.
+  var big = Buffer.alloc(b.constants.BYTES.mib(64) + 1, 7);
+  fs.writeFileSync(backupTo, big);
+  fs.writeFileSync(to, Buffer.from("BAD-NEW-BINARY"));
+
+  // Default cap (no maxBytes) must now restore the >64 MiB backup.
+  var rr = await b.selfUpdate.rollback({ to: to, backupTo: backupTo });
+  check("rollback: >64 MiB backup restores under the raised default cap", rr.ok === true);
+  check("rollback: restored file length matches the backup", fs.statSync(to).size === big.length);
+
+  // An explicit maxBytes SMALLER than the backup is forwarded to the copy read —
+  // the restore is refused (rollback-failed) rather than silently truncated.
+  fs.writeFileSync(to, Buffer.from("BAD-NEW-BINARY"));
+  var threw = null;
+  try {
+    await b.selfUpdate.rollback({ to: to, backupTo: backupTo, maxBytes: b.constants.BYTES.kib(1) });
+  } catch (e) { threw = e; }
+  check("rollback: backup over an explicit maxBytes → selfupdate/rollback-failed",
+        threw && /selfupdate\/rollback-failed/.test(threw.code || ""));
+
+  try { fs.unlinkSync(to); fs.unlinkSync(backupTo); } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(to + ".rollback-bad"); } catch (_e) { /* best-effort */ }
+  try { fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
 }
 
 // ---- #495 — probation / rollback orchestration. Real on-disk markers under
@@ -1438,6 +1527,8 @@ async function run() {
     await testSwapRollbackOptValidation();
     await testRollbackMissingBackupRefused();
     await testRollbackCopyFailure();
+    await testRollbackReplacesLockedTargetWin32();
+    await testRollbackMaxBytesRestoresLargeBackup();
     await testProbationExpiredRollsBack();
     await testProbationCleanStopWithinWindowKeeps();
     await testProbationConfirmAndFailedSwapNoPhantom();

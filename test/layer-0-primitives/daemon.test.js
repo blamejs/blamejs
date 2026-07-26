@@ -531,6 +531,48 @@ async function testDaemonStartDetachedSubscribesErrorHandler() {
   }
 }
 
+// #499 — a detached child that spawns fine but DIES AT BOOT (exits non-zero
+// before it ever serves) must not strand a live pidfile that daemon.stop would
+// later misread as a running service. start() keeps its synchronous
+// success-handle contract (detached mode returns immediately), but a one-shot
+// child 'exit' handler reaps the sidecar the moment the child dies — only when
+// the pidfile still records THIS child's pid, so a fast restart isn't clobbered
+// — and audits daemon.spawn_failed with the exit code. Uses a REAL short-lived
+// spawn (node -e process.exit(1)) so the async 'exit' event actually fires;
+// the reap is polled via helpers.waitUntil rather than a fixed sleep.
+async function testDaemonStartDetachedBootDeathReapsPidfile() {
+  var pidFile = _tmpFile("bootdeath.pid");
+  var captured = [];
+  var origSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (e) { captured.push(e); };
+  var r = null;
+  try {
+    r = b.daemon.start({
+      pidFile: pidFile,
+      command: process.execPath,
+      args:    ["-e", "process.exit(1)"],
+    });
+    check("boot-death: detached start returned a live pid",
+      typeof r.pid === "number" && r.pid > 0);
+    check("boot-death: mode=detached",            r.mode === "detached");
+    check("boot-death: pidFile written on start", fs.existsSync(pidFile));
+    // The child dies at boot; poll for the one-shot exit handler to reap it.
+    await helpers.waitUntil(function () { return !fs.existsSync(pidFile); }, {
+      timeoutMs: 5000,
+      label:     "boot-death: child exit reaps the stale pidfile",
+    });
+    check("boot-death: pidfile reaped after child exit", !fs.existsSync(pidFile));
+    check("boot-death: daemon.spawn_failed audit emitted with exit code",
+      captured.some(function (e) {
+        return e && e.action === "daemon.spawn_failed" && e.outcome === "failure" &&
+               e.metadata && e.metadata.pidFile === pidFile && e.metadata.exitCode === 1;
+      }));
+  } finally {
+    b.audit.safeEmit = origSafeEmit;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+}
+
 // #500 — on win32 process.kill(pid, "SIGTERM") maps to TerminateProcess (a hard
 // kill), so the graceful appShutdown orchestration is unreachable via signals.
 // stop() must instead write a cooperative <pidFile>.stop sentinel, poll for the
@@ -648,6 +690,7 @@ async function run() {
   await testDaemonStatusReadOnlyProbe();
   await testDaemonStartDetachedSpawnFailureUndefinedPid();
   await testDaemonStartDetachedSubscribesErrorHandler();
+  await testDaemonStartDetachedBootDeathReapsPidfile();
   await testDaemonStopWin32CooperativeStop();
   await testDaemonStartWin32CooperativeStopWatcher();
 }
@@ -658,6 +701,7 @@ module.exports = {
     testDaemonStatusReadOnlyProbe:                  testDaemonStatusReadOnlyProbe,
     testDaemonStartDetachedSpawnFailureUndefinedPid: testDaemonStartDetachedSpawnFailureUndefinedPid,
     testDaemonStartDetachedSubscribesErrorHandler:  testDaemonStartDetachedSubscribesErrorHandler,
+    testDaemonStartDetachedBootDeathReapsPidfile:   testDaemonStartDetachedBootDeathReapsPidfile,
     testDaemonStopWin32CooperativeStop:             testDaemonStopWin32CooperativeStop,
     testDaemonStartWin32CooperativeStopWatcher:     testDaemonStartWin32CooperativeStopWatcher,
   },

@@ -1303,6 +1303,18 @@ async function run() {
   check("_generateRandomToken(16) → 22 base64url chars (128-bit)",
         X._generateRandomToken(16).length === 22);
 
+  // ---- public PKCE generator (b.auth.oauth.generatePkce) ----
+  // A consumer driving its own authorization-code flow gets a
+  // spec-correct S256 verifier/challenge pair off the public surface,
+  // without reaching into the private helper or re-implementing the
+  // SHA-256/base64url transform.
+  var pubPkce = X.generatePkce();
+  check("generatePkce: verifier is 43 base64url chars (RFC 7636 32-byte)",
+        typeof pubPkce.verifier === "string" && pubPkce.verifier.length === 43 &&
+          /^[A-Za-z0-9_-]+$/.test(pubPkce.verifier));
+  check("generatePkce: challenge === base64url(SHA-256(verifier)) (S256)",
+        pubPkce.challenge === crypto.createHash("sha256").update(pubPkce.verifier).digest("base64url"));
+
   // ---- verifyIdToken: pre-JWKS refusals (no network reached) ----
   var oa = _staticOidcClient();
   await arejects("verifyIdToken: non-string refused",

@@ -172,6 +172,7 @@ async function _runAll() {
   await testDeclareSchemaPostgresExplicitXdb();
   await testReapStaleInflight();
   await testListDeliveriesFilters();
+  await testReservedWordTables();
 }
 
 function _newDispatcher(xdb, transport, extra) {
@@ -827,6 +828,47 @@ async function testListDeliveriesFilters() {
     f1.length === 1 && f1[0].endpointId === "f1" && f1[0].status === "delivered");
   var all = await wd.deliveries.list();
   check("list with no filter returns every delivery", all.length === 2);
+}
+
+// Reserved-word operator tables — endpoints/deliveries tables whose names are
+// SQL keywords ("from" / "select") must declare, register, dispatch, and poll.
+// The dispatcher builds every statement against a concrete externalDb handle
+// (never b.clusterStorage), so the operator table names are quoted by
+// construction; unquoted keyword names are a syntax error at declareSchema /
+// registerEndpoint / dispatch. Parity with b.db.from()'s reserved-word support.
+async function testReservedWordTables() {
+  var xdb = _sqliteExternalDb();
+  var transport = _stubTransport();
+  var wd = _newDispatcher(xdb, transport, {
+    endpointsTable:  "from",       // SQL reserved words — valid only when quoted
+    deliveriesTable: "select",
+  });
+  // CREATE TABLE + partial index only parse when the identifiers are quoted.
+  await wd.declareSchema();
+
+  await wd.registerEndpoint({ endpointId: "kw", url: PUBLIC_URL, eventTypes: ["e"], secret: "s" });
+  var eps = await wd.listEndpoints();
+  check("reserved-word tables: endpoint persisted + listed via quoted 'from' table",
+    eps.length === 1 && eps[0].endpointId === "kw");
+
+  // Read back through the quoted names to prove the rows landed in the keyword tables.
+  var epRow = xdb._raw.prepare('SELECT endpoint_id FROM "from"').get();
+  check("reserved-word tables: endpoint row under the quoted identifier", epRow && epRow.endpoint_id === "kw");
+
+  var res = await wd.dispatch("e", { n: 1 });
+  check("reserved-word tables: dispatch inserts + delivers via the quoted 'select' table",
+    res.delivered === 1 && res.failed === 0);
+  var delRow = xdb._raw.prepare('SELECT status FROM "select"').get();
+  check("reserved-word tables: delivery row under the quoted identifier", delRow && delRow.status === "delivered");
+
+  var rows = await wd.deliveries.list({ status: "delivered" });
+  check("reserved-word tables: deliveries.list reads back the delivered row",
+    rows.length === 1 && rows[0].status === "delivered");
+
+  // processRetries drives the claim SELECT/UPDATE + reaper against the keyword table.
+  var retryRes = await wd.processRetries();
+  check("reserved-word tables: processRetries runs the claim path without a syntax error",
+    retryRes && typeof retryRes.attempted === "number");
 }
 
 module.exports = { run: run };

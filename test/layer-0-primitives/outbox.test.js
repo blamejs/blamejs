@@ -791,6 +791,45 @@ async function testWorkerInFlightGuardAndStop() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Reserved-word operator table — a table whose name is a SQL keyword ("from")
+// must declare, enqueue, and publish. The outbox builds every statement against
+// a concrete externalDb handle (never b.clusterStorage), so the operator table
+// name is quoted by construction; an unquoted `from` is a syntax error on
+// declareSchema / enqueue. Parity with b.db.from()'s reserved-word support.
+// ---------------------------------------------------------------------------
+async function testReservedWordTable() {
+  var xdb = _sqliteExternalDb();
+  var published = [];
+  var outbox = b.outbox.create({
+    externalDb: xdb,
+    table:      "from",             // a SQL reserved word — valid only when quoted
+    publisher:  async function (e) { published.push(e); },
+    audit:      false,
+  });
+
+  // declareSchema (CREATE TABLE + partial index + ALTER) must not throw on the
+  // reserved-word name; the DDL only parses when the identifier is quoted.
+  await outbox.declareSchema();
+
+  await xdb.transaction(async function (tx) {
+    await outbox.enqueue({ topic: "kw", payload: { id: 1 }, key: "k", headers: { h: "1" } }, tx);
+  });
+  check("reserved-word table: enqueue lands a pending row", (await outbox.pendingCount()) === 1);
+
+  // Read back through the quoted name to prove the row landed in `from`.
+  var row = xdb._raw.prepare('SELECT topic, status FROM "from"').get();
+  check("reserved-word table: row persisted under the quoted identifier",
+    row && row.topic === "kw" && row.status === "pending");
+
+  var n = await outbox._processOnce();
+  check("reserved-word table: _processOnce claims + publishes the row", n === 1 && published.length === 1);
+  check("reserved-word table: payload/headers round-trip",
+    published[0].payload && published[0].payload.id === 1 && published[0].headers && published[0].headers.h === "1");
+  check("reserved-word table: row marked published (pendingCount 0)", (await outbox.pendingCount()) === 0);
+  check("reserved-word table: deadCount stays 0", (await outbox.deadCount()) === 0);
+}
+
 async function run() {
   await testCreateValidation();
   await testEnqueueValidation();
@@ -808,6 +847,7 @@ async function run() {
   await testDebeziumDefaults();
   await testWorkerLifecycle();
   await testWorkerInFlightGuardAndStop();
+  await testReservedWordTable();
   console.log("OK — outbox create/enqueue/publish/retry/dead-letter/debezium/lifecycle tests");
 }
 

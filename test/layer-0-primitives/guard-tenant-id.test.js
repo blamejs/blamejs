@@ -58,10 +58,29 @@ function testRefuses() {
     }, "tenant-id/oversize");
 }
 
+// A tenant id that collides with an inherited Object.prototype member
+// ("toString", "constructor", "hasOwnProperty", …) is a legitimate id —
+// only ROOT / FRAMEWORK / * are framework-reserved. The reserved check
+// must consult RESERVED's own keys, not the prototype chain, so these
+// validate instead of being spuriously refused as reserved.
+function testInheritedKeyNotReserved() {
+  ["toString", "constructor", "hasOwnProperty", "valueOf", "isPrototypeOf",
+   "propertyIsEnumerable", "toLocaleString"].forEach(function (id) {
+    check("inherited-key id '" + id + "' validates (not reserved)",
+      b.guardTenantId.validate(id) === id);
+  });
+  // The genuinely-reserved names still refuse — the fix must not narrow.
+  expectRefused("'*' still reserved",
+    function () { b.guardTenantId.validate("*"); }, "tenant-id/reserved");
+  expectRefused("ROOT still reserved",
+    function () { b.guardTenantId.validate("ROOT"); }, "tenant-id/reserved");
+}
+
 async function run() {
   testSurface();
   testValid();
   testRefuses();
+  testInheritedKeyNotReserved();
 }
 
 module.exports = { run: run };
