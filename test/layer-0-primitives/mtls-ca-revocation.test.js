@@ -272,6 +272,16 @@ async function testUnpinnedLeafFollowsStoredCaAlgorithm() {
   check("unpinned P12 under a stored EC CA is produced (classical MAC tier)",
         Buffer.isBuffer(p12.p12));
 
+  // Passing engine: null explicitly (an app clearing its optional engine setting)
+  // selects the bundled engine — so it is NOT a custom engine and MUST keep the
+  // stored-CA inference. RED before the fix: usesDefaultEngine tested
+  // `engine === undefined`, so an explicit null skipped the inference and the
+  // bundled engine issued an ML-DSA leaf under the classical CA.
+  var caNullEngine = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: null });
+  var leafNull = await caNullEngine.generateClientCert({ cn: "null-engine-client" });
+  check("engine: null selects the bundled engine and still follows the stored EC CA",
+        nodeCrypto.createPrivateKey(leafNull.key).asymmetricKeyType === "ec");
+
   // The default ML-DSA CA still issues ML-DSA leaves when unpinned (no regression).
   var dir2 = _mkTmp("blamejs-mtls-cafollow-pqc-");
   var caPqc = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });

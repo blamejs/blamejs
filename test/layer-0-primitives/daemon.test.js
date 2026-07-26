@@ -1703,6 +1703,22 @@ function testDaemonReapPidfileRewriteRace() {
   check("reap: a non-matching sidecar is not counted as ours", wasOurs2 === false);
   try { fs.unlinkSync(notOurs); } catch (_e) { /* best-effort */ }
 
+  // The restore must not clobber an EVEN-NEWER pidfile written while the claim is
+  // inspected. The claimed sidecar (999) is not ours (111); a still-newer daemon
+  // (333) writes pidFile during the ownership read. The atomic (link-based) restore
+  // must leave 333 intact, not overwrite it with the older claimed 999.
+  var newer = _tmpFile("reap-newer.pid");
+  fs.writeFileSync(newer, "999\n");
+  var wasOursN = b.daemon._reapOwnStalePidfile(newer, 111, function () {
+    fs.writeFileSync(newer, "333\n");   // a still-newer daemon writes a fresh pidfile
+    return 999;                          // the claimed sidecar we hold is a different (older) pid
+  });
+  check("reap: a newer pidfile written during inspection is NOT clobbered by the restore",
+        fs.existsSync(newer) && fs.readFileSync(newer, "utf8").trim() === "333");
+  check("reap: the not-ours-with-newer case is not counted as ours", wasOursN === false);
+  try { fs.unlinkSync(newer + ".reap-111"); } catch (_e) { /* leftover claim */ }
+  try { fs.unlinkSync(newer); } catch (_e) { /* best-effort */ }
+
   // An already-gone pidfile (stop() reaped it first) is a silent no-op.
   var gone = _tmpFile("reap-gone.pid");
   var wasOurs3 = b.daemon._reapOwnStalePidfile(gone, 111, function () { return 111; });
@@ -1733,21 +1749,20 @@ function testDaemonReapPidfileRewriteRace() {
   try { fs.unlinkSync(unlinkFail + ".reap-111"); } catch (_e) { /* leftover claim */ }
   try { fs.unlinkSync(unlinkFail); } catch (_e) { /* best-effort */ }
 
-  // A swallowed restore-rename failure on a non-matching sidecar is not counted
-  // as ours (best-effort restore; the pidfile may be lost either way).
+  // A swallowed claim-cleanup failure during a non-matching restore is not counted
+  // as ours (the restore linked pidFile back; dropping the claim is best-effort).
   var restoreFail = _tmpFile("reap-restorefail.pid");
   fs.writeFileSync(restoreFail, "999\n");
-  var realRename = fs.renameSync;
-  var renameCalls = 0;
-  fs.renameSync = function () {
-    renameCalls += 1;
-    if (renameCalls >= 2) throw new Error("restore rename boom");   // claim ok; restore throws
-    return realRename.apply(fs, arguments);
+  var realUnlink2 = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (/\.reap-111$/.test(String(p))) throw new Error("claim cleanup boom");
+    return realUnlink2.apply(fs, arguments);
   };
   var wasOurs6;
   try { wasOurs6 = b.daemon._reapOwnStalePidfile(restoreFail, 111, function () { return 999; }); }
-  finally { fs.renameSync = realRename; }
-  check("reap: a swallowed restore failure is not counted as ours", wasOurs6 === false);
+  finally { fs.unlinkSync = realUnlink2; }
+  check("reap: a swallowed claim-cleanup failure is not counted as ours", wasOurs6 === false);
+  check("reap: the sidecar is restored despite the claim-cleanup failure", fs.existsSync(restoreFail));
   try { fs.unlinkSync(restoreFail + ".reap-111"); } catch (_e) { /* leftover claim */ }
   try { fs.unlinkSync(restoreFail); } catch (_e) { /* best-effort */ }
 }
