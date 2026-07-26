@@ -158,6 +158,46 @@ function testAbsoluteMaxKeys() {
         })).length === b.safeJson.DEFAULT_MAX_KEYS + 1);
 }
 
+// ---- json/syntax must not echo the parsed input (CWE-532) ----
+
+function _thrown(fn) {
+  try { fn(); return null; }
+  catch (e) { return e; }
+}
+
+function testSyntaxErrorDoesNotLeakInputBytes() {
+  // A syntax error on secret-bearing input must NOT reflect a window of the
+  // parsed bytes back in the thrown message. `parse` sits at a trust boundary;
+  // a consumer that logs the error (directly, or via an unhandled rejection
+  // stack) would otherwise re-emit the secret (CWE-532). b.redact does not
+  // mitigate this: it deliberately excludes the high-entropy detector, so a
+  // raw key-byte snippet passes through unredacted.
+  var secret = "MIIJSECRETBYTES1234567890";
+  var caught = _thrown(function () { b.safeJson.parse('{"k": ' + secret + '}'); });
+
+  check("parse throws on the malformed secret-bearing body",
+        caught !== null);
+  check("the syntax error keeps the stable json/syntax code",
+        caught && caught.code === "json/syntax");
+  // V8 echoes a leading window of the offending input (here "MIIJSECRET…");
+  // the sanitized message must contain none of it.
+  check("the thrown message does NOT echo a window of the parsed input",
+        caught && typeof caught.message === "string" &&
+        caught.message.indexOf(secret) === -1 &&
+        caught.message.indexOf("MIIJSECRET") === -1);
+
+  // A position-bearing V8 error keeps the (non-secret) numeric offset while
+  // still hiding the input snippet.
+  var posSecret = "TOPSECRETVALUE";
+  var posCaught = _thrown(function () {
+    b.safeJson.parse('{"a":1 "' + posSecret + '":2}');
+  });
+  check("a position-bearing syntax error still hides the input snippet",
+        posCaught && posCaught.code === "json/syntax" &&
+        typeof posCaught.message === "string" &&
+        posCaught.message.indexOf(posSecret) === -1);
+}
+
 async function run() {
   testDefaultMaxBytes();
   testDefaultMaxDepth();
@@ -165,6 +205,7 @@ async function run() {
   testAbsoluteMaxBytes();
   testAbsoluteMaxDepth();
   testAbsoluteMaxKeys();
+  testSyntaxErrorDoesNotLeakInputBytes();
 }
 
 module.exports = { run: run };
