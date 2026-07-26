@@ -50,7 +50,7 @@ async function run() {
   var res = await ca.generateCrl();
 
   check("generateCrl succeeds with a mixed serial + fingerprint-only registry",
-        res && typeof res.crlPem === "string" && res.crlPem.indexOf("BEGIN CRL") !== -1);
+        res && typeof res.crlPem === "string" && /-----BEGIN (?:X509 )?CRL-----/.test(res.crlPem));
   check("generateCrl entryCount counts only the serial-bearing (CRL-able) revocations",
         res.entryCount === 1);
   check("generateCrl surfaces the count of fingerprint-only revocations it could not represent",
@@ -71,7 +71,7 @@ async function run() {
 
   var res2 = await ca2.generateCrl();
   check("generateCrl with only fingerprint-only revocations produces a valid CRL",
-        res2 && typeof res2.crlPem === "string" && res2.crlPem.indexOf("BEGIN CRL") !== -1);
+        res2 && typeof res2.crlPem === "string" && /-----BEGIN (?:X509 )?CRL-----/.test(res2.crlPem));
   check("that CRL has zero serial entries", _crlSerials(res2.crlPem).length === 0);
   check("entryCount is 0 and fingerprintOnlyOmitted is 1",
         res2.entryCount === 0 && res2.fingerprintOnlyOmitted === 1);

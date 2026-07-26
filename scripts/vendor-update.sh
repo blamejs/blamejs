@@ -40,7 +40,7 @@ DATE=$(date +%Y-%m-%d)
 # (see lib/argon2-builtin.js). The case-block below preserves the
 # `argon2` operator-friendly error message for anyone who still tries
 # `vendor-update.sh argon2`.
-VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/post-quantum" "@simplewebauthn/server" "peculiar-pki")
+VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/post-quantum" "@simplewebauthn/server" "@blamejs/pki" "peculiar-pki")
 
 get_vendored_ver() {
   node -e "var m=require('./$MANIFEST'); var p=m.packages['$1']; console.log(p?p.version:'?')"
@@ -419,6 +419,17 @@ ENTRY
     rm _entry.cjs
     BUNDLER_DESC="esbuild --format=cjs --platform=node --alias:reflect-metadata=reflect-metadata/lite --external:crypto --external:node:crypto"
     sed -i "1s|^|// @simplewebauthn/server v${INSTALLED_VER} — vendored. License: MIT\n// https://github.com/MasterKale/SimpleWebAuthn\n|" lib/vendor/simplewebauthn-server.cjs
+    ;;
+
+  "@blamejs/pki")
+    # Zero-dep, pure-CJS PKI toolkit (X.509 / CRL / PKCS#12 / CMS, PQC-first).
+    # Backs lib/mtls-engine-default.js. node:crypto stays external like the
+    # other vendored bundles; nothing else is pulled in (no transitive deps).
+    echo "module.exports = require(\"@blamejs/pki\");" > _entry.cjs
+    npx esbuild _entry.cjs --bundle --format=cjs --platform=node --external:crypto --external:node:crypto --outfile=lib/vendor/blamejs-pki.cjs
+    rm _entry.cjs
+    BUNDLER_DESC="esbuild --format=cjs --platform=node --external:crypto --external:node:crypto"
+    sed -i "1s|^|// @blamejs/pki v${INSTALLED_VER} — vendored (Apache-2.0). Zero-dep pure CJS.\n// https://github.com/blamejs/pki  Exports: x509, crl, pkcs12, key, webcrypto, schema, csr, cms, ...\n// Backs lib/mtls-engine-default.js (PQC-capable CA + PKCS#12 engine).\n|" lib/vendor/blamejs-pki.cjs
     ;;
 
   "argon2")
