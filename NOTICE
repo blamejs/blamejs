@@ -74,7 +74,7 @@ Used for:    Pure-JS mTLS CA. Self-signed CA generation (ECDSA P-384, SHA-384),
              chain).
 --------------------------------------------------------------------------------
 Component:   @blamejs/pki
-Version:     0.3.18
+Version:     0.3.19
 Source:      https://github.com/blamejs/pki
 License:     Apache-2.0
 Copyright:   Copyright (c) blamejs contributors
