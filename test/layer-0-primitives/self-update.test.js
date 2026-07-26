@@ -606,6 +606,61 @@ async function testPollSignaturePairingEdgeCases() {
     check("poll pairing: operator sig pattern not matching asset stem → null",
           r3.asset && r3.asset.name === "app.tar.gz" && r3.signature === null);
   } finally { s3.close(); }
+
+  // A signature that REPLACES the asset extension (app.bin -> app.sig) is the
+  // other common one-asset-one-sig convention alongside the append shape
+  // (app.bin -> app.bin.sig). The derived-name strong pairing must recognise it
+  // from the extension-stripped stem plus a signature suffix — a lone app.sig
+  // unambiguously signs app.bin. (RED before the stem-derivation: app.sig did
+  // not start with the full asset name, so the sidecar fell through to null.)
+  var s4 = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "app.bin", browser_download_url: "https://example.invalid/app.bin", size: 2048 },
+      { name: "app.sig", browser_download_url: "https://example.invalid/app.sig", size: 96 },
+    ],
+  });
+  var p4 = await b.testing.listenOnRandomPort(s4);
+  try {
+    var r4 = await _pollLocal(p4);
+    check("poll pairing: extension-replacing signature (app.bin → app.sig) paired",
+          r4.asset && r4.asset.name === "app.bin" && r4.signature && r4.signature.name === "app.sig");
+  } finally { s4.close(); }
+
+  // Precision guard: the stem must match at a delimiter boundary, not as a bare
+  // string prefix. asset `app.bin` (stem `app`) must NOT pair a sidecar named
+  // `application.sig` — the derived name is exactly `app.sig`, so `application.sig`
+  // is name-unrelated and fails closed.
+  var s5 = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "app.bin",         browser_download_url: "https://example.invalid/app.bin" },
+      { name: "application.sig", browser_download_url: "https://example.invalid/other.sig" },
+    ],
+  });
+  var p5 = await b.testing.listenOnRandomPort(s5);
+  try {
+    var r5 = await _pollLocal(p5);
+    check("poll pairing: stem-prefix look-alike (application.sig) not paired to app.bin",
+          r5.asset && r5.asset.name === "app.bin" && r5.signature === null);
+  } finally { s5.close(); }
+
+  // An extensionless asset (a Go-style bare binary) has no extension to strip, so
+  // only the append convention (myapp-linux -> myapp-linux.sig) can pair — the
+  // stem equals the asset name and no replace-convention derived name is emitted.
+  var s6 = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "myapp-linux",     browser_download_url: "https://example.invalid/bin" },
+      { name: "myapp-linux.sig", browser_download_url: "https://example.invalid/bin.sig" },
+    ],
+  });
+  var p6 = await b.testing.listenOnRandomPort(s6);
+  try {
+    var r6 = await _pollLocal(p6, { assetPattern: "myapp-linux" });
+    check("poll pairing: extensionless asset pairs its appended signature",
+          r6.asset && r6.asset.name === "myapp-linux" && r6.signature && r6.signature.name === "myapp-linux.sig");
+  } finally { s6.close(); }
 }
 
 function testPollOptValidation() {

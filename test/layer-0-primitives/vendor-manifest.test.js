@@ -153,6 +153,32 @@ function run() {
   }
   check("vendor manifest: scanned at least one hash",
         totalHashes > 0);
+
+  // Operator-facing license-summary consistency. The README dependency-inventory
+  // ends in a one-line summary that claims the tabulated set is "All ... MIT
+  // licensed" with a named exception clause. A package the README TABULATES whose
+  // NOTICE License is not MIT must be named — with its license — in that clause,
+  // or the published inventory misstates a dependency's license. Adding a new
+  // vendored bundle to the table (an Apache-2.0 @blamejs/pki) without amending the
+  // summary published "all MIT" over an Apache-2.0 dependency. Scoped to
+  // README-tabulated components (matched by their exact backtick token) so the
+  // full NOTICE inventory — which lists deps the README highlight omits (MPL-2.0
+  // publicsuffix-list, @noble/curves) — stays authoritative on its own surface.
+  var readme    = fs.readFileSync("README.md", "utf8");
+  var summaryM  = readme.match(/All are MIT licensed[^\n]*\./);
+  check("README carries the vendor license-summary sentence", !!summaryM);
+  var summary   = summaryM ? summaryM[0] : "";
+  for (var lb = 0; lb < noticeBlocks.length; lb += 1) {
+    var lcM = noticeBlocks[lb].match(/Component:\s+(.+)/);
+    var llM = noticeBlocks[lb].match(/License:\s+(\S+)/);
+    if (!lcM || !llM) continue;
+    var comp = lcM[1].trim();
+    var lic  = llM[1];
+    if (/^MIT$/i.test(lic)) continue;                       // MIT is the summary's default claim
+    if (readme.indexOf("`" + comp + "`") < 0) continue;     // not tabulated → NOTICE is authoritative
+    check("README license summary names tabulated non-MIT dep " + comp + " (" + lic + ")",
+          summary.indexOf(comp) >= 0 && summary.indexOf(lic) >= 0);
+  }
 }
 
 module.exports = { run: run };
