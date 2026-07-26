@@ -186,6 +186,18 @@ async function testP12MacFollowsAlgorithmTier() {
   var parsedP = pki.schema.pkcs12.parse(p12p.p12);
   check("PQC-default P12 keeps the PBMAC1 (RFC 9579) outer MAC",
         parsedP.mac && parsedP.mac.kind === "pbmac1");
+
+  // The public algorithm envelope must describe the P12 MAC the engine actually
+  // builds for BOTH tiers — RED before the fix it hardcoded pbmac1, misdescribing
+  // a classical-bridge archive to a compatibility/policy consumer.
+  var env = engine.algorithmEnvelope();
+  check("envelope: PQC-tier P12 MAC is PBMAC1 @ 2,000,000",
+        env.p12 && env.p12.mac && env.p12.mac["pqc-pure"] &&
+        env.p12.mac["pqc-pure"].algorithm === "pbmac1" &&
+        env.p12.mac["pqc-pure"].iterations === 2000000);
+  check("envelope: classical-tier P12 MAC is the RFC 7292 HMAC MacData @ 1,000,000",
+        env.p12.mac.classical && env.p12.mac.classical.algorithm === "hmac" &&
+        env.p12.mac.classical.iterations === 1000000);
 }
 
 // A pinned algorithm that DISAGREES with a stored CA cannot be honored: leaf
