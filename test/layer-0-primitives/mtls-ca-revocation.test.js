@@ -19,6 +19,7 @@ var fs   = require("fs");
 var os   = require("os");
 var path = require("path");
 var engine = require("../../lib/mtls-engine-default");
+var pki    = require("../../lib/vendor/blamejs-pki.cjs");   // parse a built P12 to assert its MAC form
 
 function _mkTmp(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 
@@ -163,6 +164,30 @@ async function testEngineDirectContract() {
         /ml-dsa/i.test(afterType));
 }
 
+// The PKCS#12 outer MAC must follow the cert's interop tier. The classical
+// ECDSA-P384 bridge exists FOR peers predating OpenSSL 3.5, so its P12 must use
+// the legacy-importable RFC 7292 App. B HMAC MacData — NOT PBMAC1 (RFC 9579,
+// OpenSSL 3.4+), which those same consumers cannot verify. The PQC default keeps
+// PBMAC1. RED before the fix: every P12 used PBMAC1, so an ECDSA-fallback P12 was
+// unreadable by the very legacy peers it exists to serve.
+async function testP12MacFollowsAlgorithmTier() {
+  var dirC = _mkTmp("blamejs-mtls-p12c-");
+  var dirP = _mkTmp("blamejs-mtls-p12p-");
+  var caC = b.mtlsCa.create({ dataDir: dirC, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  var p12c = await caC.generateClientP12({ cn: "classical-holder", password: "p12-pw-classical-7h2" });
+  var parsedC = pki.schema.pkcs12.parse(p12c.p12);
+  check("classical-bridge P12 uses the legacy RFC 7292 HMAC MacData (not PBMAC1)",
+        parsedC.mac && parsedC.mac.kind === "hmac");
+  check("classical-bridge P12 MacData verifies under its password",
+        (await pki.pkcs12.verifyMac(p12c.p12, "p12-pw-classical-7h2")) === true);
+
+  var caP = b.mtlsCa.create({ dataDir: dirP, caKeySealedMode: "disabled" });
+  var p12p = await caP.generateClientP12({ cn: "pqc-holder", password: "p12-pw-pqc-7h2" });
+  var parsedP = pki.schema.pkcs12.parse(p12p.p12);
+  check("PQC-default P12 keeps the PBMAC1 (RFC 9579) outer MAC",
+        parsedP.mac && parsedP.mac.kind === "pbmac1");
+}
+
 async function run() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-revoke-"));
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
@@ -250,6 +275,7 @@ async function run() {
   await testIssuanceVariants();
   await testRevocationValidation();
   await testEngineDirectContract();
+  await testP12MacFollowsAlgorithmTier();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });
