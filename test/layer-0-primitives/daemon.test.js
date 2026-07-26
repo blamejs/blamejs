@@ -727,6 +727,69 @@ async function testDaemonSameProcessStopWithinBootWindowNoSpawnFailed() {
   }
 }
 
+// A DIFFERENT process calling stop() during the boot window: the exit handler
+// runs in the still-alive STARTER (this process), which has no in-process stop
+// flag. The `<pidFile>.stopping` filesystem marker (written by the stopper, read
+// by the starter's handler) suppresses the spurious spawn_failed cross-process.
+async function testDaemonCrossProcessStopWithinBootWindowNoSpawnFailed() {
+  var pidFile    = _tmpFile("crossproc-stop.pid");
+  var captured = [];
+  var origSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (e) { captured.push(e); };
+  try {
+    // THIS process is the starter — it keeps the child's exit handler alive.
+    b.daemon.start({
+      pidFile: pidFile, command: process.execPath,
+      args: ["-e", "setInterval(function(){}, 1000)"],
+      bootDeathWindowMs: 15000,
+    });
+    // A SEPARATE process stops it (requires lib/daemon directly).
+    var daemonPath = require.resolve("../../lib/daemon.js");
+    var script =
+      "require(" + JSON.stringify(daemonPath) + ").stop({pidFile:" + JSON.stringify(pidFile) +
+      ",timeoutMs:600,pollMs:25}).then(function(){process.exit(0);},function(){process.exit(1);});";
+    await new Promise(function (resolve) {
+      var cp = processSpawn.spawn(process.execPath, ["-e", script], { stdio: "ignore" });
+      cp.once("exit", function () { resolve(); });
+    });
+    // The other process killed the child; our exit handler ran. Give it a beat.
+    await helpers.passiveObserve(200, "cross-proc-stop: no spawn_failed after a cross-process stop");
+    check("cross-proc-stop: no daemon.spawn_failed for a cross-process stop in the boot window",
+      !captured.some(function (e) {
+        return e && e.action === "daemon.spawn_failed" && e.metadata && e.metadata.pidFile === pidFile;
+      }));
+  } finally {
+    b.audit.safeEmit = origSafeEmit;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// The .stopping marker is a best-effort hint — a failed write (publishing it) or
+// a failed unlink (removing it) must not break stop(). Force both to throw for
+// the marker path only; stop() still terminates the daemon.
+async function testDaemonStopMarkerFsFailuresSwallowed() {
+  var pidFile = _tmpFile("stopmarker-fsfail.pid");
+  b.daemon.start({ pidFile: pidFile, command: process.execPath, args: ["-e", "setInterval(function(){}, 1000)"] });
+  var realWrite = atomicFile.writeSync, realUnlink = fs.unlinkSync;
+  atomicFile.writeSync = function (p) {
+    if (String(p).endsWith(".stopping")) throw new Error("marker write boom");
+    return realWrite.apply(atomicFile, arguments);
+  };
+  fs.unlinkSync = function (p) {
+    if (String(p).endsWith(".stopping")) throw new Error("marker unlink boom");
+    return realUnlink.apply(fs, arguments);
+  };
+  try {
+    var r = await b.daemon.stop({ pidFile: pidFile, timeoutMs: 600, pollMs: 25 });
+    check("stop: swallows a .stopping marker write/unlink failure and still stops",
+          r && r.stopped === true);
+  } finally {
+    atomicFile.writeSync = realWrite; fs.unlinkSync = realUnlink;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(pidFile + ".stopping"); } catch (_e) { /* best-effort */ }
+  }
+}
+
 // #500 — on win32 process.kill(pid, "SIGTERM") maps to TerminateProcess (a hard
 // kill), so the graceful appShutdown orchestration is unreachable via signals.
 // stop() must instead write a cooperative <pidFile>.stop sentinel, poll for the
@@ -1561,6 +1624,8 @@ async function run() {
   await testDaemonStartDetachedAbnormalPastBootWindow();
   await testDaemonBootWindowSurvivesShortLauncher();
   await testDaemonSameProcessStopWithinBootWindowNoSpawnFailed();
+  await testDaemonCrossProcessStopWithinBootWindowNoSpawnFailed();
+  await testDaemonStopMarkerFsFailuresSwallowed();
   await testDaemonStopWin32CooperativeStop();
   await testDaemonStartWin32CooperativeStopWatcher();
   await testDaemonReapStaleLivePidDifferentProcess();
