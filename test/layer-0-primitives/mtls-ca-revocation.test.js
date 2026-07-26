@@ -14,6 +14,7 @@
 var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
+var nodeCrypto = require("crypto");
 var fs   = require("fs");
 var os   = require("os");
 var path = require("path");
@@ -149,6 +150,17 @@ async function testEngineDirectContract() {
 
   var byName = await engine.generateCa({ algorithm: "ECDSA" });
   check("engine.generateCa pins an algorithm by its keyAlg name", typeof byName.caCertPem === "string");
+  check("a pinned CA is issued under the classical algorithm requested",
+        nodeCrypto.createPrivateKey(byName.caKeyPem).asymmetricKeyType === "ec");
+
+  // PQC-downgrade guard: a per-call classical pin MUST NOT become the process
+  // default. Immediately after pinning ECDSA above, a default (unpinned) CA has
+  // to be issued under the ML-DSA-87 PQC-first default — not silently
+  // downgraded to the last-pinned classical algorithm.
+  var afterPin = await engine.generateCa();
+  var afterType = String(nodeCrypto.createPrivateKey(afterPin.caKeyPem).asymmetricKeyType || "");
+  check("pinning a classical algorithm does not downgrade a later default CA off ML-DSA-87",
+        /ml-dsa/i.test(afterType));
 }
 
 async function run() {

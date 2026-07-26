@@ -1,0 +1,78 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.0",
+  "date": "2026-07-26",
+  "headline": "The mTLS CA engine moves to the zero-dependency @blamejs/pki toolkit and issues post-quantum ML-DSA-87 certificates by default; the @peculiar/x509 + pkijs bundle is removed",
+  "summary": "b.mtlsCa's default certificate engine is rebuilt on the vendored, zero-runtime-dependency @blamejs/pki toolkit, replacing the @peculiar/x509 + pkijs meta-bundle (which is removed entirely). CA and client certificates are now issued under ML-DSA-87 (FIPS 204) by default: node:tls verifies ML-DSA certificate chains and the CertificateVerify signature on the supported Node LTS (OpenSSL 3.5), so a post-quantum client certificate completes a real mutual-auth handshake -- not just issuance. Operators whose mTLS peers are not yet on OpenSSL 3.5 pass b.mtlsCa.create({ algorithm: \"ECDSA-P384-SHA384\" }) for a universally-interoperable classical CA -- the pin covers both the CA and every leaf it issues, and never changes the default other CAs use; SLH-DSA is intentionally not offered for TLS. PKCS#12 export now carries a PBMAC1 integrity MAC (RFC 9579). Alongside the engine, this release closes a batch of primitive-hardening issues and adds a public PKCE generator; the vendor-currency gate now hard-fails a stale or unverifiable @blamejs/pki so the vendored copy can never lag the latest published release.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.auth.oauth.generatePkce -- a public PKCE (RFC 7636) generator",
+          "body": "b.auth.oauth.generatePkce() returns a { verifier, challenge } pair for a hand-rolled authorization-code flow that does not go through create(). The verifier is 43 base64url characters (32 CSPRNG bytes) and the code_challenge_method is always S256 (the challenge is base64url of SHA-256 over the verifier)."
+        },
+        {
+          "title": "b.audit.useStore redirect mode",
+          "body": "b.audit.useStore({ record, replaceChain: true }) routes framework audit events directly into a consumer-supplied store, skipping the b.db tamper-evident chain append. A consumer with no initialized b.db can now receive audit events (via record() and emit()/safeEmit()) instead of getting a db-not-initialized error or having events silently dropped. The default remains shadow-replication with the framework chain authoritative."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "The default mTLS CA engine is @blamejs/pki with an ML-DSA-87 post-quantum default",
+          "body": "lib/mtls-engine-default.js (b.mtlsCa's default engine) is rebuilt on the vendored zero-dependency @blamejs/pki toolkit. CA and leaf certificates are issued under ML-DSA-87 by default; node:tls completes a real mutual-auth handshake with them on the supported Node LTS. Operators pin the classical bridge with b.mtlsCa.create({ algorithm: \"ECDSA-P384-SHA384\" }) when a peer predates OpenSSL 3.5; the pin flows into both CA generation and leaf issuance, and is per-call -- it never downgrades the default other CAs use. PKCS#12 packaging keeps the AES-256-CBC + PBKDF2-HMAC-SHA-512 @ 2,000,000-iteration bag protection and now uses a PBMAC1 integrity MAC (RFC 9579) at the same cost."
+        },
+        {
+          "title": "The vendor-currency gate hard-fails a stale or unverifiable @blamejs/pki",
+          "body": "@blamejs/pki is now always-strict in the vendored-dependency currency check: a stale copy fails the gate (as before) and a registry error while checking it is also a hard failure, rather than staying advisory. The required Vendor currency CI check therefore refuses to pass unless it can prove the vendored @blamejs/pki equals the latest published release, keeping the fast-moving toolkit current on every build."
+        }
+      ]
+    },
+    {
+      "heading": "Removed",
+      "items": [
+        {
+          "title": "The vendored @peculiar/x509 + pkijs bundle",
+          "body": "lib/vendor/pki.cjs (the @peculiar/x509 + pkijs + reflect-metadata + ASN.1 meta-bundle) has no remaining consumer after the engine and the test fixtures moved to @blamejs/pki, and is removed along with its MANIFEST, NOTICE, and vendor tooling entries. The framework's PKI now runs entirely on the single zero-dependency @blamejs/pki toolkit."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "b.safeJson.parse no longer leaks a window of input bytes in its error message",
+          "body": "b.safeJson.parse interpolated V8's raw SyntaxError message into the thrown error, which could echo a short window of the parsed input -- including secret bytes -- to any caller that logs the error (CWE-532). It now emits only the stable error code and the numeric position, never the input substring."
+        },
+        {
+          "title": "b.redact.redactText strips underscore-joined bearer tokens in free-text messages",
+          "body": "The message-path redactor missed id_token / refresh_token assignments (an underscore-joined name a bare-token word boundary could not match) and vault-sealed / empty-username connection-string credentials, so a credential embedded in a log message could reach a file or SIEM sink verbatim while the structured meta path stripped it. redactText now covers those shapes, matching the meta path."
+        },
+        {
+          "title": "b.guardTenantId's reserved-name check is prototype-safe",
+          "body": "The reserved-tenant-id lookup used a bare property access, so a tenant id equal to an Object.prototype member (a prototype key) spuriously matched a reserved name. It now uses an own-property test."
+        },
+        {
+          "title": "b.daemon detached start reports a boot-time death instead of unconditional success",
+          "body": "b.daemon.start in detached mode reported success even when the spawned child died at boot, leaving a stale pidfile a later daemon.stop could misread. A one-shot exit handler now reaps the stale pidfile (only when it still records that child's pid) and emits a spawn-failed audit."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.outbox and b.webhook quote operator-supplied table names",
+          "body": "Operator-supplied table names in b.outbox and b.webhook were emitted unquoted, so a reserved-word or case-sensitive operator table broke the generated SQL. Both now quote operator table names with the same allowReserved parity b.db.from() already provides."
+        },
+        {
+          "title": "b.selfUpdate.rollback replaces a running Windows executable and honors a maxBytes override",
+          "body": "b.selfUpdate.rollback could not replace a locked/running Windows image (unlike swap) and had no way to raise the 64 MiB copy cap for a large binary. rollback now moves the outgoing file aside via a rename before restoring the backup, and accepts a maxBytes override. Separately, selfUpdate.poll no longer mispairs a lone, name-unrelated signature sidecar with the runtime asset."
+        }
+      ]
+    }
+  ]
+}

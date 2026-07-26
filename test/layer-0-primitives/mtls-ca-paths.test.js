@@ -41,6 +41,19 @@ async function testCreateTimeBranches() {
   catch (e) { threwBadMode = /bad-mode/.test(e.code || ""); }
   check("legacy 'auto' sealed-mode is refused", threwBadMode);
 
+  // The algorithm pin is a config-time type guard: a non-string or an empty
+  // string is refused at create() before any issuance (the label itself is the
+  // engine's to validate later).
+  var threwBadAlg = false;
+  try { b.mtlsCa.create({ dataDir: _mkDir("mtls-alg-"), algorithm: 123 }); }
+  catch (e) { threwBadAlg = /bad-algorithm/.test(e.code || ""); }
+  check("a non-string algorithm pin is refused at config time", threwBadAlg);
+
+  var threwEmptyAlg = false;
+  try { b.mtlsCa.create({ dataDir: _mkDir("mtls-alg-"), algorithm: "" }); }
+  catch (e) { threwEmptyAlg = /bad-algorithm/.test(e.code || ""); }
+  check("an empty-string algorithm pin is refused at config time", threwEmptyAlg);
+
   // dataDir that does not exist yet is auto-created; sealed-mode defaults
   // to "required" when the opt is omitted.
   var nested = path.join(os.tmpdir(), "mtls-mk-" + Date.now() + "-" + Math.random().toString(16).slice(2), "nested");

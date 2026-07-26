@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.17.24",
-  "createdAt": "2026-07-25T21:51:17.868Z",
+  "frameworkVersion": "0.18.0",
+  "createdAt": "2026-07-26T04:56:23.891Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -3666,6 +3666,10 @@
             "create": {
               "type": "function",
               "arity": 1
+            },
+            "generatePkce": {
+              "type": "function",
+              "arity": 0
             },
             "verifyClientAttestation": {
               "type": "function",
