@@ -661,6 +661,44 @@ async function testPollSignaturePairingEdgeCases() {
     check("poll pairing: extensionless asset pairs its appended signature",
           r6.asset && r6.asset.name === "myapp-linux" && r6.signature && r6.signature.name === "myapp-linux.sig");
   } finally { s6.close(); }
+
+  // Extension-replace pairing is unambiguous ONLY when the asset is the sole
+  // artifact with its extension-stripped stem. Two artifacts sharing a stem
+  // (app.bin + app.exe, stem `app`) with a single app.sig make app.sig ambiguous
+  // — it can't be attributed to either — so it must NOT pair; the signature fails
+  // closed. RED before the fix: the stem-replace derivation returned app.sig for
+  // app.bin regardless of the co-stemmed app.exe.
+  var s7 = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "app.bin", browser_download_url: "https://example.invalid/app.bin" },
+      { name: "app.exe", browser_download_url: "https://example.invalid/app.exe" },
+      { name: "app.sig", browser_download_url: "https://example.invalid/app.sig" },
+    ],
+  });
+  var p7 = await b.testing.listenOnRandomPort(s7);
+  try {
+    var r7 = await _pollLocal(p7, { assetPattern: "app.bin" });
+    check("poll pairing: an ambiguous extension-replace stem (app.bin + app.exe share app.sig) fails closed",
+          r7.asset && r7.asset.name === "app.bin" && r7.signature === null);
+  } finally { s7.close(); }
+
+  // The append convention stays unambiguous even with a shared stem: app.bin.sig
+  // carries the FULL asset name, so app.bin still pairs it despite app.exe.
+  var s8 = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "app.bin",     browser_download_url: "https://example.invalid/app.bin" },
+      { name: "app.exe",     browser_download_url: "https://example.invalid/app.exe" },
+      { name: "app.bin.sig", browser_download_url: "https://example.invalid/app.bin.sig" },
+    ],
+  });
+  var p8 = await b.testing.listenOnRandomPort(s8);
+  try {
+    var r8 = await _pollLocal(p8, { assetPattern: "app.bin" });
+    check("poll pairing: an appended signature (app.bin.sig) still pairs despite a co-stemmed app.exe",
+          r8.asset && r8.asset.name === "app.bin" && r8.signature && r8.signature.name === "app.bin.sig");
+  } finally { s8.close(); }
 }
 
 function testPollOptValidation() {
