@@ -479,6 +479,31 @@ if (m.packages[pkg]) {
 }
 "
 
+# Keep the NOTICE component version in sync with the install. NOTICE is an
+# operator / compliance dependency inventory; a re-vendor that bumped the
+# MANIFEST version but left NOTICE stale (as happened across five @blamejs/pki
+# bumps) reports a false inventory. Match the block whose Component line names
+# EXACTLY this package and rewrite its Version value (a replace FUNCTION, so no
+# regex backreference has to survive the bash interpolation).
+node -e "
+var fs = require('fs');
+var sep = Array(81).join('-');
+var pkg = process.argv[1], ver = process.argv[2];
+var blocks = fs.readFileSync('NOTICE', 'utf8').split(sep);
+var touched = false;
+for (var i = 0; i < blocks.length; i++) {
+  if (blocks[i].indexOf('Component:') === -1) continue;
+  var cm = blocks[i].match(/Component:\s+(\S+)/);
+  if (!cm || cm[1] !== pkg) continue;
+  var next = blocks[i].replace(/(Version:[ \t]+)\S+/, function (_, p) { return p + ver; });
+  if (next !== blocks[i]) { blocks[i] = next; touched = true; }
+}
+if (touched) {
+  fs.writeFileSync('NOTICE', blocks.join(sep));
+  console.log('  NOTICE.txt: ' + pkg + ' version -> ' + ver);
+}
+" "$PKG" "$INSTALLED_VER" || { echo "ERROR: NOTICE version update failed for $PKG"; }
+
 # Clean up node_modules
 npm uninstall "$PKG" --no-save 2>/dev/null || true
 

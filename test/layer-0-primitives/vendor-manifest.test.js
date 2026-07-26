@@ -66,6 +66,13 @@ function run() {
   check("vendor manifest has at least one package",
         pkgs.length > 0);
 
+  // NOTICE is the operator / compliance dependency inventory; each Component's
+  // Version must match the vendored version. A re-vendor that bumped MANIFEST but
+  // left NOTICE stale (five @blamejs/pki bumps did exactly that) reports a false
+  // inventory — the same drift class as components[]/cpe below, on the
+  // human-facing surface. vendor-update.sh now syncs it; this gates it.
+  var noticeBlocks = fs.readFileSync("NOTICE", "utf8").split(Array(81).join("-"));
+
   var totalHashes = 0;
   for (var i = 0; i < pkgs.length; i += 1) {
     var name = pkgs[i];
@@ -126,6 +133,22 @@ function run() {
               ") matches the package version (" + pkgSemver + ")",
               cpeVer === pkgSemver);
       }
+    }
+
+    // NOTICE Version parity (when this package has a NOTICE block).
+    var noticeVer = null;
+    for (var nbi = 0; nbi < noticeBlocks.length; nbi += 1) {
+      var cm = noticeBlocks[nbi].match(/Component:\s+(\S+)/);
+      if (cm && cm[1] === name) {
+        var nvM = noticeBlocks[nbi].match(/Version:\s+(\S+)/);
+        noticeVer = nvM ? nvM[1] : null;
+        break;
+      }
+    }
+    if (noticeVer !== null) {
+      check("vendor manifest: " + name + " :: NOTICE version (" + noticeVer +
+            ") matches the manifest version (" + pkg.version + ")",
+            noticeVer === pkg.version);
     }
   }
   check("vendor manifest: scanned at least one hash",
