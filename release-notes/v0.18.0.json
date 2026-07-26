@@ -57,7 +57,7 @@
         },
         {
           "title": "b.daemon detached start reports a boot-time death instead of unconditional success",
-          "body": "b.daemon.start in detached mode reported success even when the spawned child died at boot, leaving a stale pidfile a later daemon.stop could misread. A one-shot exit handler now reaps the stale pidfile (only when it still records that child's pid) and audits a spawn failure ONLY for a boot death -- an abnormal exit (non-zero code or a terminating signal) within a boot window while the pidfile is still the child's. A clean exit or an operator stop() is no longer mislabeled as a spawn failure. The boot window is tunable via daemon.start({ bootDeathWindowMs }) (default 5s)."
+          "body": "b.daemon.start in detached mode reported success even when the spawned child died at boot, leaving a stale pidfile a later daemon.stop could misread. A one-shot exit handler now reaps the stale pidfile (only when it still records that child's pid) and audits a spawn failure ONLY for a boot death -- an abnormal exit (non-zero code or a terminating signal) within a boot window while the pidfile is still the child's. A clean exit or an operator stop() is no longer mislabeled as a spawn failure. The parent keeps its event loop alive through the boot window (a ref'd timer, cleared the instant the child exits) so even a short-lived launcher that spawns the daemon and returns still observes a boot death -- child.unref() alone would let it exit first and strand the pidfile. The window is tunable via daemon.start({ bootDeathWindowMs }) (default 5s; 0 opts out for immediate fire-and-forget)."
         }
       ]
     },

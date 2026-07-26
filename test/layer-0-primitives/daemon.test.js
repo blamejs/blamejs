@@ -666,6 +666,33 @@ async function testDaemonStartDetachedAbnormalPastBootWindow() {
   }
 }
 
+// A short-lived launcher (the primary detached scenario: `daemon start` spawns
+// the daemon then exits) must still observe a boot death. child.unref() lets the
+// launcher's loop drain immediately, so without a ref'd boot-window timer the
+// launcher exits BEFORE the child dies and the pidfile is stranded for a later
+// stop() to misread. This spawns a REAL short launcher (requires lib/daemon,
+// starts a child that dies at ~300ms, then does nothing else); with the timer it
+// lingers on its own, observes the death, and reaps the pidfile before exiting.
+async function testDaemonBootWindowSurvivesShortLauncher() {
+  var pidFile    = _tmpFile("shortlauncher.pid");
+  var daemonPath = require.resolve("../../lib/daemon.js");
+  var script =
+    "var d=require(" + JSON.stringify(daemonPath) + ");" +
+    "d.start({pidFile:" + JSON.stringify(pidFile) + ",command:process.execPath," +
+    "args:['-e','setTimeout(function(){process.exit(1)},300)'],bootDeathWindowMs:4000});";
+  await new Promise(function (resolve, reject) {
+    var cp = processSpawn.spawn(process.execPath, ["-e", script], { stdio: "ignore" });
+    cp.once("exit",  function () { resolve(); });
+    cp.once("error", reject);
+  });
+  // The launcher has fully exited. If the boot-window timer held it open, it
+  // observed the ~300ms child death and reaped the sidecar; otherwise it exited
+  // at once and the sidecar is stranded.
+  check("boot-window: a short launcher lingers through the window and reaps a boot-dead child's pidfile",
+        !fs.existsSync(pidFile));
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+}
+
 // #500 — on win32 process.kill(pid, "SIGTERM") maps to TerminateProcess (a hard
 // kill), so the graceful appShutdown orchestration is unreachable via signals.
 // stop() must instead write a cooperative <pidFile>.stop sentinel, poll for the
@@ -1498,6 +1525,7 @@ async function run() {
   await testDaemonStartDetachedBootDeathReapsPidfile();
   await testDaemonStartDetachedCleanExitNoSpawnFailed();
   await testDaemonStartDetachedAbnormalPastBootWindow();
+  await testDaemonBootWindowSurvivesShortLauncher();
   await testDaemonStopWin32CooperativeStop();
   await testDaemonStartWin32CooperativeStopWatcher();
   await testDaemonReapStaleLivePidDifferentProcess();
