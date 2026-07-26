@@ -1324,6 +1324,31 @@ async function testRollbackMaxBytesRestoresLargeBackup() {
   try { fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
 }
 
+async function testRollbackRejectsBackupAliasingQuarantine() {
+  // RED before the fix: when backupTo is exactly <to>.rollback-bad, the move-aside
+  // unlinks backupTo (the good backup), moves the bad `to` into it, copies those
+  // bad bytes back over `to`, and reports success — corrupting the target AND
+  // destroying the backup. rollback now refuses the aliasing before touching
+  // either file.
+  var dir = _tmp("dir-rbalias");
+  fs.mkdirSync(dir, { recursive: true });
+  var to       = path.join(dir, "app.bin");
+  var backupTo = to + ".rollback-bad";               // deliberately the quarantine path
+  fs.writeFileSync(to,       Buffer.from("BAD-RUNNING-BINARY"));
+  fs.writeFileSync(backupTo, Buffer.from("KNOWN-GOOD-BACKUP"));
+
+  var threw = null;
+  try { await b.selfUpdate.rollback({ to: to, backupTo: backupTo }); } catch (e) { threw = e; }
+  check("rollback: a backupTo aliasing the quarantine path is refused",
+        threw && /selfupdate\/rollback-failed/.test(threw.code || ""));
+  check("rollback: the good backup is left intact after the refusal",
+        fs.existsSync(backupTo) && fs.readFileSync(backupTo, "utf8") === "KNOWN-GOOD-BACKUP");
+  check("rollback: the target is untouched after the refusal",
+        fs.readFileSync(to, "utf8") === "BAD-RUNNING-BINARY");
+
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+}
+
 // ---- #495 — probation / rollback orchestration. Real on-disk markers under
 // os.tmpdir(); the wall clock is injected via evaluateOnBoot({ now }) so the
 // window edges are exercised deterministically (no sleeping). ----
@@ -1787,6 +1812,7 @@ async function run() {
     await testRollbackCopyFailure();
     await testRollbackReplacesLockedTargetWin32();
     await testRollbackMaxBytesRestoresLargeBackup();
+    await testRollbackRejectsBackupAliasingQuarantine();
     await testProbationExpiredRollsBack();
     await testProbationCleanStopWithinWindowKeeps();
     await testProbationConfirmAndFailedSwapNoPhantom();

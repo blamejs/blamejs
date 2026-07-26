@@ -188,6 +188,61 @@ async function testP12MacFollowsAlgorithmTier() {
         parsedP.mac && parsedP.mac.kind === "pbmac1");
 }
 
+// A pinned algorithm that DISAGREES with a stored CA cannot be honored: leaf
+// issuance would sign an ECDSA leaf under an existing ML-DSA CA, a chain the
+// pre-OpenSSL-3.5 peer the pin targets cannot verify. initCA refuses the
+// mismatch and tells the operator to rotate. RED before the fix: initCA returned
+// the stored ML-DSA CA and issued the ECDSA-pinned leaf against it.
+async function testAlgorithmPinMismatchOnExistingCa() {
+  var dir = _mkTmp("blamejs-mtls-algmismatch-");
+  var caDefault = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });   // ML-DSA default
+  await caDefault.initCA();
+  check("mismatch setup: the stored default CA is ML-DSA",
+        /ml-dsa/i.test(nodeCrypto.createPrivateKey(caDefault.loadKey()).asymmetricKeyType));
+
+  var caPinned = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  var threw = null;
+  try { await caPinned.generateClientCert({ cn: "legacy-peer" }); } catch (e) { threw = e; }
+  check("an ECDSA pin against a stored ML-DSA CA is refused (rotate instead)",
+        threw && /mtls-ca\/algorithm-mismatch/.test(threw.code || ""));
+
+  // The pin must MATCH the on-disk CA, not merely share a family: an ML-DSA-65
+  // pin against a stored ML-DSA-87 CA is refused too (rotate to switch levels).
+  var caMl65 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "ML-DSA-65" });
+  var threwMl = null;
+  try { await caMl65.generateClientCert({ cn: "ml65" }); } catch (e) { threwMl = e; }
+  check("an ML-DSA-65 pin against a stored ML-DSA-87 CA is refused",
+        threwMl && /mtls-ca\/algorithm-mismatch/.test(threwMl.code || ""));
+
+  // A label this file can't map (a custom engine's own naming) skips the check —
+  // initCA returns the stored CA and the engine owns the algorithm semantics.
+  var caCustom = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "custom-engine-alg" });
+  var custom = await caCustom.initCA();
+  check("an unmappable algorithm-pin label skips the stored-CA check",
+        typeof custom.caCertPem === "string");
+
+  // A stored CA whose key node cannot parse (a custom engine's own key form) —
+  // the check can't determine the algorithm, so it skips rather than refusing.
+  var dir3 = _mkTmp("blamejs-mtls-algstub-");
+  var okGen = async function () {
+    return { caCertPem: "-----BEGIN CERTIFICATE-----\nSTUB\n-----END CERTIFICATE-----\n", caKeyPem: "NOT-A-PARSEABLE-KEY" };
+  };
+  var caStub1 = b.mtlsCa.create({ dataDir: dir3, caKeySealedMode: "disabled", engine: { generateCa: okGen }, algorithm: "ECDSA-P384-SHA384" });
+  await caStub1.initCA();                                   // commits the non-PEM key
+  var caStub2 = b.mtlsCa.create({ dataDir: dir3, caKeySealedMode: "disabled", engine: { generateCa: okGen }, algorithm: "ECDSA-P384-SHA384" });
+  var stubCa = await caStub2.initCA();                      // CA exists; key unparseable → check skips
+  check("a stored CA key node cannot parse skips the algorithm-pin check",
+        typeof stubCa.caCertPem === "string");
+
+  // The same pin against a MATCHING stored CA still issues (re-open a pinned CA).
+  var dir2 = _mkTmp("blamejs-mtls-algmatch-");
+  var caEc1 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  await caEc1.initCA();
+  var caEc2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  var leaf = await caEc2.generateClientCert({ cn: "ec-peer" });
+  check("re-opening a matching pinned CA still issues a leaf", typeof leaf.cert === "string");
+}
+
 async function run() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-revoke-"));
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
@@ -276,6 +331,7 @@ async function run() {
   await testRevocationValidation();
   await testEngineDirectContract();
   await testP12MacFollowsAlgorithmTier();
+  await testAlgorithmPinMismatchOnExistingCa();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });

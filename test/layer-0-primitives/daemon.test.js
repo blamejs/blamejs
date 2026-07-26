@@ -693,6 +693,40 @@ async function testDaemonBootWindowSurvivesShortLauncher() {
   try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
 }
 
+// When the SAME process that called start() also stop()s the daemon within the
+// boot window, stop() sends SIGTERM but unlinks the pidfile only after the exit,
+// so the boot-death handler sees wasOurs + a signal + withinBoot. Without the
+// _STOPPING mark it would emit daemon.spawn_failed right before daemon.stopped —
+// a contradictory failure audit for an intentional stop.
+async function testDaemonSameProcessStopWithinBootWindowNoSpawnFailed() {
+  var pidFile = _tmpFile("sameproc-stop.pid");
+  var captured = [];
+  var origSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (e) { captured.push(e); };
+  try {
+    b.daemon.start({
+      pidFile: pidFile, command: process.execPath,
+      args: ["-e", "setInterval(function(){}, 1000)"],   // long-lived child
+      bootDeathWindowMs: 10000,                           // wide window so the stop lands inside it
+    });
+    // Low timeout: on win32 the raw child doesn't watch the cooperative sentinel,
+    // so stop() escalates to a hard kill after the timeout — keep it short.
+    var r = await b.daemon.stop({ pidFile: pidFile, timeoutMs: 600, pollMs: 25 });
+    check("same-proc-stop: stop reported the daemon stopped", r && r.stopped === true);
+    // Give any (suppressed) exit-handler audit path a beat to run.
+    await helpers.passiveObserve(200, "same-proc-stop: no spawn_failed after a same-process stop");
+    check("same-proc-stop: no daemon.spawn_failed for an operator stop in the boot window",
+      !captured.some(function (e) {
+        return e && e.action === "daemon.spawn_failed" && e.metadata && e.metadata.pidFile === pidFile;
+      }));
+    check("same-proc-stop: a daemon.stopped audit WAS emitted",
+      captured.some(function (e) { return e && e.action === "daemon.stopped"; }));
+  } finally {
+    b.audit.safeEmit = origSafeEmit;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+}
+
 // #500 — on win32 process.kill(pid, "SIGTERM") maps to TerminateProcess (a hard
 // kill), so the graceful appShutdown orchestration is unreachable via signals.
 // stop() must instead write a cooperative <pidFile>.stop sentinel, poll for the
@@ -1526,6 +1560,7 @@ async function run() {
   await testDaemonStartDetachedCleanExitNoSpawnFailed();
   await testDaemonStartDetachedAbnormalPastBootWindow();
   await testDaemonBootWindowSurvivesShortLauncher();
+  await testDaemonSameProcessStopWithinBootWindowNoSpawnFailed();
   await testDaemonStopWin32CooperativeStop();
   await testDaemonStartWin32CooperativeStopWatcher();
   await testDaemonReapStaleLivePidDifferentProcess();
