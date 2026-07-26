@@ -77,7 +77,7 @@ async function _makeSelfSignedCert() {
   var spki  = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", keys.publicKey));
   var now   = new Date();
   return pki.x509.sign({
-    subject:          "CN=mx1.example.com",
+    subject:          "mx1.example.com",
     subjectPublicKey: spki,
     serialNumber:     "0x01",
     notBefore:        now,

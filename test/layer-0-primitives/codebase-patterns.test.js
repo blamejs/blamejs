@@ -7615,6 +7615,24 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The {__proto__, constructor, prototype} prototype-pollution key guard was hand-rolled framework-wide in two shapes: an in-file `new Set([...])` / `[...]` definition (re-declared in 8 parsers/middleware) and a literal `k === \"__proto__\" || ...` comparison chain (re-spelled in ~20 decoders/validators), even though lib/pick.js already exported a canonical POISONED_KEYS almost nobody imported. Routed every guard through pick.isPoisonedKey (skip cases), pick.assertSafeKey (reject/throw cases), or pick.POISONED_KEYS so the dangerous-key set lives in one place; a stale per-file copy was the silent pollution hole. New hand-rolled poisoned-key literals trip this — route through pick, never re-declare or re-spell.",
   },
   {
+    id: "pki-sign-preformatted-dn-string-lib",
+    primitive: "@blamejs/pki x509.sign / crl.sign take a STRING subject/issuer/name as the common-name VALUE, not a preformatted DN — pass the bare CN value (subject: cn) or an array of structured RDN objects (subject: [{ commonName: cn }, { organizationalUnitName: \"CAv\" + n }]), never subject: \"CN=\" + cn (which double-encodes to CN=CN=cn with no parsed OU).",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /pki\.(?:x509|crl)\.sign\(\s*\{[\s\S]{0,800}?\b(?:subject|issuer|name)\s*:\s*"(?:CN|OU|O|C|L|ST|DC|UID|E)=/,
+    allowlist: [],
+    reason: "The toolkit's encodeName() wraps a string subject/issuer/name as a single commonName attribute VALUE, so a caller passing a preformatted DN string (subject: \"CN=\" + cn, or subject: \"CN=name,OU=CAvN\") produces CN=CN=cn — a double-encoded CN — and, for multi-RDN names, folds the whole comma-joined string into one CN with NO separate OU/O attribute. The mtls default engine issued every CA and leaf that way, so CN->identity mTLS authorization received \"CN=alice\" instead of \"alice\" and policies reading the OU=CAvN generation RDN found none. Pass the bare CN value for single-CN subjects and an array of { attributeName: value } RDN objects for multi-attribute DNs; the issuer is derived from the CA cert, not a string. The bound is a ReDoS backstop far above any real sign-call body. New pki sign call with a DN-prefixed string subject/issuer trips this.",
+  },
+  {
+    id: "pki-sign-preformatted-dn-string-test",
+    primitive: "@blamejs/pki x509.sign / crl.sign take a STRING subject/issuer/name as the common-name VALUE — pass the bare CN value or structured RDN objects, never subject: \"CN=\" + cn (double-encodes to CN=CN=cn). Test fixtures cargo-cult the wrong shape into shipped callers.",
+    scanScope: "test",
+    skipCommentLines: true,
+    regex: /pki\.(?:x509|crl)\.sign\(\s*\{[\s\S]{0,800}?\b(?:subject|issuer|name)\s*:\s*"(?:CN|OU|O|C|L|ST|DC|UID|E)=/,
+    allowlist: [],
+    reason: "Same @blamejs/pki encodeName contract as pki-sign-preformatted-dn-string-lib, gated on test fixtures so a fixture minting a cert with subject: \"CN=\" + cn (double-encoded CN=CN=cn) can't seed the wrong pattern back into shipped code. Fixtures pass the bare CN value (subject: cn) — a self-signed cert derives its issuer from the subject, and a chain fixture passes the issuer name the same bare way so subject/issuer stay DER-equal. The bound is a ReDoS backstop. New fixture with a DN-prefixed string subject/issuer trips this.",
+  },
+  {
     // v0.15.13 — the drop-silent, gated, prefixed audit emitter that every
     // primitive hand-rolled as a private `_emitAudit(action, outcome, metadata)`
     // closure (or inline). The namespace prefix is the only axis → build the

@@ -70,7 +70,7 @@ async function _mintChain(opts) {
   var leafSpki  = await _spki(leafKeys.publicKey);
 
   var rootPem = await pki.x509.sign({
-    subject: "CN=Test Root CA", subjectPublicKey: rootSpki,
+    subject: "Test Root CA", subjectPublicKey: rootSpki,
     serialNumber: "01", notBefore: now, notAfter: notAfter,
     extensions: {
       basicConstraints: { cA: true, pathLen: 2, critical: true },
@@ -83,15 +83,15 @@ async function _mintChain(opts) {
   // deliberately cA:FALSE intermediate can still be minted — pki.x509.sign
   // refuses to sign under an issuer *certificate* that is not itself a CA.
   var interPem = await pki.x509.sign({
-    subject: "CN=Test Intermediate", subjectPublicKey: interSpki,
+    subject: "Test Intermediate", subjectPublicKey: interSpki,
     serialNumber: "02", notBefore: now, notAfter: notAfter,
     extensions: { basicConstraints: { cA: interCa, critical: true } },
-  }, { name: "CN=Test Root CA", publicKey: rootSpki, key: rootKeys.privateKey }, { pem: true });
+  }, { name: "Test Root CA", publicKey: rootSpki, key: rootKeys.privateKey }, { pem: true });
 
   // The leaf is signed with the intermediate's raw key so a cA:FALSE
   // intermediate genuinely issues + signs it (the forged chain under test).
   var leafPem = await pki.x509.sign({
-    subject: "CN=" + leafSan, subjectPublicKey: leafSpki,
+    subject: leafSan, subjectPublicKey: leafSpki,
     serialNumber: "03", notBefore: now, notAfter: notAfter,
     extensions: {
       basicConstraints: { cA: false, critical: true },
@@ -99,7 +99,7 @@ async function _mintChain(opts) {
       subjectAltName: _sanEntries(leafSanEntries),
       extendedKeyUsage: [BIMI_EKU_OID], extendedKeyUsageCritical: false,
     },
-  }, { name: "CN=Test Intermediate", publicKey: interSpki, key: interKeys.privateKey }, { pem: true });
+  }, { name: "Test Intermediate", publicKey: interSpki, key: interKeys.privateKey }, { pem: true });
 
   // Export the leaf's private key so a consumer test can sign a payload that
   // the forged leaf would verify (e.g. a fido-mds3 BLOB).

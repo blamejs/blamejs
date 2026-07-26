@@ -57,7 +57,7 @@ async function _mintRsaCert(cn) {
     "\n-----END PRIVATE KEY-----\n";
   var now = new Date();
   var certPem = await pki.x509.sign({
-    subject:          "CN=" + cn,
+    subject:          cn,
     subjectPublicKey: spki,
     serialNumber:     "0x01",
     notBefore:        now,

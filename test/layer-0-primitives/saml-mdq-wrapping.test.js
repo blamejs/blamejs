@@ -54,7 +54,7 @@ async function _mintRsaCert(cn) {
   // own RSA algorithm name); passing the webcrypto CryptoKey directly
   // trips a name-casing mismatch in the bundle's key matcher.
   var cert = await pki.x509.sign({
-    subject:          "CN=" + cn,
+    subject:          cn,
     subjectPublicKey: spki,
     serialNumber:     "0x01",
     notBefore:        now,
