@@ -1126,6 +1126,15 @@ function testRedactTextScrubsEmbeddedCredentials() {
   // underscore-joined *_token name that \btoken cannot span.
   check("redactText: refresh_token assignment scrubbed",
         b.redact.redactText("refresh_token: hunter2secret").indexOf("hunter2secret") === -1);
+  // JSON / quoted forms — the opaque value sits behind a quote right after the
+  // delimiter. RED before the fix: the value class excludes quotes, so the value
+  // could not begin and the token slipped through unredacted.
+  check("redactText: JSON refresh_token value scrubbed",
+        b.redact.redactText('{"refresh_token":"opaqueTok3nValue"}').indexOf("opaqueTok3nValue") === -1);
+  check("redactText: JSON id_token value scrubbed",
+        b.redact.redactText('{"id_token": "eyJraDeadBeefValue"}').indexOf("eyJraDeadBeefValue") === -1);
+  check("redactText: JSON refresh_token keeps the surrounding structure",
+        /\{"refresh_token":\s*"\[redacted\]"\}/.test(b.redact.redactText('{"refresh_token":"opaqueTok3nValue"}')));
   // SSN / EIN.
   check("redactText: SSN scrubbed",
         b.redact.redactText("ssn 123-45-6789 here") === "ssn [redacted] here");

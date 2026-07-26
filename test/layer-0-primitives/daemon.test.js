@@ -74,6 +74,11 @@ function testDaemonStartRejectsBadOpts() {
   try { b.daemon.start({ pidFile: "/tmp/x.pid", bootDeathWindowMs: "soon" }); } catch (e) { threw = e; }
   check("daemon.start rejects a non-number bootDeathWindowMs",
         threw && /daemon\/bad-boot-window/.test(threw.code || ""));
+
+  threw = null;
+  try { b.daemon.start({ pidFile: "/tmp/x.pid", bootDeathWindowMs: 3000000000 }); } catch (e) { threw = e; }
+  check("daemon.start rejects a bootDeathWindowMs above setTimeout's 32-bit max",
+        threw && /daemon\/bad-boot-window/.test(threw.code || ""));
 }
 
 function testDaemonStopRejectsBadOpts() {
@@ -788,6 +793,21 @@ async function testDaemonStopMarkerFsFailuresSwallowed() {
     try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
     try { fs.unlinkSync(pidFile + ".stopping"); } catch (_e) { /* best-effort */ }
   }
+}
+
+// A stopper SIGKILLed mid-stop leaves a stale <pidFile>.stopping marker; if the
+// OS later reuses that stopped pid for a fresh child, the stale marker would
+// wrongly suppress the new child's genuine boot-death audit. A fresh start()
+// clears it (no stop is in flight when a daemon is starting).
+async function testDaemonStartClearsStaleStoppingMarker() {
+  var pidFile = _tmpFile("stalestop.pid");
+  var marker  = pidFile + ".stopping";
+  fs.writeFileSync(marker, "99999");   // stale marker left by a dead stopper
+  b.daemon.start({ pidFile: pidFile, command: process.execPath, args: ["-e", "process.exit(0)"] });
+  check("start() clears a stale .stopping marker before claiming the pidfile",
+        !fs.existsSync(marker));
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(marker); } catch (_e) { /* best-effort */ }
 }
 
 // #500 — on win32 process.kill(pid, "SIGTERM") maps to TerminateProcess (a hard
@@ -1626,6 +1646,7 @@ async function run() {
   await testDaemonSameProcessStopWithinBootWindowNoSpawnFailed();
   await testDaemonCrossProcessStopWithinBootWindowNoSpawnFailed();
   await testDaemonStopMarkerFsFailuresSwallowed();
+  await testDaemonStartClearsStaleStoppingMarker();
   await testDaemonStopWin32CooperativeStop();
   await testDaemonStartWin32CooperativeStopWatcher();
   await testDaemonReapStaleLivePidDifferentProcess();

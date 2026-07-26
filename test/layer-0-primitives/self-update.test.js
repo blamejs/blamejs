@@ -1349,6 +1349,33 @@ async function testRollbackRejectsBackupAliasingQuarantine() {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
 }
 
+async function testRollbackRefusesSymlinkedQuarantineAlias() {
+  // RED before the fix: path.resolve() leaves a SYMLINK unresolved, so a backupTo
+  // that is a symlink to <to>.rollback-bad slipped the alias check and the
+  // move-aside deleted the good backup + restored the bad binary. realpath now
+  // resolves it and refuses before touching either file.
+  var dir = _tmp("dir-rbsymlink");
+  fs.mkdirSync(dir, { recursive: true });
+  var to         = path.join(dir, "app.bin");
+  var quarantine = to + ".rollback-bad";
+  var backupLink = path.join(dir, "backup-link.bak");
+  fs.writeFileSync(to, Buffer.from("BAD-RUNNING-BINARY"));
+  fs.writeFileSync(quarantine, Buffer.from("KNOWN-GOOD-BACKUP"));   // good backup at the quarantine path
+  try { fs.symlinkSync(quarantine, backupLink); }
+  catch (_sym) {
+    check("rollback: symlink-alias test skipped (symlinks unsupported here)", true);
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+    return;
+  }
+  var threw = null;
+  try { await b.selfUpdate.rollback({ to: to, backupTo: backupLink }); } catch (e) { threw = e; }
+  check("rollback: a symlinked backupTo aliasing the quarantine is refused",
+        threw && /selfupdate\/rollback-failed/.test(threw.code || ""));
+  check("rollback: the good backup at the quarantine path survives the refusal",
+        fs.existsSync(quarantine) && fs.readFileSync(quarantine, "utf8") === "KNOWN-GOOD-BACKUP");
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+}
+
 // ---- #495 — probation / rollback orchestration. Real on-disk markers under
 // os.tmpdir(); the wall clock is injected via evaluateOnBoot({ now }) so the
 // window edges are exercised deterministically (no sleeping). ----
@@ -1813,6 +1840,7 @@ async function run() {
     await testRollbackReplacesLockedTargetWin32();
     await testRollbackMaxBytesRestoresLargeBackup();
     await testRollbackRejectsBackupAliasingQuarantine();
+    await testRollbackRefusesSymlinkedQuarantineAlias();
     await testProbationExpiredRollsBack();
     await testProbationCleanStopWithinWindowKeeps();
     await testProbationConfirmAndFailedSwapNoPhantom();

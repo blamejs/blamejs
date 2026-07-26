@@ -310,6 +310,47 @@ async function testUnpinnedLeafFollowsStoredCaAlgorithm() {
         typeof rsaLeaf.cert === "string");
 }
 
+// The classical ECDSA-P384-SHA384 bridge must sign the CA, every leaf, and every
+// CRL with ecdsa-with-SHA-384 (OID 1.2.840.10045.4.3.3) — matching its advertised
+// posture and the pre-flip release — NOT the toolkit's EC default of SHA-256,
+// which would silently downgrade the digest below the framework no-SHA-256 rule.
+// RED before the fix: the engine passed no digestAlgorithm, so every classical
+// signature was ecdsa-with-SHA-256 (OID ...4.3.2).
+async function testClassicalBridgeSignsWithSha384() {
+  var SHA384 = "1.2.840.10045.4.3.3";
+  var dir = _mkTmp("blamejs-mtls-sha384-");
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  var bundle = await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "svc" });
+  check("classical CA cert signature is ecdsa-with-SHA384 (not the SHA-256 EC default)",
+        pki.schema.x509.parse(bundle.caCertPem).signatureAlgorithm.oid === SHA384);
+  check("classical leaf cert signature is ecdsa-with-SHA384",
+        pki.schema.x509.parse(leaf.cert).signatureAlgorithm.oid === SHA384);
+  ca.revoke({ fingerprint: leaf.fingerprint });
+  var crl = await ca.generateCrl();
+  check("classical CRL signature is ecdsa-with-SHA384",
+        pki.schema.crl.parse(crl.crlPem).signatureAlgorithm.oid === SHA384);
+}
+
+// A bare IPv6 SAN must encode as an iPAddress GeneralName, not a DNS name — a
+// colon-bearing DNS SAN can never match, so a TLS client connecting by the IPv6
+// address would fail verification. RED before the fix: sans:["fe80::1"] emitted
+// DNS:fe80::1 (IPv4 was auto-detected, IPv6 fell through to the DNS default).
+async function testIpv6SanEncodesAsIpAddress() {
+  var dir = _mkTmp("blamejs-mtls-v6san-");
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var leaf = await ca.generateClientCert({ cn: "svc", usage: "server", sans: ["fe80::1"] });
+  var san = new nodeCrypto.X509Certificate(leaf.cert).subjectAltName || "";
+  check("a bare IPv6 SAN encodes as an iPAddress, not a DNS name",
+        /IP Address:/i.test(san) && !/DNS:fe80/i.test(san));
+  // A bare hostname (not an IP) still encodes as a DNS SAN — the IPv6 branch must
+  // not swallow it.
+  var leaf2 = await ca.generateClientCert({ cn: "svc", usage: "server", sans: ["api.example.com"] });
+  var san2 = new nodeCrypto.X509Certificate(leaf2.cert).subjectAltName || "";
+  check("a bare hostname SAN encodes as a DNS name",
+        /DNS:api\.example\.com/i.test(san2));
+}
+
 async function run() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-revoke-"));
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
@@ -400,6 +441,8 @@ async function run() {
   await testP12MacFollowsAlgorithmTier();
   await testAlgorithmPinMismatchOnExistingCa();
   await testUnpinnedLeafFollowsStoredCaAlgorithm();
+  await testClassicalBridgeSignsWithSha384();
+  await testIpv6SanEncodesAsIpAddress();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });

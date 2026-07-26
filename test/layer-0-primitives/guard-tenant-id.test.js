@@ -64,10 +64,18 @@ function testRefuses() {
 // must consult RESERVED's own keys, not the prototype chain, so these
 // validate instead of being spuriously refused as reserved.
 function testInheritedKeyNotReserved() {
-  ["toString", "constructor", "hasOwnProperty", "valueOf", "isPrototypeOf",
+  // Harmless inherited-member names only SHADOW the member on the store object
+  // (no pollution), so they are legitimate tenant ids.
+  ["toString", "hasOwnProperty", "valueOf", "isPrototypeOf",
    "propertyIsEnumerable", "toLocaleString"].forEach(function (id) {
     check("inherited-key id '" + id + "' validates (not reserved)",
       b.guardTenantId.validate(id) === id);
+  });
+  // ...but the prototype-pollution key names ARE refused: `store["__proto__"] = row`
+  // sets the store's prototype, and constructor/prototype collide with the chain.
+  ["__proto__", "constructor", "prototype"].forEach(function (id) {
+    expectRefused("prototype-pollution id '" + id + "' refused",
+      function () { b.guardTenantId.validate(id); }, "tenant-id/reserved");
   });
   // The genuinely-reserved names still refuse — the fix must not narrow.
   expectRefused("'*' still reserved",
