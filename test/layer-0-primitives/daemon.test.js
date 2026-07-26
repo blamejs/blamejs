@@ -23,10 +23,22 @@ var check   = helpers.check;
 
 var processSpawn = require("../../lib/process-spawn");
 
+var atomicFile  = require("../../lib/atomic-file");
+
 var _tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-daemon-test-"));
 function _tmpFile(name) {
   return path.join(_tmpBase, Date.now() + "-" +
     Math.random().toString(36).slice(2, 8) + "-" + name);
+}
+
+// Temporarily present a different process.platform to start()/stop() so the
+// POSIX code paths (detached-fork stdio, SIGTERM→SIGKILL escalation) are
+// exercised on a win32 host too. process.platform is configurable (not
+// writable), so it is swapped via a captured descriptor and restored.
+function _withPlatform(plat) {
+  var descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: plat, configurable: true, writable: true });
+  return function restore() { Object.defineProperty(process, "platform", descriptor); };
 }
 
 function testDaemonSurface() {
@@ -356,10 +368,16 @@ async function testDaemonForegroundLogRedirect() {
   var origOut = process.stdout.write;
   var origErr = process.stderr.write;
   var r = null;
+  var writerCbFired = false;
   try {
     r = b.daemon.start({ pidFile: pidFile, logFile: logFile, signals: ["SIGUSR2"] });
     process.stdout.write("daemon-redirect-probe-out\n");
     process.stderr.write("daemon-redirect-probe-err\n");
+    // Exercise the redirected writer's argument shapes: an explicit encoding
+    // string, a Buffer chunk (no re-encode), and a completion callback.
+    process.stdout.write("daemon-redirect-enc\n", "utf8");
+    process.stdout.write(Buffer.from("daemon-redirect-buf\n"));
+    process.stdout.write("daemon-redirect-cb\n", function () { writerCbFired = true; });
   } finally {
     process.stdout.write = origOut;
     process.stderr.write = origErr;
@@ -377,6 +395,11 @@ async function testDaemonForegroundLogRedirect() {
           content.indexOf("daemon-redirect-probe-out") !== -1);
     check("fg+log: stderr redirected into logFile",
           content.indexOf("daemon-redirect-probe-err") !== -1);
+    check("fg+log: writer honored an explicit encoding arg",
+          content.indexOf("daemon-redirect-enc") !== -1);
+    check("fg+log: writer passed a Buffer chunk through",
+          content.indexOf("daemon-redirect-buf") !== -1);
+    check("fg+log: writer invoked the completion callback", writerCbFired === true);
   } finally {
     if (r) { await r.orchestrator.shutdown(); r.orchestrator._resetForTest(); }
     b.daemon._resetForTest();
@@ -671,6 +694,718 @@ async function testDaemonStartWin32CooperativeStopWatcher() {
   }
 }
 
+// _maybeReapStale must leave a pidfile held by a LIVE, DIFFERENT process alone
+// (only truly-dead PIDs are reaped). process.ppid is guaranteed live and != our
+// PID, so the detached path reports already-running without touching the file.
+async function testDaemonReapStaleLivePidDifferentProcess() {
+  var pidFile = _tmpFile("reap-live-other.pid");
+  fs.writeFileSync(pidFile, String(process.ppid) + "\n");
+  var origSpawn = processSpawn.spawn;
+  var spawned = false;
+  processSpawn.spawn = function () { spawned = true; return { pid: 1, unref: function () {}, on: function () {} }; };
+  var threw = null;
+  try {
+    b.daemon.start({ pidFile: pidFile, command: process.execPath, args: ["-e", "0"] });
+  } catch (e) { threw = e; }
+  finally { processSpawn.spawn = origSpawn; }
+  check("reap-live-other: live foreign PID not reaped -> already-running",
+        threw && /daemon\/already-running/.test(threw.code || ""));
+  check("reap-live-other: spawn never attempted for a live-held pidfile", spawned === false);
+  check("reap-live-other: pidfile left in place (not reaped)", fs.existsSync(pidFile));
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+}
+
+// POSIX detached-fork stdio: with a logFile the parent opens the append fd and
+// hands [ignore, fd, fd] to the child (Issue #101), windowsHide stays undefined,
+// omitted args default to [], and the parent closes its own fd afterward. Without
+// a logFile the child inherits nothing (stdio: "ignore").
+async function testDaemonStartDetachedPosixLogFdStdio() {
+  var restore = _withPlatform("linux");
+  var origSpawn = processSpawn.spawn;
+  try {
+    // (1) POSIX + logFile → inherit-logfd branch.
+    var pidFile = _tmpFile("posix-det.pid");
+    var logFile = _tmpFile("posix-det.log");
+    var cap = null;
+    processSpawn.spawn = function (cmd, args, opts) {
+      cap = { cmd: cmd, args: args, opts: opts };
+      return { pid: 717171, unref: function () {}, on: function () {} };
+    };
+    var r = b.daemon.start({ pidFile: pidFile, logFile: logFile, command: process.execPath });
+    check("posix-det: returned child pid", r.pid === 717171);
+    check("posix-det: stdio = [ignore, fd, fd]",
+          Array.isArray(cap.opts.stdio) && cap.opts.stdio[0] === "ignore" &&
+          typeof cap.opts.stdio[1] === "number" && cap.opts.stdio[1] === cap.opts.stdio[2]);
+    check("posix-det: windowsHide undefined on POSIX", cap.opts.windowsHide === undefined);
+    check("posix-det: omitted args default to []", Array.isArray(cap.args) && cap.args.length === 0);
+    check("posix-det: logFile opened", fs.existsSync(logFile));
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(logFile); } catch (_e) { /* best-effort */ }
+
+    // (2) POSIX + no logFile → stdio "ignore".
+    var pidFile2 = _tmpFile("posix-det-nolog.pid");
+    cap = null;
+    processSpawn.spawn = function (cmd, args, opts) {
+      cap = { cmd: cmd, args: args, opts: opts };
+      return { pid: 727272, unref: function () {}, on: function () {} };
+    };
+    var r2 = b.daemon.start({ pidFile: pidFile2, command: process.execPath, args: [] });
+    check("posix-det-nolog: stdio = 'ignore'", cap.opts.stdio === "ignore");
+    check("posix-det-nolog: pid returned", r2.pid === 727272);
+    try { fs.unlinkSync(pidFile2); } catch (_e) { /* best-effort */ }
+
+    // (3) POSIX + logFile, spawn succeeds, but the parent's post-spawn fd close
+    //     throws -> swallowed (best-effort); start() still reports started.
+    var pidFile3 = _tmpFile("posix-det-closefail.pid");
+    var logFile3 = _tmpFile("posix-det-closefail.log");
+    var realClose = fs.closeSync;
+    var capturedFd3 = null;
+    var realOpen3 = atomicFile.openAppendNoFollowSync;
+    atomicFile.openAppendNoFollowSync = function () {
+      var fd = realOpen3.apply(atomicFile, arguments);
+      capturedFd3 = fd;
+      return fd;
+    };
+    processSpawn.spawn = function () { return { pid: 737373, unref: function () {}, on: function () {} }; };
+    fs.closeSync = function (fd) {
+      if (fd === capturedFd3) throw new Error("close boom");
+      return realClose.apply(fs, arguments);
+    };
+    var r3 = null, e3 = null;
+    try {
+      r3 = b.daemon.start({ pidFile: pidFile3, logFile: logFile3, command: process.execPath, args: [] });
+    } catch (e) { e3 = e; }
+    fs.closeSync = realClose;
+    atomicFile.openAppendNoFollowSync = realOpen3;
+    check("posix-det-closefail: start still returns despite fd-close throw",
+          e3 === null && r3 && r3.pid === 737373);
+    try { fs.closeSync(capturedFd3); } catch (_e) { /* leak guard */ }
+    try { fs.unlinkSync(pidFile3); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(logFile3); } catch (_e) { /* best-effort */ }
+  } finally {
+    processSpawn.spawn = origSpawn;
+    restore();
+  }
+}
+
+// A detached spawn that throws synchronously surfaces as daemon/spawn-failed;
+// on the POSIX path a parent log fd was opened, so start() closes it (best-effort)
+// on the way out. The thrown value carries no `.message` to drive the String(e)
+// fallback in the error text.
+async function testDaemonStartDetachedSpawnThrowsSync() {
+  var restore = _withPlatform("linux");
+  var origSpawn = processSpawn.spawn;
+  var realClose = fs.closeSync;
+  try {
+    var pidFile = _tmpFile("spawn-throw.pid");
+    var logFile = _tmpFile("spawn-throw.log");
+    // Non-Error-message throw: an empty .message forces the String(e) fallback.
+    processSpawn.spawn = function () { throw new Error(""); };
+    fs.closeSync = function () { throw new Error("close boom"); };  // force the best-effort fd-close guard
+    var threw = null;
+    try {
+      b.daemon.start({ pidFile: pidFile, logFile: logFile, command: process.execPath, args: [] });
+    } catch (e) { threw = e; }
+    fs.closeSync = realClose;
+    check("spawn-throw: sync spawn throw -> daemon/spawn-failed",
+          threw && /daemon\/spawn-failed/.test(threw.code || ""));
+    check("spawn-throw: no pidfile written", !fs.existsSync(pidFile));
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(logFile); } catch (_e) { /* best-effort */ }
+  } finally {
+    fs.closeSync = realClose;
+    processSpawn.spawn = origSpawn;
+    restore();
+  }
+}
+
+// POSIX detached spawn returning an undefined pid with a log fd already open:
+// start() closes the parent fd (swallowing a close failure) before failing closed.
+async function testDaemonStartDetachedUndefinedPidClosesLogFd() {
+  var restore = _withPlatform("linux");
+  var origSpawn = processSpawn.spawn;
+  var realClose = fs.closeSync;
+  try {
+    var pidFile = _tmpFile("posix-nopid.pid");
+    var logFile = _tmpFile("posix-nopid.log");
+    processSpawn.spawn = function () { return { pid: undefined, unref: function () {}, on: function () {} }; };
+    fs.closeSync = function () { throw new Error("close boom"); };
+    var threw = null;
+    try {
+      b.daemon.start({ pidFile: pidFile, logFile: logFile, command: process.execPath, args: [] });
+    } catch (e) { threw = e; }
+    fs.closeSync = realClose;
+    check("posix-nopid: undefined pid -> daemon/spawn-failed",
+          threw && /daemon\/spawn-failed/.test(threw.code || ""));
+    check("posix-nopid: no pidfile written", !fs.existsSync(pidFile));
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(logFile); } catch (_e) { /* best-effort */ }
+  } finally {
+    fs.closeSync = realClose;
+    processSpawn.spawn = origSpawn;
+    restore();
+  }
+}
+
+// A detached child whose unref() throws must not derail start(): the best-effort
+// guard swallows it and start() still reports the daemon as started.
+async function testDaemonStartDetachedUnrefThrows() {
+  var pidFile = _tmpFile("unref-throw.pid");
+  var origSpawn = processSpawn.spawn;
+  processSpawn.spawn = function () {
+    return { pid: 909090, unref: function () { throw new Error("unref boom"); }, on: function () {} };
+  };
+  try {
+    var r = b.daemon.start({ pidFile: pidFile, command: process.execPath, args: [] });
+    check("unref-throw: start returns despite unref throw", r.pid === 909090);
+    check("unref-throw: pidfile written", fs.existsSync(pidFile));
+  } finally {
+    processSpawn.spawn = origSpawn;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// A real detached child that dies at boot triggers the one-shot exit handler's
+// pidfile reap; if that unlink throws, it is swallowed and the failure audit
+// still lands (the pidfile is simply left for a later stop() to reap).
+async function testDaemonStartDetachedExitHandlerUnlinkFailure() {
+  var pidFile = _tmpFile("exit-unlinkfail.pid");
+  var captured = [];
+  var origSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (e) { captured.push(e); };
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(pidFile)) throw new Error("unlink boom");
+    return realUnlink.apply(fs, arguments);
+  };
+  try {
+    b.daemon.start({ pidFile: pidFile, command: process.execPath, args: ["-e", "process.exit(1)"] });
+    await helpers.waitUntil(function () {
+      return captured.some(function (e) {
+        return e && e.action === "daemon.spawn_failed" && e.metadata && e.metadata.pidFile === pidFile;
+      });
+    }, { timeoutMs: 5000, label: "exit-unlinkfail: boot-death audit lands despite swallowed unlink" });
+    check("exit-unlinkfail: spawn_failed audit emitted despite unlink failure",
+          captured.some(function (e) { return e && e.action === "daemon.spawn_failed"; }));
+  } finally {
+    fs.unlinkSync = realUnlink;
+    b.audit.safeEmit = origSafeEmit;
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// Foreground acquire failure paths: a pidFile whose parent is a regular file
+// cannot be opened (a non-'pidlock-held' error -> daemon/pid-acquire-failed); a
+// live foreign owner (process.ppid) drives the 'pidlock-held' arm; and a
+// message-less acquire error drives the String(e) fallback in the error text.
+async function testDaemonForegroundAcquireFailures() {
+  // (A) parent-is-a-file -> daemon/pid-acquire-failed.
+  var blocker = _tmpFile("acq-blocker");
+  fs.writeFileSync(blocker, "x");
+  var badPidFile = path.join(blocker, "nested", "d.pid");
+  var tA = null;
+  try { b.daemon.start({ pidFile: badPidFile, signals: ["SIGUSR2"] }); } catch (e) { tA = e; }
+  check("fg-acq: parent-is-a-file -> daemon/pid-acquire-failed",
+        tA && /daemon\/pid-acquire-failed/.test(tA.code || ""));
+  try { fs.unlinkSync(blocker); } catch (_e) { /* best-effort */ }
+
+  // (B) foreign live owner -> daemon/already-running via the pidlock-held arm.
+  var heldPidFile = _tmpFile("fg-held.pid");
+  fs.writeFileSync(heldPidFile, String(process.ppid) + "\n");
+  var tB = null;
+  try { b.daemon.start({ pidFile: heldPidFile, signals: ["SIGUSR2"] }); } catch (e) { tB = e; }
+  check("fg-held: foreign live PID holds pidfile -> daemon/already-running",
+        tB && /daemon\/already-running/.test(tB.code || ""));
+  try { fs.unlinkSync(heldPidFile); } catch (_e) { /* best-effort */ }
+
+  // (C) message-less acquire error -> String(e) fallback in daemon/pid-acquire-failed.
+  var appShutdown = require("../../lib/app-shutdown");
+  var realPidLock = appShutdown.pidLock;
+  appShutdown.pidLock = function () {
+    return { acquire: function () { throw Object.assign(new Error(""), { code: "weird-no-message" }); }, release: function () {}, held: function () { return false; } };
+  };
+  var strPidFile = _tmpFile("fg-acq-str.pid");
+  var tC = null;
+  try { b.daemon.start({ pidFile: strPidFile, signals: ["SIGUSR2"] }); } catch (e) { tC = e; }
+  appShutdown.pidLock = realPidLock;
+  check("fg-acq-str: message-less acquire error -> daemon/pid-acquire-failed",
+        tC && /daemon\/pid-acquire-failed/.test(tC.code || ""));
+  try { fs.unlinkSync(strPidFile); } catch (_e) { /* best-effort */ }
+
+  // (D) an acquire error with NO `.code` drives the `e.code || ""` fallback in
+  //     the pidlock-held test; it is not pidlock-held -> daemon/pid-acquire-failed.
+  appShutdown.pidLock = function () {
+    return { acquire: function () { throw new Error("acquire failed, no code"); }, release: function () {}, held: function () { return false; } };
+  };
+  var noCodePidFile = _tmpFile("fg-acq-nocode.pid");
+  var tD = null;
+  try { b.daemon.start({ pidFile: noCodePidFile, signals: ["SIGUSR2"] }); } catch (e) { tD = e; }
+  appShutdown.pidLock = realPidLock;
+  check("fg-acq-nocode: code-less acquire error -> daemon/pid-acquire-failed",
+        tD && /daemon\/pid-acquire-failed/.test(tD.code || ""));
+  try { fs.unlinkSync(noCodePidFile); } catch (_e) { /* best-effort */ }
+}
+
+// start() reaping a stale pidfile swallows a failure of the reap unlink (a race
+// where another reaper wins) and proceeds to acquire.
+async function testDaemonStartReapUnlinkFailureSwallowed() {
+  var pidFile = _tmpFile("reap-unlinkfail.pid");
+  fs.writeFileSync(pidFile, "999996\n");   // stale
+  var origSpawn = processSpawn.spawn;
+  processSpawn.spawn = function () { return { pid: 818181, unref: function () {}, on: function () {} }; };
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(pidFile)) throw new Error("reap unlink boom");
+    return realUnlink.apply(fs, arguments);
+  };
+  var r = null, threw = null;
+  try {
+    r = b.daemon.start({ pidFile: pidFile, command: process.execPath, args: [] });
+  } catch (e) { threw = e; }
+  fs.unlinkSync = realUnlink;
+  processSpawn.spawn = origSpawn;
+  check("reap-unlinkfail: start proceeds despite a swallowed reap-unlink failure",
+        threw === null && r && r.pid === 818181);
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+}
+
+// A foreground log-open failure whose error carries no `.message` drives the
+// String(e) fallback in daemon/log-open-failed; the just-acquired pidLock is
+// still released so the pidFile is reusable.
+async function testDaemonForegroundLogOpenStringFallback() {
+  var pidFile = _tmpFile("logopen-str.pid");
+  var logFile = _tmpFile("logopen-str.log");
+  var realOpen = atomicFile.openAppendNoFollowSync;
+  atomicFile.openAppendNoFollowSync = function () { throw new Error(""); };
+  var threw = null;
+  try { b.daemon.start({ pidFile: pidFile, logFile: logFile, signals: ["SIGUSR2"] }); } catch (e) { threw = e; }
+  atomicFile.openAppendNoFollowSync = realOpen;
+  check("logopen-str: message-less open failure -> daemon/log-open-failed",
+        threw && /daemon\/log-open-failed/.test(threw.code || ""));
+  check("logopen-str: pidLock released (pidFile gone)", !fs.existsSync(pidFile));
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  b.daemon._resetForTest();
+}
+
+// Foreground fd-error paths: the redirected writer swallows a writeSync failure
+// on the log fd, and the pidLock-release shutdown phase swallows a closeSync
+// failure on that same fd. Both are targeted precisely at the fd start() opened,
+// so no other descriptor is disturbed.
+async function testDaemonForegroundLogFdErrorPaths() {
+  var pidFile = _tmpFile("fg-fderr.pid");
+  var logFile = _tmpFile("fg-fderr.log");
+  var realOpen = atomicFile.openAppendNoFollowSync;
+  var capturedFd = null;
+  atomicFile.openAppendNoFollowSync = function () {
+    var fd = realOpen.apply(atomicFile, arguments);
+    capturedFd = fd;
+    return fd;
+  };
+  var origOut = process.stdout.write;
+  var origErr = process.stderr.write;
+  var r = null;
+  try {
+    r = b.daemon.start({ pidFile: pidFile, logFile: logFile, signals: ["SIGUSR2"] });
+  } finally {
+    atomicFile.openAppendNoFollowSync = realOpen;
+  }
+  // Writer swallows a writeSync failure on the log fd.
+  var realWriteSync = fs.writeSync;
+  fs.writeSync = function (fd) {
+    if (fd === capturedFd) throw new Error("fd write boom");
+    return realWriteSync.apply(fs, arguments);
+  };
+  var writeThrew = null;
+  try { process.stdout.write("probe-write-fail\n"); } catch (e) { writeThrew = e; }
+  fs.writeSync = realWriteSync;
+  process.stdout.write = origOut;
+  process.stderr.write = origErr;
+  check("fg-fderr: redirected writer swallows a writeSync failure", writeThrew === null);
+
+  // Shutdown swallows a closeSync failure on the log fd.
+  var realClose = fs.closeSync;
+  fs.closeSync = function (fd) {
+    if (fd === capturedFd) throw new Error("fd close boom");
+    return realClose.apply(fs, arguments);
+  };
+  var shutThrew = null;
+  try { await r.orchestrator.shutdown(); } catch (e) { shutThrew = e; }
+  fs.closeSync = realClose;
+  check("fg-fderr: shutdown swallows a closeSync failure on the log fd", shutThrew === null);
+  r.orchestrator._resetForTest();
+  b.daemon._resetForTest();
+  try { fs.closeSync(capturedFd); } catch (_e) { /* leak guard */ }
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(logFile); } catch (_e) { /* best-effort */ }
+}
+
+// _resetForTest swallows a throwing per-orchestrator reset so a corrupt handle
+// can't wedge the whole process-wide teardown.
+async function testDaemonResetForTestSwallowsThrow() {
+  var pidFile = _tmpFile("reset-catch.pid");
+  var r = b.daemon.start({ pidFile: pidFile, signals: ["SIGUSR2"] });
+  var realReset = r.orchestrator._resetForTest;
+  r.orchestrator._resetForTest = function () { throw new Error("reset boom"); };
+  var resetThrew = null;
+  try { b.daemon._resetForTest(); } catch (e) { resetThrew = e; }
+  check("reset-catch: _resetForTest swallows a throwing orchestrator reset", resetThrew === null);
+  r.orchestrator._resetForTest = realReset;
+  try { await r.orchestrator.shutdown(); } catch (_e) { /* best-effort */ }
+  r.orchestrator._resetForTest();
+  b.daemon._resetForTest();
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+}
+
+// stop() on a stale pidfile swallows a failure of the stale-cleanup unlink and
+// still reports reason="stale".
+async function testDaemonStopStaleUnlinkFailureSwallowed() {
+  var pidFile = _tmpFile("stale-unlink.pid");
+  fs.writeFileSync(pidFile, "999997\n");
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(pidFile)) throw new Error("unlink boom");
+    return realUnlink.apply(fs, arguments);
+  };
+  var r = null, threw = null;
+  try { r = await b.daemon.stop({ pidFile: pidFile }); } catch (e) { threw = e; }
+  fs.unlinkSync = realUnlink;
+  check("stale-unlink: stop() swallows the stale-cleanup unlink failure", threw === null);
+  check("stale-unlink: still reports stale", r && r.reason === "stale");
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+}
+
+// POSIX SIGTERM→SIGKILL escalation path (skipped on win32 by stop(), which drives
+// the cooperative sentinel instead). Forced here via a platform override + a
+// stubbed process.kill so every branch — ESRCH races, non-ESRCH failures,
+// in-loop graceful exit, escalation, and the post-kill reap poll — is exercised.
+async function testDaemonStopPosixSignalPath() {
+  var restore = _withPlatform("linux");
+  var origKill = process.kill;
+  try {
+    // (1) ESRCH between pidfile read and first signal.
+    var pf1 = _tmpFile("psx-esrch.pid"); fs.writeFileSync(pf1, "4242\n");
+    process.kill = function (pid, sig) {
+      if (sig === 0) return true;
+      var e = new Error("gone"); e.code = "ESRCH"; throw e;
+    };
+    var r1 = await b.daemon.stop({ pidFile: pf1, signal: "SIGTERM" });
+    process.kill = origKill;
+    check("psx: ESRCH-at-kill -> stopped=true", r1.stopped === true);
+    check("psx: ESRCH-at-kill mechanism=signal", r1.mechanism === "signal");
+    check("psx: ESRCH-at-kill no escalation", r1.escalated === undefined);
+    check("psx: ESRCH-at-kill pidfile cleaned", !fs.existsSync(pf1));
+
+    // (2) non-ESRCH kill error -> daemon/kill-failed.
+    var pf2 = _tmpFile("psx-killfail.pid"); fs.writeFileSync(pf2, "4243\n");
+    process.kill = function (pid, sig) {
+      if (sig === 0) return true;
+      var e = new Error("bad signal"); e.code = "EINVAL"; throw e;
+    };
+    var t2 = null;
+    try { await b.daemon.stop({ pidFile: pf2, signal: "SIGTERM" }); } catch (e) { t2 = e; }
+    process.kill = origKill;
+    check("psx: non-ESRCH kill -> daemon/kill-failed", t2 && /daemon\/kill-failed/.test(t2.code || ""));
+    try { fs.unlinkSync(pf2); } catch (_e) { /* best-effort */ }
+
+    // (3) SIGTERM delivered; target survives one probe then exits inside the loop.
+    var pf3 = _tmpFile("psx-loopexit.pid"); fs.writeFileSync(pf3, "4244\n");
+    var probes3 = 0;
+    process.kill = function (pid, sig) {
+      if (sig === 0) {
+        probes3 += 1;
+        if (probes3 >= 2) { var e = new Error("gone"); e.code = "ESRCH"; throw e; }
+        return true;
+      }
+      return true;  // SIGTERM accepted, still running for the first probe
+    };
+    var r3 = await b.daemon.stop({ pidFile: pf3, signal: "SIGTERM", timeoutMs: 1000, pollMs: 5 });
+    process.kill = origKill;
+    check("psx: in-loop graceful exit -> stopped=true", r3.stopped === true);
+    check("psx: in-loop graceful exit no escalation", r3.escalated === undefined);
+    check("psx: in-loop graceful exit pidfile cleaned", !fs.existsSync(pf3));
+
+    // (4) SIGTERM swallowed past timeout -> escalate to SIGKILL (which succeeds),
+    //     surviving one post-kill reap poll before the process is seen gone.
+    var pf4 = _tmpFile("psx-escalate.pid"); fs.writeFileSync(pf4, "4245\n");
+    var killed4 = false, postProbes4 = 0;
+    process.kill = function (pid, sig) {
+      if (sig === 0) {
+        if (!killed4) return true;
+        postProbes4 += 1;
+        if (postProbes4 >= 2) { var e = new Error("gone"); e.code = "ESRCH"; throw e; }
+        return true;
+      }
+      if (sig === "SIGKILL") { killed4 = true; return true; }
+      return true;  // SIGTERM swallowed
+    };
+    var r4 = await b.daemon.stop({ pidFile: pf4, signal: "SIGTERM", timeoutMs: 20, pollMs: 5 });
+    process.kill = origKill;
+    check("psx: escalation -> escalated=true", r4.escalated === true);
+    check("psx: escalation signal=SIGKILL", r4.signal === "SIGKILL");
+    check("psx: escalation pidfile cleaned", !fs.existsSync(pf4));
+
+    // (5) SIGKILL escalation throws ESRCH (already gone) -> swallowed, reap proceeds.
+    var pf5 = _tmpFile("psx-kill-esrch.pid"); fs.writeFileSync(pf5, "4246\n");
+    var killAttempted5 = false;
+    process.kill = function (pid, sig) {
+      if (sig === 0) { if (killAttempted5) { var e = new Error("gone"); e.code = "ESRCH"; throw e; } return true; }
+      if (sig === "SIGKILL") { killAttempted5 = true; var e2 = new Error("already gone"); e2.code = "ESRCH"; throw e2; }
+      return true;  // SIGTERM swallowed
+    };
+    var r5 = await b.daemon.stop({ pidFile: pf5, signal: "SIGTERM", timeoutMs: 15, pollMs: 5 });
+    process.kill = origKill;
+    check("psx: SIGKILL-ESRCH swallowed -> escalated=true", r5.escalated === true);
+    check("psx: SIGKILL-ESRCH pidfile cleaned", !fs.existsSync(pf5));
+
+    // (6) SIGKILL escalation throws a non-ESRCH error -> daemon/kill-failed.
+    var pf6 = _tmpFile("psx-kill-fail.pid"); fs.writeFileSync(pf6, "4247\n");
+    process.kill = function (pid, sig) {
+      if (sig === 0) return true;  // never dies
+      if (sig === "SIGKILL") { var e = new Error("perm"); e.code = "EPERM"; throw e; }
+      return true;  // SIGTERM swallowed
+    };
+    var t6 = null;
+    try { await b.daemon.stop({ pidFile: pf6, signal: "SIGTERM", timeoutMs: 15, pollMs: 5 }); } catch (e) { t6 = e; }
+    process.kill = origKill;
+    check("psx: SIGKILL non-ESRCH -> daemon/kill-failed", t6 && /daemon\/kill-failed/.test(t6.code || ""));
+    try { fs.unlinkSync(pf6); } catch (_e) { /* best-effort */ }
+
+    // (7) ESRCH-at-kill path whose pidfile-cleanup unlink fails -> swallowed.
+    var pf7 = _tmpFile("psx-esrch-unlinkfail.pid"); fs.writeFileSync(pf7, "4248\n");
+    process.kill = function (pid, sig) {
+      if (sig === 0) return true;
+      var e = new Error("gone"); e.code = "ESRCH"; throw e;
+    };
+    var realUnlink7 = fs.unlinkSync;
+    fs.unlinkSync = function (p) { if (String(p) === String(pf7)) throw new Error("unlink boom"); return realUnlink7.apply(fs, arguments); };
+    var r7 = null, e7 = null;
+    try { r7 = await b.daemon.stop({ pidFile: pf7, signal: "SIGTERM" }); } catch (e) { e7 = e; }
+    fs.unlinkSync = realUnlink7;
+    process.kill = origKill;
+    check("psx: ESRCH-race unlink failure swallowed -> stopped=true", e7 === null && r7 && r7.stopped === true);
+    try { fs.unlinkSync(pf7); } catch (_e) { /* best-effort */ }
+
+    // (8) in-loop graceful exit whose pidfile-cleanup unlink fails -> swallowed.
+    var pf8 = _tmpFile("psx-loop-unlinkfail.pid"); fs.writeFileSync(pf8, "4249\n");
+    var probes8 = 0;
+    process.kill = function (pid, sig) {
+      if (sig === 0) { probes8 += 1; if (probes8 >= 2) { var e = new Error("gone"); e.code = "ESRCH"; throw e; } return true; }
+      return true;
+    };
+    var realUnlink8 = fs.unlinkSync;
+    fs.unlinkSync = function (p) { if (String(p) === String(pf8)) throw new Error("unlink boom"); return realUnlink8.apply(fs, arguments); };
+    var r8 = null, e8 = null;
+    try { r8 = await b.daemon.stop({ pidFile: pf8, signal: "SIGTERM", timeoutMs: 1000, pollMs: 5 }); } catch (e) { e8 = e; }
+    fs.unlinkSync = realUnlink8;
+    process.kill = origKill;
+    check("psx: in-loop-exit unlink failure swallowed -> stopped=true", e8 === null && r8 && r8.stopped === true);
+    try { fs.unlinkSync(pf8); } catch (_e) { /* best-effort */ }
+
+    // (9) SIGKILL escalation whose pidfile-cleanup unlink fails -> swallowed.
+    var pf9 = _tmpFile("psx-escalate-unlinkfail.pid"); fs.writeFileSync(pf9, "4250\n");
+    var killed9 = false;
+    process.kill = function (pid, sig) {
+      if (sig === 0) { if (killed9) { var e = new Error("gone"); e.code = "ESRCH"; throw e; } return true; }
+      if (sig === "SIGKILL") { killed9 = true; return true; }
+      return true;
+    };
+    var realUnlink9 = fs.unlinkSync;
+    fs.unlinkSync = function (p) { if (String(p) === String(pf9)) throw new Error("unlink boom"); return realUnlink9.apply(fs, arguments); };
+    var r9 = null, e9 = null;
+    try { r9 = await b.daemon.stop({ pidFile: pf9, signal: "SIGTERM", timeoutMs: 20, pollMs: 5 }); } catch (e) { e9 = e; }
+    fs.unlinkSync = realUnlink9;
+    process.kill = origKill;
+    check("psx: escalation unlink failure swallowed -> escalated=true", e9 === null && r9 && r9.escalated === true);
+    try { fs.unlinkSync(pf9); } catch (_e) { /* best-effort */ }
+  } finally {
+    process.kill = origKill;
+    restore();
+  }
+}
+
+// win32 cooperative-stop: sentinel-write failure -> daemon/stop-request-failed
+// (message-less throw drives the String(e) fallback). Uses our own live PID so
+// the request fails before any TerminateProcess is attempted.
+async function testDaemonWin32StopRequestWriteFailure() {
+  if (process.platform !== "win32") {
+    check("win32 stop-request-failure test skipped on non-win32", true);
+    return;
+  }
+  var pidFile = _tmpFile("win-stopreq.pid");
+  fs.writeFileSync(pidFile, String(process.pid) + "\n");
+  var realWrite = atomicFile.writeSync;
+  atomicFile.writeSync = function () { throw new Error(""); };
+  var threw = null;
+  try { await b.daemon.stop({ pidFile: pidFile, timeoutMs: 50, pollMs: 5 }); } catch (e) { threw = e; }
+  atomicFile.writeSync = realWrite;
+  check("win-stopreq: sentinel write failure -> daemon/stop-request-failed",
+        threw && /daemon\/stop-request-failed/.test(threw.code || ""));
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(pidFile + ".stop"); } catch (_e) { /* best-effort */ }
+}
+
+// win32 TerminateProcess edge paths: escalation kill throws non-ESRCH
+// (daemon/kill-failed) and ESRCH (swallowed, with a post-kill reap poll), plus
+// swallowed pidfile-unlink failures on both the cooperative and forced exits.
+async function testDaemonWin32TerminateEdgePaths() {
+  if (process.platform !== "win32") {
+    check("win32 terminate-edge test skipped on non-win32", true);
+    return;
+  }
+  var origKill = process.kill;
+  try {
+    // (i) TerminateProcess throws non-ESRCH -> daemon/kill-failed.
+    var pf1 = _tmpFile("win-term-fail.pid"); fs.writeFileSync(pf1, "6161\n");
+    process.kill = function (pid, sig) {
+      if (sig === 0) return true;
+      var e = new Error("terminate denied"); e.code = "EPERM"; throw e;
+    };
+    var t1 = null;
+    try { await b.daemon.stop({ pidFile: pf1, timeoutMs: 20, pollMs: 5 }); } catch (e) { t1 = e; }
+    process.kill = origKill;
+    check("win-term: TerminateProcess non-ESRCH -> daemon/kill-failed",
+          t1 && /daemon\/kill-failed/.test(t1.code || ""));
+    try { fs.unlinkSync(pf1); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(pf1 + ".stop"); } catch (_e) { /* best-effort */ }
+
+    // (ii) TerminateProcess throws ESRCH (already gone) -> swallowed; the process
+    //      is seen alive for one post-kill poll before it is reaped.
+    var pf2 = _tmpFile("win-term-esrch.pid"); fs.writeFileSync(pf2, "6162\n");
+    var killAttempted2 = false, postProbes2 = 0;
+    process.kill = function (pid, sig) {
+      if (sig === 0) {
+        if (killAttempted2) {
+          postProbes2 += 1;
+          if (postProbes2 >= 2) { var e = new Error("gone"); e.code = "ESRCH"; throw e; }
+          return true;
+        }
+        return true;
+      }
+      killAttempted2 = true; var e2 = new Error("already gone"); e2.code = "ESRCH"; throw e2;
+    };
+    var r2 = await b.daemon.stop({ pidFile: pf2, timeoutMs: 20, pollMs: 5 });
+    process.kill = origKill;
+    check("win-term: TerminateProcess ESRCH swallowed -> escalated=true", r2.escalated === true);
+    check("win-term: escalation mechanism=terminate", r2.mechanism === "terminate");
+    try { fs.unlinkSync(pf2); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(pf2 + ".stop"); } catch (_e) { /* best-effort */ }
+
+    // (iii) cooperative exit whose pidfile unlink fails -> swallowed.
+    var pf3 = _tmpFile("win-coop-unlinkfail.pid"); fs.writeFileSync(pf3, "6163\n");
+    var sen3 = pf3 + ".stop";
+    process.kill = function (pid, sig) {
+      if (sig === 0) { if (fs.existsSync(sen3)) { var e = new Error("gone"); e.code = "ESRCH"; throw e; } return true; }
+      return true;
+    };
+    var realUnlink3 = fs.unlinkSync;
+    fs.unlinkSync = function (p) {
+      if (String(p) === String(pf3)) throw new Error("unlink boom");
+      return realUnlink3.apply(fs, arguments);
+    };
+    var r3 = null, e3 = null;
+    try { r3 = await b.daemon.stop({ pidFile: pf3, timeoutMs: 2000, pollMs: 5 }); } catch (e) { e3 = e; }
+    fs.unlinkSync = realUnlink3;
+    process.kill = origKill;
+    check("win-coop-unlinkfail: cooperative stop swallows pidfile unlink failure",
+          e3 === null && r3 && r3.mechanism === "cooperative");
+    try { fs.unlinkSync(pf3); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(sen3); } catch (_e) { /* best-effort */ }
+
+    // (iv) forced (timed-out) exit whose pidfile unlink fails -> swallowed.
+    var pf4 = _tmpFile("win-forced-unlinkfail.pid"); fs.writeFileSync(pf4, "6164\n");
+    var sen4 = pf4 + ".stop";
+    var terminated4 = false;
+    process.kill = function (pid, sig) {
+      if (sig === 0) { if (terminated4) { var e = new Error("gone"); e.code = "ESRCH"; throw e; } return true; }
+      terminated4 = true; return true;
+    };
+    var realUnlink4 = fs.unlinkSync;
+    fs.unlinkSync = function (p) {
+      if (String(p) === String(pf4)) throw new Error("unlink boom");
+      return realUnlink4.apply(fs, arguments);
+    };
+    var r4 = null, e4 = null;
+    try { r4 = await b.daemon.stop({ pidFile: pf4, timeoutMs: 20, pollMs: 5 }); } catch (e) { e4 = e; }
+    fs.unlinkSync = realUnlink4;
+    process.kill = origKill;
+    check("win-forced-unlinkfail: forced stop swallows pidfile unlink failure",
+          e4 === null && r4 && r4.escalated === true);
+    try { fs.unlinkSync(pf4); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(sen4); } catch (_e) { /* best-effort */ }
+  } finally {
+    process.kill = origKill;
+  }
+}
+
+// win32 cooperative-stop watcher install/teardown timer failures: setInterval
+// unavailable at install (watcher degrades, start() still succeeds) and
+// clearInterval throwing at shutdown (swallowed by _stopPolling).
+async function testDaemonWin32WatcherTimerFailures() {
+  if (process.platform !== "win32") {
+    check("win32 watcher-timer test skipped on non-win32", true);
+    return;
+  }
+  // setInterval throws at install -> watcher has no timer, start() still succeeds.
+  var pf1 = _tmpFile("win-noint.pid");
+  var realSetInterval = global.setInterval;
+  global.setInterval = function () { throw new Error("no timers"); };
+  var r1 = null, e1 = null;
+  try { r1 = b.daemon.start({ pidFile: pf1, signals: ["SIGUSR2"] }); } catch (e) { e1 = e; }
+  global.setInterval = realSetInterval;
+  check("win-noint: start succeeds despite setInterval throwing",
+        e1 === null && r1 && r1.mode === "foreground");
+  if (r1) {
+    try { await r1.orchestrator.shutdown(); } catch (_e) { /* best-effort */ }
+    r1.orchestrator._resetForTest();
+  }
+  b.daemon._resetForTest();
+  try { fs.unlinkSync(pf1); } catch (_e) { /* best-effort */ }
+
+  // clearInterval throws at shutdown -> _stopPolling swallows it.
+  var pf2 = _tmpFile("win-noclear.pid");
+  var r2 = b.daemon.start({ pidFile: pf2, signals: ["SIGUSR2"] });
+  var realClearInterval = global.clearInterval;
+  global.clearInterval = function () { throw new Error("no clear"); };
+  var e2 = null;
+  try { await r2.orchestrator.shutdown(); } catch (e) { e2 = e; }
+  global.clearInterval = realClearInterval;
+  check("win-noclear: shutdown swallows a clearInterval failure", e2 === null);
+  r2.orchestrator._resetForTest();
+  b.daemon._resetForTest();
+  try { fs.unlinkSync(pf2); } catch (_e) { /* best-effort */ }
+}
+
+// win32 cooperative-stop watcher exit-code derivation: a defined-but-zero
+// process.exitCode drives the `=== 0` arm, and a failing shutdown phase drives
+// the `result.ok ? 0 : 1` → 1 arm. process.exitCode is restored so the test
+// process still exits 0.
+async function testDaemonWin32WatcherExitCodeBranches() {
+  if (process.platform !== "win32") {
+    check("win32 watcher exit-code test skipped on non-win32", true);
+    return;
+  }
+  var pidFile = _tmpFile("win-exitcode.pid");
+  var sentinel = pidFile + ".stop";
+  var origExitCode = process.exitCode;
+  var r = b.daemon.start({ pidFile: pidFile, signals: ["SIGUSR2"] });
+  r.orchestrator.addPhase({ name: "coverage-fail", run: function () { throw new Error("phase-fail"); } });
+  process.exitCode = 0;
+  try {
+    fs.writeFileSync(sentinel, String(process.pid) + "\n");
+    await helpers.waitUntil(function () { return process.exitCode === 1; }, {
+      timeoutMs: 5000, label: "win-exitcode: cooperative shutdown sets exitCode=1 on phase failure",
+    });
+    check("win-exitcode: failing phase -> watcher sets exitCode=1", process.exitCode === 1);
+  } finally {
+    process.exitCode = origExitCode;
+    try { await r.orchestrator.shutdown(); } catch (_e) { /* best-effort */ }
+    r.orchestrator._resetForTest();
+    b.daemon._resetForTest();
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(sentinel); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
   testDaemonSurface();
   testDaemonStartRejectsBadOpts();
@@ -693,6 +1428,23 @@ async function run() {
   await testDaemonStartDetachedBootDeathReapsPidfile();
   await testDaemonStopWin32CooperativeStop();
   await testDaemonStartWin32CooperativeStopWatcher();
+  await testDaemonReapStaleLivePidDifferentProcess();
+  await testDaemonStartDetachedPosixLogFdStdio();
+  await testDaemonStartDetachedSpawnThrowsSync();
+  await testDaemonStartDetachedUndefinedPidClosesLogFd();
+  await testDaemonStartDetachedUnrefThrows();
+  await testDaemonStartDetachedExitHandlerUnlinkFailure();
+  await testDaemonForegroundAcquireFailures();
+  await testDaemonStartReapUnlinkFailureSwallowed();
+  await testDaemonForegroundLogOpenStringFallback();
+  await testDaemonForegroundLogFdErrorPaths();
+  await testDaemonResetForTestSwallowsThrow();
+  await testDaemonStopStaleUnlinkFailureSwallowed();
+  await testDaemonStopPosixSignalPath();
+  await testDaemonWin32StopRequestWriteFailure();
+  await testDaemonWin32TerminateEdgePaths();
+  await testDaemonWin32WatcherTimerFailures();
+  await testDaemonWin32WatcherExitCodeBranches();
 }
 
 module.exports = {

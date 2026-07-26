@@ -715,6 +715,80 @@ async function testDebeziumDefaults() {
 }
 
 // ---------------------------------------------------------------------------
+// Debezium — a row whose id is 0 (falsy) exercises the `rawEvent.id || null`
+// eventId fallback: a legacy/manually-written row can carry id 0, which must
+// surface in the envelope as eventId:null rather than the numeric 0.
+// ---------------------------------------------------------------------------
+async function testDebeziumFalsyEventId() {
+  var xdb = _sqliteExternalDb();
+  var published = [];
+  var outbox = _mkOutbox(xdb, {
+    envelope:  "debezium",
+    publisher: async function (e) { published.push(e); },
+  });
+  await outbox.declareSchema();
+  // Insert a claimable row with an explicit id of 0 (falsy) — the sqlite PK
+  // accepts an explicit 0, and the debezium envelope's `eventId: rawEvent.id ||
+  // null` must fall back to null rather than emit the numeric 0.
+  var past = new Date(Date.now() - C.TIME.seconds(60)).toISOString();
+  xdb._raw.prepare(
+    'INSERT INTO "test_outbox" ("id","topic","payload","enqueued_at","next_attempt_at","attempts","status")' +
+    " VALUES (0,'zero',?,?,?,0,'pending')"
+  ).run('{"a":1}', past, past);
+
+  await outbox._processOnce();
+  check("debezium falsy-id: the id=0 row published", published.length === 1);
+  check("debezium falsy-id: eventId falls back to null on a falsy row id",
+    published[0].payload.eventId === null);
+  check("debezium falsy-id: the id=0 row marked published", (await outbox.pendingCount()) === 0);
+}
+
+// ---------------------------------------------------------------------------
+// SQLite claim path — a provider that returns a rowless result for the
+// post-mark re-select drives the `(afterRows && afterRows.rows) || []` fallback,
+// so _claimBatch yields an empty batch instead of throwing on the missing rows.
+// ---------------------------------------------------------------------------
+async function testSqliteAfterSelectRowless() {
+  var base = _sqliteExternalDb();
+  // Wrap transaction so the claim's post-mark re-select (SELECT ... WHERE
+  // status = 'in-flight') returns undefined — a degenerate provider result with
+  // no `rows` — forcing the `|| []` fallback. Every other statement (INSERT,
+  // the pending SELECT, the mark UPDATE) passes through to the real engine, so
+  // the row is genuinely marked in-flight before the rowless re-select.
+  var realTransaction = base.transaction;
+  base.transaction = async function (fn) {
+    return realTransaction(async function (innerXdb) {
+      var wrapped = {
+        dialect: innerXdb.dialect,
+        query: async function (s, p) {
+          if (/^\s*select/i.test(s) && /status\s*=\s*'in-flight'/i.test(s)) {
+            return undefined; // no .rows → the (afterRows && afterRows.rows) || [] fallback
+          }
+          return innerXdb.query(s, p);
+        },
+      };
+      return fn(wrapped);
+    });
+  };
+
+  var published = [];
+  var outbox = _mkOutbox(base, { publisher: async function (e) { published.push(e); } });
+  await outbox.declareSchema();
+  await base.transaction(async function (tx) {
+    await outbox.enqueue({ topic: "t", payload: { id: 1 } }, tx);
+  });
+
+  var n = await outbox._processOnce();
+  check("after-select rowless: claim yields an empty batch (|| [] fallback)", n === 0);
+  check("after-select rowless: nothing published", published.length === 0);
+  // The mark UPDATE ran against the real engine, so the row is left in-flight —
+  // proving the rowless result came from the re-select, not a failed mark.
+  var row = base._raw.prepare('SELECT status FROM "test_outbox"').get();
+  check("after-select rowless: row was marked in-flight before the rowless re-select",
+    row && row.status === "in-flight");
+}
+
+// ---------------------------------------------------------------------------
 // Worker lifecycle — start/stop, double-start no-op, poll drains the outbox
 // ---------------------------------------------------------------------------
 async function testWorkerLifecycle() {
@@ -845,6 +919,8 @@ async function run() {
   await testPublisherRejectsFalsy();
   await testDebeziumEnvelope();
   await testDebeziumDefaults();
+  await testDebeziumFalsyEventId();
+  await testSqliteAfterSelectRowless();
   await testWorkerLifecycle();
   await testWorkerInFlightGuardAndStop();
   await testReservedWordTable();
