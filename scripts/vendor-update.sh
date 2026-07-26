@@ -40,7 +40,7 @@ DATE=$(date +%Y-%m-%d)
 # (see lib/argon2-builtin.js). The case-block below preserves the
 # `argon2` operator-friendly error message for anyone who still tries
 # `vendor-update.sh argon2`.
-VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/post-quantum" "@simplewebauthn/server" "@blamejs/pki" "peculiar-pki")
+VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/post-quantum" "@simplewebauthn/server" "@blamejs/pki")
 
 get_vendored_ver() {
   node -e "var m=require('./$MANIFEST'); var p=m.packages['$1']; console.log(p?p.version:'?')"
@@ -87,13 +87,8 @@ if [ "${1:-}" = "--check" ]; then
   for pkg in "${VENDORED_PACKAGES[@]}"; do
     vendored=$(get_vendored_ver "$pkg")
     bundled=$(node -e "var m=require('./$MANIFEST'); var p=m.packages['$pkg']; console.log(p&&p.bundledAt?p.bundledAt:'?')")
-    if [ "$pkg" = "peculiar-pki" ]; then
-      latest="meta-bundle"
-      status="check x509+pkijs separately"
-    else
-      latest=$(npm view "$pkg" version 2>/dev/null || echo "?")
-      if [ "$vendored" = "$latest" ]; then status="up to date"; else status="UPDATE AVAILABLE"; fi
-    fi
+    latest=$(npm view "$pkg" version 2>/dev/null || echo "?")
+    if [ "$vendored" = "$latest" ]; then status="up to date"; else status="UPDATE AVAILABLE"; fi
     printf "%-30s %-15s %-15s %-12s %s\n" "$pkg" "$vendored" "$latest" "$bundled" "$status"
   done
   exit 0
@@ -108,7 +103,6 @@ fi
 if [ "${1:-}" = "--diff-all" ]; then
   any=false
   for pkg in "${VENDORED_PACKAGES[@]}"; do
-    [ "$pkg" = "peculiar-pki" ] && continue
     vendored=$(get_vendored_ver "$pkg")
     latest=$(npm view "$pkg" version 2>/dev/null || echo "?")
     if [ "$vendored" != "$latest" ]; then
@@ -370,11 +364,9 @@ VER="${2:-latest}"
 
 echo "=== Vendoring $PKG@$VER ==="
 
-if [ "$PKG" != "peculiar-pki" ]; then
-  npm install "${PKG}@${VER}" --no-save --ignore-scripts 2>/dev/null
-  INSTALLED_VER=$(node -e "console.log(require('./node_modules/${PKG}/package.json').version)")
-  echo "Installed: $PKG@$INSTALLED_VER"
-fi
+npm install "${PKG}@${VER}" --no-save --ignore-scripts 2>/dev/null
+INSTALLED_VER=$(node -e "console.log(require('./node_modules/${PKG}/package.json').version)")
+echo "Installed: $PKG@$INSTALLED_VER"
 
 case "$PKG" in
   "@noble/ciphers")
@@ -440,69 +432,6 @@ ENTRY
     exit 1
     ;;
 
-  "peculiar-pki")
-    # Meta-bundle: @peculiar/x509 + pkijs + reflect-metadata + every transitive
-    # ASN.1 schema package, packed into one CJS file. lib/mtls-ca.js loads the
-    # bundle via the default engine in lib/mtls-engine-default.js for CA gen,
-    # client-cert signing, and PKCS#12 packaging — no openssl CLI at runtime.
-    #
-    # Version argument: "latest" (default) bundles the newest @peculiar/x509 +
-    # pkijs; the MANIFEST version form "<x509ver>+pkijs-<pkijsver>" (e.g.
-    # "2.0.0+pkijs-3.4.0") rebundles those exact component versions.
-    X509_REQ="latest"
-    PKIJS_REQ="latest"
-    if [ "$VER" != "latest" ]; then
-      X509_REQ="${VER%%+pkijs-*}"
-      PKIJS_REQ="${VER##*+pkijs-}"
-      if [ -z "$X509_REQ" ] || [ -z "$PKIJS_REQ" ] || [ "$X509_REQ" = "$VER" ]; then
-        echo "ERROR: peculiar-pki version must be 'latest' or '<x509ver>+pkijs-<pkijsver>' (e.g. 2.0.0+pkijs-3.4.0)"
-        exit 1
-      fi
-    fi
-    npm install --no-save --ignore-scripts \
-      reflect-metadata \
-      pvutils pvtsutils asn1js \
-      "@peculiar/asn1-schema" "@peculiar/asn1-x509" "@peculiar/asn1-ecc" "@peculiar/asn1-rsa" \
-      "@peculiar/x509@${X509_REQ}" "pkijs@${PKIJS_REQ}" 2>/dev/null
-    X509_VER=$(node -e "console.log(require('./node_modules/@peculiar/x509/package.json').version)")
-    PKIJS_VER=$(node -e "console.log(require('./node_modules/pkijs/package.json').version)")
-    echo "Installed: @peculiar/x509@$X509_VER, pkijs@$PKIJS_VER"
-    cat > _pki-entry.mjs <<'ENTRY'
-// reflect-metadata polyfills Reflect.metadata / defineMetadata / getMetadata.
-// @peculiar/asn1-schema's TypeScript decorators emit calls into these at
-// runtime, so the polyfill must load first via side-effect import.
-import "reflect-metadata";
-import * as pkijsLib from "pkijs";
-import * as x509Lib from "@peculiar/x509";
-import { webcrypto } from "node:crypto";
-const engine = new pkijsLib.CryptoEngine({ name: "node", crypto: webcrypto, subtle: webcrypto.subtle });
-pkijsLib.setEngine("node", engine);
-x509Lib.cryptoProvider.set(webcrypto);
-export const pkijs = pkijsLib;
-export const x509 = x509Lib;
-export const crypto = webcrypto;
-ENTRY
-    # reflect-metadata resolves to its upstream ./lite entry: identical
-    # metadata API and cross-copy registry, but built for runtimes with native
-    # globalThis / Map / Set / WeakMap — it has none of the legacy
-    # global-object probes (Function("return this") / indirect eval) that can
-    # never execute on the Node versions the framework supports.
-    npx esbuild _pki-entry.mjs --bundle --format=cjs --platform=node \
-      --alias:reflect-metadata=reflect-metadata/lite \
-      --external:node:crypto --external:crypto \
-      --outfile=lib/vendor/pki.cjs
-    rm _pki-entry.mjs
-    BUNDLER_DESC="esbuild --format=cjs --platform=node --alias:reflect-metadata=reflect-metadata/lite --external:node:crypto --external:crypto"
-    sed -i "1s|^|// Peculiar PKI — vendored @peculiar/x509 v${X509_VER} + pkijs v${PKIJS_VER}\n// License: MIT. Bundled with esbuild.\n// Exports: { pkijs, x509, crypto (node:webcrypto bound) }\n// Includes: reflect-metadata, pvutils, pvtsutils, asn1js, @peculiar/asn1-*\n// Used by lib/mtls-engine-default.js for pure-JS CA + PKCS#12 operations.\n|" lib/vendor/pki.cjs
-    INSTALLED_VER="${X509_VER}+pkijs-${PKIJS_VER}"
-    # Structured SBOM component versions, derived from the ACTUALLY-INSTALLED
-    # package versions captured above — written into MANIFEST components[] below
-    # so the sub-object the CVE scanners key on can never drift from the bundle
-    # (issue #366). A scanner-facing fact must come from the install, not a hand
-    # edit.
-    COMPONENT_VERSIONS_JSON="{\"@peculiar/x509\":\"${X509_VER}\",\"pkijs\":\"${PKIJS_VER}\"}"
-    ;;
-
   *)
     echo "Unknown package: $PKG"
     echo "Add a case to this script for bundling instructions."
@@ -512,7 +441,7 @@ ENTRY
 esac
 
 # Update MANIFEST.json. COMPONENT_VERSIONS_JSON (set only for meta-bundles that
-# carry a structured components[] sub-object, e.g. peculiar-pki) is passed via
+# carry a structured components[] sub-object, e.g. a future meta-bundle) is passed via
 # the environment so its JSON braces/quotes don't fight the bash interpolation
 # into the inline node script. BUNDLER_DESC records the esbuild invocation that
 # actually produced the artifact, so the manifest's bundler field can never
@@ -551,13 +480,7 @@ if (m.packages[pkg]) {
 "
 
 # Clean up node_modules
-if [ "$PKG" = "peculiar-pki" ]; then
-  npm uninstall reflect-metadata pvutils pvtsutils asn1js \
-    "@peculiar/asn1-schema" "@peculiar/asn1-x509" "@peculiar/asn1-ecc" "@peculiar/asn1-rsa" \
-    "@peculiar/x509" pkijs --no-save 2>/dev/null || true
-else
-  npm uninstall "$PKG" --no-save 2>/dev/null || true
-fi
+npm uninstall "$PKG" --no-save 2>/dev/null || true
 
 # Verify the bundle has no unresolved requires after the npm cleanup
 echo ""

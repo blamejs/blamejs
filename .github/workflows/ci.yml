@@ -195,11 +195,14 @@ jobs:
         with:
           node-version: 24.18.0
       - name: Run vendor-currency check
-        # Hits registry.npmjs.org/<pkg>/latest for each npm-mapped entry
-        # (vendored bundles plus per-component versions on meta-bundles
-        # like peculiar-pki). Fails on any "stale" finding. Registry
-        # errors stay advisory unless BLAMEJS_VENDOR_CURRENCY_STRICT=1
-        # so a transient registry hang doesn't block unrelated releases.
+        # Hits registry.npmjs.org/<pkg>/latest for each npm-mapped
+        # vendored entry. Fails on any "stale" finding. Registry errors
+        # stay advisory unless BLAMEJS_VENDOR_CURRENCY_STRICT=1 so a
+        # transient registry hang doesn't block unrelated releases --
+        # EXCEPT @blamejs/pki, which is always strict (a registry error
+        # for it also hard-fails), because it is the fast-moving sibling
+        # toolkit the mTLS engine depends on and the vendored copy must
+        # never lag the latest release.
         run: node scripts/check-vendor-currency.js
 
   actions-currency:
@@ -312,7 +315,7 @@ jobs:
       - name: Build vendored-deps CycloneDX SBOM
         # The framework ships ZERO npm runtime deps — its security-critical
         # crypto (@noble/ciphers, @noble/curves, @noble/post-quantum,
-        # @simplewebauthn/server, peculiar-pki) is VENDORED under
+        # @simplewebauthn/server, @blamejs/pki) is VENDORED under
         # lib/vendor/, so `npm audit` / Dependabot / Socket never see it.
         # check-vendor-currency.js tracks whether the vendored copies are
         # up to date, but currency is not the same as "no known CVE". This
