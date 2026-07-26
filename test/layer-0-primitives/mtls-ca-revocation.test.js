@@ -255,6 +255,61 @@ async function testAlgorithmPinMismatchOnExistingCa() {
   check("re-opening a matching pinned CA still issues a leaf", typeof leaf.cert === "string");
 }
 
+// An upgrade path: a pre-existing (classical) CA re-opened with NO algorithm pin
+// must still issue leaves under the CA's OWN algorithm, not the new ML-DSA-87
+// default — else an EC CA signs an ML-DSA leaf the legacy peers it served cannot
+// complete a handshake with. RED before the fix: an unpinned leaf followed the
+// engine's process default (ML-DSA-87).
+async function testUnpinnedLeafFollowsStoredCaAlgorithm() {
+  var dir = _mkTmp("blamejs-mtls-cafollow-");
+  var caEc = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  await caEc.initCA();                                       // a classical EC CA (pre-0.18 deployment)
+  var caUpgraded = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });   // upgrade: no pin
+  var leaf = await caUpgraded.generateClientCert({ cn: "legacy-client" });
+  check("unpinned issuance under a stored EC CA yields an EC leaf (not the ML-DSA default)",
+        nodeCrypto.createPrivateKey(leaf.key).asymmetricKeyType === "ec");
+  var p12 = await caUpgraded.generateClientP12({ cn: "legacy-p12", password: "cafollow-pw-9k2" });
+  check("unpinned P12 under a stored EC CA is produced (classical MAC tier)",
+        Buffer.isBuffer(p12.p12));
+
+  // The default ML-DSA CA still issues ML-DSA leaves when unpinned (no regression).
+  var dir2 = _mkTmp("blamejs-mtls-cafollow-pqc-");
+  var caPqc = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
+  var leafPqc = await caPqc.generateClientCert({ cn: "pqc-client" });
+  check("unpinned issuance under a default ML-DSA CA still yields an ML-DSA leaf",
+        /ml-dsa/i.test(nodeCrypto.createPrivateKey(leafPqc.key).asymmetricKeyType));
+
+  // A custom engine whose CA key node cannot parse: no algorithm can be derived,
+  // so the engine's own default applies (an undefined label passes through).
+  var dir3 = _mkTmp("blamejs-mtls-cafollow-stub-");
+  var okGen = async function () {
+    return { caCertPem: "-----BEGIN CERTIFICATE-----\nSTUB\n-----END CERTIFICATE-----\n", caKeyPem: "NOT-A-PARSEABLE-KEY" };
+  };
+  var stubEng = {
+    generateCa: okGen,
+    signClientCert: async function () { return { cert: "-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----\n", key: "k" }; },
+  };
+  var caStub = b.mtlsCa.create({ dataDir: dir3, caKeySealedMode: "disabled", engine: stubEng });
+  var stubLeaf = await caStub.generateClientCert({ cn: "stub" });
+  check("an unparseable stored CA key derives no leaf algorithm (engine default applies)",
+        typeof stubLeaf.cert === "string");
+
+  // A parseable but non-EC / non-ML-DSA stored CA key (e.g. RSA): also unmapped,
+  // so the engine's default applies.
+  var rsaPem = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .privateKey.export({ type: "pkcs8", format: "pem" });
+  var okGenRsa = async function () {
+    return { caCertPem: "-----BEGIN CERTIFICATE-----\nRSA\n-----END CERTIFICATE-----\n", caKeyPem: rsaPem };
+  };
+  var caRsa = b.mtlsCa.create({
+    dataDir: _mkTmp("blamejs-mtls-cafollow-rsa-"), caKeySealedMode: "disabled",
+    engine: { generateCa: okGenRsa, signClientCert: stubEng.signClientCert },
+  });
+  var rsaLeaf = await caRsa.generateClientCert({ cn: "rsa" });
+  check("a non-EC / non-ML-DSA stored CA key derives no leaf algorithm",
+        typeof rsaLeaf.cert === "string");
+}
+
 async function run() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-revoke-"));
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
@@ -344,6 +399,7 @@ async function run() {
   await testEngineDirectContract();
   await testP12MacFollowsAlgorithmTier();
   await testAlgorithmPinMismatchOnExistingCa();
+  await testUnpinnedLeafFollowsStoredCaAlgorithm();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });

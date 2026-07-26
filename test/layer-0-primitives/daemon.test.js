@@ -707,7 +707,7 @@ async function testDaemonSameProcessStopWithinBootWindowNoSpawnFailed() {
     b.daemon.start({
       pidFile: pidFile, command: process.execPath,
       args: ["-e", "setInterval(function(){}, 1000)"],   // long-lived child
-      bootDeathWindowMs: 10000,                           // wide window so the stop lands inside it
+      bootDeathWindowMs: 3000,                           // wide window so the stop lands inside it
     });
     // Low timeout: on win32 the raw child doesn't watch the cooperative sentinel,
     // so stop() escalates to a hard kill after the timeout — keep it short.
@@ -741,7 +741,7 @@ async function testDaemonCrossProcessStopWithinBootWindowNoSpawnFailed() {
     b.daemon.start({
       pidFile: pidFile, command: process.execPath,
       args: ["-e", "setInterval(function(){}, 1000)"],
-      bootDeathWindowMs: 15000,
+      bootDeathWindowMs: 3000,
     });
     // A SEPARATE process stops it (requires lib/daemon directly).
     var daemonPath = require.resolve("../../lib/daemon.js");
