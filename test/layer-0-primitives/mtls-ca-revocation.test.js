@@ -351,6 +351,24 @@ async function testIpv6SanEncodesAsIpAddress() {
         /DNS:api\.example\.com/i.test(san2));
 }
 
+// removeFromCRL (RFC 5280 code 8) is a delta-CRL un-revocation directive, invalid
+// in a full CRL — the only kind this CA issues. RED before the fix: revoke()
+// accepted it, and one persisted code-8 entry made every later generateCrl() fail
+// (the toolkit rejects code 8 in a full CRL), blocking all revocation publishing.
+async function testRevokeRejectsRemoveFromCrl() {
+  var dir = _mkTmp("blamejs-mtls-removefromcrl-");
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var leaf = await ca.generateClientCert({ cn: "x" });
+  var threw = null;
+  try { ca.revoke(leaf.serialNumber, { reason: "removeFromCRL" }); } catch (e) { threw = e; }
+  check("revoke: removeFromCRL is refused (delta-CRL directive, not a reason)",
+        threw && /mtls-ca\/bad-reason/.test(threw.code || ""));
+  // A valid reason still revokes AND generateCrl() publishes (not poisoned).
+  ca.revoke(leaf.serialNumber, { reason: "keyCompromise" });
+  var crl = await ca.generateCrl();
+  check("revoke: a valid reason still publishes a CRL", typeof crl.crlPem === "string");
+}
+
 async function run() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-revoke-"));
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
@@ -443,6 +461,7 @@ async function run() {
   await testUnpinnedLeafFollowsStoredCaAlgorithm();
   await testClassicalBridgeSignsWithSha384();
   await testIpv6SanEncodesAsIpAddress();
+  await testRevokeRejectsRemoveFromCrl();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });
