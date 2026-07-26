@@ -48,6 +48,14 @@ function testUseStoreBadArg() {
   threw = null;
   try { b.audit.useStore({ record: "not-a-function" }); } catch (e) { threw = e; }
   check("useStore refuses non-function record", threw !== null);
+
+  // replaceChain is a boot-time flag — a non-boolean is an operator typo and
+  // must throw loudly rather than be silently coerced.
+  threw = null;
+  try { b.audit.useStore({ record: async function () {}, replaceChain: "yes" }); }
+  catch (e) { threw = e; }
+  check("useStore refuses a non-boolean replaceChain", threw !== null);
+  b.audit.useStore(null);
 }
 
 // ---- Happy path — shadow store receives the full row ----

@@ -20,12 +20,80 @@
  */
 
 var helpers = require("../helpers");
-var b     = helpers.b;
-var check = helpers.check;
-var fs   = require("fs");
-var os   = require("os");
-var path = require("path");
-var pki  = require("../../lib/vendor/blamejs-pki.cjs");
+var b      = helpers.b;
+var check  = helpers.check;
+var fs     = require("fs");
+var os     = require("os");
+var path   = require("path");
+var pki    = require("../../lib/vendor/blamejs-pki.cjs");
+var engine = require("../../lib/mtls-engine-default");
+
+function _mkTmp(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
+
+// The framework-side generateCrl guards: an engine that does not implement
+// generateCrl at all, and one whose generateCrl returns an empty (invalid)
+// PEM. Both use a minimal custom engine so no real key material is minted.
+async function testCrlEngineGuards() {
+  var okGen = async function () { return { caCertPem: "CA-CERT", caKeyPem: "CA-KEY" }; };
+
+  var caNoCrl = b.mtlsCa.create({ dataDir: _mkTmp("blamejs-mtls-crlno-"), caKeySealedMode: "disabled", engine: { generateCa: okGen } });
+  var threwNoCrl = false;
+  try { await caNoCrl.generateCrl(); } catch (e) { threwNoCrl = /engine-no-crl/.test(e.code || ""); }
+  check("generateCrl on an engine without a generateCrl() is refused", threwNoCrl);
+
+  var caBadCrl = b.mtlsCa.create({ dataDir: _mkTmp("blamejs-mtls-crlbad-"), caKeySealedMode: "disabled", engine: { generateCa: okGen, generateCrl: async function () { return ""; } } });
+  var threwBadCrl = false;
+  try { await caBadCrl.generateCrl(); } catch (e) { threwBadCrl = /bad-engine-output/.test(e.code || ""); }
+  check("generateCrl rejecting an empty engine PEM surfaces bad-engine-output", threwBadCrl);
+}
+
+// The default engine's generateCrl serial-normalisation + argument arms,
+// exercised directly against a real CA: missing arguments, a non-array
+// revocations input, a revocation with no revokedAt (default date), a
+// 0x-prefixed serial (passed through), a null serial and a non-hex serial
+// (both normalised, then rejected by the RFC 5280 CRL encoder downstream).
+async function testEngineDirectCrl() {
+  var ca = await engine.generateCa();
+
+  // Missing-argument arms.
+  var crlArgCases = [
+    ["engine.generateCrl() with no opts throws missing-arg", undefined],
+    ["engine.generateCrl missing the CA key throws missing-arg", { caCertPem: "c" }],
+    ["engine.generateCrl missing the CA cert throws missing-arg", { caKeyPem: "k" }],
+  ];
+  for (var i = 0; i < crlArgCases.length; i++) {
+    var threw = false;
+    try { await engine.generateCrl(crlArgCases[i][1]); } catch (e) { threw = /missing-arg/.test(e.code || ""); }
+    check(crlArgCases[i][0], threw);
+  }
+
+  // Non-array revocations → treated as empty; still a valid CRL.
+  var emptyCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: "not-an-array" });
+  check("a non-array revocations list produces a valid empty CRL",
+    typeof emptyCrl === "string" && /-----BEGIN (?:X509 )?CRL-----/.test(emptyCrl));
+
+  // A revocation with no revokedAt (default revocation date) + a hex serial.
+  var noDateCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "ab" }] });
+  check("a revocation without a revokedAt defaults its revocation date", typeof noDateCrl === "string" && noDateCrl.length > 0);
+
+  // A 0x-prefixed serial is passed through unchanged.
+  var prefixedCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "0x1a2b" }] });
+  check("a 0x-prefixed serial is accepted by the CRL encoder", typeof prefixedCrl === "string" && prefixedCrl.length > 0);
+
+  // A null serial normalises to "" and a non-hex serial passes through
+  // unchanged; both are then rejected by the RFC 5280 serial encoder, which
+  // is the current (correct) downstream behaviour — the normalisation arms
+  // still execute before the encoder throws.
+  var threwNull = false;
+  try { await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: null }] }); }
+  catch (_e) { threwNull = true; }
+  check("a null revocation serial is rejected downstream by the CRL encoder", threwNull);
+
+  var threwNonHex = false;
+  try { await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "zz-not-hex" }] }); }
+  catch (_e) { threwNonHex = true; }
+  check("a non-hex revocation serial is rejected downstream by the CRL encoder", threwNonHex);
+}
 
 // Canonicalize a serial to its numeric hex: drop any 0x prefix, separators, and
 // leading zeros. The DER INTEGER encoding of a serial whose high bit is set
@@ -82,6 +150,9 @@ async function run() {
   check("that CRL has zero serial entries", _crlSerials(res2.crlPem).length === 0);
   check("entryCount is 0 and fingerprintOnlyOmitted is 1",
         res2.entryCount === 0 && res2.fingerprintOnlyOmitted === 1);
+
+  await testCrlEngineGuards();
+  await testEngineDirectCrl();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });

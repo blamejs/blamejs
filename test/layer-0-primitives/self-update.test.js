@@ -1468,6 +1468,255 @@ async function testProbationOptValidation() {
   try { fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
 }
 
+// ---- Additional BRANCH coverage: the poll signature step-(b) accept arm, the
+// non-default reported digest, and the probation marker-path / hash-algo /
+// expired-evaluation arms that the happy-path probation tests don't reach. ----
+
+function _writeMarker(markerPath, marker) {
+  fs.writeFileSync(markerPath, JSON.stringify(marker));
+}
+
+async function testPollStemSuffixSignatureViaOperatorPattern() {
+  // #497 step (b): operator signaturePattern with NO derived-suffix hit (the sig
+  // uses a non-standard suffix that asset.name + {.sig/.asc/.sig.bin} doesn't
+  // produce) — exactly one stem-referencing entry matches the pattern, so that
+  // sig is paired (the length===1 accept arm of the operator-pattern branch).
+  var s = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "runtime.tar.gz",          browser_download_url: "https://example.invalid/rt.tgz" },
+      { name: "runtime.tar.gz.customsig", browser_download_url: "https://example.invalid/rt.custom" },
+    ],
+  });
+  var port = await b.testing.listenOnRandomPort(s);
+  try {
+    var r = await _pollLocal(port, { signaturePattern: "customsig" });
+    check("poll pairing: operator-pattern stem sig (no derived hit) paired",
+          r.asset && r.asset.name === "runtime.tar.gz" &&
+          r.signature && r.signature.name === "runtime.tar.gz.customsig");
+  } finally { s.close(); }
+}
+
+async function testVerifyCustomDigestSha512() {
+  // A non-default reported digest alg (sha-512) folds an EXTRA hasher into the
+  // verifier's single pass (extraDigests=[alg]) and reports result.digests[alg]
+  // — the third arm of the hashHex selection, distinct from the sha3-512 /
+  // sha-256 fast paths the other tests exercise.
+  var keys   = _newSigningKeys();
+  var pubPem = keys.publicKey.export({ type: "spki", format: "pem" });
+  var asset  = Buffer.from("custom-digest sha-512 payload");
+  var sig    = _detachedSign(keys.privateKey, asset);
+  var aPath = _tmp("sha512-asset.bin");
+  var sPath = _tmp("sha512-asset.sig");
+  fs.writeFileSync(aPath, asset);
+  fs.writeFileSync(sPath, sig);
+  try {
+    var v = await b.selfUpdate.verify({ assetPath: aPath, signaturePath: sPath, pubkeyPem: pubPem, hashAlgo: "sha-512" });
+    check("verify: sha-512 reported digest verifies", v.verified === true);
+    check("verify: sha-512 alg reported back",         v.alg === "sha-512");
+    check("verify: sha-512 digest is 128 lc hex",      /^[0-9a-f]{128}$/.test(v.hash));
+  } finally {
+    try { fs.unlinkSync(aPath); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(sPath); } catch (_e) { /* best-effort */ }
+  }
+}
+
+async function testProbationMarkerPathAndDefaults() {
+  // beginProbation with an explicit markerPath + the DEFAULT window (windowMs
+  // omitted → 10 minutes), and a SECOND begin on the same marker that reads the
+  // prior record and bumps the generation. Bad hashAlgo is refused at config.
+  var dir = _tmp("dir-prob-mp");
+  fs.mkdirSync(dir, { recursive: true });
+  var to         = path.join(dir, "app.bin");
+  var backupTo   = path.join(dir, "app.bin.bak");
+  var markerPath = path.join(dir, "custom-marker.json");
+  var newBytes   = Buffer.from("MARKERPATH-BINARY");
+  fs.writeFileSync(to, newBytes);
+  fs.writeFileSync(backupTo, Buffer.from("OLD"));
+
+  var begun = await b.selfUpdate.beginProbation({
+    to: to, backupTo: backupTo, expectedHash: _sha3(newBytes), markerPath: markerPath,
+  });
+  check("beginProbation: honors explicit markerPath",
+        begun.markerPath === markerPath && fs.existsSync(markerPath));
+  check("beginProbation: default window is 10 minutes",
+        begun.expiresAt - begun.installedAt === b.constants.TIME.minutes(10));
+  check("beginProbation: first generation is 1", begun.generation === 1);
+
+  var begun2 = await b.selfUpdate.beginProbation({
+    to: to, backupTo: backupTo, expectedHash: _sha3(newBytes), markerPath: markerPath,
+  });
+  check("beginProbation: successive generation increments (prior marker read)",
+        begun2.generation === 2);
+
+  var t1 = null;
+  try { await b.selfUpdate.beginProbation({ to: to, backupTo: backupTo, expectedHash: "00", hashAlgo: "md5" }); }
+  catch (e) { t1 = e; }
+  check("beginProbation: bad hashAlgo → selfupdate/bad-hash-algo",
+        t1 && /selfupdate\/bad-hash-algo/.test(t1.code || ""));
+
+  try { fs.unlinkSync(markerPath); fs.unlinkSync(to); fs.unlinkSync(backupTo); fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
+}
+
+async function testConfirmHealthyUnlinkFailure() {
+  // confirmHealthy clears the marker via unlinkSync; when the marker path exists
+  // but cannot be removed (here it is a DIRECTORY, which unlink refuses), the
+  // failure surfaces as selfupdate/probation-confirm-failed rather than silently
+  // reporting cleared.
+  var dir = _tmp("dir-confirm-fail");
+  fs.mkdirSync(dir, { recursive: true });
+  var to        = path.join(dir, "app.bin");
+  var markerDir = path.join(dir, "marker-as-dir");
+  fs.mkdirSync(markerDir);   // existsSync(markerDir) === true, but unlinkSync(dir) throws
+  var threw = null;
+  try { await b.selfUpdate.confirmHealthy({ to: to, markerPath: markerDir }); }
+  catch (e) { threw = e; }
+  check("confirmHealthy: unremovable marker → selfupdate/probation-confirm-failed",
+        threw && /selfupdate\/probation-confirm-failed/.test(threw.code || ""));
+  try { fs.rmdirSync(markerDir); fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
+}
+
+async function testEvaluateMarkerCorruptAndMalformed() {
+  var dir = _tmp("dir-eval-bad");
+  fs.mkdirSync(dir, { recursive: true });
+  var to = path.join(dir, "app.bin");
+  fs.writeFileSync(to, Buffer.from("BINARY"));
+
+  // A marker that exists but is not valid JSON → readJson throws → keep(marker-unreadable).
+  var mp1 = path.join(dir, "corrupt.json");
+  fs.writeFileSync(mp1, "{ this is not json");
+  var r1 = await b.selfUpdate.evaluateOnBoot({ to: to, markerPath: mp1 });
+  check("evaluateOnBoot: unreadable marker → keep(marker-unreadable)",
+        r1.action === "keep" && r1.reason === "marker-unreadable");
+
+  // A marker that parses but is missing required fields → keep(marker-malformed).
+  var mp2 = path.join(dir, "malformed.json");
+  fs.writeFileSync(mp2, JSON.stringify({ schema: 1, note: "no expiresAt / expectedHash" }));
+  var r2 = await b.selfUpdate.evaluateOnBoot({ to: to, markerPath: mp2 });
+  check("evaluateOnBoot: malformed marker → keep(marker-malformed)",
+        r2.action === "keep" && r2.reason === "marker-malformed");
+
+  try { fs.unlinkSync(mp1); fs.unlinkSync(mp2); fs.unlinkSync(to); fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
+}
+
+async function testEvaluateExpiredHandCraftedArms() {
+  var dir = _tmp("dir-eval-arms");
+  fs.mkdirSync(dir, { recursive: true });
+
+  // Expired marker whose hashAlgo is NOT in the allowed set → alg falls back to
+  // DEFAULT_HASH_ALG (sha3-512); an explicit opts.backupTo overrides the marker's
+  // backupTo (the opts.backupTo string arm); currentHash matches → rollback.
+  var to       = path.join(dir, "app.bin");
+  var backupTo = path.join(dir, "app.bin.bak");
+  var toBytes  = Buffer.from("PROBATIONARY-BYTES");
+  fs.writeFileSync(to, toBytes);
+  fs.writeFileSync(backupTo, Buffer.from("KNOWN-GOOD"));
+  var mp = path.join(dir, "m1.json");
+  _writeMarker(mp, {
+    schema: 1, installedAt: 1000, expiresAt: 2000, windowMs: 1000,
+    to: to, backupTo: path.join(dir, "marker-backup-ignored"), expectedHash: _sha3(toBytes),
+    hashAlgo: "not-a-real-alg", generation: 5,
+  });
+  var r = await b.selfUpdate.evaluateOnBoot({ to: to, backupTo: backupTo, markerPath: mp, now: 999999 });
+  check("evaluateOnBoot: invalid marker.hashAlgo falls back to default and rolls back",
+        r.action === "rollback");
+  check("evaluateOnBoot: explicit backupTo overrides marker.backupTo",
+        fs.readFileSync(to, "utf8") === "KNOWN-GOOD");
+  check("evaluateOnBoot: carries the marker generation", r.generation === 5);
+
+  // Expired marker but `to` is ABSENT → the current-bytes read throws, currentHash
+  // stays null, so the probationary-binary check keeps (no phantom rollback).
+  var toAbsent = path.join(dir, "absent-app.bin");
+  var mp2 = path.join(dir, "m2.json");
+  _writeMarker(mp2, {
+    schema: 1, installedAt: 1000, expiresAt: 2000, windowMs: 1000,
+    to: toAbsent, backupTo: backupTo, expectedHash: _sha3(Buffer.from("never-installed")),
+    hashAlgo: "sha3-512", generation: 1,
+  });
+  var r2 = await b.selfUpdate.evaluateOnBoot({ to: toAbsent, markerPath: mp2, now: 999999 });
+  check("evaluateOnBoot: absent target → keep(installed-binary-not-probationary)",
+        r2.action === "keep" && r2.reason === "installed-binary-not-probationary");
+
+  // Expired, currentHash matches, but the backup is MISSING → keep and defer to
+  // the operator rather than leaving the target with nothing.
+  var to3      = path.join(dir, "app3.bin");
+  var to3Bytes = Buffer.from("APP3-PROBATION");
+  fs.writeFileSync(to3, to3Bytes);
+  var mp3 = path.join(dir, "m3.json");
+  _writeMarker(mp3, {
+    schema: 1, installedAt: 1000, expiresAt: 2000, windowMs: 1000,
+    to: to3, backupTo: path.join(dir, "no-such-backup.bak"), expectedHash: _sha3(to3Bytes),
+    hashAlgo: "sha3-512", generation: 1,
+  });
+  var r3 = await b.selfUpdate.evaluateOnBoot({ to: to3, markerPath: mp3, now: 999999 });
+  check("evaluateOnBoot: missing backup → keep(backup-unavailable)",
+        r3.action === "keep" && r3.reason === "backup-unavailable");
+
+  try {
+    fs.unlinkSync(to); fs.unlinkSync(backupTo); fs.unlinkSync(mp);
+    fs.unlinkSync(mp2); fs.unlinkSync(to3); fs.unlinkSync(mp3); fs.rmdirSync(dir);
+  } catch (_e) { /* best-effort */ }
+}
+
+async function testRollbackMoveAsideFailure() {
+  // rollback moves the current (bad) `to` ASIDE to a quarantine path before
+  // restoring. When that move can't complete — here the quarantine path is an
+  // existing NON-EMPTY directory, which a rename refuses — the restore fails
+  // closed with selfupdate/rollback-failed and the original `to` is left intact.
+  var dir = _tmp("dir-rb-moveaside");
+  fs.mkdirSync(dir, { recursive: true });
+  var to       = path.join(dir, "app.bin");
+  var backupTo = path.join(dir, "app.bin.bak");
+  fs.writeFileSync(to, Buffer.from("BAD-NEW-BINARY"));
+  fs.writeFileSync(backupTo, Buffer.from("KNOWN-GOOD"));
+  var quarantine = to + ".rollback-bad";
+  fs.mkdirSync(quarantine);
+  fs.writeFileSync(path.join(quarantine, "inner"), "x");   // non-empty → rename onto it refuses
+  var threw = null;
+  try { await b.selfUpdate.rollback({ to: to, backupTo: backupTo }); }
+  catch (e) { threw = e; }
+  check("rollback: move-aside failure → selfupdate/rollback-failed",
+        threw && /selfupdate\/rollback-failed/.test(threw.code || ""));
+  check("rollback: move-aside failure leaves original `to` intact",
+        fs.readFileSync(to, "utf8") === "BAD-NEW-BINARY");
+  try { fs.unlinkSync(path.join(quarantine, "inner")); fs.rmdirSync(quarantine); } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(to); fs.unlinkSync(backupTo); fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
+}
+
+async function testEvaluateRestoreWriteFailureWin32() {
+  // The expired-probation restore writes the backup over `to` via an atomic
+  // replace (temp + rename-onto-`to`). On Windows a read-only `to` refuses the
+  // in-place replace, so the restore fails and surfaces
+  // selfupdate/probation-rollback-failed (target left for the operator). Windows-
+  // only: POSIX rename-replace ignores the target's read-only mode.
+  if (process.platform !== "win32") {
+    check("evaluateOnBoot: restore-write-failure test skipped (non-win32)", true);
+    return;
+  }
+  var dir = _tmp("dir-eval-wfail");
+  fs.mkdirSync(dir, { recursive: true });
+  var to       = path.join(dir, "app.bin");
+  var backupTo = path.join(dir, "app.bin.bak");
+  var toBytes  = Buffer.from("PROBATION-READONLY");
+  fs.writeFileSync(to, toBytes);
+  fs.writeFileSync(backupTo, Buffer.from("KNOWN-GOOD"));
+  fs.chmodSync(to, 0o400);   // read-only → in-place replace onto `to` fails on win32
+  var mp = path.join(dir, "m.json");
+  _writeMarker(mp, {
+    schema: 1, installedAt: 1000, expiresAt: 2000, windowMs: 1000,
+    to: to, backupTo: backupTo, expectedHash: _sha3(toBytes),
+    hashAlgo: "sha3-512", generation: 1,
+  });
+  var threw = null;
+  try { await b.selfUpdate.evaluateOnBoot({ to: to, markerPath: mp, now: 999999 }); }
+  catch (e) { threw = e; }
+  check("evaluateOnBoot: restore write failure → selfupdate/probation-rollback-failed",
+        threw && /selfupdate\/probation-rollback-failed/.test(threw.code || ""));
+  try {
+    fs.chmodSync(to, 0o600); fs.unlinkSync(to); fs.unlinkSync(backupTo); fs.unlinkSync(mp); fs.rmdirSync(dir);
+  } catch (_e) { /* best-effort */ }
+}
+
 // selfUpdate.poll dials the releases endpoint through the shared httpClient
 // keep-alive transport pool; a cached client socket finalizes its destroy on a
 // later event-loop turn, past the forked worker's grace window. Reset the pool,
@@ -1534,6 +1783,14 @@ async function run() {
     await testProbationConfirmAndFailedSwapNoPhantom();
     await testProbationMarkerRecoverableAfterSpawnFailure();
     await testProbationOptValidation();
+    await testPollStemSuffixSignatureViaOperatorPattern();
+    await testVerifyCustomDigestSha512();
+    await testProbationMarkerPathAndDefaults();
+    await testConfirmHealthyUnlinkFailure();
+    await testEvaluateMarkerCorruptAndMalformed();
+    await testEvaluateExpiredHandCraftedArms();
+    await testRollbackMoveAsideFailure();
+    await testEvaluateRestoreWriteFailureWin32();
   } finally {
     await _drainTcpHandles();
   }
