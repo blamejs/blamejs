@@ -308,6 +308,33 @@ async function testUnpinnedLeafFollowsStoredCaAlgorithm() {
   var rsaLeaf = await caRsa.generateClientCert({ cn: "rsa" });
   check("a non-EC / non-ML-DSA stored CA key derives no leaf algorithm",
         typeof rsaLeaf.cert === "string");
+
+  // A CUSTOM engine with a PARSEABLE EC CA key must NOT have the default engine's
+  // "ECDSA-P384-SHA384" label inferred and injected: a custom engine owns its own
+  // label set and key curve (it may run a P-256/P-521 CA, or name its labels
+  // differently), so injecting the bundled label would break an engine that
+  // validates its option shape or rejects unknown labels. The CA-following
+  // inference is the DEFAULT engine's alone. RED before the fix: _labelForCaKeyType
+  // mapped every EC key to ECDSA-P384-SHA384 for every engine, so the stub saw
+  // that label instead of undefined.
+  var ecP256Pem = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" })
+    .privateKey.export({ type: "pkcs8", format: "pem" });
+  var seenAlg = "UNSET";
+  var ecEngine = {
+    generateCa: async function () {
+      return { caCertPem: "-----BEGIN CERTIFICATE-----\nECCA\n-----END CERTIFICATE-----\n", caKeyPem: ecP256Pem };
+    },
+    signClientCert: async function (a) {
+      seenAlg = a.algorithm;
+      return { cert: "-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----\n", key: "k" };
+    },
+  };
+  var caEcCustom = b.mtlsCa.create({
+    dataDir: _mkTmp("blamejs-mtls-cafollow-ec-"), caKeySealedMode: "disabled", engine: ecEngine,
+  });
+  await caEcCustom.generateClientCert({ cn: "ec" });
+  check("an unpinned custom engine with an EC CA key receives no inferred algorithm",
+        seenAlg === undefined);
 }
 
 // The classical ECDSA-P384-SHA384 bridge must sign the CA, every leaf, and every

@@ -1666,6 +1666,90 @@ async function run() {
   await testDaemonWin32TerminateEdgePaths();
   await testDaemonWin32WatcherTimerFailures();
   await testDaemonWin32WatcherExitCodeBranches();
+  await testDaemonReapPidfileRewriteRace();
+}
+
+// The boot-death reap must not delete a pidfile a fast operator restart rewrote
+// WHILE the reap runs. Inject a reader that, at the instant of the ownership
+// read, simulates a concurrent restart writing a FRESH pidfile with a DIFFERENT
+// pid (the check-then-unlink window). The naive read-then-unlink would delete the
+// new daemon's pidfile (unmanageable via stop()); the claim-then-verify reap
+// renames the sidecar off pidFile first, so it removes only its own exclusive
+// copy and leaves the new pidfile intact.
+function testDaemonReapPidfileRewriteRace() {
+  var pidFile = _tmpFile("reap-race.pid");
+  fs.writeFileSync(pidFile, "111\n");
+  var readCount = 0;
+  var racingReader = function () {
+    readCount += 1;
+    fs.writeFileSync(pidFile, "222\n");   // a concurrent restart writes a fresh pidfile
+    return 111;                            // the sidecar we hold still records THIS child's pid
+  };
+  var wasOurs = b.daemon._reapOwnStalePidfile(pidFile, 111, racingReader);
+  check("reap race: ownership reader was consulted", readCount >= 1);
+  check("reap race: this child's own sidecar counts as ours", wasOurs === true);
+  check("reap race: the concurrently-rewritten pidfile is NOT deleted", fs.existsSync(pidFile));
+  check("reap race: the new daemon's pid survives the reap",
+        fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8").trim() === "222");
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+
+  // A sidecar a different daemon already owns (a fast restart wrote it before the
+  // reap ran) is restored, not deleted, and not counted as ours.
+  var notOurs = _tmpFile("reap-notours.pid");
+  fs.writeFileSync(notOurs, "999\n");
+  var wasOurs2 = b.daemon._reapOwnStalePidfile(notOurs, 111, function () { return 999; });
+  check("reap: a non-matching sidecar is restored, not deleted",
+        fs.existsSync(notOurs) && fs.readFileSync(notOurs, "utf8").trim() === "999");
+  check("reap: a non-matching sidecar is not counted as ours", wasOurs2 === false);
+  try { fs.unlinkSync(notOurs); } catch (_e) { /* best-effort */ }
+
+  // An already-gone pidfile (stop() reaped it first) is a silent no-op.
+  var gone = _tmpFile("reap-gone.pid");
+  var wasOurs3 = b.daemon._reapOwnStalePidfile(gone, 111, function () { return 111; });
+  check("reap: an already-gone pidfile is a no-op (not ours)", wasOurs3 === false && !fs.existsSync(gone));
+
+  // A reader error during ownership check restores the claimed sidecar rather than
+  // stranding the daemon without one.
+  var readThrow = _tmpFile("reap-readthrow.pid");
+  fs.writeFileSync(readThrow, "111\n");
+  var wasOurs4 = b.daemon._reapOwnStalePidfile(readThrow, 111, function () { throw new Error("read boom"); });
+  check("reap: a reader error restores the claimed sidecar", fs.existsSync(readThrow));
+  check("reap: a reader error is not counted as ours", wasOurs4 === false);
+  try { fs.unlinkSync(readThrow); } catch (_e) { /* best-effort */ }
+
+  // A swallowed unlink failure on our own claimed sidecar still reports ownership
+  // (the sidecar is already off pidFile, so a boot death is still recognized).
+  var unlinkFail = _tmpFile("reap-unlinkfail2.pid");
+  fs.writeFileSync(unlinkFail, "111\n");
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (/\.reap-111$/.test(String(p))) throw new Error("reap unlink boom");
+    return realUnlink.apply(fs, arguments);
+  };
+  var wasOurs5;
+  try { wasOurs5 = b.daemon._reapOwnStalePidfile(unlinkFail, 111, function () { return 111; }); }
+  finally { fs.unlinkSync = realUnlink; }
+  check("reap: a swallowed unlink failure still reports ownership", wasOurs5 === true);
+  try { fs.unlinkSync(unlinkFail + ".reap-111"); } catch (_e) { /* leftover claim */ }
+  try { fs.unlinkSync(unlinkFail); } catch (_e) { /* best-effort */ }
+
+  // A swallowed restore-rename failure on a non-matching sidecar is not counted
+  // as ours (best-effort restore; the pidfile may be lost either way).
+  var restoreFail = _tmpFile("reap-restorefail.pid");
+  fs.writeFileSync(restoreFail, "999\n");
+  var realRename = fs.renameSync;
+  var renameCalls = 0;
+  fs.renameSync = function () {
+    renameCalls += 1;
+    if (renameCalls >= 2) throw new Error("restore rename boom");   // claim ok; restore throws
+    return realRename.apply(fs, arguments);
+  };
+  var wasOurs6;
+  try { wasOurs6 = b.daemon._reapOwnStalePidfile(restoreFail, 111, function () { return 999; }); }
+  finally { fs.renameSync = realRename; }
+  check("reap: a swallowed restore failure is not counted as ours", wasOurs6 === false);
+  try { fs.unlinkSync(restoreFail + ".reap-111"); } catch (_e) { /* leftover claim */ }
+  try { fs.unlinkSync(restoreFail); } catch (_e) { /* best-effort */ }
 }
 
 module.exports = {
