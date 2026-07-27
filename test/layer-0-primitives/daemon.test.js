@@ -1667,6 +1667,79 @@ async function run() {
   await testDaemonWin32WatcherTimerFailures();
   await testDaemonWin32WatcherExitCodeBranches();
   await testDaemonReapPidfileRewriteRace();
+  await testDaemonErrorHandlerNoPidPreservesReplacement();
+  await testDaemonErrorHandlerValidPidReapsOwn();
+  await testDaemonStartInvalidNumericPidRefused();
+}
+
+// A numeric-but-invalid pid (0 / negative / non-finite) is refused as a launch
+// failure and writes no pidfile — the child_process contract yields a positive
+// integer or undefined, so this guards a contract violation defensively.
+async function testDaemonStartInvalidNumericPidRefused() {
+  var origSpawn = processSpawn.spawn;
+  var cases = [0, -1, Infinity, NaN];
+  for (var i = 0; i < cases.length; i += 1) {
+    var pidFile = _tmpFile("invalidpid-" + i + ".pid");
+    (function (badPid) {
+      processSpawn.spawn = function () { return { pid: badPid, unref: function () {}, on: function () {} }; };
+    })(cases[i]);
+    var threw = null;
+    try { b.daemon.start({ pidFile: pidFile, command: process.execPath, args: [] }); }
+    catch (e) { threw = e; }
+    check("invalid-pid " + cases[i] + " refused as spawn-failed",
+          threw && /daemon\/spawn-failed/.test(threw.code || ""));
+    check("invalid-pid " + cases[i] + " wrote no pidfile", !fs.existsSync(pidFile));
+    try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  }
+  processSpawn.spawn = origSpawn;
+}
+
+// A no-PID spawn failure's late 'error' callback must NOT delete a pidfile: the
+// failed start throws synchronously BEFORE writing one, so a caller that catches
+// the throw and retries with the same pidFile keeps its replacement daemon's
+// pidfile. RED before the fix: the handler unconditionally unlinked pidFile.
+async function testDaemonErrorHandlerNoPidPreservesReplacement() {
+  var pidFile = _tmpFile("errhandler-noreplace.pid");
+  var handlers = Object.create(null);
+  var origSpawn = processSpawn.spawn;
+  processSpawn.spawn = function () {
+    return { pid: undefined, unref: function () {}, on: function (event, fn) { handlers[event] = fn; } };
+  };
+  var threw = null;
+  try { b.daemon.start({ pidFile: pidFile, command: "no-such-command-xyz", args: [] }); }
+  catch (e) { threw = e; }
+  processSpawn.spawn = origSpawn;
+  check("errhandler: a no-pid spawn throws spawn-failed",
+        threw && /daemon\/spawn-failed/.test(threw.code || ""));
+  check("errhandler: no pidfile was written for the failed no-pid start", !fs.existsSync(pidFile));
+  // A caller catches the throw and retries with the same pidFile; the retry writes its own pid.
+  fs.writeFileSync(pidFile, "424242\n");
+  // A non-Error argument exercises the audit's String(err) fallback.
+  if (typeof handlers.error === "function") handlers.error("spawn ENOENT");
+  check("errhandler: the replacement daemon's pidfile survives the late no-pid error callback",
+        fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8").trim() === "424242");
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  b.daemon._resetForTest();
+}
+
+// A valid-pid child that later fires 'error' has its OWN pidfile reaped (it wrote
+// one), via the claim-then-verify reap.
+async function testDaemonErrorHandlerValidPidReapsOwn() {
+  var pidFile = _tmpFile("errhandler-reapown.pid");
+  var handlers = Object.create(null);
+  var origSpawn = processSpawn.spawn;
+  processSpawn.spawn = function () {
+    return { pid: 515151, unref: function () {}, on: function (event, fn) { handlers[event] = fn; } };
+  };
+  var r = null;
+  try { r = b.daemon.start({ pidFile: pidFile, command: process.execPath, args: ["-e", "0"], bootDeathWindowMs: 0 }); }
+  finally { processSpawn.spawn = origSpawn; }
+  check("errhandler: valid-pid start wrote its pidfile", r && r.pid === 515151 && fs.existsSync(pidFile));
+  // The child later errors; its own pidfile (still recording 515151) is reaped.
+  if (typeof handlers.error === "function") handlers.error(new Error("late runtime error"));
+  check("errhandler: a valid-pid child's own pidfile is reaped on a late error", !fs.existsSync(pidFile));
+  try { fs.unlinkSync(pidFile); } catch (_e) { /* best-effort */ }
+  b.daemon._resetForTest();
 }
 
 // The boot-death reap must not delete a pidfile a fast operator restart rewrote
