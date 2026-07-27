@@ -253,6 +253,39 @@ async function testAlgorithmPinMismatchOnExistingCa() {
   var caEc2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
   var leaf = await caEc2.generateClientCert({ cn: "ec-peer" });
   check("re-opening a matching pinned CA still issues a leaf", typeof leaf.cert === "string");
+
+  // A stored EC CA on the WRONG curve (a P-256 CA, e.g. imported via a custom
+  // engine) must be refused under the ECDSA-P384 pin: every ECDSA label maps to the
+  // generic "ec" type, so without a curve check a P-256 CA would satisfy the P-384
+  // pin and misrepresent the posture. RED before the fix: only the key TYPE was
+  // compared, so the P-256 CA passed.
+  var p256Key = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" })
+    .privateKey.export({ type: "pkcs8", format: "pem" });
+  function _p256Engine() {
+    return {
+      generateCa: async function () {
+        return { caCertPem: "-----BEGIN CERTIFICATE-----\nP256CA\n-----END CERTIFICATE-----\n", caKeyPem: p256Key };
+      },
+      signClientCert: async function () { return { cert: "-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----\n", key: "k" }; },
+    };
+  }
+  var dirCurve = _mkTmp("blamejs-mtls-curve-");
+  await b.mtlsCa.create({ dataDir: dirCurve, caKeySealedMode: "disabled", engine: _p256Engine() }).initCA();
+  var caWrongCurve = b.mtlsCa.create({ dataDir: dirCurve, caKeySealedMode: "disabled", engine: _p256Engine(), algorithm: "ECDSA-P384-SHA384" });
+  var curveThrew = null;
+  try { await caWrongCurve.initCA(); } catch (e) { curveThrew = e; }
+  check("a P-256 stored CA is refused under the ECDSA-P384 pin (curve mismatch)",
+        curveThrew && /mtls-ca\/algorithm-mismatch/.test(curveThrew.code || "") && /secp384r1/.test(curveThrew.message || ""));
+
+  // A custom-engine label (not the ECDSA-P384 pin) leaves the curve to the engine:
+  // a P-256 CA under such a label is NOT curve-checked here.
+  var dirCustomCurve = _mkTmp("blamejs-mtls-curve-custom-");
+  await b.mtlsCa.create({ dataDir: dirCustomCurve, caKeySealedMode: "disabled", engine: _p256Engine() }).initCA();
+  var caCustomCurve = b.mtlsCa.create({ dataDir: dirCustomCurve, caKeySealedMode: "disabled", engine: _p256Engine(), algorithm: "custom-engine-alg" });
+  var customCurveThrew = null;
+  try { await caCustomCurve.initCA(); } catch (e) { customCurveThrew = e; }
+  check("a custom-engine label does not impose the P-384 curve check on a P-256 CA",
+        customCurveThrew === null);
 }
 
 // An upgrade path: a pre-existing (classical) CA re-opened with NO algorithm pin
