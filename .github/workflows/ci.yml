@@ -103,10 +103,15 @@ jobs:
           # timeout — an unref'd in-process watchdog cannot fire while the
           # event loop is blocked by a synchronous native call. Forking
           # also hands each file a fresh process, so per-file memory does
-          # not accumulate toward the heap ceiling. 4 keeps the 3-core
-          # macOS runner from thrashing the pattern-catalog's own worker
-          # pool; the publish gate uses 8 on its ubuntu-only runner.
-          SMOKE_PARALLEL: "4"
+          # not accumulate toward the heap ceiling. The 3-core macos-latest
+          # runner thrashes when the pattern-catalog file (its own worker
+          # pool, scanning the whole lib/ corpus across eight shingle sizes)
+          # competes with sibling forks — as the corpus grew, that heavy file
+          # started stalling past its watchdog on macOS — so macOS runs at 2
+          # (fewer concurrent forks → each heavy file gets more of the 3 cores
+          # → it finishes well inside SMOKE_FILE_TIMEOUT_MS); ubuntu/windows
+          # keep 4, and the publish gate uses 8 on its ubuntu-only runner.
+          SMOKE_PARALLEL: ${{ matrix.os == 'macos-latest' && '2' || '4' }}
           # Defensive libuv threadpool headroom: under parallel smoke
           # several async Argon2id key-stretch calls can queue onto the
           # pool (default 4) at once; a larger pool avoids contention
