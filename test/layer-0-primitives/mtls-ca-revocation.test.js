@@ -435,6 +435,33 @@ async function testRevokeRejectsRemoveFromCrl() {
   check("revoke: a valid reason still publishes a CRL", typeof crl.crlPem === "string");
 }
 
+// revoke() refuses removeFromCRL going forward, but a revocations registry written
+// by a pre-fix build (or hand-edited) may still hold a legacy code-8 entry. A full
+// CRL cannot carry it, so generateCrl() must DROP the invalid reason -- keeping the
+// serial revoked (fail-secure) -- rather than forward code 8 and fail the ENTIRE
+// CRL. RED before the fix: the engine forwarded reasonCode 8, so pki.crl.sign
+// rejected it (crl/bad-reason-code) and one legacy entry blocked publishing every
+// other revocation.
+async function testGenerateCrlDropsLegacyRemoveFromCrl() {
+  var ca = await engine.generateCa({ generation: 1, algorithm: "ECDSA-P384-SHA384" });
+  var threw = null, crlPem = null;
+  try {
+    crlPem = await engine.generateCrl({
+      caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+      revocations: [
+        { serialNumber: "0A", reasonCode: 8, revokedAt: Date.now() },   // legacy removeFromCRL
+        { serialNumber: "0B", reasonCode: 1, revokedAt: Date.now() },   // valid keyCompromise
+      ],
+    });
+  } catch (e) { threw = e; }
+  check("generateCrl signs despite a legacy removeFromCRL (code 8) entry",
+        threw === null && typeof crlPem === "string" && /BEGIN X509 CRL/.test(crlPem));
+  var revoked = pki.schema.crl.parse(crlPem).revokedCertificates || [];
+  var serials = revoked.map(function (e) { return parseInt(e.serialNumberHex, 16); });
+  check("generateCrl keeps the legacy-reason serial revoked (fail-secure)", serials.indexOf(0x0A) >= 0);
+  check("generateCrl keeps the valid revocation", serials.indexOf(0x0B) >= 0);
+}
+
 async function run() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-revoke-"));
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
@@ -529,6 +556,7 @@ async function run() {
   await testClassicalBridgeSignsWithSha384();
   await testIpv6SanEncodesAsIpAddress();
   await testRevokeRejectsRemoveFromCrl();
+  await testGenerateCrlDropsLegacyRemoveFromCrl();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });
