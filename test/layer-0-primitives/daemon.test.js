@@ -1838,6 +1838,39 @@ function testDaemonReapPidfileRewriteRace() {
   check("reap: the sidecar is restored despite the claim-cleanup failure", fs.existsSync(restoreFail));
   try { fs.unlinkSync(restoreFail + ".reap-111"); } catch (_e) { /* leftover claim */ }
   try { fs.unlinkSync(restoreFail); } catch (_e) { /* best-effort */ }
+
+  // On a filesystem without hard links, linkSync throws a NON-EEXIST error
+  // (ENOTSUP on FAT / some network mounts). The not-ours restore must then fall
+  // back to a plain rename so the pidfile is not LOST (link failure would
+  // otherwise drop the claim and leave nothing).
+  var noLink = _tmpFile("reap-nolink.pid");
+  fs.writeFileSync(noLink, "999\n");
+  var realLink = fs.linkSync;
+  fs.linkSync = function () { var e = new Error("hard links unsupported"); e.code = "ENOTSUP"; throw e; };
+  var wasOurs7;
+  try { wasOurs7 = b.daemon._reapOwnStalePidfile(noLink, 111, function () { return 999; }); }
+  finally { fs.linkSync = realLink; }
+  check("reap: an ENOTSUP link failure falls back to a rename (pidfile not lost)",
+        fs.existsSync(noLink) && fs.readFileSync(noLink, "utf8").trim() === "999");
+  check("reap: an ENOTSUP fallback restore is not counted as ours", wasOurs7 === false);
+  try { fs.unlinkSync(noLink + ".reap-111"); } catch (_e) { /* leftover claim */ }
+  try { fs.unlinkSync(noLink); } catch (_e) { /* best-effort */ }
+
+  // The rename fallback itself failing (a doubly-broken filesystem) is swallowed
+  // best-effort and not counted as ours.
+  var noLinkNoRename = _tmpFile("reap-nolink-norename.pid");
+  fs.writeFileSync(noLinkNoRename, "999\n");
+  var realLink2  = fs.linkSync;
+  var realRename = fs.renameSync;
+  var renameN    = 0;
+  fs.linkSync   = function () { var e = new Error("hard links unsupported"); e.code = "ENOTSUP"; throw e; };
+  fs.renameSync = function () { renameN += 1; if (renameN >= 2) throw new Error("fallback rename boom"); return realRename.apply(fs, arguments); };
+  var wasOurs8;
+  try { wasOurs8 = b.daemon._reapOwnStalePidfile(noLinkNoRename, 111, function () { return 999; }); }
+  finally { fs.linkSync = realLink2; fs.renameSync = realRename; }
+  check("reap: a doubly-failed (link + rename) restore is not counted as ours", wasOurs8 === false);
+  try { fs.unlinkSync(noLinkNoRename + ".reap-111"); } catch (_e) { /* leftover claim */ }
+  try { fs.unlinkSync(noLinkNoRename); } catch (_e) { /* best-effort */ }
 }
 
 module.exports = {

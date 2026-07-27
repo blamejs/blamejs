@@ -905,6 +905,22 @@ async function testSwapRollbackOptValidation() {
 // Each pair pins the strict-§11 ordering the poll upgrade decision relies
 // on; a lexicographic fallback would misorder several of these and offer a
 // downgrade / skip an upgrade. ----
+// The rollback quarantine-alias check compares realpath-resolved paths. realpathSync
+// does not always canonicalize the final component's case, so on a case-insensitive
+// volume a backupTo equal to the reserved quarantine path with different casing is
+// the SAME file and must be refused. _pathsAlias compares case-insensitively. RED
+// before the fix: the check used === , so a case-only alias slipped through and the
+// move-aside would destroy the backup + restore the bad binary.
+function testPathsAliasCaseInsensitive() {
+  var pa = b.selfUpdate._pathsAlias;
+  check("_pathsAlias: exact paths alias",
+        pa("/app/current.rollback-bad", "/app/current.rollback-bad") === true);
+  check("_pathsAlias: a case-only difference aliases (case-insensitive volume)",
+        pa("/app/current.ROLLBACK-BAD", "/app/current.rollback-bad") === true);
+  check("_pathsAlias: genuinely distinct paths do not alias",
+        pa("/app/current.bak", "/app/current.rollback-bad") === false);
+}
+
 function testCompareTagsFullPrecedence() {
   var cmp = b.selfUpdate.compareTags;
   // Numeric core, a-side LONGER than b-side (b's missing component is "0").
@@ -1891,6 +1907,7 @@ async function run() {
     testSurface();
     testCompareTags();
     testCompareTagsFullPrecedence();
+    testPathsAliasCaseInsensitive();
     await testPollRejectsBadOpts();
     await testPollRejectsUnsafeAssetPattern();
     await testPollAvailableAndUpToDate();
