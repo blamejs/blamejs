@@ -409,6 +409,35 @@ async function testLeafAlgorithmConflictRefused() {
         nodeCrypto.createPrivateKey(matchLeaf.key).asymmetricKeyType === "ec");
 }
 
+// A strict custom engine validates its generateCa option shape. An UNPINNED
+// create({ engine }) must call generateCa with { generation } only — no own
+// `algorithm: undefined` key — so such an engine can still do first-time CA init
+// without the operator opting into the algorithm feature. A PINNED create passes
+// the algorithm. RED before the fix: the call always included `algorithm`.
+async function testGenerateCaOmitsUnsetAlgorithm() {
+  var seenUnpinned = null;
+  var stubUnpinned = {
+    generateCa: async function (o) {
+      seenUnpinned = Object.keys(o);
+      return { caCertPem: "-----BEGIN CERTIFICATE-----\nUNP\n-----END CERTIFICATE-----\n", caKeyPem: "K" };
+    },
+  };
+  await b.mtlsCa.create({ dataDir: _mkTmp("blamejs-mtls-cagen-unp-"), caKeySealedMode: "disabled", engine: stubUnpinned }).initCA();
+  check("unpinned generateCa receives only { generation }, no algorithm key",
+        seenUnpinned && seenUnpinned.indexOf("generation") !== -1 && seenUnpinned.indexOf("algorithm") === -1);
+
+  var seenPinned = null;
+  var stubPinned = {
+    generateCa: async function (o) {
+      seenPinned = Object.keys(o);
+      return { caCertPem: "-----BEGIN CERTIFICATE-----\nPIN\n-----END CERTIFICATE-----\n", caKeyPem: "K" };
+    },
+  };
+  await b.mtlsCa.create({ dataDir: _mkTmp("blamejs-mtls-cagen-pin-"), caKeySealedMode: "disabled", engine: stubPinned, algorithm: "ECDSA-P384-SHA384" }).initCA();
+  check("pinned generateCa receives the algorithm key",
+        seenPinned && seenPinned.indexOf("algorithm") !== -1);
+}
+
 // The classical ECDSA-P384-SHA384 bridge must sign the CA, every leaf, and every
 // CRL with ecdsa-with-SHA-384 (OID 1.2.840.10045.4.3.3) — matching its advertised
 // posture and the pre-flip release — NOT the toolkit's EC default of SHA-256,
@@ -586,6 +615,7 @@ async function run() {
   await testAlgorithmPinMismatchOnExistingCa();
   await testUnpinnedLeafFollowsStoredCaAlgorithm();
   await testLeafAlgorithmConflictRefused();
+  await testGenerateCaOmitsUnsetAlgorithm();
   await testClassicalBridgeSignsWithSha384();
   await testIpv6SanEncodesAsIpAddress();
   await testRevokeRejectsRemoveFromCrl();
