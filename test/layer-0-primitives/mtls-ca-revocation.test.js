@@ -347,6 +347,35 @@ async function testUnpinnedLeafFollowsStoredCaAlgorithm() {
         seenAlg === undefined);
 }
 
+// The CA's algorithm (a factory pin verified against the stored CA, or the bundled
+// engine's stored-CA inference) is AUTHORITATIVE for the leaf: a per-issuance
+// opts.algorithm that conflicts with it is refused, not silently honored — else a
+// classical ECDSA-P384 CA would issue an ML-DSA-87 leaf its legacy peers cannot
+// authenticate, and the P12 path would select the incompatible PBMAC1 MAC tier.
+// RED before the fix: opts2.algorithm overrode the pin via Object.assign order.
+async function testLeafAlgorithmConflictRefused() {
+  var dir = _mkTmp("blamejs-mtls-algconflict-");
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  await ca.initCA();
+
+  var certThrew = null;
+  try { await ca.generateClientCert({ cn: "conflict", algorithm: "ML-DSA-87" }); }
+  catch (e) { certThrew = e; }
+  check("generateClientCert refuses a per-issuance algorithm conflicting with the pinned CA",
+        certThrew && /mtls-ca\/algorithm-conflict/.test(certThrew.code || ""));
+
+  var p12Threw = null;
+  try { await ca.generateClientP12({ cn: "conflict-p12", password: "algconflict-pw-7k", algorithm: "ML-DSA-87" }); }
+  catch (e) { p12Threw = e; }
+  check("generateClientP12 refuses a per-issuance algorithm conflicting with the pinned CA",
+        p12Threw && /mtls-ca\/algorithm-conflict/.test(p12Threw.code || ""));
+
+  // A per-issuance algorithm that MATCHES the CA is accepted (an EC leaf).
+  var matchLeaf = await ca.generateClientCert({ cn: "match", algorithm: "ECDSA-P384-SHA384" });
+  check("generateClientCert accepts a per-issuance algorithm matching the pinned CA",
+        nodeCrypto.createPrivateKey(matchLeaf.key).asymmetricKeyType === "ec");
+}
+
 // The classical ECDSA-P384-SHA384 bridge must sign the CA, every leaf, and every
 // CRL with ecdsa-with-SHA-384 (OID 1.2.840.10045.4.3.3) — matching its advertised
 // posture and the pre-flip release — NOT the toolkit's EC default of SHA-256,
@@ -496,6 +525,7 @@ async function run() {
   await testP12MacFollowsAlgorithmTier();
   await testAlgorithmPinMismatchOnExistingCa();
   await testUnpinnedLeafFollowsStoredCaAlgorithm();
+  await testLeafAlgorithmConflictRefused();
   await testClassicalBridgeSignsWithSha384();
   await testIpv6SanEncodesAsIpAddress();
   await testRevokeRejectsRemoveFromCrl();
