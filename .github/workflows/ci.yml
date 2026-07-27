@@ -42,15 +42,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Backstop against a hung child no watchdog reaped (and against the
     # watchdog logic itself regressing): without this a stuck job rides
-    # GitHub's 6-hour default. The job budget is sized to the suite plus
-    # the per-file watchdog allowance below; the 3-core macOS runner is
-    # the long pole (codebase-patterns alone scans the whole lib/ corpus),
-    # so the ceiling sits above the per-file watchdog with reporting slack.
+    # GitHub's 6-hour default. Sized to the suite plus the per-file watchdog
+    # allowance below, with generous reporting slack.
     timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos-latest is intentionally excluded from the framework smoke: its
+        # 3-core runner chronically thrashed the pattern-catalog file's own
+        # worker pool as the lib/ corpus grew, stalling that file past its
+        # watchdog (fork-starvation, not a real hang). ubuntu + windows cover
+        # the framework smoke; macOS still runs the lighter Wiki e2e leg below.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -103,15 +106,10 @@ jobs:
           # timeout — an unref'd in-process watchdog cannot fire while the
           # event loop is blocked by a synchronous native call. Forking
           # also hands each file a fresh process, so per-file memory does
-          # not accumulate toward the heap ceiling. The 3-core macos-latest
-          # runner thrashes when the pattern-catalog file (its own worker
-          # pool, scanning the whole lib/ corpus across eight shingle sizes)
-          # competes with sibling forks — as the corpus grew, that heavy file
-          # started stalling past its watchdog on macOS — so macOS runs at 2
-          # (fewer concurrent forks → each heavy file gets more of the 3 cores
-          # → it finishes well inside SMOKE_FILE_TIMEOUT_MS); ubuntu/windows
-          # keep 4, and the publish gate uses 8 on its ubuntu-only runner.
-          SMOKE_PARALLEL: ${{ matrix.os == 'macos-latest' && '2' || '4' }}
+          # not accumulate toward the heap ceiling. 4 parallel forks on the
+          # ubuntu/windows runners; the publish gate uses 8 on its ubuntu-only
+          # runner.
+          SMOKE_PARALLEL: "4"
           # Defensive libuv threadpool headroom: under parallel smoke
           # several async Argon2id key-stretch calls can queue onto the
           # pool (default 4) at once; a larger pool avoids contention
@@ -121,18 +119,14 @@ jobs:
           # is cleared by re-running the job, not by sizing the pool.
           UV_THREADPOOL_SIZE: "16"
           # Per-file watchdog budget. codebase-patterns scans the whole
-          # lib/ corpus across eight shingle sizes; on the 3-core
-          # macos-latest runner that legitimately takes ~20-30 min under
-          # the parallel forks (vs ~2.5 min on ubuntu), and that runtime
-          # tracks the lib/ corpus, which keeps growing. The budget must
-          # clear the macOS worst case with headroom while still failing
-          # a genuinely stuck file. 25 min sat right at the grown macOS
-          # high-water and began flaking (the heaviest file is starved by
-          # the parallel forks, not hung); 35 min restores headroom and
-          # stays below the 50-min job ceiling. (Earlier: 600s guillotined
-          # a slow-but-passing macOS run; 25 min then held until the
-          # corpus outgrew it.)
-          SMOKE_FILE_TIMEOUT_MS: "2100000"
+          # lib/ corpus across eight shingle sizes — the heaviest file, ~2.5 min
+          # on ubuntu under the parallel forks, and it grows with the corpus.
+          # 15 min is generous headroom over that worst case (and any slower
+          # windows runner) while still failing a genuinely stuck file well
+          # inside the 50-min job ceiling. (The former 35-min budget existed
+          # only for the now-removed 3-core macOS runner, where the same scan
+          # took ~20-30 min.)
+          SMOKE_FILE_TIMEOUT_MS: "900000"
         run: node test/smoke.js
 
   wiki-e2e:
