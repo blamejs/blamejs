@@ -10299,12 +10299,18 @@ async function testMtlsCaInitCaWithDefaultEngine() {
     var gen = b.mtlsCa.parseGeneration(fresh.caCertPem);
     check("default engine: cert carries OU=CAv1 generation tag", gen === 1);
 
-    // Subject + issuer round-trip through node:crypto — both should
-    // contain "CN=blamejs CA" since the default engine self-signs.
+    // Subject + issuer round-trip through node:crypto. The subject must be a
+    // STRUCTURED DN — a CN RDN whose value is exactly "blamejs CA" (not the
+    // whole "CN=blamejs CA,OU=CAv1" string wrapped as one CN value, which node
+    // renders as the double-CN "CN=CN=blamejs CA\,OU=CAv1") plus a REAL OU RDN
+    // carrying the generation tag. node renders each RDN on its own line.
     var nc = require("node:crypto");
     var x = new nc.X509Certificate(fresh.caCertPem);
-    check("default engine: subject contains 'CN=blamejs CA'",
-          /CN=blamejs CA/.test(x.subject || ""));
+    var caLines = String(x.subject || "").split(/\r?\n/);
+    check("default engine: CA subject CN is exactly 'blamejs CA' (no double-CN)",
+          caLines.indexOf("CN=blamejs CA") >= 0 && !/CN=CN=/.test(x.subject || ""));
+    check("default engine: CA subject carries a real OU=CAv1 generation RDN",
+          caLines.indexOf("OU=CAv1") >= 0);
     check("default engine: cert is self-signed (issuer === subject)",
           x.issuer === x.subject);
 
@@ -10330,7 +10336,7 @@ async function testMtlsCaGenerateClientCertWithDefaultEngine() {
     var nc = require("node:crypto");
     var leafX = new nc.X509Certificate(leaf.cert);
     var caX   = new nc.X509Certificate(leaf.ca);
-    check("leaf subject contains CN=alice",     /CN=alice/.test(leafX.subject || ""));
+    check("leaf subject is exactly CN=alice (no double-CN)",  leafX.subject === "CN=alice");
     check("leaf issuer === CA subject (chain)",  leafX.issuer === caX.subject);
     check("leaf verifies under CA public key",   leafX.verify(caX.publicKey) === true);
 

@@ -90,16 +90,16 @@ async function run() {
           /test-server\.blamejs\.local/.test(serverX509.subjectAltName || serverX509.toString()));
 
     // ---- algorithm posture lock-in ----
-    // The framework's mtls-engine-default uses ECDSA P-384 deliberately:
-    // node:tls and major OS cert stores don't accept SLH-DSA / ML-DSA
-    // signatures on X.509 leaves yet. When that changes, this assertion
-    // FAILS and forces the engine swap (CA_KEY_ALG + CA_SIG_ALG bump,
-    // CA_GENERATION increment so status() reports the algorithm change).
-    check("CA cert algorithm: framework's documented bridge ECDSA P-384",
-          serverX509.publicKey && /ECDSA|EC|prime256|secp384/i.test(
-            (serverX509.publicKey.asymmetricKeyType || "") + " " +
-            (serverX509.publicKey.asymmetricKeyDetails &&
-             serverX509.publicKey.asymmetricKeyDetails.namedCurve || "")));
+    // The engine issues ML-DSA-87 (FIPS 204) by default. node:tls verifies
+    // ML-DSA certificate chains + CertificateVerify on the supported Node LTS
+    // (OpenSSL 3.5), so PQC-signed leaves complete a real mutual-auth
+    // handshake (exercised below). Operators whose peers predate OpenSSL 3.5
+    // opt into the classical bridge on an ECDSA-P384-SHA384 CA. SLH-DSA is
+    // intentionally not offered here — OpenSSL rejects it in the TLS
+    // handshake ("unknown certificate type").
+    check("CA cert algorithm: PQC-first ML-DSA-87 default",
+          serverX509.publicKey && /ml-dsa/i.test(
+            String(serverX509.publicKey.asymmetricKeyType || "")));
 
     var server = tls.createServer({
       key:                serverLeaf.key,
