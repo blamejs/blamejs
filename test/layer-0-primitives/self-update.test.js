@@ -699,6 +699,44 @@ async function testPollSignaturePairingEdgeCases() {
     check("poll pairing: an appended signature (app.bin.sig) still pairs despite a co-stemmed app.exe",
           r8.asset && r8.asset.name === "app.bin" && r8.signature && r8.signature.name === "app.bin.sig");
   } finally { s8.close(); }
+
+  // A collision the stem-uniqueness check must catch: app.tar.gz (stem app.tar)
+  // and app.tar BOTH present with a single app.tar.sig. app.tar.sig is app.tar's
+  // APPEND signature, but it is also app.tar.gz's extension-REPLACE derived name —
+  // ambiguous. Selecting app.tar.gz must NOT pair app.tar.sig (which signs app.tar);
+  // it fails closed. RED before the fix: the stem check compared only stems
+  // (_assetStem("app.tar") is "app", not "app.tar"), so app.tar.gz looked stem-
+  // unique and grabbed app.tar's signature.
+  var s9 = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "app.tar.gz",  browser_download_url: "https://example.invalid/app.tar.gz" },
+      { name: "app.tar",     browser_download_url: "https://example.invalid/app.tar" },
+      { name: "app.tar.sig", browser_download_url: "https://example.invalid/app.tar.sig" },
+    ],
+  });
+  var p9 = await b.testing.listenOnRandomPort(s9);
+  try {
+    var r9 = await _pollLocal(p9, { assetPattern: "app.tar.gz" });
+    check("poll pairing: app.tar.sig (app.tar's append sig) is not stolen by app.tar.gz's replace stem",
+          r9.asset && r9.asset.name === "app.tar.gz" && r9.signature === null);
+  } finally { s9.close(); }
+
+  // app.tar itself still pairs its own append signature unambiguously.
+  var s10 = _serveJson({
+    tag_name: "v2.0.0",
+    assets: [
+      { name: "app.tar",     browser_download_url: "https://example.invalid/app.tar" },
+      { name: "app.tar.gz",  browser_download_url: "https://example.invalid/app.tar.gz" },
+      { name: "app.tar.sig", browser_download_url: "https://example.invalid/app.tar.sig" },
+    ],
+  });
+  var p10 = await b.testing.listenOnRandomPort(s10);
+  try {
+    var r10 = await _pollLocal(p10, { assetPattern: "app.tar", signaturePattern: "app.tar.sig" });
+    check("poll pairing: app.tar pairs its own append signature app.tar.sig",
+          r10.asset && r10.asset.name === "app.tar" && r10.signature && r10.signature.name === "app.tar.sig");
+  } finally { s10.close(); }
 }
 
 function testPollOptValidation() {
