@@ -205,6 +205,7 @@ async function _runAll() {
   // ---- error / edge / adversarial branch coverage ----
   await testDispatcherOptsValidation();
   await testBadTableNameRejected();
+  await testPostgresFoldsMixedCaseTables();
   await testRegisterEventTypesValidation();
   await testDispatchInputValidation();
   await testDispatchNoSubscribers();
@@ -1142,6 +1143,41 @@ async function testSqliteReselectRowlessResult() {
   });
   var res = await wd.processRetries();
   check("sqlite reselect tolerates a rows-less result (claims nothing)", res.attempted === 0);
+}
+
+// PostgreSQL folds UNQUOTED identifiers to lowercase, so a pre-0.18 deployment
+// with a bare mixed-case custom endpoints/deliveries table already has folded
+// tables. Now that names are always quoted, custom operator names must be folded
+// to lowercase on postgres so they keep targeting the existing tables. sqlite is
+// case-insensitive — no fold. RED before the fix: the postgres DDL quoted the
+// mixed-case names verbatim, stranding the folded tables.
+async function testPostgresFoldsMixedCaseTables() {
+  function _capturingDb(dialect) {
+    var sqls = [];
+    var q = async function (s) { sqls.push(String(s)); return { rows: [] }; };
+    return { _sqls: sqls, dialect: dialect, query: q,
+      transaction: async function (fn) { return fn({ dialect: dialect, query: q }); } };
+  }
+  var pg = _capturingDb("postgres");
+  var wdPg = b.webhook.dispatcher({
+    externalDb: pg, httpRequest: _stubTransport(),
+    endpointsTable: "MyEndpoints", deliveriesTable: "MyDeliveries",
+  });
+  await wdPg.declareSchema(pg);
+  var pgDdl = pg._sqls.join("\n");
+  check("postgres: mixed-case webhook tables fold to lowercase (legacy compat)",
+    pgDdl.indexOf('"myendpoints"') !== -1 && pgDdl.indexOf('"mydeliveries"') !== -1 &&
+    pgDdl.indexOf('"MyEndpoints"') === -1 && pgDdl.indexOf('"MyDeliveries"') === -1);
+
+  var lite = _capturingDb("sqlite");
+  var wdLite = b.webhook.dispatcher({
+    externalDb: lite, httpRequest: _stubTransport(),
+    endpointsTable: "MyEndpoints", deliveriesTable: "MyDeliveries",
+  });
+  await wdLite.declareSchema(lite);
+  var liteDdl = lite._sqls.join("\n");
+  check("sqlite: mixed-case webhook tables keep their casing (no fold)",
+    liteDdl.indexOf('"MyEndpoints"') !== -1 && liteDdl.indexOf('"MyDeliveries"') !== -1);
 }
 
 module.exports = { run: run };

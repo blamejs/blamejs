@@ -924,7 +924,40 @@ async function run() {
   await testWorkerLifecycle();
   await testWorkerInFlightGuardAndStop();
   await testReservedWordTable();
+  await testPostgresFoldsMixedCaseTable();
   console.log("OK — outbox create/enqueue/publish/retry/dead-letter/debezium/lifecycle tests");
+}
+
+// PostgreSQL folds UNQUOTED identifiers to lowercase, so a pre-0.18 deployment
+// with a bare mixed-case `table: "MyOutbox"` already has a `myoutbox` table. Now
+// that names are always quoted, the operator name must be folded to lowercase on
+// postgres so it keeps targeting that existing table instead of a new
+// case-sensitive "MyOutbox". sqlite is case-insensitive — no fold. RED before the
+// fix: the postgres DDL quoted "MyOutbox" verbatim, stranding the folded table.
+async function testPostgresFoldsMixedCaseTable() {
+  function _capturingDb(dialect) {
+    var sqls = [];
+    var q = async function (s) { sqls.push(String(s)); return { rows: [] }; };
+    return {
+      _sqls:   sqls,
+      dialect: dialect,
+      query:   q,
+      transaction: async function (fn) { return fn({ dialect: dialect, query: q }); },
+    };
+  }
+  var pg = _capturingDb("postgres");
+  var obPg = b.outbox.create({ externalDb: pg, table: "MyOutbox", publisher: async function () {}, audit: false });
+  await obPg.declareSchema(pg);
+  var pgDdl = pg._sqls.join("\n");
+  check("postgres: a mixed-case outbox table folds to lowercase (legacy compat)",
+    pgDdl.indexOf('"myoutbox"') !== -1 && pgDdl.indexOf('"MyOutbox"') === -1);
+
+  var lite = _capturingDb("sqlite");
+  var obLite = b.outbox.create({ externalDb: lite, table: "MyOutbox", publisher: async function () {}, audit: false });
+  await obLite.declareSchema(lite);
+  var liteDdl = lite._sqls.join("\n");
+  check("sqlite: a mixed-case outbox table keeps its casing (no fold)",
+    liteDdl.indexOf('"MyOutbox"') !== -1);
 }
 
 module.exports = { run: run };

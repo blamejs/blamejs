@@ -66,7 +66,7 @@
       "items": [
         {
           "title": "b.outbox and b.webhook quote operator-supplied table names",
-          "body": "Operator-supplied table names in b.outbox and b.webhook were emitted unquoted, so a reserved-word or case-sensitive operator table broke the generated SQL. Both now quote operator table names with the same allowReserved parity b.db.from() already provides."
+          "body": "Operator-supplied table names in b.outbox and b.webhook were emitted unquoted, so a reserved-word or case-sensitive operator table broke the generated SQL. Both now quote operator table names with the same allowReserved parity b.db.from() already provides. On PostgreSQL a bare mixed-case name is folded to lowercase before quoting, so a deployment upgrading from an unquoted-name build keeps resolving to the same folded table PostgreSQL already created (a mixed-case table config does not strand its existing rows in a new case-sensitive table)."
         },
         {
           "title": "b.selfUpdate.rollback replaces a running Windows executable and honors a maxBytes override",
