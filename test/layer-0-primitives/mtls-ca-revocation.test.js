@@ -386,6 +386,23 @@ async function testUnpinnedLeafFollowsStoredCaAlgorithm() {
 // classical ECDSA-P384 CA would issue an ML-DSA-87 leaf its legacy peers cannot
 // authenticate, and the P12 path would select the incompatible PBMAC1 MAC tier.
 // RED before the fix: opts2.algorithm overrode the pin via Object.assign order.
+// algorithmEnvelope().cert must describe the most-recent RESOLVED algorithm,
+// including a per-call PIN (deliberately never cached as the process default). RED
+// before the fix: the envelope read only _selectedAlg (the default cache), so it
+// was null after a pinned generateCa with no prior default op, or reported the
+// unrelated default otherwise.
+async function testAlgorithmEnvelopeReportsPinnedSelection() {
+  await engine.generateCa({ generation: 1, algorithm: "ECDSA-P384-SHA384" });
+  var envPin = engine.algorithmEnvelope();
+  check("envelope: reports the pinned classical selection after a pinned generateCa",
+        envPin.cert.label === "ECDSA-P384-SHA384" && envPin.cert.posture === "classical");
+  // An unpinned generateCa resolves the ML-DSA default; the envelope follows it.
+  await engine.generateCa({ generation: 1 });
+  var envDefault = engine.algorithmEnvelope();
+  check("envelope: follows the ML-DSA default after an unpinned generateCa",
+        /ml-dsa/i.test(String(envDefault.cert.label)) && envDefault.cert.posture === "pqc-pure");
+}
+
 async function testLeafAlgorithmConflictRefused() {
   var dir = _mkTmp("blamejs-mtls-algconflict-");
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
@@ -615,6 +632,7 @@ async function run() {
   await testAlgorithmPinMismatchOnExistingCa();
   await testUnpinnedLeafFollowsStoredCaAlgorithm();
   await testLeafAlgorithmConflictRefused();
+  await testAlgorithmEnvelopeReportsPinnedSelection();
   await testGenerateCaOmitsUnsetAlgorithm();
   await testClassicalBridgeSignsWithSha384();
   await testIpv6SanEncodesAsIpAddress();
