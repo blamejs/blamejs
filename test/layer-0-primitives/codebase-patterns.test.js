@@ -13974,6 +13974,34 @@ function testDbCollectionLikeOperatorUsesVerbatimWildcardPath() {
     bad);
 }
 
+// b.mtlsCa's issued-cert fingerprint MUST hash the certificate DER
+// (b.crypto.hashCertFingerprint) — the exact value the require-mtls gate pins.
+// Hashing the PEM TEXT (b.crypto.sha3Hash(certPem)) yields a fingerprint the gate
+// never matches, so revoke()/revokeGeneration() by that fingerprint silently fail
+// to enforce — a regression a same-module unit test misses because the CA is
+// internally consistent with its own wrong value. This fires on a fingerprint
+// computed via sha3Hash, catching a new issuance site reintroducing the mismatch.
+function testMtlsCaFingerprintMatchesGate() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var lines = src.split(/\r?\n/);
+  var re = /fingerprint:\s*[\w.()]*\bsha3Hash\s*\(/;
+  for (var i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) {
+      bad.push({ file: "lib/mtls-ca.js", line: i + 1,
+        content: "issuance fingerprint computed via sha3Hash(<pem>) hashes the PEM text, which the " +
+                 "require-mtls gate (hashCertFingerprint of the DER) never matches — revoke()/" +
+                 "revokeGeneration() by it cannot be enforced; use b.crypto.hashCertFingerprint(certPem).hex" });
+    }
+  }
+  bad = _filterMarkers(bad, "mtls-ca-fingerprint-hashes-pem-not-der");
+  _report("b.mtlsCa issuance fingerprint hashes the cert DER (hashCertFingerprint), " +
+          "matching the fingerprint the require-mtls gate pins",
+    bad);
+}
+
 // The esbuild dev-tool is pinned across three artifacts kept in sync:
 // package.json devDependencies (the version source-of-truth, also postject), the
 // committed root package-lock.json that ci.yml + npm-publish.yml install via
@@ -15113,6 +15141,7 @@ async function run() {
   testReleasePushPathsRunLiveIntegration();
   testSqlWhereDelegatorForwardsArguments();
   testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
+  testMtlsCaFingerprintMatchesGate();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by

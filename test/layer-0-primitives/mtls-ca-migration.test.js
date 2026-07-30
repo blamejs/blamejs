@@ -17,11 +17,35 @@ var fs       = require("fs");
 var os       = require("os");
 var path     = require("path");
 var engine   = require("../../lib/mtls-engine-default");
+var pki      = require("../../lib/vendor/blamejs-pki.cjs");
 
 var _tmpDirs = [];
 function _mkTmp() { var d = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls532-")); _tmpDirs.push(d); return d; }
 function _newCa(extra) { return b.mtlsCa.create(Object.assign({ dataDir: _mkTmp(), caKeySealedMode: "disabled" }, extra || {})); }
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+
+// A minimal custom engine that issues a P-256 (not P-384) self-signed EC CA,
+// to prove status() does NOT mislabel every EC CA as ECDSA-P384-SHA384.
+function _p256CaEngine() {
+  return {
+    generateCa: async function () {
+      var subtle = pki.webcrypto.subtle;
+      var keys = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+      var now = new Date();
+      var caCertPem = await pki.x509.sign({
+        subject:          [{ commonName: "p256-ca" }, { organizationalUnitName: "CAv1" }],
+        subjectPublicKey: spki,
+        serialNumber:     "01",
+        notBefore:        now,
+        notAfter:         new Date(now.getTime() + 86400000),
+        extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign", "cRLSign"] },
+      }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha384" });
+      var caKeyPem = await pki.key.export(keys.privateKey, { format: "pem" });
+      return { caCertPem: caCertPem, caKeyPem: caKeyPem };
+    },
+  };
+}
 
 async function testStatusAlgorithmKeyType() {
   var ca = _newCa();
@@ -111,6 +135,70 @@ async function testRevokeGeneration() {
   check("revokeGeneration: non-integer n refused", code(function () { ca.revokeGeneration(1.5); }) === "mtls-ca/bad-generation");
 }
 
+// A handle created with an algorithm pin that rotate({ algorithm })s to a
+// different one must stay usable — the effective pin follows the rotation, so
+// the next initCA()/generateClientCert() does not raise mtls-ca/algorithm-mismatch.
+async function testRotatePersistsOverrideAlgorithm() {
+  var ca = _newCa({ algorithm: "ECDSA-P384-SHA384" });
+  await ca.initCA();
+  await ca.rotate({ generation: 2, algorithm: "ML-DSA-87" });
+  check("rotate flips the stored CA to ML-DSA-87", ca.status().algorithm === "ML-DSA-87");
+  var leaf = await ca.generateClientCert({ cn: "post-rotate-mldsa" });
+  check("ECDSA-pinned handle stays usable after rotating to ML-DSA (no algorithm-mismatch)",
+        typeof leaf.cert === "string");
+  // The reverse pin also sticks: default (ML-DSA) handle rotated to ECDSA issues ECDSA.
+  var ca2 = _newCa();
+  await ca2.initCA();
+  await ca2.rotate({ generation: 2, algorithm: "ECDSA-P384-SHA384" });
+  var leaf2 = await ca2.generateClientCert({ cn: "post-rotate-ecdsa" });
+  check("default handle stays usable after rotating to ECDSA", typeof leaf2.cert === "string");
+}
+
+// rotate() must reject a fractional generation up front — Math.floor would
+// silently accept 2.9 as generation 2 and mis-assign the revocation cohort.
+async function testRotateRejectsFractionalGeneration() {
+  var ca = _newCa();
+  await ca.initCA();   // generation 1
+  check("rotate: fractional generation 2.9 refused (not floored to 2)",
+        (await code2(function () { return ca.rotate({ generation: 2.9 }); })) === "mtls-ca/bad-generation");
+  // A whole-number rotation still works after the rejection.
+  var r = await ca.rotate({ generation: 2 });
+  check("rotate: integer generation still accepted", r.generation === 2);
+}
+
+// A custom engine may issue a P-256 / P-521 EC CA; status() must not label it
+// ECDSA-P384-SHA384 (the framework's sole classical P-384 label).
+async function testStatusAlgorithmNullForNonP384Ec() {
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: _p256CaEngine() });
+  await ca.initCA();
+  var s = ca.status();
+  check("status: a P-256 EC CA is keyType 'ec' but algorithm null (not mislabeled P-384)",
+        s.keyType === "ec" && s.algorithm === null);
+}
+
+// rotate({ retainPrevious: false }) must clear a root a PRIOR retained rotation
+// left behind, so loadTrustBundle() stops trusting it.
+async function testRetainPreviousFalseClearsStaleRoot() {
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });                       // retains -> ca.prev.crt
+  check("retained root present after a retained rotation", ca.loadTrustBundle().length === 2);
+  await ca.rotate({ generation: 3, retainPrevious: false });
+  check("rotate({retainPrevious:false}) clears the stale retained root",
+        ca.loadTrustBundle().length === 1);
+}
+
+// A ledger write failure must FAIL issuance — an untracked cert can never be
+// revoked by revokeGeneration(), so returning it would be a silent hole.
+async function testIssuanceLedgerFailsClosed() {
+  var throwingStore = { list: function () { return []; }, add: function () { throw new Error("disk full"); } };
+  var ca = _newCa({ issuanceStore: throwingStore });
+  await ca.initCA();
+  check("generateClientCert fails closed when the issuance-ledger write throws",
+        (await code2(function () { return ca.generateClientCert({ cn: "untracked" }); }))
+          === "mtls-ca/issuance-ledger-write-failed");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -121,6 +209,11 @@ async function run() {
     await testTrustBundleRetention();
     await testCanVerifyInTls();
     await testRevokeGeneration();
+    await testRotatePersistsOverrideAlgorithm();
+    await testRotateRejectsFractionalGeneration();
+    await testStatusAlgorithmNullForNonP384Ec();
+    await testRetainPreviousFalseClearsStaleRoot();
+    await testIssuanceLedgerFailsClosed();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

@@ -372,6 +372,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 - [ ] Rotate leaf certificates per their issued lifetime (typically annual); keep the CA generation field bumped on full-CA rotation events
 - [ ] Migrate the CA to a stronger signature algorithm with `b.mtlsCa` `rotate({ generation, algorithm })` — gate the target algorithm on `canVerifyInTls()` first (proves the deployed Node verifies it over TLS), keep the superseded root trusted via `loadTrustBundle()` until every client re-enrolls, then `dropRetained()`
 - [ ] After superseding a CA generation, `revokeGeneration(n)` to revoke every certificate issued under the older roots rather than waiting on lifetime expiry
+- [ ] Wire the CA into the gate — `b.middleware.requireMtls({ revocationSource: caHandle })` — so `revoke()` / `revokeGeneration()` are enforced per request (fingerprint-keyed, generation-independent, fail-closed) without mirroring the registry into `denyList`
 - [ ] Distribute the CA cert to clients via `blamejs mtls show-cert --data-dir ./data` rather than copying files around — reduces "wrong-cert-trusted" mistakes
 
 **Pipeline**

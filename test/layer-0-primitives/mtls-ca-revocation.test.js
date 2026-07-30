@@ -551,8 +551,8 @@ async function run() {
     typeof issued.serialNumber === "string" && /^[0-9a-f]+$/.test(issued.serialNumber));
   check("issuance surfaces a 128-hex SHA3-512 fingerprint",
     typeof issued.fingerprint === "string" && issued.fingerprint.length === 128);
-  check("the surfaced fingerprint equals the gate's b.crypto.sha3Hash(cert)",
-    issued.fingerprint === b.crypto.sha3Hash(issued.cert));
+  check("the surfaced fingerprint equals the value the require-mtls gate pins (hashCertFingerprint of the DER)",
+    issued.fingerprint === b.crypto.hashCertFingerprint(issued.cert).hex);
 
   // ---- parseGeneration across its input arms ----
   // A framework-issued CA cert carries an OU=CAv{N} tag; a leaf does not
@@ -614,14 +614,18 @@ async function run() {
       return { caCertPem: "ENGINE-CA", caKeyPem: "ENGINE-KEY", generation: 1 };
     },
     signClientCert: async function (a) {
-      return { cert: "-----BEGIN CERTIFICATE-----\nNOT-X509-" + a.cn + "\n-----END CERTIFICATE-----\n", key: "k" };
+      // A cert with NO decodable PEM/DER envelope — hashCertFingerprint cannot
+      // process it, so _certIdentity falls back to a stable byte-hash; issuance
+      // must still surface a revocable fingerprint and never crash.
+      return { cert: "NOT-X509-" + a.cn, key: "k" };
     },
   };
   var ca3 = b.mtlsCa.create({ dataDir: dir3, engine: stubEngine, caKeySealedMode: "disabled" });
   var stub = await ca3.generateClientCert({ cn: "stub-client" });
   check("non-X.509 engine cert does not crash issuance", typeof stub.cert === "string");
   check("unparseable cert yields serialNumber null (best-effort)", stub.serialNumber === null);
-  check("fingerprint is still surfaced for a non-X.509 cert", stub.fingerprint === b.crypto.sha3Hash(stub.cert));
+  check("fingerprint is still surfaced for an undecodable cert (byte-hash fallback)",
+    stub.fingerprint === b.crypto.sha3Hash(stub.cert));
   ca3.revoke({ fingerprint: stub.fingerprint });
   check("a non-X.509 cert is still revocable by fingerprint", ca3.isRevoked(stub.fingerprint) === true);
 
