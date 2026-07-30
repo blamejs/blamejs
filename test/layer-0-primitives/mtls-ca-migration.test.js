@@ -237,19 +237,28 @@ async function testRetainedRootSurvivesFailedCommit() {
 // A rotation whose CA commit SUCCEEDS but whose retained-root snapshot fails
 // (full/read-only fs) must still succeed — the CA is committed, the algorithm
 // override sticks, and the handle keeps issuing. The retained root is secondary.
-async function testRotateSucceedsWhenRetainedRootWriteFails() {
+async function testRotateAbortsWhenRetainedRootWriteFails() {
   var dir = _mkTmp();
   var ca = b.mtlsCa.create({ dataDir: dir, algorithm: "ECDSA-P384-SHA384", caKeySealedMode: "disabled" });
   await ca.initCA();
-  // A directory sits where ca.prev.crt would be written -> the snapshot fails.
+  var keyBefore  = fs.readFileSync(ca.paths.caKey);
+  var certBefore = fs.readFileSync(ca.paths.caCert);
+  // A directory sits where ca.prev.crt would be written -> retention cannot be
+  // established. Retention is a required part of the commit, so the rotation MUST
+  // abort rather than publish a new CA while silently omitting the outgoing root
+  // (which would reject clients still enrolled under the just-superseded CA,
+  // breaking the advertised no-outage migration).
   fs.mkdirSync(ca.paths.caCertPrev);
-  var rot = await ca.rotate({ generation: 2, algorithm: "ML-DSA-87" });
-  check("rotation succeeds even though the retained-root snapshot failed", rot.generation === 2);
-  check("the algorithm override still applied despite the retained-root write failure",
-        ca.status().algorithm === "ML-DSA-87");
-  check("the rotated handle is still usable (issues under the new algorithm)",
-        typeof (await ca.generateClientCert({ cn: "post-degraded" })).cert === "string");
+  check("rotation aborts when the required retained-root write fails",
+        (await code2(function () { return ca.rotate({ generation: 2, algorithm: "ML-DSA-87" }); }))
+          === "mtls-ca/commit-failed");
   fs.rmdirSync(ca.paths.caCertPrev);
+  check("the original CA survived the aborted rotation (still gen-1 ECDSA)",
+        ca.status().generation === 1 && ca.status().algorithm === "ECDSA-P384-SHA384");
+  check("the original CA key and cert are unchanged after the aborted rotation",
+        fs.readFileSync(ca.paths.caKey).equals(keyBefore) && fs.readFileSync(ca.paths.caCert).equals(certBefore));
+  check("the surviving CA still issues under its original algorithm",
+        typeof (await ca.generateClientCert({ cn: "post-abort" })).cert === "string");
 }
 
 // A P12 archive with no certPem cannot be recorded in the issuance ledger, so it
@@ -783,7 +792,7 @@ async function run() {
     await testIssuanceLedgerFailsClosed();
     await testRevokeGenerationBackfillsFingerprint();
     await testRetainedRootSurvivesFailedCommit();
-    await testRotateSucceedsWhenRetainedRootWriteFails();
+    await testRotateAbortsWhenRetainedRootWriteFails();
     await testP12RequiresLedgerIdentity();
     await testCrlOmissionCountExcludesSerialDupes();
     await testConcurrentRotationsSerialize();

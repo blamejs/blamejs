@@ -14040,6 +14040,18 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "interrupted rotation is reconciled before the CA is read or re-rotated (found " +
                recoveryCalls + " occurrence(s), expected the definition + 2 call sites)" });
   }
+  // Durability: renameSync alone is not crash-durable, so the key and cert rename
+  // directories MUST be fsync'd before the journal is deleted — else a power loss
+  // can persist the journal deletion while losing the cert rename, reintroducing
+  // the unrecoverable new-key/old-cert pair with no journal to recover from.
+  var fsyncsKeyDir  = /fsyncDir\(\s*nodePath\.dirname\(\s*keyDest\s*\)\s*\)/.test(noComments);
+  var fsyncsCertDir = /fsyncDir\(\s*nodePath\.dirname\(\s*paths\.caCert\s*\)\s*\)/.test(noComments);
+  if (renameIdx !== -1 && !(fsyncsKeyDir && fsyncsCertDir)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit() must fsync the key and cert rename directories (atomicFile.fsyncDir(nodePath.dirname" +
+               "(...))) before deleting the rollback journal — renameSync is not crash-durable, so a power " +
+               "loss could persist the journal deletion while losing the cert rename" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
           "recover from an interrupted rotation (crash-atomic key/cert publication)",
