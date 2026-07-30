@@ -343,6 +343,38 @@ async function testRotationConflictAcrossHandles() {
   check("the CA on disk is the winner's generation 2", caA.status().generation === 2);
 }
 
+// canVerifyInTls must probe the PROSPECTIVE algorithm when given, so an
+// ECDSA-stored handle pre-flighting a move to ML-DSA tests the target chain,
+// not the current one (and a bogus label fails closed rather than passing on
+// the stored algorithm).
+async function testCanVerifyInTlsProbesTargetAlgorithm() {
+  var ca = _newCa({ algorithm: "ECDSA-P384-SHA384" });
+  await ca.initCA();   // stored CA is ECDSA
+  check("canVerifyInTls() (no arg) probes the stored ECDSA CA",
+        (await ca.canVerifyInTls()) === true);
+  check("canVerifyInTls('ML-DSA-87') probes the TARGET algorithm (the migration pre-flight)",
+        (await ca.canVerifyInTls("ML-DSA-87")) === true);
+  check("canVerifyInTls('NOT-A-REAL-ALGORITHM') fails closed (arg is honored, not ignored)",
+        (await ca.canVerifyInTls("NOT-A-REAL-ALGORITHM")) === false);
+}
+
+// Concurrent issuance against the default ledger must record every certificate
+// (the cross-process-locked read-modify-write appends without losing entries).
+async function testConcurrentIssuanceAllRecorded() {
+  var ca = _newCa();
+  await ca.initCA();
+  var leaves = await Promise.all([
+    ca.generateClientCert({ cn: "c1" }),
+    ca.generateClientCert({ cn: "c2" }),
+    ca.generateClientCert({ cn: "c3" }),
+  ]);
+  await ca.rotate({ generation: 2 });
+  check("all 3 concurrently-issued certs are recorded (revokeGeneration revokes all 3)",
+        ca.revokeGeneration(2).revoked === 3);
+  check("each concurrently-issued cert is revoked by fingerprint",
+        leaves.every(function (l) { return ca.isRevoked(l.fingerprint); }));
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -367,6 +399,8 @@ async function run() {
     await testRevocationIndexStaysConsistent();
     await testRevocationIndexRefreshesAcrossHandles();
     await testRotationConflictAcrossHandles();
+    await testCanVerifyInTlsProbesTargetAlgorithm();
+    await testConcurrentIssuanceAllRecorded();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
