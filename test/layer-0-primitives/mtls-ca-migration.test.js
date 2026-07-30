@@ -647,7 +647,9 @@ async function testInterruptedRotationRecoversFromJournal() {
   // holds the prior (gen-1) key. A fresh handle must roll BACK to the consistent
   // gen-1 pair so the CA (able to issue leaves and CRLs) survives.
   fs.writeFileSync(ca.paths.caCert, certG1);   // cert never got published
-  fs.writeFileSync(journal, keyG1);            // durable prior-key journal
+  fs.writeFileSync(journal, JSON.stringify({   // durable prior-key rollback manifest
+    key: keyG1.toString("base64"), prevAction: "leave", prevData: null,
+  }));
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   var leaf = await reopened.generateClientCert({ cn: "after-crash" });
   check("interrupted rotation: the handle recovers and issues after reconciling the rollback journal",
@@ -667,7 +669,9 @@ async function testInterruptedRotationRecoversFromJournal() {
   await ca2.rotate({ generation: 2 });
   var keyG2b  = fs.readFileSync(ca2.paths.caKey);
   var journal2 = ca2.paths.caKey + ".rollback";
-  fs.writeFileSync(journal2, priorKey2);       // stale journal over a consistent new pair
+  fs.writeFileSync(journal2, JSON.stringify({  // stale journal over a consistent new pair
+    key: priorKey2.toString("base64"), prevAction: "leave", prevData: null,
+  }));
   var reopened2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
   await reopened2.initCA();
   check("stale journal over a consistent new pair rolls forward: key stays gen-2",
@@ -680,6 +684,86 @@ async function testInterruptedRotationRecoversFromJournal() {
   // Keep certG2 referenced so the fixture stays self-documenting.
   check("interrupted-rotation fixture used two distinct generations",
         !certG2.equals(certG1) && !keyG2.equals(keyG1));
+}
+
+// An interrupted rotation must recover the RETAINED ROOT too, not just the key.
+// commit() overwrites ca.prev.crt with the outgoing cert before the final cert
+// rename, so a crash between them (with only a key-recovery journal) would roll
+// the active cert back but leave ca.prev.crt clobbered — dropping trust for
+// clients still enrolled under the formerly-retained generation. The rollback
+// journal is a manifest carrying the prior key AND the prior retained root.
+async function testInterruptedRotationRecoversRetainedRoot() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);            // becomes the retained root after gen-2
+  await ca.rotate({ generation: 2 });                        // ca.prev.crt = certG1 (retained root P)
+  var keyG2  = fs.readFileSync(ca.paths.caKey);
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 3 });                        // gives us a real gen-3 key to pose as "new"
+  var keyG3  = fs.readFileSync(ca.paths.caKey);
+  var journal = ca.paths.caKey + ".rollback";
+
+  // Fabricate a crash DURING a gen-2 -> gen-3 rotation, AFTER the retained-root
+  // update (ca.prev.crt overwritten with the outgoing gen-2 cert) but BEFORE the
+  // cert rename: the live key is gen-3, the cert is still gen-2, the retained root
+  // was clobbered from certG1 to certG2, and the manifest journals the prior key
+  // (gen-2) plus the prior retained root (certG1) to restore.
+  fs.writeFileSync(ca.paths.caKey, keyG3);                   // new key published
+  fs.writeFileSync(ca.paths.caCert, certG2);                 // cert never got published
+  fs.writeFileSync(ca.paths.caCertPrev, certG2);             // retained root clobbered (bug surface)
+  fs.writeFileSync(journal, JSON.stringify({
+    key:        keyG2.toString("base64"),
+    prevAction: "restore",
+    prevData:   certG1.toString("base64"),
+  }));
+
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var leaf = await reopened.generateClientCert({ cn: "after-prev-crash" });
+  check("interrupted 2nd rotation: the handle recovers and issues", typeof leaf.cert === "string");
+  check("interrupted 2nd rotation: the live CA key is rolled back to gen-2",
+        fs.readFileSync(reopened.paths.caKey).equals(keyG2));
+  check("interrupted 2nd rotation: the retained root is restored (formerly-retained clients keep trust)",
+        fs.readFileSync(reopened.paths.caCertPrev).equals(certG1));
+  var bundle = reopened.loadTrustBundle();
+  check("interrupted 2nd rotation: trust bundle is [gen-2 current, gen-1 retained]",
+        bundle.length === 2 &&
+        Buffer.from(bundle[0]).equals(certG2) && Buffer.from(bundle[1]).equals(certG1));
+  check("interrupted 2nd rotation: the spent journal is removed",
+        fs.existsSync(journal) === false);
+  // keep keyG3 referenced (it is the fabricated new key)
+  check("interrupted 2nd rotation fixture: gen-3 key differed from gen-2", !keyG3.equals(keyG2));
+}
+
+// A PRESENT issuance ledger with a corrupt schema (valid JSON but no `issued`
+// array — an accidental `{}`) MUST fail closed, not be treated as an empty
+// ledger. Silently treating it as empty would let the next issuance overwrite it
+// with only the new entry, permanently dropping every prior certificate from the
+// SOLE index revokeGeneration() consults (those certs would survive revocation).
+async function testCorruptIssuanceLedgerSchemaFailsClosed() {
+  var ca = _newCa();
+  await ca.initCA();
+  var first = await ca.generateClientCert({ cn: "ledger-1" });
+  check("issuance ledger recorded the first cert", ca.isRevoked(first.fingerprint) === false && typeof first.cert === "string");
+  var ledgerBefore = fs.readFileSync(ca.paths.issuance);
+
+  // Corrupt: valid JSON, wrong schema (no `issued` array).
+  fs.writeFileSync(ca.paths.issuance, "{}");
+  check("revokeGeneration fails closed on a schema-corrupt ledger (not treated as empty)",
+        (await code2(function () { return ca.revokeGeneration(2); })) === "mtls-ca/issuance-corrupt");
+  check("issuance fails closed on a schema-corrupt ledger rather than overwriting it",
+        (await code2(function () { return ca.generateClientCert({ cn: "ledger-2" }); }))
+          === "mtls-ca/issuance-ledger-write-failed");
+  check("the corrupt ledger was NOT overwritten (prior certs not silently dropped)",
+        fs.readFileSync(ca.paths.issuance).toString() === "{}");
+
+  // A non-array `issued` is also corruption, and a valid ledger still reads.
+  fs.writeFileSync(ca.paths.issuance, JSON.stringify({ issued: "nope" }));
+  check("a non-array `issued` is corruption too",
+        (await code2(function () { return ca.revokeGeneration(2); })) === "mtls-ca/issuance-corrupt");
+  fs.writeFileSync(ca.paths.issuance, ledgerBefore);
+  check("restoring a well-formed ledger clears the corruption",
+        (await code2(function () { return ca.revokeGeneration(2); })) === "NO-THROW");
 }
 
 // async variant of code() for rejected promises.
@@ -723,6 +807,8 @@ async function run() {
     await testLoadTrustBundleToleratesConcurrentPrevRemoval();
     await testImportOfRevokedGenerationIsRevoked();
     await testInterruptedRotationRecoversFromJournal();
+    await testInterruptedRotationRecoversRetainedRoot();
+    await testCorruptIssuanceLedgerSchemaFailsClosed();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

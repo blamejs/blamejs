@@ -14046,6 +14046,37 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
     bad);
 }
 
+// b.mtlsCa's issuance ledger is the SOLE index revokeGeneration() consults, so a
+// PRESENT-but-schema-corrupt ledger (valid JSON, missing or non-array `issued` —
+// an accidental `{}`) MUST fail closed (mtls-ca/issuance-corrupt), never be
+// treated as empty: silently emptying it lets the next issuance overwrite the
+// file with only its own entry, dropping every prior certificate from the index
+// (they would then survive a later generation revocation). This fires on the
+// silent-empty regression shape — a ternary that returns [] when json.issued is
+// not an array, instead of throwing.
+function testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // The regression: `... Array.isArray(json.issued) ... ? json.issued : []` inside
+  // one expression collapses a corrupt ledger to empty. The fix instead throws in
+  // an `if (!Array.isArray(json.issued)) { ... }` guard (no `? ... : []`).
+  var re = /Array\.isArray\(\s*json\.issued\s*\)[^;{}]*\?[^;]*:\s*\[\s*\]/;
+  if (re.test(noComments)) {
+    var upto = src.slice(0, src.indexOf("Array.isArray(json.issued)"));
+    bad.push({ file: "lib/mtls-ca.js", line: upto.split(/\r?\n/).length + 1,
+      content: "issuance _list() collapses a present-but-schema-corrupt ledger to [] — a missing / non-array " +
+               "`issued` must throw mtls-ca/issuance-corrupt (fail closed), else the next issuance overwrites " +
+               "the file and drops every prior cert from the sole revokeGeneration() index" });
+  }
+  bad = _filterMarkers(bad, "mtls-ca-issuance-ledger-silent-empty-on-corrupt");
+  _report("b.mtlsCa issuance ledger fails closed on a present-but-schema-corrupt file " +
+          "(no silent-empty collapse of a corrupt ledger)",
+    bad);
+}
+
 // The esbuild dev-tool is pinned across three artifacts kept in sync:
 // package.json devDependencies (the version source-of-truth, also postject), the
 // committed root package-lock.json that ci.yml + npm-publish.yml install via
@@ -15187,6 +15218,7 @@ async function run() {
   testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
   testMtlsCaFingerprintMatchesGate();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
+  testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by
