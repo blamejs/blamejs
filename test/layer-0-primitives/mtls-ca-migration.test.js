@@ -775,6 +775,54 @@ async function testCorruptIssuanceLedgerSchemaFailsClosed() {
         (await code2(function () { return ca.revokeGeneration(2); })) === "NO-THROW");
 }
 
+// retainPrevious:false is a HARD trust cutoff: if the old retained root cannot be
+// removed (a read-only / blocked ca.prev.crt), the rotation must abort rather than
+// publish a new CA while loadTrustBundle() keeps trusting a root the operator
+// asked to cut — which would keep admitting certs chained to it.
+async function testRotateRetainFalseAbortsWhenRemovalFails() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });                        // ca.prev.crt = gen-1 (a retained root exists)
+  check("a retained root exists before the hard-cutoff rotation", ca.loadTrustBundle().length === 2);
+  var keyBefore  = fs.readFileSync(ca.paths.caKey);
+  var certBefore = fs.readFileSync(ca.paths.caCert);
+  // Replace ca.prev.crt with a NON-EMPTY directory so unlinkSync() cannot remove it.
+  fs.rmSync(ca.paths.caCertPrev, { force: true });
+  fs.mkdirSync(ca.paths.caCertPrev);
+  fs.writeFileSync(path.join(ca.paths.caCertPrev, "block"), "x");
+  check("rotate({retainPrevious:false}) aborts when the old root cannot be removed",
+        (await code2(function () { return ca.rotate({ generation: 3, retainPrevious: false }); }))
+          === "mtls-ca/commit-failed");
+  fs.rmSync(ca.paths.caCertPrev, { recursive: true, force: true });
+  check("the CA survived the aborted hard-cutoff rotation (still gen-2)", ca.status().generation === 2);
+  check("the CA key and cert are unchanged after the aborted hard-cutoff",
+        fs.readFileSync(ca.paths.caKey).equals(keyBefore) && fs.readFileSync(ca.paths.caCert).equals(certBefore));
+  check("the surviving CA still issues after the aborted hard-cutoff",
+        typeof (await ca.generateClientCert({ cn: "post-cutoff-abort" })).cert === "string");
+}
+
+// canVerifyInTls() with no argument derives the label from the stored CA. A custom
+// CA this runtime cannot classify (status().algorithm === null) with no create-time
+// pin leaves the label undefined; probing the engine with undefined would let one
+// that reads an omitted label as "current default" answer for the WRONG algorithm.
+// Require an explicit algorithm instead of silently probing undefined.
+async function testCanVerifyInTlsRequiresLabelWhenUndeterminable() {
+  var dir = _mkTmp();
+  var probed = [];
+  var eng = _p256CaEngine();
+  eng.canVerifyInTls = async function (label) { probed.push(label); return true; };
+  var ca = b.mtlsCa.create({ dataDir: dir, engine: eng, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  check("a P-256 custom CA reports algorithm null (runtime cannot classify it)", ca.status().algorithm === null);
+  check("canVerifyInTls() with no argument refuses rather than probing an undeterminable algorithm",
+        (await code2(function () { return ca.canVerifyInTls(); })) === "mtls-ca/algorithm-undeterminable");
+  check("the engine was NOT probed with an undefined label", probed.indexOf(undefined) === -1);
+  var ok = await ca.canVerifyInTls("ECDSA-P384-SHA384");     // an explicit algorithm still delegates
+  check("canVerifyInTls(explicit) still delegates to the engine",
+        ok === true && probed[probed.length - 1] === "ECDSA-P384-SHA384");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -818,6 +866,8 @@ async function run() {
     await testInterruptedRotationRecoversFromJournal();
     await testInterruptedRotationRecoversRetainedRoot();
     await testCorruptIssuanceLedgerSchemaFailsClosed();
+    await testRotateRetainFalseAbortsWhenRemovalFails();
+    await testCanVerifyInTlsRequiresLabelWhenUndeterminable();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

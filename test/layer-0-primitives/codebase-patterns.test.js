@@ -14044,13 +14044,22 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // directories MUST be fsync'd before the journal is deleted — else a power loss
   // can persist the journal deletion while losing the cert rename, reintroducing
   // the unrecoverable new-key/old-cert pair with no journal to recover from.
-  var fsyncsKeyDir  = /fsyncDir\(\s*nodePath\.dirname\(\s*keyDest\s*\)\s*\)/.test(noComments);
-  var fsyncsCertDir = /fsyncDir\(\s*nodePath\.dirname\(\s*paths\.caCert\s*\)\s*\)/.test(noComments);
-  if (renameIdx !== -1 && !(fsyncsKeyDir && fsyncsCertDir)) {
+  var keyFsyncIdx  = noComments.search(/fsyncDir\(\s*nodePath\.dirname\(\s*keyDest\s*\)\s*\)/);
+  var certFsyncIdx = noComments.search(/fsyncDir\(\s*nodePath\.dirname\(\s*paths\.caCert\s*\)\s*\)/);
+  var certRenameIdx = noComments.search(/renameWithRetry\s*\(\s*certTmp\s*,\s*paths\.caCert\s*\)/);
+  if (renameIdx !== -1 && !(keyFsyncIdx !== -1 && certFsyncIdx !== -1)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "commit() must fsync the key and cert rename directories (atomicFile.fsyncDir(nodePath.dirname" +
                "(...))) before deleting the rollback journal — renameSync is not crash-durable, so a power " +
                "loss could persist the journal deletion while losing the cert rename" });
+  } else if (certRenameIdx !== -1 && (keyFsyncIdx === -1 || keyFsyncIdx > certRenameIdx)) {
+    // Ordering: the KEY rename must be made durable BEFORE the cert rename, else a
+    // reverse mismatch (cert persisted, key rename lost -> old-key/new-cert) is
+    // unrecoverable by the OLD-key journal.
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit() must fsync the key rename directory BEFORE renaming the cert — otherwise a power " +
+               "loss could persist the cert rename while losing the key rename, leaving an old-key/new-cert " +
+               "pair the journal (which holds only the old key) cannot recover" });
   }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
