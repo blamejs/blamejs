@@ -570,6 +570,10 @@ async function testMalformedWatermarkAbortsIssuance() {
   fs.writeFileSync(ca.paths.revokedGeneration, "not-a-number");
   check("issuance aborts when the revoked-generation watermark is malformed (fails closed)",
         (await code2(function () { return ca.generateClientCert({ cn: "x" }); })) === "mtls-ca/watermark-unreadable");
+  // A partially-numeric watermark must NOT parseInt to a lower prefix.
+  fs.writeFileSync(ca.paths.revokedGeneration, "1junk");
+  check("issuance aborts on a partially-numeric watermark (no parseInt prefix)",
+        (await code2(function () { return ca.generateClientCert({ cn: "y" }); })) === "mtls-ca/watermark-unreadable");
 }
 
 // importIssuance() backfills leaf identities the ledger doesn't have (pre-#532 /

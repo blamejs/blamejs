@@ -64,6 +64,19 @@ async function testRevocationSourceEnforcement() {
     check("revocationSource: refusal reason is fingerprint-revoked",
           denied && denied.reason === "fingerprint-revoked");
 
+    // A SERIAL-ONLY revocation (revoke(serial), fingerprint:null) must also be
+    // enforced — via the peer certificate's serial number, not just fingerprint.
+    var leaf2 = await ca.generateClientCert({ cn: "peer-2" });
+    var peer2 = { raw: new nodeCrypto.X509Certificate(leaf2.cert).raw, subject: { CN: "peer-2" } };
+    function _drive2() {
+      denied = null; var n = false;
+      gate(_mockReq({ authorized: true, peerCert: peer2 }), _mockRes(), function () { n = true; });
+      return n;
+    }
+    check("revocationSource: an unrevoked peer-2 is admitted", _drive2() === true);
+    await ca.revoke(leaf2.serialNumber);   // serial-only revocation (no fingerprint)
+    check("revocationSource: a serial-only revocation is enforced at the gate", _drive2() === false);
+
     // Fail-closed: a source that throws refuses rather than admitting.
     var fcDenied = null;
     var fcGate = b.middleware.requireMtls({
