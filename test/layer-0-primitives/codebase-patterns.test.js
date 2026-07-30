@@ -13880,6 +13880,39 @@ function testWikiPortAgreesAcrossArtifacts() {
     bad);
 }
 
+// Every scripts/release.js path that lands a commit on the release branch (a
+// `git push`) MUST run the touched-backend live-integration gate first. The CI
+// workflows don't invoke test-integration.js, so a backend-protocol lib change
+// that reaches the PR without cmdLiveIntegration() could merge having passed
+// only host smoke (sqlite + in-memory fakes) — the exact bypass a `push-fix`
+// added after the first `push` would open if it forgot the gate.
+function testReleasePushPathsRunLiveIntegration() {
+  var src;
+  try { src = fs.readFileSync("scripts/release.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  ["cmdPush", "cmdPushFix"].forEach(function (fnName) {
+    var start = src.search(new RegExp("\\nfunction " + fnName + "\\s*\\("));
+    if (start === -1) return;
+    var rest = src.slice(start + 1);
+    var end = rest.search(/\nfunction [A-Za-z_]/);
+    var body = end === -1 ? rest : rest.slice(0, end);
+    // Anchor on the push itself: `_run("git", ["push"...` -- a path that pushes
+    // a release commit but never calls cmdLiveIntegration() is the bypass.
+    var pushes = /_run\("git",\s*\[\s*"push"/.test(body);
+    if (pushes && body.indexOf("cmdLiveIntegration(") === -1) {
+      bad.push({ file: "scripts/release.js", line: src.slice(0, start).split(/\n/).length + 1,
+        content: fnName + " pushes a release commit but never calls cmdLiveIntegration() — a " +
+                 "backend fix would bypass the non-skippable live-integration gate and reach merge " +
+                 "untested against the real service" });
+    }
+  });
+  bad = _filterMarkers(bad, "release-push-path-missing-live-integration");
+  _report("release.js push paths (cmdPush + cmdPushFix) run the touched-backend live-integration " +
+          "gate before pushing, so a backend fix can't reach the merge untested",
+    bad);
+}
+
 // The esbuild dev-tool is pinned across three artifacts kept in sync:
 // package.json devDependencies (the version source-of-truth, also postject), the
 // committed root package-lock.json that ci.yml + npm-publish.yml install via
@@ -15016,6 +15049,7 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
+  testReleasePushPathsRunLiveIntegration();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by

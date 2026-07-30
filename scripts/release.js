@@ -140,11 +140,25 @@ function _run(cmd, args, opts) {
 
 function _capture(cmd, args, opts) {
   opts = opts || {};
-  var rv = childProcess.spawnSync(cmd, args, {
+  args = args || [];
+  // Mirror _run's shell handling: shell ONLY for npm/npx on win32 (their .cmd
+  // shims need it), and then pass a single explicitly-quoted command string.
+  // Everything else (git, gh, docker, node) spawns directly with shell off, so
+  // a multi-word argument -- e.g. a `gh api graphql` query string full of
+  // spaces and braces -- reaches the tool as ONE argument instead of being
+  // split by cmd.exe into many (which broke the review-thread lookup on
+  // Windows: gh saw 27 args and refused).
+  var spawnCmd = cmd, spawnArgs = args, useShell = false;
+  if (_needsShell(cmd)) {
+    spawnCmd = [cmd].concat(args.map(_quoteWinArg)).join(" ");
+    spawnArgs = undefined;
+    useShell = true;
+  }
+  var rv = childProcess.spawnSync(spawnCmd, spawnArgs, {
     cwd:   opts.cwd || ROOT,
     stdio: ["ignore", "pipe", "pipe"],
     env:   Object.assign({}, process.env, opts.env || {}),
-    shell: process.platform === "win32",
+    shell: useShell,
   });
   return {
     status: rv.status,
@@ -876,13 +890,18 @@ function cmdPushFix(opts) {
   _run("git", ["commit", "-s", "-m", opts.message]);   // -s DCO; NOT --amend (head must move)
   _ok("signed fix commit");
 
-  // gitleaks runs AFTER the commit so the fix itself is scanned; the signature
-  // verify catches an unsigned/badly-signed commit before it reaches the
-  // remote. On either failure, soft-reset keeps the fix staged and nothing
-  // reached the remote -- the operator fixes the cause and re-runs push-fix.
+  // Pre-push gates, all rolled back together on failure. gitleaks runs AFTER
+  // the commit so the fix itself is scanned; the signature verify catches an
+  // unsigned/badly-signed commit; and the touched-backend live-integration
+  // gate runs EXACTLY as `push` does -- a fix that changes a backend-protocol
+  // lib file must prove itself against the real service here too, or it could
+  // reach the merge having only passed host smoke (the CI workflows don't run
+  // test-integration.js). On any failure, soft-reset keeps the fix staged and
+  // nothing reached the remote -- the operator fixes the cause and re-runs.
   try {
     _gitleaks();
     _verifyCommitSignature("new");
+    cmdLiveIntegration({ skip: opts.skipLiveIntegration, skipReason: opts.liveSkipReason });
   } catch (gate) {
     _run("git", ["reset", "--soft", "HEAD~1"]);
     throw new Error("release: a pre-push gate failed -- the fix commit was rolled back " +
