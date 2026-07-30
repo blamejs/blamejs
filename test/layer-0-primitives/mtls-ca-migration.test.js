@@ -625,6 +625,63 @@ async function testImportOfRevokedGenerationIsRevoked() {
         res.revoked === 1 && ca.isRevoked(fp) === true);
 }
 
+// A rotation publishes the CA key and cert as two separate file renames, so a
+// crash BETWEEN them (or a power loss during the retained-root fsyncs) leaves
+// the new key beside the old cert with the in-memory catch rollback never run —
+// the prior key would be unrecoverable and the CA stuck (mtls-ca/ca-pair-
+// inconsistent). commit() guards this by writing a durable rollback journal of
+// the prior key before overwriting it; initCA()/_rotateImpl() reconcile from it.
+async function testInterruptedRotationRecoversFromJournal() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var keyG1  = fs.readFileSync(ca.paths.caKey);
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });
+  var keyG2  = fs.readFileSync(ca.paths.caKey);
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  var journal = ca.paths.caKey + ".rollback";
+
+  // Case 1 — crash AFTER the key rename, BEFORE the cert rename: the live key is
+  // the new (gen-2) key, the cert is still the old (gen-1) one, and the journal
+  // holds the prior (gen-1) key. A fresh handle must roll BACK to the consistent
+  // gen-1 pair so the CA (able to issue leaves and CRLs) survives.
+  fs.writeFileSync(ca.paths.caCert, certG1);   // cert never got published
+  fs.writeFileSync(journal, keyG1);            // durable prior-key journal
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var leaf = await reopened.generateClientCert({ cn: "after-crash" });
+  check("interrupted rotation: the handle recovers and issues after reconciling the rollback journal",
+        typeof leaf.cert === "string");
+  check("interrupted rotation: the live CA key is restored to the prior (gen-1) key",
+        fs.readFileSync(reopened.paths.caKey).equals(keyG1));
+  check("interrupted rotation: the spent rollback journal is removed",
+        fs.existsSync(journal) === false);
+
+  // Case 2 — crash AFTER the cert rename, BEFORE the journal delete: the new pair
+  // is consistent on disk but a stale journal lingers. Recovery must roll FORWARD
+  // (keep gen-2, drop the journal), never revert a completed rotation.
+  var dir2 = _mkTmp();
+  var ca2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
+  await ca2.initCA();
+  var priorKey2 = fs.readFileSync(ca2.paths.caKey);
+  await ca2.rotate({ generation: 2 });
+  var keyG2b  = fs.readFileSync(ca2.paths.caKey);
+  var journal2 = ca2.paths.caKey + ".rollback";
+  fs.writeFileSync(journal2, priorKey2);       // stale journal over a consistent new pair
+  var reopened2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
+  await reopened2.initCA();
+  check("stale journal over a consistent new pair rolls forward: key stays gen-2",
+        fs.readFileSync(reopened2.paths.caKey).equals(keyG2b));
+  check("stale journal over a consistent new pair is dropped",
+        fs.existsSync(journal2) === false);
+  check("roll-forward: the gen-2 CA still issues",
+        typeof (await reopened2.generateClientCert({ cn: "roll-fwd" })).cert === "string");
+
+  // Keep certG2 referenced so the fixture stays self-documenting.
+  check("interrupted-rotation fixture used two distinct generations",
+        !certG2.equals(certG1) && !keyG2.equals(keyG1));
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -665,6 +722,7 @@ async function run() {
     await testImportIssuanceBackfill();
     await testLoadTrustBundleToleratesConcurrentPrevRemoval();
     await testImportOfRevokedGenerationIsRevoked();
+    await testInterruptedRotationRecoversFromJournal();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

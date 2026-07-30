@@ -14002,6 +14002,50 @@ function testMtlsCaFingerprintMatchesGate() {
     bad);
 }
 
+// b.mtlsCa publishes the CA key and cert as two separate file renames, so they
+// cannot be a single atomic swap: a crash after the key rename but before the
+// cert rename leaves a new-key/old-cert pair the in-memory catch rollback (a
+// dead process never runs it) can't repair, and the prior key — already
+// overwritten — is unrecoverable, stranding the CA (mtls-ca/ca-pair-
+// inconsistent). commit() MUST persist a durable rollback journal of the prior
+// key (atomicFile.writeSync to keyDest + ".rollback") BEFORE the key rename, and
+// every CA-reading entry point (initCA / _rotateImpl) MUST reconcile a lingering
+// journal via _reconcileCommitJournalLocked() under the rotation lock. This fires
+// if the key rename loses its preceding journal write, or the recovery is no
+// longer wired into both entry points.
+function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  var renameIdx  = noComments.search(/renameWithRetry\s*\(\s*keyTmp\s*,\s*keyDest\s*\)/);
+  var journalIdx = noComments.search(/writeSync\s*\(\s*keyJournal\s*,/);
+  if (renameIdx === -1) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit()'s key-publish rename (renameWithRetry(keyTmp, keyDest)) is gone — the " +
+               "crash-atomicity guard can no longer verify the rollback journal precedes it" });
+  } else if (journalIdx === -1 || journalIdx > renameIdx) {
+    var upto = src.slice(0, renameIdx);
+    bad.push({ file: "lib/mtls-ca.js", line: upto.split(/\r?\n/).length,
+      content: "commit() overwrites the CA key without first persisting a durable rollback journal " +
+               "(atomicFile.writeSync(keyJournal, priorKey)) — a crash before the cert rename would " +
+               "leave a new-key/old-cert pair with the prior key unrecoverable" });
+  }
+  // One definition + two call sites (initCA + _rotateImpl) = 3 occurrences.
+  var recoveryCalls = (noComments.match(/_reconcileCommitJournalLocked\s*\(\s*\)/g) || []).length;
+  if (recoveryCalls < 3) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_reconcileCommitJournalLocked() must be invoked from both initCA() and _rotateImpl() so an " +
+               "interrupted rotation is reconciled before the CA is read or re-rotated (found " +
+               recoveryCalls + " occurrence(s), expected the definition + 2 call sites)" });
+  }
+  bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
+  _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
+          "recover from an interrupted rotation (crash-atomic key/cert publication)",
+    bad);
+}
+
 // The esbuild dev-tool is pinned across three artifacts kept in sync:
 // package.json devDependencies (the version source-of-truth, also postject), the
 // committed root package-lock.json that ci.yml + npm-publish.yml install via
@@ -15142,6 +15186,7 @@ async function run() {
   testSqlWhereDelegatorForwardsArguments();
   testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
   testMtlsCaFingerprintMatchesGate();
+  testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by
