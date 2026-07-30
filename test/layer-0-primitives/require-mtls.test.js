@@ -81,6 +81,13 @@ async function testRevocationSourceEnforcement() {
     try { b.middleware.requireMtls({ revocationSource: {} }); } catch (e) { ctorErr = e; }
     check("revocationSource without isRevoked() refused at construction",
           ctorErr && ctorErr.code === "require-mtls/bad-revocation-source");
+
+    // A falsy non-object (false / 0 / "") must NOT be silently coerced to "no
+    // source" — invalid security config fails at construction instead.
+    var falsyErr = null;
+    try { b.middleware.requireMtls({ revocationSource: false }); } catch (e) { falsyErr = e; }
+    check("a falsy non-object revocationSource (false) is refused at construction",
+          falsyErr && falsyErr.code === "require-mtls/bad-revocation-source");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

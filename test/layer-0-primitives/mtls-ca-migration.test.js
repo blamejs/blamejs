@@ -199,6 +199,41 @@ async function testIssuanceLedgerFailsClosed() {
           === "mtls-ca/issuance-ledger-write-failed");
 }
 
+// A cert revoked by SERIAL only, then swept by revokeGeneration (which supplies
+// serial + fingerprint), must become revocable by fingerprint — otherwise the
+// require-mtls gate (fingerprint-keyed) would still admit it.
+async function testRevokeGenerationBackfillsFingerprint() {
+  var ca = _newCa();
+  await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "gen1" });
+  ca.revoke(leaf.serialNumber);   // serial-only revocation
+  check("serial-only revocation does not yet match the fingerprint",
+        ca.isRevoked(leaf.fingerprint) === false);
+  await ca.rotate({ generation: 2 });
+  check("revokeGeneration backfills the fingerprint onto the serial-only entry (counts 1)",
+        ca.revokeGeneration(2).revoked === 1);
+  check("the cert is now revoked by fingerprint (gate-enforceable)",
+        ca.isRevoked(leaf.fingerprint) === true);
+}
+
+// A rotation whose CA commit FAILS must not have already destroyed the retained
+// root — a client still using it would be stranded by a rotation that never landed.
+async function testRetainedRootSurvivesFailedCommit() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });   // retains -> ca.prev.crt
+  check("retained root present before the failing rotation", ca.loadTrustBundle().length === 2);
+  // Sabotage the next commit: pre-create the key tmp path so exclusive-create fails.
+  var keyTmp = ca.paths.caKey + ".tmp";
+  fs.writeFileSync(keyTmp, "blocker");
+  check("the sabotaged rotation fails",
+        (await code2(function () { return ca.rotate({ generation: 3, retainPrevious: false }); }))
+          === "mtls-ca/commit-failed");
+  check("the retained root SURVIVES a failed retainPrevious:false rotation",
+        ca.loadTrustBundle().length === 2);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -214,6 +249,8 @@ async function run() {
     await testStatusAlgorithmNullForNonP384Ec();
     await testRetainPreviousFalseClearsStaleRoot();
     await testIssuanceLedgerFailsClosed();
+    await testRevokeGenerationBackfillsFingerprint();
+    await testRetainedRootSurvivesFailedCommit();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
