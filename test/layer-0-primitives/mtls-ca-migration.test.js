@@ -611,6 +611,20 @@ async function testLoadTrustBundleToleratesConcurrentPrevRemoval() {
         bundle.length === 1);
 }
 
+// importIssuance() of a leaf whose generation is already revoked (below the
+// watermark) must revoke it — the completed sweep won't see the late append.
+async function testImportOfRevokedGenerationIsRevoked() {
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.generateClientCert({ cn: "gen1" });
+  await ca.rotate({ generation: 2 });
+  await ca.revokeGeneration(2);   // watermark = 2
+  var fp = "cd".repeat(64);
+  var res = await ca.importIssuance([{ fingerprint: fp, generation: 1 }]);
+  check("importIssuance revokes an imported cert of an already-revoked generation",
+        res.revoked === 1 && ca.isRevoked(fp) === true);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -650,6 +664,7 @@ async function run() {
     await testMalformedWatermarkAbortsIssuance();
     await testImportIssuanceBackfill();
     await testLoadTrustBundleToleratesConcurrentPrevRemoval();
+    await testImportOfRevokedGenerationIsRevoked();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

@@ -77,6 +77,20 @@ async function testRevocationSourceEnforcement() {
     await ca.revoke(leaf2.serialNumber);   // serial-only revocation (no fingerprint)
     check("revocationSource: a serial-only revocation is enforced at the gate", _drive2() === false);
 
+    // A documented fingerprint-only source (strict 128-hex isRevoked, NO
+    // isSerialRevoked) must NOT be called with a serial — that would throw and
+    // fail-close every request. It should admit an unrevoked cert.
+    var strictFpSource = {
+      isRevoked: function (v) {
+        if (typeof v !== "string" || v.length !== 128) throw new Error("expects a 128-hex SHA3-512 fingerprint");
+        return false;
+      },
+    };
+    var fpGate = b.middleware.requireMtls({ audit: false, revocationSource: strictFpSource });
+    var fpNext = false;
+    fpGate(_mockReq({ authorized: true, peerCert: peer }), _mockRes(), function () { fpNext = true; });
+    check("a fingerprint-only revocationSource is not called with a serial (admits unrevoked)", fpNext === true);
+
     // Fail-closed: a source that throws refuses rather than admitting.
     var fcDenied = null;
     var fcGate = b.middleware.requireMtls({
