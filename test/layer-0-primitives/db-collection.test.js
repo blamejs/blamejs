@@ -315,6 +315,30 @@ async function testSealedFieldLikeQueries() {
   }
 }
 
+// A field sealed through ANY registration (here: a separate collection instance
+// with the opt) must be detected by a later plain collection() with no
+// sealedFields opt — $like consults the global registry, not just local opts.
+async function testSealedFieldLikeFromGlobalRegistry() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "col-sealed2-"));
+  try {
+    await setupTestDb(tmpDir, [{
+      name: "sealed_g",
+      columns: { _id: "TEXT PRIMARY KEY", email: "TEXT", emailHash: "TEXT" },
+      indexes: ["emailHash"],
+    }]);
+    b.db.collection("sealed_g", { sealedFields: { email: "emailHash" } }).insert({ _id: "u1", email: "bob@x.com" });
+    var plain = b.db.collection("sealed_g");   // NO sealedFields opt
+    check("exact $like on a globally-sealed field (no local opt) matches via the rewrite",
+          plain.find({ email: { $like: "bob@x.com" } }).length === 1);
+    var threw = false;
+    try { plain.find({ email: { $like: "bob%" } }); }
+    catch (e) { threw = /\$like with a wildcard is not supported on the sealed/.test(e.message); }
+    check("wildcard $like on a globally-sealed field (no local opt) is refused", threw);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   await testInsertFind();
   await testUpdateOperators();
@@ -328,6 +352,7 @@ async function run() {
   await testSealedFieldsRegistry();
   await testGhostTableIntrospection();
   await testSealedFieldLikeQueries();
+  await testSealedFieldLikeFromGlobalRegistry();
 }
 
 module.exports = { run: run };

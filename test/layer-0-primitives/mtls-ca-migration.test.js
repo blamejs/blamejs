@@ -562,6 +562,16 @@ async function testNestedPathParentDirsCreated() {
         ca.isRevoked(leaf.fingerprint) === true);
 }
 
+// A present-but-malformed generation watermark must ABORT issuance (fail closed),
+// not report 0 — reporting 0 would let a below-n generation slip through unrevoked.
+async function testMalformedWatermarkAbortsIssuance() {
+  var ca = _newCa();
+  await ca.initCA();
+  fs.writeFileSync(ca.paths.revokedGeneration, "not-a-number");
+  check("issuance aborts when the revoked-generation watermark is malformed (fails closed)",
+        (await code2(function () { return ca.generateClientCert({ cn: "x" }); })) === "mtls-ca/watermark-unreadable");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -598,6 +608,7 @@ async function run() {
     await testP12CertPemMustBeParseable();
     await testRotateRejectsEmptyAlgorithm();
     await testNestedPathParentDirsCreated();
+    await testMalformedWatermarkAbortsIssuance();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
