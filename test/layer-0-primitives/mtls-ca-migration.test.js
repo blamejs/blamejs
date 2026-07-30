@@ -506,6 +506,39 @@ async function testCommitRollsBackRetainedRootOnCertRenameFailure() {
   check("a rotation whose cert publication fails is rejected", failed);
   check("the prior retained root is restored (not lost) when cert publication fails",
         fs.existsSync(ca.paths.caCertPrev) && fs.readFileSync(ca.paths.caCertPrev).equals(priorPrev));
+  // The prior KEY must also be restored — otherwise the new key would sit beside
+  // the old cert (a mismatched pair) and the handle would be permanently unusable.
+  check("the handle still issues after the failed rotation (key + cert pair intact)",
+        typeof (await ca.generateClientCert({ cn: "after-failed-rotate" })).cert === "string");
+}
+
+// The clustered-watermark methods are all-or-nothing: a store providing only one
+// would split the watermark and fail open, so it is refused at construction.
+async function testWatermarkMethodsMustBePaired() {
+  var base = { list: function () { return []; }, add: function () {} };
+  var bumpOnly = Object.assign({}, base, { bumpGenerationWatermark: function () {} });
+  var readOnly = Object.assign({}, base, { readGenerationWatermark: function () { return 0; } });
+  check("a revocationStore with only bumpGenerationWatermark is refused",
+        code(function () { b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: bumpOnly }); })
+          === "mtls-ca/bad-revocation-store");
+  check("a revocationStore with only readGenerationWatermark is refused",
+        code(function () { b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: readOnly }); })
+          === "mtls-ca/bad-revocation-store");
+}
+
+// A P12 certPem must be a non-empty parseable certificate — an empty/bogus string
+// would record a fingerprint unrelated to the archive's real cert.
+async function testP12CertPemMustBeParseable() {
+  function eng(certPem) {
+    return { generateCa: engine.generateCa, signClientCert: engine.signClientCert,
+             packageP12: async function () { return { p12: Buffer.from("x"), certPem: certPem }; } };
+  }
+  var caEmpty = _newCa({ engine: eng("") }); await caEmpty.initCA();
+  check("generateClientP12 refuses an empty certPem",
+        (await code2(function () { return caEmpty.generateClientP12({ password: "pw" }); })) === "mtls-ca/bad-engine-output");
+  var caBogus = _newCa({ engine: eng("not a certificate") }); await caBogus.initCA();
+  check("generateClientP12 refuses a non-parseable certPem",
+        (await code2(function () { return caBogus.generateClientP12({ password: "pw" }); })) === "mtls-ca/bad-engine-output");
 }
 
 // async variant of code() for rejected promises.
@@ -540,6 +573,8 @@ async function run() {
     await testClusteredWatermarkViaStoreMethods();
     await testInitCaRefusesPersistentPairMismatch();
     await testCommitRollsBackRetainedRootOnCertRenameFailure();
+    await testWatermarkMethodsMustBePaired();
+    await testP12CertPemMustBeParseable();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
