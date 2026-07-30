@@ -57,7 +57,7 @@ async function testRevocationSourceEnforcement() {
 
     // Rotate, then revoke the whole gen-1 cohort — the fingerprint path the CRL can't cover.
     await ca.rotate({ generation: 2 });
-    check("revokeGeneration revoked the gen-1 leaf", ca.revokeGeneration(2).revoked === 1);
+    check("revokeGeneration revoked the gen-1 leaf", (await ca.revokeGeneration(2)).revoked === 1);
 
     var admittedAfter = _drive();
     check("revocationSource: the revoked cert is denied at the gate", admittedAfter === false);

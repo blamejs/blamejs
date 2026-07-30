@@ -125,12 +125,12 @@ async function testRevokeGeneration() {
   var g1b = await ca.generateClientCert({ cn: "gen1-b" });
   await ca.rotate({ generation: 2 });
   var g2 = await ca.generateClientCert({ cn: "gen2-a" });
-  var res = ca.revokeGeneration(2);
+  var res = await ca.revokeGeneration(2);
   check("revokeGeneration(2): revokes both gen-1 leaves", res.revoked === 2);
   check("revokeGeneration: gen-1 leaves are revoked",
         ca.isRevoked(g1a.fingerprint) && ca.isRevoked(g1b.fingerprint));
   check("revokeGeneration: the gen-2 leaf is NOT revoked", ca.isRevoked(g2.fingerprint) === false);
-  check("revokeGeneration: idempotent (re-run revokes 0 new)", ca.revokeGeneration(2).revoked === 0);
+  check("revokeGeneration: idempotent (re-run revokes 0 new)", (await ca.revokeGeneration(2)).revoked === 0);
   check("revokeGeneration: n=0 refused", code(function () { ca.revokeGeneration(0); }) === "mtls-ca/bad-generation");
   check("revokeGeneration: non-integer n refused", code(function () { ca.revokeGeneration(1.5); }) === "mtls-ca/bad-generation");
 }
@@ -206,12 +206,12 @@ async function testRevokeGenerationBackfillsFingerprint() {
   var ca = _newCa();
   await ca.initCA();
   var leaf = await ca.generateClientCert({ cn: "gen1" });
-  ca.revoke(leaf.serialNumber);   // serial-only revocation
+  await ca.revoke(leaf.serialNumber);   // serial-only revocation
   check("serial-only revocation does not yet match the fingerprint",
         ca.isRevoked(leaf.fingerprint) === false);
   await ca.rotate({ generation: 2 });
   check("revokeGeneration backfills the fingerprint onto the serial-only entry (counts 1)",
-        ca.revokeGeneration(2).revoked === 1);
+        (await ca.revokeGeneration(2)).revoked === 1);
   check("the cert is now revoked by fingerprint (gate-enforceable)",
         ca.isRevoked(leaf.fingerprint) === true);
 }
@@ -273,10 +273,10 @@ async function testCrlOmissionCountExcludesSerialDupes() {
   var ca = _newCa();
   await ca.initCA();
   var leaf = await ca.generateClientCert({ cn: "z1" });
-  ca.revoke(leaf.serialNumber);                 // serial-only, recorded in the ledger
-  ca.revoke({ fingerprint: "cd".repeat(64) });  // a genuine fingerprint-only revocation
+  await ca.revoke(leaf.serialNumber);                 // serial-only, recorded in the ledger
+  await ca.revoke({ fingerprint: "cd".repeat(64) });  // a genuine fingerprint-only revocation
   await ca.rotate({ generation: 2 });
-  ca.revokeGeneration(2);                        // backfills leaf -> a serial-duplicate entry
+  await ca.revokeGeneration(2);                        // backfills leaf -> a serial-duplicate entry
   var crl = await ca.generateCrl({ persist: false });
   check("generateCrl omission count counts only genuine fingerprint-only entries (serial dupes excluded)",
         crl.fingerprintOnlyOmitted === 1);
@@ -303,7 +303,7 @@ async function testRevocationIndexStaysConsistent() {
   await ca.initCA();
   var leaf = await ca.generateClientCert({ cn: "idx" });
   check("not revoked before revocation (builds the index)", ca.isRevoked(leaf.fingerprint) === false);
-  ca.revoke({ fingerprint: leaf.fingerprint });
+  await ca.revoke({ fingerprint: leaf.fingerprint });
   check("revoked after revoke (index updated incrementally, no store re-scan)",
         ca.isRevoked(leaf.fingerprint) === true);
 }
@@ -318,7 +318,7 @@ async function testRevocationIndexRefreshesAcrossHandles() {
   var leaf = await caA.generateClientCert({ cn: "shared" });
   check("handle A: cert not revoked initially (builds its index)",
         caA.isRevoked(leaf.fingerprint) === false);
-  caB.revoke({ fingerprint: leaf.fingerprint });   // revoke through the OTHER handle
+  await caB.revoke({ fingerprint: leaf.fingerprint });   // revoke through the OTHER handle
   check("handle A picks up a revocation written by handle B (index refreshed via store version)",
         caA.isRevoked(leaf.fingerprint) === true);
 }
@@ -370,9 +370,56 @@ async function testConcurrentIssuanceAllRecorded() {
   ]);
   await ca.rotate({ generation: 2 });
   check("all 3 concurrently-issued certs are recorded (revokeGeneration revokes all 3)",
-        ca.revokeGeneration(2).revoked === 3);
+        (await ca.revokeGeneration(2)).revoked === 3);
   check("each concurrently-issued cert is revoked by fingerprint",
         leaves.every(function (l) { return ca.isRevoked(l.fingerprint); }));
+}
+
+// A P-384 EC CA signed with a non-SHA-384 digest must NOT be labeled
+// ECDSA-P384-SHA384 — the digest is part of the label, not just the curve.
+async function testStatusAlgorithmNullForWrongDigest() {
+  var p384Sha512 = {
+    generateCa: async function () {
+      var subtle = pki.webcrypto.subtle;
+      var keys = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+      var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+      var now = new Date();
+      var caCertPem = await pki.x509.sign({
+        subject:          [{ commonName: "p384-sha512" }, { organizationalUnitName: "CAv1" }],
+        subjectPublicKey: spki,
+        serialNumber:     "01",
+        notBefore:        now,
+        notAfter:         new Date(now.getTime() + 86400000),
+        extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign", "cRLSign"] },
+      }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha512" });
+      var caKeyPem = await pki.key.export(keys.privateKey, { format: "pem" });
+      return { caCertPem: caCertPem, caKeyPem: caKeyPem };
+    },
+  };
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: p384Sha512 });
+  await ca.initCA();
+  var s = ca.status();
+  check("status: a P-384 CA signed with SHA-512 is not labeled ECDSA-P384-SHA384 (digest checked)",
+        s.keyType === "ec" && s.algorithm === null);
+}
+
+// An issuance whose signing straddles a rotate()+revokeGeneration() for its
+// generation must be caught and refused, not returned as a live credential the
+// sweep missed (the record races the sweep-read; the watermark closes it).
+async function testIssuanceSupersededByGenerationRevocation() {
+  var dir = _mkTmp();
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    signClientCert: async function (a) { await barrier; return engine.signClientCert(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();                            // generation 1
+  var issuing = ca.generateClientCert({ cn: "in-flight" });   // blocks in signClientCert (gen-1 CA)
+  await ca.rotate({ generation: 2 });
+  await ca.revokeGeneration(2);                 // sweeps gen-1 — the in-flight leaf isn't in the ledger yet
+  release();                                    // now _recordIssuance runs, AFTER the sweep
+  check("an issuance whose generation was revoked mid-signing is refused (superseded)",
+        (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
 }
 
 // async variant of code() for rejected promises.
@@ -401,6 +448,8 @@ async function run() {
     await testRotationConflictAcrossHandles();
     await testCanVerifyInTlsProbesTargetAlgorithm();
     await testConcurrentIssuanceAllRecorded();
+    await testStatusAlgorithmNullForWrongDigest();
+    await testIssuanceSupersededByGenerationRevocation();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

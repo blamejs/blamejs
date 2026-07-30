@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.3",
-  "createdAt": "2026-07-30T17:20:25.280Z",
+  "createdAt": "2026-07-30T17:55:10.173Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44785,6 +44785,10 @@
               "valueType": "string"
             },
             "revocations": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "revokedGeneration": {
               "type": "primitive",
               "valueType": "string"
             }

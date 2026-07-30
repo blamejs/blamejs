@@ -118,8 +118,8 @@ async function run() {
   var a = await ca.generateClientCert({ cn: "serial-revoked" });
   var bCert = await ca.generateClientCert({ cn: "fingerprint-revoked" });
 
-  ca.revoke(a.serialNumber, { reason: "superseded" });                 // serial-keyed
-  ca.revoke({ fingerprint: bCert.fingerprint, reason: "keyCompromise" }); // fingerprint-only (null serial)
+  await ca.revoke(a.serialNumber, { reason: "superseded" });                 // serial-keyed
+  await ca.revoke({ fingerprint: bCert.fingerprint, reason: "keyCompromise" }); // fingerprint-only (null serial)
 
   // RED before the fix: this throws inside the CRL encoder on the null serial.
   var res = await ca.generateCrl();
@@ -142,7 +142,7 @@ async function run() {
   var dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-crl-fponly-"));
   var ca2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
   var c = await ca2.generateClientCert({ cn: "only-fp" });
-  ca2.revoke({ fingerprint: c.fingerprint });
+  await ca2.revoke({ fingerprint: c.fingerprint });
 
   var res2 = await ca2.generateCrl();
   check("generateCrl with only fingerprint-only revocations produces a valid CRL",

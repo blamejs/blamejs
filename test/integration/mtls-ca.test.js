@@ -214,7 +214,7 @@ async function run() {
     check("getRevocations: function present", typeof ca.getRevocations === "function");
     check("generateCrl: function present",  typeof ca.generateCrl === "function");
     var startCount = ca.getRevocations().length;
-    var revoked = ca.revoke("0xABC123", { reason: "key-compromise" });
+    var revoked = await ca.revoke("0xABC123", { reason: "key-compromise" });
     check("revoke: returns the recorded entry",
           revoked && revoked.serialNumber === "abc123" && revoked.reason === "key-compromise");
     check("revoke: reasonCode mapped to RFC 5280 code 1",
@@ -224,7 +224,7 @@ async function run() {
           ca.isRevoked("ABC123") === true && ca.isRevoked("abc:12:3") === true);
     check("isRevoked: unknown serial → false",
           ca.isRevoked("DEADBEEF") === false);
-    var dup = ca.revoke("ABC123", { reason: "key-compromise" });
+    var dup = await ca.revoke("ABC123", { reason: "key-compromise" });
     check("revoke is idempotent — same revokedAt on duplicate call",
           dup.revokedAt === revoked.revokedAt);
     check("getRevocations: registry grew by 1",
@@ -272,7 +272,7 @@ async function run() {
           derBytes.length > 100);
 
     // Persist new revocation, regenerate CRL, confirm entry count grows.
-    ca.revoke("CAFEBABE", { reason: "superseded" });
+    await ca.revoke("CAFEBABE", { reason: "superseded" });
     var crl2 = await ca.generateCrl();
     check("generateCrl: picks up new revocations on regenerate",
           crl2.entryCount === crl.entryCount + 1);

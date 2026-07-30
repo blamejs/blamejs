@@ -471,7 +471,7 @@ async function testClassicalBridgeSignsWithSha384() {
         pki.schema.x509.parse(bundle.caCertPem).signatureAlgorithm.oid === SHA384);
   check("classical leaf cert signature is ecdsa-with-SHA384",
         pki.schema.x509.parse(leaf.cert).signatureAlgorithm.oid === SHA384);
-  ca.revoke({ fingerprint: leaf.fingerprint });
+  await ca.revoke({ fingerprint: leaf.fingerprint });
   var crl = await ca.generateCrl();
   check("classical CRL signature is ecdsa-with-SHA384",
         pki.schema.crl.parse(crl.crlPem).signatureAlgorithm.oid === SHA384);
@@ -509,7 +509,7 @@ async function testRevokeRejectsRemoveFromCrl() {
   check("revoke: removeFromCRL is refused (delta-CRL directive, not a reason)",
         threw && /mtls-ca\/bad-reason/.test(threw.code || ""));
   // A valid reason still revokes AND generateCrl() publishes (not poisoned).
-  ca.revoke(leaf.serialNumber, { reason: "keyCompromise" });
+  await ca.revoke(leaf.serialNumber, { reason: "keyCompromise" });
   var crl = await ca.generateCrl();
   check("revoke: a valid reason still publishes a CRL", typeof crl.crlPem === "string");
 }
@@ -567,16 +567,16 @@ async function run() {
     b.mtlsCa.parseGeneration("-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----\n") === 0);
 
   // ---- #322 part 1: revoke + isRevoked by serial (backward-compat) ----
-  ca.revoke(issued.serialNumber, { reason: "superseded" });
+  await ca.revoke(issued.serialNumber, { reason: "superseded" });
   check("revoke(serial) then isRevoked(serial) is true", ca.isRevoked(issued.serialNumber) === true);
   check("a serial that was never revoked reads false", ca.isRevoked("00ff") === false);
-  var first = ca.revoke(issued.serialNumber);
-  var again = ca.revoke(issued.serialNumber);
+  var first = await ca.revoke(issued.serialNumber);
+  var again = await ca.revoke(issued.serialNumber);
   check("revoke is idempotent (revokedAt unchanged)", first.revokedAt === again.revokedAt);
 
   // ---- #322 part 1: revoke + isRevoked by fingerprint (the gate's key) ----
   var issued2 = await ca.generateClientCert({ cn: "client-2" });
-  ca.revoke({ fingerprint: issued2.fingerprint, reason: "keyCompromise" });
+  await ca.revoke({ fingerprint: issued2.fingerprint, reason: "keyCompromise" });
   check("revoke({fingerprint}) then isRevoked(fingerprint) is true",
     ca.isRevoked(issued2.fingerprint) === true);
   check("isRevoked tolerates separator/case formatting",
@@ -591,7 +591,7 @@ async function run() {
   var store = { list: function () { return rows.slice(); }, add: function (e) { rows.push(e); } };
   var dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-byostore-"));
   var ca2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled", revocationStore: store });
-  ca2.revoke("AB:CD:EF", { reason: "cessationOfOperation" });
+  await ca2.revoke("AB:CD:EF", { reason: "cessationOfOperation" });
   check("BYO store: revoke writes through the operator store (normalized serial)",
     rows.length === 1 && rows[0].serialNumber === "abcdef");
   check("BYO store: isRevoked reads through the operator store", ca2.isRevoked("abcdef") === true);
@@ -626,7 +626,7 @@ async function run() {
   check("unparseable cert yields serialNumber null (best-effort)", stub.serialNumber === null);
   check("fingerprint is still surfaced for an undecodable cert (byte-hash fallback)",
     stub.fingerprint === b.crypto.sha3Hash(stub.cert));
-  ca3.revoke({ fingerprint: stub.fingerprint });
+  await ca3.revoke({ fingerprint: stub.fingerprint });
   check("a non-X.509 cert is still revocable by fingerprint", ca3.isRevoked(stub.fingerprint) === true);
 
   await testIssuanceVariants();
