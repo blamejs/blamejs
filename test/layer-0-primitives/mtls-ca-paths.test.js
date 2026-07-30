@@ -202,12 +202,14 @@ async function testEngineOutputGuards() {
   try { await c5.generateClientP12({ password: "pw" }); } catch (e) { threwP12 = /bad-engine-output/.test(e.code || ""); }
   check("generateClientP12 rejects a non-Buffer p12", threwP12);
 
-  // packageP12 returns a Buffer but a non-string certPem → identity
-  // enrichment is skipped and the raw result is returned unchanged.
+  // packageP12 returns a Buffer but a non-string certPem → the archive has no
+  // identity to record in the issuance ledger, so it is REFUSED rather than
+  // returned untracked (an untracked P12 could never be revoked by generation).
   var c6 = b.mtlsCa.create({ dataDir: _mkDir("mtls-eg-"), caKeySealedMode: "disabled", engine: { generateCa: okGen, packageP12: async function () { return { p12: Buffer.from("P12"), certPem: 123 }; } } });
-  var r6 = await c6.generateClientP12({ password: "pw" });
-  check("a p12 result without a string certPem is returned without a fingerprint",
-    Buffer.isBuffer(r6.p12) && r6.fingerprint === undefined);
+  var threwNoCertPem = false;
+  try { await c6.generateClientP12({ password: "pw" }); }
+  catch (e) { threwNoCertPem = /bad-engine-output/.test(e.code || ""); }
+  check("a p12 result without a string certPem is refused (untracked -> unrevocable)", threwNoCertPem);
 }
 
 async function testAbsolutePathHonored() {

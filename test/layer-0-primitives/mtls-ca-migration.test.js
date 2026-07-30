@@ -234,6 +234,54 @@ async function testRetainedRootSurvivesFailedCommit() {
         ca.loadTrustBundle().length === 2);
 }
 
+// A rotation whose CA commit SUCCEEDS but whose retained-root snapshot fails
+// (full/read-only fs) must still succeed — the CA is committed, the algorithm
+// override sticks, and the handle keeps issuing. The retained root is secondary.
+async function testRotateSucceedsWhenRetainedRootWriteFails() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, algorithm: "ECDSA-P384-SHA384", caKeySealedMode: "disabled" });
+  await ca.initCA();
+  // A directory sits where ca.prev.crt would be written -> the snapshot fails.
+  fs.mkdirSync(ca.paths.caCertPrev);
+  var rot = await ca.rotate({ generation: 2, algorithm: "ML-DSA-87" });
+  check("rotation succeeds even though the retained-root snapshot failed", rot.generation === 2);
+  check("the algorithm override still applied despite the retained-root write failure",
+        ca.status().algorithm === "ML-DSA-87");
+  check("the rotated handle is still usable (issues under the new algorithm)",
+        typeof (await ca.generateClientCert({ cn: "post-degraded" })).cert === "string");
+  fs.rmdirSync(ca.paths.caCertPrev);
+}
+
+// A P12 archive with no certPem cannot be recorded in the issuance ledger, so it
+// could never be revoked by generation — refuse it rather than return it.
+async function testP12RequiresLedgerIdentity() {
+  var noCertPem = {
+    generateCa:     engine.generateCa,
+    signClientCert: engine.signClientCert,
+    packageP12:     async function () { return { p12: Buffer.from("fake-p12-bytes") }; },
+  };
+  var ca = _newCa({ engine: noCertPem });
+  await ca.initCA();
+  check("generateClientP12 refuses a P12 with no certPem (untracked -> unrevocable)",
+        (await code2(function () { return ca.generateClientP12({ password: "pw" }); }))
+          === "mtls-ca/bad-engine-output");
+}
+
+// generateCrl's fingerprint-only omission count must not fold in the serial
+// DUPLICATES the CRL dedup drops — otherwise a complete CRL is reported incomplete.
+async function testCrlOmissionCountExcludesSerialDupes() {
+  var ca = _newCa();
+  await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "z1" });
+  ca.revoke(leaf.serialNumber);                 // serial-only, recorded in the ledger
+  ca.revoke({ fingerprint: "cd".repeat(64) });  // a genuine fingerprint-only revocation
+  await ca.rotate({ generation: 2 });
+  ca.revokeGeneration(2);                        // backfills leaf -> a serial-duplicate entry
+  var crl = await ca.generateCrl({ persist: false });
+  check("generateCrl omission count counts only genuine fingerprint-only entries (serial dupes excluded)",
+        crl.fingerprintOnlyOmitted === 1);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -251,6 +299,9 @@ async function run() {
     await testIssuanceLedgerFailsClosed();
     await testRevokeGenerationBackfillsFingerprint();
     await testRetainedRootSurvivesFailedCommit();
+    await testRotateSucceedsWhenRetainedRootWriteFails();
+    await testP12RequiresLedgerIdentity();
+    await testCrlOmissionCountExcludesSerialDupes();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
