@@ -48,12 +48,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is intentionally excluded from the framework smoke: its
-        # 3-core runner chronically thrashed the pattern-catalog file's own
-        # worker pool as the lib/ corpus grew, stalling that file past its
-        # watchdog (fork-starvation, not a real hang). ubuntu + windows cover
-        # the framework smoke; macOS still runs the lighter Wiki e2e leg below.
-        os: [ubuntu-latest, windows-latest]
+        # Framework smoke runs on ubuntu only. macOS was excluded for a
+        # chronic fork-starvation stall on its 3-core runner (the pattern-
+        # catalog file's own worker pool thrashed as the lib/ corpus grew —
+        # not a real hang). windows is excluded because the suite is already
+        # run on Windows during local development before every push, so the
+        # windows runner duplicated that signal for the job's cost. Both
+        # platforms still run the lighter Wiki e2e leg below.
+        os: [ubuntu-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -107,8 +109,7 @@ jobs:
           # event loop is blocked by a synchronous native call. Forking
           # also hands each file a fresh process, so per-file memory does
           # not accumulate toward the heap ceiling. 4 parallel forks on the
-          # ubuntu/windows runners; the publish gate uses 8 on its ubuntu-only
-          # runner.
+          # ubuntu runner; the publish gate uses 8 on its ubuntu-only runner.
           SMOKE_PARALLEL: "4"
           # Defensive libuv threadpool headroom: under parallel smoke
           # several async Argon2id key-stretch calls can queue onto the
@@ -121,11 +122,10 @@ jobs:
           # Per-file watchdog budget. codebase-patterns scans the whole
           # lib/ corpus across eight shingle sizes — the heaviest file, ~2.5 min
           # on ubuntu under the parallel forks, and it grows with the corpus.
-          # 15 min is generous headroom over that worst case (and any slower
-          # windows runner) while still failing a genuinely stuck file well
-          # inside the 50-min job ceiling. (The former 35-min budget existed
-          # only for the now-removed 3-core macOS runner, where the same scan
-          # took ~20-30 min.)
+          # 15 min is generous headroom over that worst case while still
+          # failing a genuinely stuck file well inside the 50-min job ceiling.
+          # (The former 35-min budget existed only for the since-removed
+          # 3-core macOS runner, where the same scan took ~20-30 min.)
           SMOKE_FILE_TIMEOUT_MS: "900000"
         run: node test/smoke.js
 
