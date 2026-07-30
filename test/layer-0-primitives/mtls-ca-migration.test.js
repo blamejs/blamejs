@@ -473,6 +473,41 @@ async function testClusteredWatermarkViaStoreMethods() {
         (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
 }
 
+// A CA cert/key pair that stays inconsistent after re-reading must be REFUSED
+// (mtls-ca/ca-pair-inconsistent), not signed with, so issuance fails clearly.
+async function testInitCaRefusesPersistentPairMismatch() {
+  var ca = _newCa();
+  await ca.initCA();
+  var other = _newCa();
+  await other.initCA();
+  fs.copyFileSync(other.paths.caKey, ca.paths.caKey);   // ca.key now belongs to a different CA
+  check("initCA refuses a persistently mismatched CA cert/key pair (does not sign)",
+        (await code2(function () { return ca.generateClientCert({ cn: "mismatch" }); }))
+          === "mtls-ca/ca-pair-inconsistent");
+}
+
+// If the FINAL cert rename fails after the retained root was rewritten, the prior
+// retained root must be restored — a failed rotation cannot strand old-CA clients.
+async function testCommitRollsBackRetainedRootOnCertRenameFailure() {
+  var atomicFile = require("../../lib/atomic-file");
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });                    // ca.prev.crt = gen-1 (prior retained root)
+  var priorPrev = fs.readFileSync(ca.paths.caCertPrev);
+  var realRename = atomicFile.renameWithRetry;
+  atomicFile.renameWithRetry = function (from, to) {
+    if (String(to) === String(ca.paths.caCert)) throw new Error("simulated cert rename failure");
+    return realRename.apply(this, arguments);
+  };
+  var failed = false;
+  try {
+    try { await ca.rotate({ generation: 3 }); } catch (_e) { failed = true; }
+  } finally { atomicFile.renameWithRetry = realRename; }
+  check("a rotation whose cert publication fails is rejected", failed);
+  check("the prior retained root is restored (not lost) when cert publication fails",
+        fs.existsSync(ca.paths.caCertPrev) && fs.readFileSync(ca.paths.caCertPrev).equals(priorPrev));
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -503,6 +538,8 @@ async function run() {
     await testIssuanceSupersededByGenerationRevocation();
     await testIssuanceSupersededWithCustomStore();
     await testClusteredWatermarkViaStoreMethods();
+    await testInitCaRefusesPersistentPairMismatch();
+    await testCommitRollsBackRetainedRootOnCertRenameFailure();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

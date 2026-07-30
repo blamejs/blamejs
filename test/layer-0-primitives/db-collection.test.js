@@ -291,6 +291,30 @@ async function testGhostTableIntrospection() {
   }
 }
 
+// $like on a SEALED field: an exact pattern must still match via the derived-hash
+// rewrite (as equality did), and a wildcard pattern — impossible against a hash —
+// must be refused rather than silently matching the ciphertext (returning nothing).
+async function testSealedFieldLikeQueries() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "col-sealed-"));
+  try {
+    await setupTestDb(tmpDir, [{
+      name: "sealed_users",
+      columns: { _id: "TEXT PRIMARY KEY", email: "TEXT", emailHash: "TEXT" },
+      indexes: ["emailHash"],
+    }]);
+    var users = b.db.collection("sealed_users", { sealedFields: { email: "emailHash" } });
+    users.insert({ _id: "u1", email: "alice@example.com" });
+    check("exact $like on a sealed field still matches via the derived-hash rewrite",
+          users.find({ email: { $like: "alice@example.com" } }).length === 1);
+    var threw = false;
+    try { users.find({ email: { $like: "alice%" } }); }
+    catch (e) { threw = /\$like with a wildcard is not supported on the sealed/.test(e.message); }
+    check("wildcard $like on a sealed field is refused (a hash can't be wildcard-matched)", threw);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   await testInsertFind();
   await testUpdateOperators();
@@ -303,6 +327,7 @@ async function run() {
   await testReadDefaults();
   await testSealedFieldsRegistry();
   await testGhostTableIntrospection();
+  await testSealedFieldLikeQueries();
 }
 
 module.exports = { run: run };
