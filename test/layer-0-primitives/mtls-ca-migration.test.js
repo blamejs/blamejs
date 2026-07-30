@@ -282,6 +282,32 @@ async function testCrlOmissionCountExcludesSerialDupes() {
         crl.fingerprintOnlyOmitted === 1);
 }
 
+// Concurrent rotate() calls must serialize, not both read the same current
+// generation and clobber each other's CA + retained root.
+async function testConcurrentRotationsSerialize() {
+  var ca = _newCa();
+  await ca.initCA();   // generation 1
+  var results = await Promise.all([ca.rotate({}), ca.rotate({})]);
+  var gens = results.map(function (r) { return r.generation; }).sort(function (a, b) { return a - b; });
+  check("concurrent rotations serialize into monotonic generations 2 and 3",
+        JSON.stringify(gens) === "[2,3]");
+  check("the CA ends at generation 3 with a single retained root",
+        ca.status().generation === 3 && ca.loadTrustBundle().length === 2);
+}
+
+// isRevoked() reads an in-memory index (kept in sync by revoke()) rather than
+// re-parsing the store per call — assert the index stays correct across a
+// build-then-update sequence.
+async function testRevocationIndexStaysConsistent() {
+  var ca = _newCa();
+  await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "idx" });
+  check("not revoked before revocation (builds the index)", ca.isRevoked(leaf.fingerprint) === false);
+  ca.revoke({ fingerprint: leaf.fingerprint });
+  check("revoked after revoke (index updated incrementally, no store re-scan)",
+        ca.isRevoked(leaf.fingerprint) === true);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -302,6 +328,8 @@ async function run() {
     await testRotateSucceedsWhenRetainedRootWriteFails();
     await testP12RequiresLedgerIdentity();
     await testCrlOmissionCountExcludesSerialDupes();
+    await testConcurrentRotationsSerialize();
+    await testRevocationIndexStaysConsistent();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
