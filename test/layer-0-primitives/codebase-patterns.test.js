@@ -13913,6 +13913,34 @@ function testReleasePushPathsRunLiveIntegration() {
     bad);
 }
 
+// lib/sql.js `where` / `orWhere` distinguish the 2-arg where(field, value)
+// shorthand from the 3-arg where(field, op, value) form by arguments.length.
+// A where-family delegator that re-passes FIXED positional params
+// (`return this.where(a, op, value)`) makes a 2-arg call look like 3 — the
+// value gets read as the operator and throws sql-builder/bad-operator. Such a
+// delegator MUST forward `arguments` (via `.apply`) instead. This is the
+// andWhere bug fixed alongside the sql-builder coverage work.
+function testSqlWhereDelegatorForwardsArguments() {
+  var src;
+  try { src = fs.readFileSync("lib/sql.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var lines = src.split(/\r?\n/);
+  var re = /return\s+this\.(?:where|orWhere)\s*\(\s*[A-Za-z_$]/;
+  for (var i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) {
+      bad.push({ file: "lib/sql.js", line: i + 1,
+        content: "where-family delegator re-passes fixed positional params to this.where/orWhere " +
+                 "— forward `arguments` via .apply so the 2-arg where(field, value) shorthand " +
+                 "isn't misread as 3-arg (value bound as the operator)" });
+    }
+  }
+  bad = _filterMarkers(bad, "sql-where-delegator-fixed-signature");
+  _report("lib/sql.js where-family delegators forward `arguments` (not fixed positional params) " +
+          "so the 2-arg where/andWhere/orWhere shorthand works",
+    bad);
+}
+
 // The esbuild dev-tool is pinned across three artifacts kept in sync:
 // package.json devDependencies (the version source-of-truth, also postject), the
 // committed root package-lock.json that ci.yml + npm-publish.yml install via
@@ -15050,6 +15078,7 @@ async function run() {
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
+  testSqlWhereDelegatorForwardsArguments();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by
