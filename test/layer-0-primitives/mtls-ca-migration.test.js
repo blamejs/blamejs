@@ -308,6 +308,41 @@ async function testRevocationIndexStaysConsistent() {
         ca.isRevoked(leaf.fingerprint) === true);
 }
 
+// A revocation written through ANOTHER handle over the same data directory must
+// be seen by this handle's gate lookup — the index refreshes on a store change.
+async function testRevocationIndexRefreshesAcrossHandles() {
+  var dir = _mkTmp();
+  var caA = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var caB = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await caA.initCA();
+  var leaf = await caA.generateClientCert({ cn: "shared" });
+  check("handle A: cert not revoked initially (builds its index)",
+        caA.isRevoked(leaf.fingerprint) === false);
+  caB.revoke({ fingerprint: leaf.fingerprint });   // revoke through the OTHER handle
+  check("handle A picks up a revocation written by handle B (index refreshed via store version)",
+        caA.isRevoked(leaf.fingerprint) === true);
+}
+
+// Two handles over the same dataDir own separate rotation chains, so the
+// pre-commit generation revalidation must refuse the loser instead of both
+// committing the same generation and clobbering the retained root.
+async function testRotationConflictAcrossHandles() {
+  var dir = _mkTmp();
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    generateCa: async function (o) { await barrier; return engine.generateCa(o); },
+  });
+  var caA = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var caB = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: slowEngine });
+  await caA.initCA();                              // generation 1 on disk, shared
+  var bRotate = caB.rotate({ generation: 2 });     // reads gen 1, blocks in generateCa
+  await caA.rotate({ generation: 2 });             // commits generation 2 first
+  release();                                        // unblock caB's generateCa
+  check("a concurrent cross-handle rotation is refused with mtls-ca/rotation-conflict",
+        (await code2(function () { return bRotate; })) === "mtls-ca/rotation-conflict");
+  check("the CA on disk is the winner's generation 2", caA.status().generation === 2);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -330,6 +365,8 @@ async function run() {
     await testCrlOmissionCountExcludesSerialDupes();
     await testConcurrentRotationsSerialize();
     await testRevocationIndexStaysConsistent();
+    await testRevocationIndexRefreshesAcrossHandles();
+    await testRotationConflictAcrossHandles();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
