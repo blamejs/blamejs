@@ -98,9 +98,9 @@ async function testTrustBundleRetention() {
   var bundle = ca.loadTrustBundle();
   check("loadTrustBundle: current + retained after rotate",
         bundle.length === 2 && bundle.indexOf(prevCert) !== -1);
-  var d = ca.dropRetained();
+  var d = await ca.dropRetained();
   check("dropRetained: ends the window", d.dropped === true && ca.loadTrustBundle().length === 1);
-  check("dropRetained: idempotent when nothing retained", ca.dropRetained().dropped === false);
+  check("dropRetained: idempotent when nothing retained", (await ca.dropRetained()).dropped === false);
 
   var ca2 = _newCa(); await ca2.initCA();
   await ca2.rotate({ generation: 2, retainPrevious: false });
@@ -422,6 +422,27 @@ async function testIssuanceSupersededByGenerationRevocation() {
         (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
 }
 
+// The issuance-vs-sweep watermark must cover a CUSTOM revocation store too — it
+// is a separate file, and a list()/add()-only store cannot make its own
+// append+sweep atomic.
+async function testIssuanceSupersededWithCustomStore() {
+  var dir = _mkTmp();
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    signClientCert: async function (a) { await barrier; return engine.signClientCert(a); },
+  });
+  var revoked = [];
+  var customStore = { list: function () { return revoked.slice(); }, add: function (e) { revoked.push(e); } };
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: slowEngine, revocationStore: customStore });
+  await ca.initCA();
+  var issuing = ca.generateClientCert({ cn: "in-flight-custom" });
+  await ca.rotate({ generation: 2 });
+  await ca.revokeGeneration(2);
+  release();
+  check("issuance-superseded fires with a custom revocation store (watermark applies to all stores)",
+        (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -450,6 +471,7 @@ async function run() {
     await testConcurrentIssuanceAllRecorded();
     await testStatusAlgorithmNullForWrongDigest();
     await testIssuanceSupersededByGenerationRevocation();
+    await testIssuanceSupersededWithCustomStore();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
