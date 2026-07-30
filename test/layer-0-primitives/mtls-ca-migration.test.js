@@ -541,6 +541,27 @@ async function testP12CertPemMustBeParseable() {
         (await code2(function () { return caBogus.generateClientP12({ password: "pw" }); })) === "mtls-ca/bad-engine-output");
 }
 
+// A defined rotate() algorithm must be a non-empty label (an empty string would
+// be read as a pin here but as "no pin"/"omitted" by the engine and canVerifyInTls).
+async function testRotateRejectsEmptyAlgorithm() {
+  var ca = _newCa();
+  await ca.initCA();
+  check("rotate: empty-string algorithm refused",
+        (await code2(function () { return ca.rotate({ generation: 2, algorithm: "" }); })) === "mtls-ca/bad-algorithm");
+}
+
+// A nested operator path must work: create() creates the lock target's parent
+// dir, so the first locked revoke() does not ENOENT on <path>.lock.
+async function testNestedPathParentDirsCreated() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", paths: { revocations: "state/revocations.json" } });
+  await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "nested" });
+  await ca.revoke({ fingerprint: leaf.fingerprint });
+  check("revoke() with a nested paths.revocations succeeds (lock parent dir created)",
+        ca.isRevoked(leaf.fingerprint) === true);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -575,6 +596,8 @@ async function run() {
     await testCommitRollsBackRetainedRootOnCertRenameFailure();
     await testWatermarkMethodsMustBePaired();
     await testP12CertPemMustBeParseable();
+    await testRotateRejectsEmptyAlgorithm();
+    await testNestedPathParentDirsCreated();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
