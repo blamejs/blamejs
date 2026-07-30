@@ -443,6 +443,36 @@ async function testIssuanceSupersededWithCustomStore() {
         (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
 }
 
+// Clustered deployment: a shared revocation store exposing the optional
+// watermark methods coordinates the generation watermark across hosts that each
+// have their OWN dataDir, so an issuance on host B is superseded by host A's
+// revokeGeneration even though B's local watermark file was never written.
+async function testClusteredWatermarkViaStoreMethods() {
+  var shared = { revoked: [], wm: 0 };
+  function sharedStore() {
+    return {
+      list: function () { return shared.revoked.slice(); },
+      add:  function (e) { shared.revoked.push(e); },
+      readGenerationWatermark: function () { return shared.wm; },
+      bumpGenerationWatermark: function (n) { if (n > shared.wm) shared.wm = n; },
+    };
+  }
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    signClientCert: async function (a) { await barrier; return engine.signClientCert(a); },
+  });
+  var hostB = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine, revocationStore: sharedStore() });
+  await hostB.initCA();                              // generation 1 on host B's dataDir
+  var issuing = hostB.generateClientCert({ cn: "clustered" });   // blocks in signing
+  var hostA = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: sharedStore() });
+  await hostA.initCA();
+  await hostA.rotate({ generation: 2 });
+  await hostA.revokeGeneration(2);                   // bumps the SHARED watermark
+  release();
+  check("a clustered shared-store watermark supersedes an issuance on another host",
+        (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -472,6 +502,7 @@ async function run() {
     await testStatusAlgorithmNullForWrongDigest();
     await testIssuanceSupersededByGenerationRevocation();
     await testIssuanceSupersededWithCustomStore();
+    await testClusteredWatermarkViaStoreMethods();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
