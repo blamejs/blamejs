@@ -572,6 +572,41 @@ async function testMalformedWatermarkAbortsIssuance() {
         (await code2(function () { return ca.generateClientCert({ cn: "x" }); })) === "mtls-ca/watermark-unreadable");
 }
 
+// importIssuance() backfills leaf identities the ledger doesn't have (pre-#532 /
+// out-of-band certs), so revokeGeneration() can then sweep them.
+async function testImportIssuanceBackfill() {
+  var ca = _newCa();
+  await ca.initCA();
+  var fp = "ab".repeat(64);   // a 128-hex fingerprint of a pre-existing leaf
+  var res = await ca.importIssuance([{ fingerprint: fp, generation: 1 }]);
+  check("importIssuance reports the imported count", res.imported === 1);
+  await ca.rotate({ generation: 2 });
+  check("revokeGeneration revokes an imported pre-upgrade cert", (await ca.revokeGeneration(2)).revoked === 1);
+  check("the imported cert is now revoked by fingerprint", ca.isRevoked(fp) === true);
+  check("importIssuance rejects a non-array", code(function () { ca.importIssuance("nope"); }) === "mtls-ca/bad-import");
+  check("importIssuance rejects an entry without a generation",
+        code(function () { ca.importIssuance([{ fingerprint: fp }]); }) === "mtls-ca/bad-import");
+}
+
+// loadTrustBundle() must tolerate a concurrent removal of ca.prev.crt between its
+// existsSync and its read (a dropRetained()/retainPrevious:false on another
+// process) and return the still-valid current CA rather than throwing ENOENT.
+async function testLoadTrustBundleToleratesConcurrentPrevRemoval() {
+  var atomicFile = require("../../lib/atomic-file");
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });   // ca.prev.crt exists
+  var realRead = atomicFile.fdSafeReadSync;
+  atomicFile.fdSafeReadSync = function (p) {
+    if (String(p) === String(ca.paths.caCertPrev)) { var err = new Error("ENOENT"); err.code = "ENOENT"; throw err; }
+    return realRead.apply(this, arguments);
+  };
+  var bundle;
+  try { bundle = ca.loadTrustBundle(); } finally { atomicFile.fdSafeReadSync = realRead; }
+  check("loadTrustBundle tolerates a concurrent retained-root removal (returns current CA, no throw)",
+        bundle.length === 1);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -609,6 +644,8 @@ async function run() {
     await testRotateRejectsEmptyAlgorithm();
     await testNestedPathParentDirsCreated();
     await testMalformedWatermarkAbortsIssuance();
+    await testImportIssuanceBackfill();
+    await testLoadTrustBundleToleratesConcurrentPrevRemoval();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
