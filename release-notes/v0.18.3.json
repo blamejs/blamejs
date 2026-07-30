@@ -1,0 +1,45 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.3",
+  "date": "2026-07-30",
+  "headline": "`b.mtlsCa` gains non-breaking CA algorithm-migration primitives -- rotate the CA, keep the superseded root trusted during re-enrollment, self-test that the runtime verifies the algorithm over TLS, and revoke by CA generation -- and `b.db.collection`'s `$like` operator now honours SQL `%` / `_` wildcards instead of matching them as literal characters",
+  "summary": "b.mtlsCa can now migrate a certificate authority to a new signature algorithm without an outage. status() reports the stored CA's algorithm and key type; rotate({ generation, algorithm }) generates and atomically commits a new CA and returns the superseded certificate, without the algorithm-mismatch initCA() raises once a CA already exists; commit({ retainPrevious: true }) together with loadTrustBundle() and dropRetained() keep the old root trusted through a re-enrollment grace window; canVerifyInTls() runs a loopback mutual-TLS self-test proving node:tls verifies the CA's algorithm on the running Node; and revokeGeneration(n) revokes every certificate the issuance ledger recorded under a CA generation below n. Separately, b.db.collection's $like operator emitted an escaped LIKE, so the caller's % and _ were matched as literal characters and $like collapsed to an exact match; it now emits a caller-controlled-wildcard LIKE, so find({ name: { $like: \"Al%\" } }) matches as SQL LIKE documents. The release also brings error and adversarial branches of the scheduler, session device-binding, body parser, notifier, and document collection under test.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.mtlsCa non-breaking CA algorithm-migration primitives",
+          "body": "A CA handle can now carry an operator through a signature-algorithm migration (for example a classical-to-post-quantum move) with no trust outage. status() reports the stored CA's algorithm and keyType (null before initCA()). rotate({ generation, algorithm }) generates a new CA at a strictly higher generation and atomically commits it -- returning { caCertPem, previousCaCertPem, generation, algorithm } -- so an operator does not hit the algorithm-mismatch initCA() raises when a CA is already present. The commit path gained retainPrevious (defaulted on for rotate): the outgoing certificate is snapshotted to ca.prev.crt, and loadTrustBundle() returns [current, ...retained] so both roots are trusted while clients re-enroll; dropRetained() ends that window. canVerifyInTls() performs a loopback mutual-TLS handshake with a freshly issued leaf and resolves true only if node:tls actually authenticates the client against the CA on the running runtime -- a fail-closed pre-flight before rotating to an algorithm the deployed Node cannot verify. revokeGeneration(n) walks an issuance ledger (recorded automatically as certificates are issued, or supplied via the new issuanceStore option) and revokes every certificate issued under a CA generation below n, so superseding a compromised or deprecated CA revokes exactly its cohort. The engine interface adds canVerifyInTls(algorithm) for pluggable engines."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.db.collection $like honours SQL % / _ wildcards instead of matching them literally",
+          "body": "find({ field: { $like: \"Al%\" } }) routed the pattern through the query builder's escaping LIKE comparator, which escapes % and _ so a bound value cannot smuggle wildcards. For $like -- whose contract is a SQL LIKE pattern -- that neutralised the caller's wildcards and collapsed the operator to an exact match ($like: \"Al%\" matched only the literal string \"Al%\", never \"Alice\"). $like now emits a caller-controlled-wildcard LIKE, so %, _, prefix, suffix, infix, and single-character patterns all resolve as SQL LIKE defines. Exact patterns with no wildcard are unchanged. Callers that relied on the previous literal-match behaviour should pass the field value directly ({ field: value }) or escape their own wildcards."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Error- and edge-path tests for the scheduler, session device-binding, body parser, notifier, and document collection",
+          "body": "The scheduler's register / schedule validation, start / stop / status lifecycle, and task fire-and-failure recording; b.session device-binding storage and its store-error path; the body parser across its supported content types; the notifier's transport surface; and b.db.collection's query operators now have explicit tests for their error and boundary branches. Behaviour is unchanged -- these pin guarantees the primitives already met."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "b.db.collection $like must use the verbatim caller-wildcard LIKE",
+          "body": "A source check asserts the collection's $like operator routes through the caller-controlled-wildcard LIKE and never the value-escaping LIKE comparator, so the wildcard-escaping regression cannot return unnoticed."
+        }
+      ]
+    }
+  ]
+}

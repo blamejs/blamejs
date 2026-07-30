@@ -13941,6 +13941,39 @@ function testSqlWhereDelegatorForwardsArguments() {
     bad);
 }
 
+// db-collection's `$like` operator exposes a SQL LIKE whose contract is that
+// the caller's % / _ are wildcards. The value-escaping `.where(col, "LIKE",
+// val)` path (b.sql's safe default: it runs `_escapeLike` so a value can't
+// smuggle wildcards) turns those wildcards into literals — silently collapsing
+// `$like` to an exact match. The operator MUST route through the verbatim
+// caller-wildcard LIKE (`whereGroup(g => g.like(col, val))` / the replayed
+// `.like()` part), never the escaping `.where(...,"LIKE",...)`. This fires on
+// the `$like` case reaching for the escaping call.
+function testDbCollectionLikeOperatorUsesVerbatimWildcardPath() {
+  var src;
+  try { src = fs.readFileSync("lib/db-collection.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  // Isolate the `$like` case body (up to the next case/default) and strip
+  // line comments, so prose naming either LIKE shape can't skew the check.
+  var m = /case\s+"\$like"\s*:([\s\S]*?)(?:case\s+"|default\s*:)/.exec(src);
+  if (m) {
+    var code = m[1].replace(/\/\/[^\n]*/g, "");
+    var usesVerbatim = /\.like\s*\(/.test(code);          // WhereBuilder.like — no _escapeLike
+    var usesEscaping = /\.where\s*\([^;]*"LIKE"/.test(code); // value-escaping comparator
+    if (!usesVerbatim || usesEscaping) {
+      var upto = src.slice(0, m.index);
+      bad.push({ file: "lib/db-collection.js", line: upto.split(/\r?\n/).length,
+        content: "$like must route through the verbatim caller-wildcard LIKE (WhereBuilder.like); the " +
+                 "value-escaping LIKE comparator escapes % / _ to literals and collapses $like to exact" });
+    }
+  }
+  bad = _filterMarkers(bad, "db-collection-like-escapes-wildcards");
+  _report("b.db.collection $like routes through the verbatim caller-wildcard LIKE " +
+          "(WhereBuilder.like), not the value-escaping LIKE comparator",
+    bad);
+}
+
 // The esbuild dev-tool is pinned across three artifacts kept in sync:
 // package.json devDependencies (the version source-of-truth, also postject), the
 // committed root package-lock.json that ci.yml + npm-publish.yml install via
@@ -15079,6 +15112,7 @@ async function run() {
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
   testSqlWhereDelegatorForwardsArguments();
+  testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by

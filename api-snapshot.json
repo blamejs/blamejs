@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.2",
-  "createdAt": "2026-07-30T12:32:17.729Z",
+  "frameworkVersion": "0.18.3",
+  "createdAt": "2026-07-30T14:27:34.707Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44764,6 +44764,10 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "caCertPrev": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "caKey": {
               "type": "primitive",
               "valueType": "string"
@@ -44773,6 +44777,10 @@
               "valueType": "string"
             },
             "crl": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "issuance": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -44806,6 +44814,10 @@
         "algorithmEnvelope": {
           "type": "function",
           "arity": 0
+        },
+        "canVerifyInTls": {
+          "type": "function",
+          "arity": 1
         },
         "generateCa": {
           "type": "function",
