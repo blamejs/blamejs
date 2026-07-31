@@ -14221,6 +14221,27 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "-> throw mtls-ca/not-a-ca-certificate) — a P-384 leaf parses, classifies as ECDSA-P384-SHA384, and pairs, " +
                "so it would publish and the next generateClientCert() fails x509/bad-input (a non-CA issuer cannot sign)" });
   }
+  // A bundled-engine commit() must (a) NORMALIZE the committed key to PKCS#8 — createPrivateKey()
+  // also parses the OpenSSL SEC1 EC encoding, which pairs/classifies but the toolkit cannot decode,
+  // so the next generateClientCert() fails x509/bad-input — and (b) FUNCTIONALLY preflight the
+  // material (sign a leaf AND a CRL) before publishing, since node's X509Certificate exposes no
+  // KeyUsage extension: a CA missing keyCertSign/cRLSign passes every static check yet the next
+  // generateClientCert()/generateCrl() fails, disabling issuance / the revocation-export path.
+  if (!/opts2\s*=\s*Object\.assign\(\s*\{\s*\}\s*,\s*opts2\s*,\s*\{\s*caKeyPem:\s*_commitKey\.export\(\s*\{\s*type:\s*["']pkcs8["']/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must normalize the committed bundled-engine key to PKCS#8 (opts2 = Object.assign({}, " +
+               "opts2, { caKeyPem: _commitKey.export({ type: \"pkcs8\", format: \"pem\" }) })) — a SEC1 EC key parses and " +
+               "pairs but the toolkit decodes only PKCS#8, so the next generateClientCert() fails x509/bad-input" });
+  }
+  if (!/function\s+_assertCommittedCaUsable[\s\S]{0,500}engine\.signClientCert[\s\S]{0,400}mtls-ca\/ca-cannot-issue[\s\S]{0,500}engine\.generateCrl[\s\S]{0,400}mtls-ca\/ca-cannot-sign-crl/.test(noComments) ||
+      !/if\s*\(\s*usesDefaultEngine\s*\)\s*\{\s*await\s+_assertCommittedCaUsable\(\s*opts2\.caCertPem\s*,\s*opts2\.caKeyPem\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must functionally preflight the bundled-engine material before publishing " +
+               "(_assertCommittedCaUsable signs a leaf -> mtls-ca/ca-cannot-issue and a CRL -> mtls-ca/ca-cannot-sign-crl, " +
+               "invoked under the lock as `if (usesDefaultEngine) await _assertCommittedCaUsable(opts2.caCertPem, " +
+               "opts2.caKeyPem)`) — node's X509Certificate exposes no KeyUsage, so a CA missing keyCertSign/cRLSign " +
+               "otherwise publishes and the next generateClientCert()/generateCrl() fails, disabling issuance/revocation" });
+  }
   // _adoptExistingCASnapshot()'s locked path must build the verified snapshot INSIDE the lock:
   // _verifiedCASnapshot samples the mutable caAlgorithm pin, so constructing it after releasing the
   // rotation lock lets a concurrent same-handle rotate/commit({algorithm:B}) publish B in the gap —

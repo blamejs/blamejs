@@ -107,6 +107,31 @@ async function _p384LeafPair() {
   return { caCertPem: certPem, caKeyPem: keyPem };
 }
 
+// Parametrized P-384 CA material: a CA cert (basicConstraints cA:true) with a chosen keyUsage set,
+// and its matching key exported in a chosen encoding ("pkcs8" default, or "sec1"). Used to exercise
+// commit()'s bundled-engine usability preflight — a CA missing cRLSign, or a key in the SEC1
+// encoding the bundled toolkit cannot decode.
+async function _p384CaMaterial(matOpts) {
+  matOpts = matOpts || {};
+  var subtle = pki.webcrypto.subtle;
+  var keys = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+  var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+  var now = new Date();
+  var caCertPem = await pki.x509.sign({
+    subject:          [{ commonName: "mat-ca" }, { organizationalUnitName: "CAv1" }],
+    subjectPublicKey: spki,
+    serialNumber:     "01",
+    notBefore:        now,
+    notAfter:         new Date(now.getTime() + 86400000),
+    extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: matOpts.keyUsage || ["keyCertSign", "cRLSign"] },
+  }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha384" });
+  var pkcs8 = await pki.key.export(keys.privateKey, { format: "pem" });
+  var caKeyPem = (matOpts.keyType === "sec1")
+    ? nodeCrypto.createPrivateKey(pkcs8).export({ type: "sec1", format: "pem" })
+    : pkcs8;
+  return { caCertPem: caCertPem, caKeyPem: caKeyPem };
+}
+
 // A custom engine that issues a P-384 / SHA-384 CA. _certAlgorithm() classifies
 // that curve+digest as the framework's bundled label ECDSA-P384-SHA384, but the
 // engine's own effective label for that key type is its business — so a rotate()
@@ -2361,6 +2386,34 @@ async function testCommitRejectsNonCaCertificate() {
   check("a CA certificate still initializes after the non-CA rejection", ca.status().exists === true);
 }
 
+// A bundled-engine commit() of a CA key in the common OpenSSL SEC1 encoding (BEGIN EC PRIVATE KEY)
+// must still yield a usable CA. createPrivateKey() parses SEC1, so it passes the pairing / algorithm
+// checks, but the bundled toolkit decodes only PKCS#8 — the next generateClientCert() would fail
+// x509/bad-input. commit() must normalize the committed key to PKCS#8 before publishing.
+async function testCommitNormalizesSec1KeyEncoding() {
+  var sec1 = await _p384CaMaterial({ keyType: "sec1" });          // valid CA cert + SEC1-encoded key
+  var ca = _newCa();
+  await ca.commit({ caKeyPem: sec1.caKeyPem, caCertPem: sec1.caCertPem });
+  var leaf = await ca.generateClientCert({ cn: "after-sec1-commit" });
+  check("a bundled commit() of a SEC1-encoded CA key still issues (key normalized to PKCS#8)",
+        typeof leaf.cert === "string" && leaf.cert.length > 0);
+  var crl = await ca.generateCrl({ persist: false });
+  check("the SEC1-committed CA can also sign CRLs after normalization", typeof crl.crlPem === "string");
+}
+
+// A bundled-engine commit() must reject a CA certificate that cannot sign CRLs (keyUsage has
+// keyCertSign but omits cRLSign): leaf issuance would succeed but every generateCrl() fails
+// crl/bad-input, silently disabling the revocation-export path. node's X509Certificate does not
+// expose the KeyUsage extension, so commit() functionally preflights leaf + CRL signing.
+async function testCommitRejectsCaWithoutCrlSign() {
+  var noCrl = await _p384CaMaterial({ keyUsage: ["keyCertSign"] });   // a CA, but no cRLSign
+  var ca = _newCa();
+  check("bundled commit() rejects a CA certificate whose key usage omits cRLSign",
+        (await code2(function () { return ca.commit({ caKeyPem: noCrl.caKeyPem, caCertPem: noCrl.caCertPem }); }))
+          === "mtls-ca/ca-cannot-sign-crl");
+  check("the CRL-incapable rejected commit left storage untouched", ca.status().exists === false);
+}
+
 // A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() must NOT
 // publish a revocation whose cert was issued by a DIFFERENT CA identity — under a custom engine
 // that reuses serials, that CA's revoked serial would false-revoke the unrelated current
@@ -3051,6 +3104,8 @@ async function run() {
     await testCommitRejectsMismatchedCaPair();
     await testCommitRejectsUnsupportedBundledAlgorithm();
     await testCommitRejectsNonCaCertificate();
+    await testCommitNormalizesSec1KeyEncoding();
+    await testCommitRejectsCaWithoutCrlSign();
     await testGateFingerprintLengthEnforced();
     await testCrlScopedToCurrentIssuerIdentity();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();
