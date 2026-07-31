@@ -14144,6 +14144,17 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "rollback or interrupted-rotation recovery — the CA it reverts to is still active, so its CRL is " +
                "still valid and must keep being served at the documented path" });
   }
+  // crl.rollback is a FIXED name, so the restore must be GATED on whether THIS commit
+  // moved a CRL aside — crlExisted in the catch, manifest.crlMovedAside in reconcile —
+  // else an ORPHAN crl.rollback from a prior commit (whose best-effort delete failed) is
+  // restored by a later commit that never moved it, publishing a stale-issuer CRL.
+  if (!/crlExisted\s*&&\s*nodeFs\.existsSync\(\s*crlRollback\s*\)\s*&&\s*!nodeFs\.existsSync\(\s*paths\.crl\s*\)/.test(noComments) ||
+      !/manifest\.crlMovedAside\s*&&\s*nodeFs\.existsSync\(\s*crlRollback\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the CRL restore must be GATED on whether THIS commit moved a CRL aside (crlExisted in the catch, " +
+               "manifest.crlMovedAside in reconcile) — an ungated restore would resurrect an orphan crl.rollback " +
+               "from a prior commit, publishing a CRL signed by an earlier issuer under the still-active CA" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
           "recover from an interrupted rotation (crash-atomic key/cert publication)",

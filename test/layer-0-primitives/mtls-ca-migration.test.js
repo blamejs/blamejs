@@ -32,6 +32,7 @@ function _journalManifest(m) {
     cert:        m.cert != null ? m.cert.toString("base64") : null,
     newCert:     m.newCert != null ? m.newCert.toString("base64") : null,
     retainAfter: !!m.retainAfter,
+    crlMovedAside: !!m.crlMovedAside,
     prevAction:  m.prevAction,
     prevData:    m.prevData != null ? m.prevData.toString("base64") : null,
   });
@@ -1651,7 +1652,7 @@ async function testReconcileRestoresCrlForInterruptedRotation() {
   fs.renameSync(ca.paths.crl, ca.paths.crl + ".rollback");    // CRL moved aside
   fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
     key: keyG1, newKey: keyG1, cert: certG1,                  // live cert == manifest.cert => interrupted
-    retainAfter: false, prevAction: "leave", prevData: null,
+    retainAfter: false, crlMovedAside: true, prevAction: "leave", prevData: null,
   }));
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   await reopened.initCA();                                    // reconciles under the lock
@@ -1832,6 +1833,61 @@ async function testNonBooleanRetainPreviousRejected() {
   check("generateCrl() still accepts a boolean persist", typeof crl.crlPem === "string");
 }
 
+// crl.rollback is a fixed name, so an ORPHAN left by a prior commit (whose best-effort
+// delete failed after publishing) must NOT be restored by a LATER commit that never
+// moved it aside — that would publish a CRL signed by an earlier issuer under the
+// still-active CA. The restore is gated on "did THIS commit move the CRL aside".
+async function testCommitDoesNotRestoreOrphanCrlRollback() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var staleCrl = Buffer.from("-----BEGIN X509 CRL-----\nc3RhbGUtcm9sbGJhY2s=\n-----END X509 CRL-----\n");
+  fs.writeFileSync(ca.paths.crl + ".rollback", staleCrl);          // an orphan from a prior commit
+  check("setup: an orphan crl.rollback exists with no current ca.crl",
+        fs.existsSync(ca.paths.crl + ".rollback") === true && fs.existsSync(ca.paths.crl) === false);
+  // A CA-changing commit that fails its cert publish (its catch runs). It did NOT move a
+  // CRL aside (there is no current ca.crl), so its catch must not touch the orphan.
+  var g2 = await engine.generateCa({ generation: 2 });
+  var realRename = atomicFile.renameWithRetry;
+  atomicFile.renameWithRetry = function (from, to) {
+    if (String(to) === String(ca.paths.caCert)) throw new Error("simulated cert publish failure");
+    return realRename.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false }); }); }
+  finally { atomicFile.renameWithRetry = realRename; }
+  check("the failed commit aborts", codeSeen === "mtls-ca/commit-failed");
+  check("the orphan crl.rollback is NOT restored as the current CRL (it was signed by an earlier issuer)",
+        fs.existsSync(ca.paths.crl) === false);
+  check("the orphan crl.rollback is left untouched (not this commit's to restore)",
+        fs.existsSync(ca.paths.crl + ".rollback") === true && fs.readFileSync(ca.paths.crl + ".rollback").equals(staleCrl));
+}
+
+// Reconcile must ALSO not restore an orphan crl.rollback: a journaled commit whose
+// crlMovedAside is false did not move a CRL aside, so any crl.rollback present is a
+// prior commit's orphan — restoring it would publish a stale-issuer CRL.
+async function testReconcileDoesNotRestoreOrphanCrlRollback() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var key1  = fs.readFileSync(ca.paths.caKey);
+  var cert1 = fs.readFileSync(ca.paths.caCert);
+  var staleCrl = Buffer.from("-----BEGIN X509 CRL-----\nb3JwaGFuLXJlY29uY2lsZQ==\n-----END X509 CRL-----\n");
+  fs.writeFileSync(ca.paths.crl + ".rollback", staleCrl);     // orphan, no current ca.crl
+  // An INTERRUPTED commit's journal that did NOT move a CRL aside (crlMovedAside false).
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: key1, newKey: key1, cert: cert1,                     // live cert == manifest.cert => interrupted
+    retainAfter: false, crlMovedAside: false, prevAction: "leave", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.initCA();                                    // reconciles under the lock
+  check("reconcile does NOT restore an orphan crl.rollback for a commit that did not move a CRL",
+        fs.existsSync(reopened.paths.crl) === false &&
+        fs.existsSync(reopened.paths.crl + ".rollback") === true &&
+        fs.readFileSync(reopened.paths.crl + ".rollback").equals(staleCrl));
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1917,6 +1973,8 @@ async function run() {
     await testPublicCommitPreservesCustomEnginePin();
     await testCanVerifyInTlsRejectsInvalidExplicitAlgorithm();
     await testNonBooleanRetainPreviousRejected();
+    await testCommitDoesNotRestoreOrphanCrlRollback();
+    await testReconcileDoesNotRestoreOrphanCrlRollback();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
