@@ -1334,6 +1334,42 @@ async function testCanVerifyInTlsProbesDefaultBeforeInit() {
   check("canVerifyInTls() before init probes the default engine (returns a boolean)", typeof ok === "boolean");
 }
 
+// The reconcile's journal deletion is NOT best-effort: if it fails, the caller
+// (here dropRetained) must fail closed, because a surviving interrupted journal
+// would let loadTrustBundle() re-trust its saved root and undo the cutoff.
+async function testReconcileJournalDeletionFailurePropagates() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  var keyG2  = fs.readFileSync(ca.paths.caKey);
+  await ca.dropRetained();
+  await ca.rotate({ generation: 3 });
+  // Interrupted hard-cut journal: consistent gen-2 pair, ca.prev.crt gone, journal
+  // holds gen-1 as the root to restore.
+  fs.writeFileSync(ca.paths.caKey, keyG2);
+  fs.writeFileSync(ca.paths.caCert, certG2);
+  fs.rmSync(ca.paths.caCertPrev, { force: true });
+  var journal = ca.paths.caKey + ".rollback";
+  fs.writeFileSync(journal, _journalManifest({
+    key: keyG2, newKey: keyG2, cert: certG2, retainAfter: false, prevAction: "restore", prevData: certG1,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(journal)) throw new Error("simulated journal deletion failure");
+    return realUnlink.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return reopened.dropRetained(); }); }
+  finally { fs.unlinkSync = realUnlink; }
+  check("dropRetained fails closed when the reconcile journal deletion fails", codeSeen !== "NO-THROW");
+  check("the interrupted journal survives the failed deletion (not silently completed)",
+        fs.existsSync(journal) === true);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1399,6 +1435,7 @@ async function run() {
     await testReconcileRemovesResurrectedHardCutRoot();
     await testPublicCommitEnforcesSingleRetainedWindow();
     await testCanVerifyInTlsProbesDefaultBeforeInit();
+    await testReconcileJournalDeletionFailurePropagates();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
