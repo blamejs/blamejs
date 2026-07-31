@@ -14195,6 +14195,19 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "an idempotent recommit of the same certificate leaves the CRL's issuer unchanged, so invalidating " +
                "the CRL there loses the revocation artifact until it is regenerated" });
   }
+  // The SUCCESS-path journal removal (the commit point) must FAIL CLOSED for a SAME-CERT
+  // commit: swallowing an unlink failure there lets a retainPrevious:false hard-cut report
+  // success while its authoritative journal survives — the next reconcile reads live cert ==
+  // journal.cert as INTERRUPTED and restores ca.prev.crt, and the lock-free
+  // _journalRetainedRoot() re-adds it, resurrecting the root the operator cut. A cert-CHANGING
+  // commit self-heals (reconcile rolls the leftover forward), so the propagation is gated on
+  // !caCertChanged (a blanket throw would spuriously roll back a published cert).
+  if (!/if\s*\(\s*!caCertChanged\s*\)\s*throw\s+_je/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit()'s success-path rollback-journal unlink must fail closed for a same-cert commit " +
+               "(if (!caCertChanged) throw _je) — swallowing it lets a retainPrevious:false hard-cut report success " +
+               "with its journal surviving, so the next reconcile restores ca.prev.crt and resurrects the cut root" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
           "recover from an interrupted rotation (crash-atomic key/cert publication)",
@@ -14513,14 +14526,25 @@ function testMtlsCaLeafAlgorithmBindsToSnapshot() {
     var end = rest.search(/\n\s{2}(?:async\s+)?function\s/);
     var body = end === -1 ? rest : rest.slice(0, end);
     // The leaf algorithm must be the snapshot-derived label for the default engine, and the
-    // pin ONLY for a custom engine (whose cert this runtime can't classify).
-    if (!/leafAlg\s*=\s*usesDefaultEngine\s*\?\s*_labelForCaKeyType\(\s*ca\.caKeyPem\s*\)\s*:\s*caAlgorithm/.test(body)) {
+    // SNAPSHOT-captured pin (ca.algorithm) — NOT the mutable caAlgorithm closure — for a custom
+    // engine (whose cert this runtime can't classify, so the label can only come from the pin).
+    if (!/leafAlg\s*=\s*usesDefaultEngine\s*\?\s*_labelForCaKeyType\(\s*ca\.caKeyPem\s*\)\s*:\s*ca\.algorithm/.test(body)) {
       bad.push({ file: "lib/mtls-ca.js", line: src.slice(0, src.search(/function\s+_leafEngineArgs\s*\(/)).split(/\r?\n/).length,
-        content: "_leafEngineArgs() must derive the default-engine leaf algorithm from the SNAPSHOTTED CA " +
-                 "(usesDefaultEngine ? _labelForCaKeyType(ca.caKeyPem) : caAlgorithm) — reading the mutable caAlgorithm " +
-                 "pin lets a concurrent commit()/rotate() refresh mint a leaf under the new algorithm signed by the old " +
-                 "snapshotted issuer (an ML-DSA leaf under a retained ECDSA CA legacy peers cannot authenticate)" });
+        content: "_leafEngineArgs() must derive the leaf algorithm from the SNAPSHOTTED CA " +
+                 "(usesDefaultEngine ? _labelForCaKeyType(ca.caKeyPem) : ca.algorithm) — reading the mutable caAlgorithm " +
+                 "pin (for either engine) lets a concurrent commit()/rotate() refresh mint a leaf under the new algorithm " +
+                 "signed by the old snapshotted issuer (an ML-DSA leaf under a retained ECDSA CA legacy peers cannot authenticate)" });
     }
+  }
+  // initCA() must CAPTURE the pin with the CA snapshot (algorithm: caAlgorithm on every return)
+  // so ca.algorithm above is populated atomically with the cert/key — else the custom-engine
+  // branch reads undefined and a race is reintroduced through the back door.
+  if (!/return\s*\{\s*caCertPem:[^}]*algorithm:\s*caAlgorithm\s*\}/.test(noComments) &&
+      !/Object\.assign\(\s*\{\}\s*,\s*fresh\s*,\s*\{\s*algorithm:\s*caAlgorithm\s*\}\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "initCA()'s snapshot returns must capture the algorithm pin (algorithm: caAlgorithm) atomically with " +
+               "the CA (caCertPem/caKeyPem), so _leafEngineArgs's ca.algorithm is the pin as of the snapshot, not a " +
+               "later rotate()-refreshed value" });
   }
   bad = _filterMarkers(bad, "mtls-ca-leaf-algorithm-reads-mutable-pin");
   _report("b.mtlsCa _leafEngineArgs() binds the leaf algorithm to the snapshotted CA (not the mutable pin), so a " +

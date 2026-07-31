@@ -2041,6 +2041,57 @@ async function testIdempotentCommitPreservesCrl() {
         fs.existsSync(ca.paths.crl) === false);
 }
 
+// A SAME-CERT retainPrevious:false hard-cut whose rollback-journal unlink fails must fail
+// CLOSED, not report success: the surviving journal has live cert == journal.cert, so the
+// next reconcile classifies it INTERRUPTED and restores ca.prev.crt, AND _journalRetainedRoot()
+// re-adds it — resurrecting the very root the operator cut while commit() claimed success.
+async function testCommitFailsClosedWhenSameCertCutJournalUnlinkFails() {
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.rotate({ generation: 2, retainPrevious: true });   // a retained root (ca.prev.crt) now exists
+  var sameKey  = ca.loadKey().toString("utf8");
+  var sameCert = ca.loadCert().toString("utf8");
+  var journal  = ca.paths.caKey + ".rollback";
+  check("precondition: a retained root exists before the hard-cut",
+        (await ca.loadTrustBundle()).length === 2);
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(journal)) { throw new Error("journal unlink blocked"); }
+    return realUnlink.apply(this, arguments);
+  };
+  var code;
+  try {
+    code = await code2(function () {
+      return ca.commit({ caKeyPem: sameKey, caCertPem: sameCert, retainPrevious: false });
+    });
+  } finally { fs.unlinkSync = realUnlink; }
+  check("a same-cert hard-cut whose journal unlink fails fails CLOSED (mtls-ca/commit-failed), not a false success",
+        code === "mtls-ca/commit-failed");
+}
+
+// A CERT-CHANGING commit whose journal unlink fails SELF-HEALS: the next reconcile sees live
+// cert != journal.cert (COMPLETED) and rolls the leftover forward, so the failure is swallowed
+// and the commit succeeds — propagating it would spuriously roll back a genuinely-published CA.
+async function testCommitSwallowsJournalUnlinkFailureOnCertChange() {
+  var ca = _newCa();
+  await ca.initCA();
+  var g2 = await engine.generateCa({ generation: 2 });        // a DIFFERENT CA (the cert changes)
+  var journal = ca.paths.caKey + ".rollback";
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(journal)) { throw new Error("journal unlink blocked"); }
+    return realUnlink.apply(this, arguments);
+  };
+  var code;
+  try {
+    code = await code2(function () {
+      return ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
+    });
+  } finally { fs.unlinkSync = realUnlink; }
+  check("a cert-changing commit whose journal unlink fails still SUCCEEDS (the leftover self-heals)",
+        code === "NO-THROW");
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -2446,6 +2497,8 @@ async function run() {
     await testReconcileRemovesResurrectedLiveCrlOnRollForward();
     await testReconcileRemovesLeftoverCrlRollbackOnRollForward();
     await testIdempotentCommitPreservesCrl();
+    await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();
+    await testCommitSwallowsJournalUnlinkFailureOnCertChange();
     await testRotateRefusesUndeterminableGeneration();
     await testReconcileRejectsMalformedManifestBase64();
     await testGenerateClientP12AcceptsOpaqueCert();
