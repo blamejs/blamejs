@@ -14160,6 +14160,35 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "caCertPem, opts2.caKeyPem)) throw mtls-ca/ca-pair-inconsistent) — publishing a parseable pair from " +
                "different CAs would succeed but brick the CA (the next initCA() fails ca-pair-inconsistent)" });
   }
+  // For the DEFAULT (bundled) engine, commit() must additionally require the cert AND key to PARSE
+  // — _caPairConsistent returns "consistent" for unparseable input (the opaque-custom fallback), so
+  // without this a garbage string publishes and bricks the CA. The parse requirement is
+  // default-engine-only (a custom engine may commit opaque material).
+  if (!/if\s*\(\s*usesDefaultEngine\s*\)\s*\{[\s\S]{0,400}new\s+nodeCrypto\.X509Certificate\(\s*opts2\.caCertPem\s*\)[\s\S]{0,200}createPrivateKey\(\s*opts2\.caKeyPem\s*\)[\s\S]{0,200}mtls-ca\/bad-commit/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must reject UNPARSEABLE material for the bundled engine (if (usesDefaultEngine) " +
+               "parse opts2.caCertPem via nodeCrypto.X509Certificate + opts2.caKeyPem via createPrivateKey, throwing " +
+               "mtls-ca/bad-commit on failure) — _caPairConsistent's opaque fallback would otherwise publish garbage" });
+  }
+  // The dedup in _revokeCore must not treat a serial+FINGERPRINT entry as a duplicate of a
+  // SERIAL-ONLY revoke(serial): a since-reused serial's old entry is a different cert, and dropping
+  // the serial-only entry leaves isSerialRevoked() false so the gate admits the current cert.
+  if (!/coversFingerprint\s*=\s*fingerprint\s*\?\s*\(\s*r\.fingerprint\s*===\s*fingerprint\s*\)\s*:\s*\(\s*r\.fingerprint\s*==\s*null\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_revokeCore()'s dedup must scope a serial-only request to a serial-only existing entry " +
+               "(coversFingerprint = fingerprint ? r.fingerprint === fingerprint : r.fingerprint == null) — a global " +
+               "`!fingerprint || ...` treats a serial+fingerprint entry as a duplicate, dropping the serial-only entry" });
+  }
+  // importIssuance() must record the issuing CA identity (caFingerprint from a supplied caCert) so
+  // generateCrl() can issuer-scope a backfilled entry — else an imported old-CA revocation stays in
+  // the current CRL and false-revokes a current cert reusing the serial.
+  if (!/caFingerprint:\s*caFp\b/.test(noComments) ||
+      !/caFp\s*=\s*\([\s\S]{0,80}e\.caCert[\s\S]{0,80}_certIdentity\(\s*e\.caCert\s*\)\.fingerprint/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "importIssuance() must record the issuing CA identity (caFingerprint = _certIdentity(e.caCert)." +
+               "fingerprint) so generateCrl() can issuer-scope a backfilled entry — else an imported old-CA revocation " +
+               "stays in the current CRL and false-revokes a current cert reusing the serial" });
+  }
   // Cert comparisons across DIFFERENT-formatting sources (a snapshot vs a possibly-reformatted
   // on-disk cert) must compare IDENTITY via _sameCert, never PEM string equality: the issuance
   // root-membership check (loadTrustBundle vs the signing snapshot) and generateCrl's persist

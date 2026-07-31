@@ -2178,6 +2178,58 @@ async function testSerialRevokedMatchesOnlySerialOnlyEntries() {
         code(function () { return ca.isSerialRevoked(null); }) === "mtls-ca/bad-revocation-key");
 }
 
+// A SERIAL-ONLY revoke(serial) must be recorded even when a serial+FINGERPRINT entry already
+// exists for that serial (e.g. an older CA generation's cert with a since-reused serial): treating
+// it as a duplicate would drop the serial-only entry, so isSerialRevoked() stays false and the gate
+// admits the current cert despite the revoke call.
+async function testSerialOnlyRevokeNotDedupedAgainstFingerprintEntry() {
+  var ca = _newCa();
+  await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "old" });
+  await ca.revoke({ serial: leaf.serialNumber, fingerprint: leaf.fingerprint });   // serial+fingerprint entry
+  check("precondition: the serial is not yet serial-only-revoked", ca.isSerialRevoked(leaf.serialNumber) === false);
+  await ca.revoke(leaf.serialNumber);                                              // bare serial-only revoke, same serial
+  check("a serial-only revoke(serial) is recorded even when a serial+fingerprint entry exists for the serial",
+        ca.isSerialRevoked(leaf.serialNumber) === true);
+}
+
+// The BUNDLED engine always emits parseable X.509 material, so commit() to it must reject
+// unparseable input — _caPairConsistent returns "consistent" whenever parsing throws (the opaque
+// custom fallback), which would otherwise publish garbage that bricks every later issuance.
+async function testCommitRejectsUnparseableBundledMaterial() {
+  var ca = _newCa();
+  await ca.initCA();
+  var code2v = await code2(function () {
+    return ca.commit({ caCertPem: "garbage-cert-not-pem", caKeyPem: "garbage-key-not-pem", retainPrevious: false });
+  });
+  check("commit to the bundled engine rejects unparseable cert/key material (mtls-ca/bad-commit)",
+        code2v === "mtls-ca/bad-commit");
+}
+
+// importIssuance() must record the ISSUING CA's identity (from a supplied caCert) so generateCrl()
+// can issuer-scope a backfilled old-CA entry: without it, an imported old-CA revocation whose serial
+// a current CA reuses stays in the current CRL, falsely revoking the unrelated current cert.
+async function testImportIssuanceRecordsIssuerForCrlScoping() {
+  var issued = [];
+  var revoked = [];
+  var ca = b.mtlsCa.create({
+    dataDir: _mkTmp(), caKeySealedMode: "disabled",
+    issuanceStore:   { list: function () { return issued.slice(); },  add: function (e) { issued.push(e); } },
+    revocationStore: { list: function () { return revoked.slice(); }, add: function (e) { revoked.push(e); } },
+  });
+  await ca.initCA();
+  var oldCaCert = ca.loadCert().toString("utf8");                                  // the (soon-superseded) issuing CA
+  await ca.rotate({ generation: 2 });                                             // a DIFFERENT current CA
+  var fpA = "aa".repeat(64);
+  check("importIssuance rejects a non-string caCert",
+        (await code2(function () { return ca.importIssuance([{ generation: 1, serialNumber: "0d", caCert: 123 }]); })) === "mtls-ca/bad-import");
+  await ca.importIssuance([{ generation: 1, serialNumber: "0a", fingerprint: fpA, caCert: oldCaCert }]);
+  revoked.push({ serialNumber: "0a", fingerprint: fpA });                          // revoke the imported old-CA cert
+  var crl = await ca.generateCrl({ persist: false });
+  check("an imported old-CA revocation is issuer-scoped out of the current CRL (caCert recorded on import)",
+        crl.entryCount === 0);
+}
+
 // A cert-changing commit moves the current CRL aside to a fixed crl.rollback path. If a prior
 // commit left an ORPHAN there (best-effort delete failed), on Windows renameSync cannot replace
 // it and the move-aside aborts every later rotation. commit() must clear the orphan first.
@@ -2717,6 +2769,9 @@ async function run() {
     await testCrlScopedToCurrentIssuerIdentity();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();
     await testSerialRevokedMatchesOnlySerialOnlyEntries();
+    await testSerialOnlyRevokeNotDedupedAgainstFingerprintEntry();
+    await testCommitRejectsUnparseableBundledMaterial();
+    await testImportIssuanceRecordsIssuerForCrlScoping();
     await testCommitClearsOrphanCrlRollbackBeforeMoveAside();
     await testIdempotentCommitPreservesCrl();
     await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();

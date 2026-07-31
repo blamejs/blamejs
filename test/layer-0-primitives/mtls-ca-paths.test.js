@@ -20,6 +20,17 @@ var check  = helpers.check;
 
 function _mkDir(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 
+// A minimal CUSTOM engine for the commit() STORAGE / VAULT-mechanics tests that supply opaque
+// fixture bytes ("CA-KEY-PEM", "K"/"C") to exercise atomic writes / sealing / rollback — not real
+// CA material. The bundled engine requires parseable X.509 material, so those tests run under a
+// custom engine where opaque material is legitimate.
+function _opaqueFixtureEngine() {
+  return {
+    generateCa:     function () { return Promise.resolve({ caCertPem: "-----BEGIN CERTIFICATE-----\nRkFLRQ==\n-----END CERTIFICATE-----", caKeyPem: "-----BEGIN PRIVATE KEY-----\nRkFLRQ==\n-----END PRIVATE KEY-----" }); },
+    signClientCert: function () { return Promise.resolve({ cert: "-----BEGIN CERTIFICATE-----\nRkFLRQ==\n-----END CERTIFICATE-----", key: "k" }); },
+  };
+}
+
 // A vault double whose seal() yields a Buffer (matching b.vault, whose
 // sealed bytes are binary) so the required-mode commit exercises the
 // Buffer arm of the exclusive-write path.
@@ -129,7 +140,7 @@ async function testCommitBranches() {
   // loadKey surface unseal-failed.
   var d2 = _mkDir("mtls-cm-");
   var v2 = { seal: function (pem) { return Buffer.from("SEAL:" + pem); }, unseal: function () { return ""; } };
-  var ca2 = b.mtlsCa.create({ dataDir: d2, caKeySealedMode: "required", vault: v2 });
+  var ca2 = b.mtlsCa.create({ dataDir: d2, caKeySealedMode: "required", vault: v2, engine: _opaqueFixtureEngine() });
   var committed = await ca2.commit({ caKeyPem: "CA-KEY-PEM", caCertPem: "CA-CERT-PEM" });
   check("required-mode commit writes the sealed key form", committed.sealed === true && fs.existsSync(path.join(d2, "ca.key.sealed")));
   var threwUnseal = false;
@@ -140,7 +151,7 @@ async function testCommitBranches() {
   // fresh commit: commit stages into random-token temp names, so a stale ca.key.tmp
   // / ca.crt.tmp is ignored rather than causing a spurious EEXIST commit-failed.
   var d3 = _mkDir("mtls-cm-");
-  var ca3 = b.mtlsCa.create({ dataDir: d3, caKeySealedMode: "disabled" });
+  var ca3 = b.mtlsCa.create({ dataDir: d3, caKeySealedMode: "disabled", engine: _opaqueFixtureEngine() });
   fs.writeFileSync(path.join(d3, "ca.key.tmp"), "STALE-TMP");
   fs.writeFileSync(path.join(d3, "ca.crt.tmp"), "STALE-CERT-TMP");
   var committedDespiteResidue = false;
@@ -152,7 +163,7 @@ async function testCommitBranches() {
   // through the String() fallback of its message builder.
   var d5 = _mkDir("mtls-cm-");
   var throwingVault = { seal: function () { throw new Error(""); }, unseal: function () { return "x"; } };
-  var ca5 = b.mtlsCa.create({ dataDir: d5, caKeySealedMode: "required", vault: throwingVault });
+  var ca5 = b.mtlsCa.create({ dataDir: d5, caKeySealedMode: "required", vault: throwingVault, engine: _opaqueFixtureEngine() });
   var threwFromVault = false;
   try { await ca5.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwFromVault = /commit-failed/.test(e.code || ""); }
   check("a vault seal() that throws a message-less Error still surfaces commit-failed", threwFromVault);
