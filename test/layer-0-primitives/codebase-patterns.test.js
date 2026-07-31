@@ -14117,17 +14117,38 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "retainPrevious (typeof opts2.retainPrevious !== \"boolean\") must throw mtls-ca/retention-intent-" +
                "required, else the just-superseded generation loses trust while the active cert is replaced" });
   }
-  // Retention must be gated on the committed cert actually SUPERSEDING the current one: an
-  // idempotent recommit of the same cert (retainPrevious:true) supersedes no issuer, so opening
-  // the single retained-root window there would reject the NEXT real retained rotation with
-  // mtls-ca/retained-root-exists until dropRetained(). outgoingCaCert must require
-  // !currentCaCert.equals(Buffer.from(opts2.caCertPem)), not just retainPrevious + existence.
-  if (!/outgoingCaCert\s*=\s*\(\s*currentCaCert\s*!==\s*null\s*&&\s*!currentCaCert\.equals\(\s*Buffer\.from\(\s*opts2\.caCertPem\s*\)\s*\)\s*\)/.test(noComments)) {
+  // Retention must be gated on the committed cert actually SUPERSEDING the current one, and BOTH
+  // the retention gate (outgoingCaCert) and caCertChanged (which drives CRL invalidation) must
+  // compare X.509 IDENTITY via _sameCert — NOT raw PEM bytes. An idempotent recommit of the same
+  // cert (even with harmless CRLF / trailing-newline PEM differences) supersedes no issuer;
+  // reading it as new opens the single retained-root window (failing the next real retained
+  // rotation with mtls-ca/retained-root-exists until dropRetained()) and deletes the valid CRL.
+  if (!/outgoingCaCert\s*=\s*\(\s*currentCaCert\s*!==\s*null\s*&&\s*!_sameCert\(\s*currentCaCert\.toString\(\s*["']utf8["']\s*\)\s*,\s*opts2\.caCertPem\s*\)\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "_commitLocked()'s retained-root capture (outgoingCaCert) must be gated on the committed cert differing " +
-               "from the current one (currentCaCert !== null && !currentCaCert.equals(Buffer.from(opts2.caCertPem))) — " +
-               "an idempotent retainPrevious:true recommit otherwise opens the single grace window for no benefit, " +
-               "failing the next real retained rotation with mtls-ca/retained-root-exists until dropRetained()" });
+               "from the current one by IDENTITY (currentCaCert !== null && !_sameCert(currentCaCert.toString(\"utf8\"), " +
+               "opts2.caCertPem)) — a byte compare treats a reformatted-PEM recommit as new and opens the grace window" });
+  }
+  if (!/caCertChanged\s*=\s*priorCert\s*===\s*null\s*\|\|\s*!_sameCert\(\s*priorCert\.toString\(\s*["']utf8["']\s*\)\s*,\s*opts2\.caCertPem\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "caCertChanged (which gates CRL invalidation) must compare cert IDENTITY via _sameCert, not raw bytes — " +
+               "else a reformatted-PEM recommit of the same cert deletes the still-valid CRL" });
+  }
+  // _sameCert must compare parsed DER identity (tolerating harmless PEM differences), falling
+  // back to bytes only for an unparseable opaque custom cert.
+  if (!/function\s+_sameCert[\s\S]{0,160}X509Certificate\([^)]*\)\.raw\.equals\(\s*new\s+nodeCrypto\.X509Certificate/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_sameCert() must compare parsed X.509 DER identity (X509Certificate(...).raw.equals(...)) with a raw-byte " +
+               "fallback only for an unparseable opaque custom cert — a byte-only compare misreads harmless PEM reformatting" });
+  }
+  // A CERT-ONLY store (ca.crt present, no key at the destination) must be REFUSED before mutation:
+  // committing over it journals no prior key, so a cert-rename failure after the key rename leaves
+  // an unrecoverable new-key/old-cert pair the next initCA() rejects as ca-pair-inconsistent.
+  if (!/nodeFs\.existsSync\(\s*paths\.caCert\s*\)\s*&&\s*!priorKeyExisted\s*\)\s*\{[\s\S]{0,200}throw new MtlsCaError/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_commitLocked() must refuse a cert-only store (nodeFs.existsSync(paths.caCert) && !priorKeyExisted -> throw) " +
+               "before mutating — committing over it journals no prior key and a failed cert publish leaves an " +
+               "unrecoverable new-key/old-cert pair" });
   }
   // A non-boolean opt behind a `!== false` / truthiness gate (e.g. the string "false"
   // from config) is truthy, so every such gate must REJECT a supplied non-boolean rather

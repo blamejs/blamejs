@@ -2041,6 +2041,35 @@ async function testIdempotentRetainedCommitDoesNotOpenGraceWindow() {
         rotCode === "NO-THROW" && (await ca.loadTrustBundle()).length === 2);
 }
 
+// Recommitting the IDENTICAL X.509 certificate with harmless PEM differences (CRLF line
+// endings, an extra trailing newline) must be recognized as the same issuer — a byte-exact
+// comparison would treat it as new, spuriously opening the single retained-root window.
+async function testIdempotentRetainedCommitToleratesPemReformatting() {
+  var ca = _newCa();
+  await ca.initCA();
+  var sameCert = ca.loadCert().toString("utf8");
+  var sameKey  = ca.loadKey().toString("utf8");
+  var reformatted = sameCert.replace(/\n/g, "\r\n") + "\n";     // CRLF + extra trailing newline
+  await ca.commit({ caKeyPem: sameKey, caCertPem: reformatted, retainPrevious: true });
+  check("a retained recommit of the same cert with reformatted PEM does not open the retained window",
+        (await ca.loadTrustBundle()).length === 1 && fs.existsSync(ca.paths.caCertPrev) === false);
+}
+
+// A CERT-ONLY store (ca.crt present, no key at the destination) is corrupt/half-published:
+// committing over it would journal no prior key, so a cert-rename failure after the key rename
+// leaves an unrecoverable new-key/old-cert pair. commit() must refuse it before mutating.
+async function testCommitRejectsCertOnlyState() {
+  var ca = _newCa();
+  await ca.initCA();
+  var g2 = await engine.generateCa({ generation: 2 });
+  fs.rmSync(ca.paths.caKey);                                    // corrupt: cert present, key absent
+  var code = await code2(function () {
+    return ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
+  });
+  check("commit refuses a cert-only (key-absent) state rather than leaving an unrecoverable pair",
+        code === "mtls-ca/ca-pair-inconsistent");
+}
+
 // An idempotent recommit of the SAME cert/key does not change the CRL's issuer, so the
 // valid CRL must be preserved — not moved aside and deleted like a real rotation.
 async function testIdempotentCommitPreservesCrl() {
@@ -2546,6 +2575,8 @@ async function run() {
     await testReconcileRemovesResurrectedLiveCrlOnRollForward();
     await testReconcileRemovesLeftoverCrlRollbackOnRollForward();
     await testIdempotentRetainedCommitDoesNotOpenGraceWindow();
+    await testIdempotentRetainedCommitToleratesPemReformatting();
+    await testCommitRejectsCertOnlyState();
     await testIdempotentCommitPreservesCrl();
     await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();
     await testCommitSwallowsJournalUnlinkFailureOnCertChange();
