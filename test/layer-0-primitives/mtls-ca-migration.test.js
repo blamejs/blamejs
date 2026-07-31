@@ -2574,6 +2574,32 @@ async function testCommitUpdatesCustomEnginePinToSuppliedAlgorithm() {
         recorded[recorded.length - 1] === "CUSTOM-B");
 }
 
+// The pinned-handle case's sibling: an UNPINNED custom handle (created without algorithm) that
+// commits an explicit algorithm must ALSO have it honored. Otherwise the next initCA() snapshot has
+// no algorithm, _leafEngineArgs() omits it, and a custom engine whose label can't be inferred from
+// the key selects its old default or rejects issuance despite the successful commit — whereas
+// rotate({ algorithm }) already applies the label regardless of the handle's prior pin state.
+async function testCommitAppliesCustomAlgorithmOnUnpinnedHandle() {
+  var recorded = [];
+  var caA = { caCertPem: "-----BEGIN CERTIFICATE-----\nQ0EtQQ==\n-----END CERTIFICATE-----",
+              caKeyPem:  "-----BEGIN PRIVATE KEY-----\na2V5LUE=\n-----END PRIVATE KEY-----" };
+  var caB = { caCertPem: "-----BEGIN CERTIFICATE-----\nQ0EtQg==\n-----END CERTIFICATE-----",
+              caKeyPem:  "-----BEGIN PRIVATE KEY-----\na2V5LUI=\n-----END PRIVATE KEY-----" };
+  var eng = {
+    generateCa:     async function () { return caA; },
+    signClientCert: async function (a) {
+      recorded.push(a.algorithm);
+      return { cert: "-----BEGIN CERTIFICATE-----\nbGVhZg==\n-----END CERTIFICATE-----", key: "k" };
+    },
+  };
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: eng });   // UNPINNED
+  await ca.initCA();
+  await ca.commit({ caKeyPem: caB.caKeyPem, caCertPem: caB.caCertPem, retainPrevious: false, algorithm: "CUSTOM-B" });
+  await ca.generateClientCert({ cn: "after-unpinned-custom-commit" });
+  check("commit({ algorithm }) on an UNPINNED custom handle applies the label so the next issuance uses it",
+        recorded[recorded.length - 1] === "CUSTOM-B");
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -3000,6 +3026,7 @@ async function run() {
     await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();
     await testCommitSwallowsJournalUnlinkFailureOnCertChange();
     await testCommitUpdatesCustomEnginePinToSuppliedAlgorithm();
+    await testCommitAppliesCustomAlgorithmOnUnpinnedHandle();
     await testRotateRefusesUndeterminableGeneration();
     await testReconcileRejectsMalformedManifestBase64();
     await testGenerateClientP12AcceptsOpaqueCert();

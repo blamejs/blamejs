@@ -14608,14 +14608,20 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
                  "journal) lets an unpinned default handle sign a leaf that does not chain to the stored root" });
     }
   }
-  // The public commit() must let a pinned CUSTOM-engine handle supply the NEW effective label
-  // when migrating to a different-algorithm CA (its label can't be inferred from the cert), so
-  // the pin doesn't stay stale and break the next issuance against the newly committed issuer.
-  if (!/!usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined\s*&&\s*opts2\.algorithm\s*!==\s*undefined[\s\S]{0,300}caAlgorithm\s*=\s*opts2\.algorithm/.test(noComments)) {
+  // The public commit() must let ANY custom-engine handle supply the NEW effective label when
+  // migrating to a different-algorithm CA (its label can't be inferred from the cert), so the pin
+  // doesn't stay stale/absent and break the next issuance against the newly committed issuer. Apply
+  // it REGARDLESS of prior pin state (matching rotate({ algorithm })): gating on caAlgorithm !==
+  // undefined drops the explicit label on an UNPINNED custom handle, so the next initCA() snapshot
+  // has no algorithm, _leafEngineArgs omits it, and the engine selects its old default or rejects.
+  if (!/else if\s*\(\s*!usesDefaultEngine\s*&&\s*opts2\.algorithm\s*!==\s*undefined\s*\)\s*\{[\s\S]{0,400}caAlgorithm\s*=\s*opts2\.algorithm/.test(noComments) ||
+      /!usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined\s*&&\s*opts2\.algorithm\s*!==\s*undefined/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "commit() must update a pinned CUSTOM engine's caAlgorithm to a supplied opts.algorithm " +
-               "(the new effective label) — else a custom handle that migrates to a different-algorithm CA keeps the " +
-               "stale pin and the next issuance passes it to the newly committed issuer (reject / incompatible leaf)" });
+      content: "commit() must update ANY custom engine's caAlgorithm to a supplied opts.algorithm (else if " +
+               "(!usesDefaultEngine && opts2.algorithm !== undefined) caAlgorithm = opts2.algorithm), NOT only a " +
+               "pre-pinned handle — gating on caAlgorithm !== undefined drops the explicit label on an unpinned custom " +
+               "handle, so the next issuance omits it and the engine selects its old default or rejects (rotate({ " +
+               "algorithm }) applies it unconditionally)" });
   }
   bad = _filterMarkers(bad, "mtls-ca-adopt-commit-pin-journal-divergence");
   _report("b.mtlsCa adoption/commit paths enforce the pin (shared _assertPinMatchesStoredCa + default-engine-gated " +
