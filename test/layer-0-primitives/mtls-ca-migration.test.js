@@ -13,11 +13,12 @@
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
-var fs       = require("fs");
-var os       = require("os");
-var path     = require("path");
-var engine   = require("../../lib/mtls-engine-default");
-var pki      = require("../../lib/vendor/blamejs-pki.cjs");
+var fs         = require("fs");
+var os         = require("os");
+var path       = require("path");
+var nodeCrypto = require("node:crypto");
+var engine     = require("../../lib/mtls-engine-default");
+var pki        = require("../../lib/vendor/blamejs-pki.cjs");
 
 var _tmpDirs = [];
 function _mkTmp() { var d = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls532-")); _tmpDirs.push(d); return d; }
@@ -1505,6 +1506,29 @@ async function testGenerateCrlPersistsWithCustomRevocationStore() {
         result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
 }
 
+// A pinned ECDSA handle's in-flight generateClientCert() snapshots the ECDSA CA via
+// initCA(); a public commit({ retainPrevious: true }) that installs an ML-DSA CA runs (and
+// synchronously refreshes the handle's closed-over algorithm pin) BEFORE the suspended
+// issuance reads that pin. The leaf MUST bind to the SNAPSHOTTED ECDSA CA — not the
+// refreshed ML-DSA pin — else an ML-DSA leaf is minted under the retained ECDSA root and the
+// grace window's legacy peers (the whole reason the root is retained) cannot authenticate it.
+// commit()'s rename + pin refresh run synchronously inside atomicFile.lock, so the pin is
+// already ML-DSA by the time the issuance's _leafEngineArgs microtask runs — a deterministic
+// reproduction of the race, not a timing-dependent flake.
+async function testLeafAlgorithmBindsToSnapshotNotRacingPinRefresh() {
+  var ca = _newCa({ algorithm: "ECDSA-P384-SHA384" });
+  await ca.initCA();
+  check("precondition: the pinned handle stored an ECDSA CA",
+        ca.status().algorithm === "ECDSA-P384-SHA384");
+  var mldsa = await engine.generateCa({ generation: 2 });      // a default (ML-DSA-87) CA
+  var certPromise = ca.generateClientCert({ cn: "legacy-peer" });   // snapshots the ECDSA pair
+  await ca.commit({ caKeyPem: mldsa.caKeyPem, caCertPem: mldsa.caCertPem, retainPrevious: true });
+  var result = await certPromise;
+  var leafType = new nodeCrypto.X509Certificate(result.cert).publicKey.asymmetricKeyType;
+  check("a leaf issued while commit() refreshes the pin binds to the snapshotted ECDSA CA (ec), not the ML-DSA pin",
+        leafType === "ec");
+}
+
 // For a custom engine, canVerifyInTls() with no argument must use the create-time
 // pin, not status()'s inferred bundled label — the engine may use a custom label
 // for a standard key type, and only the pin carries it.
@@ -2401,6 +2425,7 @@ async function run() {
     await testGenerateCrlSkipsPersistIfCaRotated();
     await testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
+    await testLeafAlgorithmBindsToSnapshotNotRacingPinRefresh();
     await testCanVerifyInTlsPrefersCustomPinOverInferredLabel();
     await testPublicCommitInvalidatesStaleCrl();
     await testRotationCasDetectsSameGenerationCommit();

@@ -14492,6 +14492,42 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
     bad);
 }
 
+// An issuance (generateClientCert/generateClientP12) snapshots the CA via `await initCA()`
+// then builds the leaf args in `_leafEngineArgs(ca, ...)`. The leaf algorithm MUST be derived
+// from the SNAPSHOTTED `ca` — NOT the mutable closed-over `caAlgorithm` pin: a concurrent
+// commit()/rotate() refreshes that pin (commit()'s refresh runs synchronously under the
+// rotation lock, before the suspended issuance's microtask resumes), so reading the pin would
+// mint a leaf under the NEW algorithm signed by the OLD snapshotted issuer (an ML-DSA leaf
+// under a retained ECDSA CA the grace window's legacy peers cannot authenticate). This fires
+// if `_leafEngineArgs` resolves the default-engine leaf algorithm from `caAlgorithm` instead
+// of `_labelForCaKeyType(ca.caKeyPem)`.
+function testMtlsCaLeafAlgorithmBindsToSnapshot() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  var start = noComments.search(/function\s+_leafEngineArgs\s*\(/);
+  if (start !== -1) {
+    var rest = noComments.slice(start);
+    var end = rest.search(/\n\s{2}(?:async\s+)?function\s/);
+    var body = end === -1 ? rest : rest.slice(0, end);
+    // The leaf algorithm must be the snapshot-derived label for the default engine, and the
+    // pin ONLY for a custom engine (whose cert this runtime can't classify).
+    if (!/leafAlg\s*=\s*usesDefaultEngine\s*\?\s*_labelForCaKeyType\(\s*ca\.caKeyPem\s*\)\s*:\s*caAlgorithm/.test(body)) {
+      bad.push({ file: "lib/mtls-ca.js", line: src.slice(0, src.search(/function\s+_leafEngineArgs\s*\(/)).split(/\r?\n/).length,
+        content: "_leafEngineArgs() must derive the default-engine leaf algorithm from the SNAPSHOTTED CA " +
+                 "(usesDefaultEngine ? _labelForCaKeyType(ca.caKeyPem) : caAlgorithm) — reading the mutable caAlgorithm " +
+                 "pin lets a concurrent commit()/rotate() refresh mint a leaf under the new algorithm signed by the old " +
+                 "snapshotted issuer (an ML-DSA leaf under a retained ECDSA CA legacy peers cannot authenticate)" });
+    }
+  }
+  bad = _filterMarkers(bad, "mtls-ca-leaf-algorithm-reads-mutable-pin");
+  _report("b.mtlsCa _leafEngineArgs() binds the leaf algorithm to the snapshotted CA (not the mutable pin), so a " +
+          "commit()/rotate() racing an in-flight issuance can't decouple the leaf algorithm from its issuer",
+    bad);
+}
+
 // The esbuild dev-tool is pinned across three artifacts kept in sync:
 // package.json devDependencies (the version source-of-truth, also postject), the
 // committed root package-lock.json that ci.yml + npm-publish.yml install via
@@ -15640,6 +15676,7 @@ async function run() {
   testMtlsCaReconcileFailsClosedOnCorruptJournal();
   testMtlsCaLoadTrustBundleStableSnapshot();
   testMtlsCaGenerateCrlPersistIsRevocationFresh();
+  testMtlsCaLeafAlgorithmBindsToSnapshot();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by
