@@ -1484,6 +1484,32 @@ async function testPublicCommitInvalidatesStaleCrl() {
         fs.existsSync(ca.paths.crl) === false);
 }
 
+// The rotation compare-and-swap must compare cert IDENTITY, not only the generation
+// number: a public commit() that replaces the CA with a DIFFERENT cert at the SAME
+// generation while rotate() awaits generateCa() must be detected, so the older
+// rotation does not overwrite the later commit.
+async function testRotationCasDetectsSameGenerationCommit() {
+  var dir = _mkTmp();
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    // Block only the ROTATION's keygen (gen >= 2), so initCA (gen-1) is not stalled.
+    generateCa: async function (a) { if (a.generation >= 2) { await barrier; } return engine.generateCa(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();                                          // gen-1 (not blocked)
+  var rotating = ca.rotate({ generation: 2 });               // reads gen-1, blocks in generateCa
+  // A public commit (default engine) replaces the CA at the SAME generation-1 with a
+  // DIFFERENT cert while the rotation is blocked.
+  var handle2 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var g1b = await engine.generateCa({ generation: 1 });
+  await handle2.commit({ caKeyPem: g1b.caKeyPem, caCertPem: g1b.caCertPem, retainPrevious: false });
+  release();
+  check("the rotation CAS detects a same-generation public commit and refuses",
+        (await code2(function () { return rotating; })) === "mtls-ca/rotation-conflict");
+  check("the same-generation public commit survives (its cert is the active CA)",
+        fs.readFileSync(handle2.paths.caCert).toString("utf8") === g1b.caCertPem);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1556,6 +1582,7 @@ async function run() {
     await testGenerateCrlSkipsPersistIfCaRotated();
     await testCanVerifyInTlsPrefersCustomPinOverInferredLabel();
     await testPublicCommitInvalidatesStaleCrl();
+    await testRotationCasDetectsSameGenerationCommit();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
