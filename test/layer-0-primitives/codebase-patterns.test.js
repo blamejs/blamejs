@@ -14704,9 +14704,36 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
                "— else a revoke()/revokeGeneration() that completed during signing is published-around and the served " +
                "CRL omits it until the next regeneration, so CRL-based clients keep accepting the revoked certificate" });
   }
+  // The just-signed CRL also depends on the ISSUANCE ledger: generateCrl() reads it to resolve
+  // each revoked serial's issuing CA and EXCLUDE serials issued by a different CA (issuer-scoping).
+  // That snapshot must be version-stamped and RE-CHECKED at persist too — an importIssuance() that
+  // backfills a revoked serial's (old) issuer while the engine signs otherwise leaves the published
+  // CRL listing an old-issuer serial, which under a serial-reusing custom engine false-revokes the
+  // unrelated current certificate that reused the serial. Guard the version-stamped snapshot AND the
+  // under-lock persist re-check, mirroring the revocation-store guard above.
+  if (!/issuanceSnapshotVersion\s*=\s*\(\s*typeof\s+issuanceStore\.version\s*===\s*["']function["']\s*\)\s*\?\s*issuanceStore\.version\(\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateCrl() must snapshot the issuance store's version() alongside the ledger it issuer-scopes with " +
+               "(issuanceSnapshotVersion = typeof issuanceStore.version === \"function\" ? issuanceStore.version() : null) " +
+               "— without it the persist cannot detect an importIssuance() issuer-backfill that completed while signing" });
+  }
+  if (!/atomicFile\.lock\(\s*paths\.issuance\s*,\s*function\s*\(\)\s*\{\s*if\s*\(\s*issuanceStore\.version\(\)\s*===\s*issuanceSnapshotVersion\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateCrl() must re-check the issuance ledger version UNDER the issuance lock before persisting " +
+               "(atomicFile.lock(paths.issuance, () => { if (issuanceStore.version() === issuanceSnapshotVersion) ... })) " +
+               "— else an importIssuance() that backfilled a revoked serial's old issuer during signing publishes a stale " +
+               "issuer-scoped CRL that false-revokes an unrelated current cert reusing the serial" });
+  }
+  // The default issuance store must expose the same O(1) version() signal the revocation store does.
+  if (!/function\s+_defaultIssuanceStore[\s\S]{0,1200}version:\s*function\s*\(\)\s*\{[\s\S]{0,160}statSync\(\s*paths\.issuance\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_defaultIssuanceStore() must expose a version() (statSync(paths.issuance) size:mtime) mirroring the " +
+               "revocation store's, so generateCrl() can detect an issuance-ledger change (importIssuance backfill) mid-sign" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-generatecrl-persist-races-revocation");
-  _report("b.mtlsCa generateCrl() serializes its persist with revocation writes (version snapshot + under-lock " +
-          "freshness re-check) so a revocation completing during signing is never dropped from the served CRL",
+  _report("b.mtlsCa generateCrl() serializes its persist with revocation AND issuance-ledger writes (version snapshot " +
+          "+ under-lock freshness re-check) so a revocation or an issuer-backfill completing during signing is never " +
+          "published-around into a stale served CRL",
     bad);
 }
 

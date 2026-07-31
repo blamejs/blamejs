@@ -1583,6 +1583,40 @@ async function testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning() {
         result2.persisted === true && result2.entryCount === 2 && fs.existsSync(ca.paths.crl) === true);
 }
 
+// generateCrl() reads the issuance ledger ONCE to resolve each revocation's issuing CA
+// (issuer-scoping). If importIssuance() backfills a revoked serial's issuer as a DIFFERENT
+// (old) CA while the engine signs, a persist that rechecks only the CA + revocation-store
+// version publishes the stale CRL — which still lists that old-issuer serial, false-revoking
+// an unrelated current cert that reused the serial. The issuance ledger must be version-checked
+// (or serialized) at publication too.
+async function testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning() {
+  var duringSign = null;                                       // fires AFTER the snapshot, during signing
+  var slowEngine = Object.assign({}, engine, {
+    generateCrl: async function (a) {
+      if (duringSign) { var f = duringSign; duringSign = null; await f(); }
+      return engine.generateCrl(a);
+    },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();                                           // gen-1 = the OLD issuer
+  var oldCaPem = ca.loadCert().toString("utf8");
+  await ca.rotate({ generation: 2 });                          // gen-2 = the current issuer
+  await ca.revoke("aa");                                       // serial-only; issuer undeterminable at snapshot -> included
+  // During signing, backfill serial "aa"'s issuer as the OLD (gen-1) CA. Had the ledger been
+  // read AFTER, "aa" would map to a different issuer and be EXCLUDED from this current-CA CRL.
+  duringSign = async function () {
+    await ca.importIssuance([{ serialNumber: "aa", caCert: oldCaPem, generation: 1 }]);
+  };
+  var result = await ca.generateCrl();                         // snapshots the ledger, backfills mid-sign
+  check("generateCrl does NOT persist a CRL whose issuance snapshot a concurrent issuer-backfill superseded",
+        result.persisted === false && fs.existsSync(ca.paths.crl) === false);
+  // A clean regeneration now reads the backfilled ledger, scopes "aa" to the old issuer, excludes
+  // it from the current-CA CRL, and persists (an issuer-scoped-empty CRL is still valid).
+  var result2 = await ca.generateCrl();
+  check("a clean regeneration excludes the old-issuer serial and persists",
+        result2.persisted === true && result2.entryCount === 0 && fs.existsSync(ca.paths.crl) === true);
+}
+
 // generateCrl() with a bring-your-own revocationStore (no version() signal) persists
 // directly: the framework does not own that store's write lock, so there is no version to
 // compare against a concurrent revoke() — the operator owns that store's concurrency. This
@@ -1596,6 +1630,22 @@ async function testGenerateCrlPersistsWithCustomRevocationStore() {
   await ca.revoke("0a");
   var result = await ca.generateCrl();
   check("generateCrl persists with a custom revocationStore (no version signal, operator-owned concurrency)",
+        result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
+}
+
+// generateCrl() with a bring-your-own issuanceStore (no version() signal) issuer-scopes and
+// persists directly: the framework owns no lock on that store, so there is no version to compare
+// against a concurrent importIssuance() — the operator owns its concurrency. Exercises the custom
+// issuance-store snapshot + persist arms (no under-lock version re-check).
+async function testGenerateCrlPersistsWithCustomIssuanceStore() {
+  var issued = [];
+  var customIssuance = { list: function () { return issued.slice(); },
+                         add: function (e) { issued.push(e); } };
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", issuanceStore: customIssuance });
+  await ca.initCA();
+  await ca.revoke("0b");
+  var result = await ca.generateCrl();
+  check("generateCrl persists with a custom issuanceStore (no version signal, operator-owned concurrency)",
         result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
 }
 
@@ -2835,7 +2885,9 @@ async function run() {
     await testRotateReturnsEffectiveCustomEngineLabel();
     await testGenerateCrlSkipsPersistIfCaRotated();
     await testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning();
+    await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
+    await testGenerateCrlPersistsWithCustomIssuanceStore();
     await testLeafAlgorithmBindsToSnapshotNotRacingPinRefresh();
     await testCanVerifyInTlsPrefersCustomPinOverInferredLabel();
     await testPublicCommitInvalidatesStaleCrl();
