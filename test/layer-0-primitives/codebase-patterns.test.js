@@ -14195,6 +14195,21 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "parse opts2.caCertPem via nodeCrypto.X509Certificate + opts2.caKeyPem via createPrivateKey, throwing " +
                "mtls-ca/bad-commit on failure) — _caPairConsistent's opaque fallback would otherwise publish garbage" });
   }
+  // A parseable, MATCHING pair can still be an algorithm the bundled engine does not support (a
+  // P-256 / P-521 EC CA, a non-P-384 digest, an ML-DSA parameter set outside the engine's set). The
+  // parse + pairing checks accept it, so it would publish and then the next initCA() throws
+  // mtls-ca/algorithm-mismatch (the pin requires P-384) — commit() reporting success while bricking
+  // issuance. commit() must require the committed CA to classify as one of the bundled engine's
+  // supported algorithms (derived from engine.algorithmEnvelope().cert.priority, NOT a hardcoded
+  // list that would drift from the engine) before mutating storage.
+  if (!/_supportedLabels\s*=\s*engine\.algorithmEnvelope\(\)\.cert\.priority\.map\([\s\S]{0,120}\.label[\s\S]{0,200}_committedLabel\s*===\s*null\s*\|\|\s*_supportedLabels\.indexOf\(\s*_committedLabel\s*\)\s*===\s*-1[\s\S]{0,240}mtls-ca\/unsupported-ca-algorithm/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must reject an UNSUPPORTED bundled-engine algorithm before mutating (for " +
+               "usesDefaultEngine, classify _certAlgorithm(opts2.caCertPem).algorithm and require it be in " +
+               "engine.algorithmEnvelope().cert.priority's labels, else throw mtls-ca/unsupported-ca-algorithm) — a " +
+               "parseable, matching P-256 CA otherwise publishes and the next initCA() throws algorithm-mismatch, " +
+               "leaving issuance unavailable despite commit() reporting success" });
+  }
   // The dedup in _revokeCore must not treat a serial+FINGERPRINT entry as a duplicate of a
   // SERIAL-ONLY revoke(serial): a since-reused serial's old entry is a different cert, and dropping
   // the serial-only entry leaves isSerialRevoked() false so the gate admits the current cert.

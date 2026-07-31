@@ -62,6 +62,31 @@ function _p256CaEngine() {
   };
 }
 
+// A CA whose algorithm the runtime RECOGNIZES (ml-dsa-44) but the bundled engine does not
+// issue (its set is ML-DSA-87 / ML-DSA-65 / ECDSA-P384-SHA384). Used to prove commit()'s
+// supported-algorithm gate refuses a recognized-but-unsupported label too, not only a null
+// (unclassifiable) one. ML-DSA is no-prehash — no digestAlgorithm.
+function _mldsa44CaEngine() {
+  return {
+    generateCa: async function () {
+      var subtle = pki.webcrypto.subtle;
+      var keys = await subtle.generateKey({ name: "ML-DSA-44" }, true, ["sign", "verify"]);
+      var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+      var now = new Date();
+      var caCertPem = await pki.x509.sign({
+        subject:          [{ commonName: "mldsa44-ca" }, { organizationalUnitName: "CAv1" }],
+        subjectPublicKey: spki,
+        serialNumber:     "01",
+        notBefore:        now,
+        notAfter:         new Date(now.getTime() + 86400000),
+        extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign", "cRLSign"] },
+      }, { key: keys.privateKey }, { pem: true });
+      var caKeyPem = await pki.key.export(keys.privateKey, { format: "pem" });
+      return { caCertPem: caCertPem, caKeyPem: caKeyPem };
+    },
+  };
+}
+
 // A custom engine that issues a P-384 / SHA-384 CA. _certAlgorithm() classifies
 // that curve+digest as the framework's bundled label ECDSA-P384-SHA384, but the
 // engine's own effective label for that key type is its business — so a rotate()
@@ -2251,6 +2276,34 @@ async function testCommitRejectsMismatchedCaPair() {
         code === "mtls-ca/ca-pair-inconsistent");
 }
 
+// A bundled-engine commit() must reject a parseable, MATCHING CA pair whose algorithm the bundled
+// engine does not support (e.g. a P-256 EC CA). _caPairConsistent verifies only pairing, so such a
+// CA would publish, then the next initCA() adopting it throws mtls-ca/algorithm-mismatch (the pin
+// requires P-384) — commit() reporting success while leaving every subsequent issuance unavailable.
+async function testCommitRejectsUnsupportedBundledAlgorithm() {
+  var p256 = await _p256CaEngine().generateCa();                   // a valid, matching P-256 CA pair
+  var caPinned = _newCa({ algorithm: "ECDSA-P384-SHA384" });       // the finding's scenario
+  check("bundled commit() rejects a P-256 CA on an ECDSA-P384-pinned handle before publishing",
+        (await code2(function () { return caPinned.commit({ caKeyPem: p256.caKeyPem, caCertPem: p256.caCertPem }); }))
+          === "mtls-ca/unsupported-ca-algorithm");
+  check("the rejected commit left storage untouched (no CA published)", caPinned.status().exists === false);
+  await caPinned.initCA();                                         // a supported CA still initializes
+  check("a supported CA still initializes on the same handle after the rejection",
+        caPinned.status().algorithm === "ECDSA-P384-SHA384");
+  // Even UNPINNED, the bundled engine cannot drive a P-256 CA, so it is refused too.
+  var caUnpinned = _newCa();
+  check("bundled commit() rejects a P-256 CA on an unpinned handle as well",
+        (await code2(function () { return caUnpinned.commit({ caKeyPem: p256.caKeyPem, caCertPem: p256.caCertPem }); }))
+          === "mtls-ca/unsupported-ca-algorithm");
+
+  // A RECOGNIZED-but-unsupported label (ml-dsa-44, outside the engine's ML-DSA-87/65 set) is
+  // refused as well — the gate is "supported by the bundled engine", not merely "classifiable".
+  var mldsa44 = await _mldsa44CaEngine().generateCa();
+  var caMl = _newCa();
+  var mlCode = await code2(function () { return caMl.commit({ caKeyPem: mldsa44.caKeyPem, caCertPem: mldsa44.caCertPem }); });
+  check("bundled commit() rejects a recognized-but-unsupported ML-DSA-44 CA", mlCode === "mtls-ca/unsupported-ca-algorithm");
+}
+
 // A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() must NOT
 // publish a revocation whose cert was issued by a DIFFERENT CA identity — under a custom engine
 // that reuses serials, that CA's revoked serial would false-revoke the unrelated current
@@ -2913,6 +2966,7 @@ async function run() {
     await testIssuanceNotRevokedWhenRootRepublishedReformatted();
     await testCommitRejectsCertOnlyState();
     await testCommitRejectsMismatchedCaPair();
+    await testCommitRejectsUnsupportedBundledAlgorithm();
     await testCrlScopedToCurrentIssuerIdentity();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();
     await testSerialRevokedMatchesOnlySerialOnlyEntries();
