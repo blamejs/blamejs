@@ -579,6 +579,21 @@ async function testIssuanceSupersededWithCustomStore() {
         (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
 }
 
+// A CUSTOM issuanceStore may hold entries the framework never validated (added out of band, not via
+// importIssuance — which now requires a fingerprint). revokeGeneration() sweeps them best-effort by
+// whatever identity they carry: a fingerprint-less entry revokes by serial only (the operator owns a
+// custom store's contents and accepts its per-issuer serial semantics). This exercises the
+// serial-only sweep arm for a store the framework cannot enforce fingerprints on.
+async function testRevokeGenerationSweepsFingerprintlessCustomStoreEntry() {
+  var issued = [{ generation: 1, serialNumber: "aa" }];        // out-of-band entry, no fingerprint
+  var customIss = { list: function () { return issued.slice(); }, add: function (e) { issued.push(e); } };
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", issuanceStore: customIss });
+  await ca.initCA();
+  var rg = await ca.revokeGeneration(2);                       // revokes gen < 2 -> the gen-1 entry
+  check("revokeGeneration sweeps a fingerprint-less custom-store entry by serial", rg.revoked === 1);
+  check("the serial-only swept entry is matched by isSerialRevoked", ca.isSerialRevoked("aa") === true);
+}
+
 // Clustered deployment: a shared revocation store exposing the optional
 // watermark methods coordinates the generation watermark across hosts that each
 // have their OWN dataDir, so an issuance on host B is superseded by host A's
@@ -739,6 +754,27 @@ async function testImportIssuanceBackfill() {
   check("importIssuance rejects a non-array", code(function () { ca.importIssuance("nope"); }) === "mtls-ca/bad-import");
   check("importIssuance rejects an entry without a generation",
         code(function () { ca.importIssuance([{ fingerprint: fp }]); }) === "mtls-ca/bad-import");
+}
+
+// importIssuance() exists solely so revokeGeneration() can sweep a backfilled cert. A serial-only
+// entry (no fingerprint) would be swept into a fingerprint-null revocation, which isSerialRevoked()
+// matches GLOBALLY — a custom CA that reuses that serial after rotation then has its unrelated
+// current certificate false-rejected by require-mtls. A serial is unique only per issuer; the
+// globally-unique identity the gate pins is the fingerprint, so an imported entry must carry one
+// (recording caCert alone is not enough — the live serial lookup does not consult it).
+async function testImportRequiresFingerprint() {
+  var ca = _newCa();
+  await ca.initCA();
+  check("importIssuance rejects a serial-only entry (no fingerprint)",
+        (await code2(function () { return ca.importIssuance([{ generation: 1, serialNumber: "0a" }]); }))
+          === "mtls-ca/bad-import");
+  check("importIssuance rejects a serial-only entry even with a caCert issuer recorded",
+        (await code2(function () {
+          return ca.importIssuance([{ generation: 1, serialNumber: "0a", caCert: ca.loadCert().toString("utf8") }]);
+        })) === "mtls-ca/bad-import");
+  // A fingerprint-bearing entry (with or without a serial) still imports and is generation-revocable.
+  var r = await ca.importIssuance([{ generation: 1, fingerprint: "ab".repeat(64), serialNumber: "0a" }]);
+  check("importIssuance accepts a fingerprint-bearing entry", r.imported === 1);
 }
 
 // A fingerprint STORED for the require-mtls gate must be the framework's SHA3-512 length (128 hex).
@@ -1718,7 +1754,7 @@ async function testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning() {
   // During signing, backfill serial "aa"'s issuer as the OLD (gen-1) CA. Had the ledger been
   // read AFTER, "aa" would map to a different issuer and be EXCLUDED from this current-CA CRL.
   duringSign = async function () {
-    await ca.importIssuance([{ serialNumber: "aa", caCert: oldCaPem, generation: 1 }]);
+    await ca.importIssuance([{ serialNumber: "aa", fingerprint: "ee".repeat(64), caCert: oldCaPem, generation: 1 }]);
   };
   var result = await ca.generateCrl();                         // snapshots the ledger, backfills mid-sign
   check("generateCrl does NOT persist a CRL whose issuance snapshot a concurrent issuer-backfill superseded",
@@ -2572,7 +2608,7 @@ async function testImportIssuanceRecordsIssuerForCrlScoping() {
   await ca.rotate({ generation: 2 });                                             // a DIFFERENT current CA
   var fpA = "aa".repeat(64);
   check("importIssuance rejects a non-string caCert",
-        (await code2(function () { return ca.importIssuance([{ generation: 1, serialNumber: "0d", caCert: 123 }]); })) === "mtls-ca/bad-import");
+        (await code2(function () { return ca.importIssuance([{ generation: 1, serialNumber: "0d", fingerprint: "aa".repeat(64), caCert: 123 }]); })) === "mtls-ca/bad-import");
   await ca.importIssuance([{ generation: 1, serialNumber: "0a", fingerprint: fpA, caCert: oldCaCert }]);
   revoked.push({ serialNumber: "0a", fingerprint: fpA });                          // revoke the imported old-CA cert
   var crl = await ca.generateCrl({ persist: false });
@@ -2892,30 +2928,29 @@ async function testMtlsCaReachableBranchCoverage() {
   check("canVerifyInTls refuses an engine without canVerifyInTls",
         (await code2(function () { return caNoProbe.canVerifyInTls(); })) === "mtls-ca/no-tls-probe");
 
-  // importIssuance edges: non-object entry, neither-fp-nor-serial, serial-only + fp-only,
+  // importIssuance edges: non-object entry, missing fingerprint, fingerprint (± serial),
   // superseded-on-import, and a CUSTOM issuanceStore (the Promise.resolve(add()) arm).
   var caImp = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
   await caImp.initCA();
   check("importIssuance rejects a non-object entry",
         (await code2(function () { return caImp.importIssuance([null]); })) === "mtls-ca/bad-import");
-  check("importIssuance rejects an entry with neither fingerprint nor serial",
+  check("importIssuance rejects an entry without a fingerprint",
         (await code2(function () { return caImp.importIssuance([{ generation: 1 }]); })) === "mtls-ca/bad-import");
-  var imp = await caImp.importIssuance([{ generation: 1, serialNumber: "0a" }, { generation: 1, fingerprint: "ab".repeat(64) }]);
-  check("importIssuance imports serial-only and fingerprint-only entries", imp.imported === 2);
+  var imp = await caImp.importIssuance([{ generation: 1, fingerprint: "ab".repeat(64), serialNumber: "0a" }, { generation: 1, fingerprint: "ba".repeat(64) }]);
+  check("importIssuance imports fingerprint entries (with and without a serial)", imp.imported === 2);
   await caImp.revokeGeneration(3);
-  // Both a fingerprint-only and a SERIAL-ONLY below-watermark entry supersede on import:
-  // the serial-only one revokes with fingerprint:null (a pre-#532 out-of-band cert
-  // backfilled by serial), exercising both revoke-key fallbacks in the superseded sweep.
-  check("importIssuance revokes below-watermark entries (fingerprint-only + serial-only)",
+  // Both a fingerprint-only and a fingerprint+serial below-watermark entry supersede on import,
+  // each revoked by its (globally-unique) fingerprint — exercising the superseded sweep.
+  check("importIssuance revokes below-watermark fingerprint entries",
         (await caImp.importIssuance([
           { generation: 1, fingerprint: "cd".repeat(64) },
-          { generation: 1, serialNumber: "0f" },
+          { generation: 1, fingerprint: "dc".repeat(64), serialNumber: "0f" },
         ])).revoked === 2);
   var customIss = { _l: [], list: function () { return this._l; }, add: function (e) { this._l.push(e); } };
   var caCI = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", issuanceStore: customIss });
   await caCI.initCA();
   check("importIssuance with a custom issuanceStore imports through it",
-        (await caCI.importIssuance([{ generation: 1, serialNumber: "0b" }])).imported === 1 && customIss._l.length === 1);
+        (await caCI.importIssuance([{ generation: 1, fingerprint: "ef".repeat(64) }])).imported === 1 && customIss._l.length === 1);
 
   // revokeGeneration: unknown reason, and a real sweep that revokes a below-n leaf.
   var caRev = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
@@ -3074,6 +3109,7 @@ async function run() {
     await testStatusAlgorithmNullForWrongDigest();
     await testIssuanceSupersededByGenerationRevocation();
     await testIssuanceSupersededWithCustomStore();
+    await testRevokeGenerationSweepsFingerprintlessCustomStoreEntry();
     await testClusteredWatermarkViaStoreMethods();
     await testInitCaRefusesPersistentPairMismatch();
     await testCommitRollsBackRetainedRootOnCertRenameFailure();
@@ -3083,6 +3119,7 @@ async function run() {
     await testNestedPathParentDirsCreated();
     await testMalformedWatermarkAbortsIssuance();
     await testImportIssuanceBackfill();
+    await testImportRequiresFingerprint();
     await testLoadTrustBundleToleratesConcurrentPrevRemoval();
     await testImportOfRevokedGenerationIsRevoked();
     await testInterruptedRotationRecoversFromJournal();

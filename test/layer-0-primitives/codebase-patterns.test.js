@@ -14314,6 +14314,19 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "fingerprint) so generateCrl() can issuer-scope a backfilled entry — else an imported old-CA revocation " +
                "stays in the current CRL and false-revokes a current cert reusing the serial" });
   }
+  // importIssuance() exists solely so revokeGeneration() can sweep the backfilled cert, so every
+  // entry MUST carry a fingerprint (the globally-unique SHA3-512 identity the gate pins). A serial-
+  // only entry (allowed by `if (!fp && !serial)`) would be swept into a fingerprint-null revocation
+  // that isSerialRevoked() matches GLOBALLY — false-revoking a current cert that reuses the serial
+  // under a rotated/custom CA. Require the fingerprint (`if (!fp)`); serialNumber stays optional.
+  if (!/if\s*\(\s*!fp\s*\)\s*\{[\s\S]{0,240}importIssuance entry requires a fingerprint/.test(noComments) ||
+      /if\s*\(\s*!fp\s*&&\s*!serial\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "importIssuance() must REQUIRE a fingerprint on every entry (if (!fp) throw mtls-ca/bad-import " +
+               "\"importIssuance entry requires a fingerprint\"), NOT accept a serial-only entry (if (!fp && !serial)) — a " +
+               "serial is unique only per issuer, so a serial-only import is generation-revoked into a fingerprint-null " +
+               "revocation that isSerialRevoked() matches globally, false-revoking a current cert reusing the serial" });
+  }
   // Cert comparisons across DIFFERENT-formatting sources (a snapshot vs a possibly-reformatted
   // on-disk cert) must compare IDENTITY via _sameCert, never PEM string equality: the issuance
   // root-membership check (loadTrustBundle vs the signing snapshot) and generateCrl's persist
