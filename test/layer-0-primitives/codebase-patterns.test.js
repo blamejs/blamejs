@@ -14369,6 +14369,28 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
                "(new nodeCrypto.X509Certificate(result.certPem)) — it must accept an opaque custom-engine cert " +
                "like generateClientCert; the non-empty check suffices and parsing cannot prove the p12 pairing" });
   }
+  // Every path that ADOPTS a stored CA must read a CONSISTENT snapshot through the shared
+  // _adoptExistingCASnapshot() helper (re-read past an in-flight rotation + reconcile under
+  // the lock), so initCA()'s existing-CA path AND _freshCreateSerialized()'s cold-start adopt
+  // can't diverge: the fresh-create pre-lock branch used to read loadCert()/loadKey() unlocked
+  // with no _caPairConsistent check and could hand an old-cert/new-key pair to a custom engine.
+  // Definition + 2 call sites (initCA + _freshCreateSerialized) = 3 occurrences.
+  var adoptCalls = (noComments.match(/_adoptExistingCASnapshot\b/g) || []).length;
+  if (adoptCalls < 3) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "both initCA() and _freshCreateSerialized()'s cold-start adopt must route through the shared " +
+               "_adoptExistingCASnapshot() helper (found " + adoptCalls + " occurrence(s), expected the definition + 2 " +
+               "call sites) — an inline unlocked read can adopt a mid-rotation old-cert/new-key pair" });
+  }
+  // The public commit() must let a pinned CUSTOM-engine handle supply the NEW effective label
+  // when migrating to a different-algorithm CA (its label can't be inferred from the cert), so
+  // the pin doesn't stay stale and break the next issuance against the newly committed issuer.
+  if (!/!usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined\s*&&\s*opts2\.algorithm\s*!==\s*undefined[\s\S]{0,300}caAlgorithm\s*=\s*opts2\.algorithm/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit() must update a pinned CUSTOM engine's caAlgorithm to a supplied opts.algorithm " +
+               "(the new effective label) — else a custom handle that migrates to a different-algorithm CA keeps the " +
+               "stale pin and the next issuance passes it to the newly committed issuer (reject / incompatible leaf)" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-adopt-commit-pin-journal-divergence");
   _report("b.mtlsCa adoption/commit paths enforce the pin (shared _assertPinMatchesStoredCa + default-engine-gated " +
           "commit pin refresh), journal the new cert so a key-only init rolls forward, and canVerifyInTls validates " +

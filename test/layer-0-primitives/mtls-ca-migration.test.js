@@ -2092,6 +2092,35 @@ async function testCommitSwallowsJournalUnlinkFailureOnCertChange() {
         code === "NO-THROW");
 }
 
+// A pinned CUSTOM-engine handle migrating to a different-algorithm CA via the public commit()
+// primitive must be able to supply the NEW effective label: the bundled label cannot be
+// inferred from a custom cert, so without it the stale pin is passed to the newly committed
+// issuer on the next issuance (reject / incompatible leaf) even though commit() succeeded.
+async function testCommitUpdatesCustomEnginePinToSuppliedAlgorithm() {
+  var recorded = [];
+  var caA = { caCertPem: "-----BEGIN CERTIFICATE-----\nQ0EtQQ==\n-----END CERTIFICATE-----",
+              caKeyPem:  "-----BEGIN PRIVATE KEY-----\na2V5LUE=\n-----END PRIVATE KEY-----" };
+  var caB = { caCertPem: "-----BEGIN CERTIFICATE-----\nQ0EtQg==\n-----END CERTIFICATE-----",
+              caKeyPem:  "-----BEGIN PRIVATE KEY-----\na2V5LUI=\n-----END PRIVATE KEY-----" };
+  var eng = {
+    generateCa:     async function () { return caA; },
+    signClientCert: async function (a) {
+      recorded.push(a.algorithm);
+      return { cert: "-----BEGIN CERTIFICATE-----\nbGVhZg==\n-----END CERTIFICATE-----", key: "k" };
+    },
+  };
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: eng, algorithm: "CUSTOM-A" });
+  await ca.initCA();
+  check("commit rejects a non-string algorithm",
+        (await code2(function () {
+          return ca.commit({ caKeyPem: caB.caKeyPem, caCertPem: caB.caCertPem, algorithm: 123 });
+        })) === "mtls-ca/bad-algorithm");
+  await ca.commit({ caKeyPem: caB.caKeyPem, caCertPem: caB.caCertPem, retainPrevious: false, algorithm: "CUSTOM-B" });
+  await ca.generateClientCert({ cn: "after-custom-migrate" });
+  check("commit({ algorithm }) updates a custom-engine pin so the next issuance uses the NEW label",
+        recorded[recorded.length - 1] === "CUSTOM-B");
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -2499,6 +2528,7 @@ async function run() {
     await testIdempotentCommitPreservesCrl();
     await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();
     await testCommitSwallowsJournalUnlinkFailureOnCertChange();
+    await testCommitUpdatesCustomEnginePinToSuppliedAlgorithm();
     await testRotateRefusesUndeterminableGeneration();
     await testReconcileRejectsMalformedManifestBase64();
     await testGenerateClientP12AcceptsOpaqueCert();
