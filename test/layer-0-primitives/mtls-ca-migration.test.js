@@ -238,21 +238,26 @@ async function testRetainedRootSurvivesFailedCommit() {
 // (full/read-only fs) must still succeed — the CA is committed, the algorithm
 // override sticks, and the handle keeps issuing. The retained root is secondary.
 async function testRotateAbortsWhenRetainedRootWriteFails() {
+  var atomicFile = require("../../lib/atomic-file");
   var dir = _mkTmp();
   var ca = b.mtlsCa.create({ dataDir: dir, algorithm: "ECDSA-P384-SHA384", caKeySealedMode: "disabled" });
   await ca.initCA();
   var keyBefore  = fs.readFileSync(ca.paths.caKey);
   var certBefore = fs.readFileSync(ca.paths.caCert);
-  // A directory sits where ca.prev.crt would be written -> retention cannot be
-  // established. Retention is a required part of the commit, so the rotation MUST
-  // abort rather than publish a new CA while silently omitting the outgoing root
-  // (which would reject clients still enrolled under the just-superseded CA,
-  // breaking the advertised no-outage migration).
-  fs.mkdirSync(ca.paths.caCertPrev);
-  check("rotation aborts when the required retained-root write fails",
-        (await code2(function () { return ca.rotate({ generation: 2, algorithm: "ML-DSA-87" }); }))
-          === "mtls-ca/commit-failed");
-  fs.rmdirSync(ca.paths.caCertPrev);
+  // The required retained-root write fails (a read-only ca.prev.crt directory,
+  // disk full). Retention is part of the commit, so the rotation MUST abort rather
+  // than publish a new CA while silently omitting the outgoing root (which would
+  // reject clients still enrolled under the just-superseded CA, breaking the
+  // advertised no-outage migration).
+  var realWrite = atomicFile.writeSync;
+  atomicFile.writeSync = function (p) {
+    if (String(p) === String(ca.paths.caCertPrev)) throw new Error("simulated retained-root write failure");
+    return realWrite.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.rotate({ generation: 2, algorithm: "ML-DSA-87" }); }); }
+  finally { atomicFile.writeSync = realWrite; }
+  check("rotation aborts when the required retained-root write fails", codeSeen === "mtls-ca/commit-failed");
   check("the original CA survived the aborted rotation (still gen-1 ECDSA)",
         ca.status().generation === 1 && ca.status().algorithm === "ECDSA-P384-SHA384");
   check("the original CA key and cert are unchanged after the aborted rotation",
@@ -292,16 +297,23 @@ async function testCrlOmissionCountExcludesSerialDupes() {
 }
 
 // Concurrent rotate() calls must serialize, not both read the same current
-// generation and clobber each other's CA + retained root.
+// generation and clobber each other's CA + retained root. With only one retained
+// grace window at a time, the first opens the window and the second is refused
+// rather than silently dropping it.
 async function testConcurrentRotationsSerialize() {
   var ca = _newCa();
   await ca.initCA();   // generation 1
-  var results = await Promise.all([ca.rotate({}), ca.rotate({})]);
-  var gens = results.map(function (r) { return r.generation; }).sort(function (a, b) { return a - b; });
-  check("concurrent rotations serialize into monotonic generations 2 and 3",
-        JSON.stringify(gens) === "[2,3]");
-  check("the CA ends at generation 3 with a single retained root",
-        ca.status().generation === 3 && ca.loadTrustBundle().length === 2);
+  var results = await Promise.allSettled([ca.rotate({}), ca.rotate({})]);
+  var fulfilled = results.filter(function (r) { return r.status === "fulfilled"; });
+  var rejected  = results.filter(function (r) { return r.status === "rejected"; });
+  check("exactly one concurrent retained rotation succeeds, the other is refused",
+        fulfilled.length === 1 && rejected.length === 1);
+  check("the winner is generation 2 retaining gen-1",
+        fulfilled[0].value.generation === 2 && ca.status().generation === 2 && ca.loadTrustBundle().length === 2);
+  check("the loser is refused (the open grace window is not silently dropped)",
+        rejected[0].reason && rejected[0].reason.code === "mtls-ca/retained-root-exists");
+  await ca.dropRetained();
+  check("after dropRetained the CA rotates to generation 3", (await ca.rotate({})).generation === 3);
 }
 
 // isRevoked() reads an in-memory index (kept in sync by revoke()) rather than
@@ -506,9 +518,9 @@ async function testInitCaRefusesPersistentPairMismatch() {
 async function testCommitRollsBackRetainedRootOnCertRenameFailure() {
   var atomicFile = require("../../lib/atomic-file");
   var ca = _newCa();
-  await ca.initCA();
-  await ca.rotate({ generation: 2 });                    // ca.prev.crt = gen-1 (prior retained root)
-  var priorPrev = fs.readFileSync(ca.paths.caCertPrev);
+  await ca.initCA();                                     // gen-1, no retained root yet
+  var keyBefore  = fs.readFileSync(ca.paths.caKey);
+  var certBefore = fs.readFileSync(ca.paths.caCert);
   var realRename = atomicFile.renameWithRetry;
   atomicFile.renameWithRetry = function (from, to) {
     if (String(to) === String(ca.paths.caCert)) throw new Error("simulated cert rename failure");
@@ -516,13 +528,17 @@ async function testCommitRollsBackRetainedRootOnCertRenameFailure() {
   };
   var failed = false;
   try {
-    try { await ca.rotate({ generation: 3 }); } catch (_e) { failed = true; }
+    try { await ca.rotate({ generation: 2 }); } catch (_e) { failed = true; }
   } finally { atomicFile.renameWithRetry = realRename; }
   check("a rotation whose cert publication fails is rejected", failed);
-  check("the prior retained root is restored (not lost) when cert publication fails",
-        fs.existsSync(ca.paths.caCertPrev) && fs.readFileSync(ca.paths.caCertPrev).equals(priorPrev));
-  // The prior KEY must also be restored — otherwise the new key would sit beside
-  // the old cert (a mismatched pair) and the handle would be permanently unusable.
+  // The prior KEY must be restored — otherwise the new key would sit beside the old
+  // cert (a mismatched pair) and the handle would be permanently unusable — and the
+  // retained root the failed rotation created must be rolled back (there was none
+  // before a first rotation, so ca.prev.crt is removed).
+  check("the CA rolls back to the prior key + cert when cert publication fails",
+        fs.readFileSync(ca.paths.caKey).equals(keyBefore) && fs.readFileSync(ca.paths.caCert).equals(certBefore));
+  check("no stale retained root is left behind by the failed first rotation",
+        fs.existsSync(ca.paths.caCertPrev) === false);
   check("the handle still issues after the failed rotation (key + cert pair intact)",
         typeof (await ca.generateClientCert({ cn: "after-failed-rotate" })).cert === "string");
 }
@@ -715,6 +731,7 @@ async function testInterruptedRotationRecoversRetainedRoot() {
   await ca.rotate({ generation: 2 });                        // ca.prev.crt = certG1 (retained root P)
   var keyG2  = fs.readFileSync(ca.paths.caKey);
   var certG2 = fs.readFileSync(ca.paths.caCert);
+  await ca.dropRetained();                                   // end the gen-1 window (only one at a time)
   await ca.rotate({ generation: 3 });                        // gives us a real gen-3 key to pose as "new"
   var keyG3  = fs.readFileSync(ca.paths.caKey);
   var journal = ca.paths.caKey + ".rollback";
@@ -869,9 +886,86 @@ async function testLoadTrustBundleDedupsIdenticalRetainedRoot() {
   var bundle = ca.loadTrustBundle();
   check("loadTrustBundle dedups an identical retained root (no [cur, cur])",
         bundle.length === 1 && Buffer.from(bundle[0]).equals(cur));
+  fs.rmSync(ca.paths.caCertPrev, { force: true });      // clear the fabricated dup before a real rotation
   await ca.rotate({ generation: 2 });                   // a genuinely-distinct retained root still appears
   check("loadTrustBundle returns [current, retained] for a real retained rotation",
         ca.loadTrustBundle().length === 2);
+}
+
+// Only ONE retained grace window at a time: ca.prev.crt holds a single prior root,
+// so a second RETAINED rotation would overwrite it and strand clients still under
+// the first retained generation. Refuse it until the window is ended explicitly.
+async function testRefuseConsecutiveRetainedRotations() {
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });                        // retains gen-1
+  check("a retained root exists after the first retained rotation", ca.loadTrustBundle().length === 2);
+  check("a second retained rotation is refused while a root is retained",
+        (await code2(function () { return ca.rotate({ generation: 3 }); })) === "mtls-ca/retained-root-exists");
+  check("the refused rotation left the CA at gen-2 with its retained root intact",
+        ca.status().generation === 2 && ca.loadTrustBundle().length === 2);
+  // Ending the window (dropRetained) lets a retained rotation proceed.
+  await ca.dropRetained();
+  check("after dropRetained, a retained rotation proceeds",
+        (await ca.rotate({ generation: 3 })).generation === 3);
+  // rotate({ retainPrevious: false }) is always allowed (it hard-cuts the old root).
+  await ca.rotate({ generation: 4, retainPrevious: false });
+  check("a hard-cut rotation is allowed even while a root is retained", ca.status().generation === 4);
+}
+
+// A rotation must ABORT when an existing CA key cannot be captured for the rollback
+// journal — proceeding would leave no way to restore the old key if the cert
+// publish then fails, stranding the CA on a new-key/old-cert pair.
+async function testRotateAbortsWhenPriorKeyUnreadable() {
+  var atomicFile = require("../../lib/atomic-file");
+  var ca = _newCa();
+  await ca.initCA();
+  var keyBefore  = fs.readFileSync(ca.paths.caKey);
+  var certBefore = fs.readFileSync(ca.paths.caCert);
+  var realRead = atomicFile.fdSafeReadSync;
+  atomicFile.fdSafeReadSync = function (p) {
+    if (String(p) === String(ca.paths.caKey)) throw new Error("simulated transient key read failure");
+    return realRead.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.rotate({ generation: 2 }); }); }
+  finally { atomicFile.fdSafeReadSync = realRead; }
+  check("rotation aborts when the prior key cannot be captured", codeSeen === "mtls-ca/prior-key-unreadable");
+  check("the original key and cert are untouched after the aborted rotation",
+        fs.readFileSync(ca.paths.caKey).equals(keyBefore) && fs.readFileSync(ca.paths.caCert).equals(certBefore));
+  check("the CA still issues after the aborted rotation",
+        typeof (await ca.generateClientCert({ cn: "post-keyread-abort" })).cert === "string");
+}
+
+// loadTrustBundle() must include a retained root that a crashed rotation left only
+// in the rollback journal (before any initCA()/rotate() reconciled it), so a
+// restart that loads trust without first reconciling does not drop that cohort.
+async function testLoadTrustBundleIncludesUnreconciledJournalRoot() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });                        // gen-2 active, gen-1 retained
+  var keyG2  = fs.readFileSync(ca.paths.caKey);
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  await ca.dropRetained();
+  await ca.rotate({ generation: 3 });
+  var keyG3 = fs.readFileSync(ca.paths.caKey);
+  // Fabricate a crashed retainPrevious:false rotation (gen-2 -> gen-3) that
+  // journaled gen-1 as the root to restore, then unlinked ca.prev.crt, then died
+  // before publishing the cert: the live cert is gen-2, ca.prev.crt is gone, and
+  // the journal holds gen-1.
+  fs.writeFileSync(ca.paths.caKey, keyG3);
+  fs.writeFileSync(ca.paths.caCert, certG2);
+  fs.rmSync(ca.paths.caCertPrev, { force: true });
+  fs.writeFileSync(ca.paths.caKey + ".rollback", JSON.stringify({
+    key: keyG2.toString("base64"), prevAction: "restore", prevData: certG1.toString("base64"),
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var bundle = reopened.loadTrustBundle();                   // called BEFORE any initCA reconcile
+  check("loadTrustBundle includes the current cert and the journal's retained root (no dropped cohort)",
+        bundle.length === 2 &&
+        Buffer.from(bundle[0]).equals(certG2) && Buffer.from(bundle[1]).equals(certG1));
 }
 
 // async variant of code() for rejected promises.
@@ -921,6 +1015,9 @@ async function run() {
     await testCanVerifyInTlsRequiresLabelWhenUndeterminable();
     await testClusteredRevocationStoreRequiresSharedIssuanceStore();
     await testLoadTrustBundleDedupsIdenticalRetainedRoot();
+    await testRefuseConsecutiveRetainedRotations();
+    await testRotateAbortsWhenPriorKeyUnreadable();
+    await testLoadTrustBundleIncludesUnreconciledJournalRoot();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
