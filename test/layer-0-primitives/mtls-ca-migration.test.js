@@ -1386,6 +1386,21 @@ async function testPublicCommitIsLockedPromise() {
         code(function () { ca.commit({}); }) === "mtls-ca/bad-commit");
 }
 
+// A persisted CRL is signed by the CA that produced it; after a rotation it is
+// signed by the SUPERSEDED issuer, so rotation must invalidate it (a consumer
+// serving the path must not publish a CRL the new CA cannot authenticate).
+async function testRotationInvalidatesStaleCrl() {
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.generateCrl();                                     // persists ca.crl signed by gen-1
+  check("a CRL is persisted before rotation", fs.existsSync(ca.paths.crl) === true);
+  await ca.rotate({ generation: 2 });
+  check("rotation invalidates the stale CRL signed by the superseded CA",
+        fs.existsSync(ca.paths.crl) === false);
+  await ca.generateCrl();                                     // operator regenerates under the new CA
+  check("generateCrl re-signs the CRL under the new CA after rotation", fs.existsSync(ca.paths.crl) === true);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1453,6 +1468,7 @@ async function run() {
     await testCanVerifyInTlsProbesDefaultBeforeInit();
     await testReconcileJournalDeletionFailurePropagates();
     await testPublicCommitIsLockedPromise();
+    await testRotationInvalidatesStaleCrl();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
