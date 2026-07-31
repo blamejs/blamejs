@@ -696,6 +696,27 @@ async function testImportIssuanceBackfill() {
         code(function () { ca.importIssuance([{ fingerprint: fp }]); }) === "mtls-ca/bad-import");
 }
 
+// A fingerprint STORED for the require-mtls gate must be the framework's SHA3-512 length (128 hex).
+// _normalizeFingerprint validates only hex, so importIssuance()/revoke({fingerprint}) would accept a
+// SHA-256 (64-hex) or truncated value, "succeed", yet the gate's 128-hex compare never matches — the
+// certificate stays admitted (a silent fail-open). Reject the wrong-length fingerprint at the write.
+async function testGateFingerprintLengthEnforced() {
+  var ca = _newCa();
+  await ca.initCA();
+  var sha256Fp = "ab".repeat(32);                 // 64 hex — a SHA-256 fingerprint, not the gate's SHA3-512
+  check("importIssuance rejects a non-SHA3-512-length fingerprint",
+        (await code2(function () { return ca.importIssuance([{ fingerprint: sha256Fp, generation: 1 }]); }))
+          === "mtls-ca/bad-fingerprint");
+  check("revoke({fingerprint}) rejects a non-SHA3-512-length fingerprint",
+        (await code2(function () { return ca.revoke({ fingerprint: sha256Fp }); }))
+          === "mtls-ca/bad-fingerprint");
+  var sha3Fp = "cd".repeat(64);                    // 128 hex — a valid SHA3-512 leaf fingerprint
+  check("importIssuance accepts a 128-hex SHA3-512 fingerprint",
+        (await code2(function () { return ca.importIssuance([{ fingerprint: sha3Fp, generation: 1 }]); })) === "NO-THROW");
+  check("revoke({fingerprint}) accepts a 128-hex SHA3-512 fingerprint",
+        (await code2(function () { return ca.revoke({ fingerprint: sha3Fp }); })) === "NO-THROW");
+}
+
 // loadTrustBundle() must tolerate a concurrent removal of ca.prev.crt between its
 // existsSync and its read (a dropRetained()/retainPrevious:false on another
 // process) and return the still-valid current CA rather than throwing ENOENT.
@@ -2720,7 +2741,7 @@ async function testMtlsCaReachableBranchCoverage() {
         (await code2(function () { return caImp.importIssuance([null]); })) === "mtls-ca/bad-import");
   check("importIssuance rejects an entry with neither fingerprint nor serial",
         (await code2(function () { return caImp.importIssuance([{ generation: 1 }]); })) === "mtls-ca/bad-import");
-  var imp = await caImp.importIssuance([{ generation: 1, serialNumber: "0a" }, { generation: 1, fingerprint: "ab".repeat(32) }]);
+  var imp = await caImp.importIssuance([{ generation: 1, serialNumber: "0a" }, { generation: 1, fingerprint: "ab".repeat(64) }]);
   check("importIssuance imports serial-only and fingerprint-only entries", imp.imported === 2);
   await caImp.revokeGeneration(3);
   // Both a fingerprint-only and a SERIAL-ONLY below-watermark entry supersede on import:
@@ -2728,7 +2749,7 @@ async function testMtlsCaReachableBranchCoverage() {
   // backfilled by serial), exercising both revoke-key fallbacks in the superseded sweep.
   check("importIssuance revokes below-watermark entries (fingerprint-only + serial-only)",
         (await caImp.importIssuance([
-          { generation: 1, fingerprint: "cd".repeat(32) },
+          { generation: 1, fingerprint: "cd".repeat(64) },
           { generation: 1, serialNumber: "0f" },
         ])).revoked === 2);
   var customIss = { _l: [], list: function () { return this._l; }, add: function (e) { this._l.push(e); } };
@@ -2967,6 +2988,7 @@ async function run() {
     await testCommitRejectsCertOnlyState();
     await testCommitRejectsMismatchedCaPair();
     await testCommitRejectsUnsupportedBundledAlgorithm();
+    await testGateFingerprintLengthEnforced();
     await testCrlScopedToCurrentIssuerIdentity();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();
     await testSerialRevokedMatchesOnlySerialOnlyEntries();

@@ -14210,6 +14210,34 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "parseable, matching P-256 CA otherwise publishes and the next initCA() throws algorithm-mismatch, " +
                "leaving issuance unavailable despite commit() reporting success" });
   }
+  // _adoptExistingCASnapshot()'s locked path must build the verified snapshot INSIDE the lock:
+  // _verifiedCASnapshot samples the mutable caAlgorithm pin, so constructing it after releasing the
+  // rotation lock lets a concurrent same-handle rotate/commit({algorithm:B}) publish B in the gap —
+  // pairing this A key/cert with label B, which a custom signer rejects or mints an incompatible leaf
+  // under. The snapshot must be assigned to _snap right after the under-lock cert/key re-read (as
+  // _freshCreateSerialized's adopt tail does), not returned from a bare call after the lock.
+  if (!/existingKeyPem\s*=\s*loadKey\(\)\.toString\(\s*["']utf8["']\s*\);\s*_snap\s*=\s*_verifiedCASnapshot\(\s*existingCertPem\s*,\s*existingKeyPem\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_adoptExistingCASnapshot()'s locked path must build the snapshot UNDER the lock (_snap = " +
+               "_verifiedCASnapshot(existingCertPem, existingKeyPem) right after the under-lock re-read) — " +
+               "_verifiedCASnapshot samples the mutable caAlgorithm pin, so building it after the lock releases lets a " +
+               "concurrent rotate/commit({algorithm:B}) pair this A key/cert with label B (custom signer rejects / " +
+               "incompatible leaf)" });
+  }
+  // A fingerprint STORED for the require-mtls gate (revoke({fingerprint}) / importIssuance) must be
+  // the framework's SHA3-512 length — _normalizeFingerprint validates only hex, so a SHA-256 (64-hex)
+  // or truncated value is stored but the gate's 128-hex compare never matches (a silent fail-open).
+  // A shared _normalizeGateFingerprint helper enforces the length; both write paths route through it
+  // (isRevoked/isSerialRevoked keep the bare normalizer — they accept a serial too, which is shorter).
+  if (!/function\s+_normalizeGateFingerprint[\s\S]{0,200}_normalizeFingerprint\(\s*fp\s*\)[\s\S]{0,200}\.length\s*!==\s*SHA3_512_HEX_LEN[\s\S]{0,240}mtls-ca\/bad-fingerprint/.test(noComments) ||
+      !/_normalizeGateFingerprint\(\s*fingerprintIn\s*\)/.test(noComments) ||
+      !/_normalizeGateFingerprint\(\s*e\.fingerprint\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "a gate fingerprint (revoke({fingerprint}) + importIssuance entry.fingerprint) must be normalized through " +
+               "_normalizeGateFingerprint — which enforces the SHA3-512 length (_normalizeFingerprint(fp) then .length !== " +
+               "SHA3_512_HEX_LEN throws mtls-ca/bad-fingerprint) — else a SHA-256 (64-hex) / truncated fingerprint is " +
+               "stored but the require-mtls gate's 128-hex compare never matches, leaving the certificate admitted" });
+  }
   // The dedup in _revokeCore must not treat a serial+FINGERPRINT entry as a duplicate of a
   // SERIAL-ONLY revoke(serial): a since-reused serial's old entry is a different cert, and dropping
   // the serial-only entry leaves isSerialRevoked() false so the gate admits the current cert.
