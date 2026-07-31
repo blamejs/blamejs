@@ -1320,6 +1320,20 @@ async function testPublicCommitEnforcesSingleRetainedWindow() {
   check("the refused commit left the retained root intact", (await ca.loadTrustBundle()).length === 2);
 }
 
+// A default-engine handle with NO CA stored yet and no pin must probe the engine
+// default on a no-argument canVerifyInTls() (the documented fresh-deployment
+// pre-flight), NOT refuse with algorithm-undeterminable — an omitted label is
+// unambiguous when there is no stored CA to mismatch.
+async function testCanVerifyInTlsProbesDefaultBeforeInit() {
+  var ca = _newCa();   // default engine, NOT initialized, no create-time pin
+  check("no CA is stored yet", ca.status().exists === false);
+  var codeSeen = await code2(function () { return ca.canVerifyInTls(); });
+  check("canVerifyInTls() before init does not refuse with algorithm-undeterminable",
+        codeSeen !== "mtls-ca/algorithm-undeterminable");
+  var ok = await ca.canVerifyInTls();
+  check("canVerifyInTls() before init probes the default engine (returns a boolean)", typeof ok === "boolean");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1384,6 +1398,7 @@ async function run() {
     await testReconcileFinishesCompletedRotationWithLostKey();
     await testReconcileRemovesResurrectedHardCutRoot();
     await testPublicCommitEnforcesSingleRetainedWindow();
+    await testCanVerifyInTlsProbesDefaultBeforeInit();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
