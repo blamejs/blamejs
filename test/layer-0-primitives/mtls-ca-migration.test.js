@@ -1471,6 +1471,19 @@ async function testCanVerifyInTlsPrefersCustomPinOverInferredLabel() {
         probed[probed.length - 1] === "CUSTOM-PQC-LABEL");
 }
 
+// CRL invalidation is part of the commit (under the lock), so the public commit()
+// path — not just rotate() — invalidates a persisted CRL when it republishes the CA.
+async function testPublicCommitInvalidatesStaleCrl() {
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.generateCrl();                                     // persists ca.crl under gen-1
+  check("a CRL is persisted before the public commit", fs.existsSync(ca.paths.crl) === true);
+  var g2 = await engine.generateCa({ generation: 2 });
+  await ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
+  check("a public commit invalidates the stale CRL (the CA cert changed)",
+        fs.existsSync(ca.paths.crl) === false);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1542,6 +1555,7 @@ async function run() {
     await testPublicCommitReconcilesLeftoverJournalFirst();
     await testGenerateCrlSkipsPersistIfCaRotated();
     await testCanVerifyInTlsPrefersCustomPinOverInferredLabel();
+    await testPublicCommitInvalidatesStaleCrl();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
