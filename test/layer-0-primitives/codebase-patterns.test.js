@@ -14129,6 +14129,16 @@ function testMtlsCaLoadTrustBundleStableSnapshot() {
                "changed (a stable snapshot) — reading it once lets a concurrent retained rotation return " +
                "[old, old], omitting the new active root (found " + reads + " _readCurrentCert() occurrence(s))" });
   }
+  // The retained root must ALSO be re-read in the stability check (definition + the
+  // read + the re-read = 3): re-checking only the current cert lets a dropRetained()
+  // that unlinks ca.prev.crt mid-read slip through, returning a root just cut.
+  var prevReads = (noComments.match(/_readRetainedRoot\s*\(\s*\)/g) || []).length;
+  if (prevReads > 0 && prevReads < 3) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "loadTrustBundle() must re-read the RETAINED ROOT in the stability check too (not only the " +
+               "current cert) — otherwise a concurrent dropRetained() can slip its removed root into the " +
+               "returned bundle (found " + prevReads + " _readRetainedRoot() occurrence(s))" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-trust-bundle-unstable-snapshot");
   _report("b.mtlsCa loadTrustBundle() reads a stable snapshot (re-reads the current cert) so a concurrent " +
           "rotation cannot yield a bundle omitting the active root",
