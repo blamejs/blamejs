@@ -1804,6 +1804,34 @@ async function testCanVerifyInTlsRejectsInvalidExplicitAlgorithm() {
         (await code2(function () { return ca.canVerifyInTls(null); })) === "mtls-ca/bad-algorithm");
 }
 
+// A non-boolean retainPrevious (e.g. the string "false" from config) must be REJECTED,
+// not interpreted by truthiness: "false" is truthy, so it would retain the outgoing
+// root when the operator intended a hard cut (and rotate() retains for every value !==
+// literal false). Validate the supplied value is a boolean at both entry points.
+async function testNonBooleanRetainPreviousRejected() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var g2 = await engine.generateCa({ generation: 2 });
+  check("commit() rejects a non-boolean retainPrevious (the string \"false\" would otherwise retain)",
+        (await code2(function () {
+          return ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: "false" });
+        })) === "mtls-ca/bad-retain-previous");
+  check("rotate() rejects a non-boolean retainPrevious",
+        (await code2(function () { return ca.rotate({ generation: 2, retainPrevious: "false" }); }))
+          === "mtls-ca/bad-retain-previous");
+  // A proper boolean still works (hard cut to gen 2).
+  var r = await ca.rotate({ generation: 2, retainPrevious: false });
+  check("rotate() still accepts a boolean retainPrevious",
+        typeof r.caCertPem === "string" && ca.status().generation === 2);
+  // generateCrl()'s persist is the same !== false truthiness class — a non-boolean must
+  // be rejected rather than persisting when the operator meant return-only.
+  check("generateCrl() rejects a non-boolean persist (the string \"false\" would otherwise persist)",
+        (await code2(function () { return ca.generateCrl({ persist: "false" }); })) === "mtls-ca/bad-persist");
+  var crl = await ca.generateCrl({ persist: false });   // a proper boolean still returns without persisting
+  check("generateCrl() still accepts a boolean persist", typeof crl.crlPem === "string");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1888,6 +1916,7 @@ async function run() {
     await testReconcileRollsForwardKeyOnlyInit();
     await testPublicCommitPreservesCustomEnginePin();
     await testCanVerifyInTlsRejectsInvalidExplicitAlgorithm();
+    await testNonBooleanRetainPreviousRejected();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

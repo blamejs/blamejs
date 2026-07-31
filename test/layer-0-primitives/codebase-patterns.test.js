@@ -14083,6 +14083,25 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "retainPrevious (typeof opts2.retainPrevious !== \"boolean\") must throw mtls-ca/retention-intent-" +
                "required, else the just-superseded generation loses trust while the active cert is replaced" });
   }
+  // A non-boolean opt behind a `!== false` / truthiness gate (e.g. the string "false"
+  // from config) is truthy, so every such gate must REJECT a supplied non-boolean rather
+  // than interpret it: retainPrevious (commit/_commitLocked outgoingCaCert + rotate's
+  // `!== false`) would retain a superseded root the operator meant to hard-cut, and
+  // generateCrl's persist would persist when the operator meant return-only.
+  if (noComments.indexOf("mtls-ca/bad-retain-previous") === -1 ||
+      !/rotateOpts\.retainPrevious\s*!==\s*undefined\s*&&\s*typeof\s+rotateOpts\.retainPrevious\s*!==\s*["']boolean["']/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit()/_commitLocked() AND rotate() must reject a supplied non-boolean retainPrevious (throw " +
+               "mtls-ca/bad-retain-previous) — a non-boolean like the string \"false\" is truthy (and not the " +
+               "literal false rotate() compares), so it would retain a superseded root the operator meant to hard-cut" });
+  }
+  if (noComments.indexOf("mtls-ca/bad-persist") === -1 ||
+      !/opts3\.persist\s*!==\s*undefined\s*&&\s*typeof\s+opts3\.persist\s*!==\s*["']boolean["']/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateCrl() must reject a supplied non-boolean persist (throw mtls-ca/bad-persist) — its `!== " +
+               "false` gate treats the string \"false\" as truthy and persists a CRL the operator asked to return " +
+               "only" });
+  }
   // Invalidating a persisted CRL on a CA change must be TIED to the cert publication:
   // the stale CRL is MOVED ASIDE (renameWithRetry(paths.crl, crlRollback)) BEFORE the
   // cert rename — a required step (a read-only CRL dir fails the commit) — and deleted
