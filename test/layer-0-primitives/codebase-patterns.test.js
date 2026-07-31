@@ -14250,18 +14250,21 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "isSerialRevoked, not aliased to isRevoked) — a global serial match false-denies a different " +
                "generation's cert reusing the serial in the live multi-root gate" });
   }
-  // generateCrl() must SCOPE its entries to the current issuer's generation (a CRL is signed by
-  // one CA, and serials are unique only per issuer): resolve each revocation's generation from
-  // the issuance ledger and exclude one from a superseded generation. Without it, an old
-  // generation's revoked serial is published under the new issuer, false-revoking a
-  // current-generation cert that reuses the serial (a custom engine restarting its counter).
-  if (!/currentGen\s*=\s*parseGeneration\(\s*ca\.caCertPem\s*\)/.test(noComments) ||
-      !/eg\s*!==\s*currentGen\s*\)\s*return false/.test(noComments)) {
+  // generateCrl() must SCOPE its entries to the current issuer IDENTITY (a CRL is signed by one
+  // CA, and serials are unique only per issuer): resolve each revocation's issuing CA from the
+  // ledger's caFingerprint and exclude one from a DIFFERENT CA. Scoping by GENERATION is
+  // insufficient — commit() can replace a CA with a different cert at the SAME generation — so it
+  // must use the CA-cert identity (_certIdentity(ca.caCertPem).fingerprint), and _recordIssuance
+  // must record caFingerprint. Without it, another CA's revoked serial is published under this
+  // issuer, false-revoking a current cert reusing the serial (a custom engine reusing serials).
+  if (!/currentCaId\s*=\s*_certIdentity\(\s*ca\.caCertPem\s*\)\.fingerprint/.test(noComments) ||
+      !/ei\s*!==\s*currentCaId\s*\)\s*return false/.test(noComments) ||
+      !/caFingerprint:\s*_certIdentity\(\s*caCertPem\s*\)\.fingerprint/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "generateCrl() must scope revocations to the current issuer generation (currentGen = " +
-               "parseGeneration(ca.caCertPem); exclude an entry whose ledger-resolved generation !== currentGen) — " +
-               "publishing a superseded generation's revoked serial under the new issuer false-revokes a " +
-               "current-generation cert reusing the serial" });
+      content: "generateCrl() must scope revocations to the current issuer IDENTITY (currentCaId = " +
+               "_certIdentity(ca.caCertPem).fingerprint; exclude an entry whose ledger caFingerprint !== currentCaId; " +
+               "_recordIssuance records caFingerprint) — generation equality is not issuer equality (commit() can " +
+               "replace a CA at the same generation), and publishing another CA's serial false-revokes a cert reusing it" });
   }
   // The moved-aside CRL must be RESTORED on a rollback / interrupted-rotation recovery
   // (the CA it reverts to is still active, so its CRL is still valid) — in the catch AND

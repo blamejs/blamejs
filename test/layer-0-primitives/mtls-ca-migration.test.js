@@ -2108,12 +2108,12 @@ async function testCommitRejectsMismatchedCaPair() {
         code === "mtls-ca/ca-pair-inconsistent");
 }
 
-// A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() under the
-// current generation must NOT publish a revocation whose cert was issued by a DIFFERENT
-// (superseded) generation — under a custom engine that reuses serials across rotations, that would
-// false-revoke the unrelated current-generation certificate reusing the serial. Injected stores
-// simulate the serial collision deterministically.
-async function testCrlScopedToCurrentIssuerGeneration() {
+// A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() must NOT
+// publish a revocation whose cert was issued by a DIFFERENT CA identity — under a custom engine
+// that reuses serials, that CA's revoked serial would false-revoke the unrelated current
+// certificate reusing it. Scoping is by ISSUER IDENTITY (the ledger's caFingerprint), NOT
+// generation number: commit() can replace a CA with a different cert at the SAME generation.
+async function testCrlScopedToCurrentIssuerIdentity() {
   var issued = [];
   var revoked = [];
   var ca = b.mtlsCa.create({
@@ -2121,21 +2121,24 @@ async function testCrlScopedToCurrentIssuerGeneration() {
     issuanceStore:   { list: function () { return issued.slice(); },  add: function (e) { issued.push(e); } },
     revocationStore: { list: function () { return revoked.slice(); }, add: function (e) { revoked.push(e); } },
   });
-  await ca.initCA();                                                 // gen-1
-  await ca.rotate({ generation: 2 });                                // gen-2 (its cert parses to generation 2)
-  check("precondition: the CA is at generation 2", ca.status().generation === 2);
-  var fpA = "aa".repeat(64), fpB = "bb".repeat(64);                  // distinct SHA3-512 fingerprints
-  issued.push({ generation: 1, serialNumber: "0a", fingerprint: fpA });   // gen-1 cert A, serial 0a
-  issued.push({ generation: 2, serialNumber: "0a", fingerprint: fpB });   // gen-2 cert B REUSES serial 0a
-  revoked.push({ serialNumber: "0a", fingerprint: fpA });                 // revoke gen-1 cert A (serial+fingerprint)
+  await ca.initCA();
+  var oldCaId = b.crypto.hashCertFingerprint(ca.loadCert().toString("utf8")).hex;   // the superseded CA's identity
+  var replacement = await engine.generateCa({ generation: 1 });                     // a DIFFERENT CA at the SAME generation
+  await ca.commit({ caKeyPem: replacement.caKeyPem, caCertPem: replacement.caCertPem, retainPrevious: false });
+  var newCaId = b.crypto.hashCertFingerprint(ca.loadCert().toString("utf8")).hex;
+  check("precondition: same generation, different CA identity",
+        ca.status().generation === 1 && oldCaId !== newCaId);
+  var fpA = "aa".repeat(64);
+  issued.push({ caFingerprint: oldCaId, serialNumber: "0a", fingerprint: fpA });   // cert A issued by the OLD CA
+  revoked.push({ serialNumber: "0a", fingerprint: fpA });                          // revoke cert A
   var crl = await ca.generateCrl({ persist: false });
-  check("the gen-2 CRL excludes a gen-1 revocation's reused serial (scoped to the current issuer)",
+  check("the current CRL excludes a revocation from a different CA identity at the SAME generation",
         crl.entryCount === 0);
 }
 
 // generateCrl() dedups two revocations of the SAME serial (a serial-only entry plus a later
 // serial+fingerprint one revokeGeneration backfills) to one CRL entry, and skips a malformed
-// issuance-ledger entry (no numeric generation) when resolving generations.
+// issuance-ledger entry (no caFingerprint) when resolving issuers.
 async function testCrlDedupsAndSkipsMalformedLedgerEntries() {
   var issued = [];
   var revoked = [];
@@ -2144,14 +2147,15 @@ async function testCrlDedupsAndSkipsMalformedLedgerEntries() {
     issuanceStore:   { list: function () { return issued.slice(); },  add: function (e) { issued.push(e); } },
     revocationStore: { list: function () { return revoked.slice(); }, add: function (e) { revoked.push(e); } },
   });
-  await ca.initCA();                                                 // gen-1 (currentGen 1)
+  await ca.initCA();
+  var caId = b.crypto.hashCertFingerprint(ca.loadCert().toString("utf8")).hex;    // the current CA's identity
   var fp = "dd".repeat(64);
-  issued.push({ serialNumber: "0c", fingerprint: "cc".repeat(64) }); // MALFORMED: no generation -> skipped
-  issued.push({ generation: 1, serialNumber: "0b", fingerprint: fp });
-  revoked.push({ serialNumber: "0b", fingerprint: null });           // serial-only revocation
-  revoked.push({ serialNumber: "0b", fingerprint: fp });             // serial+fingerprint (same serial -> dedup)
+  issued.push({ serialNumber: "0c", fingerprint: "cc".repeat(64) });              // MALFORMED: no caFingerprint -> skipped
+  issued.push({ caFingerprint: caId, serialNumber: "0b", fingerprint: fp });
+  revoked.push({ serialNumber: "0b", fingerprint: null });                        // serial-only revocation
+  revoked.push({ serialNumber: "0b", fingerprint: fp });                          // serial+fingerprint (same serial -> dedup)
   var crl = await ca.generateCrl({ persist: false });
-  check("generateCrl dedups two revocations of the same serial and tolerates a ledger entry with no generation",
+  check("generateCrl dedups two revocations of the same serial and tolerates a ledger entry with no caFingerprint",
         crl.entryCount === 1);
 }
 
@@ -2710,7 +2714,7 @@ async function run() {
     await testIssuanceNotRevokedWhenRootRepublishedReformatted();
     await testCommitRejectsCertOnlyState();
     await testCommitRejectsMismatchedCaPair();
-    await testCrlScopedToCurrentIssuerGeneration();
+    await testCrlScopedToCurrentIssuerIdentity();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();
     await testSerialRevokedMatchesOnlySerialOnlyEntries();
     await testCommitClearsOrphanCrlRollbackBeforeMoveAside();
