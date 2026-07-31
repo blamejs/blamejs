@@ -1201,6 +1201,36 @@ async function testHardCutRotationSupersedesStraddlingIssuance() {
         (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
 }
 
+// A leaf whose signing began under a generation that is then RETAINED-rotated and
+// dropRetained() before issuance finishes chains to a root no longer in the trust
+// bundle — it must self-revoke rather than return un-verifiable.
+async function testDropRetainedSupersedesStraddlingIssuance() {
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    signClientCert: async function (a) { await barrier; return engine.signClientCert(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();                                          // gen-1
+  var issuing = ca.generateClientCert({ cn: "straddle-drop" }); // signs under gen-1, blocks
+  await ca.rotate({ generation: 2 });                        // gen-1 becomes the retained root
+  await ca.dropRetained();                                   // removes gen-1 entirely
+  release();
+  check("a leaf straddling a rotate + dropRetained (its root dropped) self-revokes",
+        (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
+}
+
+// A leaf issued under the CURRENT generation with no concurrent removal is NOT
+// falsely superseded (its root stays in the trust bundle).
+async function testNormalIssuanceNotFalselySuperseded() {
+  var ca = _newCa();
+  await ca.initCA();
+  check("a normal issuance under the current CA is not falsely superseded",
+        typeof (await ca.generateClientCert({ cn: "normal" })).cert === "string");
+  await ca.rotate({ generation: 2 });   // retained rotation keeps gen-1 in the bundle
+  check("issuance under the new generation after a retained rotation is not superseded",
+        typeof (await ca.generateClientCert({ cn: "normal-2" })).cert === "string");
+}
+
 // Concurrent first-time inits must converge on ONE CA (serialized), not each
 // generate a CA and clobber one another (orphaning the loser's just-issued leaf).
 async function testConcurrentFirstInitDoesNotClobber() {
@@ -1330,6 +1360,8 @@ async function run() {
     await testCustomEngineReconcileRestoresKeyByBytes();
     await testUnpinnedRotatePreservesStoredAlgorithm();
     await testHardCutRotationSupersedesStraddlingIssuance();
+    await testDropRetainedSupersedesStraddlingIssuance();
+    await testNormalIssuanceNotFalselySuperseded();
     await testConcurrentFirstInitDoesNotClobber();
     await testReconcileFinishesCompletedRotationWithLostKey();
     await testReconcileRemovesResurrectedHardCutRoot();
