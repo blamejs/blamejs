@@ -62,6 +62,31 @@ function _p256CaEngine() {
   };
 }
 
+// A custom engine that issues a P-384 / SHA-384 CA. _certAlgorithm() classifies
+// that curve+digest as the framework's bundled label ECDSA-P384-SHA384, but the
+// engine's own effective label for that key type is its business — so a rotate()
+// under this engine must report the requested/pinned label, not the inference.
+function _p384CaEngine() {
+  return {
+    generateCa: async function () {
+      var subtle = pki.webcrypto.subtle;
+      var keys = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+      var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+      var now = new Date();
+      var caCertPem = await pki.x509.sign({
+        subject:          [{ commonName: "p384-ca" }, { organizationalUnitName: "CAv1" }],
+        subjectPublicKey: spki,
+        serialNumber:     "01",
+        notBefore:        now,
+        notAfter:         new Date(now.getTime() + 86400000),
+        extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign", "cRLSign"] },
+      }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha384" });
+      var caKeyPem = await pki.key.export(keys.privateKey, { format: "pem" });
+      return { caCertPem: caCertPem, caKeyPem: caKeyPem };
+    },
+  };
+}
+
 async function testStatusAlgorithmKeyType() {
   var ca = _newCa();
   var before = ca.status();
@@ -1476,6 +1501,46 @@ async function testRotationCasToleratesReformattedConcurrentCommit() {
         code === "NO-THROW");
 }
 
+// The documented rotate() result carries the migration algorithm operators persist.
+// For a CUSTOM engine, _certAlgorithm() only understands bundled labels — it would
+// report a custom P-384 CA as ECDSA-P384-SHA384, or null for other custom certs.
+// The effective label (the explicit rotate({algorithm}), else the create-time pin)
+// must be returned instead; certificate inference is reserved for the bundled engine.
+async function testRotateReturnsEffectiveCustomEngineLabel() {
+  // Explicit rotate({ algorithm }): return the requested custom label, not the
+  // bundled cert inference (this P-384/SHA-384 cert would infer ECDSA-P384-SHA384).
+  var caA = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: _p384CaEngine() });
+  await caA.initCA();
+  var rA = await caA.rotate({ generation: 2, algorithm: "CUSTOM-P384" });
+  check("rotate returns the requested custom-engine label, not the bundled cert inference",
+        rA.algorithm === "CUSTOM-P384");
+
+  // No rotate({ algorithm }): the effective label is the retained create-time pin.
+  // A P-256 custom cert infers to null, so a caller would otherwise record null for
+  // a migration whose algorithm is in fact known (the handle's pin).
+  var caB = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", algorithm: "CUSTOM-P256", engine: _p256CaEngine() });
+  await caB.initCA();
+  var rB = await caB.rotate({ generation: 2 });
+  check("an unpinned-rotate custom engine returns the retained create-time label, not null",
+        rB.algorithm === "CUSTOM-P256");
+
+  // No rotate({ algorithm }) AND no create-time pin: the custom label is genuinely
+  // unknown, so the result is null rather than a bundled cert inference.
+  var caD = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: _p256CaEngine() });
+  await caD.initCA();
+  var rD = await caD.rotate({ generation: 2 });
+  check("an unpinned custom engine with no pin reports a null migration algorithm",
+        rD.algorithm === null);
+
+  // The bundled engine still infers from the freshly-issued cert (authoritative — the
+  // engine chose the key type), so a default-engine rotate keeps reporting ML-DSA-87.
+  var caC = _newCa();
+  await caC.initCA();
+  var rC = await caC.rotate({ generation: 2 });
+  check("a bundled-engine rotate still reports the inferred cert algorithm",
+        rC.algorithm === "ML-DSA-87");
+}
+
 // generateCrl() must not persist a CRL signed by a CA that ROTATED while it was
 // signing — that would recreate the stale-issuer artifact the rotation invalidated.
 async function testGenerateCrlSkipsPersistIfCaRotated() {
@@ -2767,6 +2832,7 @@ async function run() {
     await testRotationInvalidatesStaleCrl();
     await testPublicCommitReconcilesLeftoverJournalFirst();
     await testRotationCasToleratesReformattedConcurrentCommit();
+    await testRotateReturnsEffectiveCustomEngineLabel();
     await testGenerateCrlSkipsPersistIfCaRotated();
     await testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();

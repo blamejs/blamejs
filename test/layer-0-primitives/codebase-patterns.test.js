@@ -14145,6 +14145,20 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "previousCaCertPem)) — an exact-string compare aborts a rotation when a concurrent commit merely " +
                "reformatted the same cert (rotation-conflict)" });
   }
+  // _rotateImpl()'s returned result carries the migration algorithm operators persist. It must
+  // report the EFFECTIVE label, gating certificate inference behind the bundled engine: the fresh
+  // cert is authoritative only for the default engine (it chose the key type), whereas a custom
+  // engine's own label is NOT inferable — _certAlgorithm() would misreport a custom P-384 CA as the
+  // bundled ECDSA-P384-SHA384 (or null for other custom certs). An unconditional
+  // `algorithm: _certAlgorithm(fresh.caCertPem).algorithm` records the wrong migration algorithm.
+  if (!/algorithm:\s*usesDefaultEngine\s*\?\s*_certAlgorithm\(\s*fresh\.caCertPem\s*\)\.algorithm\s*:\s*\(\s*pin\s*!==\s*undefined\s*\?\s*pin\s*:\s*null\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_rotateImpl()'s returned result must report the EFFECTIVE algorithm (algorithm: usesDefaultEngine ? " +
+               "_certAlgorithm(fresh.caCertPem).algorithm : (pin !== undefined ? pin : null)), reserving certificate " +
+               "inference for the bundled engine — an unconditional _certAlgorithm(fresh.caCertPem).algorithm misreports " +
+               "a custom P-384 CA as ECDSA-P384-SHA384 (or null), recording the wrong migration algorithm for callers " +
+               "persisting rotate()'s documented result" });
+  }
   // _sameCert must compare parsed DER identity (tolerating harmless PEM differences), falling
   // back to bytes only for an unparseable opaque custom cert.
   if (!/function\s+_sameCert[\s\S]{0,160}X509Certificate\([^)]*\)\.raw\.equals\(\s*new\s+nodeCrypto\.X509Certificate/.test(noComments)) {
