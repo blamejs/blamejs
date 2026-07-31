@@ -87,6 +87,26 @@ function _mldsa44CaEngine() {
   };
 }
 
+// A P-384 / SHA-384 self-signed LEAF (basicConstraints cA:false) + its matching key. Parses,
+// classifies as ECDSA-P384-SHA384, and pairs — but is NOT a CA, so a bundled-engine commit() of it
+// must be refused (the next generateClientCert() would fail: a non-CA issuer cannot sign leaves).
+async function _p384LeafPair() {
+  var subtle = pki.webcrypto.subtle;
+  var keys = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+  var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+  var now = new Date();
+  var certPem = await pki.x509.sign({
+    subject:          [{ commonName: "not-a-ca-leaf" }],
+    subjectPublicKey: spki,
+    serialNumber:     "01",
+    notBefore:        now,
+    notAfter:         new Date(now.getTime() + 86400000),
+    extensions:       { basicConstraints: { cA: false }, keyUsage: ["digitalSignature"] },
+  }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha384" });
+  var keyPem = await pki.key.export(keys.privateKey, { format: "pem" });
+  return { caCertPem: certPem, caKeyPem: keyPem };
+}
+
 // A custom engine that issues a P-384 / SHA-384 CA. _certAlgorithm() classifies
 // that curve+digest as the framework's bundled label ECDSA-P384-SHA384, but the
 // engine's own effective label for that key type is its business — so a rotate()
@@ -2325,6 +2345,22 @@ async function testCommitRejectsUnsupportedBundledAlgorithm() {
   check("bundled commit() rejects a recognized-but-unsupported ML-DSA-44 CA", mlCode === "mtls-ca/unsupported-ca-algorithm");
 }
 
+// A bundled-engine commit() must reject a certificate that is NOT a CA (basicConstraints cA:false —
+// e.g. a P-384 LEAF and its matching key). It parses, classifies as a supported ECDSA algorithm, and
+// pairs, so the earlier checks accept it — but the bundled engine signs leaves WITH the committed CA,
+// so the next generateClientCert() would fail (a non-CA issuer, x509/bad-input). Refuse it up front.
+async function testCommitRejectsNonCaCertificate() {
+  var leaf = await _p384LeafPair();                               // a valid P-384 leaf + key (cA:false)
+  var ca = _newCa();
+  check("bundled commit() rejects a non-CA (leaf) certificate before publishing",
+        (await code2(function () { return ca.commit({ caKeyPem: leaf.caKeyPem, caCertPem: leaf.caCertPem }); }))
+          === "mtls-ca/not-a-ca-certificate");
+  check("the rejected commit left storage untouched", ca.status().exists === false);
+  // A genuine CA still initializes on the same handle after the rejection.
+  await ca.initCA();
+  check("a CA certificate still initializes after the non-CA rejection", ca.status().exists === true);
+}
+
 // A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() must NOT
 // publish a revocation whose cert was issued by a DIFFERENT CA identity — under a custom engine
 // that reuses serials, that CA's revoked serial would false-revoke the unrelated current
@@ -3014,6 +3050,7 @@ async function run() {
     await testCommitRejectsCertOnlyState();
     await testCommitRejectsMismatchedCaPair();
     await testCommitRejectsUnsupportedBundledAlgorithm();
+    await testCommitRejectsNonCaCertificate();
     await testGateFingerprintLengthEnforced();
     await testCrlScopedToCurrentIssuerIdentity();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();

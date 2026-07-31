@@ -14210,6 +14210,17 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "parseable, matching P-256 CA otherwise publishes and the next initCA() throws algorithm-mismatch, " +
                "leaving issuance unavailable despite commit() reporting success" });
   }
+  // A bundled-engine commit() must reject a certificate that is NOT a CA (basicConstraints cA:false,
+  // e.g. a P-384 leaf): it parses, classifies as a supported algorithm, and pairs, so the other
+  // checks accept it, but the bundled engine signs leaves WITH the committed CA — the next
+  // generateClientCert() then fails (x509/bad-input, a non-CA issuer), commit() reporting success
+  // while bricking issuance. Require X509Certificate.ca === true before publishing.
+  if (!/\.ca\s*!==\s*true[\s\S]{0,240}mtls-ca\/not-a-ca-certificate/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must reject a non-CA certificate for the bundled engine (X509Certificate.ca !== true " +
+               "-> throw mtls-ca/not-a-ca-certificate) — a P-384 leaf parses, classifies as ECDSA-P384-SHA384, and pairs, " +
+               "so it would publish and the next generateClientCert() fails x509/bad-input (a non-CA issuer cannot sign)" });
+  }
   // _adoptExistingCASnapshot()'s locked path must build the verified snapshot INSIDE the lock:
   // _verifiedCASnapshot samples the mutable caAlgorithm pin, so constructing it after releasing the
   // rotation lock lets a concurrent same-handle rotate/commit({algorithm:B}) publish B in the gap —
