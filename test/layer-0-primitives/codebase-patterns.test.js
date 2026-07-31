@@ -14216,6 +14216,29 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
         content: "the stale-CRL move-aside must NOT be wrapped in a swallowing try/catch — a failure (a read-only " +
                  "CRL directory) must abort and roll back the commit, not report success" });
     }
+    // The move-aside must CLEAR an orphan crl.rollback first: a prior commit's best-effort delete
+    // may have left one, and on Windows renameSync cannot replace an existing destination, so the
+    // move would exhaust renameWithRetry and abort every later rotation.
+    if (!/nodeFs\.existsSync\(\s*crlRollback\s*\)[\s\S]{0,240}unlinkSync\(\s*crlRollback\s*\)[\s\S]{0,240}renameWithRetry\(\s*paths\.crl\s*,\s*crlRollback\s*\)/.test(noComments)) {
+      bad.push({ file: "lib/mtls-ca.js", line: 1,
+        content: "commit()'s CRL move-aside must clear an ORPHAN crl.rollback (if (nodeFs.existsSync(crlRollback)) " +
+                 "unlinkSync(crlRollback)) BEFORE renameWithRetry(paths.crl, crlRollback) — on Windows renameSync cannot " +
+                 "replace an existing destination, so a survivor from a prior commit would abort every later rotation" });
+    }
+  }
+  // isSerialRevoked() (the require-mtls live gate's serial fallback) must consult a SERIAL-ONLY
+  // index, not the global isRevoked() index: a serial is unique per issuer, so a serial+fingerprint
+  // revocation is scoped to its cert by the fingerprint, and matching its serial globally would
+  // false-deny a different generation's cert reusing the serial (a custom engine that restarts its
+  // serial counter). Requires the dedicated fn, its export, and the serial-only index build.
+  if (!/function\s+isSerialRevoked[\s\S]{0,300}_revSerialOnlyFor\(\)\.has/.test(noComments) ||
+      /isSerialRevoked:\s*isRevoked\b/.test(noComments) ||
+      !/r\.fingerprint\s*==\s*null\s*\)\s*_revSerialOnly\.add\(\s*r\.serialNumber\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "isSerialRevoked() must match ONLY serial-only revocations via a dedicated serial-only index " +
+               "(_revSerialOnlyFor().has; built in _revIndexFor from entries with fingerprint == null; exported as " +
+               "isSerialRevoked, not aliased to isRevoked) — a global serial match false-denies a different " +
+               "generation's cert reusing the serial in the live multi-root gate" });
   }
   // The moved-aside CRL must be RESTORED on a rollback / interrupted-rotation recovery
   // (the CA it reverts to is still active, so its CRL is still valid) — in the catch AND

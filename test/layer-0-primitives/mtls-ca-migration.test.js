@@ -2093,6 +2093,52 @@ async function testCommitRejectsCertOnlyState() {
         code === "mtls-ca/ca-pair-inconsistent");
 }
 
+// isSerialRevoked() (the require-mtls live gate's serial fallback) must match ONLY serial-only
+// revocations: a serial is unique per issuer, so a serial+fingerprint revocation is scoped to its
+// specific cert by the fingerprint. Matching its serial globally would false-deny a DIFFERENT
+// generation's cert reusing the serial (a custom engine that restarts its serial counter).
+async function testSerialRevokedMatchesOnlySerialOnlyEntries() {
+  var ca = _newCa();
+  await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "gen1" });
+  await ca.revoke({ serial: leaf.serialNumber, fingerprint: leaf.fingerprint });   // serial+fingerprint
+  check("isRevoked matches a serial+fingerprint revocation by fingerprint", ca.isRevoked(leaf.fingerprint) === true);
+  check("isSerialRevoked does NOT match a serial+fingerprint revocation (scoped to its cert by fingerprint)",
+        ca.isSerialRevoked(leaf.serialNumber) === false);
+  await ca.revoke("0abc");                                                          // bare serial-only
+  check("isSerialRevoked matches a bare serial-only revocation (the require-mtls serial fallback)",
+        ca.isSerialRevoked("0abc") === true);
+  check("isSerialRevoked throws on a non-string serial",
+        code(function () { return ca.isSerialRevoked(null); }) === "mtls-ca/bad-revocation-key");
+}
+
+// A cert-changing commit moves the current CRL aside to a fixed crl.rollback path. If a prior
+// commit left an ORPHAN there (best-effort delete failed), on Windows renameSync cannot replace
+// it and the move-aside aborts every later rotation. commit() must clear the orphan first.
+async function testCommitClearsOrphanCrlRollbackBeforeMoveAside() {
+  var atomicFile = require("../../lib/atomic-file");
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.generateCrl();
+  fs.writeFileSync(ca.paths.crl + ".rollback", "stale-orphan-crl");                 // orphan from a prior commit
+  var g2 = await engine.generateCa({ generation: 2 });
+  var realRename = atomicFile.renameWithRetry;
+  atomicFile.renameWithRetry = function (src, dest) {                               // simulate Windows rename semantics
+    if (String(dest).endsWith("crl.rollback") && fs.existsSync(dest)) {
+      throw new Error("EEXIST (simulated Windows: rename cannot replace an existing crl.rollback)");
+    }
+    return realRename.apply(this, arguments);
+  };
+  var code;
+  try {
+    code = await code2(function () {
+      return ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
+    });
+  } finally { atomicFile.renameWithRetry = realRename; }
+  check("a cert-changing commit clears an orphan crl.rollback before the move-aside (no abort)",
+        code === "NO-THROW");
+}
+
 // An idempotent recommit of the SAME cert/key does not change the CRL's issuer, so the
 // valid CRL must be preserved — not moved aside and deleted like a real rotation.
 async function testIdempotentCommitPreservesCrl() {
@@ -2601,6 +2647,8 @@ async function run() {
     await testIdempotentRetainedCommitToleratesPemReformatting();
     await testIssuanceNotRevokedWhenRootRepublishedReformatted();
     await testCommitRejectsCertOnlyState();
+    await testSerialRevokedMatchesOnlySerialOnlyEntries();
+    await testCommitClearsOrphanCrlRollbackBeforeMoveAside();
     await testIdempotentCommitPreservesCrl();
     await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();
     await testCommitSwallowsJournalUnlinkFailureOnCertChange();
