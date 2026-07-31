@@ -1888,6 +1888,38 @@ async function testReconcileDoesNotRestoreOrphanCrlRollback() {
         fs.readFileSync(reopened.paths.crl + ".rollback").equals(staleCrl));
 }
 
+// A completed rotation whose CRL move-aside was LOST (best-effort fsyncDir did not
+// persist the rename) leaves the OLD-issuer CRL live at paths.crl with no crl.rollback,
+// while the new cert IS published. Reconcile classifies it completed; it must remove the
+// stale live CRL too, not just the (absent) crl.rollback — else the old-issuer CRL stays
+// published under the new CA until the operator regenerates.
+async function testReconcileRemovesResurrectedLiveCrlOnRollForward() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var key1  = fs.readFileSync(ca.paths.caKey);
+  var cert1 = fs.readFileSync(ca.paths.caCert);
+  await ca.generateCrl();
+  var staleCrl = fs.readFileSync(ca.paths.crl);              // CRL signed by cert1 (gen-1 issuer)
+  var g2 = await engine.generateCa({ generation: 2 });
+  // Crash state: the new cert/key are published, ca.crl still holds the OLD-issuer CRL
+  // (the move-aside rename was lost), there is NO crl.rollback, and the journal survived.
+  fs.writeFileSync(ca.paths.caKey, g2.caKeyPem);
+  fs.writeFileSync(ca.paths.caCert, g2.caCertPem);
+  fs.writeFileSync(ca.paths.crl, staleCrl);
+  fs.rmSync(ca.paths.crl + ".rollback", { force: true });
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: key1, newKey: Buffer.from(g2.caKeyPem), cert: cert1, newCert: Buffer.from(g2.caCertPem),
+    retainAfter: false, crlMovedAside: true, prevAction: "delete", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.initCA();                                   // reconciles: completed + crlMovedAside
+  check("reconcile removes a stale live CRL a lost move-aside left under the new CA (completed roll-forward)",
+        fs.existsSync(reopened.paths.crl) === false);
+  check("the reconciled CA still issues after removing the resurrected stale CRL",
+        typeof (await reopened.generateClientCert({ cn: "post-crl-rollforward" })).cert === "string");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1975,6 +2007,7 @@ async function run() {
     await testNonBooleanRetainPreviousRejected();
     await testCommitDoesNotRestoreOrphanCrlRollback();
     await testReconcileDoesNotRestoreOrphanCrlRollback();
+    await testReconcileRemovesResurrectedLiveCrlOnRollForward();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

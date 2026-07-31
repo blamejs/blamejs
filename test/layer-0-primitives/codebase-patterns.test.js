@@ -14107,14 +14107,11 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // cert rename — a required step (a read-only CRL dir fails the commit) — and deleted
   // only after the new cert lands; a rollback / interrupted-rotation reconcile renames
   // it BACK, because the CA it reverts to is still active and its CRL still valid.
-  // Directly unlinking the live CRL (unlinkSync(paths.crl)) instead would permanently
-  // lose a still-valid CRL when the publish fails and the CA rolls back.
-  if (/unlinkSync\(\s*paths\.crl\s*\)/.test(noComments)) {
-    bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "commit() must MOVE the stale CRL aside (renameWithRetry(paths.crl, crlRollback)) and delete it only " +
-               "after the cert publishes, not unlinkSync(paths.crl) directly — a direct delete permanently loses a " +
-               "still-valid CRL when the publish fails and the CA rolls back" });
-  }
+  // (A direct unlinkSync(paths.crl) in the COMMIT path instead of the move-aside would
+  // lose a still-valid CRL on rollback — caught by the move-aside-absent check below,
+  // since reverting to a direct delete removes renameWithRetry(paths.crl, crlRollback).
+  // A blanket "no unlinkSync(paths.crl)" check can't live here: reconcile's roll-forward
+  // legitimately unlinks a resurrected stale paths.crl a lost move-aside left behind.)
   var crlAsideIdx = noComments.search(/renameWithRetry\(\s*paths\.crl\s*,\s*crlRollback\s*\)/);
   if (crlAsideIdx === -1) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
@@ -14149,7 +14146,7 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // else an ORPHAN crl.rollback from a prior commit (whose best-effort delete failed) is
   // restored by a later commit that never moved it, publishing a stale-issuer CRL.
   if (!/crlExisted\s*&&\s*nodeFs\.existsSync\(\s*crlRollback\s*\)\s*&&\s*!nodeFs\.existsSync\(\s*paths\.crl\s*\)/.test(noComments) ||
-      !/manifest\.crlMovedAside\s*&&\s*nodeFs\.existsSync\(\s*crlRollback\s*\)/.test(noComments)) {
+      !/if\s*\(\s*manifest\.crlMovedAside\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "the CRL restore must be GATED on whether THIS commit moved a CRL aside (crlExisted in the catch, " +
                "manifest.crlMovedAside in reconcile) — an ungated restore would resurrect an orphan crl.rollback " +
