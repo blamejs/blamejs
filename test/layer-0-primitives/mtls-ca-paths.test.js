@@ -62,9 +62,10 @@ async function testCreateTimeBranches() {
   check("caKeySealedMode defaults to 'required'", caDefault.caKeySealedMode === "required");
 }
 
-// status() when a CA is present on disk (the exists()==true arm) — an
-// unparseable cert reads back generation 0, which is < the handle's
-// current generation, so the CA reports legacy.
+// status() when a CA is present on disk (the exists()==true arm) — an unparseable cert
+// reads back generation 0 (UNDETERMINABLE). That is NOT "older than current", so it is
+// NOT reported as legacy: a current opaque-engine CA must not be mislabeled legacy, which
+// would contradict rotate()'s generation-undeterminable refusal on the same cert.
 async function testStatusExists() {
   var dir = _mkDir("mtls-st-");
   fs.writeFileSync(path.join(dir, "ca.crt"), "TEST CRT");
@@ -73,7 +74,8 @@ async function testStatusExists() {
   var st = ca.status();
   check("status() reports the on-disk CA as existing", st.exists === true);
   check("status() reads generation 0 from an unparseable cert", st.generation === 0);
-  check("status() flags a below-current CA as legacy", st.isLegacy === true && st.current === 3);
+  check("status() does NOT flag an undeterminable-generation (0) CA as legacy",
+        st.isLegacy === false && st.current === 3);
 }
 
 // loadKey / loadCert dispatch across the sealed-mode matrix.

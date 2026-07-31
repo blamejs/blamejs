@@ -576,9 +576,11 @@ async function testWatermarkMethodsMustBePaired() {
           === "mtls-ca/bad-revocation-store");
 }
 
-// A P12 certPem must be a non-empty parseable certificate — an empty/bogus string
-// would record a fingerprint unrelated to the archive's real cert.
-async function testP12CertPemMustBeParseable() {
+// A P12 certPem must be NON-EMPTY (it is the ledger identity), but need NOT be
+// node-parseable — a custom engine may package an opaque certificate this runtime cannot
+// parse, exactly as generateClientCert accepts; _certIdentity still derives a stable
+// fingerprint, and parsing cannot prove certPem is the cert inside the encrypted p12.
+async function testP12CertPemMustBeNonEmpty() {
   function eng(certPem) {
     return { generateCa: engine.generateCa, signClientCert: engine.signClientCert,
              packageP12: async function () { return { p12: Buffer.from("x"), certPem: certPem }; } };
@@ -586,9 +588,10 @@ async function testP12CertPemMustBeParseable() {
   var caEmpty = _newCa({ engine: eng("") }); await caEmpty.initCA();
   check("generateClientP12 refuses an empty certPem",
         (await code2(function () { return caEmpty.generateClientP12({ password: "pw" }); })) === "mtls-ca/bad-engine-output");
-  var caBogus = _newCa({ engine: eng("not a certificate") }); await caBogus.initCA();
-  check("generateClientP12 refuses a non-parseable certPem",
-        (await code2(function () { return caBogus.generateClientP12({ password: "pw" }); })) === "mtls-ca/bad-engine-output");
+  var caOpaque = _newCa({ engine: eng("not a parseable certificate") }); await caOpaque.initCA();
+  var out = await caOpaque.generateClientP12({ password: "pw" });
+  check("generateClientP12 ACCEPTS a non-parseable (opaque) certPem, deriving a fingerprint",
+        Buffer.isBuffer(out.p12) && typeof out.fingerprint === "string" && out.fingerprint.length > 0);
 }
 
 // A defined rotate() algorithm must be a non-empty label (an empty string would
@@ -1920,6 +1923,39 @@ async function testReconcileRemovesResurrectedLiveCrlOnRollForward() {
         typeof (await reopened.generateClientCert({ cn: "post-crl-rollforward" })).cert === "string");
 }
 
+// Completed roll-forward where the move-aside STUCK (ca.crl.rollback is present) but the
+// post-publish delete of that moved-aside copy did not run before the crash. Reconcile
+// must remove the leftover crl.rollback — the superseded issuer's CRL must not linger.
+async function testReconcileRemovesLeftoverCrlRollbackOnRollForward() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var key1  = fs.readFileSync(ca.paths.caKey);
+  var cert1 = fs.readFileSync(ca.paths.caCert);
+  await ca.generateCrl();
+  var staleCrl = fs.readFileSync(ca.paths.crl);              // CRL signed by cert1 (gen-1 issuer)
+  var g2 = await engine.generateCa({ generation: 2 });
+  // Crash state: the new cert/key are published (completed roll-forward), the stale CRL was
+  // moved aside to crl.rollback and that rename STUCK, but the post-publish delete of the
+  // moved-aside copy did not run; there is no live paths.crl; the journal survived.
+  fs.writeFileSync(ca.paths.caKey, g2.caKeyPem);
+  fs.writeFileSync(ca.paths.caCert, g2.caCertPem);
+  fs.rmSync(ca.paths.crl, { force: true });
+  fs.writeFileSync(ca.paths.crl + ".rollback", staleCrl);
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: key1, newKey: Buffer.from(g2.caKeyPem), cert: cert1, newCert: Buffer.from(g2.caCertPem),
+    retainAfter: false, crlMovedAside: true, prevAction: "delete", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.initCA();                                   // reconciles: completed + crlMovedAside
+  check("reconcile removes a leftover moved-aside crl.rollback on a completed roll-forward",
+        fs.existsSync(reopened.paths.crl + ".rollback") === false);
+  check("no stale CRL is republished under the new CA after the leftover is removed",
+        fs.existsSync(reopened.paths.crl) === false);
+  check("the reconciled CA still issues after removing the leftover crl.rollback",
+        typeof (await reopened.generateClientCert({ cn: "post-crl-leftover" })).cert === "string");
+}
+
 // An idempotent recommit of the SAME cert/key does not change the CRL's issuer, so the
 // valid CRL must be preserved — not moved aside and deleted like a real rotation.
 async function testIdempotentCommitPreservesCrl() {
@@ -1938,6 +1974,318 @@ async function testIdempotentCommitPreservesCrl() {
   await ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
   check("committing a DIFFERENT CA still invalidates the stale CRL",
         fs.existsSync(ca.paths.crl) === false);
+}
+
+// A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
+// node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
+// rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
+// lower/equal generation would be accepted, violating the strictly-increasing invariant.
+async function testRotateRefusesUndeterminableGeneration() {
+  var dir = _mkTmp();
+  var eng = {
+    generateCa:     async function () { return { caCertPem: "-----BEGIN CERTIFICATE-----\nb3BhcXVlLWNh\n-----END CERTIFICATE-----", caKeyPem: "-----BEGIN PRIVATE KEY-----\nb3BhcXVlLWtleQ==\n-----END PRIVATE KEY-----" }; },
+    signClientCert: async function () { return { cert: "-----BEGIN CERTIFICATE-----\nbGVhZg==\n-----END CERTIFICATE-----", key: "k" }; },
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: eng });
+  await ca.initCA();
+  check("an opaque custom CA reports generation 0 (undeterminable)", ca.status().generation === 0);
+  check("rotate({generation}) refuses a CA whose current generation is undeterminable",
+        (await code2(function () { return ca.rotate({ generation: 3 }); })) === "mtls-ca/generation-undeterminable");
+  check("a default rotate() is refused too (cannot compute a strictly-increasing generation)",
+        (await code2(function () { return ca.rotate(); })) === "mtls-ca/generation-undeterminable");
+}
+
+// A crash journal that is valid JSON but carries an EMPTY (or non-canonical) base64
+// byte field must fail closed: an empty base64 `key` decodes to an empty buffer that,
+// written over the live CA key on the interrupted path, permanently destroys the CA.
+async function testReconcileRejectsMalformedManifestBase64() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var goodKey  = fs.readFileSync(ca.paths.caKey);
+  var goodCert = fs.readFileSync(ca.paths.caCert);
+  // Empty base64 key (decodes to an empty buffer). The interrupted path (live cert ==
+  // manifest.cert) would write it over the live key.
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: Buffer.alloc(0), newKey: null, cert: goodCert, newCert: null,
+    retainAfter: false, prevAction: "leave", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  check("reconcile fails closed on an EMPTY base64 key (rollback-journal-corrupt)",
+        (await code2(function () { return reopened.initCA(); })) === "mtls-ca/rollback-journal-corrupt");
+  check("the live CA key is untouched (not destroyed by an empty-buffer overwrite)",
+        fs.readFileSync(ca.paths.caKey).equals(goodKey));
+  // A NON-CANONICAL base64 key ("abc" round-trips to "abc=") must also be refused.
+  fs.writeFileSync(ca.paths.caKey + ".rollback", JSON.stringify({
+    key: "abc", cert: goodCert.toString("base64"), retainAfter: false, prevAction: "leave", prevData: null,
+  }));
+  var reopened2 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  check("reconcile fails closed on a NON-CANONICAL base64 key",
+        (await code2(function () { return reopened2.initCA(); })) === "mtls-ca/rollback-journal-corrupt");
+}
+
+// generateClientP12 must accept an OPAQUE (unparseable) certPem from a custom engine —
+// the same way generateClientCert does — because _certIdentity() still derives a stable
+// fingerprint, and parsing cannot prove the certPem is the cert inside the encrypted P12
+// anyway. Rejecting it makes the primitive unusable for a post-quantum custom engine.
+async function testGenerateClientP12AcceptsOpaqueCert() {
+  var dir = _mkTmp();
+  var opaqueLeaf = "-----BEGIN CERTIFICATE-----\nb3BhcXVlLXAxMi1sZWFm\n-----END CERTIFICATE-----";
+  var eng = {
+    generateCa: async function () { return { caCertPem: "-----BEGIN CERTIFICATE-----\nb3BhcXVlLWNh\n-----END CERTIFICATE-----", caKeyPem: "opaque-key" }; },
+    packageP12: async function () { return { p12: Buffer.from("p12-bytes"), certPem: opaqueLeaf, issuedAt: new Date(), expiresAt: new Date() }; },
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: eng });
+  await ca.initCA();
+  var out = await ca.generateClientP12({ cn: "opaque-p12", password: "pw" });
+  check("generateClientP12 accepts an opaque certPem from a custom engine (fingerprint still derived)",
+        Buffer.isBuffer(out.p12) && typeof out.fingerprint === "string" && out.fingerprint.length > 0);
+}
+
+// status() must NOT report isLegacy:true for an UNDETERMINABLE generation (an opaque
+// cert -> generation 0): that would mislabel a current opaque-engine CA as legacy, and
+// an isLegacy-keyed upgrade flow would then rotate() it and hit generation-undeterminable
+// — status() and rotate() contradicting each other on the same cert.
+async function testStatusIsLegacyFalseForUndeterminableGeneration() {
+  var dir = _mkTmp();
+  var eng = {
+    generateCa:     async function () { return { caCertPem: "-----BEGIN CERTIFICATE-----\nb3BhcXVl\n-----END CERTIFICATE-----", caKeyPem: "opaque-key" }; },
+    signClientCert: async function () { return { cert: "x", key: "k" }; },
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: eng, generation: 3 });
+  await ca.initCA();
+  var s = ca.status();
+  check("status: an undeterminable generation (0) is NOT reported as legacy",
+        s.generation === 0 && s.isLegacy === false && s.current === 3);
+}
+
+// _journalRetainedRoot (the read sibling of reconcile) must validate the journal's base64
+// canonically: a malformed prevData would otherwise decode to a garbage NON-empty string
+// returned into loadTrustBundle(), and feeding that to a node:tls `ca:` build fails —
+// a DoS of the mTLS gate. A corrupt journal's root is left for the locked reconcile.
+async function testJournalRetainedRootRejectsMalformedPrevData() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  fs.writeFileSync(ca.paths.caKey + ".rollback", JSON.stringify({
+    key:  fs.readFileSync(ca.paths.caKey).toString("base64"),
+    cert: certG1.toString("base64"),               // == live cert => interrupted
+    prevData: "!!!not-canonical-base64",           // malformed: lenient decode -> garbage
+    prevAction: "restore",
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var bundle = await reopened.loadTrustBundle();
+  check("loadTrustBundle excludes a malformed-prevData journal root (only the current cert)",
+        bundle.length === 1 && bundle[0] === certG1.toString("utf8"));
+}
+
+// A valid restore-journal is present but the live CA cert is ABSENT (a crash window
+// between the retained-root update and the new-cert publish, read before any reconcile).
+// _journalRetainedRoot must not trust the journal's old root when it cannot confirm the
+// live cert still equals the prior cert — loadTrustBundle returns no root, never throws.
+async function testJournalRetainedRootSkippedWhenLiveCertAbsent() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  fs.writeFileSync(ca.paths.caKey + ".rollback", JSON.stringify({
+    key:  fs.readFileSync(ca.paths.caKey).toString("base64"),
+    cert: certG1.toString("base64"),               // would match — but the live cert is gone
+    prevData: certG1.toString("base64"),           // canonical: a genuine retained root
+    prevAction: "restore",
+  }));
+  fs.rmSync(ca.paths.caCert, { force: true });     // live cert absent -> the existsSync guard is false
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var bundle = await reopened.loadTrustBundle();
+  check("loadTrustBundle omits the journal root when the live cert is absent (no throw)",
+        Array.isArray(bundle) && bundle.length === 0);
+}
+
+// Exhaustive coverage of the reachable error/edge branches accumulated across the
+// migration primitives — the paths a happy-path suite skips (bad engine/store output,
+// fault-injected reads, undeterminable/superseded generations, key-only/no-CA states).
+async function testMtlsCaReachableBranchCoverage() {
+  var atomicFile = require("../../lib/atomic-file");
+
+  // rotate() on a FRESH handle (no CA yet): the st.exists=false arms.
+  var caFresh = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  var rf = await caFresh.rotate({ generation: 1 });
+  check("rotate() on a fresh handle creates a gen-1 CA",
+        typeof rf.caCertPem === "string" && caFresh.status().generation === 1);
+
+  // unpinned rotate over a custom P-256 CA: _certAlgorithm -> null -> pin || undefined.
+  var caP256 = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: _p256CaEngine() });
+  await caP256.initCA();
+  check("unpinned rotate over a custom P-256 CA succeeds",
+        typeof (await caP256.rotate({ generation: 2 })).caCertPem === "string");
+
+  // rotate() with an engine returning bad generateCa output.
+  var caBad = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: {
+    generateCa: async function (a) { if (a.generation >= 2) { return { nope: true }; } return engine.generateCa(a); },
+    signClientCert: engine.signClientCert } });
+  await caBad.initCA();
+  check("rotate() rejects an engine that returns bad generateCa output",
+        (await code2(function () { return caBad.rotate({ generation: 2 }); })) === "mtls-ca/bad-engine-output");
+
+  // canVerifyInTls with an engine lacking the method.
+  var caNoProbe = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled",
+    engine: { generateCa: engine.generateCa, signClientCert: engine.signClientCert } });
+  await caNoProbe.initCA();
+  check("canVerifyInTls refuses an engine without canVerifyInTls",
+        (await code2(function () { return caNoProbe.canVerifyInTls(); })) === "mtls-ca/no-tls-probe");
+
+  // importIssuance edges: non-object entry, neither-fp-nor-serial, serial-only + fp-only,
+  // superseded-on-import, and a CUSTOM issuanceStore (the Promise.resolve(add()) arm).
+  var caImp = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await caImp.initCA();
+  check("importIssuance rejects a non-object entry",
+        (await code2(function () { return caImp.importIssuance([null]); })) === "mtls-ca/bad-import");
+  check("importIssuance rejects an entry with neither fingerprint nor serial",
+        (await code2(function () { return caImp.importIssuance([{ generation: 1 }]); })) === "mtls-ca/bad-import");
+  var imp = await caImp.importIssuance([{ generation: 1, serialNumber: "0a" }, { generation: 1, fingerprint: "ab".repeat(32) }]);
+  check("importIssuance imports serial-only and fingerprint-only entries", imp.imported === 2);
+  await caImp.revokeGeneration(3);
+  // Both a fingerprint-only and a SERIAL-ONLY below-watermark entry supersede on import:
+  // the serial-only one revokes with fingerprint:null (a pre-#532 out-of-band cert
+  // backfilled by serial), exercising both revoke-key fallbacks in the superseded sweep.
+  check("importIssuance revokes below-watermark entries (fingerprint-only + serial-only)",
+        (await caImp.importIssuance([
+          { generation: 1, fingerprint: "cd".repeat(32) },
+          { generation: 1, serialNumber: "0f" },
+        ])).revoked === 2);
+  var customIss = { _l: [], list: function () { return this._l; }, add: function (e) { this._l.push(e); } };
+  var caCI = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", issuanceStore: customIss });
+  await caCI.initCA();
+  check("importIssuance with a custom issuanceStore imports through it",
+        (await caCI.importIssuance([{ generation: 1, serialNumber: "0b" }])).imported === 1 && customIss._l.length === 1);
+
+  // revokeGeneration: unknown reason, and a real sweep that revokes a below-n leaf.
+  var caRev = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await caRev.initCA();
+  var leaf = await caRev.generateClientCert({ cn: "gen1" });
+  check("revokeGeneration rejects an unknown reason",
+        (await code2(function () { return caRev.revokeGeneration(2, { reason: "bogus" }); })) === "mtls-ca/bad-reason");
+  var rg = await caRev.revokeGeneration(2);
+  check("revokeGeneration sweeps and revokes a below-n leaf",
+        rg.revoked === 1 && caRev.isRevoked(leaf.fingerprint) === true);
+  var revs = caRev.getRevocations();
+  check("getRevocations returns a copy of the revocation registry",
+        Array.isArray(revs) && revs.length >= 1 && revs !== caRev.getRevocations());
+
+  // A below-watermark issuance self-revokes (issuance-superseded, the gen < watermark arm).
+  var caSup = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await caSup.initCA();
+  await caSup.revokeGeneration(5);
+  check("issuing under a below-watermark generation self-revokes",
+        (await code2(function () { return caSup.generateClientCert({ cn: "x" }); })) === "mtls-ca/issuance-superseded");
+
+  // A clustered revocationStore whose readGenerationWatermark returns a non-number.
+  var sharedIss = { _l: [], list: function () { return this._l; }, add: function (e) { this._l.push(e); } };
+  var caWm = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", issuanceStore: sharedIss,
+    revocationStore: { list: function () { return []; }, add: function () {},
+      readGenerationWatermark: function () { return "nope"; }, bumpGenerationWatermark: function () {} } });
+  await caWm.initCA();
+  check("issuance fails closed when a clustered watermark is non-numeric",
+        (await code2(function () { return caWm.generateClientCert({ cn: "x" }); })) === "mtls-ca/watermark-unreadable");
+
+  // A versioned revocationStore: the version() rebuild arm.
+  var verStore = { _l: [], _v: 1, list: function () { return this._l; },
+    add: function (e) { this._l.push(e); this._v += 1; }, version: function () { return this._v; } };
+  var caVer = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: verStore });
+  await caVer.initCA();
+  var lv = await caVer.generateClientCert({ cn: "v" });
+  await caVer.revoke(lv.serialNumber);
+  check("a versioned revocationStore reflects a revocation via its version() signal",
+        caVer.isRevoked(lv.serialNumber) === true);
+
+  // A malformed issuance ledger (parse throws) fails closed — revokeGeneration reads the
+  // ledger directly, so it surfaces issuance-corrupt (generateClientCert would wrap it).
+  var caIL = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await caIL.initCA();
+  fs.writeFileSync(caIL.paths.issuance, "not json{{{");
+  check("a malformed issuance ledger fails closed (issuance-corrupt)",
+        (await code2(function () { return caIL.revokeGeneration(2); })) === "mtls-ca/issuance-corrupt");
+
+  // The issuanceStore.add write throwing fails issuance closed.
+  var caIW = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled",
+    issuanceStore: { list: function () { return []; }, add: function () { throw new Error("disk full"); } } });
+  await caIW.initCA();
+  check("issuance fails closed when the ledger write throws",
+        (await code2(function () { return caIW.generateClientCert({ cn: "x" }); })) === "mtls-ca/issuance-ledger-write-failed");
+
+  // The local watermark file present-but-unreadable aborts issuance.
+  var caWr = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await caWr.initCA();
+  await caWr.revokeGeneration(2);
+  var realRead = atomicFile.fdSafeReadSync;
+  atomicFile.fdSafeReadSync = function (p) {
+    if (String(p) === String(caWr.paths.revokedGeneration)) { throw new Error("wm read fail"); }
+    return realRead.apply(this, arguments);
+  };
+  var wmErr;
+  try { wmErr = await code2(function () { return caWr.generateClientCert({ cn: "x" }); }); }
+  finally { atomicFile.fdSafeReadSync = realRead; }
+  check("issuance fails closed when the local watermark file is unreadable", wmErr === "mtls-ca/watermark-unreadable");
+
+  // loadTrustBundle on a handle with NO CA (cur null -> []).
+  var caNoCa = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  check("loadTrustBundle on a handle with no CA returns []", (await caNoCa.loadTrustBundle()).length === 0);
+
+  // A malformed-JSON rollback journal is tolerated by the trust-bundle read (parse catch).
+  var caJ = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await caJ.initCA();
+  fs.writeFileSync(caJ.paths.caKey + ".rollback", "not-json{{{");
+  check("loadTrustBundle tolerates a malformed journal (parse catch)", (await caJ.loadTrustBundle()).length === 1);
+
+  // A key-only commit (ca.crt absent) journals cert:null and publishes the new CA.
+  var caK = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await caK.initCA();
+  fs.rmSync(caK.paths.caCert, { force: true });
+  var g2 = await engine.generateCa({ generation: 2 });
+  await caK.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
+  check("a key-only commit (no prior cert) publishes the new CA",
+        fs.readFileSync(caK.paths.caCert).toString("utf8") === g2.caCertPem);
+}
+
+// Reconcile / journal-read arms that only fire when a crash left files ABSENT: the
+// current-cert / current-key reads returning null, a completed journal with no newKey,
+// and the trust-read tolerating an absent current cert.
+async function testReconcileFileAbsentBranches() {
+  // Interrupted crash with BOTH ca.crt and ca.key removed: reconcile's curCertBuf and
+  // curKeyRaw null arms, and _journalRetainedRoot's no-current-cert arm.
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var key1 = fs.readFileSync(ca.paths.caKey);
+  var cert1 = fs.readFileSync(ca.paths.caCert);
+  fs.rmSync(ca.paths.caCert, { force: true });
+  fs.rmSync(ca.paths.caKey, { force: true });
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: key1, newKey: key1, cert: cert1, newCert: cert1,   // live cert absent => interrupted
+    retainAfter: false, crlMovedAside: false, prevAction: "delete", prevData: null,
+  }));
+  check("loadTrustBundle with a journal and no ca.crt returns []", (await ca.loadTrustBundle()).length === 0);
+  var g = await engine.generateCa({ generation: 2 });
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.commit({ caKeyPem: g.caKeyPem, caCertPem: g.caCertPem, retainPrevious: false });
+  check("commit reconciles a key/cert-absent interrupted journal then publishes",
+        fs.readFileSync(reopened.paths.caCert).toString("utf8") === g.caCertPem);
+
+  // Completed key-only journal with NO newKey: the wantKeyBuf null arm (key drive skipped).
+  var dir2 = _mkTmp();
+  var ca2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
+  await ca2.initCA();
+  var certA = fs.readFileSync(ca2.paths.caCert);
+  var keyA = fs.readFileSync(ca2.paths.caKey);
+  fs.writeFileSync(ca2.paths.caKey + ".rollback", _journalManifest({
+    key: keyA, newKey: null, cert: null, newCert: certA,   // priorCert null, live==newCert => completed; newKey absent
+    retainAfter: false, crlMovedAside: false, prevAction: "delete", prevData: null,
+  }));
+  var reopened2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
+  await reopened2.initCA();
+  check("reconcile of a completed journal with no newKey leaves the live key",
+        fs.readFileSync(reopened2.paths.caKey).equals(keyA));
 }
 
 // async variant of code() for rejected promises.
@@ -1973,7 +2321,7 @@ async function run() {
     await testInitCaRefusesPersistentPairMismatch();
     await testCommitRollsBackRetainedRootOnCertRenameFailure();
     await testWatermarkMethodsMustBePaired();
-    await testP12CertPemMustBeParseable();
+    await testP12CertPemMustBeNonEmpty();
     await testRotateRejectsEmptyAlgorithm();
     await testNestedPathParentDirsCreated();
     await testMalformedWatermarkAbortsIssuance();
@@ -2028,7 +2376,16 @@ async function run() {
     await testCommitDoesNotRestoreOrphanCrlRollback();
     await testReconcileDoesNotRestoreOrphanCrlRollback();
     await testReconcileRemovesResurrectedLiveCrlOnRollForward();
+    await testReconcileRemovesLeftoverCrlRollbackOnRollForward();
     await testIdempotentCommitPreservesCrl();
+    await testRotateRefusesUndeterminableGeneration();
+    await testReconcileRejectsMalformedManifestBase64();
+    await testGenerateClientP12AcceptsOpaqueCert();
+    await testStatusIsLegacyFalseForUndeterminableGeneration();
+    await testJournalRetainedRootRejectsMalformedPrevData();
+    await testJournalRetainedRootSkippedWhenLiveCertAbsent();
+    await testMtlsCaReachableBranchCoverage();
+    await testReconcileFileAbsentBranches();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

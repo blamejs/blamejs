@@ -14224,6 +14224,27 @@ function testMtlsCaIssuanceGenerationUndeterminableIsNull() {
                "revoked-generation watermark — a null (undeterminable) generation coerces to 0 and would " +
                "self-revoke every opaque-custom-CA issuance" });
   }
+  // rotate() must REFUSE a stored CA whose generation is undeterminable (an opaque
+  // custom cert -> status().generation === 0): a default rotation would mint generation 1
+  // and an explicit lower generation would be accepted (curGen 0), mis-cohorting the
+  // revocation set and breaking the strictly-increasing invariant.
+  if (!/st\.exists\s*&&\s*curGen\s*===\s*0/.test(noComments) ||
+      noComments.indexOf("mtls-ca/generation-undeterminable") === -1) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "rotate() must refuse a CA whose current generation is undeterminable (st.exists && curGen === 0 " +
+               "-> mtls-ca/generation-undeterminable) — else a default rotation mints generation 1 or accepts a " +
+               "lower explicit generation, mis-cohorting revocation and violating strictly-increasing rotation" });
+  }
+  // status().isLegacy must guard gen >= 1: an UNDETERMINABLE generation (0) is not "older
+  // than current", so isLegacy:true there mislabels a current opaque CA as legacy and an
+  // isLegacy-keyed upgrade would rotate() it into generation-undeterminable (contradicting
+  // status()).
+  if (!/isLegacy:\s*gen\s*>=\s*1\s*&&\s*gen\s*<\s*generation/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "status().isLegacy must guard gen >= 1 (isLegacy: gen >= 1 && gen < generation) — an undeterminable " +
+               "generation (0) must NOT report isLegacy:true, else status() mislabels a current opaque-engine CA " +
+               "as legacy and contradicts rotate()'s generation-undeterminable refusal" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-issuance-generation-zero-on-undeterminable");
   _report("b.mtlsCa records an undeterminable CA generation as null (not 0) and the issuance self-revoke check " +
           "guards a numeric generation",
@@ -14291,6 +14312,16 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
                "as its _commitLocked — an assignment after the lock releases lets a concurrent commit() interleave " +
                "and leave the stored CA and the handle pin disagreeing (algorithm-mismatch on the next issuance)" });
   }
+  // generateClientP12 must NOT require certPem parseability — it must accept an opaque
+  // custom-engine cert exactly as generateClientCert does (_certIdentity derives a
+  // fingerprint, and parsing cannot prove certPem is the cert inside the encrypted p12).
+  // Fires if a parse-throw on result.certPem is (re-)introduced.
+  if (/new\s+nodeCrypto\.X509Certificate\(\s*result\.certPem\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateClientP12 must not require certPem to be a node-parseable X.509 certificate " +
+               "(new nodeCrypto.X509Certificate(result.certPem)) — it must accept an opaque custom-engine cert " +
+               "like generateClientCert; the non-empty check suffices and parsing cannot prove the p12 pairing" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-adopt-commit-pin-journal-divergence");
   _report("b.mtlsCa adoption/commit paths enforce the pin (shared _assertPinMatchesStoredCa + default-engine-gated " +
           "commit pin refresh), journal the new cert so a key-only init rolls forward, and canVerifyInTls validates " +
@@ -14325,6 +14356,28 @@ function testMtlsCaReconcileFailsClosedOnCorruptJournal() {
       content: "_reconcileCommitJournalLocked() returns silently when the journal is not a valid manifest " +
                "(missing string `key`) — it must throw mtls-ca/rollback-journal-corrupt (fail closed), else a " +
                "mutating open overwrites an unresolved rotation marker and can lose the prior key" });
+  }
+  // Every PRESENT manifest byte field must be validated as non-empty CANONICAL base64
+  // (via _validManifestB64Field) before recovery: a typeof-only guard accepts an empty
+  // base64 key that decodes to an empty buffer and, written over the live key on the
+  // interrupted path, destroys the CA.
+  if (!/\.every\(\s*_validManifestB64Field\s*\)/.test(noComments) ||
+      !/function\s+_validManifestB64Field/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "reconcile must validate every present manifest byte field is non-empty canonical base64 " +
+               "([key, newKey, cert, newCert, prevData].every(_validManifestB64Field)) — an empty base64 key " +
+               "decodes to an empty buffer that overwrites and destroys the live CA key on recovery" });
+  }
+  // The READ sibling _journalRetainedRoot must apply the SAME canonical-base64 validation
+  // to m.prevData and m.cert — a malformed prevData otherwise decodes to a garbage
+  // non-empty root returned into loadTrustBundle(), and a node:tls `ca:` build over it
+  // fails (a DoS of the mTLS gate).
+  if (!/_validManifestB64Field\(\s*m\.prevData\s*\)/.test(noComments) ||
+      !/_validManifestB64Field\(\s*m\.cert\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_journalRetainedRoot() must validate m.prevData and m.cert via _validManifestB64Field (the read " +
+               "sibling of reconcile) — a malformed prevData otherwise becomes a garbage trust-bundle root that " +
+               "fails a node:tls `ca:` build (a DoS of the mTLS gate)" });
   }
   bad = _filterMarkers(bad, "mtls-ca-reconcile-silent-on-corrupt-journal");
   _report("b.mtlsCa reconcile fails closed on a corrupt/unparseable rollback journal (no silent return that " +
