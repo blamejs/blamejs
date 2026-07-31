@@ -2021,6 +2021,26 @@ async function testReconcileRemovesLeftoverCrlRollbackOnRollForward() {
         typeof (await reopened.generateClientCert({ cn: "post-crl-leftover" })).cert === "string");
 }
 
+// An idempotent recommit of the CURRENT CA with retainPrevious:true supersedes no issuer, so
+// it must NOT open the single retained-root window — else the next REAL retained rotation
+// fails with mtls-ca/retained-root-exists until the operator calls dropRetained().
+async function testIdempotentRetainedCommitDoesNotOpenGraceWindow() {
+  var ca = _newCa();
+  await ca.initCA();
+  var sameKey  = ca.loadKey().toString("utf8");
+  var sameCert = ca.loadCert().toString("utf8");
+  await ca.commit({ caKeyPem: sameKey, caCertPem: sameCert, retainPrevious: true });
+  check("an idempotent retainPrevious:true commit does not open the retained-root window",
+        (await ca.loadTrustBundle()).length === 1 && fs.existsSync(ca.paths.caCertPrev) === false);
+  // A subsequent REAL retained rotation still succeeds (the window was not spuriously consumed).
+  var g2 = await engine.generateCa({ generation: 2 });
+  var rotCode = await code2(function () {
+    return ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: true });
+  });
+  check("a real retained rotation after an idempotent recommit succeeds (window was free)",
+        rotCode === "NO-THROW" && (await ca.loadTrustBundle()).length === 2);
+}
+
 // An idempotent recommit of the SAME cert/key does not change the CRL's issuer, so the
 // valid CRL must be preserved — not moved aside and deleted like a real rotation.
 async function testIdempotentCommitPreservesCrl() {
@@ -2525,6 +2545,7 @@ async function run() {
     await testReconcileDoesNotRestoreOrphanCrlRollback();
     await testReconcileRemovesResurrectedLiveCrlOnRollForward();
     await testReconcileRemovesLeftoverCrlRollbackOnRollForward();
+    await testIdempotentRetainedCommitDoesNotOpenGraceWindow();
     await testIdempotentCommitPreservesCrl();
     await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();
     await testCommitSwallowsJournalUnlinkFailureOnCertChange();

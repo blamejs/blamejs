@@ -14117,6 +14117,18 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "retainPrevious (typeof opts2.retainPrevious !== \"boolean\") must throw mtls-ca/retention-intent-" +
                "required, else the just-superseded generation loses trust while the active cert is replaced" });
   }
+  // Retention must be gated on the committed cert actually SUPERSEDING the current one: an
+  // idempotent recommit of the same cert (retainPrevious:true) supersedes no issuer, so opening
+  // the single retained-root window there would reject the NEXT real retained rotation with
+  // mtls-ca/retained-root-exists until dropRetained(). outgoingCaCert must require
+  // !currentCaCert.equals(Buffer.from(opts2.caCertPem)), not just retainPrevious + existence.
+  if (!/outgoingCaCert\s*=\s*\(\s*currentCaCert\s*!==\s*null\s*&&\s*!currentCaCert\.equals\(\s*Buffer\.from\(\s*opts2\.caCertPem\s*\)\s*\)\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_commitLocked()'s retained-root capture (outgoingCaCert) must be gated on the committed cert differing " +
+               "from the current one (currentCaCert !== null && !currentCaCert.equals(Buffer.from(opts2.caCertPem))) — " +
+               "an idempotent retainPrevious:true recommit otherwise opens the single grace window for no benefit, " +
+               "failing the next real retained rotation with mtls-ca/retained-root-exists until dropRetained()" });
+  }
   // A non-boolean opt behind a `!== false` / truthiness gate (e.g. the string "false"
   // from config) is truthy, so every such gate must REJECT a supplied non-boolean rather
   // than interpret it: retainPrevious (commit/_commitLocked outgoingCaCert + rotate's
@@ -14313,11 +14325,15 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
   catch (_e) { return; }
   var bad = [];
   var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
-  if (!/_assertPinMatchesStoredCa\s*\(\s*adoptedCert\s*,\s*adoptedKey\s*\)/.test(noComments)) {
+  // The pin validation for EVERY adoption tail lives in the shared _verifiedCASnapshot()
+  // (adopt branches route through it — see the _verifiedCASnapshot count check below), so it
+  // must call _assertPinMatchesStoredCa on the pair; else a pinned handle silently adopts and
+  // issues under an incompatible-algorithm CA a concurrent process created.
+  if (!/function\s+_verifiedCASnapshot[\s\S]{0,500}_assertPinMatchesStoredCa\s*\(\s*certPem\s*,\s*keyPem\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "the fresh-init adoption branch(es) must validate the adopted CA against the pin via " +
-               "_assertPinMatchesStoredCa(adoptedCert, adoptedKey) — else a pinned handle silently adopts and " +
-               "issues under an incompatible-algorithm CA a concurrent process created" });
+      content: "the shared _verifiedCASnapshot() (which every stored-CA adoption tail routes through) must validate " +
+               "the adopted CA against the pin via _assertPinMatchesStoredCa(certPem, keyPem) — else a pinned handle " +
+               "silently adopts and issues under an incompatible-algorithm CA a concurrent process created" });
   }
   if (!/caAlgorithm\s*=\s*committedAlg/.test(noComments) ||
       !/usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined/.test(noComments)) {
@@ -14381,6 +14397,31 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
       content: "both initCA() and _freshCreateSerialized()'s cold-start adopt must route through the shared " +
                "_adoptExistingCASnapshot() helper (found " + adoptCalls + " occurrence(s), expected the definition + 2 " +
                "call sites) — an inline unlocked read can adopt a mid-rotation old-cert/new-key pair" });
+  }
+  // EVERY adoption tail (initCA's existing-CA path AND _freshCreateSerialized's UNDER-LOCK
+  // adopt) must verify the pair through the shared _verifiedCASnapshot() (pairing + pin check +
+  // pin capture) — definition + 2 call sites = 3 occurrences. The under-lock adopt also must
+  // _reconcileCommitJournalLocked() first, else a CA another process crashed mid-rotation
+  // (old-cert/new-key + journal) is adopted unreconciled and an unpinned default handle signs a
+  // leaf that does not chain to the stored root.
+  var verifyCalls = (noComments.match(/_verifiedCASnapshot\b/g) || []).length;
+  if (verifyCalls < 3) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "every stored-CA adoption tail must return _verifiedCASnapshot() (pairing + pin check + pin capture) — " +
+               "found " + verifyCalls + " occurrence(s), expected the definition + 2 call sites; a bare read that skips " +
+               "the pairing check can adopt a mismatched old-cert/new-key pair" });
+  }
+  // The under-lock cold-start adopt must reconcile before verifying: the reconcile call and the
+  // _verifiedCASnapshot must both appear inside _freshCreateSerialized's under-lock exists() arm.
+  var fcsStart = noComments.search(/function\s+_freshCreateSerialized\s*\(/);
+  if (fcsStart !== -1) {
+    var fcsBody = noComments.slice(fcsStart, fcsStart + 2000);
+    if (!/atomicFile\.lock\(\s*paths\.caCert[\s\S]*?_reconcileCommitJournalLocked\(\)[\s\S]*?_verifiedCASnapshot\(/.test(fcsBody)) {
+      bad.push({ file: "lib/mtls-ca.js", line: 1,
+        content: "_freshCreateSerialized()'s UNDER-LOCK adopt must _reconcileCommitJournalLocked() then verify via " +
+                 "_verifiedCASnapshot() — adopting an unreconciled CA another process left mid-rotation (old-cert/new-key + " +
+                 "journal) lets an unpinned default handle sign a leaf that does not chain to the stored root" });
+    }
   }
   // The public commit() must let a pinned CUSTOM-engine handle supply the NEW effective label
   // when migrating to a different-algorithm CA (its label can't be inferred from the cert), so
