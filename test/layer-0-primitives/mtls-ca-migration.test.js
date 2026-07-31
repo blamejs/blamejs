@@ -1576,32 +1576,90 @@ async function testMutatingPathFailsClosedOnCorruptRollbackJournal() {
           === "mtls-ca/rollback-journal-corrupt");
 }
 
-// Invalidating a persisted CRL is a REQUIRED part of a CA-changing commit (the
-// release contract: a rotation invalidates the persisted CRL). If the CRL cannot be
-// removed (a read-only / separately-configured CRL directory), the commit must ABORT
-// and roll the CA back rather than publish a new CA while an unauthenticatable CRL —
-// signed by the superseded issuer — stays served at the documented path.
-async function testRotationAbortsWhenStaleCrlCannotBeRemoved() {
+// Invalidating a persisted CRL is a REQUIRED part of a CA-changing commit (the release
+// contract: a rotation invalidates the persisted CRL). The stale CRL is MOVED ASIDE
+// before the cert publish; if that move fails (a read-only / separately-configured CRL
+// directory), the commit must ABORT and roll the CA back — and the surviving CA's
+// still-valid CRL must be left in place, not lost.
+async function testRotationAbortsWhenStaleCrlCannotBeMovedAside() {
+  var atomicFile = require("../../lib/atomic-file");
   var dir = _mkTmp();
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   await ca.initCA();
   await ca.generateCrl();                                     // persists ca.crl under gen-1
-  check("a CRL is persisted before the rotation", fs.existsSync(ca.paths.crl) === true);
+  var crlBefore = fs.readFileSync(ca.paths.crl);
+  check("a CRL is persisted before the rotation", crlBefore.length > 0);
   var keyBefore  = fs.readFileSync(ca.paths.caKey);
   var certBefore = fs.readFileSync(ca.paths.caCert);
-  var realUnlink = fs.unlinkSync;
-  fs.unlinkSync = function (p) {
-    if (String(p) === String(ca.paths.crl)) throw new Error("simulated read-only CRL directory");
-    return realUnlink.apply(this, arguments);
+  var realRename = atomicFile.renameWithRetry;
+  atomicFile.renameWithRetry = function (from) {
+    if (String(from) === String(ca.paths.crl)) throw new Error("simulated read-only CRL directory");
+    return realRename.apply(this, arguments);
   };
   var codeSeen;
   try { codeSeen = await code2(function () { return ca.rotate({ generation: 2, retainPrevious: false }); }); }
-  finally { fs.unlinkSync = realUnlink; }
-  check("the rotation aborts when the stale CRL cannot be removed", codeSeen === "mtls-ca/commit-failed");
+  finally { atomicFile.renameWithRetry = realRename; }
+  check("the rotation aborts when the stale CRL cannot be moved aside", codeSeen === "mtls-ca/commit-failed");
   check("the CA rolled back (key + cert unchanged) rather than publishing beside a stale CRL",
         fs.readFileSync(ca.paths.caKey).equals(keyBefore) && fs.readFileSync(ca.paths.caCert).equals(certBefore));
+  check("the surviving CA's valid CRL is left in place after the aborted rotation",
+        fs.existsSync(ca.paths.crl) === true && fs.readFileSync(ca.paths.crl).equals(crlBefore));
   check("the surviving CA still issues after the aborted rotation",
         typeof (await ca.generateClientCert({ cn: "post-crl-abort" })).cert === "string");
+}
+
+// If a rotation's cert publish fails AFTER the stale CRL was moved aside, the commit
+// rolls back — and the CA it reverts to is still active, so its still-valid CRL must be
+// RESTORED, not left permanently deleted (a deployment serving the documented CRL path
+// must not lose its published revocation data because a rotation failed).
+async function testRotationRestoresCrlWhenCertPublishFails() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.generateCrl();
+  var crlBefore = fs.readFileSync(ca.paths.crl);
+  var realRename = atomicFile.renameWithRetry;
+  atomicFile.renameWithRetry = function (from, to) {
+    if (String(to) === String(ca.paths.caCert)) throw new Error("simulated cert publish failure");
+    return realRename.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.rotate({ generation: 2, retainPrevious: false }); }); }
+  finally { atomicFile.renameWithRetry = realRename; }
+  check("the rotation aborts when the cert publish fails", codeSeen === "mtls-ca/commit-failed");
+  check("the rolled-back CA's still-valid CRL is restored (not permanently lost)",
+        fs.existsSync(ca.paths.crl) === true && fs.readFileSync(ca.paths.crl).equals(crlBefore));
+  check("no orphan crl.rollback remains after the restore",
+        fs.existsSync(ca.paths.crl + ".rollback") === false);
+  check("the surviving CA still issues and can regenerate its CRL",
+        typeof (await ca.generateClientCert({ cn: "post-crl-restore" })).cert === "string");
+}
+
+// A crash between moving the CRL aside and publishing the new cert leaves the CRL at
+// crl.rollback with a journal marking an INTERRUPTED rotation. Reconcile on the next
+// mutating open must restore it (the CA it rolls back to is still active).
+async function testReconcileRestoresCrlForInterruptedRotation() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.generateCrl();
+  var crlBytes = fs.readFileSync(ca.paths.crl);
+  var keyG1  = fs.readFileSync(ca.paths.caKey);
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  fs.renameSync(ca.paths.crl, ca.paths.crl + ".rollback");    // CRL moved aside
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: keyG1, newKey: keyG1, cert: certG1,                  // live cert == manifest.cert => interrupted
+    retainAfter: false, prevAction: "leave", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.initCA();                                    // reconciles under the lock
+  check("reconcile restores the valid CRL an interrupted rotation moved aside",
+        fs.existsSync(reopened.paths.crl) === true && fs.readFileSync(reopened.paths.crl).equals(crlBytes));
+  check("the crl.rollback temp is cleared after the reconcile restore",
+        fs.existsSync(reopened.paths.crl + ".rollback") === false);
+  check("the reconciled CA still issues",
+        typeof (await reopened.generateClientCert({ cn: "post-reconcile-crl" })).cert === "string");
 }
 
 // async variant of code() for rejected promises.
@@ -1679,7 +1737,9 @@ async function run() {
     await testRotationCasDetectsSameGenerationCommit();
     await testPublicCommitRefusesRetentionAmbiguityWhileWindowOpen();
     await testMutatingPathFailsClosedOnCorruptRollbackJournal();
-    await testRotationAbortsWhenStaleCrlCannotBeRemoved();
+    await testRotationAbortsWhenStaleCrlCannotBeMovedAside();
+    await testRotationRestoresCrlWhenCertPublishFails();
+    await testReconcileRestoresCrlForInterruptedRotation();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

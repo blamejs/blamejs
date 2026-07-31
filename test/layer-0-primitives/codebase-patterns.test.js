@@ -14083,29 +14083,47 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "retainPrevious (typeof opts2.retainPrevious !== \"boolean\") must throw mtls-ca/retention-intent-" +
                "required, else the just-superseded generation loses trust while the active cert is replaced" });
   }
-  // The stale-CRL invalidation is a REQUIRED commit step, not best-effort: a rotation
-  // republishes the CA cert, so a CRL under the OLD cert is signed by a superseded
-  // issuer. Its removal must run BEFORE the cert publish (so a completed rotation
-  // reconciled on open has always already invalidated it) and must NOT be swallowed (a
-  // read-only CRL dir must FAIL the commit, not leave an unauthenticatable CRL served).
-  var crlUnlinkIdx = noComments.search(/unlinkSync\(\s*paths\.crl\s*\)/);
-  if (crlUnlinkIdx === -1) {
+  // Invalidating a persisted CRL on a CA change must be TIED to the cert publication:
+  // the stale CRL is MOVED ASIDE (renameWithRetry(paths.crl, crlRollback)) BEFORE the
+  // cert rename — a required step (a read-only CRL dir fails the commit) — and deleted
+  // only after the new cert lands; a rollback / interrupted-rotation reconcile renames
+  // it BACK, because the CA it reverts to is still active and its CRL still valid.
+  // Directly unlinking the live CRL (unlinkSync(paths.crl)) instead would permanently
+  // lose a still-valid CRL when the publish fails and the CA rolls back.
+  if (/unlinkSync\(\s*paths\.crl\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "commit() no longer removes a persisted CRL (unlinkSync(paths.crl)) on a CA change — a CRL signed " +
-               "by the superseded issuer would stay served, so revocations for the new generation are ineffective" });
+      content: "commit() must MOVE the stale CRL aside (renameWithRetry(paths.crl, crlRollback)) and delete it only " +
+               "after the cert publishes, not unlinkSync(paths.crl) directly — a direct delete permanently loses a " +
+               "still-valid CRL when the publish fails and the CA rolls back" });
+  }
+  var crlAsideIdx = noComments.search(/renameWithRetry\(\s*paths\.crl\s*,\s*crlRollback\s*\)/);
+  if (crlAsideIdx === -1) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit() no longer moves the stale CRL aside (renameWithRetry(paths.crl, crlRollback)) on a CA " +
+               "change — a CRL signed by the superseded issuer would stay served, so revocations for the new " +
+               "generation are ineffective" });
   } else {
-    if (certRenameIdx !== -1 && crlUnlinkIdx > certRenameIdx) {
+    if (certRenameIdx !== -1 && crlAsideIdx > certRenameIdx) {
       bad.push({ file: "lib/mtls-ca.js", line: 1,
-        content: "commit() must invalidate the stale CRL BEFORE publishing the new cert (renameWithRetry(certTmp, " +
-                 "paths.caCert)) — after it, a completed rotation reconciled on open would leave the stale CRL served" });
+        content: "commit() must move the stale CRL aside BEFORE publishing the new cert (renameWithRetry(certTmp, " +
+                 "paths.caCert)) — after it the move is not a precondition, so a read-only CRL dir would not fail " +
+                 "the commit and a completed rotation could leave the stale CRL served" });
     }
-    var crlGuardIdx = noComments.search(/existsSync\(\s*paths\.crl\s*\)/);
-    if (crlGuardIdx !== -1 && crlGuardIdx < crlUnlinkIdx && /\btry\b/.test(noComments.slice(crlGuardIdx, crlUnlinkIdx))) {
+    var crlGuardIdx = noComments.search(/if\s*\(\s*crlExisted\s*\)/);
+    if (crlGuardIdx !== -1 && crlGuardIdx < crlAsideIdx && /\btry\b/.test(noComments.slice(crlGuardIdx, crlAsideIdx))) {
       bad.push({ file: "lib/mtls-ca.js", line: 1,
-        content: "the stale-CRL removal must NOT be wrapped in a swallowing try/catch — a failure (a read-only CRL " +
-                 "directory) must abort and roll back the commit, not report success while an unauthenticatable CRL " +
-                 "stays published at the documented path" });
+        content: "the stale-CRL move-aside must NOT be wrapped in a swallowing try/catch — a failure (a read-only " +
+                 "CRL directory) must abort and roll back the commit, not report success" });
     }
+  }
+  // The moved-aside CRL must be RESTORED on a rollback / interrupted-rotation recovery
+  // (the CA it reverts to is still active, so its CRL is still valid) — in the catch AND
+  // the reconcile roll-back path, both spelled renameWithRetry(crlRollback, paths.crl).
+  if (!/renameWithRetry\(\s*crlRollback\s*,\s*paths\.crl\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit()/reconcile must RESTORE the moved-aside CRL (renameWithRetry(crlRollback, paths.crl)) on a " +
+               "rollback or interrupted-rotation recovery — the CA it reverts to is still active, so its CRL is " +
+               "still valid and must keep being served at the documented path" });
   }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
