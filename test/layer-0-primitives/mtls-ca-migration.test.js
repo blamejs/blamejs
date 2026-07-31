@@ -23,6 +23,18 @@ var _tmpDirs = [];
 function _mkTmp() { var d = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls532-")); _tmpDirs.push(d); return d; }
 function _newCa(extra) { return b.mtlsCa.create(Object.assign({ dataDir: _mkTmp(), caKeySealedMode: "disabled" }, extra || {})); }
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+// Build a rollback-journal manifest as commit() writes it (Buffers -> base64), for
+// fabricating crash states. m: { key, newKey, cert, retainAfter, prevAction, prevData }.
+function _journalManifest(m) {
+  return JSON.stringify({
+    key:         m.key.toString("base64"),
+    newKey:      m.newKey != null ? m.newKey.toString("base64") : null,
+    cert:        m.cert != null ? m.cert.toString("base64") : null,
+    retainAfter: !!m.retainAfter,
+    prevAction:  m.prevAction,
+    prevData:    m.prevData != null ? m.prevData.toString("base64") : null,
+  });
+}
 
 // A minimal custom engine that issues a P-256 (not P-384) self-signed EC CA,
 // to prove status() does NOT mislabel every EC CA as ECDSA-P384-SHA384.
@@ -219,17 +231,22 @@ async function testRevokeGenerationBackfillsFingerprint() {
 // A rotation whose CA commit FAILS must not have already destroyed the retained
 // root — a client still using it would be stranded by a rotation that never landed.
 async function testRetainedRootSurvivesFailedCommit() {
+  var atomicFile = require("../../lib/atomic-file");
   var dir = _mkTmp();
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   await ca.initCA();
   await ca.rotate({ generation: 2 });   // retains -> ca.prev.crt
   check("retained root present before the failing rotation", ca.loadTrustBundle().length === 2);
-  // Sabotage the next commit: pre-create the key tmp path so exclusive-create fails.
-  var keyTmp = ca.paths.caKey + ".tmp";
-  fs.writeFileSync(keyTmp, "blocker");
-  check("the sabotaged rotation fails",
-        (await code2(function () { return ca.rotate({ generation: 3, retainPrevious: false }); }))
-          === "mtls-ca/commit-failed");
+  // Sabotage the next commit at the cert publish so it rolls back.
+  var realRename = atomicFile.renameWithRetry;
+  atomicFile.renameWithRetry = function (from, to) {
+    if (String(to) === String(ca.paths.caCert)) throw new Error("simulated cert rename failure");
+    return realRename.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.rotate({ generation: 3, retainPrevious: false }); }); }
+  finally { atomicFile.renameWithRetry = realRename; }
+  check("the sabotaged rotation fails", codeSeen === "mtls-ca/commit-failed");
   check("the retained root SURVIVES a failed retainPrevious:false rotation",
         ca.loadTrustBundle().length === 2);
 }
@@ -677,9 +694,9 @@ async function testInterruptedRotationRecoversFromJournal() {
   // the new (gen-2) key, the cert is still the old (gen-1) one, and the journal
   // holds the prior (gen-1) key. A fresh handle must roll BACK to the consistent
   // gen-1 pair so the CA (able to issue leaves and CRLs) survives.
-  fs.writeFileSync(ca.paths.caCert, certG1);   // cert never got published
-  fs.writeFileSync(journal, JSON.stringify({   // durable prior-key rollback manifest
-    key: keyG1.toString("base64"), prevAction: "leave", prevData: null,
+  fs.writeFileSync(ca.paths.caCert, certG1);   // cert never got published (live == journal's prior => interrupted)
+  fs.writeFileSync(journal, _journalManifest({
+    key: keyG1, newKey: keyG2, cert: certG1, retainAfter: true, prevAction: "delete", prevData: null,
   }));
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   var leaf = await reopened.generateClientCert({ cn: "after-crash" });
@@ -697,11 +714,13 @@ async function testInterruptedRotationRecoversFromJournal() {
   var ca2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
   await ca2.initCA();
   var priorKey2 = fs.readFileSync(ca2.paths.caKey);
+  var certG1b   = fs.readFileSync(ca2.paths.caCert);
   await ca2.rotate({ generation: 2 });
   var keyG2b  = fs.readFileSync(ca2.paths.caKey);
   var journal2 = ca2.paths.caKey + ".rollback";
-  fs.writeFileSync(journal2, JSON.stringify({  // stale journal over a consistent new pair
-    key: priorKey2.toString("base64"), prevAction: "leave", prevData: null,
+  // Live cert (gen-2) differs from the journal's prior cert (gen-1) => COMPLETED.
+  fs.writeFileSync(journal2, _journalManifest({
+    key: priorKey2, newKey: keyG2b, cert: certG1b, retainAfter: true, prevAction: "delete", prevData: null,
   }));
   var reopened2 = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled" });
   await reopened2.initCA();
@@ -742,12 +761,10 @@ async function testInterruptedRotationRecoversRetainedRoot() {
   // was clobbered from certG1 to certG2, and the manifest journals the prior key
   // (gen-2) plus the prior retained root (certG1) to restore.
   fs.writeFileSync(ca.paths.caKey, keyG3);                   // new key published
-  fs.writeFileSync(ca.paths.caCert, certG2);                 // cert never got published
+  fs.writeFileSync(ca.paths.caCert, certG2);                 // cert never got published (live == prior => interrupted)
   fs.writeFileSync(ca.paths.caCertPrev, certG2);             // retained root clobbered (bug surface)
-  fs.writeFileSync(journal, JSON.stringify({
-    key:        keyG2.toString("base64"),
-    prevAction: "restore",
-    prevData:   certG1.toString("base64"),
+  fs.writeFileSync(journal, _journalManifest({
+    key: keyG2, newKey: keyG3, cert: certG2, retainAfter: false, prevAction: "restore", prevData: certG1,
   }));
 
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
@@ -810,14 +827,19 @@ async function testRotateRetainFalseAbortsWhenRemovalFails() {
   check("a retained root exists before the hard-cutoff rotation", ca.loadTrustBundle().length === 2);
   var keyBefore  = fs.readFileSync(ca.paths.caKey);
   var certBefore = fs.readFileSync(ca.paths.caCert);
-  // Replace ca.prev.crt with a NON-EMPTY directory so unlinkSync() cannot remove it.
-  fs.rmSync(ca.paths.caCertPrev, { force: true });
-  fs.mkdirSync(ca.paths.caCertPrev);
-  fs.writeFileSync(path.join(ca.paths.caCertPrev, "block"), "x");
-  check("rotate({retainPrevious:false}) aborts when the old root cannot be removed",
-        (await code2(function () { return ca.rotate({ generation: 3, retainPrevious: false }); }))
-          === "mtls-ca/commit-failed");
-  fs.rmSync(ca.paths.caCertPrev, { recursive: true, force: true });
+  // The retained-root REMOVAL fails (a read-only ca.prev.crt directory). The prev is
+  // readable (captured for rollback), but its unlink fails -> the hard cutoff cannot
+  // be established, so the rotation aborts rather than publishing a new CA while
+  // loadTrustBundle() keeps trusting a root the operator asked to cut.
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(ca.paths.caCertPrev)) throw new Error("simulated retained-root removal failure");
+    return realUnlink.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.rotate({ generation: 3, retainPrevious: false }); }); }
+  finally { fs.unlinkSync = realUnlink; }
+  check("rotate({retainPrevious:false}) aborts when the old root cannot be removed", codeSeen === "mtls-ca/commit-failed");
   check("the CA survived the aborted hard-cutoff rotation (still gen-2)", ca.status().generation === 2);
   check("the CA key and cert are unchanged after the aborted hard-cutoff",
         fs.readFileSync(ca.paths.caKey).equals(keyBefore) && fs.readFileSync(ca.paths.caCert).equals(certBefore));
@@ -1038,6 +1060,218 @@ async function testPartialRollbackKeepsJournalForRetainedRoot() {
         fs.readFileSync(reopened.paths.caCert).equals(certG2));
 }
 
+// The rollback journal must hold a COMPLETE snapshot of the pre-rotation state.
+// If the existing current cert cannot be read for the journal's prior-cert marker,
+// commit() aborts before mutating — otherwise a cert:null journal would break the
+// interrupted-vs-completed comparison and mis-reconcile the retained root.
+async function testCommitAbortsWhenPriorCertUnreadable() {
+  var atomicFile = require("../../lib/atomic-file");
+  var ca = _newCa();
+  await ca.initCA();
+  var fresh = await engine.generateCa({ generation: 2 });
+  var realRead = atomicFile.fdSafeReadSync;
+  atomicFile.fdSafeReadSync = function (p) {
+    if (String(p) === String(ca.paths.caCert)) throw new Error("simulated prior-cert read failure");
+    return realRead.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = code(function () { ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem }); }); }
+  finally { atomicFile.fdSafeReadSync = realRead; }
+  check("commit aborts when the prior cert cannot be captured", codeSeen === "mtls-ca/prior-cert-unreadable");
+  check("the CA still issues after the aborted commit (untouched)",
+        typeof (await ca.generateClientCert({ cn: "post-cert-abort" })).cert === "string");
+}
+
+// If an existing retained root cannot be read for the rollback journal, commit()
+// aborts before mutating — otherwise a failed hard-cut rotation could remove it
+// with neither the catch nor a reconcile able to restore it, permanently stranding
+// clients in the existing grace window.
+async function testCommitAbortsWhenPriorRetainedRootUnreadable() {
+  var atomicFile = require("../../lib/atomic-file");
+  var ca = _newCa();
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });                        // ca.prev.crt = gen-1
+  var fresh = await engine.generateCa({ generation: 3 });
+  var realRead = atomicFile.fdSafeReadSync;
+  atomicFile.fdSafeReadSync = function (p) {
+    if (String(p) === String(ca.paths.caCertPrev)) throw new Error("simulated prior-retained-root read failure");
+    return realRead.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = code(function () { ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem }); }); }
+  finally { atomicFile.fdSafeReadSync = realRead; }
+  check("commit aborts when the prior retained root cannot be captured",
+        codeSeen === "mtls-ca/prior-retained-root-unreadable");
+  check("the retained root and CA survive the aborted commit",
+        ca.loadTrustBundle().length === 2 &&
+        typeof (await ca.generateClientCert({ cn: "post-prev-abort" })).cert === "string");
+}
+
+// dropRetained() must reconcile an interrupted rotation's journal under its lock
+// before removing the retained root — otherwise a crashed hard-cut rotation (which
+// removed ca.prev.crt but left a journal whose recorded root loadTrustBundle()
+// still trusts) would survive dropRetained(), so the grace window never ends.
+async function testDropRetainedReconcilesInterruptedJournal() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  var keyG2  = fs.readFileSync(ca.paths.caKey);
+  await ca.dropRetained();
+  await ca.rotate({ generation: 3 });
+  // Fabricate an interrupted hard-cut rotation (gen-2 -> gen-3): a consistent gen-2
+  // pair on disk, ca.prev.crt gone, and a journal (prior cert gen-2 == live cert)
+  // holding gen-1 as the root to restore.
+  fs.writeFileSync(ca.paths.caKey, keyG2);
+  fs.writeFileSync(ca.paths.caCert, certG2);
+  fs.rmSync(ca.paths.caCertPrev, { force: true });
+  fs.writeFileSync(ca.paths.caKey + ".rollback", JSON.stringify({
+    key: keyG2.toString("base64"), cert: certG2.toString("base64"),
+    prevAction: "restore", prevData: certG1.toString("base64"),
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  check("interrupted journal surfaces the retained root before dropRetained",
+        reopened.loadTrustBundle().some(function (c) { return Buffer.from(c).equals(certG1); }));
+  await reopened.dropRetained();
+  check("dropRetained reconciles the journal and truly ends the grace window",
+        reopened.loadTrustBundle().every(function (c) { return !Buffer.from(c).equals(certG1); }) &&
+        fs.existsSync(reopened.paths.caKey + ".rollback") === false);
+}
+
+// Reconcile must restore the prior key by BYTES, not gate on _caPairConsistent —
+// which returns true for a custom-engine cert/key node cannot parse, so gating on
+// it would skip the restore and strand (then permanently brick) a custom-engine CA.
+async function testCustomEngineReconcileRestoresKeyByBytes() {
+  var dir = _mkTmp();
+  var opaqueEngine = {   // node cannot parse these -> _caPairConsistent would say "consistent"
+    generateCa: async function (a) {
+      return { caCertPem: "OPAQUE-CERT-gen" + a.generation, caKeyPem: "OPAQUE-KEY-gen" + a.generation };
+    },
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, engine: opaqueEngine, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var oldKey  = fs.readFileSync(ca.paths.caKey);
+  var oldCert = fs.readFileSync(ca.paths.caCert);
+  var newKey  = Buffer.from("OPAQUE-KEY-gen2-NEW");
+  // Crash after the key rename, before the cert rename: new key beside old cert.
+  fs.writeFileSync(ca.paths.caKey, newKey);
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: oldKey, newKey: newKey, cert: oldCert, retainAfter: false, prevAction: "delete", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, engine: opaqueEngine, caKeySealedMode: "disabled" });
+  await reopened.initCA();   // triggers the locked reconcile
+  check("custom-engine reconcile restores the prior key by BYTES (not gated on _caPairConsistent)",
+        fs.readFileSync(reopened.paths.caKey).equals(oldKey));
+  check("the custom-engine interrupted rotation rolled back the cert unchanged",
+        fs.readFileSync(reopened.paths.caCert).equals(oldCert));
+}
+
+// An UNPINNED rotation over an existing CA must PRESERVE the stored algorithm, not
+// silently adopt the engine default (ML-DSA-87) — otherwise a bare generation bump
+// would flip a classical ECDSA CA to ML-DSA and reject legacy peers.
+async function testUnpinnedRotatePreservesStoredAlgorithm() {
+  var dir = _mkTmp();
+  var pinned = b.mtlsCa.create({ dataDir: dir, algorithm: "ECDSA-P384-SHA384", caKeySealedMode: "disabled" });
+  await pinned.initCA();
+  check("stored CA is ECDSA before rotation", pinned.status().algorithm === "ECDSA-P384-SHA384");
+  var unpinned = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });   // no create-time pin
+  var r = await unpinned.rotate({ generation: 2 });                                 // unpinned rotate
+  check("unpinned rotate over an ECDSA CA stays ECDSA (no silent flip to ML-DSA)",
+        r.algorithm === "ECDSA-P384-SHA384" && unpinned.status().algorithm === "ECDSA-P384-SHA384");
+  check("the rotated ECDSA CA still issues",
+        typeof (await unpinned.generateClientCert({ cn: "post-unpinned-rotate" })).cert === "string");
+}
+
+// A hard-cut rotation supersedes the old generation like revokeGeneration: an
+// issuance that straddles it (signed under the now-untrusted old generation) must
+// self-revoke rather than return an un-verifiable leaf.
+async function testHardCutRotationSupersedesStraddlingIssuance() {
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    signClientCert: async function (a) { await barrier; return engine.signClientCert(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();                                          // gen-1
+  var issuing = ca.generateClientCert({ cn: "straddle" });   // blocks in signing under gen-1
+  await ca.rotate({ generation: 2, retainPrevious: false }); // hard cut supersedes gen-1
+  release();
+  check("a leaf straddling a hard-cut rotation self-revokes (issuance-superseded)",
+        (await code2(function () { return issuing; })) === "mtls-ca/issuance-superseded");
+}
+
+// Concurrent first-time inits must converge on ONE CA (serialized), not each
+// generate a CA and clobber one another (orphaning the loser's just-issued leaf).
+async function testConcurrentFirstInitDoesNotClobber() {
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var genCount = 0;
+  var slowEngine = Object.assign({}, engine, {
+    generateCa: async function (a) { genCount += 1; await barrier; return engine.generateCa(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  var p1 = ca.initCA();
+  var p2 = ca.initCA();
+  release();
+  var r1 = await p1; var r2 = await p2;
+  check("concurrent first inits converge on ONE CA (no clobber)", r1.caCertPem === r2.caCertPem);
+  check("first-time creation is serialized (one keygen, not two)", genCount === 1);
+  check("the CA issues after concurrent init",
+        typeof (await ca.generateClientCert({ cn: "post-concurrent-init" })).cert === "string");
+}
+
+// A COMPLETED rotation whose key rename didn't durably stick (a Windows/FUSE
+// fsyncDir no-op) must be FINISHED from the journal's new key, not left on an
+// old-key/new-cert pair the OLD-key-only journal could not repair.
+async function testReconcileFinishesCompletedRotationWithLostKey() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var keyG1 = fs.readFileSync(ca.paths.caKey);
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });
+  var keyG2 = fs.readFileSync(ca.paths.caKey);
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  // Completed gen-1 -> gen-2 (live cert = gen-2) but the key rename was lost (old key).
+  fs.writeFileSync(ca.paths.caKey, keyG1);
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: keyG1, newKey: keyG2, cert: certG1, retainAfter: true, prevAction: "delete", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.initCA();
+  check("reconcile finishes a completed rotation whose key rename was lost (restores the new key)",
+        fs.readFileSync(reopened.paths.caKey).equals(keyG2) && fs.readFileSync(reopened.paths.caCert).equals(certG2));
+  check("the finished CA issues",
+        typeof (await reopened.generateClientCert({ cn: "post-lost-key" })).cert === "string");
+}
+
+// A COMPLETED hard-cut rotation whose ca.prev.crt unlink didn't durably stick must
+// have the resurrected root REMOVED on reconcile — else loadTrustBundle keeps
+// trusting a root the operator hard-cut.
+async function testReconcileRemovesResurrectedHardCutRoot() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  var keyG2 = fs.readFileSync(ca.paths.caKey);
+  await ca.dropRetained();
+  await ca.rotate({ generation: 3 });
+  var keyG3 = fs.readFileSync(ca.paths.caKey);
+  // Completed hard-cut gen-2 -> gen-3 (live cert = gen-3, retainAfter false) but the
+  // ca.prev.crt unlink was lost: gen-1 resurrected as the retained root.
+  fs.writeFileSync(ca.paths.caCertPrev, certG1);
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: keyG2, newKey: keyG3, cert: certG2, retainAfter: false, prevAction: "restore", prevData: certG1,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.initCA();
+  check("reconcile removes a resurrected hard-cut root on a completed rotation",
+        fs.existsSync(reopened.paths.caCertPrev) === false &&
+        reopened.loadTrustBundle().every(function (c) { return !Buffer.from(c).equals(certG1); }));
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1090,6 +1324,15 @@ async function run() {
     await testLoadTrustBundleIncludesUnreconciledJournalRoot();
     await testLoadTrustBundleExcludesSpentJournalRoot();
     await testPartialRollbackKeepsJournalForRetainedRoot();
+    await testCommitAbortsWhenPriorCertUnreadable();
+    await testCommitAbortsWhenPriorRetainedRootUnreadable();
+    await testDropRetainedReconcilesInterruptedJournal();
+    await testCustomEngineReconcileRestoresKeyByBytes();
+    await testUnpinnedRotatePreservesStoredAlgorithm();
+    await testHardCutRotationSupersedesStraddlingIssuance();
+    await testConcurrentFirstInitDoesNotClobber();
+    await testReconcileFinishesCompletedRotationWithLostKey();
+    await testReconcileRemovesResurrectedHardCutRoot();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

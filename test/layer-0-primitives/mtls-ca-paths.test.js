@@ -134,23 +134,16 @@ async function testCommitBranches() {
   try { ca2.loadKey(); } catch (e) { threwUnseal = /unseal-failed/.test(e.code || ""); }
   check("a vault that unseals to empty surfaces unseal-failed", threwUnseal);
 
-  // A residual key .tmp file makes the first exclusive-create ("wx") open
-  // fail with EEXIST, exercising the commit cleanup + commit-failed wrap.
+  // A residual FIXED-name .tmp (crash residue from an older commit) must NOT block a
+  // fresh commit: commit stages into random-token temp names, so a stale ca.key.tmp
+  // / ca.crt.tmp is ignored rather than causing a spurious EEXIST commit-failed.
   var d3 = _mkDir("mtls-cm-");
   var ca3 = b.mtlsCa.create({ dataDir: d3, caKeySealedMode: "disabled" });
   fs.writeFileSync(path.join(d3, "ca.key.tmp"), "STALE-TMP");
-  var threwCommitFailed = false;
-  try { ca3.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwCommitFailed = /commit-failed/.test(e.code || ""); }
-  check("a residual key .tmp file makes commit fail with commit-failed", threwCommitFailed);
-
-  // A residual cert .tmp file lets the key write succeed but fails the cert
-  // write, so cleanup finds BOTH tmp files present (the other cleanup arm).
-  var d4 = _mkDir("mtls-cm-");
-  var ca4 = b.mtlsCa.create({ dataDir: d4, caKeySealedMode: "disabled" });
-  fs.writeFileSync(path.join(d4, "ca.crt.tmp"), "STALE-CERT-TMP");
-  var threwCommitFailed2 = false;
-  try { ca4.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwCommitFailed2 = /commit-failed/.test(e.code || ""); }
-  check("a residual cert .tmp file makes commit fail after the key write", threwCommitFailed2);
+  fs.writeFileSync(path.join(d3, "ca.crt.tmp"), "STALE-CERT-TMP");
+  var committedDespiteResidue = false;
+  try { ca3.commit({ caKeyPem: "K", caCertPem: "C" }); committedDespiteResidue = true; } catch (_e) { /* unexpected */ }
+  check("a residual fixed-name .tmp file does NOT block commit (random-token temps)", committedDespiteResidue);
 
   // A vault whose seal() throws an Error with no message: the commit
   // wrapper must still surface commit-failed, formatting the thrown value
