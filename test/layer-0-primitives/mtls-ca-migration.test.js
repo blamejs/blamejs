@@ -2093,6 +2093,53 @@ async function testCommitRejectsCertOnlyState() {
         code === "mtls-ca/ca-pair-inconsistent");
 }
 
+// A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() under the
+// current generation must NOT publish a revocation whose cert was issued by a DIFFERENT
+// (superseded) generation — under a custom engine that reuses serials across rotations, that would
+// false-revoke the unrelated current-generation certificate reusing the serial. Injected stores
+// simulate the serial collision deterministically.
+async function testCrlScopedToCurrentIssuerGeneration() {
+  var issued = [];
+  var revoked = [];
+  var ca = b.mtlsCa.create({
+    dataDir: _mkTmp(), caKeySealedMode: "disabled",
+    issuanceStore:   { list: function () { return issued.slice(); },  add: function (e) { issued.push(e); } },
+    revocationStore: { list: function () { return revoked.slice(); }, add: function (e) { revoked.push(e); } },
+  });
+  await ca.initCA();                                                 // gen-1
+  await ca.rotate({ generation: 2 });                                // gen-2 (its cert parses to generation 2)
+  check("precondition: the CA is at generation 2", ca.status().generation === 2);
+  var fpA = "aa".repeat(64), fpB = "bb".repeat(64);                  // distinct SHA3-512 fingerprints
+  issued.push({ generation: 1, serialNumber: "0a", fingerprint: fpA });   // gen-1 cert A, serial 0a
+  issued.push({ generation: 2, serialNumber: "0a", fingerprint: fpB });   // gen-2 cert B REUSES serial 0a
+  revoked.push({ serialNumber: "0a", fingerprint: fpA });                 // revoke gen-1 cert A (serial+fingerprint)
+  var crl = await ca.generateCrl({ persist: false });
+  check("the gen-2 CRL excludes a gen-1 revocation's reused serial (scoped to the current issuer)",
+        crl.entryCount === 0);
+}
+
+// generateCrl() dedups two revocations of the SAME serial (a serial-only entry plus a later
+// serial+fingerprint one revokeGeneration backfills) to one CRL entry, and skips a malformed
+// issuance-ledger entry (no numeric generation) when resolving generations.
+async function testCrlDedupsAndSkipsMalformedLedgerEntries() {
+  var issued = [];
+  var revoked = [];
+  var ca = b.mtlsCa.create({
+    dataDir: _mkTmp(), caKeySealedMode: "disabled",
+    issuanceStore:   { list: function () { return issued.slice(); },  add: function (e) { issued.push(e); } },
+    revocationStore: { list: function () { return revoked.slice(); }, add: function (e) { revoked.push(e); } },
+  });
+  await ca.initCA();                                                 // gen-1 (currentGen 1)
+  var fp = "dd".repeat(64);
+  issued.push({ serialNumber: "0c", fingerprint: "cc".repeat(64) }); // MALFORMED: no generation -> skipped
+  issued.push({ generation: 1, serialNumber: "0b", fingerprint: fp });
+  revoked.push({ serialNumber: "0b", fingerprint: null });           // serial-only revocation
+  revoked.push({ serialNumber: "0b", fingerprint: fp });             // serial+fingerprint (same serial -> dedup)
+  var crl = await ca.generateCrl({ persist: false });
+  check("generateCrl dedups two revocations of the same serial and tolerates a ledger entry with no generation",
+        crl.entryCount === 1);
+}
+
 // isSerialRevoked() (the require-mtls live gate's serial fallback) must match ONLY serial-only
 // revocations: a serial is unique per issuer, so a serial+fingerprint revocation is scoped to its
 // specific cert by the fingerprint. Matching its serial globally would false-deny a DIFFERENT
@@ -2647,6 +2694,8 @@ async function run() {
     await testIdempotentRetainedCommitToleratesPemReformatting();
     await testIssuanceNotRevokedWhenRootRepublishedReformatted();
     await testCommitRejectsCertOnlyState();
+    await testCrlScopedToCurrentIssuerGeneration();
+    await testCrlDedupsAndSkipsMalformedLedgerEntries();
     await testSerialRevokedMatchesOnlySerialOnlyEntries();
     await testCommitClearsOrphanCrlRollbackBeforeMoveAside();
     await testIdempotentCommitPreservesCrl();

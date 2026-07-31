@@ -14240,6 +14240,19 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "isSerialRevoked, not aliased to isRevoked) — a global serial match false-denies a different " +
                "generation's cert reusing the serial in the live multi-root gate" });
   }
+  // generateCrl() must SCOPE its entries to the current issuer's generation (a CRL is signed by
+  // one CA, and serials are unique only per issuer): resolve each revocation's generation from
+  // the issuance ledger and exclude one from a superseded generation. Without it, an old
+  // generation's revoked serial is published under the new issuer, false-revoking a
+  // current-generation cert that reuses the serial (a custom engine restarting its counter).
+  if (!/currentGen\s*=\s*parseGeneration\(\s*ca\.caCertPem\s*\)/.test(noComments) ||
+      !/eg\s*!==\s*currentGen\s*\)\s*return false/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateCrl() must scope revocations to the current issuer generation (currentGen = " +
+               "parseGeneration(ca.caCertPem); exclude an entry whose ledger-resolved generation !== currentGen) — " +
+               "publishing a superseded generation's revoked serial under the new issuer false-revokes a " +
+               "current-generation cert reusing the serial" });
+  }
   // The moved-aside CRL must be RESTORED on a rollback / interrupted-rotation recovery
   // (the CA it reverts to is still active, so its CRL is still valid) — in the catch AND
   // the reconcile roll-back path, both spelled renameWithRetry(crlRollback, paths.crl).
