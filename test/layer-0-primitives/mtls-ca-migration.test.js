@@ -2055,6 +2055,29 @@ async function testIdempotentRetainedCommitToleratesPemReformatting() {
         (await ca.loadTrustBundle()).length === 1 && fs.existsSync(ca.paths.caCertPrev) === false);
 }
 
+// An in-flight issuance checks that its signing root is still in loadTrustBundle() (to catch a
+// concurrent hard-cut). That membership check must compare cert IDENTITY: an idempotent commit()
+// that republished the SAME root with reformatted PEM during signing leaves the same root under
+// different bytes, and a string comparison would falsely revoke the leaf (issuance-superseded).
+async function testIssuanceNotRevokedWhenRootRepublishedReformatted() {
+  var dir = _mkTmp();
+  var caCertPath = null;
+  var reformatted = null;
+  var eng = Object.assign({}, engine, {
+    signClientCert: async function (a) {
+      if (reformatted) { fs.writeFileSync(caCertPath, reformatted); }   // republish reformatted mid-sign
+      return engine.signClientCert(a);
+    },
+  });
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: eng });
+  await ca.initCA();
+  caCertPath = ca.paths.caCert;
+  reformatted = fs.readFileSync(ca.paths.caCert, "utf8").replace(/\n/g, "\r\n") + "\n";   // CRLF + newline
+  var code = await code2(function () { return ca.generateClientCert({ cn: "straddling-leaf" }); });
+  check("an in-flight issuance is NOT revoked when its root is idempotently republished with reformatted PEM",
+        code === "NO-THROW");
+}
+
 // A CERT-ONLY store (ca.crt present, no key at the destination) is corrupt/half-published:
 // committing over it would journal no prior key, so a cert-rename failure after the key rename
 // leaves an unrecoverable new-key/old-cert pair. commit() must refuse it before mutating.
@@ -2576,6 +2599,7 @@ async function run() {
     await testReconcileRemovesLeftoverCrlRollbackOnRollForward();
     await testIdempotentRetainedCommitDoesNotOpenGraceWindow();
     await testIdempotentRetainedCommitToleratesPemReformatting();
+    await testIssuanceNotRevokedWhenRootRepublishedReformatted();
     await testCommitRejectsCertOnlyState();
     await testIdempotentCommitPreservesCrl();
     await testCommitFailsClosedWhenSameCertCutJournalUnlinkFails();

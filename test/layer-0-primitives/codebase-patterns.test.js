@@ -14150,6 +14150,24 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "before mutating — committing over it journals no prior key and a failed cert publish leaves an " +
                "unrecoverable new-key/old-cert pair" });
   }
+  // Cert comparisons across DIFFERENT-formatting sources (a snapshot vs a possibly-reformatted
+  // on-disk cert) must compare IDENTITY via _sameCert, never PEM string equality: the issuance
+  // root-membership check (loadTrustBundle vs the signing snapshot) and generateCrl's persist
+  // re-check (on-disk vs the signed-under snapshot) would otherwise falsely fire on an idempotent
+  // commit() that republished the same cert with harmless PEM reformatting (CRLF, trailing NL).
+  if (!/_sameCert\(\s*root\s*,\s*caCertPem\s*\)/.test(noComments) ||
+      /indexOf\(\s*caCertPem\s*\)\s*===\s*-1/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the issuance root-membership check must compare cert IDENTITY (loadTrustBundle().some(root => " +
+               "_sameCert(root, caCertPem))), not string indexOf(caCertPem) — a reformatted-PEM republish of the same " +
+               "root would otherwise falsely revoke a straddling leaf (mtls-ca/issuance-superseded)" });
+  }
+  if (/\)\.toString\(\s*["']utf8["']\s*\)\s*===\s*ca\.caCertPem/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateCrl()'s persist re-check (is the CA we signed under still current?) must compare cert IDENTITY " +
+               "via _sameCert(onDiskCert, ca.caCertPem), not `=== ca.caCertPem` — an idempotent reformatted-PEM republish " +
+               "during signing would otherwise read as a rotation and skip the persist" });
+  }
   // A non-boolean opt behind a `!== false` / truthiness gate (e.g. the string "false"
   // from config) is truthy, so every such gate must REJECT a supplied non-boolean rather
   // than interpret it: retainPrevious (commit/_commitLocked outgoingCaCert + rotate's
