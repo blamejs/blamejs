@@ -1762,6 +1762,48 @@ async function testReconcileRollsForwardKeyOnlyInit() {
         fs.existsSync(reopened.paths.caKey + ".rollback") === false);
 }
 
+// A custom engine may use its OWN label (e.g. "CUSTOM-P384") for a standard key type.
+// The public commit() pin refresh maps via _certAlgorithm(), which yields BUNDLED
+// labels — so refreshing a custom-engine pin would replace its label with the bundled
+// one and the next issuance would pass a label the engine rejects. Refresh the pin only
+// for the default engine; a custom engine's pin is preserved.
+async function testPublicCommitPreservesCustomEnginePin() {
+  var dir = _mkTmp();
+  var seen = [];
+  var eng = {
+    generateCa:     async function () { return { caCertPem: "opaque-ca", caKeyPem: "opaque-key" }; },
+    signClientCert: async function (a) {
+      seen.push(a.algorithm);
+      if (a.algorithm !== "CUSTOM-P384") throw new Error("engine only accepts CUSTOM-P384, got " + a.algorithm);
+      return { cert: "-----BEGIN CERTIFICATE-----\nbGVhZg==\n-----END CERTIFICATE-----", key: "k" };
+    },
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: eng, algorithm: "CUSTOM-P384" });
+  await ca.initCA();
+  // Commit a PARSEABLE ECDSA-P384 CA (default engine) through the custom-engine handle.
+  var ecSource = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  await ecSource.initCA();
+  await ca.commit({ caKeyPem: ecSource.loadKey().toString("utf8"), caCertPem: ecSource.loadCert().toString("utf8"), retainPrevious: false });
+  var leaf = await ca.generateClientCert({ cn: "post-commit-custom" });
+  check("a custom-engine pin survives a public commit (the engine receives CUSTOM-P384, not the bundled label)",
+        typeof leaf.cert === "string" && seen[seen.length - 1] === "CUSTOM-P384");
+}
+
+// canVerifyInTls() must REJECT an invalid explicit target (empty string / non-string)
+// rather than silently falling back to the stored/default algorithm — else a migration
+// pre-flight returns true without testing the requested target. create()/rotate() reject
+// the same invalid values.
+async function testCanVerifyInTlsRejectsInvalidExplicitAlgorithm() {
+  var ca = _newCa();
+  await ca.initCA();
+  check("canVerifyInTls('') rejects an empty explicit target (no silent fallback to the stored CA)",
+        (await code2(function () { return ca.canVerifyInTls(""); })) === "mtls-ca/bad-algorithm");
+  check("canVerifyInTls(123) rejects a non-string explicit target",
+        (await code2(function () { return ca.canVerifyInTls(123); })) === "mtls-ca/bad-algorithm");
+  check("canVerifyInTls(null) rejects a null explicit target",
+        (await code2(function () { return ca.canVerifyInTls(null); })) === "mtls-ca/bad-algorithm");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1844,6 +1886,8 @@ async function run() {
     await testFreshInitAdoptionValidatesPin();
     await testPublicCommitRefreshesAlgorithmPin();
     await testReconcileRollsForwardKeyOnlyInit();
+    await testPublicCommitPreservesCustomEnginePin();
+    await testCanVerifyInTlsRejectsInvalidExplicitAlgorithm();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

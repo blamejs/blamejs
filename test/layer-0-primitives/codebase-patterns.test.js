@@ -14215,11 +14215,22 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
                "_assertPinMatchesStoredCa(adoptedCert, adoptedKey) — else a pinned handle silently adopts and " +
                "issues under an incompatible-algorithm CA a concurrent process created" });
   }
-  if (!/caAlgorithm\s*=\s*committedAlg/.test(noComments)) {
+  if (!/caAlgorithm\s*=\s*committedAlg/.test(noComments) ||
+      !/usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "the public commit() must refresh the handle's algorithm pin to the committed CA (caAlgorithm = " +
-               "committedAlg) — else a pinned handle that migrates algorithms via commit() throws mtls-ca/" +
-               "algorithm-mismatch on the next issuance" });
+               "committedAlg) GATED on usesDefaultEngine — else a pinned handle that migrates algorithms via commit() " +
+               "throws mtls-ca/algorithm-mismatch on the next issuance, and refreshing a CUSTOM engine's pin would " +
+               "overwrite its own label (e.g. CUSTOM-P384) with a bundled one the engine then rejects" });
+  }
+  // canVerifyInTls() must REJECT a supplied-but-invalid explicit algorithm (empty /
+  // non-string) rather than silently falling back to the stored/default label — else a
+  // migration pre-flight returns true without testing the requested target.
+  if (!/algorithm\s*!==\s*undefined\s*&&\s*\(\s*typeof\s+algorithm\s*!==\s*["']string["']\s*\|\|\s*algorithm\.length\s*===\s*0\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "canVerifyInTls(algorithm) must validate a SUPPLIED argument (reject non-string / empty with mtls-ca/" +
+               "bad-algorithm) before falling back to the stored/default label — else a migration pre-flight probes " +
+               "the current CA and returns true without testing the requested target" });
   }
   if (!/newCert:\s*Buffer\.from\(\s*opts2\.caCertPem\s*\)/.test(noComments) ||
       !/newCertBuf\s*!==\s*null\s*&&\s*Buffer\.from\(\s*curCertBuf\s*\)\.equals\(\s*newCertBuf\s*\)/.test(noComments)) {
@@ -14229,8 +14240,9 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
                "and restores the orphaned prior key beside the newly published cert (an unusable pair)" });
   }
   bad = _filterMarkers(bad, "mtls-ca-adopt-commit-pin-journal-divergence");
-  _report("b.mtlsCa adoption/commit paths enforce the pin (shared _assertPinMatchesStoredCa + commit pin refresh) " +
-          "and journal the new cert so a key-only init rolls forward",
+  _report("b.mtlsCa adoption/commit paths enforce the pin (shared _assertPinMatchesStoredCa + default-engine-gated " +
+          "commit pin refresh), journal the new cert so a key-only init rolls forward, and canVerifyInTls validates " +
+          "a supplied algorithm",
     bad);
 }
 
