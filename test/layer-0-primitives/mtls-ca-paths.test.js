@@ -128,7 +128,7 @@ async function testCommitBranches() {
   var d2 = _mkDir("mtls-cm-");
   var v2 = { seal: function (pem) { return Buffer.from("SEAL:" + pem); }, unseal: function () { return ""; } };
   var ca2 = b.mtlsCa.create({ dataDir: d2, caKeySealedMode: "required", vault: v2 });
-  var committed = ca2.commit({ caKeyPem: "CA-KEY-PEM", caCertPem: "CA-CERT-PEM" });
+  var committed = await ca2.commit({ caKeyPem: "CA-KEY-PEM", caCertPem: "CA-CERT-PEM" });
   check("required-mode commit writes the sealed key form", committed.sealed === true && fs.existsSync(path.join(d2, "ca.key.sealed")));
   var threwUnseal = false;
   try { ca2.loadKey(); } catch (e) { threwUnseal = /unseal-failed/.test(e.code || ""); }
@@ -142,7 +142,7 @@ async function testCommitBranches() {
   fs.writeFileSync(path.join(d3, "ca.key.tmp"), "STALE-TMP");
   fs.writeFileSync(path.join(d3, "ca.crt.tmp"), "STALE-CERT-TMP");
   var committedDespiteResidue = false;
-  try { ca3.commit({ caKeyPem: "K", caCertPem: "C" }); committedDespiteResidue = true; } catch (_e) { /* unexpected */ }
+  try { await ca3.commit({ caKeyPem: "K", caCertPem: "C" }); committedDespiteResidue = true; } catch (_e) { /* unexpected */ }
   check("a residual fixed-name .tmp file does NOT block commit (random-token temps)", committedDespiteResidue);
 
   // A vault whose seal() throws an Error with no message: the commit
@@ -152,7 +152,7 @@ async function testCommitBranches() {
   var throwingVault = { seal: function () { throw new Error(""); }, unseal: function () { return "x"; } };
   var ca5 = b.mtlsCa.create({ dataDir: d5, caKeySealedMode: "required", vault: throwingVault });
   var threwFromVault = false;
-  try { ca5.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwFromVault = /commit-failed/.test(e.code || ""); }
+  try { await ca5.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwFromVault = /commit-failed/.test(e.code || ""); }
   check("a vault seal() that throws a message-less Error still surfaces commit-failed", threwFromVault);
 }
 

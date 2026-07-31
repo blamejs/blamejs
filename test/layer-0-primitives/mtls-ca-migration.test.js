@@ -1075,7 +1075,7 @@ async function testCommitAbortsWhenPriorCertUnreadable() {
     return realRead.apply(this, arguments);
   };
   var codeSeen;
-  try { codeSeen = code(function () { ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem }); }); }
+  try { codeSeen = await code2(function () { return ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem }); }); }
   finally { atomicFile.fdSafeReadSync = realRead; }
   check("commit aborts when the prior cert cannot be captured", codeSeen === "mtls-ca/prior-cert-unreadable");
   check("the CA still issues after the aborted commit (untouched)",
@@ -1098,7 +1098,7 @@ async function testCommitAbortsWhenPriorRetainedRootUnreadable() {
     return realRead.apply(this, arguments);
   };
   var codeSeen;
-  try { codeSeen = code(function () { ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem }); }); }
+  try { codeSeen = await code2(function () { return ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem }); }); }
   finally { atomicFile.fdSafeReadSync = realRead; }
   check("commit aborts when the prior retained root cannot be captured",
         codeSeen === "mtls-ca/prior-retained-root-unreadable");
@@ -1311,11 +1311,11 @@ async function testPublicCommitEnforcesSingleRetainedWindow() {
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   await ca.initCA();                                          // gen-1, no retained root
   var g2 = await engine.generateCa({ generation: 2 });
-  ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: true });   // retains gen-1
+  await ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: true });   // retains gen-1
   check("first retained public commit creates a retained root", (await ca.loadTrustBundle()).length === 2);
   var g3 = await engine.generateCa({ generation: 3 });
   check("a second retained public commit is refused (single window)",
-        code(function () { ca.commit({ caKeyPem: g3.caKeyPem, caCertPem: g3.caCertPem, retainPrevious: true }); })
+        await code2(function () { return ca.commit({ caKeyPem: g3.caKeyPem, caCertPem: g3.caCertPem, retainPrevious: true }); })
           === "mtls-ca/retained-root-exists");
   check("the refused commit left the retained root intact", (await ca.loadTrustBundle()).length === 2);
 }
@@ -1368,6 +1368,22 @@ async function testReconcileJournalDeletionFailurePropagates() {
   check("dropRetained fails closed when the reconcile journal deletion fails", codeSeen !== "NO-THROW");
   check("the interrupted journal survives the failed deletion (not silently completed)",
         fs.existsSync(journal) === true);
+}
+
+// The public commit() is the LOCKED commit primitive (migration docs direct
+// operators to it), so it returns a promise — it takes the rotation lock to
+// serialize with a concurrent rotate/init over the same dataDir.
+async function testPublicCommitIsLockedPromise() {
+  var ca = _newCa();
+  await ca.initCA();
+  var g2 = await engine.generateCa({ generation: 2 });
+  var p = ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
+  check("public commit() returns a promise (the locked primitive)", p && typeof p.then === "function");
+  await p;
+  check("the committed CA issues", typeof (await ca.generateClientCert({ cn: "post-public-commit" })).cert === "string");
+  // Bad input still throws synchronously (a config-time typo), before the lock.
+  check("public commit() validates its argument shape synchronously",
+        code(function () { ca.commit({}); }) === "mtls-ca/bad-commit");
 }
 
 // async variant of code() for rejected promises.
@@ -1436,6 +1452,7 @@ async function run() {
     await testPublicCommitEnforcesSingleRetainedWindow();
     await testCanVerifyInTlsProbesDefaultBeforeInit();
     await testReconcileJournalDeletionFailurePropagates();
+    await testPublicCommitIsLockedPromise();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

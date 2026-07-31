@@ -10199,14 +10199,14 @@ function testMtlsCaLoadFailures() {
   } finally { fx.cleanup(); }
 }
 
-function testMtlsCaCommitAndLoadPlaintext() {
+async function testMtlsCaCommitAndLoadPlaintext() {
   var fx = _mtlsCaFixture();
   try {
     var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "disabled" });
     var keyPem  = "-----BEGIN PRIVATE KEY-----\nFAKE-CA-KEY-BYTES\n-----END PRIVATE KEY-----\n";
     var certPem = "-----BEGIN CERTIFICATE-----\nFAKE-CA-CERT-BYTES\n-----END CERTIFICATE-----\n";
 
-    var r = ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
+    var r = await ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
     check("commit returned keyPath ending in ca.key",  /ca\.key$/.test(r.keyPath));
     check("commit returned certPath ending in ca.crt", /ca\.crt$/.test(r.certPath));
     check("commit sealed=false in 'disabled' mode",     r.sealed === false);
@@ -10225,7 +10225,7 @@ function testMtlsCaCommitAndLoadPlaintext() {
   } finally { fx.cleanup(); }
 }
 
-function testMtlsCaSealedRequiredMode() {
+async function testMtlsCaSealedRequiredMode() {
   var fx = _mtlsCaFixture();
   try {
     var v = _mockVault();
@@ -10233,7 +10233,7 @@ function testMtlsCaSealedRequiredMode() {
     var keyPem  = "-----BEGIN PRIVATE KEY-----\nSEALED-KEY\n-----END PRIVATE KEY-----\n";
     var certPem = "-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----\n";
 
-    var r = ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
+    var r = await ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
     check("required mode: sealed=true",                r.sealed === true);
     check("required mode: keyPath ends in ca.key.sealed",
           /ca\.key\.sealed$/.test(r.keyPath));
@@ -19350,8 +19350,8 @@ async function run() {
   testMtlsCaParseGeneration();
   testMtlsCaExistsAndStatusWhenAbsent();
   testMtlsCaLoadFailures();
-  testMtlsCaCommitAndLoadPlaintext();
-  testMtlsCaSealedRequiredMode();
+  await testMtlsCaCommitAndLoadPlaintext();
+  await testMtlsCaSealedRequiredMode();
   testMtlsCaSealedDisabledRefusesSealedFile();
   testMtlsCaSealedRequiredRefusesPlaintextFile();
   await testMtlsCaInitCaWithDefaultEngine();
