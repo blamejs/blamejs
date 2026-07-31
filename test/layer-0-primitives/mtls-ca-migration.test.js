@@ -1302,6 +1302,24 @@ async function testReconcileRemovesResurrectedHardCutRoot() {
         reopened.loadTrustBundle().every(function (c) { return !Buffer.from(c).equals(certG1); }));
 }
 
+// The single-retained-window invariant must hold on EVERY retention entry point,
+// including the public commit() path (which calls _commitLocked directly) — not
+// just rotate(). Two retained commits without ending the window between them would
+// otherwise overwrite the retained root and strand the first cohort.
+async function testPublicCommitEnforcesSingleRetainedWindow() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();                                          // gen-1, no retained root
+  var g2 = await engine.generateCa({ generation: 2 });
+  ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: true });   // retains gen-1
+  check("first retained public commit creates a retained root", ca.loadTrustBundle().length === 2);
+  var g3 = await engine.generateCa({ generation: 3 });
+  check("a second retained public commit is refused (single window)",
+        code(function () { ca.commit({ caKeyPem: g3.caKeyPem, caCertPem: g3.caCertPem, retainPrevious: true }); })
+          === "mtls-ca/retained-root-exists");
+  check("the refused commit left the retained root intact", ca.loadTrustBundle().length === 2);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1365,6 +1383,7 @@ async function run() {
     await testConcurrentFirstInitDoesNotClobber();
     await testReconcileFinishesCompletedRotationWithLostKey();
     await testReconcileRemovesResurrectedHardCutRoot();
+    await testPublicCommitEnforcesSingleRetainedWindow();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
