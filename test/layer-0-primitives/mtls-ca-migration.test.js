@@ -1464,6 +1464,47 @@ async function testGenerateCrlSkipsPersistIfCaRotated() {
         result.persisted === false && fs.existsSync(ca.paths.crl) === false);
 }
 
+// generateCrl() must not persist a CRL whose revocation snapshot a concurrent revoke()/
+// revokeGeneration() has already superseded — a revocation that COMPLETED (returned
+// success) while we awaited engine.generateCrl() would be dropped from the published CRL,
+// so CRL-based clients keep accepting the revoked certificate until the next regeneration.
+async function testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning() {
+  var duringSign = null;                                       // fires AFTER the snapshot, during signing
+  var slowEngine = Object.assign({}, engine, {
+    generateCrl: async function (a) {
+      if (duringSign) { var f = duringSign; duringSign = null; await f(); }
+      return engine.generateCrl(a);
+    },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();
+  await ca.revoke("01");                                      // one revocation in the snapshot
+  duringSign = async function () { await ca.revoke("02"); };  // a revocation COMPLETES during signing
+  var result = await ca.generateCrl();                        // snapshots {01}, revokes 02 mid-sign
+  check("generateCrl does NOT persist a CRL whose snapshot a concurrent revocation superseded",
+        result.persisted === false && fs.existsSync(ca.paths.crl) === false);
+  // A clean regeneration (no concurrent write) publishes a CRL covering every revocation.
+  var result2 = await ca.generateCrl();
+  check("a clean regeneration persists a CRL covering every completed revocation",
+        result2.persisted === true && result2.entryCount === 2 && fs.existsSync(ca.paths.crl) === true);
+}
+
+// generateCrl() with a bring-your-own revocationStore (no version() signal) persists
+// directly: the framework does not own that store's write lock, so there is no version to
+// compare against a concurrent revoke() — the operator owns that store's concurrency. This
+// exercises the custom-store snapshot and persist paths (no under-lock version re-check).
+async function testGenerateCrlPersistsWithCustomRevocationStore() {
+  var entries = [];
+  var customStore = { list: function () { return entries.slice(); },
+                      add: function (e) { entries.push(e); } };
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: customStore });
+  await ca.initCA();
+  await ca.revoke("0a");
+  var result = await ca.generateCrl();
+  check("generateCrl persists with a custom revocationStore (no version signal, operator-owned concurrency)",
+        result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
+}
+
 // For a custom engine, canVerifyInTls() with no argument must use the create-time
 // pin, not status()'s inferred bundled label — the engine may use a custom label
 // for a standard key type, and only the pin carries it.
@@ -2358,6 +2399,8 @@ async function run() {
     await testRotationInvalidatesStaleCrl();
     await testPublicCommitReconcilesLeftoverJournalFirst();
     await testGenerateCrlSkipsPersistIfCaRotated();
+    await testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning();
+    await testGenerateCrlPersistsWithCustomRevocationStore();
     await testCanVerifyInTlsPrefersCustomPinOverInferredLabel();
     await testPublicCommitInvalidatesStaleCrl();
     await testRotationCasDetectsSameGenerationCommit();

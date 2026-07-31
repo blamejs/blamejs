@@ -13913,6 +13913,40 @@ function testReleasePushPathsRunLiveIntegration() {
     bad);
 }
 
+// _unresolvedThreads() is the authoritative merge gate: [] means "no unresolved threads =>
+// safe to merge". It paginates the PR's review threads under a bounded page cap. If the loop
+// exhausts that cap while a successor page is still pending (hasNextPage=true), the thread
+// set is TRUNCATED — a later-page unresolved finding is invisible and the gate would pass on
+// an incomplete prefix, merging past a live finding. The cap must FAIL CLOSED (throw), never
+// treat "ran out of pages" as "walked to the end". This fires if the pagination loop lacks a
+// walked-to-completion flag or the post-loop fail-closed throw that guards the cap.
+function testReleaseUnresolvedThreadsFailClosedAtPageCap() {
+  var src;
+  try { src = fs.readFileSync("scripts/release.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var start = src.search(/\nfunction _unresolvedThreads\s*\(/);
+  if (start !== -1) {
+    var rest = src.slice(start + 1);
+    var end = rest.search(/\nfunction [A-Za-z_]/);
+    var body = end === -1 ? rest : rest.slice(0, end);
+    // The loop must mark completion only on the hasNextPage=false break, and after the loop
+    // throw when that completion was never reached (the cap was hit with more pages pending).
+    var marksCompletion = /!\s*conn\.pageInfo\.hasNextPage[\s\S]{0,80}walkedToEnd\s*=\s*true/.test(body);
+    var failsClosed = /if\s*\(\s*!\s*walkedToEnd\s*\)\s*\{[\s\S]{0,400}throw new Error/.test(body);
+    if (!marksCompletion || !failsClosed) {
+      bad.push({ file: "scripts/release.js", line: src.slice(0, start).split(/\n/).length + 1,
+        content: "_unresolvedThreads() must fail closed at the pagination cap — set a walked-to-completion flag " +
+                 "only on the hasNextPage=false break and throw after the loop when it was never reached, else a PR " +
+                 "with more threads than the cap truncates the set and the merge gate passes on an incomplete prefix" });
+    }
+  }
+  bad = _filterMarkers(bad, "release-unresolved-threads-cap-fail-open");
+  _report("release.js _unresolvedThreads() fails closed at its pagination cap (never treats an exhausted cap with " +
+          "a pending successor page as a complete, empty thread set)",
+    bad);
+}
+
 // lib/sql.js `where` / `orWhere` distinguish the 2-arg where(field, value)
 // shorthand from the 3-arg where(field, op, value) form by arguments.length.
 // A where-family delegator that re-passes FIXED positional params
@@ -14420,6 +14454,41 @@ function testMtlsCaLoadTrustBundleStableSnapshot() {
   bad = _filterMarkers(bad, "mtls-ca-trust-bundle-unstable-snapshot");
   _report("b.mtlsCa loadTrustBundle() reads a stable snapshot (re-reads the current cert) so a concurrent " +
           "rotation cannot yield a bundle omitting the active root",
+    bad);
+}
+
+// generateCrl() snapshots the revocation registry, then AWAITS engine.generateCrl() before
+// persisting. A revoke()/revokeGeneration() that COMPLETES during that await is dropped
+// from the published CRL unless the persist is serialized with revocation writes. The fix:
+// capture the default store's version() with the snapshot, then re-check it under the
+// revocations lock (atomic with revoke()) before writing paths.crl, skipping the publish if
+// it advanced (persisted=false — the caller regenerates, same contract as a rotation). This
+// fires if the version snapshot or the under-lock freshness re-check is dropped, which would
+// let a completed revocation stay off the served CRL until the next regeneration.
+function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  if (!/revSnapshotVersion\s*=\s*\(\s*typeof\s+revocationStore\.version\s*===\s*["']function["']\s*\)\s*\?\s*revocationStore\.version\(\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateCrl() must snapshot the revocation store's version() alongside its list() (revSnapshotVersion " +
+               "= typeof revocationStore.version === \"function\" ? revocationStore.version() : null) — without the " +
+               "snapshot version the persist cannot detect a revoke() that completed while engine.generateCrl() signed" });
+  }
+  // The persist freshness gate must compare version() to the snapshot UNDER the revocations
+  // lock (so the check and the paths.crl write are atomic with revoke()'s write).
+  if (!/atomicFile\.lock\(\s*paths\.revocations\s*,\s*function\s*\(\)\s*\{\s*if\s*\(\s*revocationStore\.version\(\)\s*===\s*revSnapshotVersion\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "generateCrl() must re-check the revocation store version UNDER the revocations lock before persisting " +
+               "(atomicFile.lock(paths.revocations, () => { if (revocationStore.version() === revSnapshotVersion) ... })) " +
+               "— else a revoke()/revokeGeneration() that completed during signing is published-around and the served " +
+               "CRL omits it until the next regeneration, so CRL-based clients keep accepting the revoked certificate" });
+  }
+  bad = _filterMarkers(bad, "mtls-ca-generatecrl-persist-races-revocation");
+  _report("b.mtlsCa generateCrl() serializes its persist with revocation writes (version snapshot + under-lock " +
+          "freshness re-check) so a revocation completing during signing is never dropped from the served CRL",
     bad);
 }
 
@@ -15560,6 +15629,7 @@ async function run() {
   // step's port mapping + curl host.
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
+  testReleaseUnresolvedThreadsFailClosedAtPageCap();
   testSqlWhereDelegatorForwardsArguments();
   testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
   testMtlsCaFingerprintMatchesGate();
@@ -15569,6 +15639,7 @@ async function run() {
   testMtlsCaAdoptAndCommitEnforcePinAndJournal();
   testMtlsCaReconcileFailsClosedOnCorruptJournal();
   testMtlsCaLoadTrustBundleStableSnapshot();
+  testMtlsCaGenerateCrlPersistIsRevocationFresh();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by

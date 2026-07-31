@@ -946,6 +946,7 @@ function _unresolvedThreads(prNum) {
   // real work (the loop stops at hasNextPage=false well before it).
   var nodes = [];
   var after = null;
+  var walkedToEnd = false;
   for (var page = 0; page < 100; page += 1) {
     var afterClause = after ? (", after: \"" + after + "\"") : "";
     var rv = _capture("gh", ["api", "graphql",
@@ -963,8 +964,17 @@ function _unresolvedThreads(prNum) {
                       " had no reviewThreads connection -- an unreadable result is not an empty one.");
     }
     nodes = nodes.concat(conn.nodes || []);
-    if (!conn.pageInfo.hasNextPage) { after = null; break; }
+    if (!conn.pageInfo.hasNextPage) { after = null; walkedToEnd = true; break; }
     after = conn.pageInfo.endCursor;
+  }
+  // Fail closed at the page cap: if the loop exhausted its bound while a successor page was
+  // still pending (hasNextPage=true on the last page walked), the thread set is TRUNCATED --
+  // a later-page unresolved finding would be invisible and this authoritative merge gate
+  // would pass on an incomplete prefix. Refuse rather than treat the cap as completion.
+  if (!walkedToEnd) {
+    throw new Error("release: PR #" + prNum + " has more review threads than the pagination cap " +
+      "(100 pages x 100 = 10,000) can walk -- refusing to evaluate a truncated thread set, since a " +
+      "later-page unresolved finding would be invisible and merge past it. Resolve stale threads or raise the cap.");
   }
   return nodes.filter(function (t) { return t && t.isResolved === false; })
     .map(function (t) {
