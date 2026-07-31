@@ -14194,6 +14194,46 @@ function testMtlsCaIssuanceGenerationUndeterminableIsNull() {
     bad);
 }
 
+// Every path that ADOPTS or INSTALLS a stored CA must enforce the same pin/journal
+// invariants initCA()'s existing-CA path does, so the public commit() and fresh-adopt
+// paths cannot silently diverge: (1) the fresh-init adoption branch (a concurrent
+// process created the CA while this pinned handle awaited generateCa) validates the pin
+// via the shared _assertPinMatchesStoredCa() helper; (2) the public commit() refreshes
+// the handle's algorithm pin to the committed CA (like rotate()), else the next
+// issuance throws algorithm-mismatch; (3) _commitLocked() journals the intended NEW
+// cert so reconcile can roll a completed KEY-ONLY init forward instead of restoring an
+// orphaned prior key beside the published cert. Fires if any guard is dropped.
+function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  if (!/_assertPinMatchesStoredCa\s*\(\s*adoptedCert\s*,\s*adoptedKey\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the fresh-init adoption branch(es) must validate the adopted CA against the pin via " +
+               "_assertPinMatchesStoredCa(adoptedCert, adoptedKey) — else a pinned handle silently adopts and " +
+               "issues under an incompatible-algorithm CA a concurrent process created" });
+  }
+  if (!/caAlgorithm\s*=\s*committedAlg/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must refresh the handle's algorithm pin to the committed CA (caAlgorithm = " +
+               "committedAlg) — else a pinned handle that migrates algorithms via commit() throws mtls-ca/" +
+               "algorithm-mismatch on the next issuance" });
+  }
+  if (!/newCert:\s*Buffer\.from\(\s*opts2\.caCertPem\s*\)/.test(noComments) ||
+      !/newCertBuf\s*!==\s*null\s*&&\s*Buffer\.from\(\s*curCertBuf\s*\)\.equals\(\s*newCertBuf\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_commitLocked() must journal the intended NEW cert (newCert) and reconcile must classify a key-only " +
+               "init by it (curCert equals newCert) — else a completed key-only cold start is misread as interrupted " +
+               "and restores the orphaned prior key beside the newly published cert (an unusable pair)" });
+  }
+  bad = _filterMarkers(bad, "mtls-ca-adopt-commit-pin-journal-divergence");
+  _report("b.mtlsCa adoption/commit paths enforce the pin (shared _assertPinMatchesStoredCa + commit pin refresh) " +
+          "and journal the new cert so a key-only init rolls forward",
+    bad);
+}
+
 // The reconcile a MUTATING open (commit/rotate/initCA/dropRetained) runs must FAIL
 // CLOSED on a rollback journal it cannot parse, or one that is present but is not a
 // valid manifest (missing a string `key`). Continuing would overwrite the ONLY durable
@@ -15409,6 +15449,7 @@ async function run() {
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testMtlsCaIssuanceGenerationUndeterminableIsNull();
+  testMtlsCaAdoptAndCommitEnforcePinAndJournal();
   testMtlsCaReconcileFailsClosedOnCorruptJournal();
   testMtlsCaLoadTrustBundleStableSnapshot();
   testEsbuildPinAgreesAcrossArtifacts();

@@ -30,6 +30,7 @@ function _journalManifest(m) {
     key:         m.key.toString("base64"),
     newKey:      m.newKey != null ? m.newKey.toString("base64") : null,
     cert:        m.cert != null ? m.cert.toString("base64") : null,
+    newCert:     m.newCert != null ? m.newCert.toString("base64") : null,
     retainAfter: !!m.retainAfter,
     prevAction:  m.prevAction,
     prevData:    m.prevData != null ? m.prevData.toString("base64") : null,
@@ -1694,6 +1695,73 @@ async function testOpaqueCustomEngineIssuanceGenerationNotZero() {
         typeof leaf2.cert === "string" && ca.isRevoked(leaf2.fingerprint) === false);
 }
 
+// The fresh-init adoption branch (a concurrent process created the CA under the shared
+// dataDir while this pinned handle awaited generateCa) must run the SAME algorithm-pin
+// validation as initCA()'s normal existing-CA path — else a pinned handle adopts and
+// issues under an incompatible CA.
+async function testFreshInitAdoptionValidatesPin() {
+  var dir = _mkTmp();
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    generateCa: async function (a) { await barrier; return engine.generateCa(a); },
+  });
+  var pinned = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: slowEngine, algorithm: "ECDSA-P384-SHA384" });
+  var issuing = pinned.generateClientCert({ cn: "adopt" });  // initCA -> _freshCreateSerialized, blocks in generateCa
+  var other = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });   // ML-DSA default
+  await other.initCA();                                      // publishes an ML-DSA CA at the shared dataDir
+  release();
+  check("the fresh-init adoption branch validates the pin (refuses adopting a different-algorithm CA)",
+        (await code2(function () { return issuing; })) === "mtls-ca/algorithm-mismatch");
+}
+
+// A handle created with an algorithm pin that migrates its CA to a different algorithm
+// via the public commit() path must refresh the pin (like rotate() does) — else the
+// next initCA()/generateClientCert() compares the stale pin to the new CA and throws
+// algorithm-mismatch, leaving the handle unusable immediately after a successful commit.
+async function testPublicCommitRefreshesAlgorithmPin() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", algorithm: "ECDSA-P384-SHA384" });
+  await ca.initCA();
+  var mlSource = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });   // ML-DSA default
+  await mlSource.initCA();
+  var mlKey  = mlSource.loadKey().toString("utf8");
+  var mlCert = mlSource.loadCert().toString("utf8");
+  await ca.commit({ caKeyPem: mlKey, caCertPem: mlCert, retainPrevious: false });
+  var leaf = await ca.generateClientCert({ cn: "post-commit-migrate" });
+  check("a pinned handle stays usable after commit()ing a different-algorithm CA (pin refreshed)",
+        typeof leaf.cert === "string");
+}
+
+// A key-only cold start (a crashed FIRST init left ca.key with no ca.crt, so the retry's
+// _commitLocked captured it as the prior key with cert=null) must still roll a COMPLETED
+// init forward: reconcile classifies by the intended NEW cert, so it keeps the published
+// key/cert pair instead of restoring the orphaned prior key beside the new cert.
+async function testReconcileRollsForwardKeyOnlyInit() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var key1  = fs.readFileSync(ca.paths.caKey);
+  var cert1 = fs.readFileSync(ca.paths.caCert);
+  var other = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled" });
+  await other.initCA();
+  var keyOrphan = fs.readFileSync(other.paths.caKey);        // an unrelated prior key
+  // Fabricate a COMPLETED key-only init that crashed before deleting the journal: the
+  // journal's prior cert is null (none existed when the commit began), its newKey/newCert
+  // are the published pair, and the live pair IS that published pair.
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: keyOrphan, newKey: key1, cert: null, newCert: cert1,
+    retainAfter: false, prevAction: "delete", prevData: null,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.initCA();                                   // reconciles under the lock
+  check("reconcile rolls a completed key-only init FORWARD (keeps the published key, not the orphan)",
+        fs.readFileSync(reopened.paths.caKey).equals(key1));
+  check("the reconciled key-only CA is a usable pair (issues cleanly)",
+        typeof (await reopened.generateClientCert({ cn: "post-keyonly" })).cert === "string");
+  check("the journal is cleared after the key-only roll-forward",
+        fs.existsSync(reopened.paths.caKey + ".rollback") === false);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1773,6 +1841,9 @@ async function run() {
     await testRotationRestoresCrlWhenCertPublishFails();
     await testReconcileRestoresCrlForInterruptedRotation();
     await testOpaqueCustomEngineIssuanceGenerationNotZero();
+    await testFreshInitAdoptionValidatesPin();
+    await testPublicCommitRefreshesAlgorithmPin();
+    await testReconcileRollsForwardKeyOnlyInit();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
