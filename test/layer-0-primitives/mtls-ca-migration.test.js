@@ -1097,8 +1097,15 @@ async function testCommitAbortsWhenPriorRetainedRootUnreadable() {
     if (String(p) === String(ca.paths.caCertPrev)) throw new Error("simulated prior-retained-root read failure");
     return realRead.apply(this, arguments);
   };
+  // Hard-cut (retainPrevious:false) is the scenario the abort protects: it needs the
+  // prior retained root for its rollback, so an unreadable one must abort before
+  // mutating. (An omitted retainPrevious would be refused earlier as ambiguous.)
   var codeSeen;
-  try { codeSeen = await code2(function () { return ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem }); }); }
+  try {
+    codeSeen = await code2(function () {
+      return ca.commit({ caKeyPem: fresh.caKeyPem, caCertPem: fresh.caCertPem, retainPrevious: false });
+    });
+  }
   finally { atomicFile.fdSafeReadSync = realRead; }
   check("commit aborts when the prior retained root cannot be captured",
         codeSeen === "mtls-ca/prior-retained-root-unreadable");
@@ -1510,6 +1517,93 @@ async function testRotationCasDetectsSameGenerationCommit() {
         fs.readFileSync(handle2.paths.caCert).toString("utf8") === g1b.caCertPem);
 }
 
+// While a retained grace window is open (ca.prev.crt present), a public commit()
+// that OMITS retainPrevious is ambiguous: outgoingCaCert is null (so the single-
+// window guard does not fire) AND the hard-cut branch (retainPrevious === false)
+// does not fire either, so the old retained root would be left untouched while the
+// active cert is replaced — silently dropping trust for the just-superseded
+// generation (its cert becomes neither the new current nor the retained root). The
+// commit must refuse until the caller states its retention intent.
+async function testPublicCommitRefusesRetentionAmbiguityWhileWindowOpen() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });                        // gen-2 active, gen-1 retained (window open)
+  var activeBefore = fs.readFileSync(ca.paths.caCert).toString("utf8");   // the gen-2 cert
+  check("a retained window is open before the ambiguous commit", (await ca.loadTrustBundle()).length === 2);
+  var g3 = await engine.generateCa({ generation: 3 });
+  check("a retainPrevious-omitted commit is refused while a grace window is open",
+        (await code2(function () { return ca.commit({ caKeyPem: g3.caKeyPem, caCertPem: g3.caCertPem }); }))
+          === "mtls-ca/retention-intent-required");
+  check("the refused commit left the active CA cert unchanged (no cohort silently dropped)",
+        fs.readFileSync(ca.paths.caCert).toString("utf8") === activeBefore);
+  check("both roots are still trusted after the refused commit", (await ca.loadTrustBundle()).length === 2);
+  // An explicit retention intent (hard-cut) is still accepted and ends the window.
+  await ca.commit({ caKeyPem: g3.caKeyPem, caCertPem: g3.caCertPem, retainPrevious: false });
+  check("an explicit retainPrevious:false commit hard-cuts the window",
+        fs.readFileSync(ca.paths.caCert).toString("utf8") === g3.caCertPem &&
+        (await ca.loadTrustBundle()).length === 1);
+}
+
+// A rollback journal that exists but cannot be parsed (or is not a valid manifest)
+// is the "rotation in progress / crashed" marker. A mutating open (commit/rotate)
+// must NOT continue into _commitLocked — that would overwrite the ONLY durable copy
+// of the prior key while snapshotting a possibly-orphaned live key, so a later failed
+// publish could restore the orphan and permanently lose the matching key. Fail closed
+// (the reconcile is idempotent, so the operator resolves the fault and retries).
+async function testMutatingPathFailsClosedOnCorruptRollbackJournal() {
+  // (a) Unparseable journal bytes -> a commit refuses.
+  var dirA = _mkTmp();
+  var caA = b.mtlsCa.create({ dataDir: dirA, caKeySealedMode: "disabled" });
+  await caA.initCA();
+  fs.writeFileSync(caA.paths.caKey + ".rollback", "not-json{{{");
+  var reopenA = b.mtlsCa.create({ dataDir: dirA, caKeySealedMode: "disabled" });
+  var g2a = await engine.generateCa({ generation: 2 });
+  check("a mutating commit refuses while an UNPARSEABLE rollback journal is present",
+        (await code2(function () {
+          return reopenA.commit({ caKeyPem: g2a.caKeyPem, caCertPem: g2a.caCertPem, retainPrevious: false });
+        })) === "mtls-ca/rollback-journal-corrupt");
+  check("the unparseable journal is left intact for the operator to resolve",
+        fs.existsSync(reopenA.paths.caKey + ".rollback") === true);
+  // (b) Valid JSON but not a rollback manifest (missing the prior-key field) -> rotate refuses.
+  var dirB = _mkTmp();
+  var caB = b.mtlsCa.create({ dataDir: dirB, caKeySealedMode: "disabled" });
+  await caB.initCA();
+  fs.writeFileSync(caB.paths.caKey + ".rollback", JSON.stringify({ not: "a manifest" }));
+  var reopenB = b.mtlsCa.create({ dataDir: dirB, caKeySealedMode: "disabled" });
+  check("a rotate refuses while a schema-invalid rollback journal is present",
+        (await code2(function () { return reopenB.rotate({ generation: 2 }); }))
+          === "mtls-ca/rollback-journal-corrupt");
+}
+
+// Invalidating a persisted CRL is a REQUIRED part of a CA-changing commit (the
+// release contract: a rotation invalidates the persisted CRL). If the CRL cannot be
+// removed (a read-only / separately-configured CRL directory), the commit must ABORT
+// and roll the CA back rather than publish a new CA while an unauthenticatable CRL —
+// signed by the superseded issuer — stays served at the documented path.
+async function testRotationAbortsWhenStaleCrlCannotBeRemoved() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.generateCrl();                                     // persists ca.crl under gen-1
+  check("a CRL is persisted before the rotation", fs.existsSync(ca.paths.crl) === true);
+  var keyBefore  = fs.readFileSync(ca.paths.caKey);
+  var certBefore = fs.readFileSync(ca.paths.caCert);
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(ca.paths.crl)) throw new Error("simulated read-only CRL directory");
+    return realUnlink.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.rotate({ generation: 2, retainPrevious: false }); }); }
+  finally { fs.unlinkSync = realUnlink; }
+  check("the rotation aborts when the stale CRL cannot be removed", codeSeen === "mtls-ca/commit-failed");
+  check("the CA rolled back (key + cert unchanged) rather than publishing beside a stale CRL",
+        fs.readFileSync(ca.paths.caKey).equals(keyBefore) && fs.readFileSync(ca.paths.caCert).equals(certBefore));
+  check("the surviving CA still issues after the aborted rotation",
+        typeof (await ca.generateClientCert({ cn: "post-crl-abort" })).cert === "string");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1583,6 +1677,9 @@ async function run() {
     await testCanVerifyInTlsPrefersCustomPinOverInferredLabel();
     await testPublicCommitInvalidatesStaleCrl();
     await testRotationCasDetectsSameGenerationCommit();
+    await testPublicCommitRefusesRetentionAmbiguityWhileWindowOpen();
+    await testMutatingPathFailsClosedOnCorruptRollbackJournal();
+    await testRotationAbortsWhenStaleCrlCannotBeRemoved();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

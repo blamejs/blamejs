@@ -14070,6 +14070,43 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       content: "a ca.prev.crt removal must be followed by atomicFile.fsyncDir(nodePath.dirname(paths.caCertPrev)) " +
                "— its directory may differ from ca.crt's, so without it a power loss can resurrect a hard-cut root" });
   }
+  // A commit() while a grace window (ca.prev.crt) is open must state its retention
+  // intent: an OMITTED retainPrevious is refused (mtls-ca/retention-intent-required),
+  // else outgoingCaCert is null (the single-window guard does not fire) AND the hard-cut
+  // branch (=== false) does not fire, so the outgoing root is left untouched while the
+  // active cert is replaced — silently dropping trust for the just-superseded generation
+  // (neither the new current nor the retained root). Fires if the guard or its throw goes.
+  if (noComments.indexOf("mtls-ca/retention-intent-required") === -1 ||
+      !/typeof\s+opts2\.retainPrevious\s*!==\s*["']boolean["']/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_commitLocked() must refuse an ambiguous commit while a retained root is present — an omitted " +
+               "retainPrevious (typeof opts2.retainPrevious !== \"boolean\") must throw mtls-ca/retention-intent-" +
+               "required, else the just-superseded generation loses trust while the active cert is replaced" });
+  }
+  // The stale-CRL invalidation is a REQUIRED commit step, not best-effort: a rotation
+  // republishes the CA cert, so a CRL under the OLD cert is signed by a superseded
+  // issuer. Its removal must run BEFORE the cert publish (so a completed rotation
+  // reconciled on open has always already invalidated it) and must NOT be swallowed (a
+  // read-only CRL dir must FAIL the commit, not leave an unauthenticatable CRL served).
+  var crlUnlinkIdx = noComments.search(/unlinkSync\(\s*paths\.crl\s*\)/);
+  if (crlUnlinkIdx === -1) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "commit() no longer removes a persisted CRL (unlinkSync(paths.crl)) on a CA change — a CRL signed " +
+               "by the superseded issuer would stay served, so revocations for the new generation are ineffective" });
+  } else {
+    if (certRenameIdx !== -1 && crlUnlinkIdx > certRenameIdx) {
+      bad.push({ file: "lib/mtls-ca.js", line: 1,
+        content: "commit() must invalidate the stale CRL BEFORE publishing the new cert (renameWithRetry(certTmp, " +
+                 "paths.caCert)) — after it, a completed rotation reconciled on open would leave the stale CRL served" });
+    }
+    var crlGuardIdx = noComments.search(/existsSync\(\s*paths\.crl\s*\)/);
+    if (crlGuardIdx !== -1 && crlGuardIdx < crlUnlinkIdx && /\btry\b/.test(noComments.slice(crlGuardIdx, crlUnlinkIdx))) {
+      bad.push({ file: "lib/mtls-ca.js", line: 1,
+        content: "the stale-CRL removal must NOT be wrapped in a swallowing try/catch — a failure (a read-only CRL " +
+                 "directory) must abort and roll back the commit, not report success while an unauthenticatable CRL " +
+                 "stays published at the documented path" });
+    }
+  }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
           "recover from an interrupted rotation (crash-atomic key/cert publication)",
@@ -14104,6 +14141,40 @@ function testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema() {
   bad = _filterMarkers(bad, "mtls-ca-issuance-ledger-silent-empty-on-corrupt");
   _report("b.mtlsCa issuance ledger fails closed on a present-but-schema-corrupt file " +
           "(no silent-empty collapse of a corrupt ledger)",
+    bad);
+}
+
+// The reconcile a MUTATING open (commit/rotate/initCA/dropRetained) runs must FAIL
+// CLOSED on a rollback journal it cannot parse, or one that is present but is not a
+// valid manifest (missing a string `key`). Continuing would overwrite the ONLY durable
+// copy of the prior key while snapshotting a possibly-orphaned live key, so a later
+// failed publish could restore the orphan and permanently lose the matching key. It
+// must throw mtls-ca/rollback-journal-corrupt, never return silently. Fires on the
+// silent-return regression shape (a bare `return` where the throw belongs).
+function testMtlsCaReconcileFailsClosedOnCorruptJournal() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  if (noComments.indexOf("mtls-ca/rollback-journal-corrupt") === -1) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_reconcileCommitJournalLocked() must fail closed (throw mtls-ca/rollback-journal-corrupt) on an " +
+               "unparseable or schema-invalid rollback journal — the fail-closed throw is gone, so a mutating " +
+               "open would overwrite the prior-key journal and could permanently lose the matching key" });
+  }
+  // The silent-schema regression: a bare `return` when the parsed journal lacks a
+  // string `key` (instead of throwing) lets the caller overwrite an unresolved marker.
+  if (/typeof\s+manifest\.key\s*!==\s*["']string["']\s*\)\s*return\s*;/.test(noComments)) {
+    var upto = src.slice(0, src.search(/typeof\s+manifest\.key\s*!==\s*["']string["']\s*\)\s*return/));
+    bad.push({ file: "lib/mtls-ca.js", line: upto.split(/\r?\n/).length + 1,
+      content: "_reconcileCommitJournalLocked() returns silently when the journal is not a valid manifest " +
+               "(missing string `key`) — it must throw mtls-ca/rollback-journal-corrupt (fail closed), else a " +
+               "mutating open overwrites an unresolved rotation marker and can lose the prior key" });
+  }
+  bad = _filterMarkers(bad, "mtls-ca-reconcile-silent-on-corrupt-journal");
+  _report("b.mtlsCa reconcile fails closed on a corrupt/unparseable rollback journal (no silent return that " +
+          "lets a mutating open overwrite the prior-key journal)",
     bad);
 }
 
@@ -15287,6 +15358,7 @@ async function run() {
   testMtlsCaFingerprintMatchesGate();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
+  testMtlsCaReconcileFailsClosedOnCorruptJournal();
   testMtlsCaLoadTrustBundleStableSnapshot();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
