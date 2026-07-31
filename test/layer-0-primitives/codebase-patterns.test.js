@@ -14134,6 +14134,17 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       content: "caCertChanged (which gates CRL invalidation) must compare cert IDENTITY via _sameCert, not raw bytes — " +
                "else a reformatted-PEM recommit of the same cert deletes the still-valid CRL" });
   }
+  // _rotateImpl's CAS check (is the current cert still the one snapshotted before generateCa?) must
+  // compare cert IDENTITY via _sameCert, not exact PEM text — else a concurrent idempotent commit()
+  // that merely REFORMATTED the same cert during generateCa spuriously aborts the rotation with
+  // rotation-conflict. The null checks are retained (either side null before a first CA).
+  if (!/nowCertChanged\s*=\s*\(\s*nowCert\s*===\s*null\s*\|\|\s*previousCaCertPem\s*===\s*null\s*\)[\s\S]{0,120}!_sameCert\(\s*nowCert\s*,\s*previousCaCertPem\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_rotateImpl()'s CAS check must compare the snapshotted vs current cert by IDENTITY (nowCertChanged = " +
+               "(nowCert===null||previousCaCertPem===null) ? nowCert!==previousCaCertPem : !_sameCert(nowCert, " +
+               "previousCaCertPem)) — an exact-string compare aborts a rotation when a concurrent commit merely " +
+               "reformatted the same cert (rotation-conflict)" });
+  }
   // _sameCert must compare parsed DER identity (tolerating harmless PEM differences), falling
   // back to bytes only for an unparseable opaque custom cert.
   if (!/function\s+_sameCert[\s\S]{0,160}X509Certificate\([^)]*\)\.raw\.equals\(\s*new\s+nodeCrypto\.X509Certificate/.test(noComments)) {

@@ -1448,6 +1448,34 @@ async function testPublicCommitReconcilesLeftoverJournalFirst() {
         typeof (await ca.generateClientCert({ cn: "post-public-commit-fail" })).cert === "string");
 }
 
+// rotate()'s CAS check (is the current cert still the one snapshotted before generateCa?) must
+// compare cert IDENTITY, not exact PEM text: a concurrent idempotent commit() that merely
+// REFORMATTED the same cert (CRLF, trailing newline) during generateCa must NOT abort the rotation
+// with mtls-ca/rotation-conflict — the issuer and generation are unchanged.
+async function testRotationCasToleratesReformattedConcurrentCommit() {
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var reachedBarrier = false;
+  var slowActive = false;                                            // slow ONLY the rotate's generateCa, not initCA's
+  var slowEngine = Object.assign({}, engine, {
+    generateCa: async function (a) { if (slowActive) { reachedBarrier = true; await barrier; } return engine.generateCa(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();
+  var sameCert = ca.loadCert().toString("utf8");
+  var sameKey  = ca.loadKey().toString("utf8");
+  slowActive = true;
+  var rotatePromise = ca.rotate({ generation: 2 });                 // snapshots the gen-1 cert, then blocks in generateCa
+  // Wait until the rotation has snapshotted the cert and reached generateCa, THEN idempotently
+  // recommit the SAME cert REFORMATTED (so the rotation's snapshot is the ORIGINAL bytes).
+  await helpers.waitUntil(function () { return reachedBarrier; },
+    { timeoutMs: 5000, label: "rotation-cas: rotate reached generateCa" });
+  await ca.commit({ caKeyPem: sameKey, caCertPem: sameCert.replace(/\n/g, "\r\n") + "\n", retainPrevious: false });
+  release();
+  var code = await code2(function () { return rotatePromise; });
+  check("a rotation is NOT aborted by a concurrent idempotent commit that only reformatted the same cert",
+        code === "NO-THROW");
+}
+
 // generateCrl() must not persist a CRL signed by a CA that ROTATED while it was
 // signing — that would recreate the stale-issuer artifact the rotation invalidated.
 async function testGenerateCrlSkipsPersistIfCaRotated() {
@@ -2738,6 +2766,7 @@ async function run() {
     await testPublicCommitIsLockedPromise();
     await testRotationInvalidatesStaleCrl();
     await testPublicCommitReconcilesLeftoverJournalFirst();
+    await testRotationCasToleratesReformattedConcurrentCommit();
     await testGenerateCrlSkipsPersistIfCaRotated();
     await testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
