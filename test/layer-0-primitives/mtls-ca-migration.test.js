@@ -2093,6 +2093,21 @@ async function testCommitRejectsCertOnlyState() {
         code === "mtls-ca/ca-pair-inconsistent");
 }
 
+// A migration caller that accidentally supplies a certificate and key from DIFFERENT CA material
+// must be rejected before publishing — otherwise commit() succeeds but the next initCA() fails
+// ca-pair-inconsistent, leaving an unusable CA that can issue neither certs nor CRLs.
+async function testCommitRejectsMismatchedCaPair() {
+  var ca = _newCa();
+  await ca.initCA();
+  var g1cert = ca.loadCert().toString("utf8");                      // this CA's (gen-1) cert
+  var other = await engine.generateCa({ generation: 2 });           // an UNRELATED CA's cert+key
+  var code = await code2(function () {                               // gen-1 cert + unrelated key = mismatch
+    return ca.commit({ caCertPem: g1cert, caKeyPem: other.caKeyPem, retainPrevious: false });
+  });
+  check("commit refuses a mismatched cert/key pair (the cert's public key doesn't match the key) before publishing",
+        code === "mtls-ca/ca-pair-inconsistent");
+}
+
 // A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() under the
 // current generation must NOT publish a revocation whose cert was issued by a DIFFERENT
 // (superseded) generation — under a custom engine that reuses serials across rotations, that would
@@ -2694,6 +2709,7 @@ async function run() {
     await testIdempotentRetainedCommitToleratesPemReformatting();
     await testIssuanceNotRevokedWhenRootRepublishedReformatted();
     await testCommitRejectsCertOnlyState();
+    await testCommitRejectsMismatchedCaPair();
     await testCrlScopedToCurrentIssuerGeneration();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();
     await testSerialRevokedMatchesOnlySerialOnlyEntries();

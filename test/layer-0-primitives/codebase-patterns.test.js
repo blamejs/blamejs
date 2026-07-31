@@ -14150,6 +14150,16 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "before mutating — committing over it journals no prior key and a failed cert publish leaves an " +
                "unrecoverable new-key/old-cert pair" });
   }
+  // The public commit() must reject a MISMATCHED cert/key pair (a parseable cert whose public key
+  // doesn't correspond to the key — e.g. a caller supplying material from two different CAs) BEFORE
+  // publishing: it would otherwise succeed but leave the next initCA() failing ca-pair-inconsistent,
+  // an unusable CA. _caPairConsistent returns "consistent" for an opaque custom pair, preserving it.
+  if (!/if\s*\(\s*!_caPairConsistent\(\s*opts2\.caCertPem\s*,\s*opts2\.caKeyPem\s*\)\s*\)\s*\{[\s\S]{0,260}mtls-ca\/ca-pair-inconsistent/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must reject a mismatched cert/key pair up front (if (!_caPairConsistent(opts2." +
+               "caCertPem, opts2.caKeyPem)) throw mtls-ca/ca-pair-inconsistent) — publishing a parseable pair from " +
+               "different CAs would succeed but brick the CA (the next initCA() fails ca-pair-inconsistent)" });
+  }
   // Cert comparisons across DIFFERENT-formatting sources (a snapshot vs a possibly-reformatted
   // on-disk cert) must compare IDENTITY via _sameCert, never PEM string equality: the issuance
   // root-membership check (loadTrustBundle vs the signing snapshot) and generateCrl's persist
