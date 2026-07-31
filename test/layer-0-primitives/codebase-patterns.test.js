@@ -14162,6 +14162,38 @@ function testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema() {
     bad);
 }
 
+// parseGeneration() returns 0 when node:crypto cannot parse the CA cert (a custom
+// engine's opaque / post-quantum cert). Recording an issuance's generation as that 0
+// (a value below any real generation, which start at 1) makes revokeGeneration(1)
+// revoke those CURRENT leaves and the bumped watermark self-revoke every future
+// issuance. _recordIssuance() must map an undeterminable generation to null (skipped
+// by the numeric sweep, still revocable by fingerprint), and the self-revoke watermark
+// comparison must guard `typeof gen === "number"` so a null generation is not coerced
+// to 0. Fires if either guard is dropped.
+function testMtlsCaIssuanceGenerationUndeterminableIsNull() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  if (!/parsedGen\s*>=\s*1\s*\?\s*parsedGen\s*:\s*null/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_recordIssuance() must map an undeterminable generation (parseGeneration() === 0 for an opaque " +
+               "custom cert) to null, not record 0 — recording 0 lets revokeGeneration(1) revoke current leaves " +
+               "and self-revoke every future issuance via the watermark" });
+  }
+  if (!/typeof\s+gen\s*===\s*["']number["']\s*&&\s*gen\s*<\s*_readRevokedWatermark/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the issuance self-revoke check must guard `typeof gen === \"number\"` before comparing gen to the " +
+               "revoked-generation watermark — a null (undeterminable) generation coerces to 0 and would " +
+               "self-revoke every opaque-custom-CA issuance" });
+  }
+  bad = _filterMarkers(bad, "mtls-ca-issuance-generation-zero-on-undeterminable");
+  _report("b.mtlsCa records an undeterminable CA generation as null (not 0) and the issuance self-revoke check " +
+          "guards a numeric generation",
+    bad);
+}
+
 // The reconcile a MUTATING open (commit/rotate/initCA/dropRetained) runs must FAIL
 // CLOSED on a rollback journal it cannot parse, or one that is present but is not a
 // valid manifest (missing a string `key`). Continuing would overwrite the ONLY durable
@@ -15376,6 +15408,7 @@ async function run() {
   testMtlsCaFingerprintMatchesGate();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
+  testMtlsCaIssuanceGenerationUndeterminableIsNull();
   testMtlsCaReconcileFailsClosedOnCorruptJournal();
   testMtlsCaLoadTrustBundleStableSnapshot();
   testEsbuildPinAgreesAcrossArtifacts();

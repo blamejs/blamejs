@@ -1662,6 +1662,38 @@ async function testReconcileRestoresCrlForInterruptedRotation() {
         typeof (await reopened.generateClientCert({ cn: "post-reconcile-crl" })).cert === "string");
 }
 
+// A supported custom engine whose CA certificate node:crypto cannot parse (an opaque /
+// post-quantum cert) makes parseGeneration() fall back to 0. Recording issuances as
+// generation 0 then lets revokeGeneration(1) revoke those CURRENT leaves (0 < 1) and,
+// via the bumped watermark, self-revoke every future issuance. An undeterminable
+// generation must be recorded as null — skipped by generation-based revocation (still
+// revocable by fingerprint), never 0.
+async function testOpaqueCustomEngineIssuanceGenerationNotZero() {
+  var dir = _mkTmp();
+  var opaqueCert = "-----BEGIN CERTIFICATE-----\nb3BhcXVlLWNhLW5vdC1wYXJzZWFibGU=\n-----END CERTIFICATE-----";
+  var opaqueKey  = "-----BEGIN PRIVATE KEY-----\nb3BhcXVlLWtleQ==\n-----END PRIVATE KEY-----";
+  var n = 0;
+  var eng = {
+    generateCa:     async function () { return { caCertPem: opaqueCert, caKeyPem: opaqueKey }; },
+    signClientCert: async function () {
+      n += 1;   // distinct opaque leaves -> distinct fingerprints (_certIdentity hashes the bytes)
+      return { cert: "-----BEGIN CERTIFICATE-----\nbGVhZi0" + n + "=\n-----END CERTIFICATE-----", key: "leaf-key-" + n };
+    },
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: eng });
+  await ca.initCA();
+  var leaf1 = await ca.generateClientCert({ cn: "opaque-1" });
+  var ledger = JSON.parse(fs.readFileSync(ca.paths.issuance, "utf8"));
+  check("an opaque custom CA records issuance generation as null (undeterminable), not 0",
+        ledger.issued.length === 1 && ledger.issued[0].generation === null);
+  var res = await ca.revokeGeneration(1);
+  check("revokeGeneration(1) does not sweep an undeterminable-generation leaf",
+        res.revoked === 0 && ca.isRevoked(leaf1.fingerprint) === false);
+  var leaf2 = await ca.generateClientCert({ cn: "opaque-2" });
+  check("a later issuance under the opaque CA does not self-revoke as superseded",
+        typeof leaf2.cert === "string" && ca.isRevoked(leaf2.fingerprint) === false);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1740,6 +1772,7 @@ async function run() {
     await testRotationAbortsWhenStaleCrlCannotBeMovedAside();
     await testRotationRestoresCrlWhenCertPublishFails();
     await testReconcileRestoresCrlForInterruptedRotation();
+    await testOpaqueCustomEngineIssuanceGenerationNotZero();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
