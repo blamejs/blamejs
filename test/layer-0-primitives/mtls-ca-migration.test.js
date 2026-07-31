@@ -1401,6 +1401,76 @@ async function testRotationInvalidatesStaleCrl() {
   check("generateCrl re-signs the CRL under the new CA after rotation", fs.existsSync(ca.paths.crl) === true);
 }
 
+// The public commit() must reconcile a leftover journal FIRST (as rotate does),
+// so a crash-left new-key/old-cert state is rolled back before the new commit —
+// otherwise the commit records the ORPHANED new key as its prior key and a failed
+// publish would roll back to that orphan, losing the actual matching old key.
+async function testPublicCommitReconcilesLeftoverJournalFirst() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var keyG1 = fs.readFileSync(ca.paths.caKey);
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });
+  var keyG2 = fs.readFileSync(ca.paths.caKey);
+  // Crashed gen-1 -> gen-2: new key (gen-2) beside old cert (gen-1); journal holds gen-1.
+  fs.writeFileSync(ca.paths.caCert, certG1);
+  fs.rmSync(ca.paths.caCertPrev, { force: true });
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: keyG1, newKey: keyG2, cert: certG1, retainAfter: false, prevAction: "delete", prevData: null,
+  }));
+  var g3 = await engine.generateCa({ generation: 3 });
+  var realRename = atomicFile.renameWithRetry;
+  atomicFile.renameWithRetry = function (from, to) {
+    if (String(to) === String(ca.paths.caCert)) throw new Error("simulated cert publish failure");
+    return realRename.apply(this, arguments);
+  };
+  var codeSeen;
+  try { codeSeen = await code2(function () { return ca.commit({ caKeyPem: g3.caKeyPem, caCertPem: g3.caCertPem, retainPrevious: false }); }); }
+  finally { atomicFile.renameWithRetry = realRename; }
+  check("public commit whose publish failed rolled back to the ACTUAL gen-1 key (reconciled first)",
+        codeSeen === "mtls-ca/commit-failed" && fs.readFileSync(ca.paths.caKey).equals(keyG1));
+  check("the CA still issues under the recovered gen-1",
+        typeof (await ca.generateClientCert({ cn: "post-public-commit-fail" })).cert === "string");
+}
+
+// generateCrl() must not persist a CRL signed by a CA that ROTATED while it was
+// signing — that would recreate the stale-issuer artifact the rotation invalidated.
+async function testGenerateCrlSkipsPersistIfCaRotated() {
+  var release; var barrier = new Promise(function (r) { release = r; });
+  var slowEngine = Object.assign({}, engine, {
+    generateCrl: async function (a) { await barrier; return engine.generateCrl(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();                                          // gen-1
+  var crlPromise = ca.generateCrl();                          // signs under gen-1, blocks
+  await ca.rotate({ generation: 2 });                         // CA rotates during signing
+  release();
+  var result = await crlPromise;
+  check("generateCrl does NOT persist a CRL signed by a CA that rotated during signing",
+        result.persisted === false && fs.existsSync(ca.paths.crl) === false);
+}
+
+// For a custom engine, canVerifyInTls() with no argument must use the create-time
+// pin, not status()'s inferred bundled label — the engine may use a custom label
+// for a standard key type, and only the pin carries it.
+async function testCanVerifyInTlsPrefersCustomPinOverInferredLabel() {
+  var dir = _mkTmp();
+  var probed = [];
+  var eng = {
+    generateCa:     async function (a) { return engine.generateCa({ generation: a.generation }); },
+    signClientCert: engine.signClientCert,
+    canVerifyInTls: async function (label) { probed.push(label); return true; },
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, engine: eng, algorithm: "CUSTOM-PQC-LABEL", caKeySealedMode: "disabled" });
+  await ca.initCA();
+  check("status() infers a bundled label from the cert", ca.status().algorithm === "ML-DSA-87");
+  await ca.canVerifyInTls();
+  check("canVerifyInTls() passes the custom engine's create-time pin, not the inferred bundled label",
+        probed[probed.length - 1] === "CUSTOM-PQC-LABEL");
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -1469,6 +1539,9 @@ async function run() {
     await testReconcileJournalDeletionFailurePropagates();
     await testPublicCommitIsLockedPromise();
     await testRotationInvalidatesStaleCrl();
+    await testPublicCommitReconcilesLeftoverJournalFirst();
+    await testGenerateCrlSkipsPersistIfCaRotated();
+    await testCanVerifyInTlsPrefersCustomPinOverInferredLabel();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
