@@ -1920,6 +1920,26 @@ async function testReconcileRemovesResurrectedLiveCrlOnRollForward() {
         typeof (await reopened.generateClientCert({ cn: "post-crl-rollforward" })).cert === "string");
 }
 
+// An idempotent recommit of the SAME cert/key does not change the CRL's issuer, so the
+// valid CRL must be preserved — not moved aside and deleted like a real rotation.
+async function testIdempotentCommitPreservesCrl() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.generateCrl();
+  var crlBefore = fs.readFileSync(ca.paths.crl);
+  var sameKey  = ca.loadKey().toString("utf8");
+  var sameCert = ca.loadCert().toString("utf8");
+  await ca.commit({ caKeyPem: sameKey, caCertPem: sameCert, retainPrevious: false });   // recommit the SAME CA
+  check("an idempotent recommit of the same CA preserves the valid CRL (issuer unchanged)",
+        fs.existsSync(ca.paths.crl) === true && fs.readFileSync(ca.paths.crl).equals(crlBefore));
+  // A DIFFERENT cert still invalidates the CRL (control).
+  var g2 = await engine.generateCa({ generation: 2 });
+  await ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: false });
+  check("committing a DIFFERENT CA still invalidates the stale CRL",
+        fs.existsSync(ca.paths.crl) === false);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -2008,6 +2028,7 @@ async function run() {
     await testCommitDoesNotRestoreOrphanCrlRollback();
     await testReconcileDoesNotRestoreOrphanCrlRollback();
     await testReconcileRemovesResurrectedLiveCrlOnRollForward();
+    await testIdempotentCommitPreservesCrl();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }

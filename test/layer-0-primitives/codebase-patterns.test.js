@@ -14145,12 +14145,21 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // moved a CRL aside — crlExisted in the catch, manifest.crlMovedAside in reconcile —
   // else an ORPHAN crl.rollback from a prior commit (whose best-effort delete failed) is
   // restored by a later commit that never moved it, publishing a stale-issuer CRL.
-  if (!/crlExisted\s*&&\s*nodeFs\.existsSync\(\s*crlRollback\s*\)\s*&&\s*!nodeFs\.existsSync\(\s*paths\.crl\s*\)/.test(noComments) ||
+  if (!/movingCrlAside\s*&&\s*nodeFs\.existsSync\(\s*crlRollback\s*\)\s*&&\s*!nodeFs\.existsSync\(\s*paths\.crl\s*\)/.test(noComments) ||
       !/if\s*\(\s*manifest\.crlMovedAside\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "the CRL restore must be GATED on whether THIS commit moved a CRL aside (crlExisted in the catch, " +
+      content: "the CRL restore must be GATED on whether THIS commit moved a CRL aside (movingCrlAside in the catch, " +
                "manifest.crlMovedAside in reconcile) — an ungated restore would resurrect an orphan crl.rollback " +
                "from a prior commit, publishing a CRL signed by an earlier issuer under the still-active CA" });
+  }
+  // The CRL is invalidated only when the committed cert actually CHANGES the issuer:
+  // movingCrlAside = crlExisted && caCertChanged. An idempotent recommit of the same
+  // cert must keep the valid CRL served, not move it aside and delete it.
+  if (!/movingCrlAside\s*=\s*crlExisted\s*&&\s*caCertChanged/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the CRL move-aside must be gated on caCertChanged (movingCrlAside = crlExisted && caCertChanged) — " +
+               "an idempotent recommit of the same certificate leaves the CRL's issuer unchanged, so invalidating " +
+               "the CRL there loses the revocation artifact until it is regenerated" });
   }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
@@ -14265,6 +14274,22 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
       content: "_commitLocked() must journal the intended NEW cert (newCert) and reconcile must classify a key-only " +
                "init by it (curCert equals newCert) — else a completed key-only cold start is misread as interrupted " +
                "and restores the orphaned prior key beside the newly published cert (an unusable pair)" });
+  }
+  // rotate()'s algorithm-pin update must run WITHIN the same locked callback as its
+  // _commitLocked (not after the lock releases): a concurrent public commit() could
+  // otherwise acquire the lock the instant the rotation releases it, publish a different
+  // CA and set the pin to match, only for rotate's unlocked assignment to overwrite the
+  // pin afterwards — leaving the stored CA and the pin disagreeing. Fires if a lock-close
+  // (`});`) sits between rotate's _commitLocked and its caAlgorithm assignment.
+  var rotCommit = /_commitLocked\(\{\s*caKeyPem:\s*fresh\.caKeyPem,\s*caCertPem:\s*fresh\.caCertPem,\s*retainPrevious:\s*retain\s*\}\);/.exec(noComments);
+  var rotPin = /if\s*\(\s*rotateOpts\.algorithm\s*!==\s*undefined\s*\)\s*caAlgorithm\s*=\s*rotateOpts\.algorithm;/.exec(noComments);
+  var betweenCommitAndPin = (rotCommit && rotPin && rotPin.index > rotCommit.index)
+    ? noComments.slice(rotCommit.index + rotCommit[0].length, rotPin.index) : "});";
+  if (!rotCommit || !rotPin || /\}\s*\)\s*;/.test(betweenCommitAndPin)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "rotate()'s pin update (caAlgorithm = rotateOpts.algorithm) must run inside the same locked callback " +
+               "as its _commitLocked — an assignment after the lock releases lets a concurrent commit() interleave " +
+               "and leave the stored CA and the handle pin disagreeing (algorithm-mismatch on the next issuance)" });
   }
   bad = _filterMarkers(bad, "mtls-ca-adopt-commit-pin-journal-divergence");
   _report("b.mtlsCa adoption/commit paths enforce the pin (shared _assertPinMatchesStoredCa + default-engine-gated " +
