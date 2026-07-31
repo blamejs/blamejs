@@ -14061,6 +14061,15 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "loss could persist the cert rename while losing the key rename, leaving an old-key/new-cert " +
                "pair the journal (which holds only the old key) cannot recover" });
   }
+  // A retained-root REMOVAL (rotate retainPrevious:false / dropRetained) must fsync
+  // ca.prev.crt's directory — it can live in a different parent than ca.crt, so a
+  // power loss could otherwise resurrect a root the operator hard-cut.
+  if (/unlinkSync\(\s*paths\.caCertPrev\s*\)/.test(noComments) &&
+      !/fsyncDir\(\s*nodePath\.dirname\(\s*paths\.caCertPrev\s*\)\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "a ca.prev.crt removal must be followed by atomicFile.fsyncDir(nodePath.dirname(paths.caCertPrev)) " +
+               "— its directory may differ from ca.crt's, so without it a power loss can resurrect a hard-cut root" });
+  }
   bad = _filterMarkers(bad, "mtls-ca-commit-missing-rollback-journal");
   _report("b.mtlsCa commit() journals the prior CA key before overwriting it, and initCA()/_rotateImpl() " +
           "recover from an interrupted rotation (crash-atomic key/cert publication)",
@@ -14095,6 +14104,34 @@ function testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema() {
   bad = _filterMarkers(bad, "mtls-ca-issuance-ledger-silent-empty-on-corrupt");
   _report("b.mtlsCa issuance ledger fails closed on a present-but-schema-corrupt file " +
           "(no silent-empty collapse of a corrupt ledger)",
+    bad);
+}
+
+// loadTrustBundle() must read a STABLE snapshot of the current cert: a retained
+// rotation publishes ca.prev.crt = old THEN ca.crt = new as two steps, so a single
+// read can interleave and return [old, old], omitting the new active root (a TLS
+// context reloaded from that rejects newly-enrolled clients). The fix re-reads the
+// current cert after the retained one and retries if it changed. This fires if the
+// re-read is dropped (the current cert is read only once).
+function testMtlsCaLoadTrustBundleStableSnapshot() {
+  var src;
+  try { src = fs.readFileSync("lib/mtls-ca.js", "utf8"); }
+  catch (_e) { return; }
+  var bad = [];
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // The stable-snapshot read calls _readCurrentCert() twice per attempt (read +
+  // re-read to compare); with its definition that is >= 3 occurrences. A single
+  // read (definition + one call = 2) means the re-read/retry guard was dropped.
+  var reads = (noComments.match(/_readCurrentCert\s*\(\s*\)/g) || []).length;
+  if (reads > 0 && reads < 3) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "loadTrustBundle() must re-read the current cert after the retained one and retry if it " +
+               "changed (a stable snapshot) — reading it once lets a concurrent retained rotation return " +
+               "[old, old], omitting the new active root (found " + reads + " _readCurrentCert() occurrence(s))" });
+  }
+  bad = _filterMarkers(bad, "mtls-ca-trust-bundle-unstable-snapshot");
+  _report("b.mtlsCa loadTrustBundle() reads a stable snapshot (re-reads the current cert) so a concurrent " +
+          "rotation cannot yield a bundle omitting the active root",
     bad);
 }
 
@@ -15240,6 +15277,7 @@ async function run() {
   testMtlsCaFingerprintMatchesGate();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
+  testMtlsCaLoadTrustBundleStableSnapshot();
   testEsbuildPinAgreesAcrossArtifacts();
   // fuzz-build cross-artifact detector: .clusterfuzzlite/build.sh must install
   // @jazzer.js/core before compile_javascript_fuzzer + pair each seed corpus by

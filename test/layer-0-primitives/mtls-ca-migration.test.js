@@ -466,14 +466,20 @@ async function testClusteredWatermarkViaStoreMethods() {
       bumpGenerationWatermark: function (n) { if (n > shared.wm) shared.wm = n; },
     };
   }
+  // Clustered operation also requires a shared issuance ledger (per-host default
+  // ledgers would let revokeGeneration() miss another host's issuances).
+  var sharedIssued = [];
+  function sharedIssuanceStore() {
+    return { list: function () { return sharedIssued.slice(); }, add: function (e) { sharedIssued.push(e); } };
+  }
   var release; var barrier = new Promise(function (r) { release = r; });
   var slowEngine = Object.assign({}, engine, {
     signClientCert: async function (a) { await barrier; return engine.signClientCert(a); },
   });
-  var hostB = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine, revocationStore: sharedStore() });
+  var hostB = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine, revocationStore: sharedStore(), issuanceStore: sharedIssuanceStore() });
   await hostB.initCA();                              // generation 1 on host B's dataDir
   var issuing = hostB.generateClientCert({ cn: "clustered" });   // blocks in signing
-  var hostA = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: sharedStore() });
+  var hostA = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: sharedStore(), issuanceStore: sharedIssuanceStore() });
   await hostA.initCA();
   await hostA.rotate({ generation: 2 });
   await hostA.revokeGeneration(2);                   // bumps the SHARED watermark
@@ -823,6 +829,51 @@ async function testCanVerifyInTlsRequiresLabelWhenUndeterminable() {
         ok === true && probed[probed.length - 1] === "ECDSA-P384-SHA384");
 }
 
+// Clustered operation (shared revocationStore + watermark, per-host dataDirs) also
+// requires a shared issuanceStore: with the default per-host ledger, revokeGeneration()
+// on one host cannot see certs issued on another, leaving them accepted by the shared
+// gate. Refuse the fail-open split at construction.
+async function testClusteredRevocationStoreRequiresSharedIssuanceStore() {
+  function clusteredRevStore() {
+    return {
+      list: function () { return []; }, add: function () {},
+      readGenerationWatermark: function () { return 0; },
+      bumpGenerationWatermark: function () {},
+    };
+  }
+  check("a clustered revocationStore without a shared issuanceStore is refused at construction",
+        code(function () {
+          b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", revocationStore: clusteredRevStore() });
+        }) === "mtls-ca/bad-issuance-store");
+  check("a clustered revocationStore WITH a shared issuanceStore is accepted",
+        code(function () {
+          b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled",
+            revocationStore: clusteredRevStore(),
+            issuanceStore: { list: function () { return []; }, add: function () {} } });
+        }) === "NO-THROW");
+  check("a non-clustered revocationStore still accepts the default per-host ledger",
+        code(function () {
+          b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled",
+            revocationStore: { list: function () { return []; }, add: function () {} } });
+        }) === "NO-THROW");
+}
+
+// loadTrustBundle() must never advertise the same root twice: a degenerate state
+// where ca.prev.crt == ca.crt (a crash-recovered rollback, or the mixed-snapshot
+// race this guards) must dedup to a single-entry bundle rather than [cur, cur].
+async function testLoadTrustBundleDedupsIdenticalRetainedRoot() {
+  var ca = _newCa();
+  await ca.initCA();
+  var cur = fs.readFileSync(ca.paths.caCert);
+  fs.writeFileSync(ca.paths.caCertPrev, cur);           // ca.prev.crt identical to ca.crt
+  var bundle = ca.loadTrustBundle();
+  check("loadTrustBundle dedups an identical retained root (no [cur, cur])",
+        bundle.length === 1 && Buffer.from(bundle[0]).equals(cur));
+  await ca.rotate({ generation: 2 });                   // a genuinely-distinct retained root still appears
+  check("loadTrustBundle returns [current, retained] for a real retained rotation",
+        ca.loadTrustBundle().length === 2);
+}
+
 // async variant of code() for rejected promises.
 async function code2(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
@@ -868,6 +919,8 @@ async function run() {
     await testCorruptIssuanceLedgerSchemaFailsClosed();
     await testRotateRetainFalseAbortsWhenRemovalFails();
     await testCanVerifyInTlsRequiresLabelWhenUndeterminable();
+    await testClusteredRevocationStoreRequiresSharedIssuanceStore();
+    await testLoadTrustBundleDedupsIdenticalRetainedRoot();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
