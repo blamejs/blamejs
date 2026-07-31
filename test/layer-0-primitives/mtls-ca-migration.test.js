@@ -104,19 +104,19 @@ async function testRotate() {
 async function testTrustBundleRetention() {
   var ca = _newCa();
   await ca.initCA();
-  check("loadTrustBundle: one cert before rotation", ca.loadTrustBundle().length === 1);
+  check("loadTrustBundle: one cert before rotation", (await ca.loadTrustBundle()).length === 1);
   var prevCert = ca.loadCert().toString("utf8");
   await ca.rotate({ generation: 2, algorithm: "ECDSA-P384-SHA384" });   // retainPrevious defaults on
-  var bundle = ca.loadTrustBundle();
+  var bundle = (await ca.loadTrustBundle());
   check("loadTrustBundle: current + retained after rotate",
         bundle.length === 2 && bundle.indexOf(prevCert) !== -1);
   var d = await ca.dropRetained();
-  check("dropRetained: ends the window", d.dropped === true && ca.loadTrustBundle().length === 1);
+  check("dropRetained: ends the window", d.dropped === true && (await ca.loadTrustBundle()).length === 1);
   check("dropRetained: idempotent when nothing retained", (await ca.dropRetained()).dropped === false);
 
   var ca2 = _newCa(); await ca2.initCA();
   await ca2.rotate({ generation: 2, retainPrevious: false });
-  check("rotate({retainPrevious:false}): no retained CA", ca2.loadTrustBundle().length === 1);
+  check("rotate({retainPrevious:false}): no retained CA", (await ca2.loadTrustBundle()).length === 1);
 }
 
 async function testCanVerifyInTls() {
@@ -194,10 +194,10 @@ async function testRetainPreviousFalseClearsStaleRoot() {
   var ca = _newCa();
   await ca.initCA();
   await ca.rotate({ generation: 2 });                       // retains -> ca.prev.crt
-  check("retained root present after a retained rotation", ca.loadTrustBundle().length === 2);
+  check("retained root present after a retained rotation", (await ca.loadTrustBundle()).length === 2);
   await ca.rotate({ generation: 3, retainPrevious: false });
   check("rotate({retainPrevious:false}) clears the stale retained root",
-        ca.loadTrustBundle().length === 1);
+        (await ca.loadTrustBundle()).length === 1);
 }
 
 // A ledger write failure must FAIL issuance — an untracked cert can never be
@@ -236,7 +236,7 @@ async function testRetainedRootSurvivesFailedCommit() {
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   await ca.initCA();
   await ca.rotate({ generation: 2 });   // retains -> ca.prev.crt
-  check("retained root present before the failing rotation", ca.loadTrustBundle().length === 2);
+  check("retained root present before the failing rotation", (await ca.loadTrustBundle()).length === 2);
   // Sabotage the next commit at the cert publish so it rolls back.
   var realRename = atomicFile.renameWithRetry;
   atomicFile.renameWithRetry = function (from, to) {
@@ -248,7 +248,7 @@ async function testRetainedRootSurvivesFailedCommit() {
   finally { atomicFile.renameWithRetry = realRename; }
   check("the sabotaged rotation fails", codeSeen === "mtls-ca/commit-failed");
   check("the retained root SURVIVES a failed retainPrevious:false rotation",
-        ca.loadTrustBundle().length === 2);
+        (await ca.loadTrustBundle()).length === 2);
 }
 
 // A rotation whose CA commit SUCCEEDS but whose retained-root snapshot fails
@@ -326,7 +326,7 @@ async function testConcurrentRotationsSerialize() {
   check("exactly one concurrent retained rotation succeeds, the other is refused",
         fulfilled.length === 1 && rejected.length === 1);
   check("the winner is generation 2 retaining gen-1",
-        fulfilled[0].value.generation === 2 && ca.status().generation === 2 && ca.loadTrustBundle().length === 2);
+        fulfilled[0].value.generation === 2 && ca.status().generation === 2 && (await ca.loadTrustBundle()).length === 2);
   check("the loser is refused (the open grace window is not silently dropped)",
         rejected[0].reason && rejected[0].reason.code === "mtls-ca/retained-root-exists");
   await ca.dropRetained();
@@ -654,7 +654,7 @@ async function testLoadTrustBundleToleratesConcurrentPrevRemoval() {
     return realRead.apply(this, arguments);
   };
   var bundle;
-  try { bundle = ca.loadTrustBundle(); } finally { atomicFile.fdSafeReadSync = realRead; }
+  try { bundle = (await ca.loadTrustBundle()); } finally { atomicFile.fdSafeReadSync = realRead; }
   check("loadTrustBundle tolerates a concurrent retained-root removal (returns current CA, no throw)",
         bundle.length === 1);
 }
@@ -774,7 +774,7 @@ async function testInterruptedRotationRecoversRetainedRoot() {
         fs.readFileSync(reopened.paths.caKey).equals(keyG2));
   check("interrupted 2nd rotation: the retained root is restored (formerly-retained clients keep trust)",
         fs.readFileSync(reopened.paths.caCertPrev).equals(certG1));
-  var bundle = reopened.loadTrustBundle();
+  var bundle = (await reopened.loadTrustBundle());
   check("interrupted 2nd rotation: trust bundle is [gen-2 current, gen-1 retained]",
         bundle.length === 2 &&
         Buffer.from(bundle[0]).equals(certG2) && Buffer.from(bundle[1]).equals(certG1));
@@ -824,7 +824,7 @@ async function testRotateRetainFalseAbortsWhenRemovalFails() {
   var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   await ca.initCA();
   await ca.rotate({ generation: 2 });                        // ca.prev.crt = gen-1 (a retained root exists)
-  check("a retained root exists before the hard-cutoff rotation", ca.loadTrustBundle().length === 2);
+  check("a retained root exists before the hard-cutoff rotation", (await ca.loadTrustBundle()).length === 2);
   var keyBefore  = fs.readFileSync(ca.paths.caKey);
   var certBefore = fs.readFileSync(ca.paths.caCert);
   // The retained-root REMOVAL fails (a read-only ca.prev.crt directory). The prev is
@@ -905,13 +905,13 @@ async function testLoadTrustBundleDedupsIdenticalRetainedRoot() {
   await ca.initCA();
   var cur = fs.readFileSync(ca.paths.caCert);
   fs.writeFileSync(ca.paths.caCertPrev, cur);           // ca.prev.crt identical to ca.crt
-  var bundle = ca.loadTrustBundle();
+  var bundle = (await ca.loadTrustBundle());
   check("loadTrustBundle dedups an identical retained root (no [cur, cur])",
         bundle.length === 1 && Buffer.from(bundle[0]).equals(cur));
   fs.rmSync(ca.paths.caCertPrev, { force: true });      // clear the fabricated dup before a real rotation
   await ca.rotate({ generation: 2 });                   // a genuinely-distinct retained root still appears
   check("loadTrustBundle returns [current, retained] for a real retained rotation",
-        ca.loadTrustBundle().length === 2);
+        (await ca.loadTrustBundle()).length === 2);
 }
 
 // Only ONE retained grace window at a time: ca.prev.crt holds a single prior root,
@@ -921,11 +921,11 @@ async function testRefuseConsecutiveRetainedRotations() {
   var ca = _newCa();
   await ca.initCA();
   await ca.rotate({ generation: 2 });                        // retains gen-1
-  check("a retained root exists after the first retained rotation", ca.loadTrustBundle().length === 2);
+  check("a retained root exists after the first retained rotation", (await ca.loadTrustBundle()).length === 2);
   check("a second retained rotation is refused while a root is retained",
         (await code2(function () { return ca.rotate({ generation: 3 }); })) === "mtls-ca/retained-root-exists");
   check("the refused rotation left the CA at gen-2 with its retained root intact",
-        ca.status().generation === 2 && ca.loadTrustBundle().length === 2);
+        ca.status().generation === 2 && (await ca.loadTrustBundle()).length === 2);
   // Ending the window (dropRetained) lets a retained rotation proceed.
   await ca.dropRetained();
   check("after dropRetained, a retained rotation proceeds",
@@ -985,7 +985,7 @@ async function testLoadTrustBundleIncludesUnreconciledJournalRoot() {
     prevAction: "restore", prevData: certG1.toString("base64"),
   }));
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
-  var bundle = reopened.loadTrustBundle();                   // called BEFORE any initCA reconcile
+  var bundle = (await reopened.loadTrustBundle());                   // called BEFORE any initCA reconcile
   check("loadTrustBundle includes the current cert and the journal's retained root (no dropped cohort)",
         bundle.length === 2 &&
         Buffer.from(bundle[0]).equals(certG2) && Buffer.from(bundle[1]).equals(certG1));
@@ -1012,7 +1012,7 @@ async function testLoadTrustBundleExcludesSpentJournalRoot() {
     prevAction: "restore", prevData: certG1.toString("base64"),
   }));
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
-  var bundle = reopened.loadTrustBundle();
+  var bundle = (await reopened.loadTrustBundle());
   check("loadTrustBundle excludes a spent journal's old retained root (hard cutoff respected)",
         bundle.every(function (c) { return !Buffer.from(c).equals(certG1); }));
 }
@@ -1103,7 +1103,7 @@ async function testCommitAbortsWhenPriorRetainedRootUnreadable() {
   check("commit aborts when the prior retained root cannot be captured",
         codeSeen === "mtls-ca/prior-retained-root-unreadable");
   check("the retained root and CA survive the aborted commit",
-        ca.loadTrustBundle().length === 2 &&
+        (await ca.loadTrustBundle()).length === 2 &&
         typeof (await ca.generateClientCert({ cn: "post-prev-abort" })).cert === "string");
 }
 
@@ -1133,10 +1133,10 @@ async function testDropRetainedReconcilesInterruptedJournal() {
   }));
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
   check("interrupted journal surfaces the retained root before dropRetained",
-        reopened.loadTrustBundle().some(function (c) { return Buffer.from(c).equals(certG1); }));
+        (await reopened.loadTrustBundle()).some(function (c) { return Buffer.from(c).equals(certG1); }));
   await reopened.dropRetained();
   check("dropRetained reconciles the journal and truly ends the grace window",
-        reopened.loadTrustBundle().every(function (c) { return !Buffer.from(c).equals(certG1); }) &&
+        (await reopened.loadTrustBundle()).every(function (c) { return !Buffer.from(c).equals(certG1); }) &&
         fs.existsSync(reopened.paths.caKey + ".rollback") === false);
 }
 
@@ -1299,7 +1299,7 @@ async function testReconcileRemovesResurrectedHardCutRoot() {
   await reopened.initCA();
   check("reconcile removes a resurrected hard-cut root on a completed rotation",
         fs.existsSync(reopened.paths.caCertPrev) === false &&
-        reopened.loadTrustBundle().every(function (c) { return !Buffer.from(c).equals(certG1); }));
+        (await reopened.loadTrustBundle()).every(function (c) { return !Buffer.from(c).equals(certG1); }));
 }
 
 // The single-retained-window invariant must hold on EVERY retention entry point,
@@ -1312,12 +1312,12 @@ async function testPublicCommitEnforcesSingleRetainedWindow() {
   await ca.initCA();                                          // gen-1, no retained root
   var g2 = await engine.generateCa({ generation: 2 });
   ca.commit({ caKeyPem: g2.caKeyPem, caCertPem: g2.caCertPem, retainPrevious: true });   // retains gen-1
-  check("first retained public commit creates a retained root", ca.loadTrustBundle().length === 2);
+  check("first retained public commit creates a retained root", (await ca.loadTrustBundle()).length === 2);
   var g3 = await engine.generateCa({ generation: 3 });
   check("a second retained public commit is refused (single window)",
         code(function () { ca.commit({ caKeyPem: g3.caKeyPem, caCertPem: g3.caCertPem, retainPrevious: true }); })
           === "mtls-ca/retained-root-exists");
-  check("the refused commit left the retained root intact", ca.loadTrustBundle().length === 2);
+  check("the refused commit left the retained root intact", (await ca.loadTrustBundle()).length === 2);
 }
 
 // async variant of code() for rejected promises.
