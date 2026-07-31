@@ -121,8 +121,8 @@ async function _p384CaMaterial(matOpts) {
     subject:          [{ commonName: "mat-ca" }, { organizationalUnitName: "CAv1" }],
     subjectPublicKey: spki,
     serialNumber:     "01",
-    notBefore:        now,
-    notAfter:         new Date(now.getTime() + 86400000),
+    notBefore:        matOpts.notBefore || now,
+    notAfter:         matOpts.notAfter || new Date(now.getTime() + 86400000),
     extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: matOpts.keyUsage || ["keyCertSign", "cRLSign"] },
   }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha384" });
   var pkcs8 = await pki.key.export(keys.privateKey, { format: "pem" });
@@ -760,6 +760,28 @@ async function testGateFingerprintLengthEnforced() {
         (await code2(function () { return ca.importIssuance([{ fingerprint: sha3Fp, generation: 1 }]); })) === "NO-THROW");
   check("revoke({fingerprint}) accepts a 128-hex SHA3-512 fingerprint",
         (await code2(function () { return ca.revoke({ fingerprint: sha3Fp }); })) === "NO-THROW");
+}
+
+// The default issuance ledger is READ with a 16 MiB cap (fdSafeReadSync throws over it), but its
+// WRITE was uncapped: an append that pushes the file past 16 MiB would succeed and return the signed
+// credential, yet every later _list() then fails the framework's own file — disabling future issuance
+// and revokeGeneration(). The store must size-check the serialized output and refuse before publishing.
+async function testIssuanceRefusedWhenLedgerWouldExceedReadCap() {
+  var ca = _newCa();
+  await ca.initCA();
+  var CAP = 16 * 1024 * 1024;                                   // the store's read cap (C.BYTES.mib(16))
+  // Pre-fill the ledger to just under the cap: one valid entry padded so a single further append
+  // (~a few hundred bytes) tips the serialized file over the cap.
+  var entry = { serialNumber: "01", fingerprint: "ab".repeat(64), generation: 1, caFingerprint: "cd".repeat(64), issuedAt: 1, _pad: "" };
+  var emptyBytes = Buffer.byteLength(JSON.stringify({ issued: [entry] }, null, 2) + "\n", "utf8");
+  entry._pad = "x".repeat(CAP - emptyBytes - 200);             // file ends ~200 bytes under the cap
+  fs.writeFileSync(ca.paths.issuance, JSON.stringify({ issued: [entry] }, null, 2) + "\n");
+  var sizeBefore = fs.statSync(ca.paths.issuance).size;
+  check("the pre-filled ledger is just under the read cap", sizeBefore < CAP && sizeBefore > CAP - 1024);
+  // An issuance now appends one entry, pushing the serialized file over the cap.
+  var codeSeen = await code2(function () { return ca.generateClientCert({ cn: "over-cap" }); });
+  check("issuance is refused before the ledger exceeds its read cap", codeSeen === "mtls-ca/issuance-ledger-write-failed");
+  check("no over-cap file was written (the ledger stays readable)", fs.statSync(ca.paths.issuance).size <= CAP);
 }
 
 // loadTrustBundle() must tolerate a concurrent removal of ca.prev.crt between its
@@ -2414,6 +2436,28 @@ async function testCommitRejectsCaWithoutCrlSign() {
   check("the CRL-incapable rejected commit left storage untouched", ca.status().exists === false);
 }
 
+// A bundled-engine commit() must reject a CA certificate outside its validity window (expired or
+// not-yet-valid). It parses, is a CA, classifies, pairs, and even signs a leaf — but every issued
+// leaf chains to that CA, and a TLS peer rejects an expired/not-yet-valid chain (CERT_HAS_EXPIRED),
+// so a "successful" migration would make every new credential unusable. Validate the dates up front.
+async function testCommitRejectsCaOutsideValidity() {
+  var dayMs = 86400000;
+  var expired = await _p384CaMaterial({ notBefore: new Date(Date.now() - 2 * dayMs), notAfter: new Date(Date.now() - dayMs) });
+  var ca = _newCa();
+  check("bundled commit() rejects an expired CA certificate",
+        (await code2(function () { return ca.commit({ caKeyPem: expired.caKeyPem, caCertPem: expired.caCertPem }); }))
+          === "mtls-ca/ca-outside-validity");
+  var notYet = await _p384CaMaterial({ notBefore: new Date(Date.now() + dayMs), notAfter: new Date(Date.now() + 2 * dayMs) });
+  check("bundled commit() rejects a not-yet-valid CA certificate",
+        (await code2(function () { return ca.commit({ caKeyPem: notYet.caKeyPem, caCertPem: notYet.caCertPem }); }))
+          === "mtls-ca/ca-outside-validity");
+  check("the out-of-window rejected commits left storage untouched", ca.status().exists === false);
+  // A currently-valid CA still commits.
+  var valid = await _p384CaMaterial({});
+  await ca.commit({ caKeyPem: valid.caKeyPem, caCertPem: valid.caCertPem });
+  check("a currently-valid CA still commits", ca.status().exists === true);
+}
+
 // A CRL is signed by ONE issuer, and serials are unique only per issuer. generateCrl() must NOT
 // publish a revocation whose cert was issued by a DIFFERENT CA identity — under a custom engine
 // that reuses serials, that CA's revoked serial would false-revoke the unrelated current
@@ -3106,7 +3150,9 @@ async function run() {
     await testCommitRejectsNonCaCertificate();
     await testCommitNormalizesSec1KeyEncoding();
     await testCommitRejectsCaWithoutCrlSign();
+    await testCommitRejectsCaOutsideValidity();
     await testGateFingerprintLengthEnforced();
+    await testIssuanceRefusedWhenLedgerWouldExceedReadCap();
     await testCrlScopedToCurrentIssuerIdentity();
     await testCrlDedupsAndSkipsMalformedLedgerEntries();
     await testSerialRevokedMatchesOnlySerialOnlyEntries();

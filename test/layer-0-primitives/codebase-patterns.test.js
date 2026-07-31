@@ -14221,6 +14221,31 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "-> throw mtls-ca/not-a-ca-certificate) — a P-384 leaf parses, classifies as ECDSA-P384-SHA384, and pairs, " +
                "so it would publish and the next generateClientCert() fails x509/bad-input (a non-CA issuer cannot sign)" });
   }
+  // A bundled-engine commit() must reject a CA certificate OUTSIDE its validity window (expired or
+  // not-yet-valid): it parses, is a CA, classifies, pairs, and signs a leaf, but every issued leaf
+  // chains to it, and a TLS peer rejects an expired/not-yet-valid chain (CERT_HAS_EXPIRED). Validate
+  // X509Certificate.validFromDate/validToDate against now before publishing.
+  if (!/validFromDate\.getTime\(\)\s*>\s*_nowMs\s*\|\|\s*_commitCert\.validToDate\.getTime\(\)\s*<\s*_nowMs[\s\S]{0,240}mtls-ca\/ca-outside-validity/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the public commit() must reject a CA certificate outside its validity window (_commitCert.validFromDate." +
+               "getTime() > _nowMs || _commitCert.validToDate.getTime() < _nowMs -> throw mtls-ca/ca-outside-validity) — " +
+               "an expired/not-yet-valid CA parses and signs, but every leaf then chains to it and a TLS peer rejects the " +
+               "chain (CERT_HAS_EXPIRED), so a successful commit makes every new credential unusable" });
+  }
+  // The default file stores (issuance ledger + revocation registry) are READ with fdSafeReadSync's
+  // maxBytes cap, but a WRITE that pushes a file past the cap succeeds and then FAILS every later read
+  // (too-large), bricking future issuance/revocation. Both add() must size-check the serialized output
+  // against the SAME cap before writing — via the shared _writeStoreCapped(STORE_READ_CAP) — so an
+  // over-cap append is refused instead of silently disabling the store after returning the credential.
+  if (!/function\s+_writeStoreCapped[\s\S]{0,220}Buffer\.byteLength\([^)]*\)\s*>\s*STORE_READ_CAP/.test(noComments) ||
+      !/_writeStoreCapped\(\s*paths\.issuance\b/.test(noComments) ||
+      !/_writeStoreCapped\(\s*paths\.revocations\b/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "both default file stores must size-check their serialized output against STORE_READ_CAP before writing " +
+               "(route _defaultIssuanceStore.add + _defaultFileStore.add through _writeStoreCapped(paths.*, ...), which " +
+               "throws when Buffer.byteLength(serialized) > STORE_READ_CAP) — the read is capped at that size, so an " +
+               "uncapped over-cap append succeeds but then fails every later _list(), disabling future issuance/revocation" });
+  }
   // A bundled-engine commit() must (a) NORMALIZE the committed key to PKCS#8 — createPrivateKey()
   // also parses the OpenSSL SEC1 EC encoding, which pairs/classifies but the toolkit cannot decode,
   // so the next generateClientCert() fails x509/bad-input — and (b) FUNCTIONALLY preflight the
