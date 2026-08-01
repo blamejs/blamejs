@@ -458,7 +458,9 @@ function _wireHandler(sock, script, state) {
       if (inData) {
         dataBuf += pending.toString("utf8");
         pending = Buffer.alloc(0);
-        if (dataBuf.indexOf("\r\n.\r\n") >= 0) {
+        var dataEnd = dataBuf.indexOf("\r\n.\r\n");
+        if (dataEnd >= 0) {
+          state.lastDataRaw = dataBuf.slice(0, dataEnd);   // raw wire payload (still dot-stuffed), before CRLF.CRLF
           inData = false; dataBuf = "";
           reply(script.bodyCode || 250, "message accepted");
         }
@@ -2185,11 +2187,19 @@ async function testAuditOnEmitCountShapes() {
 // existing 127.0.0.1 / bad-input cases). Shape-asserted — value is
 // resolver-dependent, but the branch executes regardless.
 async function testReverseDnsIpv6Loopback() {
+  // Control the PTR + AAAA lookups so the IPv6 forward-confirm path (resolveAaaa +
+  // the fcrdns match loop) actually runs — a bare `::1` with no PTR would take the
+  // early dns/reverse-failed exit and never reach those branches.
+  var networkDns = require("../../lib/network-dns");
+  var realReverse = networkDns.reverse, realAaaa = networkDns.resolveAaaa;
+  networkDns.reverse = function () { return Promise.resolve(["loopback.test."]); };
+  networkDns.resolveAaaa = function () { return Promise.resolve(["::1"]); };
   var r;
   try { r = await b.mail.reverseDns("::1"); }
-  catch (e) { r = { ok: false, error: (e && e.code) || "throw" }; }
-  check("reverseDns: ::1 returns the documented result shape (IPv6 forward path)",
-    r && typeof r.ok === "boolean" && Array.isArray(r.forward) && typeof r.fcrdns === "boolean");
+  finally { networkDns.reverse = realReverse; networkDns.resolveAaaa = realAaaa; }
+  check("reverseDns: ::1 with a controlled PTR + AAAA runs the IPv6 forward-confirm path (fcrdns true)",
+    r && r.ok === true && r.ptr === "loopback.test." && Array.isArray(r.forward) &&
+    r.forward.indexOf("::1") >= 0 && r.fcrdns === true);
 }
 
 // ---------------------------------------------------------------------------
@@ -2206,6 +2216,11 @@ async function testSmtpDataDotStuffing(certPair) {
     var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: ".leading dot line\nsecond line" });
     check("smtp-dotstuff: delivered via DATA (dot-stuffed body line)",
       r.code === 250 && st.bdatChunks.length === 0);
+    // Prove the transparency guarantee: the leading-dot body line is DOUBLED on the wire
+    // (RFC 5321 sec. 4.5.2), so the raw DATA payload carries "..leading dot line", never a bare ".".
+    check("smtp-dotstuff: the leading dot is doubled on the wire (RFC 5321 dot-stuffing)",
+      typeof st.lastDataRaw === "string" && st.lastDataRaw.indexOf("\r\n..leading dot line\r\n") >= 0 &&
+      st.lastDataRaw.indexOf("\r\n.leading dot line\r\n") === -1);
   } finally { await closeServer(st); }
 }
 

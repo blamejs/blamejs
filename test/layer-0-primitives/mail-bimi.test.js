@@ -1296,12 +1296,13 @@ async function _generateFourLevelChain() {
 }
 
 function testTinyPsSvgBareUnquotedAttrs() {
-  // Bare (unquoted) attribute values exercise the third alternation of the
-  // attribute regex (the `[^\s>]+` capture, m[5]) — distinct from the
-  // double-quoted (m[3]) and single-quoted (m[4]) paths.
+  // Bare (unquoted) version / baseProfile values exercise the third alternation
+  // of the attribute regex (the `[^\s>]+` capture, m[5]) — distinct from the
+  // double-quoted (m[3]) and single-quoted (m[4]) paths. viewBox stays a valid
+  // quoted four-number box so this stays valid if viewBox format checking tightens.
   var rv = b.mail.bimi.validateTinyPsSvg(
-    "<svg version=1.2 baseProfile=tiny-ps viewBox=0></svg>");
-  check("tiny-ps: bare unquoted attributes are parsed and validate",
+    "<svg version=1.2 baseProfile=tiny-ps viewBox=\"0 0 1 1\"></svg>");
+  check("tiny-ps: bare unquoted version/baseProfile are parsed and validate",
         rv.ok === true && rv.violations.length === 0);
 }
 

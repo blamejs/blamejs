@@ -1695,12 +1695,17 @@ async function testNullActorKeyBypassesQuota() {
 }
 
 // A client that disconnects mid-stream triggers the cancellation-propagation
-// path: the file stream is destroyed and the idle timer cleared while both are
-// still live (the normal-completion path clears the timer first, so this only
-// runs on an abort). The server must survive and keep serving.
+// path: the file stream is destroyed, the idle timer cleared, and the actor's
+// concurrency slot released while all are still live (the normal-completion path
+// clears them first, so this only runs on an abort). Capping concurrency at 1
+// makes the slot release OBSERVABLE: if the abort path fails to free the slot,
+// the actor stays pinned at the cap and every follow-up request is refused 429.
 async function testClientAbortMidStream() {
   var big = Buffer.alloc(4 * 1024 * 1024, 0x61); // 4 MiB of 'a'
-  var ctx = await _ctx({ contentSafety: null }, { "big.dat": big });
+  var cache = b.cache.create({ namespace: "static-abort-" + process.pid, backend: "memory" });
+  var ctx = await _ctx(
+    { contentSafety: null, cache: cache, maxConcurrentDownloadsPerActor: 1 },
+    { "big.dat": big });
   try {
     var net = require("node:net");
     await new Promise(function (resolve) {
@@ -1710,18 +1715,28 @@ async function testClientAbortMidStream() {
       var done = false;
       function finish() { if (!done) { done = true; resolve(); } }
       sock.on("data", function () {
-        // First bytes on the wire — vanish while the stream is still flowing.
+        // First bytes on the wire — the slot is now held; vanish while the stream is
+        // still flowing so ONLY the abort path (not a normal end) can release it.
         try { sock.destroy(); } catch (_d) { /* already gone */ }
         finish();
       });
       sock.on("error", finish);
       sock.on("close", finish);
     });
-    // Server survived the mid-stream abort — a fresh full request still serves.
-    var r = await _get(ctx.port, "/big.dat");
-    check("client-abort: server survives a mid-stream disconnect and still serves the full file",
+    // The aborted stream must have released the actor's slot. Re-poll a fresh full
+    // request (the slot release lands on a later loop turn than the client close);
+    // a leaked slot answers 429 forever and fails this by exhausting the attempts.
+    var r = null;
+    for (var attempt = 0; attempt < 50; attempt += 1) {
+      r = await _get(ctx.port, "/big.dat");
+      if (r.statusCode === 200) break;
+    }
+    check("client-abort: the aborted stream releases its concurrency slot (a fresh full request then serves 200)",
           r.statusCode === 200 && r.body.length === big.length);
-  } finally { ctx.close(); }
+  } finally {
+    ctx.close();
+    if (typeof cache.close === "function") await cache.close();
+  }
 }
 
 // The _get helper drives each fixture server with a default-agent http.request
