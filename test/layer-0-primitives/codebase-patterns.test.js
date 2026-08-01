@@ -14200,8 +14200,8 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       !/completed\s*=\s*certRepublished\s*\|\|\s*hardCutRemovalDone/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "reconcile must distinguish a COMPLETED byte-identical HARD CUT from an interrupted one (certKeyUnchanged " +
-               "= !certRepublished && manifest.key===manifest.newKey; hardCutRemovalDone = certKeyUnchanged && manifest." +
-               "retainAfter===false && !nodeFs.existsSync(paths.caCertPrev); completed = certRepublished || " +
+               "= !certRepublished && manifest.key===manifest.newKey; hardCutRemovalDone = certKeyUnchanged && " +
+               "manifest.retainAfter===false && !nodeFs.existsSync(paths.caCertPrev); completed = certRepublished || " +
                "hardCutRemovalDone) — else a hard cut that republished the byte-identical current CA and crashed before " +
                "the journal delete is read as interrupted and RESTORES ca.prev.crt, resurrecting the hard-cut root" });
   }
@@ -14228,7 +14228,7 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       // completed-commit reconcile restores it (_persistAlgorithm(manifest.customAlgorithm)).
       !/_customCommitLabel\s*=\s*\(\s*!usesDefaultEngine[\s\S]{0,120}opts2\.algorithm/.test(noComments) ||
       !/customAlgorithm:\s*_customCommitLabel/.test(noComments) ||
-      !/_customCommitLabel\s*!==\s*null\s*\)?\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)/.test(noComments) ||
+      !/_customCommitLabel\s*!==\s*null\s*\)\s*\{\s*try\s*\{\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)/.test(noComments) ||
       !/_persistAlgorithm\(\s*manifest\.customAlgorithm\s*\)/.test(noComments) ||
       // rotate must hand _commitLocked the effective label (explicit, else the preserved persisted pin).
       !/algorithm:\s*\(\s*rotateOpts\.algorithm\s*!==\s*undefined\s*\?\s*rotateOpts\.algorithm\s*:\s*pin\s*\)/.test(noComments) ||
@@ -14244,6 +14244,33 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "(caAlgorithm = _persisted), the _freshCreateSerialized cold-start adopt (caAlgorithm = _adoptedLabel), and " +
                "an unpinned custom rotate (pin = _persistedPin) — else a stale/racing/crash-stranded label makes a sibling " +
                "issue under the wrong algorithm against the new CA (rejected / incompatible leaf)" });
+  }
+  // The commit-point ca.algorithm write runs AFTER the new key/cert are published, but the outer
+  // rollback catch restores only the prior key + retained root (it cannot un-publish the cert) and
+  // deletes the journal — so a label-write throw there would strand an old-key/new-cert pair with no
+  // journal to heal it. A CA-CHANGING commit must ROLL FORWARD instead: swallow the label-write
+  // failure, retain the journal (skip the delete), and let reconcile restore the label. Only a
+  // SAME-cert re-stamp (which the outer rollback CAN restore consistently) fails closed.
+  if (!/_persistAlgorithm\(\s*_customCommitLabel\s*\)[\s\S]{0,240}catch\s*\([^)]*\)\s*\{[\s\S]{0,260}if\s*\(\s*!caCertChanged\s*\)\s*throw[\s\S]{0,120}_labelPersistDeferred\s*=\s*true/.test(noComments) ||
+      !/if\s*\(\s*keyJournalWritten\s*&&\s*!_labelPersistDeferred\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "the commit-point _persistAlgorithm(_customCommitLabel) write (which runs AFTER the cert is published) " +
+               "must roll FORWARD on failure for a CA-changing commit — catch it, rethrow only when !caCertChanged, else set " +
+               "_labelPersistDeferred = true and gate the journal delete on `keyJournalWritten && !_labelPersistDeferred` — " +
+               "so a label-file write error cannot drive the outer rollback (which restores the prior key but leaves the new " +
+               "cert and deletes the journal, stranding an unusable old-key/new-cert CA)" });
+  }
+  // canVerifyInTls()'s no-argument probe documents that it tests the STORED CA. For a custom engine
+  // the stored label is ca.algorithm (durable shared metadata a sibling handle's migration updates),
+  // NOT this handle's caAlgorithm closure — so it must read the persisted label first, exactly as the
+  // issuance/adopt/rotate paths do, else it probes a stale label and reports an unrelated verdict.
+  if (!/_persistedLabel\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,80}_effectiveCustomLabel\s*=\s*_persistedLabel/.test(noComments) ||
+      !/usesDefaultEngine\s*\?\s*\(\s*st\.algorithm\s*\|\|\s*caAlgorithm\s*\)\s*:\s*\(\s*_effectiveCustomLabel\s*\|\|\s*st\.algorithm\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "canVerifyInTls() must resolve a custom engine's label from the persisted ca.algorithm " +
+               "(_effectiveCustomLabel = caAlgorithm; if (!usesDefaultEngine) read _readPersistedAlgorithm() into it) and " +
+               "probe with `_effectiveCustomLabel || st.algorithm` — trusting the possibly-stale caAlgorithm closure probes " +
+               "the wrong algorithm after a sibling handle migrates the CA over the same dataDir" });
   }
   // _rotateImpl's CAS check (is the current cert still the one snapshotted before generateCa?) must
   // compare cert IDENTITY via _sameCert, not exact PEM text — else a concurrent idempotent commit()

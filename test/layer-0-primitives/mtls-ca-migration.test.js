@@ -2982,8 +2982,9 @@ async function testCommitAppliesCustomAlgorithmOnUnpinnedHandle() {
 // but whose ALGORITHM the framework cannot classify (P-256 -> _certAlgorithm null) — the label is only
 // known from the create-time pin / an explicit commit/rotate({algorithm}). `record` collects the label
 // each signClientCert receives, so a cross-handle test can observe which label an issuance used.
-function _p256CaEngineGen(record, genRecord) {
+function _p256CaEngineGen(record, genRecord, probeRecord) {
   return {
+    canVerifyInTls: async function (label) { if (probeRecord) probeRecord.push(label); return true; },
     generateCa: async function (genOpts) {
       if (genRecord) genRecord.push((genOpts && genOpts.algorithm) || "DEFAULT");
       var gen = (genOpts && genOpts.generation) || 1;
@@ -3117,6 +3118,81 @@ async function testCustomLabelPersistIsCrashAtomicWithCommit() {
   check("reconcile restored the custom label to the CA's actual (CUSTOM-B), so issuance uses it",
         rec[rec.length - 1] === "CUSTOM-B");
   check("the spent journal is removed after reconcile", fs.existsSync(journal) === false);
+}
+
+// A ca.algorithm label-file write failure AFTER the new key/cert are published must NOT drive the
+// commit into the abort-rollback: that catch restores the prior key + retained root but cannot
+// un-publish the new certificate, leaving an old-key/new-cert pair, and it deletes the journal that
+// would have healed it. For a CA-CHANGING commit the correct behavior is roll-forward — keep the
+// published CA and retain the journal so the next reconcile restores the label.
+async function testCommitLabelWriteFailureRollsForwardNotAbort() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var rec = [];
+  var A = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec), algorithm: "CUSTOM-A" });
+  await A.initCA();
+  var journal = A.paths.caKey + ".rollback";
+  var keyBefore = fs.readFileSync(A.paths.caKey, "utf8");
+  var realWrite = atomicFile.writeSync;
+  atomicFile.writeSync = function (p) {
+    if (String(p) === String(A.paths.algorithm)) throw new Error("simulated ENOSPC writing ca.algorithm");
+    return realWrite.apply(this, arguments);
+  };
+  var threw = null;
+  try { await A.rotate({ generation: 2, algorithm: "CUSTOM-B", retainPrevious: false }); }
+  catch (e) { threw = e; }
+  finally { atomicFile.writeSync = realWrite; }
+  check("a label-file write failure does not abort the CA-changing commit", threw === null);
+  var keyAfter = fs.readFileSync(A.paths.caKey, "utf8");
+  check("the new CA key stayed published (not rolled back to the prior key)", keyAfter !== keyBefore);
+  check("the rollback journal survives for reconcile to restore the label", fs.existsSync(journal) === true);
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec) });
+  await reopened.generateClientCert({ cn: "after-label-write-fail" });   // adopt -> reconcile restores the label
+  check("the published key/cert are a usable pair and reconcile restored the label (issuance uses CUSTOM-B)",
+        rec[rec.length - 1] === "CUSTOM-B");
+  check("the journal is cleared once reconcile rolls the label forward", fs.existsSync(journal) === false);
+}
+
+// canVerifyInTls() with no argument documents that it probes the STORED CA. For a custom engine the
+// stored label lives in ca.algorithm (the durable shared file), not this handle's caAlgorithm closure:
+// after a sibling handle over the same dataDir migrates the label, this handle's closure is stale, so
+// the probe must read the persisted label first (as issuance, cold-start adopt, and rotate now do).
+async function testCanVerifyInTlsUsesPersistedLabelAfterSiblingRotation() {
+  var dir = _mkTmp();
+  var probes = [];
+  var A = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([], null, probes), algorithm: "CUSTOM-A" });
+  await A.initCA();
+  var B = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([], null, probes), algorithm: "CUSTOM-A" });
+  await B.rotate({ generation: 2, algorithm: "CUSTOM-B", retainPrevious: false });   // sibling persists ca.algorithm = CUSTOM-B
+  probes.length = 0;
+  var ok = await A.canVerifyInTls();
+  check("canVerifyInTls() succeeded probing the stored CA", ok === true);
+  check("canVerifyInTls() probed the persisted label (CUSTOM-B), not A's stale closure (CUSTOM-A)",
+        probes.length === 1 && probes[0] === "CUSTOM-B");
+}
+
+// The roll-forward is gated to CA-CHANGING commits: a SAME-cert label re-stamp whose ca.algorithm
+// write fails must FAIL CLOSED (rethrow), because the outer rollback restores a fully consistent prior
+// state (unchanged cert + prior key) — reporting success there would leave the stored label silently
+// stale against the CA. This exercises the !caCertChanged arm of the label-persist guard.
+async function testSameCertLabelRestampWriteFailureFailsClosed() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var rec = [];
+  var A = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec), algorithm: "CUSTOM-A" });
+  await A.initCA();
+  var curCert = fs.readFileSync(A.paths.caCert, "utf8");
+  var curKey = fs.readFileSync(A.paths.caKey, "utf8");
+  var realWrite = atomicFile.writeSync;
+  atomicFile.writeSync = function (p) {
+    if (String(p) === String(A.paths.algorithm)) throw new Error("simulated ENOSPC writing ca.algorithm");
+    return realWrite.apply(this, arguments);
+  };
+  var threw = null;
+  try { await A.commit({ caCertPem: curCert, caKeyPem: curKey, algorithm: "CUSTOM-B" }); }
+  catch (e) { threw = e; }
+  finally { atomicFile.writeSync = realWrite; }
+  check("a same-cert label re-stamp whose ca.algorithm write fails aborts (fails closed)", threw !== null);
 }
 
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
@@ -3512,6 +3588,9 @@ async function run() {
     await testGenerateCrlPersistsDespiteConcurrentNormalIssuance();
     await testGenerateCrlPersistsDespiteConcurrentFingerprintRevoke();
     await testGenerateCrlScopedSerialsFallbackCoversRichState();
+    await testCommitLabelWriteFailureRollsForwardNotAbort();
+    await testCanVerifyInTlsUsesPersistedLabelAfterSiblingRotation();
+    await testSameCertLabelRestampWriteFailureFailsClosed();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();
