@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.2",
-  "createdAt": "2026-07-30T12:32:17.729Z",
+  "frameworkVersion": "0.18.3",
+  "createdAt": "2026-08-01T16:10:18.526Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44760,7 +44760,15 @@
         "DEFAULT_PATHS": {
           "type": "object",
           "members": {
+            "algorithm": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "caCert": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "caCertPrev": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -44776,7 +44784,15 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "issuance": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "revocations": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "revokedGeneration": {
               "type": "primitive",
               "valueType": "string"
             }
@@ -44806,6 +44822,10 @@
         "algorithmEnvelope": {
           "type": "function",
           "arity": 0
+        },
+        "canVerifyInTls": {
+          "type": "function",
+          "arity": 1
         },
         "generateCa": {
           "type": "function",

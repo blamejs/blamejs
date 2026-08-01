@@ -20,6 +20,17 @@ var check  = helpers.check;
 
 function _mkDir(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 
+// A minimal CUSTOM engine for the commit() STORAGE / VAULT-mechanics tests that supply opaque
+// fixture bytes ("CA-KEY-PEM", "K"/"C") to exercise atomic writes / sealing / rollback — not real
+// CA material. The bundled engine requires parseable X.509 material, so those tests run under a
+// custom engine where opaque material is legitimate.
+function _opaqueFixtureEngine() {
+  return {
+    generateCa:     function () { return Promise.resolve({ caCertPem: "-----BEGIN CERTIFICATE-----\nRkFLRQ==\n-----END CERTIFICATE-----", caKeyPem: "-----BEGIN PRIVATE KEY-----\nRkFLRQ==\n-----END PRIVATE KEY-----" }); },
+    signClientCert: function () { return Promise.resolve({ cert: "-----BEGIN CERTIFICATE-----\nRkFLRQ==\n-----END CERTIFICATE-----", key: "k" }); },
+  };
+}
+
 // A vault double whose seal() yields a Buffer (matching b.vault, whose
 // sealed bytes are binary) so the required-mode commit exercises the
 // Buffer arm of the exclusive-write path.
@@ -62,9 +73,10 @@ async function testCreateTimeBranches() {
   check("caKeySealedMode defaults to 'required'", caDefault.caKeySealedMode === "required");
 }
 
-// status() when a CA is present on disk (the exists()==true arm) — an
-// unparseable cert reads back generation 0, which is < the handle's
-// current generation, so the CA reports legacy.
+// status() when a CA is present on disk (the exists()==true arm) — an unparseable cert
+// reads back generation 0 (UNDETERMINABLE). That is NOT "older than current", so it is
+// NOT reported as legacy: a current opaque-engine CA must not be mislabeled legacy, which
+// would contradict rotate()'s generation-undeterminable refusal on the same cert.
 async function testStatusExists() {
   var dir = _mkDir("mtls-st-");
   fs.writeFileSync(path.join(dir, "ca.crt"), "TEST CRT");
@@ -73,7 +85,8 @@ async function testStatusExists() {
   var st = ca.status();
   check("status() reports the on-disk CA as existing", st.exists === true);
   check("status() reads generation 0 from an unparseable cert", st.generation === 0);
-  check("status() flags a below-current CA as legacy", st.isLegacy === true && st.current === 3);
+  check("status() does NOT flag an undeterminable-generation (0) CA as legacy",
+        st.isLegacy === false && st.current === 3);
 }
 
 // loadKey / loadCert dispatch across the sealed-mode matrix.
@@ -127,39 +140,32 @@ async function testCommitBranches() {
   // loadKey surface unseal-failed.
   var d2 = _mkDir("mtls-cm-");
   var v2 = { seal: function (pem) { return Buffer.from("SEAL:" + pem); }, unseal: function () { return ""; } };
-  var ca2 = b.mtlsCa.create({ dataDir: d2, caKeySealedMode: "required", vault: v2 });
-  var committed = ca2.commit({ caKeyPem: "CA-KEY-PEM", caCertPem: "CA-CERT-PEM" });
+  var ca2 = b.mtlsCa.create({ dataDir: d2, caKeySealedMode: "required", vault: v2, engine: _opaqueFixtureEngine() });
+  var committed = await ca2.commit({ caKeyPem: "CA-KEY-PEM", caCertPem: "CA-CERT-PEM" });
   check("required-mode commit writes the sealed key form", committed.sealed === true && fs.existsSync(path.join(d2, "ca.key.sealed")));
   var threwUnseal = false;
   try { ca2.loadKey(); } catch (e) { threwUnseal = /unseal-failed/.test(e.code || ""); }
   check("a vault that unseals to empty surfaces unseal-failed", threwUnseal);
 
-  // A residual key .tmp file makes the first exclusive-create ("wx") open
-  // fail with EEXIST, exercising the commit cleanup + commit-failed wrap.
+  // A residual FIXED-name .tmp (crash residue from an older commit) must NOT block a
+  // fresh commit: commit stages into random-token temp names, so a stale ca.key.tmp
+  // / ca.crt.tmp is ignored rather than causing a spurious EEXIST commit-failed.
   var d3 = _mkDir("mtls-cm-");
-  var ca3 = b.mtlsCa.create({ dataDir: d3, caKeySealedMode: "disabled" });
+  var ca3 = b.mtlsCa.create({ dataDir: d3, caKeySealedMode: "disabled", engine: _opaqueFixtureEngine() });
   fs.writeFileSync(path.join(d3, "ca.key.tmp"), "STALE-TMP");
-  var threwCommitFailed = false;
-  try { ca3.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwCommitFailed = /commit-failed/.test(e.code || ""); }
-  check("a residual key .tmp file makes commit fail with commit-failed", threwCommitFailed);
-
-  // A residual cert .tmp file lets the key write succeed but fails the cert
-  // write, so cleanup finds BOTH tmp files present (the other cleanup arm).
-  var d4 = _mkDir("mtls-cm-");
-  var ca4 = b.mtlsCa.create({ dataDir: d4, caKeySealedMode: "disabled" });
-  fs.writeFileSync(path.join(d4, "ca.crt.tmp"), "STALE-CERT-TMP");
-  var threwCommitFailed2 = false;
-  try { ca4.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwCommitFailed2 = /commit-failed/.test(e.code || ""); }
-  check("a residual cert .tmp file makes commit fail after the key write", threwCommitFailed2);
+  fs.writeFileSync(path.join(d3, "ca.crt.tmp"), "STALE-CERT-TMP");
+  var committedDespiteResidue = false;
+  try { await ca3.commit({ caKeyPem: "K", caCertPem: "C" }); committedDespiteResidue = true; } catch (_e) { /* unexpected */ }
+  check("a residual fixed-name .tmp file does NOT block commit (random-token temps)", committedDespiteResidue);
 
   // A vault whose seal() throws an Error with no message: the commit
   // wrapper must still surface commit-failed, formatting the thrown value
   // through the String() fallback of its message builder.
   var d5 = _mkDir("mtls-cm-");
   var throwingVault = { seal: function () { throw new Error(""); }, unseal: function () { return "x"; } };
-  var ca5 = b.mtlsCa.create({ dataDir: d5, caKeySealedMode: "required", vault: throwingVault });
+  var ca5 = b.mtlsCa.create({ dataDir: d5, caKeySealedMode: "required", vault: throwingVault, engine: _opaqueFixtureEngine() });
   var threwFromVault = false;
-  try { ca5.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwFromVault = /commit-failed/.test(e.code || ""); }
+  try { await ca5.commit({ caKeyPem: "K", caCertPem: "C" }); } catch (e) { threwFromVault = /commit-failed/.test(e.code || ""); }
   check("a vault seal() that throws a message-less Error still surfaces commit-failed", threwFromVault);
 }
 
@@ -202,12 +208,14 @@ async function testEngineOutputGuards() {
   try { await c5.generateClientP12({ password: "pw" }); } catch (e) { threwP12 = /bad-engine-output/.test(e.code || ""); }
   check("generateClientP12 rejects a non-Buffer p12", threwP12);
 
-  // packageP12 returns a Buffer but a non-string certPem → identity
-  // enrichment is skipped and the raw result is returned unchanged.
+  // packageP12 returns a Buffer but a non-string certPem → the archive has no
+  // identity to record in the issuance ledger, so it is REFUSED rather than
+  // returned untracked (an untracked P12 could never be revoked by generation).
   var c6 = b.mtlsCa.create({ dataDir: _mkDir("mtls-eg-"), caKeySealedMode: "disabled", engine: { generateCa: okGen, packageP12: async function () { return { p12: Buffer.from("P12"), certPem: 123 }; } } });
-  var r6 = await c6.generateClientP12({ password: "pw" });
-  check("a p12 result without a string certPem is returned without a fingerprint",
-    Buffer.isBuffer(r6.p12) && r6.fingerprint === undefined);
+  var threwNoCertPem = false;
+  try { await c6.generateClientP12({ password: "pw" }); }
+  catch (e) { threwNoCertPem = /bad-engine-output/.test(e.code || ""); }
+  check("a p12 result without a string certPem is refused (untracked -> unrevocable)", threwNoCertPem);
 }
 
 async function testAbsolutePathHonored() {

@@ -10127,6 +10127,17 @@ function _mtlsCaFixture() {
   };
 }
 
+// A minimal CUSTOM engine for the commit() STORAGE-mechanics tests below, which supply opaque
+// fixture PEM bytes to exercise atomic writes / sealed-mode / paths (not real CA material). The
+// bundled engine requires parseable X.509 material, so those tests run under a custom engine where
+// opaque material is legitimate.
+function _opaqueFixtureEngine() {
+  return {
+    generateCa:     async function () { return { caCertPem: "-----BEGIN CERTIFICATE-----\nRkFLRQ==\n-----END CERTIFICATE-----", caKeyPem: "-----BEGIN PRIVATE KEY-----\nRkFLRQ==\n-----END PRIVATE KEY-----" }; },
+    signClientCert: async function () { return { cert: "-----BEGIN CERTIFICATE-----\nRkFLRQ==\n-----END CERTIFICATE-----", key: "k" }; },
+  };
+}
+
 // Mock vault for sealed-mode tests — round-trip via base64 plus a
 // constant prefix marker. Honest enough for the file-handling tests
 // since the real vault-seal format is opaque to mtls-ca anyway.
@@ -10199,14 +10210,14 @@ function testMtlsCaLoadFailures() {
   } finally { fx.cleanup(); }
 }
 
-function testMtlsCaCommitAndLoadPlaintext() {
+async function testMtlsCaCommitAndLoadPlaintext() {
   var fx = _mtlsCaFixture();
   try {
-    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "disabled" });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "disabled", engine: _opaqueFixtureEngine() });
     var keyPem  = "-----BEGIN PRIVATE KEY-----\nFAKE-CA-KEY-BYTES\n-----END PRIVATE KEY-----\n";
     var certPem = "-----BEGIN CERTIFICATE-----\nFAKE-CA-CERT-BYTES\n-----END CERTIFICATE-----\n";
 
-    var r = ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
+    var r = await ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
     check("commit returned keyPath ending in ca.key",  /ca\.key$/.test(r.keyPath));
     check("commit returned certPath ending in ca.crt", /ca\.crt$/.test(r.certPath));
     check("commit sealed=false in 'disabled' mode",     r.sealed === false);
@@ -10225,15 +10236,15 @@ function testMtlsCaCommitAndLoadPlaintext() {
   } finally { fx.cleanup(); }
 }
 
-function testMtlsCaSealedRequiredMode() {
+async function testMtlsCaSealedRequiredMode() {
   var fx = _mtlsCaFixture();
   try {
     var v = _mockVault();
-    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "required", vault: v });
+    var ca = b.mtlsCa.create({ dataDir: fx.dir, caKeySealedMode: "required", vault: v, engine: _opaqueFixtureEngine() });
     var keyPem  = "-----BEGIN PRIVATE KEY-----\nSEALED-KEY\n-----END PRIVATE KEY-----\n";
     var certPem = "-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----\n";
 
-    var r = ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
+    var r = await ca.commit({ caKeyPem: keyPem, caCertPem: certPem });
     check("required mode: sealed=true",                r.sealed === true);
     check("required mode: keyPath ends in ca.key.sealed",
           /ca\.key\.sealed$/.test(r.keyPath));
@@ -19350,8 +19361,8 @@ async function run() {
   testMtlsCaParseGeneration();
   testMtlsCaExistsAndStatusWhenAbsent();
   testMtlsCaLoadFailures();
-  testMtlsCaCommitAndLoadPlaintext();
-  testMtlsCaSealedRequiredMode();
+  await testMtlsCaCommitAndLoadPlaintext();
+  await testMtlsCaSealedRequiredMode();
   testMtlsCaSealedDisabledRefusesSealedFile();
   testMtlsCaSealedRequiredRefusesPlaintextFile();
   await testMtlsCaInitCaWithDefaultEngine();
