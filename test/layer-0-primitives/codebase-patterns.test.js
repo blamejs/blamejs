@@ -14177,16 +14177,73 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "retainAfter ? priorCertBuf : null` — an idempotent reformatted recommit with an open grace window would " +
                "otherwise be read as COMPLETED and DELETE the retained root, stranding clients enrolled under it" });
   }
+  // _journalRetainedRoot() (the LOCK-FREE trust read loadTrustBundle uses before any reconcile) must
+  // ALSO fail closed for a completed byte-identical HARD CUT: it re-trusts a spent journal's prevData
+  // only for an INTERRUPTED RETENTION rotation. A hard cut (retainAfter:false) that re-committed the
+  // same-bytes CA has the same live cert as the interrupted case, so the cert compare can't tell them
+  // apart — re-trusting would resurrect the hard-cut root (fail-OPEN). Gate re-trust on retainAfter.
+  if (!/m\.prevAction\s*===\s*["']restore["']\s*&&\s*m\.retainAfter\s*!==\s*false/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_journalRetainedRoot()'s re-trust condition must exclude a HARD CUT (m.prevAction === \"restore\" && " +
+               "m.retainAfter !== false) — a completed byte-identical hard cut leaves the live cert equal to the journal's " +
+               "prior cert, so re-trusting prevData resurrects the hard-cut root in loadTrustBundle() before any reconcile " +
+               "(the reconcile path's hardCutRemovalDone tie-break handles this; the lock-free read must match it)" });
+  }
+  // Reconcile's completed/interrupted discriminator can't use the cert bytes alone when a commit changed
+  // NEITHER the cert NOR the key (a hard cut that only removed ca.prev.crt, re-committing the
+  // byte-IDENTICAL current CA): the live cert equals the journal's prior cert, so the byte compare reads
+  // it as INTERRUPTED and RESTORES the removed root, resurrecting the root the operator hard-cut. Tie-break
+  // on the prev state — a hard cut (retainAfter:false) whose intended-removed prev is already ABSENT is
+  // COMPLETED. Gate on manifest.key===manifest.newKey so a different-key interrupted rotation is untouched.
+  if (!/certKeyUnchanged\s*=\s*!certRepublished\s*&&\s*manifest\.key\s*===\s*manifest\.newKey/.test(noComments) ||
+      !/hardCutRemovalDone\s*=\s*certKeyUnchanged\s*&&\s*manifest\.retainAfter\s*===\s*false\s*&&[\s\S]{0,60}manifest\.prevAction\s*===\s*["']restore["']\s*&&\s*!nodeFs\.existsSync\(\s*paths\.caCertPrev\s*\)/.test(noComments) ||
+      !/completed\s*=\s*certRepublished\s*\|\|\s*hardCutRemovalDone/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "reconcile must distinguish a COMPLETED byte-identical HARD CUT from an interrupted one (certKeyUnchanged " +
+               "= !certRepublished && manifest.key===manifest.newKey; hardCutRemovalDone = certKeyUnchanged && manifest." +
+               "retainAfter===false && !nodeFs.existsSync(paths.caCertPrev); completed = certRepublished || " +
+               "hardCutRemovalDone) — else a hard cut that republished the byte-identical current CA and crashed before " +
+               "the journal delete is read as interrupted and RESTORES ca.prev.crt, resurrecting the hard-cut root" });
+  }
   // parseGeneration()'s OU=CAv{N} RDN-boundary match must recognize the " + " attribute separator node
   // emits inside a MULTI-VALUED RDN (e.g. "CN=x + OU=CAv7") via an unescaped-plus boundary with a
   // lookbehind that excludes an escaped "\+" inside a value. Without it an externally generated gen-N
   // CA reads as the legacy fallback 1, letting status()/rotate() allow generation 2 over it.
-  if (!/\(\?<!\\\\\)\\\+\)\\s\*OU=CAv/.test(noComments)) {
+  if (!/\(\?<!\\\\\)\[,\+\]\)\\s\*OU=CAv/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "parseGeneration()'s OU=CAv{N} RDN-boundary regex must recognize the multi-valued-RDN \" + \" attribute " +
-               "separator node emits (e.g. \"CN=x + OU=CAv7\") via an unescaped-plus boundary with a lookbehind that " +
-               "excludes an escaped plus — else an externally generated gen-N CA reads as the legacy fallback 1, letting " +
-               "status()/rotate() allow generation 2 over it and mis-cohort issuance/revocation" });
+      content: "parseGeneration()'s OU=CAv{N} RDN-boundary regex must guard BOTH the comma and the multi-valued-RDN \" + \" " +
+               "separators with the (?<!\\) escaped-separator lookbehind (an unescaped [,+] class) — node renders a " +
+               "value-internal comma/plus as \"\\,\"/\"\\+\", so an unguarded comma reads \"CN=foo\\,OU=CAv9\" as gen 9, " +
+               "and a missing plus boundary reads a multi-valued \"CN=x + OU=CAv7\" as the legacy 1; both mis-cohort " +
+               "issuance/revocation and let status()/rotate() mis-order generations" });
+  }
+  // A CUSTOM engine's effective algorithm label is not cert-derivable, so a commit/rotate({ algorithm })
+  // that changes it must PERSIST it as shared metadata (paths.algorithm) and an adopting handle must
+  // READ it — else a second handle over the same dataDir keeps its stale create-time pin and passes the
+  // wrong label to the new issuer (rejected / incompatible leaf). Guard both the persist (commit +
+  // rotate) and the under-lock read into caAlgorithm.
+  if (!/function\s+_persistAlgorithm[\s\S]{0,140}atomicFile\.writeSync\(\s*paths\.algorithm/.test(noComments) ||
+      // #1: the label write is crash-ATOMIC with the CA — _commitLocked journals the effective custom
+      // label (customAlgorithm: _customCommitLabel), writes it before the journal delete, and a
+      // completed-commit reconcile restores it (_persistAlgorithm(manifest.customAlgorithm)).
+      !/_customCommitLabel\s*=\s*\(\s*!usesDefaultEngine[\s\S]{0,120}opts2\.algorithm/.test(noComments) ||
+      !/customAlgorithm:\s*_customCommitLabel/.test(noComments) ||
+      !/_customCommitLabel\s*!==\s*null\s*\)?\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)/.test(noComments) ||
+      !/_persistAlgorithm\(\s*manifest\.customAlgorithm\s*\)/.test(noComments) ||
+      // rotate must hand _commitLocked the effective label (explicit, else the preserved persisted pin).
+      !/algorithm:\s*\(\s*rotateOpts\.algorithm\s*!==\s*undefined\s*\?\s*rotateOpts\.algorithm\s*:\s*pin\s*\)/.test(noComments) ||
+      !/if\s*\(\s*!usesDefaultEngine\s*\)\s*\{[\s\S]{0,160}_readPersistedAlgorithm\(\)[\s\S]{0,100}caAlgorithm\s*=\s*_persisted/.test(noComments) ||
+      // #2: the cold-start adopt branch (_freshCreateSerialized) must ALSO read the persisted label.
+      !/_adoptedLabel\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,100}caAlgorithm\s*=\s*_adoptedLabel/.test(noComments) ||
+      // #3: an unpinned custom rotate must PRESERVE the persisted label (read it into `pin`).
+      !/rotateOpts\.algorithm\s*===\s*undefined\s*&&\s*!usesDefaultEngine[\s\S]{0,120}_persistedPin\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,60}pin\s*=\s*_persistedPin/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "a CUSTOM engine's effective algorithm label must be persisted CRASH-ATOMICALLY with the CA (journaled as " +
+               "customAlgorithm in _commitLocked, written before the journal delete, restored by reconcile via " +
+               "_persistAlgorithm(manifest.customAlgorithm)) and READ on every adoption path — _adoptExistingCASnapshot " +
+               "(caAlgorithm = _persisted), the _freshCreateSerialized cold-start adopt (caAlgorithm = _adoptedLabel), and " +
+               "an unpinned custom rotate (pin = _persistedPin) — else a stale/racing/crash-stranded label makes a sibling " +
+               "issue under the wrong algorithm against the new CA (rejected / incompatible leaf)" });
   }
   // _rotateImpl's CAS check (is the current cert still the one snapshotted before generateCa?) must
   // compare cert IDENTITY via _sameCert, not exact PEM text — else a concurrent idempotent commit()
@@ -14327,7 +14384,7 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // pairing this A key/cert with label B, which a custom signer rejects or mints an incompatible leaf
   // under. The snapshot must be assigned to _snap right after the under-lock cert/key re-read (as
   // _freshCreateSerialized's adopt tail does), not returned from a bare call after the lock.
-  if (!/existingKeyPem\s*=\s*loadKey\(\)\.toString\(\s*["']utf8["']\s*\);\s*_snap\s*=\s*_verifiedCASnapshot\(\s*existingCertPem\s*,\s*existingKeyPem\s*\)/.test(noComments)) {
+  if (!/existingKeyPem\s*=\s*loadKey\(\)\.toString\(\s*["']utf8["']\s*\);(?:(?!\}\s*\)\s*;)[\s\S]){0,400}_snap\s*=\s*_verifiedCASnapshot\(\s*existingCertPem\s*,\s*existingKeyPem\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "_adoptExistingCASnapshot()'s locked path must build the snapshot UNDER the lock (_snap = " +
                "_verifiedCASnapshot(existingCertPem, existingKeyPem) right after the under-lock re-read) — " +
@@ -14674,8 +14731,8 @@ function testMtlsCaAdoptAndCommitEnforcePinAndJournal() {
   // CA and set the pin to match, only for rotate's unlocked assignment to overwrite the
   // pin afterwards — leaving the stored CA and the pin disagreeing. Fires if a lock-close
   // (`});`) sits between rotate's _commitLocked and its caAlgorithm assignment.
-  var rotCommit = /_commitLocked\(\{\s*caKeyPem:\s*fresh\.caKeyPem,\s*caCertPem:\s*fresh\.caCertPem,\s*retainPrevious:\s*retain\s*\}\);/.exec(noComments);
-  var rotPin = /if\s*\(\s*rotateOpts\.algorithm\s*!==\s*undefined\s*\)\s*caAlgorithm\s*=\s*rotateOpts\.algorithm;/.exec(noComments);
+  var rotCommit = /_commitLocked\(\{\s*caKeyPem:\s*fresh\.caKeyPem,\s*caCertPem:\s*fresh\.caCertPem,\s*retainPrevious:\s*retain[\s\S]{0,160}\}\);/.exec(noComments);
+  var rotPin = /if\s*\(\s*rotateOpts\.algorithm\s*!==\s*undefined\s*\)\s*\{\s*caAlgorithm\s*=\s*rotateOpts\.algorithm;/.exec(noComments);
   var betweenCommitAndPin = (rotCommit && rotPin && rotPin.index > rotCommit.index)
     ? noComments.slice(rotCommit.index + rotCommit[0].length, rotPin.index) : "});";
   if (!rotCommit || !rotPin || /\}\s*\)\s*;/.test(betweenCommitAndPin)) {
@@ -14870,12 +14927,13 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
   }
   // The persist freshness gate must compare version() to the snapshot UNDER the revocations
   // lock (so the check and the paths.crl write are atomic with revoke()'s write).
-  if (!/atomicFile\.lock\(\s*paths\.revocations\s*,\s*function\s*\(\)\s*\{\s*if\s*\(\s*revocationStore\.version\(\)\s*===\s*revSnapshotVersion\s*\)/.test(noComments)) {
+  if (!/atomicFile\.lock\(\s*paths\.revocations\s*,\s*function\s*\(\)\s*\{[\s\S]{0,140}revocationStore\.version\(\)\s*===\s*revSnapshotVersion\s*\|\|[\s\S]{0,140}_scopedCrlSerials\(\s*revocationStore\.list\(\)\s*,\s*_issuanceEntries\s*\)\s*===\s*signedCrlSerials/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "generateCrl() must re-check the revocation store version UNDER the revocations lock before persisting " +
-               "(atomicFile.lock(paths.revocations, () => { if (revocationStore.version() === revSnapshotVersion) ... })) " +
-               "— else a revoke()/revokeGeneration() that completed during signing is published-around and the served " +
-               "CRL omits it until the next regeneration, so CRL-based clients keep accepting the revoked certificate" });
+      content: "generateCrl()'s under-revocations-lock persist gate must be `revocationStore.version() === " +
+               "revSnapshotVersion || _scopedCrlSerials(revocationStore.list(), _issuanceEntries) === signedCrlSerials` " +
+               "— the version fast-path is fine, but a bare version compare SPURIOUSLY skips on a fingerprint-only revoke() " +
+               "(never in a serial CRL); the scoped-serial re-check persists unless the CRL's actual content changed, so a " +
+               "new serial revocation is still caught while a stale CRL is not left published under sustained churn" });
   }
   // The just-signed CRL also depends on the ISSUANCE ledger: generateCrl() reads it to resolve
   // each revoked serial's issuing CA and EXCLUDE serials issued by a different CA (issuer-scoping).
@@ -14890,12 +14948,13 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
                "(issuanceSnapshotVersion = typeof issuanceStore.version === \"function\" ? issuanceStore.version() : null) " +
                "— without it the persist cannot detect an importIssuance() issuer-backfill that completed while signing" });
   }
-  if (!/atomicFile\.lock\(\s*paths\.issuance\s*,\s*function\s*\(\)\s*\{\s*if\s*\(\s*issuanceStore\.version\(\)\s*===\s*issuanceSnapshotVersion\s*\)/.test(noComments)) {
+  if (!/atomicFile\.lock\(\s*paths\.issuance\s*,\s*function\s*\(\)\s*\{[\s\S]{0,140}issuanceStore\.version\(\)\s*===\s*issuanceSnapshotVersion\s*\|\|[\s\S]{0,140}_scopedCrlSerials\(\s*allRevocations\s*,\s*issuanceStore\.list\(\)\s*\)\s*===\s*signedCrlSerials/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "generateCrl() must re-check the issuance ledger version UNDER the issuance lock before persisting " +
-               "(atomicFile.lock(paths.issuance, () => { if (issuanceStore.version() === issuanceSnapshotVersion) ... })) " +
-               "— else an importIssuance() that backfilled a revoked serial's old issuer during signing publishes a stale " +
-               "issuer-scoped CRL that false-revokes an unrelated current cert reusing the serial" });
+      content: "generateCrl()'s under-issuance-lock persist gate must be `issuanceStore.version() === " +
+               "issuanceSnapshotVersion || _scopedCrlSerials(allRevocations, issuanceStore.list()) === signedCrlSerials` " +
+               "— a bare version compare SPURIOUSLY skips on a normal generateClientCert() (appends an unrelated fresh " +
+               "serial), starving CRL persistence on a busy CA; the scoped-serial re-check persists unless an " +
+               "importIssuance() issuer-backfill actually changed the CRL's issuer-scoped content" });
   }
   // The default issuance store must expose the same O(1) version() signal the revocation store does.
   if (!/function\s+_defaultIssuanceStore[\s\S]{0,1200}version:\s*function\s*\(\)\s*\{[\s\S]{0,160}statSync\(\s*paths\.issuance\s*\)/.test(noComments)) {

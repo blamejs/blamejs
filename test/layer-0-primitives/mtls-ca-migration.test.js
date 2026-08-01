@@ -308,11 +308,28 @@ var _ESCAPED_PLUS_CA_PEM =
   "dBhoLIjlKEpfBuobGnZrAjAyOgYRJ6iwh6TgLY1VTksfeSAzxgYNYWcHEK+WY7mZ\n" +
   "iGJ3rg0Lyh9YNvbA7gCYaHo=\n" +
   "-----END CERTIFICATE-----\n";
+// A legacy CA whose CN VALUE literally contains ",OU=CAv9" — node renders it as "CN=foo\,OU=CAv9"
+// (escaped comma). The escaped comma must NOT be read as an RDN separator (parseGeneration -> 1).
+var _ESCAPED_COMMA_CA_PEM =
+  "-----BEGIN CERTIFICATE-----\n" +
+  "MIIBvTCCAUSgAwIBAgIUQRZUsXjizY3E+sUhJ1rkzqWSS/YwCgYIKoZIzj0EAwMw\n" +
+  "FjEUMBIGA1UEAwwLZm9vLE9VPUNBdjkwHhcNMjYwODAxMDE1NTQzWhcNMjYwODAy\n" +
+  "MDE1NTQzWjAWMRQwEgYDVQQDDAtmb28sT1U9Q0F2OTB2MBAGByqGSM49AgEGBSuB\n" +
+  "BAAiA2IABI3gbTXLRrNowu4lXq/fgt09Wg4XBhtZwG62N2Wo+mQpP2gqqktAAPXA\n" +
+  "OYBslSDUu3zTBMPzyinO+YfMDchP8A+g4/PD8xl+An5OrFHA0etNp01TNwBGoIRg\n" +
+  "Cp7MlseKOqNTMFEwHQYDVR0OBBYEFHprrljDxStahOJ+WEavHMo1S+c2MB8GA1Ud\n" +
+  "IwQYMBaAFHprrljDxStahOJ+WEavHMo1S+c2MA8GA1UdEwEB/wQFMAMBAf8wCgYI\n" +
+  "KoZIzj0EAwMDZwAwZAIwDyUvALrqDfldNmAlKyItmnv04WNuLL+EbkI0ROYNcEn2\n" +
+  "k7n2p3RBX9Jod+eQvrbCAjAuiReowjBDFuVbEHLcfDkTUg4LI47g9X/Nq9XC4Iav\n" +
+  "Bc5B7ldBGEPqY3nJ6FbJrZI=\n" +
+  "-----END CERTIFICATE-----\n";
 async function testParseGenerationReadsMultiValuedRdn() {
   check("parseGeneration reads OU=CAv7 from a multi-valued RDN (CN=x + OU=CAv7)",
         b.mtlsCa.parseGeneration(_MULTIVALUED_RDN_CA_PEM) === 7);
   check("parseGeneration treats an escaped + inside a value as NOT a boundary (CN=foo\\+OU=CAv9 -> legacy 1)",
         b.mtlsCa.parseGeneration(_ESCAPED_PLUS_CA_PEM) === 1);
+  check("parseGeneration treats an escaped , inside a value as NOT a boundary (CN=foo\\,OU=CAv9 -> legacy 1)",
+        b.mtlsCa.parseGeneration(_ESCAPED_COMMA_CA_PEM) === 1);
 }
 
 // A custom engine may issue a P-256 / P-521 EC CA; status() must not label it
@@ -1042,6 +1059,40 @@ async function testIdempotentRecommitPreservesRetainedRootAcrossCrash() {
         bundle.length === 2 && bundle.some(function (c) { return Buffer.from(c).equals(certG1); }));
 }
 
+// A hard-cut commit({ retainPrevious:false }) that republishes the BYTE-IDENTICAL current CA (same
+// cert AND key) to close a grace window must not resurrect the retained root on crash recovery. The
+// live cert equals the journal's prior cert, so the byte-only completed/interrupted discriminator
+// misreads it as INTERRUPTED and restores the removed root. Reconcile must recognize the completed
+// hard cut (cert+key unchanged, retainAfter:false, prev already absent) and keep the root removed.
+async function testByteIdenticalHardCutDoesNotResurrectRoot() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  await ca.rotate({ generation: 2 });                        // ca.prev.crt = gen-1 (grace window open)
+  check("a grace window is open before the byte-identical hard cut", (await ca.loadTrustBundle()).length === 2);
+  var certG2 = ca.loadCert().toString("utf8");               // exact current bytes (NOT reformatted)
+  var keyG2  = ca.loadKey().toString("utf8");
+  var journal = ca.paths.caKey + ".rollback";
+
+  // Hard-cut recommit of the byte-identical current CA. Simulate a crash after the prev removal +
+  // cert publish but BEFORE the journal delete by no-op'ing the journal unlink -> journal survives.
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) { if (String(p) === String(journal)) return; return realUnlink.apply(this, arguments); };
+  try {
+    await ca.commit({ caKeyPem: keyG2, caCertPem: certG2, retainPrevious: false });
+  } finally { fs.unlinkSync = realUnlink; }
+  check("the byte-identical hard cut removed the retained root", fs.existsSync(ca.paths.caCertPrev) === false);
+  check("the byte-identical hard cut left the journal on disk (simulated crash)", fs.existsSync(journal) === true);
+
+  // Reopen -> reconcile. It must keep the root removed, not restore it.
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.generateClientCert({ cn: "after-byte-identical-hard-cut" });
+  check("the spent journal is removed after reconcile", fs.existsSync(journal) === false);
+  check("reconcile did NOT resurrect the hard-cut root", fs.existsSync(reopened.paths.caCertPrev) === false);
+  check("the trust bundle is just the current CA (grace window stays closed)",
+        (await reopened.loadTrustBundle()).length === 1);
+}
+
 // A PRESENT issuance ledger with a corrupt schema (valid JSON but no `issued`
 // array — an accidental `{}`) MUST fail closed, not be treated as an empty
 // ledger. Silently treating it as empty would let the next issuance overwrite it
@@ -1273,6 +1324,31 @@ async function testLoadTrustBundleExcludesSpentJournalRoot() {
   var bundle = (await reopened.loadTrustBundle());
   check("loadTrustBundle excludes a spent journal's old retained root (hard cutoff respected)",
         bundle.every(function (c) { return !Buffer.from(c).equals(certG1); }));
+}
+
+// loadTrustBundle() reads the crash journal WITHOUT reconciling, so its retained-root check must
+// fail closed for a COMPLETED byte-identical HARD CUT: a hard cut that re-committed the same-bytes
+// current CA leaves the live cert EQUAL to the journal's prior cert, so the cert-identity discriminator
+// (used to exclude a cert-CHANGING spent journal) can't tell completed from interrupted. Re-trusting
+// the prevData root would resurrect the root the operator hard-cut (fail-OPEN). Exclude it via retainAfter.
+async function testLoadTrustBundleExcludesSpentHardCutRoot() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);
+  await ca.rotate({ generation: 2 });                        // ca.prev.crt = gen-1, window open
+  var certG2 = fs.readFileSync(ca.paths.caCert);
+  var keyG2  = fs.readFileSync(ca.paths.caKey);
+  // A COMPLETED byte-identical hard cut whose journal delete failed: prev REMOVED, live cert still
+  // gen-2 (== journal's prior cert), journal records retainAfter:false + prevAction:restore + gen-1.
+  fs.rmSync(ca.paths.caCertPrev, { force: true });
+  fs.writeFileSync(ca.paths.caKey + ".rollback", _journalManifest({
+    key: keyG2, newKey: keyG2, cert: certG2, retainAfter: false, prevAction: "restore", prevData: certG1,
+  }));
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  var bundle = await reopened.loadTrustBundle();             // read BEFORE any mutating op reconciles
+  check("loadTrustBundle does NOT re-trust a hard-cut root from a spent byte-identical hard-cut journal",
+        bundle.length === 1 && Buffer.from(bundle[0]).equals(certG2));
 }
 
 // A hard-cut rotation whose cert publish fails AND whose in-memory retained-root
@@ -1808,6 +1884,61 @@ async function testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning() {
   var result2 = await ca.generateCrl();
   check("a clean regeneration persists a CRL covering every completed revocation",
         result2.persisted === true && result2.entryCount === 2 && fs.existsSync(ca.paths.crl) === true);
+}
+
+// A NORMAL generateClientCert() completing during signing appends an unrelated fresh serial to the
+// issuance ledger (advancing its version()) but does NOT change the CRL's issuer-scoped serial set,
+// so the persist must NOT spuriously skip — a coarse version compare would starve CRL publishing on a
+// busy CA, leaving a revoked serial's CRL stale for external consumers.
+async function testGenerateCrlPersistsDespiteConcurrentNormalIssuance() {
+  var duringSign = null;
+  var slowEngine = Object.assign({}, engine, {
+    generateCrl: async function (a) { if (duringSign) { var f = duringSign; duringSign = null; await f(); } return engine.generateCrl(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();
+  await ca.revoke("01");
+  duringSign = async function () { await ca.generateClientCert({ cn: "concurrent-issue" }); };
+  var result = await ca.generateCrl();
+  check("generateCrl persists despite a concurrent normal issuance during signing (CRL content unchanged)",
+        result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
+}
+
+// A FINGERPRINT-ONLY revoke() completing during signing adds no serial — it is never in a serial-keyed
+// CRL — so the persist must NOT spuriously skip on the advanced revocation version().
+async function testGenerateCrlPersistsDespiteConcurrentFingerprintRevoke() {
+  var duringSign = null;
+  var slowEngine = Object.assign({}, engine, {
+    generateCrl: async function (a) { if (duringSign) { var f = duringSign; duringSign = null; await f(); } return engine.generateCrl(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();
+  await ca.revoke("01");
+  duringSign = async function () { await ca.revoke({ fingerprint: "ab".repeat(64) }); };
+  var result = await ca.generateCrl();
+  check("generateCrl persists despite a concurrent fingerprint-only revoke during signing (not in a serial CRL)",
+        result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
+}
+
+// Exercises the scoped-serial persist fallback (_scopedCrlSerials) over a RICH revocation/issuance
+// set: a fingerprint-bearing revocation (resolved via the fingerprint map), a duplicate serial (the
+// dedup), and an imported entry with no caCert (caFingerprint null, skipped). A concurrent normal
+// issuance during signing forces the fallback, which must still persist (the CRL content is unchanged).
+async function testGenerateCrlScopedSerialsFallbackCoversRichState() {
+  var duringSign = null;
+  var slowEngine = Object.assign({}, engine, {
+    generateCrl: async function (a) { if (duringSign) { var f = duringSign; duringSign = null; await f(); } return engine.generateCrl(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();
+  var leaf = await ca.generateClientCert({ cn: "rich" });                          // issuance: serial+fingerprint+caFingerprint
+  await ca.revoke({ serial: leaf.serialNumber, fingerprint: leaf.fingerprint });   // fingerprint-bearing revocation
+  await ca.revoke(leaf.serialNumber);                                              // duplicate serial (serial-only)
+  await ca.importIssuance([{ fingerprint: "ab".repeat(64), generation: 1 }]);      // no caCert -> caFingerprint null
+  duringSign = async function () { await ca.generateClientCert({ cn: "concurrent" }); };
+  var result = await ca.generateCrl();
+  check("generateCrl persists with a rich revocation/issuance set despite concurrent issuance (scoped-serial fallback)",
+        result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
 }
 
 // generateCrl() reads the issuance ledger ONCE to resolve each revocation's issuing CA
@@ -2847,6 +2978,147 @@ async function testCommitAppliesCustomAlgorithmOnUnpinnedHandle() {
         recorded[recorded.length - 1] === "CUSTOM-B");
 }
 
+// A CUSTOM engine whose CA cert is node-parseable (so generation is determinable and rotation works)
+// but whose ALGORITHM the framework cannot classify (P-256 -> _certAlgorithm null) — the label is only
+// known from the create-time pin / an explicit commit/rotate({algorithm}). `record` collects the label
+// each signClientCert receives, so a cross-handle test can observe which label an issuance used.
+function _p256CaEngineGen(record, genRecord) {
+  return {
+    generateCa: async function (genOpts) {
+      if (genRecord) genRecord.push((genOpts && genOpts.algorithm) || "DEFAULT");
+      var gen = (genOpts && genOpts.generation) || 1;
+      var subtle = pki.webcrypto.subtle;
+      var keys = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+      var now = new Date();
+      var caCertPem = await pki.x509.sign({
+        subject:          [{ commonName: "p256-ca" }, { organizationalUnitName: "CAv" + gen }],
+        subjectPublicKey: spki,
+        serialNumber:     "0" + gen,
+        notBefore:        now,
+        notAfter:         new Date(now.getTime() + 86400000),
+        extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign", "cRLSign"] },
+      }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha384" });
+      var caKeyPem = await pki.key.export(keys.privateKey, { format: "pem" });
+      return { caCertPem: caCertPem, caKeyPem: caKeyPem };
+    },
+    signClientCert: async function (a) {
+      record.push(a.algorithm);
+      return { cert: "-----BEGIN CERTIFICATE-----\nbGVhZg==\n-----END CERTIFICATE-----", key: "k" };
+    },
+  };
+}
+
+// Two custom-engine handles sharing a dataDir: a commit/rotate({ algorithm:B }) on ONE handle updates
+// only its own caAlgorithm closure. The OTHER handle, reading the same stored CA, would snapshot its
+// STALE create-time pin and pass A with issuer B (custom labels aren't cert-derivable), so the engine
+// rejects or mints an incompatible leaf. The effective custom label must be PERSISTED as shared
+// metadata so any handle over the dataDir issues under the CURRENT label.
+async function testCustomLabelPersistsAcrossHandles() {
+  var dir = _mkTmp();
+  var recorded = [];
+  var h1 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(recorded), algorithm: "CUSTOM-A" });
+  var h2 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(recorded), algorithm: "CUSTOM-A" });
+  await h1.initCA();
+  var caB = await _p256CaEngineGen(recorded).generateCa({ generation: 1 });   // a matching P-256 pair to commit
+  await h1.commit({ caKeyPem: caB.caKeyPem, caCertPem: caB.caCertPem, retainPrevious: false, algorithm: "CUSTOM-B" });
+  await h2.generateClientCert({ cn: "cross-handle-commit" });
+  check("a second shared-dataDir handle issues under the current custom label (B), not its stale pin (A)",
+        recorded[recorded.length - 1] === "CUSTOM-B");
+  // A rotate({ algorithm }) on h1 likewise persists the new label for h2.
+  await h1.rotate({ generation: 2, algorithm: "CUSTOM-C" });
+  await h2.generateClientCert({ cn: "cross-handle-rotate" });
+  check("the second handle picks up a rotate({ algorithm })'s new custom label too",
+        recorded[recorded.length - 1] === "CUSTOM-C");
+}
+
+// _readPersistedAlgorithm() edges: an UNPINNED custom create persists nothing (no file), and an EMPTY
+// ca.algorithm (a truncated write) is ignored — neither silently forces a wrong label on a sibling.
+async function testPersistedAlgorithmReadEdges() {
+  var dir = _mkTmp();
+  var recorded = [];
+  var h1 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(recorded) });   // UNPINNED
+  await h1.initCA();
+  check("an unpinned custom create persists no algorithm metadata", fs.existsSync(h1.paths.algorithm) === false);
+  var h2 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(recorded) });   // UNPINNED
+  await h2.generateClientCert({ cn: "no-persisted-label" });                                                     // adopts, no file to read
+  check("a sibling adopting with no persisted label passes no algorithm (engine default)",
+        recorded[recorded.length - 1] === undefined);
+  // An EMPTY ca.algorithm (truncated write) is ignored — the handle keeps its own pin.
+  fs.writeFileSync(h2.paths.algorithm, "");
+  var h3 = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(recorded), algorithm: "CUSTOM-Z" });
+  await h3.generateClientCert({ cn: "empty-persisted-label" });
+  check("an empty persisted-algorithm file is ignored (handle keeps its own pin)",
+        recorded[recorded.length - 1] === "CUSTOM-Z");
+}
+
+// Cold-start concurrent create: two custom-engine handles with DIFFERENT create-time pins race to
+// create the CA (both pass exists()===false, both keygen, then contend for the lock). The loser adopts
+// the winner's CA via _freshCreateSerialized's under-lock adopt branch, which must read the WINNER's
+// persisted label — else the loser issues under its own stale pin against the winner's CA (rejected /
+// incompatible leaf). Both leaves must therefore be signed under the same (winner's) label.
+async function testColdStartAdoptReadsPersistedCustomLabel() {
+  var dir = _mkTmp();
+  var rec = [];
+  var A = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec), algorithm: "CUSTOM-A" });
+  var B = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec), algorithm: "CUSTOM-B" });
+  await Promise.allSettled([A.generateClientCert({ cn: "a" }), B.generateClientCert({ cn: "b" })]);
+  check("a cold-start concurrent-create loser issues under the winner's persisted custom label (both equal)",
+        rec.length === 2 && rec[0] === rec[1]);
+}
+
+// A BARE rotate({ generation }) (no algorithm) on a custom-engine handle whose caAlgorithm is stale
+// (a sibling's create-time pin, or an unpinned cron handle) must mint the new CA under the PERSISTED
+// label — the authoritative stored-CA label — not the handle's stale pin. Otherwise it silently
+// reverts a completed migration and diverges ca.algorithm from the stored CA (mirroring the
+// default engine's stored-algorithm preservation, which reads the label from the cert).
+async function testUnpinnedCustomRotatePreservesPersistedLabel() {
+  var dir = _mkTmp();
+  var rec = [], genRec = [];
+  var A = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec), algorithm: "CUSTOM-A" });
+  await A.initCA();
+  await A.rotate({ generation: 2, algorithm: "CUSTOM-B", retainPrevious: false });   // stored CA + persisted label = CUSTOM-B
+  // A stale-pinned sibling (create-time pin CUSTOM-A, never adopted) does a bare rotate.
+  var Bh = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec, genRec), algorithm: "CUSTOM-A" });
+  await Bh.rotate({ generation: 3 });
+  check("a bare rotate on a stale-pinned custom handle mints the new CA under the PERSISTED label, not the stale pin",
+        genRec[genRec.length - 1] === "CUSTOM-B");
+  // A later adopter now issues under a label consistent with the CA (both are CUSTOM-B).
+  var C = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec) });
+  await C.generateClientCert({ cn: "after-bare-rotate" });
+  check("a later adopter issues under the same label the CA was minted under (CUSTOM-B)",
+        rec[rec.length - 1] === "CUSTOM-B");
+}
+
+// The custom-engine label write must be crash-ATOMIC with the CA commit: a power loss between the CA
+// publish and the ca.algorithm write would leave the label STALE (the old label) against the new CA,
+// and every sibling would then issue under the wrong label. The label is journaled, so a
+// completed-commit reconcile restores it. Simulate the crash by skipping the label write + journal
+// delete during the rotate, then reopen and reconcile.
+async function testCustomLabelPersistIsCrashAtomicWithCommit() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var rec = [];
+  var A = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec), algorithm: "CUSTOM-A" });
+  await A.initCA();                                           // ca.algorithm = CUSTOM-A
+  var journal = A.paths.caKey + ".rollback";
+  // Rotate to CUSTOM-B, but simulate a crash AFTER the CA is durably published and BEFORE the label
+  // write / journal delete: skip the ca.algorithm write and the journal unlink for this rotate.
+  var realWrite = atomicFile.writeSync, realUnlink = fs.unlinkSync;
+  atomicFile.writeSync = function (p) { if (String(p) === String(A.paths.algorithm)) return; return realWrite.apply(this, arguments); };
+  fs.unlinkSync = function (p) { if (String(p) === String(journal)) return; return realUnlink.apply(this, arguments); };
+  try { await A.rotate({ generation: 2, algorithm: "CUSTOM-B", retainPrevious: false }); }
+  finally { atomicFile.writeSync = realWrite; fs.unlinkSync = realUnlink; }
+  check("the crash left ca.algorithm STALE at CUSTOM-A and the journal on disk",
+        fs.readFileSync(A.paths.algorithm, "utf8") === "CUSTOM-A" && fs.existsSync(journal) === true);
+  // A fresh handle reconciles on adoption and must restore the label to the CA's actual (CUSTOM-B).
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen(rec) });
+  await reopened.generateClientCert({ cn: "after-label-crash" });
+  check("reconcile restored the custom label to the CA's actual (CUSTOM-B), so issuance uses it",
+        rec[rec.length - 1] === "CUSTOM-B");
+  check("the spent journal is removed after reconcile", fs.existsSync(journal) === false);
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -3204,6 +3476,7 @@ async function run() {
     await testInterruptedRotationRecoversFromJournal();
     await testInterruptedRotationRecoversRetainedRoot();
     await testIdempotentRecommitPreservesRetainedRootAcrossCrash();
+    await testByteIdenticalHardCutDoesNotResurrectRoot();
     await testCorruptIssuanceLedgerSchemaFailsClosed();
     await testRotateRetainFalseAbortsWhenRemovalFails();
     await testCanVerifyInTlsRequiresLabelWhenUndeterminable();
@@ -3213,6 +3486,7 @@ async function run() {
     await testRotateAbortsWhenPriorKeyUnreadable();
     await testLoadTrustBundleIncludesUnreconciledJournalRoot();
     await testLoadTrustBundleExcludesSpentJournalRoot();
+    await testLoadTrustBundleExcludesSpentHardCutRoot();
     await testPartialRollbackKeepsJournalForRetainedRoot();
     await testCommitAbortsWhenPriorCertUnreadable();
     await testCommitAbortsWhenPriorRetainedRootUnreadable();
@@ -3235,6 +3509,9 @@ async function run() {
     await testRotateReturnsEffectiveCustomEngineLabel();
     await testGenerateCrlSkipsPersistIfCaRotated();
     await testGenerateCrlSkipsPersistIfRevocationLandedDuringSigning();
+    await testGenerateCrlPersistsDespiteConcurrentNormalIssuance();
+    await testGenerateCrlPersistsDespiteConcurrentFingerprintRevoke();
+    await testGenerateCrlScopedSerialsFallbackCoversRichState();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();
@@ -3282,6 +3559,11 @@ async function run() {
     await testCommitSwallowsJournalUnlinkFailureOnCertChange();
     await testCommitUpdatesCustomEnginePinToSuppliedAlgorithm();
     await testCommitAppliesCustomAlgorithmOnUnpinnedHandle();
+    await testCustomLabelPersistsAcrossHandles();
+    await testPersistedAlgorithmReadEdges();
+    await testColdStartAdoptReadsPersistedCustomLabel();
+    await testUnpinnedCustomRotatePreservesPersistedLabel();
+    await testCustomLabelPersistIsCrashAtomicWithCommit();
     await testRotateRefusesUndeterminableGeneration();
     await testReconcileRejectsMalformedManifestBase64();
     await testGenerateClientP12AcceptsOpaqueCert();
