@@ -14240,7 +14240,12 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       // #4: a FRESH create writes no rollback journal, so its label persist must precede _commitLocked
       // (the cert is published LAST there) — a failed label write must abort BEFORE any CA is installed,
       // never leave a labelless CA a sibling would issue under its own stale pin.
-      !/if\s*\(\s*!usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined\s*\)\s*_persistAlgorithm\(\s*caAlgorithm\s*\)\s*;\s*_commitLocked\(\s*fresh\s*\)/.test(noComments)) {
+      !/if\s*\(\s*!usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined\s*\)\s*_persistAlgorithm\(\s*caAlgorithm\s*\)\s*;\s*_commitLocked\(\s*fresh\s*\)/.test(noComments) ||
+      // #5: _commitLocked itself follows the same rule — a JOURNAL-LESS commit (initial commit with no
+      // prior key) persists the label BEFORE publishing the key/cert; only the JOURNALED path defers to
+      // the commit-point roll-forward. Guard both the pre-publish persist and the keyJournalWritten gate.
+      !/if\s*\(\s*!keyJournalWritten\s*&&\s*_customCommitLabel\s*!==\s*null\s*\)\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)\s*;\s*atomicFile\.renameWithRetry\(\s*keyTmp\s*,\s*keyDest\s*\)/.test(noComments) ||
+      !/if\s*\(\s*keyJournalWritten\s*&&\s*_customCommitLabel\s*!==\s*null\s*\)\s*\{\s*try\s*\{\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "a CUSTOM engine's effective algorithm label must be persisted CRASH-ATOMICALLY with the CA (journaled as " +
                "customAlgorithm in _commitLocked, written before the journal delete, restored by reconcile via " +
@@ -14248,9 +14253,12 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "(caAlgorithm = _persisted), the _freshCreateSerialized cold-start adopt (caAlgorithm = _adoptedLabel), and " +
                "an unpinned custom rotate (pin = _persistedPin). A fresh create writes no journal, so its label persist must " +
                "run BEFORE _commitLocked(fresh) (`if (!usesDefaultEngine && caAlgorithm !== undefined) " +
-               "_persistAlgorithm(caAlgorithm); _commitLocked(fresh)`) so a failed label write aborts before any CA lands. " +
-               "Else a stale/racing/crash-stranded label makes a sibling issue under the wrong algorithm against the new CA " +
-               "(rejected / incompatible leaf)" });
+               "_persistAlgorithm(caAlgorithm); _commitLocked(fresh)`) so a failed label write aborts before any CA lands; " +
+               "likewise inside _commitLocked a journal-less commit persists the label before the key publish " +
+               "(if (!keyJournalWritten && _customCommitLabel !== null) _persistAlgorithm(...); renameWithRetry(keyTmp, " +
+               "keyDest)) while only the JOURNALED path (if (keyJournalWritten && _customCommitLabel !== null)) defers to " +
+               "the roll-forward. Else a stale/racing/crash-stranded label makes a sibling issue under the wrong algorithm " +
+               "against the new CA (rejected / incompatible leaf)" });
   }
   // The commit-point ca.algorithm write runs AFTER the new key/cert are published, but the outer
   // rollback catch restores only the prior key + retained root (it cannot un-publish the cert) and
@@ -14289,6 +14297,21 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "(nowCert===null||previousCaCertPem===null) ? nowCert!==previousCaCertPem : !_sameCert(nowCert, " +
                "previousCaCertPem)) — an exact-string compare aborts a rotation when a concurrent commit merely " +
                "reformatted the same cert (rotation-conflict)" });
+  }
+  // _rotateImpl()'s CAS check must ALSO compare the persisted CUSTOM label, not just generation + cert
+  // identity: a concurrent commit({ algorithm }) can re-label a byte-identical cert/key (unchanged gen
+  // and cert), so a rotation that snapshotted the old label would otherwise publish over the newer
+  // migration. Snapshot previousPersistedLabel before generateCa and fold nowLabelChanged into the gate.
+  if (!/previousPersistedLabel\s*=\s*!usesDefaultEngine\s*\?\s*_readPersistedAlgorithm\(\)\s*:\s*undefined/.test(noComments) ||
+      !/nowLabelChanged\s*=\s*!usesDefaultEngine\s*&&\s*_readPersistedAlgorithm\(\)\s*!==\s*previousPersistedLabel/.test(noComments) ||
+      !/nowGen\s*!==\s*curGen\s*\|\|\s*nowCertChanged\s*\|\|\s*nowLabelChanged/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_rotateImpl()'s rotation-conflict compare-and-swap must include the persisted CUSTOM label " +
+               "(previousPersistedLabel = !usesDefaultEngine ? _readPersistedAlgorithm() : undefined; nowLabelChanged = " +
+               "!usesDefaultEngine && _readPersistedAlgorithm() !== previousPersistedLabel; if (nowGen !== curGen || " +
+               "nowCertChanged || nowLabelChanged) throw rotation-conflict) — else a concurrent commit({ algorithm }) that " +
+               "re-labels a byte-identical CA (same generation + cert) is missed and this rotation overwrites the newer " +
+               "effective-label migration under the stale label" });
   }
   // _rotateImpl()'s returned result carries the migration algorithm operators persist. It must
   // report the EFFECTIVE label, gating certificate inference behind the bundled engine: the fresh

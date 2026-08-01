@@ -3254,6 +3254,61 @@ async function testFreshCreateLabelWriteFailureLeavesNoOrphanCa() {
         fs.existsSync(B.paths.caCert) === true && fs.readFileSync(B.paths.algorithm, "utf8") === "CUSTOM-A");
 }
 
+// An INITIAL commit() that bootstraps the first CA writes no rollback journal (no prior key), so like
+// a fresh create its custom label must be persisted BEFORE the CA is published. A failed label write
+// must abort before the key/cert land — not defer as though a journal will reconcile it (there is
+// none), which would install a labelless CA a sibling would issue under its own stale pin.
+async function testInitialCustomCommitLabelWriteFailureFailsClosed() {
+  var atomicFile = require("../../lib/atomic-file");
+  var src = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: _p256CaEngineGen([]), algorithm: "CUSTOM-A" });
+  await src.initCA();
+  var extCert = fs.readFileSync(src.paths.caCert, "utf8");
+  var extKey  = fs.readFileSync(src.paths.caKey, "utf8");
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]) });
+  var realWrite = atomicFile.writeSync;
+  atomicFile.writeSync = function (p) {
+    if (String(p) === String(ca.paths.algorithm)) throw new Error("simulated ENOSPC writing ca.algorithm");
+    return realWrite.apply(this, arguments);
+  };
+  var threw = null;
+  try { await ca.commit({ caCertPem: extCert, caKeyPem: extKey, algorithm: "CUSTOM-A" }); }
+  catch (e) { threw = e; }
+  finally { atomicFile.writeSync = realWrite; }
+  check("an initial custom commit (no prior key, no journal) whose label write fails, fails closed", threw !== null);
+  check("a failed initial commit leaves NO CA installed (no certificate without its durable label)",
+        fs.existsSync(ca.paths.caCert) === false);
+}
+
+// A custom rotation reads label A, then awaits generateCa; a concurrent commit re-labels the
+// byte-identical current cert/key as B. The rotation's compare-and-swap checks generation AND cert
+// identity AND the persisted label, so it detects the label migration and refuses rather than
+// publishing a new CA under A that overwrites the newer B migration.
+async function testRotateConflictsWithConcurrentLabelRestamp() {
+  var duringGen = null;
+  var base = _p256CaEngineGen([]);
+  var slowEngine = Object.assign({}, base, {
+    generateCa: async function (a) {
+      var out = await base.generateCa(a);
+      if (duringGen) { var f = duringGen; duringGen = null; await f(); }
+      return out;
+    },
+  });
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: slowEngine, algorithm: "CUSTOM-A" });
+  await ca.initCA();
+  var curCert = fs.readFileSync(ca.paths.caCert, "utf8");
+  var curKey  = fs.readFileSync(ca.paths.caKey, "utf8");
+  duringGen = async function () {
+    await ca.commit({ caCertPem: curCert, caKeyPem: curKey, algorithm: "CUSTOM-B" });   // re-label the byte-identical CA
+  };
+  var err = await code2(function () { return ca.rotate({ generation: 2, algorithm: "CUSTOM-A" }); });
+  check("a rotation whose CA was re-labelled by a concurrent commit during signing conflicts",
+        err === "mtls-ca/rotation-conflict");
+  check("the concurrent commit's label (CUSTOM-B) survived the stale rotation",
+        fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-B");
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -3652,6 +3707,8 @@ async function run() {
     await testCanVerifyInTlsUsesPersistedLabelAfterSiblingRotation();
     await testSameCertLabelRestampWriteFailureFailsClosed();
     await testFreshCreateLabelWriteFailureLeavesNoOrphanCa();
+    await testInitialCustomCommitLabelWriteFailureFailsClosed();
+    await testRotateConflictsWithConcurrentLabelRestamp();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();
