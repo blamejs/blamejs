@@ -14294,6 +14294,23 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "so a label-file write error cannot drive the outer rollback (which restores the prior key but leaves the new " +
                "cert and deletes the journal, stranding an unusable old-key/new-cert CA)" });
   }
+  // A REJECTED commit (a same-cert re-label whose label write landed but whose journal delete then
+  // threw) must ROLL BACK the label with the key/prev/CRL — else the failed migration leaves the new
+  // label active. Restore _priorPersistedLabel in the outer catch, gate the journal delete on
+  // labelRolledBack too, journal the prior label (priorCustomAlgorithm), and restore it in reconcile's
+  // interrupted branch so a crash between the catch's restore and the journal delete is also recovered.
+  if (!/if\s*\(\s*!usesDefaultEngine\s*&&\s*_customCommitLabel\s*!==\s*null\s*\)\s*\{[\s\S]{0,140}_priorPersistedLabel\s*!==\s*undefined[\s\S]{0,80}_persistAlgorithm\(\s*_priorPersistedLabel\s*\)/.test(noComments) ||
+      !/keyJournalWritten\s*&&\s*keyRolledBack\s*&&\s*prevRolledBack\s*&&\s*crlRolledBack\s*&&\s*labelRolledBack/.test(noComments) ||
+      !/priorCustomAlgorithm:\s*\(\s*_priorPersistedLabel\s*!==\s*undefined/.test(noComments) ||
+      !/manifest\.priorCustomAlgorithm[\s\S]{0,90}_persistAlgorithm\(\s*manifest\.priorCustomAlgorithm\s*\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "a rejected custom-engine commit must ROLL BACK the algorithm label with the rest of the CA: capture " +
+               "_priorPersistedLabel before mutating, restore it in the outer catch (or unlink ca.algorithm when there was " +
+               "no prior label) with labelRolledBack gating the journal delete (keyJournalWritten && keyRolledBack && " +
+               "prevRolledBack && crlRolledBack && labelRolledBack), journal it (priorCustomAlgorithm), and restore it in " +
+               "_reconcileCommitJournalLocked's interrupted branch — else a same-cert re-label whose write succeeded but " +
+               "whose commit then failed leaves the new label active and reconcile cannot recover the prior one" });
+  }
   // canVerifyInTls()'s no-argument probe documents that it tests the STORED CA. For a custom engine
   // the stored label is ca.algorithm (durable shared metadata a sibling handle's migration updates),
   // NOT this handle's caAlgorithm closure — so it must read the persisted label first, exactly as the

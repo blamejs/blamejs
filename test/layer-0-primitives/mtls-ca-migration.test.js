@@ -3356,6 +3356,59 @@ async function testPersistedLabelReadFailureFailsClosed() {
         probe === "mtls-ca/algorithm-undeterminable");
 }
 
+// A same-cert re-label whose ca.algorithm write SUCCEEDS but whose journal delete then FAILS is
+// rejected (fails closed). The rollback must restore the PRIOR label — else the rejected migration
+// leaves the new label active. The journal carries the prior label too, so an interrupted-commit
+// reconcile (a crash between the catch's restore and the journal delete) also restores it.
+async function testSameCertRelabelJournalDeleteFailureRestoresPriorLabel() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]), algorithm: "CUSTOM-A" });
+  await ca.initCA();
+  var curCert = fs.readFileSync(ca.paths.caCert, "utf8");
+  var curKey  = fs.readFileSync(ca.paths.caKey, "utf8");
+  var journal = ca.paths.caKey + ".rollback";
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(journal)) throw new Error("simulated journal-delete failure");
+    return realUnlink.apply(this, arguments);
+  };
+  var threw = null;
+  try { await ca.commit({ caCertPem: curCert, caKeyPem: curKey, algorithm: "CUSTOM-B" }); }
+  catch (e) { threw = e; }
+  finally { fs.unlinkSync = realUnlink; }
+  check("a same-cert re-label whose journal delete fails is rejected", threw !== null);
+  check("the rejected re-label restored the prior label (CUSTOM-A), not left CUSTOM-B active",
+        fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-A");
+  // The surviving journal reconciles on reopen; the interrupted-commit path restores the prior label.
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]) });
+  await reopened.generateClientCert({ cn: "after-relabel-reject" });
+  check("after reconcile the label is still the prior CUSTOM-A", fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-A");
+}
+
+// When there was NO prior label (an UNPINNED custom CA being re-labeled), a rejected re-label must
+// REMOVE the newly-written ca.algorithm on rollback rather than leave it — the no-prior-label arm of
+// the label rollback.
+async function testUnpinnedCustomRelabelRejectRemovesLabel() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]) });   // unpinned: no label file
+  await ca.initCA();
+  var curCert = fs.readFileSync(ca.paths.caCert, "utf8");
+  var curKey  = fs.readFileSync(ca.paths.caKey, "utf8");
+  var journal = ca.paths.caKey + ".rollback";
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(journal)) throw new Error("simulated journal-delete failure");
+    return realUnlink.apply(this, arguments);
+  };
+  var threw = null;
+  try { await ca.commit({ caCertPem: curCert, caKeyPem: curKey, algorithm: "CUSTOM-B" }); }
+  catch (e) { threw = e; }
+  finally { fs.unlinkSync = realUnlink; }
+  check("an unpinned-CA re-label whose journal delete fails is rejected", threw !== null);
+  check("the rejected re-label removed the newly-written label (no prior label to restore)",
+        fs.existsSync(ca.paths.algorithm) === false);
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -3758,6 +3811,8 @@ async function run() {
     await testRotateConflictsWithConcurrentLabelRestamp();
     await testInitialPinnedCommitWithoutOverridePersistsHandleLabel();
     await testPersistedLabelReadFailureFailsClosed();
+    await testSameCertRelabelJournalDeleteFailureRestoresPriorLabel();
+    await testUnpinnedCustomRelabelRejectRemovesLabel();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();
