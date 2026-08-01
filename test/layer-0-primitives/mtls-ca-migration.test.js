@@ -3227,6 +3227,33 @@ async function testSameCertLabelRestampWriteFailureFailsClosed() {
   check("a same-cert label re-stamp whose ca.algorithm write fails aborts (fails closed)", threw !== null);
 }
 
+// A fresh CA creation writes no rollback journal (no prior key to restore), so the create-time custom
+// label must be persisted BEFORE the certificate is published — else a failed label write leaves a CA
+// installed with no durable label and no journal to heal it, and a sibling handle over the same
+// dataDir would issue under its own stale pin. The label going first makes a label-write failure abort
+// before any CA is installed.
+async function testFreshCreateLabelWriteFailureLeavesNoOrphanCa() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var A = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]), algorithm: "CUSTOM-A" });
+  var realWrite = atomicFile.writeSync;
+  atomicFile.writeSync = function (p) {
+    if (String(p) === String(A.paths.algorithm)) throw new Error("simulated ENOSPC writing ca.algorithm");
+    return realWrite.apply(this, arguments);
+  };
+  var threw = null;
+  try { await A.initCA(); }
+  catch (e) { threw = e; }
+  finally { atomicFile.writeSync = realWrite; }
+  check("initCA fails when the initial custom label cannot be persisted", threw !== null);
+  check("a failed initial creation leaves NO CA installed (no certificate without its durable label)",
+        fs.existsSync(A.paths.caCert) === false);
+  var B = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]), algorithm: "CUSTOM-A" });
+  await B.initCA();
+  check("a retry cleanly installs the CA and persists the label",
+        fs.existsSync(B.paths.caCert) === true && fs.readFileSync(B.paths.algorithm, "utf8") === "CUSTOM-A");
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -3624,6 +3651,7 @@ async function run() {
     await testCommitLabelWriteFailureRollsForwardNotAbort();
     await testCanVerifyInTlsUsesPersistedLabelAfterSiblingRotation();
     await testSameCertLabelRestampWriteFailureFailsClosed();
+    await testFreshCreateLabelWriteFailureLeavesNoOrphanCa();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();

@@ -14236,14 +14236,21 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       // #2: the cold-start adopt branch (_freshCreateSerialized) must ALSO read the persisted label.
       !/_adoptedLabel\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,100}caAlgorithm\s*=\s*_adoptedLabel/.test(noComments) ||
       // #3: an unpinned custom rotate must PRESERVE the persisted label (read it into `pin`).
-      !/rotateOpts\.algorithm\s*===\s*undefined\s*&&\s*!usesDefaultEngine[\s\S]{0,120}_persistedPin\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,60}pin\s*=\s*_persistedPin/.test(noComments)) {
+      !/rotateOpts\.algorithm\s*===\s*undefined\s*&&\s*!usesDefaultEngine[\s\S]{0,120}_persistedPin\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,60}pin\s*=\s*_persistedPin/.test(noComments) ||
+      // #4: a FRESH create writes no rollback journal, so its label persist must precede _commitLocked
+      // (the cert is published LAST there) — a failed label write must abort BEFORE any CA is installed,
+      // never leave a labelless CA a sibling would issue under its own stale pin.
+      !/if\s*\(\s*!usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined\s*\)\s*_persistAlgorithm\(\s*caAlgorithm\s*\)\s*;\s*_commitLocked\(\s*fresh\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "a CUSTOM engine's effective algorithm label must be persisted CRASH-ATOMICALLY with the CA (journaled as " +
                "customAlgorithm in _commitLocked, written before the journal delete, restored by reconcile via " +
                "_persistAlgorithm(manifest.customAlgorithm)) and READ on every adoption path — _adoptExistingCASnapshot " +
                "(caAlgorithm = _persisted), the _freshCreateSerialized cold-start adopt (caAlgorithm = _adoptedLabel), and " +
-               "an unpinned custom rotate (pin = _persistedPin) — else a stale/racing/crash-stranded label makes a sibling " +
-               "issue under the wrong algorithm against the new CA (rejected / incompatible leaf)" });
+               "an unpinned custom rotate (pin = _persistedPin). A fresh create writes no journal, so its label persist must " +
+               "run BEFORE _commitLocked(fresh) (`if (!usesDefaultEngine && caAlgorithm !== undefined) " +
+               "_persistAlgorithm(caAlgorithm); _commitLocked(fresh)`) so a failed label write aborts before any CA lands. " +
+               "Else a stale/racing/crash-stranded label makes a sibling issue under the wrong algorithm against the new CA " +
+               "(rejected / incompatible leaf)" });
   }
   // The commit-point ca.algorithm write runs AFTER the new key/cert are published, but the outer
   // rollback catch restores only the prior key + retained root (it cannot un-publish the cert) and
