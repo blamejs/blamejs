@@ -276,6 +276,45 @@ async function testRotateRejectsFractionalGeneration() {
   check("rotate: integer generation still accepted", r.generation === 2);
 }
 
+// parseGeneration() must read OU=CAv{N} from a MULTI-VALUED RDN. Node exposes a multi-valued RDN
+// (e.g. "CN=x + OU=CAv7") with a " + " attribute separator that the RDN-boundary match must
+// recognize — while still excluding an ESCAPED "\+" inside a value ("CN=foo\+OU=CAv9", a literal +
+// in the CN value, is NOT a boundary). Else an externally generated gen-7 CA reads as the legacy
+// fallback 1, letting status()/rotate() allow generation 2 over it and mis-cohort issuance/revocation.
+// Fixtures: openssl self-signed CAs (parseGeneration only parses the subject, no chain verification).
+var _MULTIVALUED_RDN_CA_PEM =
+  "-----BEGIN CERTIFICATE-----\n" +
+  "MIIBwzCCAUqgAwIBAgIUR69UCMv+o074W1zvQw6ChqcvO88wCgYIKoZIzj0EAwMw\n" +
+  "GTEXMAgGA1UEAwwBeDALBgNVBAsMBENBdjcwHhcNMjYwODAxMDAzNDM2WhcNMjYw\n" +
+  "ODAyMDAzNDM2WjAZMRcwCAYDVQQDDAF4MAsGA1UECwwEQ0F2NzB2MBAGByqGSM49\n" +
+  "AgEGBSuBBAAiA2IABP0cB1yUhJsA8vv2jWgrWp0Pzoyel+OHRHLFJD6Kj1yPieAy\n" +
+  "eZskRnKR1LIawpK0FKRxUKVuWW/EPu9mopbHj2v50ON2UUiLNRwdTb6ZNafEOhxG\n" +
+  "aBG3whSTXh1WHb//yqNTMFEwHQYDVR0OBBYEFJfC4/drUVMpucaU3OTYFK6ZbUTK\n" +
+  "MB8GA1UdIwQYMBaAFJfC4/drUVMpucaU3OTYFK6ZbUTKMA8GA1UdEwEB/wQFMAMB\n" +
+  "Af8wCgYIKoZIzj0EAwMDZwAwZAIwWIRwvdjOXuV1Z/ZQr7ovjFZaP7Ta4q5Z2yeg\n" +
+  "Kb2ddZ31k9iEZD3MhNBaHNg9ITnzAjAlByOIa2z6c1U7pQq8Lp3ix6a65GJzq9nm\n" +
+  "6GksQ6r8bGdL2bvqYPXZYdbC6K/T0DM=\n" +
+  "-----END CERTIFICATE-----\n";
+var _ESCAPED_PLUS_CA_PEM =
+  "-----BEGIN CERTIFICATE-----\n" +
+  "MIIBvTCCAUSgAwIBAgIUGzwKagAotUudwlmaUK7NiqA+UccwCgYIKoZIzj0EAwMw\n" +
+  "FjEUMBIGA1UEAwwLZm9vK09VPUNBdjkwHhcNMjYwODAxMDAzNjAxWhcNMjYwODAy\n" +
+  "MDAzNjAxWjAWMRQwEgYDVQQDDAtmb28rT1U9Q0F2OTB2MBAGByqGSM49AgEGBSuB\n" +
+  "BAAiA2IABHgDvAZ4wrnWM2cJlnEP3zfY8WqTz3F55vnfkTBDVACPORB9k97p5+e8\n" +
+  "PGWzQNBdM+5eSABAC/dJF9Frs10X/QGtCsVoDJOAOlXf7l/QvDNMbC/lI/Ah17JH\n" +
+  "+aOwam9U46NTMFEwHQYDVR0OBBYEFL2uLN8Gsq5faxHNrUcrBfw4aDZgMB8GA1Ud\n" +
+  "IwQYMBaAFL2uLN8Gsq5faxHNrUcrBfw4aDZgMA8GA1UdEwEB/wQFMAMBAf8wCgYI\n" +
+  "KoZIzj0EAwMDZwAwZAIwbKpimgrxpavrfLHwyQGfEo6AHxNTDogrQ2EgHAVB6MWJ\n" +
+  "dBhoLIjlKEpfBuobGnZrAjAyOgYRJ6iwh6TgLY1VTksfeSAzxgYNYWcHEK+WY7mZ\n" +
+  "iGJ3rg0Lyh9YNvbA7gCYaHo=\n" +
+  "-----END CERTIFICATE-----\n";
+async function testParseGenerationReadsMultiValuedRdn() {
+  check("parseGeneration reads OU=CAv7 from a multi-valued RDN (CN=x + OU=CAv7)",
+        b.mtlsCa.parseGeneration(_MULTIVALUED_RDN_CA_PEM) === 7);
+  check("parseGeneration treats an escaped + inside a value as NOT a boundary (CN=foo\\+OU=CAv9 -> legacy 1)",
+        b.mtlsCa.parseGeneration(_ESCAPED_PLUS_CA_PEM) === 1);
+}
+
 // A custom engine may issue a P-256 / P-521 EC CA; status() must not label it
 // ECDSA-P384-SHA384 (the framework's sole classical P-384 label).
 async function testStatusAlgorithmNullForNonP384Ec() {
@@ -3131,6 +3170,7 @@ async function run() {
     await testRevokeGeneration();
     await testRotatePersistsOverrideAlgorithm();
     await testRotateRejectsFractionalGeneration();
+    await testParseGenerationReadsMultiValuedRdn();
     await testStatusAlgorithmNullForNonP384Ec();
     await testRetainPreviousFalseClearsStaleRoot();
     await testIssuanceLedgerFailsClosed();

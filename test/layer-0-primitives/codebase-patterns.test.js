@@ -14177,6 +14177,17 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "retainAfter ? priorCertBuf : null` — an idempotent reformatted recommit with an open grace window would " +
                "otherwise be read as COMPLETED and DELETE the retained root, stranding clients enrolled under it" });
   }
+  // parseGeneration()'s OU=CAv{N} RDN-boundary match must recognize the " + " attribute separator node
+  // emits inside a MULTI-VALUED RDN (e.g. "CN=x + OU=CAv7") via an unescaped-plus boundary with a
+  // lookbehind that excludes an escaped "\+" inside a value. Without it an externally generated gen-N
+  // CA reads as the legacy fallback 1, letting status()/rotate() allow generation 2 over it.
+  if (!/\(\?<!\\\\\)\\\+\)\\s\*OU=CAv/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "parseGeneration()'s OU=CAv{N} RDN-boundary regex must recognize the multi-valued-RDN \" + \" attribute " +
+               "separator node emits (e.g. \"CN=x + OU=CAv7\") via an unescaped-plus boundary with a lookbehind that " +
+               "excludes an escaped plus — else an externally generated gen-N CA reads as the legacy fallback 1, letting " +
+               "status()/rotate() allow generation 2 over it and mis-cohort issuance/revocation" });
+  }
   // _rotateImpl's CAS check (is the current cert still the one snapshotted before generateCa?) must
   // compare cert IDENTITY via _sameCert, not exact PEM text — else a concurrent idempotent commit()
   // that merely REFORMATTED the same cert during generateCa spuriously aborts the rotation with
