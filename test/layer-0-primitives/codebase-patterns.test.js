@@ -14070,6 +14070,34 @@ function testRequireMtlsRevocationSourceReturnsBoolean() {
     bad);
 }
 
+// session.updateData({ merge: true }) documents "Inner objects merge ONE LEVEL DEEP; arrays REPLACE",
+// so an inner plain-object value must merge into the existing inner object (its keys survive), not
+// shallow-replace the whole nested object. A bare `next[k] = data[k]` silently discards the operator's
+// existing nested keys — a data-loss bug the merge test must expose (assert the preserved inner key).
+function testSessionUpdateDataMergesOneLevelDeep() {
+  var src;
+  try { src = fs.readFileSync("lib/session.js", "utf8"); }
+  catch (_e) { return; }
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  var bad = [];
+  if (!/_isPlainObject\(\s*ev\s*\)\s*&&\s*_isPlainObject\(\s*nv\s*\)[\s\S]{0,80}next\[k\]\s*=\s*Object\.assign\(\s*\{\}\s*,\s*ev\s*,\s*nv\s*\)/.test(noComments) ||
+      !/function\s+_isPlainObject[\s\S]{0,180}getPrototypeOf\([\s\S]{0,60}Object\.prototype/.test(noComments) ||
+      /next\[k\]\s*=\s*data\[k\]/.test(noComments)) {
+    bad.push({ file: "lib/session.js", line: 1,
+      content: "session.updateData({ merge: true }) must merge an inner PLAIN OBJECT one level deep so the existing inner " +
+               "keys survive (its doc promises \"Inner objects merge ONE LEVEL DEEP\") — merge only when BOTH values are " +
+               "plain objects (`_isPlainObject(ev) && _isPlainObject(nv)` → `next[k] = Object.assign({}, ev, nv)`), where " +
+               "_isPlainObject is prototype-based (Object.getPrototypeOf === Object.prototype/null) so a Date/Buffer/class " +
+               "instance REPLACES (reaching JSON as its own form) rather than being merged into the retained old object or " +
+               "mangled to byte keys. A bare `next[k] = data[k]` shallow-replaces the whole inner object, silently " +
+               "discarding the operator's existing nested keys (data loss)" });
+  }
+  bad = _filterMarkers(bad, "session-updatedata-merges-one-level-deep");
+  _report("session.updateData({ merge: true }) merges an inner object one level deep (existing nested keys survive), " +
+          "never a shallow next[k] = data[k] that discards them",
+    bad);
+}
+
 // b.mtlsCa publishes the CA key and cert as two separate file renames, so they
 // cannot be a single atomic swap: a crash after the key rename but before the
 // cert rename leaves a new-key/old-cert pair the in-memory catch rollback (a
@@ -15088,7 +15116,9 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
                "— without it the persist cannot detect an importIssuance() issuer-backfill that completed while signing" });
   }
   // The default issuance store must expose the same O(1) version() signal the revocation store does.
-  if (!/function\s+_defaultIssuanceStore[\s\S]{0,1200}version:\s*function\s*\(\)\s*\{[\s\S]{0,160}statSync\(\s*paths\.issuance\s*\)/.test(noComments)) {
+  // Temper the span on the next 2-space sibling `function` (structural boundary) so the char bound is a
+  // pure ReDoS backstop, not a layout-coupled precision that rots when _defaultIssuanceStore's body grows.
+  if (!/function\s+_defaultIssuanceStore\b(?:(?!\n {2}function )[\s\S]){0,2400}version:\s*function\s*\(\)\s*\{[\s\S]{0,200}statSync\(\s*paths\.issuance\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "_defaultIssuanceStore() must expose a version() (statSync(paths.issuance) size:mtime) mirroring the " +
                "revocation store's, so generateCrl() can detect an issuance-ledger change (importIssuance backfill) mid-sign" });
@@ -16289,6 +16319,7 @@ async function run() {
   testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
   testMtlsCaFingerprintMatchesGate();
   testRequireMtlsRevocationSourceReturnsBoolean();
+  testSessionUpdateDataMergesOneLevelDeep();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testMtlsCaIssuanceGenerationUndeterminableIsNull();
