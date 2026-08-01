@@ -3309,6 +3309,53 @@ async function testRotateConflictsWithConcurrentLabelRestamp() {
         fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-B");
 }
 
+// A pinned custom handle that bootstraps the CA via commit() WITHOUT redundantly repeating the label
+// must still persist ca.algorithm from its effective pin — else a sibling adopts the CA under its own
+// stale pin or engine default. _customCommitLabel falls back to the handle's caAlgorithm.
+async function testInitialPinnedCommitWithoutOverridePersistsHandleLabel() {
+  var src = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: _p256CaEngineGen([]), algorithm: "CUSTOM-A" });
+  await src.initCA();
+  var extCert = fs.readFileSync(src.paths.caCert, "utf8");
+  var extKey  = fs.readFileSync(src.paths.caKey, "utf8");
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: _p256CaEngineGen([]), algorithm: "CUSTOM-A" });
+  await ca.commit({ caCertPem: extCert, caKeyPem: extKey });   // no commit.algorithm override
+  check("an initial pinned custom commit without an override persists the handle's label",
+        fs.existsSync(ca.paths.algorithm) === true && fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-A");
+}
+
+// A non-ENOENT ca.algorithm read failure (permissions, an unreadable/unmounted path, an over-cap read)
+// must FAIL CLOSED, not masquerade as "no label" — else a sibling adopts the CA under a stale/default
+// label. Only a genuine absent-file race (ENOENT between the existsSync check and the read) is missing.
+async function testPersistedLabelReadFailureFailsClosed() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]), algorithm: "CUSTOM-A" });
+  await ca.initCA();
+  var realRead = atomicFile.fdSafeReadSync;
+  var eacces = new Error("EACCES: permission denied"); eacces.code = "EACCES";
+  atomicFile.fdSafeReadSync = function (p) {
+    if (String(p) === String(ca.paths.algorithm)) throw eacces;
+    return realRead.apply(this, arguments);
+  };
+  var sib = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]) });
+  var threw = null;
+  try { await sib.generateClientCert({ cn: "x" }); }   // adoption reads the label
+  catch (e) { threw = e; }
+  finally { atomicFile.fdSafeReadSync = realRead; }
+  check("a non-ENOENT ca.algorithm read failure fails closed (adoption aborts)", threw !== null);
+  // The ENOENT race branch: a vanished file reads as missing (undefined), not a hard error.
+  var enoent = new Error("ENOENT: no such file"); enoent.code = "ENOENT";
+  atomicFile.fdSafeReadSync = function (p) {
+    if (String(p) === String(ca.paths.algorithm)) throw enoent;
+    return realRead.apply(this, arguments);
+  };
+  var probe = null;
+  try { probe = await code2(function () { return sib.canVerifyInTls(); }); }
+  finally { atomicFile.fdSafeReadSync = realRead; }
+  check("an ENOENT ca.algorithm race reads as no-label (undeterminable), not a hard read error",
+        probe === "mtls-ca/algorithm-undeterminable");
+}
+
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
 // node:crypto cannot parse -> status().generation === 0) cannot be rotated: a default
 // rotation would mint generation 1 (mis-cohorting the leaves it revokes) and an explicit
@@ -3709,6 +3756,8 @@ async function run() {
     await testFreshCreateLabelWriteFailureLeavesNoOrphanCa();
     await testInitialCustomCommitLabelWriteFailureFailsClosed();
     await testRotateConflictsWithConcurrentLabelRestamp();
+    await testInitialPinnedCommitWithoutOverridePersistsHandleLabel();
+    await testPersistedLabelReadFailureFailsClosed();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();

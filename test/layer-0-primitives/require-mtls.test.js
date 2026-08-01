@@ -140,6 +140,22 @@ async function testRevocationSourceEnforcement() {
     check("revocationSource: a non-boolean isSerialRevoked result fails closed",
           serNext === false && serDenied && serDenied.reason === "revocation-source-invalid");
 
+    // A cert whose serial cannot be extracted (unparseable raw — e.g. a TLS-terminating proxy
+    // prevalidated it, or an algorithm the local X.509 parser rejects) must be REFUSED when serial
+    // enforcement is enabled (isSerialRevoked present) — never admitted after a skipped serial lookup,
+    // which would let a serial-only revoke(serial) be bypassed.
+    var serUnresDenied = null;
+    var serUnresGate = b.middleware.requireMtls({
+      audit: false,
+      revocationSource: { isRevoked: function () { return false; }, isSerialRevoked: function () { return false; } },
+      onDeny: function (req, res, info) { serUnresDenied = info; },
+    });
+    var serUnresNext = false;
+    serUnresGate(_mockReq({ authorized: true, peerCert: { raw: Buffer.from("not-a-valid-der-cert"), subject: { CN: "unparseable" } } }),
+                 _mockRes(), function () { serUnresNext = true; });
+    check("a cert whose serial cannot be extracted is refused when serial enforcement is enabled",
+          serUnresNext === false && serUnresDenied && serUnresDenied.reason === "serial-unresolved");
+
     // A null isRevoked result also refuses (typeof null is "object", so the diagnostic reports "null").
     var nullDenied = null;
     var nullGate = b.middleware.requireMtls({

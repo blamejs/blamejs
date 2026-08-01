@@ -14050,12 +14050,19 @@ function testRequireMtlsRevocationSourceReturnsBoolean() {
   if (!/typeof\s+byFp\s*!==\s*["']boolean["'][\s\S]{0,200}revocation-source-invalid/.test(noComments) ||
       !/typeof\s+bySerial\s*!==\s*["']boolean["'][\s\S]{0,200}revocation-source-invalid/.test(noComments) ||
       /revocationSource\.isRevoked\([^)]*\)\s*===\s*true/.test(noComments) ||
-      /revocationSource\.isSerialRevoked\([^)]*\)\s*===\s*true/.test(noComments)) {
+      /revocationSource\.isSerialRevoked\([^)]*\)\s*===\s*true/.test(noComments) ||
+      // With serial enforcement enabled (isSerialRevoked present), a cert whose serial cannot be
+      // extracted (raw unparseable) cannot be cleared against revoke(serial), so it must REFUSE — never
+      // fall through the lookup and admit it. Guard the !serial -> serial-unresolved refuse.
+      !/if\s*\(\s*!serial\s*\)\s*\{\s*return\s+_refuse\([\s\S]{0,80}serial-unresolved/.test(noComments)) {
     bad.push({ file: "lib/middleware/require-mtls.js", line: 1,
       content: "the require-mtls gate must typecheck each revocationSource result to a boolean and REFUSE " +
                "(revocation-source-invalid) on a non-boolean (typeof byFp !== \"boolean\" / typeof bySerial !== " +
                "\"boolean\") — never `revocationSource.isRevoked(...) === true`, which admits a possibly-revoked peer " +
-               "when an async/DB source returns a Promise (never === true) or undefined, failing OPEN on a fail-closed gate" });
+               "when an async/DB source returns a Promise (never === true) or undefined; and when isSerialRevoked is " +
+               "present it must REFUSE (serial-unresolved) a cert whose serial cannot be extracted (if (!serial) return " +
+               "_refuse(...)) rather than skip the serial lookup and admit a serial-only-revoked peer — both fail OPEN on a " +
+               "fail-closed gate" });
   }
   bad = _filterMarkers(bad, "require-mtls-revocation-source-returns-boolean");
   _report("require-mtls revocationSource results are typechecked to boolean and fail closed on a non-boolean " +
@@ -14226,7 +14233,7 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       // #1: the label write is crash-ATOMIC with the CA — _commitLocked journals the effective custom
       // label (customAlgorithm: _customCommitLabel), writes it before the journal delete, and a
       // completed-commit reconcile restores it (_persistAlgorithm(manifest.customAlgorithm)).
-      !/_customCommitLabel\s*=\s*\(\s*!usesDefaultEngine[\s\S]{0,120}opts2\.algorithm/.test(noComments) ||
+      !/_customCommitLabel\s*=\s*!usesDefaultEngine[\s\S]{0,120}opts2\.algorithm/.test(noComments) ||
       !/customAlgorithm:\s*_customCommitLabel/.test(noComments) ||
       !/_customCommitLabel\s*!==\s*null\s*\)\s*\{\s*try\s*\{\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)/.test(noComments) ||
       !/_persistAlgorithm\(\s*manifest\.customAlgorithm\s*\)/.test(noComments) ||
@@ -14237,13 +14244,14 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       !/_adoptedLabel\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,100}caAlgorithm\s*=\s*_adoptedLabel/.test(noComments) ||
       // #3: an unpinned custom rotate must PRESERVE the persisted label (read it into `pin`).
       !/rotateOpts\.algorithm\s*===\s*undefined\s*&&\s*!usesDefaultEngine[\s\S]{0,120}_persistedPin\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,60}pin\s*=\s*_persistedPin/.test(noComments) ||
-      // #4: a FRESH create writes no rollback journal, so its label persist must precede _commitLocked
-      // (the cert is published LAST there) — a failed label write must abort BEFORE any CA is installed,
-      // never leave a labelless CA a sibling would issue under its own stale pin.
-      !/if\s*\(\s*!usesDefaultEngine\s*&&\s*caAlgorithm\s*!==\s*undefined\s*\)\s*_persistAlgorithm\(\s*caAlgorithm\s*\)\s*;\s*_commitLocked\(\s*fresh\s*\)/.test(noComments) ||
-      // #5: _commitLocked itself follows the same rule — a JOURNAL-LESS commit (initial commit with no
-      // prior key) persists the label BEFORE publishing the key/cert; only the JOURNALED path defers to
-      // the commit-point roll-forward. Guard both the pre-publish persist and the keyJournalWritten gate.
+      // #4: _customCommitLabel falls back to the handle's caAlgorithm when no explicit override is
+      // supplied, so a pinned handle that bootstraps/migrates the CA via commit() without repeating the
+      // label still publishes ca.algorithm (the label persist below runs off _customCommitLabel).
+      !/_customCommitLabel\s*=\s*!usesDefaultEngine[\s\S]{0,120}typeof\s+caAlgorithm\s*===\s*["']string["'][\s\S]{0,40}\?\s*caAlgorithm\s*:\s*null/.test(noComments) ||
+      // #5: a JOURNAL-LESS commit (fresh create / initial commit, no prior key) persists the label
+      // BEFORE publishing the key/cert (the cert lands last), so a failed label write aborts before any
+      // CA installs; only the JOURNALED path defers to the commit-point roll-forward. This is the single
+      // label-persist point for fresh create too (_freshCreateSerialized routes its label through here).
       !/if\s*\(\s*!keyJournalWritten\s*&&\s*_customCommitLabel\s*!==\s*null\s*\)\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)\s*;\s*atomicFile\.renameWithRetry\(\s*keyTmp\s*,\s*keyDest\s*\)/.test(noComments) ||
       !/if\s*\(\s*keyJournalWritten\s*&&\s*_customCommitLabel\s*!==\s*null\s*\)\s*\{\s*try\s*\{\s*_persistAlgorithm\(\s*_customCommitLabel\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
@@ -14251,14 +14259,25 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "customAlgorithm in _commitLocked, written before the journal delete, restored by reconcile via " +
                "_persistAlgorithm(manifest.customAlgorithm)) and READ on every adoption path — _adoptExistingCASnapshot " +
                "(caAlgorithm = _persisted), the _freshCreateSerialized cold-start adopt (caAlgorithm = _adoptedLabel), and " +
-               "an unpinned custom rotate (pin = _persistedPin). A fresh create writes no journal, so its label persist must " +
-               "run BEFORE _commitLocked(fresh) (`if (!usesDefaultEngine && caAlgorithm !== undefined) " +
-               "_persistAlgorithm(caAlgorithm); _commitLocked(fresh)`) so a failed label write aborts before any CA lands; " +
-               "likewise inside _commitLocked a journal-less commit persists the label before the key publish " +
-               "(if (!keyJournalWritten && _customCommitLabel !== null) _persistAlgorithm(...); renameWithRetry(keyTmp, " +
-               "keyDest)) while only the JOURNALED path (if (keyJournalWritten && _customCommitLabel !== null)) defers to " +
-               "the roll-forward. Else a stale/racing/crash-stranded label makes a sibling issue under the wrong algorithm " +
-               "against the new CA (rejected / incompatible leaf)" });
+               "an unpinned custom rotate (pin = _persistedPin). _customCommitLabel falls back to the handle's caAlgorithm " +
+               "when no explicit override is passed, so a pinned bootstrap/migrate via commit() still persists a label. " +
+               "_commitLocked is the single persist point: a journal-less commit (fresh create / initial commit) persists " +
+               "the label before the key publish (if (!keyJournalWritten && _customCommitLabel !== null) " +
+               "_persistAlgorithm(...); renameWithRetry(keyTmp, keyDest)) so a failed write aborts before any CA lands, while " +
+               "only the JOURNALED path (if (keyJournalWritten && _customCommitLabel !== null)) defers to the roll-forward. " +
+               "Else a stale/racing/crash-stranded label makes a sibling issue under the wrong algorithm against the new CA " +
+               "(rejected / incompatible leaf)" });
+  }
+  // _readPersistedAlgorithm() must fail CLOSED on a genuine read failure: only an absent-file race
+  // (ENOENT between the existsSync check and the open) is "no label" and returns undefined; any other
+  // read error (permissions, an unreadable/unmounted algorithm path, an over-cap read) must THROW so
+  // adoption/rotation/probing abort rather than silently downgrade to a stale pin / inferred label.
+  if (!/if\s*\(\s*_e\s*&&\s*_e\.code\s*===\s*["']ENOENT["']\s*\)\s*return\s+undefined\s*;\s*throw\s+_e/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_readPersistedAlgorithm()'s read-error catch must fail CLOSED — `if (_e && _e.code === \"ENOENT\") return " +
+               "undefined; throw _e` — so only a genuine absent-file race is treated as \"no label\"; a permissions / " +
+               "unmounted-path / over-cap read error must propagate and abort adoption, rotation, and probing rather than " +
+               "masquerade as missing and let a stale create-time pin or inferred bundled label be used against the CA" });
   }
   // The commit-point ca.algorithm write runs AFTER the new key/cert are published, but the outer
   // rollback catch restores only the prior key + retained root (it cannot un-publish the cert) and
