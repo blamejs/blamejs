@@ -1941,6 +1941,38 @@ async function testGenerateCrlScopedSerialsFallbackCoversRichState() {
         result.persisted === true && result.entryCount === 1 && fs.existsSync(ca.paths.crl) === true);
 }
 
+// The persist re-check must recompute the CRL scope from ONE coherent view of BOTH fresh stores, not
+// each store against the other's stale snapshot. A revoke({ serial: X, fingerprint: newFp }) plus an
+// importIssuance mapping newFp to the CURRENT issuer, both landing during signing, only reveal that X
+// now belongs in the CRL when the fresh revocation and fresh issuance are combined — each single-fresh
+// check still excludes X. Publishing the signed (X-omitting) CRL there would drop a revoked serial.
+async function testGenerateCrlPersistRecomputesFromCoherentStoreView() {
+  var duringSign = null;
+  var slowEngine = Object.assign({}, engine, {
+    generateCrl: async function (a) { if (duringSign) { var f = duringSign; duringSign = null; await f(); } return engine.generateCrl(a); },
+  });
+  var ca = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: slowEngine });
+  await ca.initCA();
+  var other = b.mtlsCa.create({ dataDir: _mkTmp(), caKeySealedMode: "disabled", engine: engine });
+  await other.initCA();
+  var otherCaCert   = fs.readFileSync(other.paths.caCert, "utf8");
+  var currentCaCert = fs.readFileSync(ca.paths.caCert, "utf8");
+  var X = "0a1b", oldFp = "aa".repeat(64), newFp = "bb".repeat(64);
+  // Pre-existing issuance maps serial X to the OTHER (non-current) issuer, so a serial-only resolution
+  // of X excludes it from THIS CA's CRL.
+  await ca.importIssuance([{ fingerprint: oldFp, serialNumber: X, generation: 1, caCert: otherCaCert }]);
+  duringSign = async function () {
+    await ca.revoke({ serial: X, fingerprint: newFp });
+    await ca.importIssuance([{ fingerprint: newFp, serialNumber: X, generation: 1, caCert: currentCaCert }]);
+  };
+  var result = await ca.generateCrl();
+  check("generateCrl does NOT publish a CRL whose scope changed under a combined fresh revocation+issuance view",
+        result.persisted === false && fs.existsSync(ca.paths.crl) === false);
+  // The operator's next generateCrl (no concurrency) sees X mapped to the current issuer and includes it.
+  var result2 = await ca.generateCrl();
+  check("the regenerated CRL includes the now-current-issuer serial X", result2.persisted === true && result2.entryCount === 1);
+}
+
 // generateCrl() reads the issuance ledger ONCE to resolve each revocation's issuing CA
 // (issuer-scoping). If importIssuance() backfills a revoked serial's issuer as a DIFFERENT
 // (old) CA while the engine signs, a persist that rechecks only the CA + revocation-store
@@ -3588,6 +3620,7 @@ async function run() {
     await testGenerateCrlPersistsDespiteConcurrentNormalIssuance();
     await testGenerateCrlPersistsDespiteConcurrentFingerprintRevoke();
     await testGenerateCrlScopedSerialsFallbackCoversRichState();
+    await testGenerateCrlPersistRecomputesFromCoherentStoreView();
     await testCommitLabelWriteFailureRollsForwardNotAbort();
     await testCanVerifyInTlsUsesPersistedLabelAfterSiblingRotation();
     await testSameCertLabelRestampWriteFailureFailsClosed();

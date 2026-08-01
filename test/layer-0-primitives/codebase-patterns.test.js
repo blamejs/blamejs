@@ -14952,15 +14952,29 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
                "= typeof revocationStore.version === \"function\" ? revocationStore.version() : null) — without the " +
                "snapshot version the persist cannot detect a revoke() that completed while engine.generateCrl() signed" });
   }
-  // The persist freshness gate must compare version() to the snapshot UNDER the revocations
-  // lock (so the check and the paths.crl write are atomic with revoke()'s write).
-  if (!/atomicFile\.lock\(\s*paths\.revocations\s*,\s*function\s*\(\)\s*\{[\s\S]{0,140}revocationStore\.version\(\)\s*===\s*revSnapshotVersion\s*\|\|[\s\S]{0,140}_scopedCrlSerials\(\s*revocationStore\.list\(\)\s*,\s*_issuanceEntries\s*\)\s*===\s*signedCrlSerials/.test(noComments)) {
+  // The persist re-check must recompute the CRL scope from ONE coherent view of BOTH fresh stores
+  // (revFresh + issFresh) with the revocations AND issuance leaf locks held — never pairing one fresh
+  // store with the OTHER's stale snapshot. A revoke by a new fingerprint plus an importIssuance mapping
+  // that fingerprint to the current issuer each look scope-neutral to a single-fresh check, but together
+  // move a serial into scope; checking (freshRev, staleIss) and (staleRev, freshIss) separately both
+  // miss it and publish a CRL that drops the revoked serial. The version fast-path stays.
+  if (!/revFresh\s*=\s*usesDefaultRevocationStore\s*\?\s*revocationStore\.list\(\)\s*:\s*allRevocations/.test(noComments) ||
+      !/issFresh\s*=\s*usesDefaultIssuanceStore\s*\?\s*issuanceStore\.list\(\)\s*:\s*_issuanceEntries/.test(noComments) ||
+      !/_scopedCrlSerials\(\s*revFresh\s*,\s*issFresh\s*\)\s*===\s*signedCrlSerials/.test(noComments) ||
+      !/atomicFile\.lock\(\s*paths\.revocations\s*,\s*_underIssuanceLock\s*\)/.test(noComments) ||
+      !/atomicFile\.lock\(\s*paths\.issuance\s*,\s*_persistIfScopeUnchanged\s*\)/.test(noComments) ||
+      /_scopedCrlSerials\(\s*revocationStore\.list\(\)\s*,\s*_issuanceEntries\s*\)/.test(noComments) ||
+      /_scopedCrlSerials\(\s*allRevocations\s*,\s*issuanceStore\.list\(\)\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "generateCrl()'s under-revocations-lock persist gate must be `revocationStore.version() === " +
-               "revSnapshotVersion || _scopedCrlSerials(revocationStore.list(), _issuanceEntries) === signedCrlSerials` " +
-               "— the version fast-path is fine, but a bare version compare SPURIOUSLY skips on a fingerprint-only revoke() " +
-               "(never in a serial CRL); the scoped-serial re-check persists unless the CRL's actual content changed, so a " +
-               "new serial revocation is still caught while a stale CRL is not left published under sustained churn" });
+      content: "generateCrl()'s persist re-check must recompute the scoped serial set from ONE coherent view of BOTH fresh " +
+               "stores under BOTH locks — revFresh = usesDefaultRevocationStore ? revocationStore.list() : allRevocations; " +
+               "issFresh = usesDefaultIssuanceStore ? issuanceStore.list() : _issuanceEntries; (revUnchanged && issUnchanged) " +
+               "|| _scopedCrlSerials(revFresh, issFresh) === signedCrlSerials — with atomicFile.lock(paths.revocations, " +
+               "_underIssuanceLock) wrapping atomicFile.lock(paths.issuance, _persistIfScopeUnchanged). It must NOT pair one " +
+               "fresh store with the other's stale snapshot (_scopedCrlSerials(revocationStore.list(), _issuanceEntries) or " +
+               "_scopedCrlSerials(allRevocations, issuanceStore.list())): a revoke-by-new-fingerprint plus an importIssuance " +
+               "mapping it to the current issuer move a serial into scope only in the combined fresh view, so a split check " +
+               "publishes a CRL that drops the revoked serial" });
   }
   // The just-signed CRL also depends on the ISSUANCE ledger: generateCrl() reads it to resolve
   // each revoked serial's issuing CA and EXCLUDE serials issued by a different CA (issuer-scoping).
@@ -14974,14 +14988,6 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
       content: "generateCrl() must snapshot the issuance store's version() alongside the ledger it issuer-scopes with " +
                "(issuanceSnapshotVersion = typeof issuanceStore.version === \"function\" ? issuanceStore.version() : null) " +
                "— without it the persist cannot detect an importIssuance() issuer-backfill that completed while signing" });
-  }
-  if (!/atomicFile\.lock\(\s*paths\.issuance\s*,\s*function\s*\(\)\s*\{[\s\S]{0,140}issuanceStore\.version\(\)\s*===\s*issuanceSnapshotVersion\s*\|\|[\s\S]{0,140}_scopedCrlSerials\(\s*allRevocations\s*,\s*issuanceStore\.list\(\)\s*\)\s*===\s*signedCrlSerials/.test(noComments)) {
-    bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "generateCrl()'s under-issuance-lock persist gate must be `issuanceStore.version() === " +
-               "issuanceSnapshotVersion || _scopedCrlSerials(allRevocations, issuanceStore.list()) === signedCrlSerials` " +
-               "— a bare version compare SPURIOUSLY skips on a normal generateClientCert() (appends an unrelated fresh " +
-               "serial), starving CRL persistence on a busy CA; the scoped-serial re-check persists unless an " +
-               "importIssuance() issuer-backfill actually changed the CRL's issuer-scoped content" });
   }
   // The default issuance store must expose the same O(1) version() signal the revocation store does.
   if (!/function\s+_defaultIssuanceStore[\s\S]{0,1200}version:\s*function\s*\(\)\s*\{[\s\S]{0,160}statSync\(\s*paths\.issuance\s*\)/.test(noComments)) {
