@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.6",
+  "date": "2026-08-01",
+  "headline": "Error- and edge-path tests for the CLI, mail sender, BIMI verifier, and static-file server",
+  "summary": "Error, edge, and adversarial branches of the blamejs CLI (migrate/seed runner error codes, dev-runner watch/ignore/kill-signal flags and start-failure exit, restore/backup inspect and rollback paths, mtls / vault / config-drift subcommands), b.mail (SMTPUTF8 detection, address validation and EAI edges, SMTP-smuggling refusal, DKIM and interpret error paths, the console/http/resend transports, guardDomain cc/bcc validation), b.mail.bimi verification branches, and b.static's request and path-resolution branches are now under test. Behaviour is unchanged -- these pin guarantees the primitives already met.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Error- and edge-path tests for the CLI, mail sender, BIMI verifier, and static-file server",
+          "body": "The blamejs CLI (migrate/seed runner coded-error paths, the dev runner's --watch / --ignore / --kill-signal handling and start-rejection exit, restore inspect/apply/rollback and list-rollbacks, backup inspect/verify, mtls show-cert / status, vault status, and config-drift inspect on a tampered sidecar), b.mail (long-ASCII SMTPUTF8 opt-in, reverse-DNS forward-confirm, address and EAI-domain validation edges, the outbound SMTP-smuggling refusal, DKIM-sign and interpret error fallbacks, the console / http / resend transports and their option defaults, guardDomain cc/bcc validation, and the CAN-SPAM refusal audit), b.mail.bimi's verification branches, and b.static's request and path-resolution error branches now have explicit tests for their boundary paths. Behaviour is unchanged -- the additions pin guarantees the primitives already met."
+        }
+      ]
+    }
+  ]
+}

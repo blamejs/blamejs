@@ -2734,6 +2734,23 @@ async function run() {
   await sectionEraseSuccess();
   await sectionAuditSuccess();
   await sectionDevSupervisor();
+
+  // Remaining branch-coverage closers: defensive / option-alternate / success-
+  // body arms the omit-one-flag + populated-fixture tests above never reach.
+  await sectionWriteLineNoWrite();
+  await sectionAuditRelativeOut();
+  await sectionRestoreApplyNoMax();
+  await sectionRestoreRollbackRelative();
+  await sectionRestoreListRollbacksNoMarker();
+  await sectionVaultStatusPresent();
+  await sectionConfigDriftInspectTampered();
+  await sectionMigrateSeedCodedError();
+  await sectionBackupInspectSuccess();
+  await sectionRestoreInspectSuccess();
+  await sectionDevSupervisorMore();
+  await sectionRestoreApplyGuards();
+  await sectionBackupVerifyBlockEntry();
+  await sectionMtlsShowCertLoadThrows();
 }
 
 // The `dev` supervisor's run loop, driven in-process via the _dev / _onDevRunning
@@ -2778,6 +2795,408 @@ async function sectionDevSupervisor() {
   stopResolve();                   // stop() completes
   var rc = await runP;
   check("dev: main resolves 0 after stop() completes", rc === 0);
+}
+
+// ---------------------------------------------------------------------------
+// _writeLine defensive guard — a ctx stream that is present but lacks a
+// .write method must be a silent no-op (the `!stream || typeof
+// stream.write !== "function"` guard returns), NOT a throw. Drives the
+// `version` command with a stdout object that has no write function; the
+// version print is dropped and main() still returns 0 without rejecting.
+// ---------------------------------------------------------------------------
+async function sectionWriteLineNoWrite() {
+  var stderr = [];
+  var brokenCtx = {
+    stdout: {},                                  // present, but no .write
+    stderr: { write: function (s) { stderr.push(String(s)); } },
+    env:    {},
+    cwd:    process.cwd(),
+  };
+  var threw = false;
+  var rc;
+  try { rc = await cli.main(["version"], brokenCtx); }
+  catch (_e) { threw = true; }
+  check("_writeLine (stdout without write) → never throws", threw === false);
+  check("_writeLine (stdout without write) → still exits 0", rc === 0);
+}
+
+// ---------------------------------------------------------------------------
+// audit — a RELATIVE --out path exercises the `nodePath.resolve(ctx.cwd, p)`
+// arm of _resolveOutPath (every other audit test passes an absolute path, so
+// only the isAbsolute-true arm was covered). The archive proceeds past
+// validation into auditTools.archive (exit != 2 either way).
+// ---------------------------------------------------------------------------
+async function sectionAuditRelativeOut() {
+  var ctx = _captureCtx();
+  var rc = await cli.main(
+    ["audit", "archive", "--passphrase", "p", "--out", "rel-audit-out-dir",
+     "--before", "2000-01-01"], ctx);
+  check("audit archive (relative --out) → past validation (exit != 2)", rc !== 2);
+}
+
+// ---------------------------------------------------------------------------
+// restore apply — a valid selector + passphrase but with the --max-pulled-*
+// flags OMITTED drives the `: undefined` alternate arms of the two
+// maxPulled* ternaries (sectionRestoreMore covers the Number(...) arms with
+// explicit values). run() then rejects on the unpullable bundle → exit 1.
+// ---------------------------------------------------------------------------
+async function sectionRestoreApplyNoMax() {
+  var dir = _tmpDir("blamejs-cli-restore-nomax");
+  try {
+    var ca = _captureCtx();
+    var rca = await cli.main(
+      ["restore", "apply", "--data-dir", path.join(dir, "dd"),
+       "--bundle", path.join(dir, "bun"), "--passphrase", "p"], ca);
+    check("restore apply (no max-pulled flags) → exit 1 (unpullable bundle)", rca === 1);
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// restore rollback — an explicit --rollback given as a RELATIVE basename
+// drives the `nodePath.resolve(rollbackRootR, rt)` arm (the earlier explicit-
+// target test passes an absolute path → the `rt` arm). The point does not
+// exist → restoreRollback.rollback throws → catch → exit 1.
+// ---------------------------------------------------------------------------
+async function sectionRestoreRollbackRelative() {
+  var dir = _tmpDir("blamejs-cli-restore-rbrel");
+  try {
+    var dd = path.join(dir, "dd");
+    fs.mkdirSync(dd, { recursive: true });
+    var c = _captureCtx();
+    var rc = await cli.main(
+      ["restore", "rollback", "--data-dir", dd, "--rollback", "some-relative-point"], c);
+    check("restore rollback (relative --rollback) → non-zero", rc !== 0);
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// restore list-rollbacks — a rollback point directory with NO sibling
+// marker.json → restoreRollback.list returns it with marker:null, so the row
+// renders with the EMPTY-annotation arms of the bundleId / reason ternaries
+// (`: ""`), distinct from sectionRestoreMore's fully-annotated marker point.
+// ---------------------------------------------------------------------------
+async function sectionRestoreListRollbacksNoMarker() {
+  var dir = _tmpDir("blamejs-cli-restore-nomarker");
+  try {
+    var dd = path.join(dir, "dd");
+    fs.mkdirSync(dd, { recursive: true });
+    var rbRoot = path.join(dir, "rbroot");
+    fs.mkdirSync(path.join(rbRoot, "point-bare"), { recursive: true });   // no .marker.json
+    var c = _captureCtx();
+    var rc = await cli.main(
+      ["restore", "list-rollbacks", "--data-dir", dd, "--rollback-root", rbRoot], c);
+    check("restore list-rollbacks (markerless point) → exit 0", rc === 0);
+    check("restore list-rollbacks (markerless point) → lists the point", /point-bare/.test(c.out()));
+    check("restore list-rollbacks (markerless point) → no bundleId annotation",
+      !/bundleId=/.test(c.out()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// vault status — a data-dir where a plaintext vault.key IS present drives the
+// `pre.ok ? "present (sealable)"` arm (the fresh-dir tests only hit the
+// absent arm). The key is materialised out-of-band via b.vault.init in
+// plaintext mode; the singleton is reset before + after so later booted
+// sections re-init cleanly.
+// ---------------------------------------------------------------------------
+async function sectionVaultStatusPresent() {
+  var dir = _tmpDir("blamejs-cli-vault-present");
+  var savedPass = process.env.BLAMEJS_VAULT_PASSPHRASE;
+  try {
+    delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    b.vault._resetForTest();
+    await b.vault.init({ dataDir: dir, mode: "plaintext" });
+    b.vault._resetForTest();
+
+    var c = _captureCtx();
+    var rc = await cli.main(["vault", "status", "--data-dir", dir], c);
+    check("vault status (plaintext key present) → exit 0", rc === 0);
+    check("vault status (plaintext key present) → present (sealable)",
+      /vault\.key \(plaintext\):\s+present \(sealable\)/.test(c.out()));
+  } finally {
+    b.vault._resetForTest();
+    if (savedPass === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    else process.env.BLAMEJS_VAULT_PASSPHRASE = savedPass;
+    _rm(dir);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// config-drift inspect — a TAMPERED sidecar (signature no longer verifies)
+// drives inspect's `verified ? "yes" : "no — " + tamperReason` else-arm and
+// the `return sidecar.verified ? 0 : 1` exit-1 arm (sectionConfigDriftTamper
+// only runs `verify` on the tampered sidecar; inspect's not-verified arms
+// went untested).
+// ---------------------------------------------------------------------------
+async function sectionConfigDriftInspectTampered() {
+  var dataDir = _tmpDir("blamejs-cli-drift-inspect-tamper");
+  try {
+    var sidecarPath;
+    var booted = await b.cliHelpers.bootApp({ dataDir: dataDir, vaultMode: "plaintext", env: {} });
+    try {
+      var drift = booted.b.configDrift.create({ dataDir: dataDir, audit: booted.b.audit });
+      sidecarPath = drift.sidecarPath;
+      var res = await drift.checkpoint({ service: "worker", replicas: 5 });
+      check("config-drift inspect-tamper: baseline captured", res && res.signed === true);
+    } finally {
+      try { await booted.app.shutdown(); } catch (_e) { /* best-effort */ }
+    }
+
+    var sc = JSON.parse(fs.readFileSync(sidecarPath, "utf8"));
+    sc.digestHex = sc.digestHex.slice(0, -1) + (sc.digestHex.slice(-1) === "a" ? "b" : "a");
+    fs.writeFileSync(sidecarPath, JSON.stringify(sc, null, 2));
+
+    // inspect (text, no --json) → the not-verified "no — <reason>" arm + exit 1.
+    var ci = _captureCtx();
+    var rci = await cli.main(
+      ["config-drift", "inspect", "--data-dir", dataDir, "--vault-mode", "plaintext"], ci);
+    check("config-drift inspect (tampered) → exit 1", rci === 1);
+    check("config-drift inspect (tampered) → verified: no line", /verified:\s+no —/.test(ci.out()));
+  } finally { _rm(dataDir); }
+}
+
+// ---------------------------------------------------------------------------
+// migrate / seed — a subcommand whose runner throws a CODED error (bad SQL in
+// a migration/seeder → node:sqlite SqliteError carrying `.code`) drives the
+// `(e && e.code)` truthy arm of the catch's `code = (e && e.code) || "ERROR"`
+// (the existing broken-* tests throw a plain Error with no code → only the
+// "ERROR" fallback arm). Both catch bodies still report exit 1.
+// ---------------------------------------------------------------------------
+async function sectionMigrateSeedCodedError() {
+  var dir = _tmpDir("blamejs-cli-coded-err");
+  try {
+    // migrate up whose up() runs invalid SQL → coded SqliteError.
+    var migDb = path.join(dir, "mig.db");
+    var migDir = path.join(dir, "migrations");
+    fs.mkdirSync(migDir, { recursive: true });
+    fs.writeFileSync(path.join(migDir, "0001-badsql.js"),
+      "module.exports = { up: function (db) { db['exec'](\"THIS IS NOT VALID SQL\"); } };");
+    var cm = _captureCtx();
+    var rcm = await cli.main(["migrate", "up", "--db", migDb, "--dir", migDir], cm);
+    check("migrate up (coded SQL error) → exit 1", rcm === 1);
+    check("migrate up (coded SQL error) → prints the error code",
+      /blamejs migrate up: migrations\/up-failed:/.test(cm.err()));
+
+    // seed run whose seeder runs invalid SQL → coded SqliteError.
+    var seedDb = path.join(dir, "seed.db");
+    var devDir = path.join(dir, "seeders", "dev");
+    fs.mkdirSync(devDir, { recursive: true });
+    fs.writeFileSync(path.join(devDir, "0001-badsql.js"),
+      "module.exports = { description: \"x\", run: async function (db) {" +
+      " db.exec(\"THIS IS NOT VALID SQL\"); } };");
+    var cs = _captureCtx();
+    var rcs = await cli.main(
+      ["seed", "run", "--db", seedDb, "--env", "dev", "--dir", path.join(dir, "seeders")], cs);
+    check("seed run (coded SQL error) → exit 1", rcs === 1);
+    check("seed run (coded SQL error) → prints the error code",
+      /blamejs seed run: RUN_FAILED:/.test(cs.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// backup inspect — the SUCCESS body (a valid unsigned manifest.json, no
+// decryption) exercises the encryptedSize summing, the manifestVersion ||
+// version || "unknown" fallback, the kinds histogram loop + canonicalJson
+// sortKeys, and report.ok. The earlier backup-inspect test only hits the
+// no-such-bundle throw catch.
+// ---------------------------------------------------------------------------
+function _writeValidManifest(bundleDir) {
+  fs.mkdirSync(bundleDir, { recursive: true });
+  var manifest = {
+    version:          1,
+    framework:        "blamejs",
+    frameworkVersion: "0.0.0-test",
+    createdAt:        new Date().toISOString(),
+    vaultKeySalt:     "ab".repeat(16),
+    vaultKeyEnc:      Buffer.from("x".repeat(48)).toString("base64"),
+    files: [
+      { relativePath: "a.bin", encryptedPath: "files/a.enc", size: 10, encryptedSize: 20,
+        checksum: "cd".repeat(64), salt: "ef".repeat(8), kind: "raw" },
+      { relativePath: "b.bin", encryptedPath: "files/b.enc", size: 30, encryptedSize: 40,
+        checksum: "11".repeat(64), salt: "22".repeat(8), kind: "vault-sealed" },
+      // A zero-`encryptedSize` entry (0 is a valid non-negative integer) drives
+      // the `encryptedSize || 0` fallback arm in both the backup-inspect and
+      // restore-inspect summing loops.
+      { relativePath: "c.bin", encryptedPath: "files/c.enc", size: 0, encryptedSize: 0,
+        checksum: "33".repeat(64), salt: "44".repeat(8), kind: "plaintext" },
+    ],
+  };
+  fs.writeFileSync(path.join(bundleDir, "manifest.json"), JSON.stringify(manifest));
+}
+
+async function sectionBackupInspectSuccess() {
+  var dir = _tmpDir("blamejs-cli-backup-inspect-ok");
+  try {
+    var bundleDir = path.join(dir, "a-bundle");
+    _writeValidManifest(bundleDir);
+    var c = _captureCtx();
+    var rc = await cli.main(["backup", "inspect", "--bundle", bundleDir], c);
+    check("backup inspect (valid manifest) → exit 0", rc === 0);
+    check("backup inspect (valid manifest) → file count", /files:\s+3/.test(c.out()));
+    check("backup inspect (valid manifest) → summed encrypted size", /encrypted size: 60 bytes/.test(c.out()));
+    check("backup inspect (valid manifest) → manifest version from `version`", /manifest:\s+v1/.test(c.out()));
+    check("backup inspect (valid manifest) → kinds histogram", /raw: 1/.test(c.out()) && /vault-sealed: 1/.test(c.out()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// restore inspect — the SUCCESS body: a valid manifest under a diskStorage
+// bundle dir means restore.create().inspect() pulls + reads it (no decrypt),
+// and the CLI prints the bundle / storage-root / manifest version / created /
+// files / summed encrypted-size lines (the earlier restore-inspect test only
+// hits the missing-bundle reject catch).
+// ---------------------------------------------------------------------------
+async function sectionRestoreInspectSuccess() {
+  var dir = _tmpDir("blamejs-cli-restore-inspect-ok");
+  try {
+    var store = path.join(dir, "store");
+    var bundleId = "2026-05-24T16-00-00-000Z-ccdd2200";   // valid timestamp+suffix
+    _writeValidManifest(path.join(store, bundleId));
+    var c = _captureCtx();
+    var rc = await cli.main(
+      ["restore", "inspect", "--storage-root", store, "--bundle-id", bundleId], c);
+    check("restore inspect (valid manifest) → exit 0", rc === 0);
+    check("restore inspect (valid manifest) → bundle line", new RegExp("bundle:\\s+" + bundleId).test(c.out()));
+    check("restore inspect (valid manifest) → files line", /files:\s+3/.test(c.out()));
+    check("restore inspect (valid manifest) → summed encrypted size", /encrypted size: 60 bytes/.test(c.out()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// dev supervisor — the option-building arms the single-arg supervisor test
+// never reaches: repeated --arg / --watch (the Array.isArray(val) slice arm of
+// _coerceList), a non-empty --watch (watchList.length ? watchList) + --ignore
+// (ignoreList.length ? ignoreList) + --kill-signal (typeof === "string"), a
+// SECOND shutdown() call (the `if (stopped) return` early-out), and a start()
+// that REJECTS (the start catch → exit 1).
+// ---------------------------------------------------------------------------
+async function sectionDevSupervisorMore() {
+  // --- multi-flag supervisor + double-shutdown ---
+  var startCalls = 0, stopCalls = 0;
+  var stopResolve;
+  var stopDone = new Promise(function (r) { stopResolve = r; });
+  var fakeDev = {
+    start: function () { startCalls += 1; return Promise.resolve(); },
+    stop:  function () { stopCalls += 1; return stopDone; },
+  };
+  var shutdownFn = null;
+  var capturedOpts = null;
+  var c = _captureCtx();
+  c._dev = function (opts) { capturedOpts = opts; return fakeDev; };
+  c._onDevRunning = function (fn) { shutdownFn = fn; };
+
+  var runP = cli.main(
+    ["dev", "--command", "node",
+     "--arg", "one", "--arg", "two",           // repeated → array → _coerceList slice arm
+     "--watch", "./w1", "--watch", "./w2",     // repeated → array + non-empty watchList arm
+     "--ignore", "node_modules",               // valid pattern → non-empty ignoreList arm
+     "--kill-signal", "SIGTERM"], c);          // string → killSignal arm
+  await helpers.waitUntil(function () { return shutdownFn !== null; }, {
+    timeoutMs: 5000, label: "cli dev-more: supervisor started + running",
+  });
+  check("dev-more: start() called once", startCalls === 1);
+  check("dev-more: repeated --arg reaches the child as an ordered array",
+    !!capturedOpts && Array.isArray(capturedOpts.args) &&
+    capturedOpts.args.join(",") === "one,two");
+  check("dev-more: repeated --watch passed to the supervisor",
+    !!capturedOpts && Array.isArray(capturedOpts.watch) &&
+    capturedOpts.watch.join(",") === "./w1,./w2");
+  check("dev-more: valid --ignore compiled to a RegExp list",
+    !!capturedOpts && Array.isArray(capturedOpts.ignore) &&
+    capturedOpts.ignore.length === 1 && capturedOpts.ignore[0] instanceof RegExp);
+  check("dev-more: --kill-signal forwarded as a string", capturedOpts.killSignal === "SIGTERM");
+
+  shutdownFn();                    // first shutdown → stop() (still pending)
+  check("dev-more: stop() invoked once on first shutdown", stopCalls === 1);
+  shutdownFn();                    // second shutdown → `if (stopped) return` early-out
+  check("dev-more: second shutdown is a no-op (stop not re-invoked)", stopCalls === 1);
+
+  stopResolve();
+  var rc = await runP;
+  check("dev-more: main resolves 0 after stop() completes", rc === 0);
+
+  // --- start() rejects → the dev start catch returns exit 1 ---
+  var failDev = {
+    start: function () { return Promise.reject(new Error("spawn-failed-xyz")); },
+    stop:  function () { return Promise.resolve(); },
+  };
+  var cf = _captureCtx();
+  cf._dev = function () { return failDev; };
+  var rcf = await cli.main(["dev", "--command", "node"], cf);
+  check("dev-more: start() rejection → exit 1", rcf === 1);
+  check("dev-more: start() rejection → stderr message", /blamejs dev: spawn-failed-xyz/.test(cf.err()));
+}
+
+// ---------------------------------------------------------------------------
+// restore apply — the two early guard returns: apply with NO --data-dir (the
+// _requireDataDir null → return 2 arm) and apply with a --data-dir but NO
+// bundle selector (the _resolveRestoreBundleSelector null → return 2 arm).
+// The existing apply tests supply both, so neither early return was taken.
+// ---------------------------------------------------------------------------
+async function sectionRestoreApplyGuards() {
+  var dir = _tmpDir("blamejs-cli-restore-applyguard");
+  try {
+    // no --data-dir → the _requireDataDir guard returns 2 before the selector.
+    var cNoDir = _captureCtx();
+    var rcNoDir = await cli.main(
+      ["restore", "apply", "--bundle", path.join(dir, "bun"), "--passphrase", "p"], cNoDir);
+    check("restore apply (no --data-dir) → exit 2", rcNoDir === 2);
+    check("restore apply (no --data-dir) → message", /--data-dir <path> is required/.test(cNoDir.err()));
+
+    // --data-dir present, no --bundle / --storage-root → the selector guard → 2.
+    var cNoSel = _captureCtx();
+    var rcNoSel = await cli.main(
+      ["restore", "apply", "--data-dir", path.join(dir, "dd"), "--passphrase", "p"], cNoSel);
+    check("restore apply (no selector) → exit 2", rcNoSel === 2);
+    check("restore apply (no selector) → message", /--bundle <dir> OR --storage-root/.test(cNoSel.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// backup verify — with a passphrase present (past the passphrase gate) but a
+// nonexistent bundle: control enters the `verify` block (which the no-
+// passphrase test never reaches), restoreBundle.extract throws, and the verify
+// catch returns exit 1.
+// ---------------------------------------------------------------------------
+async function sectionBackupVerifyBlockEntry() {
+  var dir = _tmpDir("blamejs-cli-backup-verify-entry");
+  try {
+    var c = _captureCtx();
+    var rc = await cli.main(
+      ["backup", "verify", "--bundle", path.join(dir, "no-such-bundle"), "--passphrase", "p"], c);
+    check("backup verify (bad bundle, passphrase present) → exit 1", rc === 1);
+    check("backup verify (bad bundle, passphrase present) → catch message",
+      /blamejs backup verify:/.test(c.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// mtls show-cert — a CA that `exists()` (key + cert both present) but whose
+// cert file exceeds loadCert()'s 1 MiB fd-read cap: exists() still returns
+// true, but loadCert()'s bounded read throws ("too-large") → the show-cert
+// `catch (e)` returns "could not load CA cert", exit 1 (the earlier show-cert
+// tests hit only the no-CA and the success-PEM arms).
+// ---------------------------------------------------------------------------
+async function sectionMtlsShowCertLoadThrows() {
+  var dataDir = _tmpDir("blamejs-cli-mtls-loadthrow");
+  try {
+    var base = ["--data-dir", dataDir, "--vault-mode", "plaintext"];
+    var ci = _captureCtx();
+    check("mtls init (for load-throw) → exit 0", (await cli.main(["mtls", "init"].concat(base), ci)) === 0);
+
+    var certPath = path.join(dataDir, "ca.crt");
+    check("mtls init wrote ca.crt", fs.existsSync(certPath));
+    // Overwrite the cert with a file past the 1 MiB read cap: exists() still
+    // sees the path, but loadCert()'s fdSafeReadSync refuses it → the show-cert
+    // load catch fires.
+    fs.writeFileSync(certPath, Buffer.alloc(b.constants.BYTES.mib(1) + b.constants.BYTES.kib(4), 0x41));
+
+    var cs = _captureCtx();
+    var rcs = await cli.main(["mtls", "show-cert"].concat(base), cs);
+    check("mtls show-cert (oversize cert) → exit 1", rcs === 1);
+    check("mtls show-cert (oversize cert) → could-not-load message",
+      /could not load CA cert:/.test(cs.err()));
+  } finally { _rm(dataDir); }
 }
 
 module.exports = { run: run };

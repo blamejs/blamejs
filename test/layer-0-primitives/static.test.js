@@ -1560,6 +1560,170 @@ function testParseRangeHeaderGuard() {
         b.staticServe._parseRangeHeader(null, 10) === null);
 }
 
+// A non-GET/HEAD method is not the download surface — the middleware ignores
+// it and hands off to next() (here the fixture's 404 fall-through) rather than
+// serving or refusing the asset.
+async function testNonGetMethodFallsThrough() {
+  var ctx = await _ctx({ contentSafety: null }, { "a.txt": "abc" });
+  try {
+    var post = await _req(ctx.port, "POST", "/a.txt");
+    check("method: POST is not served (falls through to next → 404)",
+          post.statusCode === 404);
+    var del = await _req(ctx.port, "DELETE", "/a.txt");
+    check("method: DELETE is not served (falls through to next → 404)",
+          del.statusCode === 404);
+    // Sanity: GET on the same asset still serves — the method gate did not
+    // break the download path.
+    var get = await _get(ctx.port, "/a.txt");
+    check("method: GET on the same asset still serves 200",
+          get.statusCode === 200 && get.body.toString("utf8") === "abc");
+  } finally { ctx.close(); }
+}
+
+// A permissions gate whose check() THROWS (backend outage) fails closed: the
+// error is swallowed into { ok: false } and the request is refused 403 — the
+// same refusal a plain `false` produces, never a 500 or an open serve.
+async function testPermissionCheckThrows() {
+  var ctx = await _ctx({
+    contentSafety: null,
+    permissions: { check: async function () { throw new Error("authz backend down"); } },
+  }, { "secret.txt": "classified" });
+  try {
+    var r = await _get(ctx.port, "/secret.txt");
+    check("permission: a throwing check() fails closed → 403 (never 500 / never served)",
+          r.statusCode === 403 && r.body.toString("utf8").indexOf("classified") === -1);
+  } finally { ctx.close(); }
+}
+
+// contentSafety:null records the opt-out via audit.safeEmit at create() time.
+// A safeEmit that THROWS must not abort create() — the emission is best-effort
+// and the swallowed throw still yields a working serve handle.
+async function testContentSafetyDisabledAuditThrows() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-audit-throw-"));
+  _writeFile(dir, "a.txt", "abc");
+  b.staticServe._resetCacheForTest();
+  var createThrew = null;
+  var fn = null;
+  var throwingAudit = { safeEmit: function () { throw new Error("audit sink down"); } };
+  try {
+    fn = b.staticServe.create({ root: dir, contentSafety: null, audit: throwingAudit });
+  } catch (e) { createThrew = e; }
+  check("contentSafety:null: a throwing audit.safeEmit does not abort create()",
+        createThrew === null && typeof fn === "function");
+  // The handle still serves — the swallowed audit throw left the instance intact.
+  var server = http.createServer(function (req, res) {
+    fn(req, res, function () { res.writeHead(404); res.end("nf"); });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    var r = await _get(port, "/a.txt");
+    check("contentSafety:null: handle serves normally after the swallowed audit throw",
+          r.statusCode === 200 && r.body.toString("utf8") === "abc");
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// safeAttachmentForRiskyMimes forces download for a risky MIME whose
+// Content-Type carries NO parameter (image/svg+xml has no "; charset=...") —
+// exercises the semicolon-absent branch of the risky-MIME classifier.
+async function testSafeAttachmentRiskyMimeNoParam() {
+  var ctx = await _ctx({ contentSafety: null, safeAttachmentForRiskyMimes: true },
+    { "icon.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>" });
+  try {
+    var r = await _get(ctx.port, "/icon.svg");
+    check("safeAttachmentForRiskyMimes: parameter-less image/svg+xml forced to attachment",
+          r.statusCode === 200 &&
+          /^attachment;/.test(r.headers["content-disposition"] || ""));
+    check("safeAttachmentForRiskyMimes: svg content-type advertised without a charset param",
+          (r.headers["content-type"] || "").indexOf(";") === -1);
+  } finally { ctx.close(); }
+}
+
+// forceAttachmentForNonText with a contentSafety MAP that is a real object but
+// carries no ".svg" gate: an SVG is forced to download because no sanitizer
+// vouches for it (distinct from contentSafety:null, which is the not-an-object
+// branch). This is the "object present, .svg gate absent" refusal.
+async function testForceAttachmentSvgMapMissingSvgGate() {
+  var csvGate = { check: async function () { return { ok: true, action: "serve" }; } };
+  var ctx = await _ctx({
+    forceAttachmentForNonText: true,
+    contentSafety: { ".csv": csvGate },
+  }, { "evil.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>" });
+  try {
+    var r = await _get(ctx.port, "/evil.svg");
+    check("force-attachment: svg with a contentSafety map lacking a .svg gate is forced to download",
+          /^attachment;/.test(r.headers["content-disposition"] || "") &&
+          r.headers["x-content-type-options"] === "nosniff");
+  } finally { ctx.close(); }
+}
+
+// When the request context resolves neither a userId nor an IP, the quota
+// actor key is null — the concurrency / bandwidth caps early-return "ok" for a
+// keyless actor rather than sharing one global bucket. Force the null key by
+// presenting an empty-string req.ip (a string, so it wins the ip branch, but
+// falsy so it yields no key) and prove a capped mount still serves.
+async function testNullActorKeyBypassesQuota() {
+  var cache = b.cache.create({ namespace: "static-nullactor-" + process.pid, backend: "memory" });
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-nullactor-"));
+  _writeFile(dir, "f.txt", "body");
+  b.staticServe._resetCacheForTest();
+  var fn = b.staticServe.create({
+    root: dir, contentSafety: null, cache: cache, maxConcurrentDownloadsPerActor: 1,
+  });
+  var server = http.createServer(function (req, res) {
+    // Empty-string ip → extractActorContext keeps it, _actorKeyFromContext
+    // returns null (falsy ip, no userId).
+    req.ip = "";
+    fn(req, res, function () { res.writeHead(404); res.end("nf"); });
+  });
+  var port = await listenOnRandomPort(server);
+  try {
+    // Seed both plausible ip-form keys above the cap: a keyed actor would 429,
+    // but a null-key actor never consults them → serves.
+    await cache.set("static:conc:ip:", 5);
+    await cache.set("static:conc:ip:127.0.0.1", 5);
+    var r = await _get(port, "/f.txt");
+    check("actor-key: a null actor key bypasses the concurrency cap (keyless → not rate-limited) → 200",
+          r.statusCode === 200 && r.body.toString("utf8") === "body");
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (typeof cache.close === "function") await cache.close();
+  }
+}
+
+// A client that disconnects mid-stream triggers the cancellation-propagation
+// path: the file stream is destroyed and the idle timer cleared while both are
+// still live (the normal-completion path clears the timer first, so this only
+// runs on an abort). The server must survive and keep serving.
+async function testClientAbortMidStream() {
+  var big = Buffer.alloc(4 * 1024 * 1024, 0x61); // 4 MiB of 'a'
+  var ctx = await _ctx({ contentSafety: null }, { "big.dat": big });
+  try {
+    var net = require("node:net");
+    await new Promise(function (resolve) {
+      var sock = net.connect(ctx.port, "127.0.0.1", function () {
+        sock.write("GET /big.dat HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+      });
+      var done = false;
+      function finish() { if (!done) { done = true; resolve(); } }
+      sock.on("data", function () {
+        // First bytes on the wire — vanish while the stream is still flowing.
+        try { sock.destroy(); } catch (_d) { /* already gone */ }
+        finish();
+      });
+      sock.on("error", finish);
+      sock.on("close", finish);
+    });
+    // Server survived the mid-stream abort — a fresh full request still serves.
+    var r = await _get(ctx.port, "/big.dat");
+    check("client-abort: server survives a mid-stream disconnect and still serves the full file",
+          r.statusCode === 200 && r.body.length === big.length);
+  } finally { ctx.close(); }
+}
+
 // The _get helper drives each fixture server with a default-agent http.request
 // (keep-alive), and srv.close() runs fire-and-forget. The kept-alive client
 // sockets, the servers' accept sockets, and any in-flight static-file read
@@ -1650,6 +1814,13 @@ async function run() {
     await testHeadSanitizeOverride();
     await testIntegrityOnDirectory();
     testParseRangeHeaderGuard();
+    await testNonGetMethodFallsThrough();
+    await testPermissionCheckThrows();
+    await testContentSafetyDisabledAuditThrows();
+    await testSafeAttachmentRiskyMimeNoParam();
+    await testForceAttachmentSvgMapMissingSvgGate();
+    await testNullActorKeyBypassesQuota();
+    await testClientAbortMidStream();
   } finally {
     await _drainTcpHandles();
   }

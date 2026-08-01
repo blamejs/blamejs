@@ -1238,6 +1238,178 @@ async function testFetchAndVerifyMarkAuditSinkThrows() {
         rv.ok === true);
 }
 
+// _generateFourLevelChain — root -> interA -> interB -> leaf. The fetched
+// body carries [leaf, interB, interA] (interB BEFORE interA on purpose):
+// walking interB's issuer, the verifier encounters interB itself in the
+// intermediates array before interA, exercising the `cand === current`
+// self-skip branch of _verifyCertChain.
+async function _generateFourLevelChain() {
+  var rootKeys = await _genKey();
+  var interAKeys = await _genKey();
+  var interBKeys = await _genKey();
+  var leafKeys = await _genKey();
+  var now = new Date();
+  var far = new Date(now.getTime() + 10 * YEAR_MS);
+
+  var rootKeyPem = await _keyPem(rootKeys.privateKey);
+  var interAKeyPem = await _keyPem(interAKeys.privateKey);
+  var interBKeyPem = await _keyPem(interBKeys.privateKey);
+
+  var rootPem = await pki.x509.sign({
+    subject: "BIMI Test Root", subjectPublicKey: await _spki(rootKeys.publicKey),
+    serialNumber: "0x01", notBefore: now, notAfter: far,
+    extensions: {
+      basicConstraints: { cA: true, pathLen: 3, critical: true },
+      keyUsage:         ["keyCertSign", "cRLSign"], keyUsageCritical: true,
+    },
+  }, { key: rootKeyPem }, { pem: true });
+
+  var interAPem = await pki.x509.sign({
+    subject: "BIMI Test Intermediate A", subjectPublicKey: await _spki(interAKeys.publicKey),
+    serialNumber: "0x02", notBefore: now, notAfter: far,
+    extensions: {
+      basicConstraints: { cA: true, pathLen: 2, critical: true },
+      keyUsage:         ["keyCertSign", "cRLSign"], keyUsageCritical: true,
+    },
+  }, { cert: rootPem, key: rootKeyPem }, { pem: true });
+
+  var interBPem = await pki.x509.sign({
+    subject: "BIMI Test Intermediate B", subjectPublicKey: await _spki(interBKeys.publicKey),
+    serialNumber: "0x03", notBefore: now, notAfter: far,
+    extensions: {
+      basicConstraints: { cA: true, pathLen: 0, critical: true },
+      keyUsage:         ["keyCertSign", "cRLSign"], keyUsageCritical: true,
+    },
+  }, { cert: interAPem, key: interAKeyPem }, { pem: true });
+
+  var leafPem = await pki.x509.sign({
+    subject: "example.com", subjectPublicKey: await _spki(leafKeys.publicKey),
+    serialNumber: "0x04", notBefore: now, notAfter: far,
+    extensions: {
+      basicConstraints: { cA: false, critical: true },
+      subjectAltName:   [{ dNSName: "example.com" }],
+      extendedKeyUsage: [BIMI_EKU_OID], extendedKeyUsageCritical: false,
+    },
+  }, { cert: interBPem, key: interBKeyPem }, { pem: true });
+
+  return { rootPem: rootPem, interAPem: interAPem, interBPem: interBPem, leafPem: leafPem };
+}
+
+function testTinyPsSvgBareUnquotedAttrs() {
+  // Bare (unquoted) attribute values exercise the third alternation of the
+  // attribute regex (the `[^\s>]+` capture, m[5]) — distinct from the
+  // double-quoted (m[3]) and single-quoted (m[4]) paths.
+  var rv = b.mail.bimi.validateTinyPsSvg(
+    "<svg version=1.2 baseProfile=tiny-ps viewBox=0></svg>");
+  check("tiny-ps: bare unquoted attributes are parsed and validate",
+        rv.ok === true && rv.violations.length === 0);
+}
+
+async function testFetchAndVerifyMarkRequestRejectsNonError() {
+  // The httpClient rejects with a NON-Error value (a bare string). The
+  // fetch-failed path must fall back to String(e) for both the audit
+  // reason and the thrown message.
+  var chain = await _generateTestChain();
+  var nonErr = "socket hang up (bare-string reason)";
+  var threw = null;
+  try {
+    await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _throwingHttpClient(nonErr),
+    });
+  } catch (e) { threw = e; }
+  check("fetchAndVerifyMark: non-Error rejection uses String(e) fallback in message",
+        threw && threw.code === "bimi/vmc-fetch-failed" &&
+        threw.message.indexOf("bare-string reason") !== -1);
+}
+
+async function testFetchAndVerifyMarkNullBody() {
+  // A 200 response with a null body: the `rsp.body || ""` fallback yields
+  // an empty string, which fails the has-PEM check.
+  var threw = null;
+  try {
+    await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: "anchor",
+      httpClient:      { request: function () {
+        return Promise.resolve({ statusCode: 200, headers: {}, body: null });
+      } },
+    });
+  } catch (e) { threw = e; }
+  check("fetchAndVerifyMark: null response body coerces to empty and throws vmc-fetch-failed",
+        threw && threw.code === "bimi/vmc-fetch-failed" &&
+        /not a PEM-encoded CERTIFICATE chain/.test(threw.message));
+}
+
+async function testFetchAndVerifyMarkFourLevelChain() {
+  // leaf -> interB -> interA -> root, with the body ordering the
+  // intermediates [interB, interA]. Verifying interB's issuer, the walker
+  // encounters interB itself before interA and must skip it (self-skip).
+  var chain = await _generateFourLevelChain();
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(
+      chain.leafPem + "\n" + chain.interBPem + "\n" + chain.interAPem),
+  });
+  check("fetchAndVerifyMark: four-level chain validates past the self-skip branch",
+        rv.ok === true && rv.vmcType === "vmc");
+}
+
+async function testFetchAndVerifyMarkDomainCanonicalizesEmpty() {
+  // The BIMI domain is a non-empty string that canonicalizes to "" (it
+  // contains a path separator). The SAN matcher fails closed on an empty
+  // canonical domain rather than matching anything.
+  var chain = await _generateTestChain({ sanDomain: "example.com" });
+  var threw = null;
+  try {
+    await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com/evil",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _stubHttpClient(chain.leafPem),
+    });
+  } catch (e) { threw = e; }
+  check("fetchAndVerifyMark: domain canonicalizing to empty fails closed (domain-mismatch)",
+        threw && threw.code === "bimi/vmc-domain-mismatch");
+}
+
+async function testFetchAndVerifyMarkLogotypeShortOctet() {
+  // A logotype SEQUENCE whose only leaf is a < 4-byte OCTET STRING — the
+  // scanner rejects it as too short to hold a magic prefix and yields no
+  // svg.
+  var shortSeq = _derSequence(Buffer.from([0x04, 0x02, 0x41, 0x42]));
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(shortSeq) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: short (<4B) logotype leaf yields mark.svg === null",
+        rv.ok === true && rv.mark.svg === null);
+}
+
+async function testFetchAndVerifyMarkLogotypeUnparseableInner() {
+  // A logotype whose inner constructed value fails BOTH readSequence and
+  // the single-node readNode fallback (truncated child TLV) — the scanner
+  // returns null via the inner catch.
+  var badInner = Buffer.from([0x30, 0x03, 0x04, 0x05, 0x41]);
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(badInner) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: unparseable logotype inner yields mark.svg === null",
+        rv.ok === true && rv.mark.svg === null);
+}
+
 async function run() {
   testSurface();
   testRecordShape();
@@ -1288,6 +1460,7 @@ async function run() {
   testTinyPsSvgUnterminatedStartTag();
   testTinyPsSvgSingleQuotedAttrs();
   testTinyPsSvgMissingVersion();
+  testTinyPsSvgBareUnquotedAttrs();
 
   await testFetchAndVerifyMarkSuccess();
   await testFetchAndVerifyMarkCmc();
@@ -1325,11 +1498,18 @@ async function run() {
   await testFetchAndVerifyMarkStringBodyAndExplicitOpts();
   await testFetchAndVerifyMarkAuditSinkSuccess();
   await testFetchAndVerifyMarkAuditSinkThrows();
+
+  await testFetchAndVerifyMarkRequestRejectsNonError();
+  await testFetchAndVerifyMarkNullBody();
+  await testFetchAndVerifyMarkFourLevelChain();
+  await testFetchAndVerifyMarkDomainCanonicalizesEmpty();
+  await testFetchAndVerifyMarkLogotypeShortOctet();
+  await testFetchAndVerifyMarkLogotypeUnparseableInner();
 }
 
 module.exports = { run: run };
 
 if (require.main === module) {
-  run().then(function () { console.log("OK"); })
+  run().then(function () { console.log("OK — " + helpers.getChecks() + " checks passed"); })
        .catch(function (e) { console.error(e.stack || e); process.exit(1); });
 }

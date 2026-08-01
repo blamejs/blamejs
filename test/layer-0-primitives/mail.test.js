@@ -1935,6 +1935,386 @@ async function testSmtpSmtpUtf8FromCcRecipient(certPair) {
 }
 
 // ---------------------------------------------------------------------------
+// Additional branch closures — no-socket / pure paths
+// ---------------------------------------------------------------------------
+
+// consoleTransport — single (non-array) bcc with redact OFF prints the
+// address verbatim (the false arm of the bcc join ternary).
+async function testConsoleNonArrayBccNoRedact() {
+  var s = _fakeStream();
+  var t = b.mail.transports.console({ stream: s });
+  await t.send({ to: "solo@x.com", from: "f@x.com", bcc: "one-bcc@x.com", text: "hi" });
+  check("console: single (non-array) bcc printed verbatim (redact off)",
+    s.data.indexOf("Bcc: one-bcc@x.com") !== -1);
+}
+
+// No-arg construction defaults: http()/resend()/smtp() with no opts still
+// hit the `opts = opts || {}` guard (then fail their required-opt gate);
+// create() with no opts falls back to the console transport.
+function testNoArgConstructionDefaults() {
+  function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
+  check("http: no-arg → opts||{} then requires endpoint",
+    threw(function () { b.mail.transports.http(); }).code === "mail/http-misconfigured");
+  check("resend: no-arg → opts||{} then requires apiKey",
+    threw(function () { b.mail.transports.resend(); }).code === "mail/resend-misconfigured");
+  check("smtp: no-arg → opts||{} then requires host",
+    threw(function () { b.mail.transports.smtp(); }).code === "mail/smtp-misconfigured");
+  var m = b.mail.create();
+  check("create: no-arg → default console transport", m.transport.name === "console");
+}
+
+// httpTransport without a name → codePrefix defaults to "mail/http".
+async function testHttpTransportDefaultName() {
+  var t = b.mail.transports.http({
+    endpoint: "https://x.test",
+    serialize: function () { return null; },
+  });
+  check("http: no name → transport.name defaults to 'http'", t.name === "http");
+  var e = await _sendErr(t, { to: "a@x.com", from: "f@x.com" });
+  check("http: default-name error code is mail/http-bad-serializer",
+    e && e.code === "mail/http-bad-serializer");
+}
+
+// resendTransport built with only apiKey → default endpoint + null
+// allowedProtocols/allowInternal (the falsy arms of those opt reads).
+function testResendDefaultEndpointBuild() {
+  var t = b.mail.transports.resend({ apiKey: "re_key" });
+  check("resend: apiKey-only build uses default endpoint (transport constructs)",
+    t.name === "resend" && typeof t.send === "function");
+}
+
+// _isValidEmail EAI length boundaries driven through the recipient
+// validator (guardDomain:false isolates the address-shape gate):
+//   - a Unicode domain that punycodes to > (254-2) ASCII bytes,
+//   - a Unicode domain whose local+ASCII-domain sum exceeds 254.
+async function testEaiPunycodeLengthBoundaries() {
+  var m = b.mail.create({
+    transport: function () { return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false,
+  });
+  async function reject(label, to, code) {
+    var e = await _sendErr(m, { to: to, from: "f@x.com", text: "hi" });
+    check(label, e && e.code === code);
+  }
+  // ASCII punycode domain length exceeds EMAIL_MAX_LEN-2 → refused pre-regex.
+  var domTooLongAscii = "b@" + "ü".repeat(247) + ".de";
+  await reject("eai: IDN domain punycoding to >252 ASCII bytes → invalid-recipient",
+    domTooLongAscii, "mail/invalid-recipient");
+  // local + '@' + ASCII-domain sum exceeds the 254-octet forward-path bound.
+  var localSumOver = "a".repeat(50) + "@" + "ü".repeat(200) + ".de";
+  await reject("eai: local+ASCII-domain sum >254 octets → invalid-recipient",
+    localSumOver, "mail/invalid-recipient");
+  // Non-ASCII address whose domain part carries a URL delimiter → toAscii()
+  // returns null (domainToASCII truncates at the delimiter) → refused.
+  await reject("eai: domain with URL delimiter → toAscii null → invalid-recipient",
+    "bü@evil/path", "mail/invalid-recipient");
+}
+
+// create({ guardDomain: {} }) with no profile opt → the object branch's
+// innermost "strict" fallback; a normal recipient then validates.
+async function testCreateGuardDomainObjectDefaultStrict() {
+  var m = b.mail.create({ transport: b.mail.transports.memory(), guardDomain: {} });
+  var rv = await m.send({ to: "alice@example.com", from: "s@example.org", subject: "t", text: "hi" });
+  check("create: guardDomain:{} (no profile) defaults strict + allows normal recipient",
+    rv && rv.transport === "memory");
+}
+
+// guardDomain-ON send with an angle-bracket display address plus cc + bcc
+// exercises the RFC 5322 inner-address extraction and the cc/bcc validation
+// loops (all skipped when guardDomain is off or cc/bcc are absent).
+async function testGuardDomainAngleBracketAndCcBcc() {
+  var m = b.mail.create({ transport: b.mail.transports.memory() });
+  var rv = await m.send({
+    from: "Bob <bob@example.org>",
+    to: "Alice <alice@example.com>",
+    cc: ["carol@example.net"],
+    bcc: ["dan@example.io"],
+    subject: "t", text: "hi",
+  });
+  check("guardDomain-on: angle-bracket from/to + cc + bcc all validate + deliver",
+    rv && rv.transport === "memory");
+}
+
+// commercial send whose `unsubscribe` is a truthy NON-object (so it is not
+// expanded) and carries no List-Unsubscribe header → the opt-out gate still
+// refuses (the `unsubscribe && typeof===object` false arm of _hasUnsubscribe).
+async function testCommercialUnsubscribeNonObjectRefused() {
+  var addr = { street: "1 St", city: "Springfield", region: "IL", postalCode: "62701", country: "US" };
+  var captured = [];
+  var m = b.mail.create({
+    transport: function (msg) { captured.push(msg); return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false, commercial: true, postalAddress: addr,
+  });
+  var e = await _sendErr(m, { to: "a@x.com", from: "f@x.com", text: "hi", unsubscribe: 5 });
+  check("commercial: truthy non-object unsubscribe + no header → canspam refusal",
+    e && e.code === "mail/canspam-no-unsubscribe");
+  check("commercial: non-object-unsubscribe refusal happened before transport",
+    captured.length === 0);
+}
+
+// commercial no-unsubscribe refusal audit row uses transport.name || "custom"
+// — a nameless transport object drives the "custom" fallback in that row.
+async function testCommercialNamelessTransportRefusalAudit() {
+  var addr = { street: "1 St", city: "Springfield", region: "IL", postalCode: "62701", country: "US" };
+  var m = b.mail.create({
+    transport: { send: function () { return Promise.resolve({ ok: 1 }); } },
+    guardDomain: false, commercial: true, postalAddress: addr,
+  });
+  var e = await _sendErr(m, { to: "a@x.com", from: "f@x.com", text: "hi" });
+  check("commercial: nameless-transport refusal still surfaces canspam-no-unsubscribe",
+    e && e.code === "mail/canspam-no-unsubscribe");
+}
+
+// httpTransport interpret() that throws a NON-Error → the String(e) fallback
+// in the interpret-failed message; interpret() returning a falsy verdict →
+// the `!verdict` arm of the rejection gate.
+async function testHttpInterpretNonErrorAndFalsyVerdict() {
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{}");
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  var base = {
+    endpoint: "http://127.0.0.1:" + port + "/send", name: "vend",
+    allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+  };
+  try {
+    var tNonErr = b.mail.transports.http(Object.assign({}, base, {
+      serialize: function () { return { body: "{}" }; },
+      interpret: function () { var nonErr = "kaput"; throw nonErr; },
+    }));
+    var eNon = await _sendErr(tNonErr, { to: "a@x.com", from: "f@x.com" });
+    check("http: interpret throws non-Error → interpret-failed carries String(e)",
+      eNon && eNon.code === "mail/vend-interpret-failed" && /kaput/.test(eNon.message));
+
+    var tFalsy = b.mail.transports.http(Object.assign({}, base, {
+      serialize: function () { return { body: "{}" }; },
+      interpret: function () { return undefined; },
+    }));
+    var eFalsy = await _sendErr(tFalsy, { to: "a@x.com", from: "f@x.com" });
+    check("http: interpret returns falsy verdict → rejected (default reason)",
+      eFalsy && eFalsy.code === "mail/vend-rejected" && /rejected/.test(eFalsy.message));
+  } finally {
+    await new Promise(function (r) { server.close(function () { r(); }); });
+  }
+}
+
+// resend serialize array/non-array arms not hit by the earlier cases:
+// to as ARRAY, cc as a STRING, bcc as an ARRAY, attachment content as a
+// Buffer (the Buffer.isBuffer true arm).
+async function testResendSerializeArrayAndBufferArms() {
+  var lastBody = { v: null };
+  var server = http.createServer(function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      lastBody.v = Buffer.concat(chunks).toString("utf8");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "re_arr" }));
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var port = server.address().port;
+  try {
+    var t = b.mail.transports.resend({
+      apiKey: "k", endpoint: "http://127.0.0.1:" + port + "/emails",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    var r = await t.send({
+      from: "f@x.com",
+      to: ["a@x.com", "b@x.com"],
+      cc: "c@x.com",
+      bcc: ["d@x.com", "e@x.com"],
+      text: "t",
+      attachments: [{ filename: "a.bin", content: Buffer.from("hello"), contentType: "application/octet-stream" }],
+    });
+    check("resend: array-to/string-cc/array-bcc/buffer-attachment → id", r.id === "re_arr");
+    var payload = JSON.parse(lastBody.v);
+    check("resend: to array preserved as array", Array.isArray(payload.to) && payload.to.length === 2);
+    check("resend: string cc wrapped into a 1-element array", Array.isArray(payload.cc) && payload.cc.length === 1);
+    check("resend: array bcc preserved", Array.isArray(payload.bcc) && payload.bcc.length === 2);
+    check("resend: Buffer attachment base64-encoded from the buffer arm",
+      payload.attachments[0].content === Buffer.from("hello").toString("base64"));
+  } finally {
+    await new Promise(function (r) { server.close(function () { r(); }); });
+  }
+}
+
+// Audit-ON _emit rows: recipient-count ternaries across array/single/absent
+// shapes, subject fallback, and transport.name || "custom" — on both the
+// success and failure paths. Also drives create()'s transport-error wrap
+// with a nameless transport that throws a NON-Error (String(e) fallback).
+async function testAuditOnEmitCountShapes() {
+  var okXport = { send: function () { return Promise.resolve({ ok: 1 }); } };
+  var mOk = b.mail.create({ transport: okXport, guardDomain: false }); // audit defaults ON
+  // Array to/cc/bcc + subject present.
+  await mOk.send({ to: ["a@x.com", "b@x.com"], cc: ["c@x.com"], bcc: ["d@x.com"], from: "f@x.com", subject: "s", text: "hi" });
+  // Single cc/bcc + NO subject (subject-fallback + single-count arms).
+  var r2 = await mOk.send({ to: "a@x.com", cc: "c@x.com", bcc: "d@x.com", from: "f@x.com", text: "hi" });
+  check("audit-on success: nameless-transport array/single count rows emit + deliver",
+    r2 && r2.ok === 1);
+
+  // Failure path — nameless transport throwing a NON-Error → mail/transport-failed
+  // with the String(e) fallback and the "custom" transport-name fallback.
+  var mFailNon = b.mail.create({
+    transport: { send: function () { var nonErr = "splat"; throw nonErr; } },
+    guardDomain: false,
+  });
+  var eNon = await _sendErr(mFailNon, { to: ["a@x.com", "b@x.com"], cc: ["c@x.com"], bcc: ["d@x.com"], from: "f@x.com", subject: "s", text: "hi" });
+  check("audit-on failure: non-Error throw → mail/transport-failed via String(e)+custom",
+    eNon && eNon.code === "mail/transport-failed" && /splat/.test(eNon.message) &&
+    /transport 'custom'/.test(eNon.message));
+
+  // Failure path with single-count recipients (single-arm of the failure counts).
+  var mFail = b.mail.create({
+    transport: { send: function () { throw new Error("nope"); } },
+    guardDomain: false,
+  });
+  var eSingle = await _sendErr(mFail, { to: "a@x.com", cc: "c@x.com", bcc: "d@x.com", from: "f@x.com", text: "hi" });
+  check("audit-on failure: single-count failure row still wraps to transport-failed",
+    eSingle && eSingle.code === "mail/transport-failed");
+}
+
+// reverseDns over IPv6 loopback drives the net.isIPv6 → resolveAaaa forward
+// path and the forward-confirmation loop (the IPv4 path is exercised by the
+// existing 127.0.0.1 / bad-input cases). Shape-asserted — value is
+// resolver-dependent, but the branch executes regardless.
+async function testReverseDnsIpv6Loopback() {
+  var r;
+  try { r = await b.mail.reverseDns("::1"); }
+  catch (e) { r = { ok: false, error: (e && e.code) || "throw" }; }
+  check("reverseDns: ::1 returns the documented result shape (IPv6 forward path)",
+    r && typeof r.ok === "boolean" && Array.isArray(r.forward) && typeof r.fcrdns === "boolean");
+}
+
+// ---------------------------------------------------------------------------
+// Additional SMTP state-machine closures over loopback TLS
+// ---------------------------------------------------------------------------
+
+// DATA transparency: a body line beginning with "." is dot-stuffed on the
+// DATA path (no CHUNKING advertised → DATA, not BDAT).
+async function testSmtpDataDotStuffing(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: ".leading dot line\nsecond line" });
+    check("smtp-dotstuff: delivered via DATA (dot-stuffed body line)",
+      r.code === 250 && st.bdatChunks.length === 0);
+  } finally { await closeServer(st); }
+}
+
+// AUTH LOGIN username step rejected (non-334) → auth-username-rejected.
+async function testSmtpAuthUsernameRejected(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["8BITMIME"], authUserCode: 500 });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port, { user: "u", pass: "p" });
+    var e = await _sendErr(t, { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-auth: username step 500 → auth-username-rejected",
+      e && /auth-username-rejected/.test(e.message));
+  } finally { await closeServer(st); }
+}
+
+// AUTH LOGIN password step rejected (non-334) → auth-password-rejected.
+async function testSmtpAuthPasswordRejected(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["8BITMIME"], authPassCode: 500 });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port, { user: "u", pass: "p" });
+    var e = await _sendErr(t, { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-auth: password step 500 → auth-password-rejected",
+      e && /auth-password-rejected/.test(e.message));
+  } finally { await closeServer(st); }
+}
+
+// implicit-TLS send WITHOUT preferFamily → connect() calls _autoDetectFamily
+// (the "any" path) instead of pinning a family, exercising the family-omit
+// arm of the implicit-TLS connect and the interface walk.
+async function testSmtpAutoDetectFamilyConnect(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(st);
+  try {
+    var t = b.mail.transports.smtp({
+      host: "127.0.0.1", port: st.port, implicitTls: true,
+      ca: certPair.caCertPem, servername: "localhost",
+      timeoutMs: C.TIME.seconds(4),
+    });
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+    check("smtp-autofamily: delivered with no preferFamily (auto-detect path)", r.code === 250);
+  } finally { await closeServer(st); }
+}
+
+// A non-ASCII FROM (not just to/cc) flips _messageRequiresSmtpUtf8 via its
+// first branch; the SMTPUTF8-advertising peer accepts.
+async function testSmtpUnicodeFromRequiresSmtpUtf8(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["SMTPUTF8", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({ from: "grüße@münchen.de", to: "r@b.test", subject: "hi", text: "hello" });
+    check("smtp-utf8-from: non-ASCII FROM → SMTPUTF8 on MAIL FROM",
+      r.code === 250 && /SMTPUTF8/.test(st.mailFromLine || ""));
+  } finally { await closeServer(st); }
+}
+
+// A long (>254-octet) but pure-ASCII subject is treated as non-ASCII by the
+// length-bounded _isAscii guard, so the transaction opts into SMTPUTF8 when
+// the peer advertises it.
+async function testSmtpLongAsciiSubjectSmtpUtf8(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["SMTPUTF8", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "x".repeat(300), text: "hi" });
+    check("smtp-longsubj: >254-octet ASCII subject opts into SMTPUTF8 (length-bounded _isAscii)",
+      r.code === 250 && /SMTPUTF8/.test(st.mailFromLine || ""));
+  } finally { await closeServer(st); }
+}
+
+// Outbound SMTP-smuggling refusal: a body carrying a bare-CR + smuggled verb
+// is caught by guardEmail before the socket opens → outbound-smuggling-refused.
+async function testSmtpOutboundSmugglingRefused(certPair) {
+  var t = b.mail.transports.smtp({
+    host: "127.0.0.1", port: 1, implicitTls: true,
+    ca: certPair.caCertPem, servername: "localhost", timeoutMs: C.TIME.seconds(4),
+  });
+  var e = await _sendErr(t, {
+    from: "s@a.test", to: "r@b.test", subject: "s",
+    text: "harmless\rMAIL FROM:<evil@x> injected",
+  });
+  check("smtp-smuggling: bare-CR + verb body refused pre-connect → outbound-smuggling-refused",
+    e && e.code === "mail/outbound-smuggling-refused");
+}
+
+// A dkimSigner.sign() that throws a NON-Error rejects the send with the
+// String(e) fallback in the dkim-sign-failed message (distinct from the
+// existing Error-message case).
+async function testSmtpDkimSignNonErrorThrow() {
+  var t = b.mail.transports.smtp({
+    host: "127.0.0.1", port: 1, implicitTls: true,
+    dkimSigner: { sign: function () { var nonErr = "no-key-string"; throw nonErr; } },
+  });
+  var e = await _sendErr(t, { from: "s@a.test", to: "r@b.test", subject: "s", text: "t" });
+  check("smtp: dkim sign non-Error throw → mail/dkim-sign-failed via String(e)",
+    e && e.code === "mail/dkim-sign-failed" && /no-key-string/.test(e.message));
+}
+
+// smtpTransport with explicit null credentials/servername exercises the
+// `val === null` arm of the CR/LF/NUL refusal guard, and a non-string
+// credential exercises the `typeof val !== "string"` early-return arm.
+function testSmtpNullCredentialsBuild() {
+  var t = b.mail.transports.smtp({ host: "mx.example.test", user: 12345, pass: null, servername: null });
+  check("smtp: null/non-string user/pass/servername still builds (null + non-string arms of ctl-byte guard)",
+    typeof t.send === "function");
+}
+
+// ---------------------------------------------------------------------------
 
 async function run() {
   testSmtpTransportAcceptsChunkingOpts();
@@ -1999,6 +2379,22 @@ async function run() {
   await testResendMinimalAndNoMessageReason();
   testSmtpOptionPermutations();
 
+  // Further branch closures — no-socket / pure paths.
+  await testConsoleNonArrayBccNoRedact();
+  testNoArgConstructionDefaults();
+  await testHttpTransportDefaultName();
+  testResendDefaultEndpointBuild();
+  await testEaiPunycodeLengthBoundaries();
+  await testCreateGuardDomainObjectDefaultStrict();
+  await testGuardDomainAngleBracketAndCcBcc();
+  await testCommercialUnsubscribeNonObjectRefused();
+  await testCommercialNamelessTransportRefusalAudit();
+  await testHttpInterpretNonErrorAndFalsyVerdict();
+  await testResendSerializeArrayAndBufferArms();
+  await testAuditOnEmitCountShapes();
+  await testReverseDnsIpv6Loopback();
+  testSmtpNullCredentialsBuild();
+
   // SMTP state machine over loopback TLS — mint one cert pair, reuse.
   var ca = await b.mtlsEngine.generateCa({ generation: 1 });
   var leaf = await b.mtlsEngine.signClientCert({
@@ -2025,11 +2421,21 @@ async function run() {
   await testSmtpParsePeerSizeNoCapAndJunk(certPair);
   await testSmtp8BitMimeCalendarBody(certPair);
   await testSmtpSmtpUtf8FromCcRecipient(certPair);
+
+  // Further SMTP state-machine closures.
+  await testSmtpDataDotStuffing(certPair);
+  await testSmtpAuthUsernameRejected(certPair);
+  await testSmtpAuthPasswordRejected(certPair);
+  await testSmtpAutoDetectFamilyConnect(certPair);
+  await testSmtpUnicodeFromRequiresSmtpUtf8(certPair);
+  await testSmtpLongAsciiSubjectSmtpUtf8(certPair);
+  await testSmtpOutboundSmugglingRefused(certPair);
+  await testSmtpDkimSignNonErrorThrow();
 }
 
 module.exports = { run: run };
 
 if (require.main === module) {
-  run().then(function () { console.log("OK"); })
+  run().then(function () { console.log("OK — " + helpers.getChecks() + " checks passed"); })
        .catch(function (e) { console.error(e.stack || e); process.exit(1); });
 }
