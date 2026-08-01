@@ -14080,14 +14080,17 @@ function testSessionUpdateDataMergesOneLevelDeep() {
   catch (_e) { return; }
   var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
   var bad = [];
-  if (!/ev\s*&&\s*typeof\s+ev\s*===\s*["']object["']\s*&&\s*!Array\.isArray\(\s*ev\s*\)[\s\S]{0,140}next\[k\]\s*=\s*Object\.assign\(\s*\{\}\s*,\s*ev\s*,\s*nv\s*\)/.test(noComments) ||
+  if (!/_isPlainObject\(\s*ev\s*\)\s*&&\s*_isPlainObject\(\s*nv\s*\)[\s\S]{0,80}next\[k\]\s*=\s*Object\.assign\(\s*\{\}\s*,\s*ev\s*,\s*nv\s*\)/.test(noComments) ||
+      !/function\s+_isPlainObject[\s\S]{0,180}getPrototypeOf\([\s\S]{0,60}Object\.prototype/.test(noComments) ||
       /next\[k\]\s*=\s*data\[k\]/.test(noComments)) {
     bad.push({ file: "lib/session.js", line: 1,
       content: "session.updateData({ merge: true }) must merge an inner PLAIN OBJECT one level deep so the existing inner " +
-               "keys survive (its doc promises \"Inner objects merge ONE LEVEL DEEP\") — for an object-vs-object key " +
-               "`next[k] = Object.assign({}, ev, nv)` (existing[k] then data[k]); an array or non-object value REPLACES. A " +
-               "bare `next[k] = data[k]` shallow-replaces the whole inner object, silently discarding the operator's " +
-               "existing nested keys (data loss)" });
+               "keys survive (its doc promises \"Inner objects merge ONE LEVEL DEEP\") — merge only when BOTH values are " +
+               "plain objects (`_isPlainObject(ev) && _isPlainObject(nv)` → `next[k] = Object.assign({}, ev, nv)`), where " +
+               "_isPlainObject is prototype-based (Object.getPrototypeOf === Object.prototype/null) so a Date/Buffer/class " +
+               "instance REPLACES (reaching JSON as its own form) rather than being merged into the retained old object or " +
+               "mangled to byte keys. A bare `next[k] = data[k]` shallow-replaces the whole inner object, silently " +
+               "discarding the operator's existing nested keys (data loss)" });
   }
   bad = _filterMarkers(bad, "session-updatedata-merges-one-level-deep");
   _report("session.updateData({ merge: true }) merges an inner object one level deep (existing nested keys survive), " +

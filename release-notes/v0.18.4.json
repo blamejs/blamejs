@@ -19,7 +19,7 @@
       "items": [
         {
           "title": "b.session.updateData({ merge: true }) merges an inner object one level deep instead of discarding existing nested keys",
-          "body": "updateData(token, data, { merge: true }) is documented to merge one level deep -- inner objects merge, arrays replace. It merged only the top-level keys: an inner object value was assigned wholesale (next[k] = data[k]), so updateData(token, { prefs: { theme: \"dark\" } }, { merge: true }) against a stored { prefs: { locale: \"en\" } } dropped prefs.locale, leaving only { prefs: { theme: \"dark\" } }. An inner plain-object value now merges into the existing inner object (its keys survive, then the incoming keys apply); an array or non-object value still replaces, and merging beyond one level replaces. Operators who relied on the previous top-level-only behaviour, or who intend to replace a whole nested object, can pass the full nested value they want stored."
+          "body": "updateData(token, data, { merge: true }) is documented to merge one level deep -- inner objects merge, arrays replace. It merged only the top-level keys: an inner object value was assigned wholesale (next[k] = data[k]), so updateData(token, { prefs: { theme: \"dark\" } }, { merge: true }) against a stored { prefs: { locale: \"en\" } } dropped prefs.locale, leaving only { prefs: { theme: \"dark\" } }. An inner PLAIN-object value now merges into the existing plain object (its keys survive, then the incoming keys apply); an array, a non-plain object (a Date, Buffer, or class instance -- stored as its own JSON form rather than mangled into the retained old object or byte-index keys), or a non-object value replaces, and merging beyond one level replaces. Operators who relied on the previous top-level-only behaviour, or who intend to replace a whole nested object, can pass the full nested value they want stored."
         }
       ]
     },
@@ -28,7 +28,7 @@
       "items": [
         {
           "title": "session.updateData({ merge: true }) must merge an inner object one level deep",
-          "body": "A source check asserts the merge path builds an object-vs-object inner value as Object.assign({}, existing[k], data[k]) rather than a bare next[k] = data[k] shallow replace, so the nested-key data-loss regression cannot return unnoticed."
+          "body": "A source check asserts the merge path merges an inner value only when BOTH are PLAIN objects (a prototype-based _isPlainObject) as Object.assign({}, existing[k], data[k]), never a bare next[k] = data[k] shallow replace, so the nested-key data-loss regression -- and a Date/Buffer being merged instead of replaced -- cannot return unnoticed."
         }
       ]
     }

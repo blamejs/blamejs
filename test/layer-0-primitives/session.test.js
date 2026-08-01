@@ -864,6 +864,14 @@ async function testUpdateDataBranches() {
     check("updateData merge REPLACES an inner array and REPLACES a scalar (arrays/non-objects do not merge)",
       merged2 === true && vm2 && vm2.data && Array.isArray(vm2.data.nested) &&
       vm2.data.nested.length === 1 && vm2.data.nested[0] === 9 && vm2.data.keep === 5);
+    // A NON-PLAIN object (Date) REPLACES an existing plain object — only two PLAIN objects merge (else a
+    // Date, which has no enumerable keys, would leave the old object in place; a Buffer would mangle to
+    // byte-index keys). The Date must reach JSON as its own ISO-string form.
+    var sd = await b.session.create({ userId: "u-plain", data: { obj: { a: 1 } } });
+    await b.session.updateData(sd.token, { obj: new Date("2020-01-02T03:04:05.000Z") }, { merge: true });
+    var vsd = await b.session.verify(sd.token);
+    check("updateData merge REPLACES a plain object with a Date (stored as its JSON ISO string, not the retained old object)",
+      vsd && vsd.data && vsd.data.obj === "2020-01-02T03:04:05.000Z");
 
     // A merge that carries the reserved __bj_fingerprint key is ignored for it
     // (operators can't overwrite the binding) while other keys still merge.
