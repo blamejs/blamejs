@@ -14161,6 +14161,22 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
       content: "caCertChanged (which gates CRL invalidation) must compare cert IDENTITY via _sameCert, not raw bytes — " +
                "else a reformatted-PEM recommit of the same cert deletes the still-valid CRL" });
   }
+  // The journal must record the ACTUAL intended post-commit retained root (retainAfterCert), not derive
+  // it from retainAfter alone: an idempotent recommit that only REFORMATS the current cert
+  // (outgoingCaCert===null) while a grace window is OPEN keeps the EXISTING ca.prev.crt (priorPrev),
+  // but the reformatted live cert is byte-different from the journal's prior cert, so reconcile reads
+  // the commit as COMPLETED and — with retainAfter:false — would DELETE the retained root, stranding
+  // clients enrolled under it. Record priorPrev's bytes and roll forward to them.
+  if (!/retainAfterCert\s*=\s*\(\s*opts2\.retainPrevious\s*===\s*false\s*\)\s*\?\s*null\s*:\s*\(\s*outgoingCaCert\s*!==\s*null\s*\?\s*outgoingCaCert\s*:\s*priorPrev\s*\)/.test(noComments) ||
+      !/wantPrevBuf\s*=\s*manifest\.retainAfter\s*\?\s*\(\s*typeof\s+manifest\.retainAfterCert\s*===\s*["']string["'][\s\S]{0,120}Buffer\.from\(\s*manifest\.retainAfterCert/.test(noComments) ||
+      /wantPrevBuf\s*=\s*manifest\.retainAfter\s*\?\s*priorCertBuf\s*:\s*null/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "_commitLocked() must journal the ACTUAL intended retained root (retainAfterCert = retainPrevious===false " +
+               "? null : (outgoingCaCert !== null ? outgoingCaCert : priorPrev)) and reconcile must roll forward to it " +
+               "(wantPrevBuf = manifest.retainAfter ? Buffer.from(manifest.retainAfterCert,...) : null), NOT `manifest." +
+               "retainAfter ? priorCertBuf : null` — an idempotent reformatted recommit with an open grace window would " +
+               "otherwise be read as COMPLETED and DELETE the retained root, stranding clients enrolled under it" });
+  }
   // _rotateImpl's CAS check (is the current cert still the one snapshotted before generateCa?) must
   // compare cert IDENTITY via _sameCert, not exact PEM text — else a concurrent idempotent commit()
   // that merely REFORMATTED the same cert during generateCa spuriously aborts the rotation with

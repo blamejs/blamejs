@@ -964,6 +964,45 @@ async function testInterruptedRotationRecoversRetainedRoot() {
   check("interrupted 2nd rotation fixture: gen-3 key differed from gen-2", !keyG3.equals(keyG2));
 }
 
+// An idempotent commit({ retainPrevious:true }) that only REFORMATS the current cert (byte-different,
+// same identity) while a grace window is OPEN must not strand the retained root on crash recovery.
+// The reformatted cert is byte-different from the journal's prior cert, so reconcile classifies the
+// commit COMPLETED and rolls forward — it must PRESERVE the existing ca.prev.crt (priorPrev), not
+// delete it (a retainAfter:false derived from outgoingCaCert===null would).
+async function testIdempotentRecommitPreservesRetainedRootAcrossCrash() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await ca.initCA();
+  var certG1 = fs.readFileSync(ca.paths.caCert);            // becomes the retained root after gen-2
+  await ca.rotate({ generation: 2 });                        // ca.prev.crt = certG1 (grace window open)
+  check("a grace window is open before the reformatted recommit", (await ca.loadTrustBundle()).length === 2);
+  var certG2 = ca.loadCert().toString("utf8");
+  var keyG2  = ca.loadKey().toString("utf8");
+  var journal = ca.paths.caKey + ".rollback";
+
+  // Recommit the CURRENT cert REFORMATTED (CRLF + trailing NL: byte-different, same identity).
+  // Simulate a crash AFTER the durable publish but BEFORE the journal delete by no-op'ing the
+  // journal unlink for the duration of the commit — so the journal survives to be reconciled.
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {
+    if (String(p) === String(journal)) return;   // skip the journal delete -> journal survives (crash)
+    return realUnlink.apply(this, arguments);
+  };
+  try {
+    await ca.commit({ caKeyPem: keyG2, caCertPem: certG2.replace(/\n/g, "\r\n") + "\n", retainPrevious: true });
+  } finally { fs.unlinkSync = realUnlink; }
+  check("the reformatted recommit left the journal on disk (simulated crash)", fs.existsSync(journal) === true);
+  check("the grace-window root is still present right after the recommit", fs.existsSync(ca.paths.caCertPrev) === true);
+
+  // Reopen -> reconcile (via issuance). It must PRESERVE the retained root, not delete it.
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled" });
+  await reopened.generateClientCert({ cn: "after-idempotent-recommit-crash" });
+  check("the spent journal is removed after reconcile", fs.existsSync(journal) === false);
+  var bundle = await reopened.loadTrustBundle();
+  check("reconcile PRESERVED the grace-window root (still trusted, not stranded)",
+        bundle.length === 2 && bundle.some(function (c) { return Buffer.from(c).equals(certG1); }));
+}
+
 // A PRESENT issuance ledger with a corrupt schema (valid JSON but no `issued`
 // array — an accidental `{}`) MUST fail closed, not be treated as an empty
 // ledger. Silently treating it as empty would let the next issuance overwrite it
@@ -3124,6 +3163,7 @@ async function run() {
     await testImportOfRevokedGenerationIsRevoked();
     await testInterruptedRotationRecoversFromJournal();
     await testInterruptedRotationRecoversRetainedRoot();
+    await testIdempotentRecommitPreservesRetainedRootAcrossCrash();
     await testCorruptIssuanceLedgerSchemaFailsClosed();
     await testRotateRetainFalseAbortsWhenRemovalFails();
     await testCanVerifyInTlsRequiresLabelWhenUndeterminable();
