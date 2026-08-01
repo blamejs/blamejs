@@ -43,8 +43,8 @@
           "body": "The scheduler's register / schedule validation, start / stop / status lifecycle, and task fire-and-failure recording; b.session device-binding storage and its store-error path; the body parser across its supported content types; the notifier's transport surface; and b.db.collection's query operators now have explicit tests for their error and boundary branches. Behaviour is unchanged -- these pin guarantees the primitives already met."
         },
         {
-          "title": "Vendored @blamejs/pki refreshed to 0.3.26",
-          "body": "The bundled PKI toolkit (lib/vendor/blamejs-pki.cjs, the mTLS CA engine's certificate/CMS backend) is refreshed from 0.3.25 to 0.3.26. It adds no runtime dependency and no public framework API; the upstream release adds pki.cmp.verify and fixes across the X.509 / CMS / PKCS#12 surface (subjectAltName IP-address string GeneralNames, RSASSA-PKCS1-v1_5 WebCrypto algorithm-name casing, public-key-integrity PKCS#12, CMS countersignature verification)."
+          "title": "Vendored @blamejs/pki refreshed to 0.3.27",
+          "body": "The bundled PKI toolkit (lib/vendor/blamejs-pki.cjs, the mTLS CA engine's certificate/CMS backend) is refreshed from 0.3.25 to 0.3.27. It adds no runtime dependency and no public framework API; the upstream releases add CMP certificate-enrollment protocol support (pki.cmp.verify checks a PKIMessage's signature/PBMAC1 protection; pki.cmp.session drives a full RFC 9810 ir/cr/kur/p10cr enrollment exchange) and fixes across the X.509 / CMS / PKCS#12 surface (subjectAltName IP-address string GeneralNames, RSASSA-PKCS1-v1_5 WebCrypto algorithm-name casing, public-key-integrity PKCS#12, CMS countersignature verification, cross-origin SNI/pin retention in the EST/ACME clients)."
         }
       ]
     },
