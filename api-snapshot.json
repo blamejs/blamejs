@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.3",
-  "createdAt": "2026-07-31T09:18:49.960Z",
+  "createdAt": "2026-08-01T15:57:59.668Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44760,6 +44760,10 @@
         "DEFAULT_PATHS": {
           "type": "object",
           "members": {
+            "algorithm": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "caCert": {
               "type": "primitive",
               "valueType": "string"
