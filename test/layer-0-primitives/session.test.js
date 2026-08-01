@@ -854,8 +854,16 @@ async function testUpdateDataBranches() {
     var merged = await b.session.updateData(s.token, { added: 2, nested: { y: 2 } }, { merge: true });
     check("updateData merge:true returns true", merged === true);
     var vm = await b.session.verify(s.token);
-    check("updateData merge kept existing keys + added new ones",
-      vm && vm.data && vm.data.keep === 1 && vm.data.added === 2 && vm.data.nested && vm.data.nested.y === 2);
+    check("updateData merge kept existing keys + added new ones, and merged the inner object ONE LEVEL DEEP (nested.x survives)",
+      vm && vm.data && vm.data.keep === 1 && vm.data.added === 2 && vm.data.nested &&
+      vm.data.nested.x === 1 && vm.data.nested.y === 2);
+    // arrays / non-objects REPLACE (the other half of the documented one-level-deep merge): an array
+    // value replaces the existing inner object, and a scalar replaces an existing scalar.
+    var merged2 = await b.session.updateData(s.token, { nested: [9], keep: 5 }, { merge: true });
+    var vm2 = await b.session.verify(s.token);
+    check("updateData merge REPLACES an inner array and REPLACES a scalar (arrays/non-objects do not merge)",
+      merged2 === true && vm2 && vm2.data && Array.isArray(vm2.data.nested) &&
+      vm2.data.nested.length === 1 && vm2.data.nested[0] === 9 && vm2.data.keep === 5);
 
     // A merge that carries the reserved __bj_fingerprint key is ignored for it
     // (operators can't overwrite the binding) while other keys still merge.

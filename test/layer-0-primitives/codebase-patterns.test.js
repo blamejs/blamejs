@@ -14070,6 +14070,31 @@ function testRequireMtlsRevocationSourceReturnsBoolean() {
     bad);
 }
 
+// session.updateData({ merge: true }) documents "Inner objects merge ONE LEVEL DEEP; arrays REPLACE",
+// so an inner plain-object value must merge into the existing inner object (its keys survive), not
+// shallow-replace the whole nested object. A bare `next[k] = data[k]` silently discards the operator's
+// existing nested keys — a data-loss bug the merge test must expose (assert the preserved inner key).
+function testSessionUpdateDataMergesOneLevelDeep() {
+  var src;
+  try { src = fs.readFileSync("lib/session.js", "utf8"); }
+  catch (_e) { return; }
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  var bad = [];
+  if (!/ev\s*&&\s*typeof\s+ev\s*===\s*["']object["']\s*&&\s*!Array\.isArray\(\s*ev\s*\)[\s\S]{0,140}next\[k\]\s*=\s*Object\.assign\(\s*\{\}\s*,\s*ev\s*,\s*nv\s*\)/.test(noComments) ||
+      /next\[k\]\s*=\s*data\[k\]/.test(noComments)) {
+    bad.push({ file: "lib/session.js", line: 1,
+      content: "session.updateData({ merge: true }) must merge an inner PLAIN OBJECT one level deep so the existing inner " +
+               "keys survive (its doc promises \"Inner objects merge ONE LEVEL DEEP\") — for an object-vs-object key " +
+               "`next[k] = Object.assign({}, ev, nv)` (existing[k] then data[k]); an array or non-object value REPLACES. A " +
+               "bare `next[k] = data[k]` shallow-replaces the whole inner object, silently discarding the operator's " +
+               "existing nested keys (data loss)" });
+  }
+  bad = _filterMarkers(bad, "session-updatedata-merges-one-level-deep");
+  _report("session.updateData({ merge: true }) merges an inner object one level deep (existing nested keys survive), " +
+          "never a shallow next[k] = data[k] that discards them",
+    bad);
+}
+
 // b.mtlsCa publishes the CA key and cert as two separate file renames, so they
 // cannot be a single atomic swap: a crash after the key rename but before the
 // cert rename leaves a new-key/old-cert pair the in-memory catch rollback (a
@@ -16291,6 +16316,7 @@ async function run() {
   testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
   testMtlsCaFingerprintMatchesGate();
   testRequireMtlsRevocationSourceReturnsBoolean();
+  testSessionUpdateDataMergesOneLevelDeep();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testMtlsCaIssuanceGenerationUndeterminableIsNull();
