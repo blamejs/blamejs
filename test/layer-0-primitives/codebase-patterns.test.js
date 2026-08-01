@@ -14036,6 +14036,33 @@ function testMtlsCaFingerprintMatchesGate() {
     bad);
 }
 
+// The require-mtls gate is documented fail-CLOSED, but the revocationSource contract is a SYNCHRONOUS
+// boolean: a non-boolean result (a Promise from an async/DB source, undefined, garbage) is not ===
+// true, so treating it as not-revoked would ADMIT a possibly-revoked peer. Both isRevoked() and
+// isSerialRevoked() results must be typechecked to boolean and REFUSE (revocation-source-invalid) on
+// a non-boolean — never `revocationSource.isRevoked(...) === true`, which silently admits.
+function testRequireMtlsRevocationSourceReturnsBoolean() {
+  var src;
+  try { src = fs.readFileSync("lib/middleware/require-mtls.js", "utf8"); }
+  catch (_e) { return; }
+  var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  var bad = [];
+  if (!/typeof\s+byFp\s*!==\s*["']boolean["'][\s\S]{0,200}revocation-source-invalid/.test(noComments) ||
+      !/typeof\s+bySerial\s*!==\s*["']boolean["'][\s\S]{0,200}revocation-source-invalid/.test(noComments) ||
+      /revocationSource\.isRevoked\([^)]*\)\s*===\s*true/.test(noComments) ||
+      /revocationSource\.isSerialRevoked\([^)]*\)\s*===\s*true/.test(noComments)) {
+    bad.push({ file: "lib/middleware/require-mtls.js", line: 1,
+      content: "the require-mtls gate must typecheck each revocationSource result to a boolean and REFUSE " +
+               "(revocation-source-invalid) on a non-boolean (typeof byFp !== \"boolean\" / typeof bySerial !== " +
+               "\"boolean\") — never `revocationSource.isRevoked(...) === true`, which admits a possibly-revoked peer " +
+               "when an async/DB source returns a Promise (never === true) or undefined, failing OPEN on a fail-closed gate" });
+  }
+  bad = _filterMarkers(bad, "require-mtls-revocation-source-returns-boolean");
+  _report("require-mtls revocationSource results are typechecked to boolean and fail closed on a non-boolean " +
+          "(so an async/Promise source cannot silently admit a revoked peer)",
+    bad);
+}
+
 // b.mtlsCa publishes the CA key and cert as two separate file renames, so they
 // cannot be a single atomic swap: a crash after the key rename but before the
 // cert rename leaves a new-key/old-cert pair the in-memory catch rollback (a
@@ -16044,6 +16071,7 @@ async function run() {
   testSqlWhereDelegatorForwardsArguments();
   testDbCollectionLikeOperatorUsesVerbatimWildcardPath();
   testMtlsCaFingerprintMatchesGate();
+  testRequireMtlsRevocationSourceReturnsBoolean();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testMtlsCaIssuanceGenerationUndeterminableIsNull();

@@ -103,6 +103,69 @@ async function testRevocationSourceEnforcement() {
     check("revocationSource: a throwing source fails closed (denied, next not called)",
           fcNext === false && fcDenied && fcDenied.reason === "revocation-check-failed");
 
+    // Fail-closed on a NON-BOOLEAN result: the contract is a SYNCHRONOUS boolean. An async source
+    // (isRevoked returns a Promise) or one returning undefined/garbage must REFUSE — a Promise is
+    // never === true, so silently treating it as not-revoked would ADMIT a possibly-revoked peer.
+    var asyncDenied = null;
+    var asyncGate = b.middleware.requireMtls({
+      audit: false,
+      revocationSource: { isRevoked: function () { return Promise.resolve(true); } },   // async, "revoked"
+      onDeny: function (req, res, info) { asyncDenied = info; },
+    });
+    var asyncNext = false;
+    asyncGate(_mockReq({ authorized: true, peerCert: peer }), _mockRes(), function () { asyncNext = true; });
+    check("revocationSource: an async (Promise-returning) isRevoked fails closed",
+          asyncNext === false && asyncDenied && asyncDenied.reason === "revocation-source-invalid");
+
+    var undefDenied = null;
+    var undefGate = b.middleware.requireMtls({
+      audit: false,
+      revocationSource: { isRevoked: function () { return undefined; } },
+      onDeny: function (req, res, info) { undefDenied = info; },
+    });
+    var undefNext = false;
+    undefGate(_mockReq({ authorized: true, peerCert: peer }), _mockRes(), function () { undefNext = true; });
+    check("revocationSource: an undefined isRevoked result fails closed",
+          undefNext === false && undefDenied && undefDenied.reason === "revocation-source-invalid");
+
+    // A non-boolean isSerialRevoked result (with a proper boolean isRevoked) also refuses.
+    var serDenied = null;
+    var serGate = b.middleware.requireMtls({
+      audit: false,
+      revocationSource: { isRevoked: function () { return false; }, isSerialRevoked: function () { return Promise.resolve(true); } },
+      onDeny: function (req, res, info) { serDenied = info; },
+    });
+    var serNext = false;
+    serGate(_mockReq({ authorized: true, peerCert: peer }), _mockRes(), function () { serNext = true; });
+    check("revocationSource: a non-boolean isSerialRevoked result fails closed",
+          serNext === false && serDenied && serDenied.reason === "revocation-source-invalid");
+
+    // A null isRevoked result also refuses (typeof null is "object", so the diagnostic reports "null").
+    var nullDenied = null;
+    var nullGate = b.middleware.requireMtls({
+      audit: false,
+      revocationSource: { isRevoked: function () { return null; } },
+      onDeny: function (req, res, info) { nullDenied = info; },
+    });
+    var nullNext = false;
+    nullGate(_mockReq({ authorized: true, peerCert: peer }), _mockRes(), function () { nullNext = true; });
+    check("revocationSource: a null isRevoked result fails closed with a null-typed diagnostic",
+          nullNext === false && nullDenied && nullDenied.reason === "revocation-source-invalid" &&
+          nullDenied.type === "null");
+
+    // A null isSerialRevoked result likewise refuses (null-typed diagnostic).
+    var nullSerDenied = null;
+    var nullSerGate = b.middleware.requireMtls({
+      audit: false,
+      revocationSource: { isRevoked: function () { return false; }, isSerialRevoked: function () { return null; } },
+      onDeny: function (req, res, info) { nullSerDenied = info; },
+    });
+    var nullSerNext = false;
+    nullSerGate(_mockReq({ authorized: true, peerCert: peer }), _mockRes(), function () { nullSerNext = true; });
+    check("revocationSource: a null isSerialRevoked result fails closed with a null-typed diagnostic",
+          nullSerNext === false && nullSerDenied && nullSerDenied.reason === "revocation-source-invalid" &&
+          nullSerDenied.type === "null");
+
     // A non-conforming revocationSource is rejected at construction.
     var ctorErr = null;
     try { b.middleware.requireMtls({ revocationSource: {} }); } catch (e) { ctorErr = e; }
