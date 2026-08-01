@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.4",
+  "date": "2026-08-01",
+  "headline": "Error- and edge-path tests for the queue, encrypted-field, session, and CalDAV/CardDAV primitives",
+  "summary": "Error, edge, and adversarial branches of b.queue (init and backend resolution, consume success/retry/dead-letter, enqueueFlow validation and dependency ordering, dead-letter list/retry/size, shutdown drain, bootFromEnv), b.crypto.field (seal/unseal envelope-floor enforcement, derived-hash modes, per-row-key unseal rate cooldown, data residency, read-time hash upgrade, erase-row vacuum cascade, hash lookup), b.session (fingerprint-drift scoring and fail-closed binding, anonymous mint, rotate carry-forward and re-key, updateData merge guards, validFrom scheduling), and b.mail.dav (CalDAV/CardDAV request and response branches) are now under test. Behaviour is unchanged -- these pin guarantees the primitives already met.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Error- and edge-path tests for the queue, encrypted-field, session, and CalDAV/CardDAV primitives",
+          "body": "b.queue (init idempotency and the missing-backends / unknown-backend refusals, consume success/retry/dead-letter-write/rate-limit-wait/lease-extend/progress paths, enqueueFlow validation and cycle/dependency ordering, dead-letter list/retry/size with the SQS-unsupported refusals, shutdown pre-init no-op and in-flight drain, bootFromEnv config resolution), b.crypto.field (seal-envelope-floor enforcement, derived-hash keyed/legacy modes and truncation, per-row-key unseal rate cooldown and its audit, data residency, read-time derived-hash upgrade, the erase-row vacuum cascade, and hash lookup), b.session (fingerprint-drift scoring with clamp and fail-closed admission, strict-binding missing/unreadable refusal, anonymous mint and the anonymous-plus-userId refusal, rotate data-replace / carry-forward / bound re-key, updateData token and merge guards, and validFrom read-back with check admit/revoke), and b.mail.dav's request and response branches now have explicit tests for their error and boundary paths. Behaviour is unchanged -- these pin guarantees the primitives already met."
+        }
+      ]
+    }
+  ]
+}

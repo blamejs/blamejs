@@ -15088,7 +15088,9 @@ function testMtlsCaGenerateCrlPersistIsRevocationFresh() {
                "— without it the persist cannot detect an importIssuance() issuer-backfill that completed while signing" });
   }
   // The default issuance store must expose the same O(1) version() signal the revocation store does.
-  if (!/function\s+_defaultIssuanceStore[\s\S]{0,1200}version:\s*function\s*\(\)\s*\{[\s\S]{0,160}statSync\(\s*paths\.issuance\s*\)/.test(noComments)) {
+  // Temper the span on the next 2-space sibling `function` (structural boundary) so the char bound is a
+  // pure ReDoS backstop, not a layout-coupled precision that rots when _defaultIssuanceStore's body grows.
+  if (!/function\s+_defaultIssuanceStore\b(?:(?!\n {2}function )[\s\S]){0,2400}version:\s*function\s*\(\)\s*\{[\s\S]{0,200}statSync\(\s*paths\.issuance\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "_defaultIssuanceStore() must expose a version() (statSync(paths.issuance) size:mtime) mirroring the " +
                "revocation store's, so generateCrl() can detect an issuance-ledger change (importIssuance backfill) mid-sign" });
