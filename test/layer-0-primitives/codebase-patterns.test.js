@@ -14302,7 +14302,10 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   if (!/if\s*\(\s*!usesDefaultEngine\s*&&\s*_customCommitLabel\s*!==\s*null\s*\)\s*\{[\s\S]{0,140}_priorPersistedLabel\s*!==\s*undefined[\s\S]{0,80}_persistAlgorithm\(\s*_priorPersistedLabel\s*\)/.test(noComments) ||
       !/keyJournalWritten\s*&&\s*keyRolledBack\s*&&\s*prevRolledBack\s*&&\s*crlRolledBack\s*&&\s*labelRolledBack/.test(noComments) ||
       !/priorCustomAlgorithm:\s*\(\s*_priorPersistedLabel\s*!==\s*undefined/.test(noComments) ||
-      !/manifest\.priorCustomAlgorithm[\s\S]{0,90}_persistAlgorithm\(\s*manifest\.priorCustomAlgorithm\s*\)/.test(noComments)) {
+      !/manifest\.priorCustomAlgorithm[\s\S]{0,90}_persistAlgorithm\(\s*manifest\.priorCustomAlgorithm\s*\)/.test(noComments) ||
+      // The interrupted branch must also handle the NULL prior (an unpinned re-label): remove ca.algorithm
+      // rather than leave the rejected label, matching the catch's unlink arm.
+      !/manifest\.priorCustomAlgorithm\s*===\s*null\s*&&\s*typeof\s*manifest\.customAlgorithm\s*===\s*["']string["'][\s\S]{0,220}nodeFs\.unlinkSync\(\s*paths\.algorithm\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "a rejected custom-engine commit must ROLL BACK the algorithm label with the rest of the CA: capture " +
                "_priorPersistedLabel before mutating, restore it in the outer catch (or unlink ca.algorithm when there was " +
@@ -14315,7 +14318,7 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // the stored label is ca.algorithm (durable shared metadata a sibling handle's migration updates),
   // NOT this handle's caAlgorithm closure — so it must read the persisted label first, exactly as the
   // issuance/adopt/rotate paths do, else it probes a stale label and reports an unrelated verdict.
-  if (!/_persistedLabel\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,80}_effectiveCustomLabel\s*=\s*_persistedLabel/.test(noComments) ||
+  if (!/_persistedLabel\s*=\s*_currentCustomLabel\(\)[\s\S]{0,80}_effectiveCustomLabel\s*=\s*_persistedLabel/.test(noComments) ||
       !/usesDefaultEngine\s*\?\s*\(\s*st\.algorithm\s*\|\|\s*caAlgorithm\s*\)\s*:\s*\(\s*_effectiveCustomLabel\s*\|\|\s*st\.algorithm\s*\)/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "canVerifyInTls() must resolve a custom engine's label from the persisted ca.algorithm " +
@@ -14327,7 +14330,7 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // custom engine may use its own label ("CUSTOM-P384") for a key type _certAlgorithm calls
   // "ECDSA-P384-SHA384" (or cannot classify → null), so a bundled guess misreports the stored algorithm
   // to migration/audit logic. keyType stays cert-derived; unpinned custom reports null, not a guess.
-  if (!/if\s*\(\s*usesDefaultEngine\s*\)\s*\{\s*_statusAlgorithm\s*=\s*alg\.algorithm\s*;\s*\}\s*else\s*\{[\s\S]{0,120}_persistedStatusLabel\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,80}_statusAlgorithm\s*=\s*\(\s*_persistedStatusLabel\s*!==\s*undefined\s*\)\s*\?\s*_persistedStatusLabel\s*:\s*null/.test(noComments) ||
+  if (!/if\s*\(\s*usesDefaultEngine\s*\)\s*\{\s*_statusAlgorithm\s*=\s*alg\.algorithm\s*;\s*\}\s*else\s*\{[\s\S]{0,120}_persistedStatusLabel\s*=\s*_currentCustomLabel\(\)[\s\S]{0,80}_statusAlgorithm\s*=\s*\(\s*_persistedStatusLabel\s*!==\s*undefined\s*\)\s*\?\s*_persistedStatusLabel\s*:\s*null/.test(noComments) ||
       !/algorithm:\s*_statusAlgorithm\s*,\s*keyType:\s*alg\.keyType/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "status() must report a custom engine's stored algorithm from the PERSISTED label, not _certAlgorithm's " +
@@ -14335,6 +14338,22 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "_readPersistedAlgorithm(); _statusAlgorithm = _persistedStatusLabel !== undefined ? _persistedStatusLabel : " +
                "null; }` returned as `algorithm: _statusAlgorithm, keyType: alg.keyType` — else a custom \"CUSTOM-P384\" CA is " +
                "reported as the bundled \"ECDSA-P384-SHA384\" (or null), and migration/audit logic acts on the wrong algorithm" });
+  }
+  // The read-only status/probe paths (which do NOT reconcile) must consult a pending COMPLETED-commit
+  // journal, not just the on-disk ca.algorithm file: a deferred label persist (_labelPersistDeferred —
+  // a CA-changing commit whose label write failed but whose CA published) leaves the new label only in
+  // the retained journal until a mutation reconciles it. Route status() + canVerifyInTls through
+  // _currentCustomLabel(), which prefers _pendingCompletedJournalLabel() (live cert == journal newCert).
+  if (!/function\s+_currentCustomLabel\(\)[\s\S]{0,140}_pendingCompletedJournalLabel\(\)[\s\S]{0,80}_readPersistedAlgorithm\(\)/.test(noComments) ||
+      !/return\s+!_sameCert\(\s*liveCert\s*,\s*priorCert\s*\)\s*\?\s*manifest\.customAlgorithm\s*:\s*undefined/.test(noComments) ||
+      !/_persistedStatusLabel\s*=\s*_currentCustomLabel\(\)/.test(noComments) ||
+      !/_persistedLabel\s*=\s*_currentCustomLabel\(\)/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "status() and canVerifyInTls() (read-only paths that do not reconcile) must read the custom label via " +
+               "_currentCustomLabel(), which prefers _pendingCompletedJournalLabel() — the newer label of a COMPLETED-commit " +
+               "journal (live cert == manifest.newCert via _sameCert) whose ca.algorithm write was deferred — over the stale " +
+               "on-disk file; else a status-only migration/audit process reports the pre-migration label indefinitely after a " +
+               "label-write fault, acting on the wrong algorithm" });
   }
   // _rotateImpl's CAS check (is the current cert still the one snapshotted before generateCa?) must
   // compare cert IDENTITY via _sameCert, not exact PEM text — else a concurrent idempotent commit()

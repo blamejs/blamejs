@@ -3409,6 +3409,10 @@ async function testSameCertRelabelJournalDeleteFailureRestoresPriorLabel() {
   check("a same-cert re-label whose journal delete fails is rejected", threw !== null);
   check("the rejected re-label restored the prior label (CUSTOM-A), not left CUSTOM-B active",
         fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-A");
+  // status() must NOT report the retained rejected journal's label: the journal is an INTERRUPTED
+  // same-cert re-stamp (live cert == its prior cert), so the rollback-restored file label (A) wins.
+  check("status() reports the restored label (CUSTOM-A) despite the retained rejected-relabel journal",
+        ca.status().algorithm === "CUSTOM-A");
   // The surviving journal reconciles on reopen; the interrupted-commit path restores the prior label.
   var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]) });
   await reopened.generateClientCert({ cn: "after-relabel-reject" });
@@ -3457,6 +3461,61 @@ async function testStatusReportsPersistedCustomLabel() {
   await unpinned.initCA();
   check("an unpinned custom CA reports algorithm null (no misleading bundled label)",
         unpinned.status().algorithm === null && unpinned.status().keyType === "ec");
+}
+
+// When a CA-changing commit publishes the new CA but its ca.algorithm write fails (deferred), the new
+// label lives only in the retained COMPLETED-commit journal until a reconcile runs. The read-only
+// status()/canVerifyInTls() paths must report that pending label — not the stale file — so a
+// status-only migration/audit process does not act on the wrong algorithm indefinitely.
+async function testStatusReportsDeferredLabelFromJournal() {
+  var atomicFile = require("../../lib/atomic-file");
+  var dir = _mkTmp();
+  var probes = [];
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([], null, probes), algorithm: "CUSTOM-A" });
+  await ca.initCA();
+  var journal = ca.paths.caKey + ".rollback";
+  var realWrite = atomicFile.writeSync;
+  atomicFile.writeSync = function (p) {
+    if (String(p) === String(ca.paths.algorithm)) throw new Error("simulated ENOSPC writing ca.algorithm");
+    return realWrite.apply(this, arguments);
+  };
+  try { await ca.rotate({ generation: 2, algorithm: "CUSTOM-B", retainPrevious: false }); }   // CA-changing; label write deferred
+  finally { atomicFile.writeSync = realWrite; }
+  check("the deferred label left the file stale (CUSTOM-A) with the completed-commit journal retained",
+        fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-A" && fs.existsSync(journal) === true);
+  check("status() reports the deferred completed-commit label (CUSTOM-B) from the journal, not the stale file",
+        ca.status().algorithm === "CUSTOM-B");
+  probes.length = 0;
+  await ca.canVerifyInTls();
+  check("canVerifyInTls() also probes the deferred label (CUSTOM-B) from the journal",
+        probes.length === 1 && probes[0] === "CUSTOM-B");
+}
+
+// When an unpinned CA's rejected re-label is left on disk (the catch could not unlink it, so it
+// retained the journal), reconcile must REMOVE ca.algorithm — the null-prior sentinel means there is
+// no prior label to restore. Else the rejected new label stays active after the fault clears.
+async function testReconcileRemovesNullPriorRejectedLabel() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]) });   // unpinned
+  await ca.initCA();
+  var curCert = fs.readFileSync(ca.paths.caCert, "utf8");
+  var curKey  = fs.readFileSync(ca.paths.caKey, "utf8");
+  var journal = ca.paths.caKey + ".rollback";
+  var realUnlink = fs.unlinkSync;
+  fs.unlinkSync = function (p) {   // fail BOTH the catch's label unlink AND the journal delete (crash-mid-catch analog)
+    if (String(p) === String(journal) || String(p) === String(ca.paths.algorithm)) throw new Error("simulated unlink failure");
+    return realUnlink.apply(this, arguments);
+  };
+  var threw = null;
+  try { await ca.commit({ caCertPem: curCert, caKeyPem: curKey, algorithm: "CUSTOM-B" }); }
+  catch (e) { threw = e; }
+  finally { fs.unlinkSync = realUnlink; }
+  check("the rejected re-label was left on disk (catch unlink failed) with the journal retained",
+        threw !== null && fs.readFileSync(ca.paths.algorithm, "utf8") === "CUSTOM-B" && fs.existsSync(journal) === true);
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p256CaEngineGen([]) });
+  await reopened.generateClientCert({ cn: "after-null-prior" });   // triggers reconcile
+  check("reconcile removed the rejected label (null prior — nothing to restore)",
+        fs.existsSync(ca.paths.algorithm) === false);
 }
 
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
@@ -3864,6 +3923,8 @@ async function run() {
     await testSameCertRelabelJournalDeleteFailureRestoresPriorLabel();
     await testUnpinnedCustomRelabelRejectRemovesLabel();
     await testStatusReportsPersistedCustomLabel();
+    await testStatusReportsDeferredLabelFromJournal();
+    await testReconcileRemovesNullPriorRejectedLabel();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();
