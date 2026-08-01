@@ -14323,6 +14323,19 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "probe with `_effectiveCustomLabel || st.algorithm` — trusting the possibly-stale caAlgorithm closure probes " +
                "the wrong algorithm after a sibling handle migrates the CA over the same dataDir" });
   }
+  // status() must report a CUSTOM engine's PERSISTED label, not _certAlgorithm's bundled inference: a
+  // custom engine may use its own label ("CUSTOM-P384") for a key type _certAlgorithm calls
+  // "ECDSA-P384-SHA384" (or cannot classify → null), so a bundled guess misreports the stored algorithm
+  // to migration/audit logic. keyType stays cert-derived; unpinned custom reports null, not a guess.
+  if (!/if\s*\(\s*usesDefaultEngine\s*\)\s*\{\s*_statusAlgorithm\s*=\s*alg\.algorithm\s*;\s*\}\s*else\s*\{[\s\S]{0,120}_persistedStatusLabel\s*=\s*_readPersistedAlgorithm\(\)[\s\S]{0,80}_statusAlgorithm\s*=\s*\(\s*_persistedStatusLabel\s*!==\s*undefined\s*\)\s*\?\s*_persistedStatusLabel\s*:\s*null/.test(noComments) ||
+      !/algorithm:\s*_statusAlgorithm\s*,\s*keyType:\s*alg\.keyType/.test(noComments)) {
+    bad.push({ file: "lib/mtls-ca.js", line: 1,
+      content: "status() must report a custom engine's stored algorithm from the PERSISTED label, not _certAlgorithm's " +
+               "bundled inference — `if (usesDefaultEngine) _statusAlgorithm = alg.algorithm; else { _persistedStatusLabel = " +
+               "_readPersistedAlgorithm(); _statusAlgorithm = _persistedStatusLabel !== undefined ? _persistedStatusLabel : " +
+               "null; }` returned as `algorithm: _statusAlgorithm, keyType: alg.keyType` — else a custom \"CUSTOM-P384\" CA is " +
+               "reported as the bundled \"ECDSA-P384-SHA384\" (or null), and migration/audit logic acts on the wrong algorithm" });
+  }
   // _rotateImpl's CAS check (is the current cert still the one snapshotted before generateCa?) must
   // compare cert IDENTITY via _sameCert, not exact PEM text — else a concurrent idempotent commit()
   // that merely REFORMATTED the same cert during generateCa spuriously aborts the rotation with

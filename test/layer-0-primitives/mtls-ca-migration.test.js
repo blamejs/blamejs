@@ -2062,9 +2062,9 @@ async function testLeafAlgorithmBindsToSnapshotNotRacingPinRefresh() {
         leafType === "ec");
 }
 
-// For a custom engine, canVerifyInTls() with no argument must use the create-time
-// pin, not status()'s inferred bundled label — the engine may use a custom label
-// for a standard key type, and only the pin carries it.
+// For a custom engine, both status() and canVerifyInTls() must report the persisted custom label,
+// not _certAlgorithm's bundled inference — the engine may use a custom label ("CUSTOM-PQC-LABEL")
+// for a standard key type (here ML-DSA), and only the persisted label / create-time pin carries it.
 async function testCanVerifyInTlsPrefersCustomPinOverInferredLabel() {
   var dir = _mkTmp();
   var probed = [];
@@ -2075,7 +2075,8 @@ async function testCanVerifyInTlsPrefersCustomPinOverInferredLabel() {
   };
   var ca = b.mtlsCa.create({ dataDir: dir, engine: eng, algorithm: "CUSTOM-PQC-LABEL", caKeySealedMode: "disabled" });
   await ca.initCA();
-  check("status() infers a bundled label from the cert", ca.status().algorithm === "ML-DSA-87");
+  check("status() reports the persisted custom label, not the bundled inference (ML-DSA-87)",
+        ca.status().algorithm === "CUSTOM-PQC-LABEL");
   await ca.canVerifyInTls();
   check("canVerifyInTls() passes the custom engine's create-time pin, not the inferred bundled label",
         probed[probed.length - 1] === "CUSTOM-PQC-LABEL");
@@ -3014,6 +3015,35 @@ async function testCommitAppliesCustomAlgorithmOnUnpinnedHandle() {
 // but whose ALGORITHM the framework cannot classify (P-256 -> _certAlgorithm null) — the label is only
 // known from the create-time pin / an explicit commit/rotate({algorithm}). `record` collects the label
 // each signClientCert receives, so a cross-handle test can observe which label an issuance used.
+// A custom engine whose CA key is a Node-PARSEABLE P-384 — so _certAlgorithm() classifies it as the
+// bundled "ECDSA-P384-SHA384" — but whose effective label is the operator's own ("CUSTOM-P384"). Used
+// to prove status()/probes report the PERSISTED custom label, not the bundled inference.
+function _p384CaEngineGen() {
+  return {
+    canVerifyInTls: async function () { return true; },
+    generateCa: async function (genOpts) {
+      var gen = (genOpts && genOpts.generation) || 1;
+      var subtle = pki.webcrypto.subtle;
+      var keys = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+      var spki = Buffer.from(await subtle.exportKey("spki", keys.publicKey));
+      var now = new Date();
+      var caCertPem = await pki.x509.sign({
+        subject:          [{ commonName: "p384-ca" }, { organizationalUnitName: "CAv" + gen }],
+        subjectPublicKey: spki,
+        serialNumber:     "0" + gen,
+        notBefore:        now,
+        notAfter:         new Date(now.getTime() + 86400000),
+        extensions:       { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign", "cRLSign"] },
+      }, { key: keys.privateKey }, { pem: true, digestAlgorithm: "sha384" });
+      var caKeyPem = await pki.key.export(keys.privateKey, { format: "pem" });
+      return { caCertPem: caCertPem, caKeyPem: caKeyPem };
+    },
+    signClientCert: async function () {
+      return { cert: "-----BEGIN CERTIFICATE-----\nbGVhZg==\n-----END CERTIFICATE-----", key: "k" };
+    },
+  };
+}
+
 function _p256CaEngineGen(record, genRecord, probeRecord) {
   return {
     canVerifyInTls: async function (label) { if (probeRecord) probeRecord.push(label); return true; },
@@ -3407,6 +3437,26 @@ async function testUnpinnedCustomRelabelRejectRemovesLabel() {
   check("an unpinned-CA re-label whose journal delete fails is rejected", threw !== null);
   check("the rejected re-label removed the newly-written label (no prior label to restore)",
         fs.existsSync(ca.paths.algorithm) === false);
+}
+
+// status() must report a custom engine's PERSISTED label, not _certAlgorithm's bundled inference: a
+// custom P-384 CA labeled "CUSTOM-P384" would otherwise be reported as "ECDSA-P384-SHA384", making
+// migration/audit logic act on the wrong algorithm. keyType stays certificate-derived.
+async function testStatusReportsPersistedCustomLabel() {
+  var dir = _mkTmp();
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", engine: _p384CaEngineGen(), algorithm: "CUSTOM-P384" });
+  await ca.initCA();
+  var st = ca.status();
+  check("status() reports the persisted custom label (CUSTOM-P384), not the bundled inference",
+        st.algorithm === "CUSTOM-P384");
+  check("status() still reports the certificate-derived keyType (ec)", st.keyType === "ec");
+  // An UNPINNED custom CA has no persisted label, so status() reports null (undeterminable) rather
+  // than the misleading bundled guess.
+  var dir2 = _mkTmp();
+  var unpinned = b.mtlsCa.create({ dataDir: dir2, caKeySealedMode: "disabled", engine: _p384CaEngineGen() });
+  await unpinned.initCA();
+  check("an unpinned custom CA reports algorithm null (no misleading bundled label)",
+        unpinned.status().algorithm === null && unpinned.status().keyType === "ec");
 }
 
 // A stored CA whose generation is UNDETERMINABLE (a custom engine's opaque cert
@@ -3813,6 +3863,7 @@ async function run() {
     await testPersistedLabelReadFailureFailsClosed();
     await testSameCertRelabelJournalDeleteFailureRestoresPriorLabel();
     await testUnpinnedCustomRelabelRejectRemovesLabel();
+    await testStatusReportsPersistedCustomLabel();
     await testGenerateCrlSkipsPersistIfIssuerBackfilledDuringSigning();
     await testGenerateCrlPersistsWithCustomRevocationStore();
     await testGenerateCrlPersistsWithCustomIssuanceStore();
