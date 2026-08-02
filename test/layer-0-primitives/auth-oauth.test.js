@@ -670,6 +670,24 @@ async function scenarioTokenFlows(base, routes) {
     seenRevAuth === "Basic " + Buffer.from(encodeURIComponent("ac-basic") + ":" + encodeURIComponent("sec"), "utf8").toString("base64"));
   check("revokeToken basic: client_secret NOT in the body", seenRevBody.indexOf("client_secret") === -1);
 
+  // An operator httpClient.headers config must NOT clobber the request's own
+  // headers (Content-Type, Accept, the Basic Authorization header).
+  var seenHdrs = null;
+  routes["/token"] = function (req, res) {
+    seenHdrs = req.headers;
+    var out = JSON.stringify({ access_token: "at-hdrs", token_type: "Bearer" });
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+  };
+  var oaHdrs = mk(base, "ac-hdrs", { tokenEndpointAuthMethod: "client_secret_basic",
+    httpClient: { responseMode: "always-resolve", headers: { "x-operator": "op-val" } } });
+  await aresolves("exchangeCode: works with an httpClient.headers config",
+    function () { return oaHdrs.exchangeCode({ code: "c", verifier: "v", skipNonceCheck: true }); });
+  check("_postForm: an operator httpClient.headers does NOT drop the Basic Authorization header",
+    seenHdrs && seenHdrs.authorization === "Basic " + Buffer.from(encodeURIComponent("ac-hdrs") + ":" + encodeURIComponent("sec"), "utf8").toString("base64"));
+  check("_postForm: the operator's custom header is still sent", seenHdrs && seenHdrs["x-operator"] === "op-val");
+  check("_postForm: Content-Type header preserved", seenHdrs && seenHdrs["content-type"] === "application/x-www-form-urlencoded");
+
   // clientCredentials + manager reject unknown / non-object opts (config-time throw).
   var eBadCc = null; try { await oa.clientCredentials({ bogus: 1 }); } catch (x) { eBadCc = x; }
   check("clientCredentials: an unknown opt key is refused", eBadCc !== null);
