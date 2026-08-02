@@ -1346,9 +1346,11 @@ async function testFetchAndVerifyMarkNullBody() {
 }
 
 async function testFetchAndVerifyMarkFourLevelChain() {
-  // leaf -> interB -> interA -> root, with the body ordering the
-  // intermediates [interB, interA]. Verifying interB's issuer, the walker
-  // encounters interB itself before interA and must skip it (self-skip).
+  // A deeper leaf -> interB -> interA -> root chain validates to a VMC. The body
+  // orders the intermediates [interB, interA], so the issuer walk encounters
+  // interB before interA and exercises the self-skip continue; because interB is
+  // not its own issuer the walk still selects interA either way, so this pins the
+  // multi-intermediate happy path rather than the self-skip in isolation.
   var chain = await _generateFourLevelChain();
   var rv = await b.mail.bimi.fetchAndVerifyMark({
     domain:          "example.com",
@@ -1357,25 +1359,30 @@ async function testFetchAndVerifyMarkFourLevelChain() {
     httpClient:      _stubHttpClient(
       chain.leafPem + "\n" + chain.interBPem + "\n" + chain.interAPem),
   });
-  check("fetchAndVerifyMark: four-level chain validates past the self-skip branch",
+  check("fetchAndVerifyMark: a four-level leaf->interB->interA->root chain validates to a VMC",
         rv.ok === true && rv.vmcType === "vmc");
 }
 
 async function testFetchAndVerifyMarkDomainCanonicalizesEmpty() {
-  // The BIMI domain is a non-empty string that canonicalizes to "" (it
-  // contains a path separator). The SAN matcher fails closed on an empty
-  // canonical domain rather than matching anything.
-  var chain = await _generateTestChain({ sanDomain: "example.com" });
+  // The empty-canonical-domain guard is a SAN-authorization backstop: an operator
+  // BIMI domain that canonicalizes to "" (here via a path separator) must NEVER
+  // match a cert whose DNS SAN ALSO canonicalizes to "". The fixture's SAN is
+  // "a..b" — itself canonicalizing to "" — so without the `dom.length === 0`
+  // guard the matcher would compare "" === "" and vouch this garbage-SAN cert for
+  // the domain (SAN-authorization bypass). With the guard it fails closed. The
+  // "" SAN makes this test RED if the guard is removed (the prior example.com SAN
+  // passed either way, so it did not protect the guard).
+  var chain = await _generateTestChain({ sanEntries: [{ type: "dns", value: "a..b" }] });
   var threw = null;
   try {
     await b.mail.bimi.fetchAndVerifyMark({
-      domain:          "example.com/evil",
+      domain:          "example.com/evil",   // canonicalizes to ""
       vmcUrl:          "https://example.com/cert.pem",
       trustAnchorsPem: chain.rootPem,
       httpClient:      _stubHttpClient(chain.leafPem),
     });
   } catch (e) { threw = e; }
-  check("fetchAndVerifyMark: domain canonicalizing to empty fails closed (domain-mismatch)",
+  check("fetchAndVerifyMark: an empty-canonical domain never matches an empty-canonical SAN (fails closed, domain-mismatch)",
         threw && threw.code === "bimi/vmc-domain-mismatch");
 }
 

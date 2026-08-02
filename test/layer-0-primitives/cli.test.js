@@ -2823,15 +2823,54 @@ async function sectionWriteLineNoWrite() {
 // ---------------------------------------------------------------------------
 // audit — a RELATIVE --out path exercises the `nodePath.resolve(ctx.cwd, p)`
 // arm of _resolveOutPath (every other audit test passes an absolute path, so
-// only the isAbsolute-true arm was covered). The archive proceeds past
-// validation into auditTools.archive (exit != 2 either way).
+// only the isAbsolute-true arm was covered). Backed by a live seeded audit
+// chain + covering checkpoint (the sectionAuditSuccess setup), the archive
+// SUCCEEDS (rc 0) so the RESOLVED absolute path is observable in the "wrote
+// archive bundle to <abs>" line. That pins the resolve arm to
+// path.resolve(ctx.cwd, "rel-audit-out-dir") — the old `rc !== 2` assertion
+// passed even on the no-row throw (rc 1), never proving resolution at all.
 // ---------------------------------------------------------------------------
 async function sectionAuditRelativeOut() {
+  var dbDir = _tmpDir("blamejs-cli-audit-relout");
+  var savedVault = process.env.BLAMEJS_VAULT_PASSPHRASE;
+  var savedSign = process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;
+  var savedNtp = process.env.BLAMEJS_SKIP_NTP_CHECK;
+  var PASS = "audit-cli-relout-passphrase";
+  // ctx.cwd is process.cwd() (the _captureCtx default), so the relative --out
+  // resolves under that dir; compute the SAME absolute target from ctx.cwd and
+  // clean it up either side of the run so nothing is left behind.
   var ctx = _captureCtx();
-  var rc = await cli.main(
-    ["audit", "archive", "--passphrase", "p", "--out", "rel-audit-out-dir",
-     "--before", "2000-01-01"], ctx);
-  check("audit archive (relative --out) → past validation (exit != 2)", rc !== 2);
+  var resolvedOut = path.resolve(ctx.cwd, "rel-audit-out-dir");
+  var tornDown = false;
+  try {
+    _rm(resolvedOut);   // archive refuses an existing --out; ensure a fresh path
+    await helpers.setupTestDb(dbDir);
+    b.audit.registerNamespace("test");
+    for (var i = 0; i < 4; i++) {
+      await b.audit.record({ actor: { userId: "u-" + i }, action: "test.seeded", outcome: "success", metadata: { i: i } });
+    }
+    await b.audit.flush();
+    await b.audit.checkpoint();
+
+    var future = new Date(Date.now() + 3600000).toISOString();
+    var rc = await cli.main(
+      ["audit", "archive", "--passphrase", PASS, "--out", "rel-audit-out-dir",
+       "--before", future], ctx);
+    check("audit archive (relative --out, live chain) → exit 0", rc === 0);
+    // indexOf (not RegExp) — resolvedOut carries backslashes on Windows.
+    check("audit archive (relative --out) → wrote to the resolved absolute path",
+      ctx.out().indexOf("wrote archive bundle to " + resolvedOut) !== -1);
+
+    await helpers.teardownTestDb(dbDir);
+    tornDown = true;
+  } finally {
+    if (!tornDown) { try { await helpers.teardownTestDb(dbDir); } catch (_e) { /* best-effort */ } }
+    _rm(resolvedOut);
+    _rm(dbDir);
+    if (savedVault === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE; else process.env.BLAMEJS_VAULT_PASSPHRASE = savedVault;
+    if (savedSign === undefined) delete process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE; else process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = savedSign;
+    if (savedNtp === undefined) delete process.env.BLAMEJS_SKIP_NTP_CHECK; else process.env.BLAMEJS_SKIP_NTP_CHECK = savedNtp;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2848,6 +2887,10 @@ async function sectionRestoreApplyNoMax() {
       ["restore", "apply", "--data-dir", path.join(dir, "dd"),
        "--bundle", path.join(dir, "bun"), "--passphrase", "p"], ca);
     check("restore apply (no max-pulled flags) → exit 1 (unpullable bundle)", rca === 1);
+    // Pin the SPECIFIC unpullable failure (restore.js run(): "bundle '<id>' not
+    // in storage") so the exit 1 can't come from an unrelated error path.
+    check("restore apply (no max-pulled flags) → 'not in storage' unpullable message",
+      /not in storage/.test(ca.err()));
   } finally { _rm(dir); }
 }
 
@@ -2865,7 +2908,12 @@ async function sectionRestoreRollbackRelative() {
     var c = _captureCtx();
     var rc = await cli.main(
       ["restore", "rollback", "--data-dir", dd, "--rollback", "some-relative-point"], c);
-    check("restore rollback (relative --rollback) → non-zero", rc !== 0);
+    // A relative --rollback resolves against "<dataDir>.rollbacks"; a nonexistent
+    // target exits 1 (the not-found catch, not an exit-2 arg error) AND the error
+    // names the resolved absolute path — proving the relative-resolve arm produced it.
+    var resolved = path.resolve(dd + ".rollbacks", "some-relative-point");
+    check("restore rollback (relative --rollback) → exit 1 naming the resolved absolute target",
+      rc === 1 && c.err().indexOf(resolved) !== -1);
   } finally { _rm(dir); }
 }
 
@@ -2956,11 +3004,15 @@ async function sectionConfigDriftInspectTampered() {
 }
 
 // ---------------------------------------------------------------------------
-// migrate / seed — a subcommand whose runner throws a CODED error (bad SQL in
-// a migration/seeder → node:sqlite SqliteError carrying `.code`) drives the
-// `(e && e.code)` truthy arm of the catch's `code = (e && e.code) || "ERROR"`
-// (the existing broken-* tests throw a plain Error with no code → only the
-// "ERROR" fallback arm). Both catch bodies still report exit 1.
+// migrate / seed — a subcommand whose runner hits bad SQL. The raw node:sqlite
+// SqliteError is NOT what the CLI catch sees: migrations.up wraps it in a
+// MigrationError("migrations/up-failed") and seeders.run wraps it in a
+// SeederError("RUN_FAILED") before re-throwing. So the `(e && e.code)` truthy
+// arm of the catch's `code = (e && e.code) || "ERROR"` is exercised by that
+// FRAMEWORK-WRAPPER code, and the assertions below pin the wrapper codes
+// (migrations/up-failed: / RUN_FAILED:) — not the raw SqliteError `.code`. The
+// existing broken-* tests throw a plain Error with no code → only the "ERROR"
+// fallback arm. Both catch bodies still report exit 1.
 // ---------------------------------------------------------------------------
 async function sectionMigrateSeedCodedError() {
   var dir = _tmpDir("blamejs-cli-coded-err");
@@ -3090,7 +3142,7 @@ async function sectionDevSupervisorMore() {
      "--arg", "one", "--arg", "two",           // repeated → array → _coerceList slice arm
      "--watch", "./w1", "--watch", "./w2",     // repeated → array + non-empty watchList arm
      "--ignore", "node_modules",               // valid pattern → non-empty ignoreList arm
-     "--kill-signal", "SIGTERM"], c);          // string → killSignal arm
+     "--kill-signal", "SIGKILL"], c);          // NON-default signal → killSignal arm
   await helpers.waitUntil(function () { return shutdownFn !== null; }, {
     timeoutMs: 5000, label: "cli dev-more: supervisor started + running",
   });
@@ -3104,7 +3156,10 @@ async function sectionDevSupervisorMore() {
   check("dev-more: valid --ignore compiled to a RegExp list",
     !!capturedOpts && Array.isArray(capturedOpts.ignore) &&
     capturedOpts.ignore.length === 1 && capturedOpts.ignore[0] instanceof RegExp);
-  check("dev-more: --kill-signal forwarded as a string", capturedOpts.killSignal === "SIGTERM");
+  // A NON-default signal (the framework default is SIGTERM): asserting the
+  // exact forwarded value catches a regression that hardcodes / default-
+  // substitutes the signal instead of threading the operator's flag through.
+  check("dev-more: --kill-signal forwarded verbatim (non-default value)", capturedOpts.killSignal === "SIGKILL");
 
   shutdownFn();                    // first shutdown → stop() (still pending)
   check("dev-more: stop() invoked once on first shutdown", stopCalls === 1);

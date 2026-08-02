@@ -1566,12 +1566,15 @@ function testParseRangeHeaderGuard() {
 async function testNonGetMethodFallsThrough() {
   var ctx = await _ctx({ contentSafety: null }, { "a.txt": "abc" });
   try {
+    // The 404 must come from the fixture's own next() handler (body "nf"), not
+    // an opaque 404 the middleware itself could emit — that proves the request
+    // fell THROUGH the static handler rather than being handled+refused by it.
     var post = await _req(ctx.port, "POST", "/a.txt");
-    check("method: POST is not served (falls through to next → 404)",
-          post.statusCode === 404);
+    check("method: POST is not served (falls through to next → 404 'nf')",
+          post.statusCode === 404 && post.body.toString("utf8") === "nf");
     var del = await _req(ctx.port, "DELETE", "/a.txt");
-    check("method: DELETE is not served (falls through to next → 404)",
-          del.statusCode === 404);
+    check("method: DELETE is not served (falls through to next → 404 'nf')",
+          del.statusCode === 404 && del.body.toString("utf8") === "nf");
     // Sanity: GET on the same asset still serves — the method gate did not
     // break the download path.
     var get = await _get(ctx.port, "/a.txt");
@@ -1659,34 +1662,36 @@ async function testForceAttachmentSvgMapMissingSvgGate() {
   } finally { ctx.close(); }
 }
 
-// When the request context resolves neither a userId nor an IP, the quota
-// actor key is null — the concurrency / bandwidth caps early-return "ok" for a
-// keyless actor rather than sharing one global bucket. Force the null key by
-// presenting an empty-string req.ip (a string, so it wins the ip branch, but
-// falsy so it yields no key) and prove a capped mount still serves.
-async function testNullActorKeyBypassesQuota() {
-  var cache = b.cache.create({ namespace: "static-nullactor-" + process.pid, backend: "memory" });
-  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-nullactor-"));
+// A blank req.ip must NOT shadow the socket fallback: extractActorContext falls
+// through to the real peer address, so the actor key resolves and the per-actor
+// concurrency cap is ENFORCED. A proxy/middleware that blanks req.ip when it
+// can't resolve a forwarded address must not silently disable the quota
+// (fail-open). Seed the actor at the cap and prove the request is refused 429.
+async function testEmptyReqIpFallsBackToSocketAndEnforcesQuota() {
+  var cache = b.cache.create({ namespace: "static-emptyip-" + process.pid, backend: "memory" });
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-emptyip-"));
   _writeFile(dir, "f.txt", "body");
   b.staticServe._resetCacheForTest();
   var fn = b.staticServe.create({
     root: dir, contentSafety: null, cache: cache, maxConcurrentDownloadsPerActor: 1,
   });
   var server = http.createServer(function (req, res) {
-    // Empty-string ip → extractActorContext keeps it, _actorKeyFromContext
-    // returns null (falsy ip, no userId).
+    // A blank req.ip must fall through to req.socket.remoteAddress, not yield a
+    // null (quota-disabling) actor key.
     req.ip = "";
     fn(req, res, function () { res.writeHead(404); res.end("nf"); });
   });
   var port = await listenOnRandomPort(server);
   try {
-    // Seed both plausible ip-form keys above the cap: a keyed actor would 429,
-    // but a null-key actor never consults them → serves.
-    await cache.set("static:conc:ip:", 5);
-    await cache.set("static:conc:ip:127.0.0.1", 5);
+    // Seed every plausible localhost socket-address key above the cap; the empty
+    // req.ip resolves to one of them, so the cap must bite regardless of its form.
+    var ipCands = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+    for (var i = 0; i < ipCands.length; i++) {
+      await cache.set("static:conc:ip:" + ipCands[i], 5);
+    }
     var r = await _get(port, "/f.txt");
-    check("actor-key: a null actor key bypasses the concurrency cap (keyless → not rate-limited) → 200",
-          r.statusCode === 200 && r.body.toString("utf8") === "body");
+    check("actor-key: a blank req.ip falls back to the socket address so the concurrency cap is enforced → 429",
+          r.statusCode === 429);
   } finally {
     server.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -1859,7 +1864,7 @@ async function run() {
     await testContentSafetyDisabledAuditThrows();
     await testSafeAttachmentRiskyMimeNoParam();
     await testForceAttachmentSvgMapMissingSvgGate();
-    await testNullActorKeyBypassesQuota();
+    await testEmptyReqIpFallsBackToSocketAndEnforcesQuota();
     await testClientAbortMidStream();
   } finally {
     await _drainTcpHandles();

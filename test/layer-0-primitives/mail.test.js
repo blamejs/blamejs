@@ -1182,6 +1182,20 @@ function testSmtpConfigGates() {
     threw(function () { b.mail.transports.smtp({ host: "h", chunkSize: -1 }); }).code === "mail/smtp-misconfigured");
   check("smtp: bad maxTransactionMs refused",
     threw(function () { b.mail.transports.smtp({ host: "h", maxTransactionMs: -5 }); }).code === "mail/smtp-misconfigured");
+  // A present-but-non-string identity/credential field is a misconfiguration: it
+  // slips past a CR/LF/NUL check yet crashes later on the wire (e.g. a numeric
+  // user reaches Buffer.from(user) at AUTH and throws ERR_INVALID_ARG_TYPE, so
+  // the send fails instead of authenticating). Reject it at build, like CRLF.
+  check("smtp: non-string user refused",
+    threw(function () { b.mail.transports.smtp({ host: "h", user: 12345 }); }).code === "mail/smtp-misconfigured");
+  check("smtp: non-string pass refused",
+    threw(function () { b.mail.transports.smtp({ host: "h", pass: { secret: 1 } }); }).code === "mail/smtp-misconfigured");
+  check("smtp: non-string ehloName refused",
+    threw(function () { b.mail.transports.smtp({ host: "h", ehloName: 42 }); }).code === "mail/smtp-misconfigured");
+  check("smtp: non-string servername refused",
+    threw(function () { b.mail.transports.smtp({ host: "h", servername: 7 }); }).code === "mail/smtp-misconfigured");
+  check("smtp: non-string host refused",
+    threw(function () { b.mail.transports.smtp({ host: 999 }); }).code === "mail/smtp-misconfigured");
 }
 
 async function testSmtpDkimSignFailureRejectsPreConnect() {
@@ -1979,10 +1993,25 @@ async function testHttpTransportDefaultName() {
 
 // resendTransport built with only apiKey → default endpoint + null
 // allowedProtocols/allowInternal (the falsy arms of those opt reads).
-function testResendDefaultEndpointBuild() {
+async function testResendDefaultEndpointBuild() {
   var t = b.mail.transports.resend({ apiKey: "re_key" });
-  check("resend: apiKey-only build uses default endpoint (transport constructs)",
+  check("resend: apiKey-only build returns a named resend transport",
     t.name === "resend" && typeof t.send === "function");
+  // The default endpoint (https://api.resend.com/emails) is closed over inside
+  // httpTransport and never exposed on the returned {name,send}, so assert it
+  // by intercepting the outbound request URL — no network, no real Resend call.
+  var httpClientMod = require("../../lib/http-client");
+  var realRequest = httpClientMod.request;
+  var seenUrl = null;
+  httpClientMod.request = function (reqOpts) {
+    seenUrl = reqOpts && reqOpts.url;
+    return Promise.resolve({ statusCode: 200, body: Buffer.from(JSON.stringify({ id: "re_default" })) });
+  };
+  var info;
+  try { info = await t.send({ from: "f@x.com", to: "a@x.com", subject: "s", text: "hi" }); }
+  finally { httpClientMod.request = realRequest; }
+  check("resend: apiKey-only build POSTs to the default endpoint https://api.resend.com/emails",
+    seenUrl === "https://api.resend.com/emails" && info && info.id === "re_default");
 }
 
 // _isValidEmail EAI length boundaries driven through the recipient
@@ -2013,12 +2042,15 @@ async function testEaiPunycodeLengthBoundaries() {
 }
 
 // create({ guardDomain: {} }) with no profile opt → the object branch's
-// innermost "strict" fallback; a normal recipient then validates.
+// innermost "strict" fallback. Prove it defaults STRICT (not permissive) with
+// a recipient the two profiles disagree on: a bare-IP domain, which strict
+// refuses (CVE-2021-22931 class) but permissive allows. A normal recipient
+// passes under both and could not distinguish the default.
 async function testCreateGuardDomainObjectDefaultStrict() {
   var m = b.mail.create({ transport: b.mail.transports.memory(), guardDomain: {} });
-  var rv = await m.send({ to: "alice@example.com", from: "s@example.org", subject: "t", text: "hi" });
-  check("create: guardDomain:{} (no profile) defaults strict + allows normal recipient",
-    rv && rv.transport === "memory");
+  var e = await _sendErr(m, { to: "alice@192.168.1.1", from: "s@example.org", subject: "t", text: "hi" });
+  check("create: guardDomain:{} (no profile) defaults strict → refuses a bare-IP recipient permissive would allow",
+    e && e.code === "mail/recipient-domain-refused" && /ipv4-as-domain/.test(e.message));
 }
 
 // guardDomain-ON send with an angle-bracket display address plus cc + bcc
@@ -2060,11 +2092,27 @@ async function testCommercialNamelessTransportRefusalAudit() {
   var addr = { street: "1 St", city: "Springfield", region: "IL", postalCode: "62701", country: "US" };
   var m = b.mail.create({
     transport: { send: function () { return Promise.resolve({ ok: 1 }); } },
-    guardDomain: false, commercial: true, postalAddress: addr,
+    guardDomain: false, commercial: true, postalAddress: addr,  // audit defaults ON
   });
-  var e = await _sendErr(m, { to: "a@x.com", from: "f@x.com", text: "hi" });
+  // Capture the audit row the refusal emits so we can assert the nameless-
+  // transport "custom" fallback — the coverage this test uniquely claims.
+  var auditModule = require("../../lib/audit");
+  var realSafeEmit = auditModule.safeEmit;
+  var rows = [];
+  auditModule.safeEmit = function (evt) {
+    rows.push({ action: evt && evt.action, outcome: evt && evt.outcome, metadata: Object.assign({}, evt && evt.metadata) });
+    return realSafeEmit.call(auditModule, evt);
+  };
+  var e;
+  try { e = await _sendErr(m, { to: "a@x.com", from: "f@x.com", text: "hi" }); }
+  finally { auditModule.safeEmit = realSafeEmit; }
   check("commercial: nameless-transport refusal still surfaces canspam-no-unsubscribe",
     e && e.code === "mail/canspam-no-unsubscribe");
+  var refusals = rows.filter(function (r) { return r.action === "mail.canspam.refused"; });
+  check("commercial: nameless-transport canspam refusal emits mail.canspam.refused with transport='custom'",
+    refusals.length === 1 && refusals[0].outcome === "denied" &&
+    refusals[0].metadata.transport === "custom" &&
+    refusals[0].metadata.reason === "missing-unsubscribe");
 }
 
 // httpTransport interpret() that throws a NON-Error → the String(e) fallback
@@ -2152,34 +2200,56 @@ async function testResendSerializeArrayAndBufferArms() {
 // success and failure paths. Also drives create()'s transport-error wrap
 // with a nameless transport that throws a NON-Error (String(e) fallback).
 async function testAuditOnEmitCountShapes() {
-  var okXport = { send: function () { return Promise.resolve({ ok: 1 }); } };
-  var mOk = b.mail.create({ transport: okXport, guardDomain: false }); // audit defaults ON
-  // Array to/cc/bcc + subject present.
-  await mOk.send({ to: ["a@x.com", "b@x.com"], cc: ["c@x.com"], bcc: ["d@x.com"], from: "f@x.com", subject: "s", text: "hi" });
-  // Single cc/bcc + NO subject (subject-fallback + single-count arms).
-  var r2 = await mOk.send({ to: "a@x.com", cc: "c@x.com", bcc: "d@x.com", from: "f@x.com", text: "hi" });
-  check("audit-on success: nameless-transport array/single count rows emit + deliver",
-    r2 && r2.ok === 1);
+  // Intercept the audit sink at the module boundary (mirrors the network-dns
+  // stub pattern below) so we can read the exact event mail.js hands to
+  // audit.safeEmit. Snapshot action/outcome/metadata immediately — the real
+  // safeEmit still runs (audit is ON) and could redact a copy downstream.
+  var auditModule = require("../../lib/audit");
+  var realSafeEmit = auditModule.safeEmit;
+  var rows = [];
+  auditModule.safeEmit = function (evt) {
+    rows.push({ action: evt && evt.action, outcome: evt && evt.outcome, metadata: Object.assign({}, evt && evt.metadata) });
+    return realSafeEmit.call(auditModule, evt);
+  };
+  try {
+    var okXport = { send: function () { return Promise.resolve({ ok: 1 }); } };
+    var mOk = b.mail.create({ transport: okXport, guardDomain: false }); // audit defaults ON
+    // Array to/cc/bcc + subject present.
+    await mOk.send({ to: ["a@x.com", "b@x.com"], cc: ["c@x.com"], bcc: ["d@x.com"], from: "f@x.com", subject: "s", text: "hi" });
+    // Single cc/bcc + NO subject (subject-fallback + single-count arms).
+    var r2 = await mOk.send({ to: "a@x.com", cc: "c@x.com", bcc: "d@x.com", from: "f@x.com", text: "hi" });
+    var okRows = rows.filter(function (r) { return r.action === "mail.send.success"; });
+    check("audit-on success: array + single sends both deliver and each emits a mail.send.success row",
+      r2 && r2.ok === 1 && okRows.length === 2);
+    check("audit-on success: array-recipient row records toCount=2 / ccCount=1 / bccCount=1",
+      okRows[0] && okRows[0].metadata.toCount === 2 &&
+      okRows[0].metadata.ccCount === 1 && okRows[0].metadata.bccCount === 1);
+    check("audit-on success: single-recipient row records toCount=1 / ccCount=1 / bccCount=1",
+      okRows[1] && okRows[1].metadata.toCount === 1 &&
+      okRows[1].metadata.ccCount === 1 && okRows[1].metadata.bccCount === 1);
 
-  // Failure path — nameless transport throwing a NON-Error → mail/transport-failed
-  // with the String(e) fallback and the "custom" transport-name fallback.
-  var mFailNon = b.mail.create({
-    transport: { send: function () { var nonErr = "splat"; throw nonErr; } },
-    guardDomain: false,
-  });
-  var eNon = await _sendErr(mFailNon, { to: ["a@x.com", "b@x.com"], cc: ["c@x.com"], bcc: ["d@x.com"], from: "f@x.com", subject: "s", text: "hi" });
-  check("audit-on failure: non-Error throw → mail/transport-failed via String(e)+custom",
-    eNon && eNon.code === "mail/transport-failed" && /splat/.test(eNon.message) &&
-    /transport 'custom'/.test(eNon.message));
+    // Failure path — nameless transport throwing a NON-Error → mail/transport-failed
+    // with the String(e) fallback and the "custom" transport-name fallback.
+    var mFailNon = b.mail.create({
+      transport: { send: function () { var nonErr = "splat"; throw nonErr; } },
+      guardDomain: false,
+    });
+    var eNon = await _sendErr(mFailNon, { to: ["a@x.com", "b@x.com"], cc: ["c@x.com"], bcc: ["d@x.com"], from: "f@x.com", subject: "s", text: "hi" });
+    check("audit-on failure: non-Error throw → mail/transport-failed via String(e)+custom",
+      eNon && eNon.code === "mail/transport-failed" && /splat/.test(eNon.message) &&
+      /transport 'custom'/.test(eNon.message));
 
-  // Failure path with single-count recipients (single-arm of the failure counts).
-  var mFail = b.mail.create({
-    transport: { send: function () { throw new Error("nope"); } },
-    guardDomain: false,
-  });
-  var eSingle = await _sendErr(mFail, { to: "a@x.com", cc: "c@x.com", bcc: "d@x.com", from: "f@x.com", text: "hi" });
-  check("audit-on failure: single-count failure row still wraps to transport-failed",
-    eSingle && eSingle.code === "mail/transport-failed");
+    // Failure path with single-count recipients (single-arm of the failure counts).
+    var mFail = b.mail.create({
+      transport: { send: function () { throw new Error("nope"); } },
+      guardDomain: false,
+    });
+    var eSingle = await _sendErr(mFail, { to: "a@x.com", cc: "c@x.com", bcc: "d@x.com", from: "f@x.com", text: "hi" });
+    check("audit-on failure: single-count failure row still wraps to transport-failed",
+      eSingle && eSingle.code === "mail/transport-failed");
+  } finally {
+    auditModule.safeEmit = realSafeEmit;
+  }
 }
 
 // reverseDns over IPv6 loopback drives the net.isIPv6 → resolveAaaa forward
@@ -2332,11 +2402,12 @@ async function testSmtpDkimSignNonErrorThrow() {
 }
 
 // smtpTransport with explicit null credentials/servername exercises the
-// `val === null` arm of the CR/LF/NUL refusal guard, and a non-string
-// credential exercises the `typeof val !== "string"` early-return arm.
+// `val === null` arm of the CR/LF/NUL refusal guard — null means "no auth /
+// default servername" and must still build. A present non-string value is a
+// misconfiguration and is rejected at build (see testSmtpConfigGates).
 function testSmtpNullCredentialsBuild() {
-  var t = b.mail.transports.smtp({ host: "mx.example.test", user: 12345, pass: null, servername: null });
-  check("smtp: null/non-string user/pass/servername still builds (null + non-string arms of ctl-byte guard)",
+  var t = b.mail.transports.smtp({ host: "mx.example.test", user: null, pass: null, servername: null });
+  check("smtp: null user/pass/servername still builds (null arm of the ctl-byte guard)",
     typeof t.send === "function");
 }
 
@@ -2409,7 +2480,7 @@ async function run() {
   await testConsoleNonArrayBccNoRedact();
   testNoArgConstructionDefaults();
   await testHttpTransportDefaultName();
-  testResendDefaultEndpointBuild();
+  await testResendDefaultEndpointBuild();
   await testEaiPunycodeLengthBoundaries();
   await testCreateGuardDomainObjectDefaultStrict();
   await testGuardDomainAngleBracketAndCcBcc();

@@ -6445,6 +6445,37 @@ var KNOWN_ANTIPATTERNS = [
     reason: "_messageRequiresSmtpUtf8 decides the SMTPUTF8 wire requirement (RFC 6531 §3.2) purely on non-ASCII CONTENT via _hasNonAscii — never the length-bounded _isAscii, which caps at EMAIL_MAX_LEN and exists for address validity/ReDoS. A long pure-ASCII subject or address is ASCII and must not opt into SMTPUTF8, else delivery to a non-SMTPUTF8 peer fails. Any _isAscii( call inside this function re-introduces the length-vs-content conflation.",
   },
   {
+    id: "mail-smtp-field-guard-rejects-non-string-not-early-return",
+    primitive: "b.mail",
+    scanScope: "lib",
+    // The smtpTransport _refuseCtlBytes guard validates every identity/credential
+    // field concatenated into a wire command (ehloName/user/pass/host/servername).
+    // A present-but-non-string value must be REJECTED at config-time (throw
+    // mail/smtp-misconfigured) — not early-returned as "nothing to CR/LF-check".
+    // Early-returning lets a non-string slip through the builder and crash later
+    // on the wire (e.g. Buffer.from(numericUser) throws ERR_INVALID_ARG_TYPE at
+    // AUTH), so the send fails instead of failing closed at boot. The guard must
+    // fail closed: `typeof val !== "string"` throws, never returns.
+    regex: /function _refuseCtlBytes\b[\s\S]{0,240}typeof val !== "string"\)\s*return/,
+    allowlist: [],
+    reason: "smtpTransport._refuseCtlBytes must fail CLOSED on a present non-string field (throw mail/smtp-misconfigured), not early-return. A non-string user/pass/host/servername/ehloName is a misconfiguration that otherwise passes build and crashes on the wire (Buffer.from(nonString) at AUTH). An early-return on the `typeof val !== \"string\"` arm re-opens the class.",
+  },
+  {
+    id: "actor-context-empty-ip-must-not-shadow-socket-fallback",
+    primitive: "b.requestHelpers.extractActorContext",
+    scanScope: "lib",
+    // extractActorContext prefers a direct req.ip but must fall through to the
+    // socket/connection remoteAddress when req.ip is EMPTY. Reading a blank
+    // req.ip into ctx.ip shadows the real peer address and yields a null actor
+    // key downstream — silently disabling every per-actor rate / concurrency /
+    // bandwidth quota that keys off ctx.ip (fail-open). The reader must guard
+    // the empty string (req.ip.length > 0), so a blank req.ip resolves to the
+    // real socket address instead of blanking the actor key.
+    regex: /typeof req\.ip === "string"\)\s*ctx\.ip = req\.ip/,
+    allowlist: [],
+    reason: "extractActorContext must not let an empty req.ip shadow the connection/socket remoteAddress fallback — a blank actor IP nulls the actor key and fails per-actor quotas OPEN. Guard the emptiness (req.ip.length > 0) as the sibling reader does. An unguarded `typeof req.ip === \"string\") ctx.ip = req.ip` re-opens the fail-open.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",
