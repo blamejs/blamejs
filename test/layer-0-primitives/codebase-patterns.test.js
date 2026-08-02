@@ -6539,6 +6539,91 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Every STARTTLS line-protocol server that routes through the shared upgradeSocket / upgradeLineProtocol must pass a TLS-aware onTimeout (encrypted BYE/-ERR + close) — the shared helper strips the plain-socket idle handler, so a missing onTimeout leaves the upgraded session with no idle teardown at all.",
   },
   {
+    id: "db-collection-overflow-update-guards-unconditional-write",
+    primitive: "b.db.collection",
+    scanScope: "lib",
+    // The overflow-field read-modify-write reads matched rows (qFetch.all()) then
+    // writes each by _id — a WHERE'd write — so it slips past db-query's
+    // unconditional-write guard ("refusing unconditional update — call where(...)
+    // first"). It MUST re-assert that guard on the READ (qFetch._hasConditions())
+    // BEFORE qFetch.all(), or an unconditional overflow update (null / empty filter)
+    // silently mutates every row while the real-column path correctly refuses.
+    regex: /var qFetch = db\(\)\.from\(name\);(?:(?!qFetch\._hasConditions)[\s\S]){0,400}qFetch\.all\(\)/,
+    allowlist: [],
+    reason: "The db-collection overflow read-modify-write must re-assert db-query's unconditional-write guard on its READ (qFetch._hasConditions() before qFetch.all()) — its per-_id writes carry a WHERE and would otherwise let an unconditional overflow update silently rewrite every row, inconsistent with the real-column path that db-query refuses.",
+  },
+  {
+    id: "local-http-loopback-guard-requires-ip-literal",
+    primitive: "b.localHttp",
+    scanScope: "lib",
+    // The loopback-only guard must require an actual IP LITERAL (net.isIP), not a
+    // regex over the spelling. A hostname ("localhost") or a non-canonical form
+    // ("127.001.002.003", which net.isIP treats as 0) that a permissive regex
+    // admits would be sent through name resolution — a poisoned resolver could
+    // then steer it off-loopback, an SSRF bypass of the by-construction guarantee.
+    regex: /function _isLoopbackHost/,
+    requires: /net\.isIP/,
+    allowlist: [],
+    reason: "b.localHttp's loopback guard must require a loopback IP literal via net.isIP — a regex-only 127.0.0.0/8 check admits DNS-resolved spellings (a 'localhost' hostname, or a non-canonical '127.001.002.003' that net.isIP treats as 0), which name resolution could steer off-loopback and defeat the SSRF-safe-by-construction guarantee.",
+  },
+  {
+    id: "oauth-cc-manager-backoff-never-serves-expired-token",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // The clientCredentialsManager 429 backoff may ride out on the cached token
+    // ONLY while it is still valid. Serving an already-expired token is worse
+    // than surfacing the rate-limit error and letting the caller retry, so both
+    // serve-cached paths must gate on _servableDuringBackoff (expiresAt > now),
+    // never a bare `if (cached) return cached.accessToken`.
+    regex: /backoffUntil = Date\.now\(\) \+ backoffMs/,
+    requires: /_servableDuringBackoff/,
+    allowlist: [],
+    reason: "The clientCredentialsManager 429 backoff must serve the cached token only while it is still valid (_servableDuringBackoff: expiresAt !== null && expiresAt > now) — a bare `if (cached)` would ride out the backoff on an already-expired, dead token.",
+  },
+  {
+    id: "oauth-cc-manager-no-network-call-during-backoff",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // Throughout a 429 backoff window getToken() must make NO token-endpoint
+    // request — re-hammering the AS is exactly what the backoff prevents. So a
+    // getToken() inside the window either serves the still-valid cached token or
+    // fails fast with auth-oauth/backoff-active; it must never fall through to a
+    // fetch. The presence of that coded throw is the structural guard.
+    regex: /backoffUntil = Date\.now\(\) \+ backoffMs/,
+    requires: /auth-oauth\/backoff-active/,
+    allowlist: [],
+    reason: "clientCredentialsManager.getToken() must not make a network call during a 429 backoff window — it serves the still-valid cache or throws auth-oauth/backoff-active. Removing that fail-fast throw would let it re-hammer the token endpoint mid-backoff.",
+  },
+  {
+    id: "oauth-cc-omits-authcode-scope-for-m2m",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // A client_credentials (machine-to-machine) request must NOT inherit the
+    // client's authorization-code / OIDC scope default (e.g. "openid"): it sends
+    // only an explicitly-supplied scope. clientCredentials therefore resolves
+    // scope from `ccopts.scope === undefined ? null : ccopts.scope` (null omits
+    // the client-scope fallback), never a bare `_scopeParam(ccopts.scope)`.
+    regex: /"grant_type", "client_credentials"/,
+    requires: /ccopts\.scope === undefined \? null/,
+    allowlist: [],
+    reason: "clientCredentials must not send the client's authorization-code scope default on a machine-to-machine request — it resolves scope via `ccopts.scope === undefined ? null : ccopts.scope` so no scope is sent unless one is explicitly supplied.",
+  },
+  {
+    id: "oauth-postform-supports-client-secret-basic",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // Every token-endpoint POST must support RFC 6749 §2.3.1 client_secret_basic
+    // (HTTP Basic Authorization header) in addition to client_secret_post — some
+    // authorization servers require Basic. This client authentication is applied
+    // uniformly in _postForm (from the client's tokenEndpointAuthMethod), so it
+    // covers exchangeCode / refresh / revoke / clientCredentials alike; the Basic
+    // branch there is the structural guard against regressing to post-only.
+    regex: /req\.responseMode = "always-resolve"/,
+    requires: /tokenEndpointAuthMethod === "client_secret_basic"/,
+    allowlist: [],
+    reason: "_postForm (anchored on its always-resolve force, unique to b.auth.oauth) must honor the client's tokenEndpointAuthMethod and support client_secret_basic (an HTTP Basic Authorization header) as well as client_secret_post, uniformly for every token-endpoint POST — an AS that mandates Basic would otherwise be unreachable for the whole client.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",
