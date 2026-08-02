@@ -2421,6 +2421,270 @@ function testSmtpNullCredentialsBuild() {
 }
 
 // ---------------------------------------------------------------------------
+// reverseDns — forward-confirm branch closures via a controlled resolver.
+// The IPv4 (resolve4) forward path, the forward-query failure catch, a
+// codeless PTR-lookup error (dns/reverse-failed fallback), and a non-array
+// forward reply all require driving network-dns; stub it at the module
+// boundary (mirrors testReverseDnsIpv6Loopback).
+// ---------------------------------------------------------------------------
+async function testReverseDnsForwardConfirmBranches() {
+  var networkDns = require("../../lib/network-dns");
+  var realReverse = networkDns.reverse;
+  var realA       = networkDns.resolve4;
+  var realAaaa    = networkDns.resolveAaaa;
+
+  // (a) PTR lookup rejects with an error carrying NO .code → the
+  // `(e && e.code) || "dns/reverse-failed"` fallback arm.
+  networkDns.reverse = function () { return Promise.reject(new Error("ptr boom")); };
+  var rA;
+  try { rA = await b.mail.reverseDns("203.0.113.9"); }
+  finally { networkDns.reverse = realReverse; }
+  check("reverseDns: codeless PTR error → error defaults to dns/reverse-failed",
+    rA && rA.ok === false && rA.error === "dns/reverse-failed" && rA.fcrdns === false);
+
+  // (b) IPv4 forward-confirm: reverse → PTR, resolve4 → the source IP. Drives
+  // the else (resolve4) arm of the family split + the fcrdns match loop.
+  networkDns.reverse  = function () { return Promise.resolve(["mx.forward.test."]); };
+  networkDns.resolve4 = function () { return Promise.resolve(["203.0.113.9"]); };
+  var rB;
+  try { rB = await b.mail.reverseDns("203.0.113.9"); }
+  finally { networkDns.reverse = realReverse; networkDns.resolve4 = realA; }
+  check("reverseDns: IPv4 PTR+A forward-confirm (resolve4 arm) → fcrdns true, ptr + forward preserved",
+    rB && rB.ok === true && rB.ptr === "mx.forward.test." &&
+    Array.isArray(rB.forward) && rB.forward.indexOf("203.0.113.9") >= 0 && rB.fcrdns === true);
+
+  // (c) forward A-query rejects → the forward-confirm catch (dns/forward-failed).
+  // result.ok is already true (PTR resolved); the error rides alongside it.
+  networkDns.reverse  = function () { return Promise.resolve(["mx.forward.test."]); };
+  networkDns.resolve4 = function () { return Promise.reject(new Error("nxdomain")); };
+  var rC;
+  try { rC = await b.mail.reverseDns("203.0.113.10"); }
+  finally { networkDns.reverse = realReverse; networkDns.resolve4 = realA; }
+  check("reverseDns: forward A-query failure → caught, error=dns/forward-failed, ptr kept, fcrdns false",
+    rC && rC.ok === true && rC.ptr === "mx.forward.test." &&
+    rC.error === "dns/forward-failed" && rC.fcrdns === false &&
+    Array.isArray(rC.forward) && rC.forward.length === 0);
+
+  // (d) forward resolver returns a NON-array → the `: []` ternary alternate
+  // coerces result.forward, keeping fcrdns false rather than throwing on a
+  // malformed resolver reply.
+  networkDns.reverse     = function () { return Promise.resolve(["mx6.forward.test."]); };
+  networkDns.resolveAaaa = function () { return Promise.resolve(null); };
+  var rD;
+  try { rD = await b.mail.reverseDns("2001:db8::99"); }
+  finally { networkDns.reverse = realReverse; networkDns.resolveAaaa = realAaaa; }
+  check("reverseDns: non-array forward reply → forward coerced to [] (fcrdns false), ptr preserved",
+    rD && rD.ok === true && rD.ptr === "mx6.forward.test." &&
+    Array.isArray(rD.forward) && rD.forward.length === 0 && rD.fcrdns === false);
+}
+
+// _validateMessage header loop: an INHERITED enumerable header property must
+// be skipped (hasOwnProperty continue) while the own header is still validated
+// and shipped intact.
+async function testValidateMessageInheritedHeaderSkipped() {
+  var captured = [];
+  var m = b.mail.create({
+    transport: function (msg) { captured.push(msg); return Promise.resolve({ ok: 1 }); },
+    guardDomain: false, audit: false,
+  });
+  var proto = {};
+  Object.defineProperty(proto, "X-Inherited", { value: "inherited-val", enumerable: true });
+  var headers = Object.create(proto);
+  headers["X-Own"] = "own-val";
+  await m.send({ to: "a@x.com", from: "f@x.com", text: "hi", headers: headers });
+  check("validate: inherited header skipped (continue), own header dispatched intact",
+    captured.length === 1 && captured[0].headers &&
+    captured[0].headers["X-Own"] === "own-val");
+}
+
+// httpTransport request-failure wrap: http-client rejects with a MESSAGE-LESS
+// value → ((e && e.message) || String(e)) falls back to String(e); a numeric
+// statusCode on the rejection is preserved on the wrapped MailError.
+async function testHttpTransportMessagelessErrorWrap() {
+  var httpClientMod = require("../../lib/http-client");
+  var realRequest = httpClientMod.request;
+  httpClientMod.request = function () { return Promise.reject({ statusCode: 502 }); };
+  var e;
+  try {
+    var t = b.mail.transports.http({
+      endpoint: "https://x.test", name: "vend",
+      serialize: function () { return { body: "{}" }; },
+    });
+    e = await _sendErr(t, { to: "a@x.com", from: "f@x.com" });
+  } finally { httpClientMod.request = realRequest; }
+  check("http: message-less request rejection → mail/vend-failed via String(e), statusCode preserved",
+    e && e.code === "mail/vend-failed" && /object Object/.test(e.message) && e.statusCode === 502);
+}
+
+// resendTransport interpret: a response with NO body takes the `res.body ? …
+// : ""` empty-string arm; safeJson.parse("") then fails → resend-bad-response.
+async function testResendBodylessResponse() {
+  var httpClientMod = require("../../lib/http-client");
+  var realRequest = httpClientMod.request;
+  httpClientMod.request = function () { return Promise.resolve({ statusCode: 200 }); };
+  var e;
+  try {
+    var t = b.mail.transports.resend({ apiKey: "k" });
+    e = await _sendErr(t, { from: "f@x.com", to: "a@x.com", subject: "s", text: "t" });
+  } finally { httpClientMod.request = realRequest; }
+  check("resend: bodyless response → interpret empty-string arm → mail/resend-bad-response",
+    e && e.code === "mail/resend-bad-response");
+}
+
+// smtpTransport: a TLS option Node rejects synchronously (an invalid
+// minVersion) makes connect() throw inside the send — the try/catch around
+// connect() maps it to a MailError rather than letting the throw escape.
+async function testSmtpConnectSyncThrow() {
+  var t = b.mail.transports.smtp({
+    host: "127.0.0.1", port: 2, implicitTls: true, minTlsVersion: "TLSv9.9",
+  });
+  var e = await _sendErr(t, { from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+  check("smtp: synchronous connect() failure wrapped as mail/smtp-failed",
+    e && e.code === "mail/smtp-failed");
+}
+
+// Raw smtp transport bypasses create()'s message validation, so a `null` from
+// reaches _smtpSend: _extractAddr(null) exercises the `s === null` arm and
+// _messageRequiresSmtpUtf8 falls back on `message.from || ""` — both run before
+// the outbound guardEmail refuses the resulting address-less From wire
+// (pre-connect, so no socket is opened).
+async function testSmtpNullFromExtractAndUtf8Default() {
+  var t = b.mail.transports.smtp({ host: "127.0.0.1", port: 2, implicitTls: true });
+  var e = await _sendErr(t, { from: null, to: "r@b.test", subject: "s", text: "hi" });
+  check("smtp: null from → extract/utf8 branches run, wire refused by guardEmail (multi-at)",
+    e && e.code === "mail/outbound-smuggling-refused" && /multi-at/.test(e.message));
+}
+
+// create() commercial refusal: audit().safeEmit throwing while recording the
+// CAN-SPAM refusal is swallowed — the refusal still propagates unchanged.
+async function testCommercialAuditThrowSwallowed() {
+  var addr = { street: "1 St", city: "Springfield", region: "IL", postalCode: "62701", country: "US" };
+  var auditModule = require("../../lib/audit");
+  var realSafeEmit = auditModule.safeEmit;
+  auditModule.safeEmit = function () { throw new Error("audit boom"); };
+  var m = b.mail.create({
+    transport: b.mail.transports.memory(),
+    guardDomain: false, commercial: true, postalAddress: addr,   // audit defaults ON
+  });
+  var e;
+  try { e = await _sendErr(m, { to: "a@x.com", from: "f@x.com", text: "hi" }); }
+  finally { auditModule.safeEmit = realSafeEmit; }
+  check("commercial: audit-emit throw during refusal swallowed, canspam refusal still thrown",
+    e && e.code === "mail/canspam-no-unsubscribe");
+}
+
+// onData framing: a greeting carrying a trailing blank line surfaces an empty
+// response line to the client parser — the `if (!line) continue` skip. The
+// send must still complete normally.
+async function testSmtpBlankResponseLineSkipped(certPair) {
+  var st = startTlsSmtp(certPair, { greeting: "220 mock ESMTP\r\n", ext: ["8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+    check("smtp: blank response line skipped, send still delivers", r.code === 250);
+  } finally { await closeServer(st); }
+}
+
+// BDAT audit signal: audit().safeEmit throwing during the once-per-send BDAT
+// audit must be swallowed (best-effort) — delivery over BDAT still succeeds.
+async function testSmtpBdatAuditThrowSwallowed(certPair) {
+  var auditModule = require("../../lib/audit");
+  var realSafeEmit = auditModule.safeEmit;
+  auditModule.safeEmit = function () { throw new Error("audit boom"); };
+  var st = startTlsSmtp(certPair, { ext: ["CHUNKING", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port, { chunkSize: C.BYTES.bytes(32) });
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: new Array(10).join("chunky-") });
+    check("smtp-bdat: audit-emit throw swallowed, delivery still succeeds via BDAT",
+      r.code === 250 && st.bdatChunks.length >= 1);
+  } finally {
+    auditModule.safeEmit = realSafeEmit;
+    await closeServer(st);
+  }
+}
+
+// _messageRequiresBinaryMime must SKIP a falsy attachment slot (`if (!att)
+// continue`) and still detect the real NUL-bearing binary attachment that
+// follows — BODY=BINARYMIME is emitted despite the empty leading slot.
+async function testSmtpBinaryMimeSkipsFalsyAttachmentSlot(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["CHUNKING", "BINARYMIME", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({
+      from: "s@a.test", to: "r@b.test", subject: "bin", text: "see attached",
+      attachments: [
+        0,   // falsy slot — skipped by the `if (!att) continue` guard
+        { filename: "a.bin", content: Buffer.from([0x00, 0x01]), binary: true,        // allow:raw-byte-literal — NUL binary fixture
+          skipMagicByteCheck: true, contentType: "application/octet-stream" },
+      ],
+    });
+    check("smtp-binarymime: falsy attachment slot skipped, real binary still triggers BODY=BINARYMIME",
+      r.code === 250 && /BODY=BINARYMIME/.test(st.mailFromLine || ""));
+  } finally { await closeServer(st); }
+}
+
+// AUTH LOGIN with user set but pass OMITTED: the password step sends
+// Buffer.from(cfg.pass || "") = "" (the `cfg.pass || ""` fallback). A bespoke
+// server that acks the empty password line (the shared mock skips empty lines)
+// carries the transaction through to delivery.
+async function testSmtpAuthEmptyPassword(certPair) {
+  var tlsMod = require("node:tls");
+  var st = { mailFromLine: null, authAcked: false, port: 0, server: null };
+  st.server = tlsMod.createServer({ key: certPair.key, cert: certPair.cert }, function (sock) {
+    sock.setEncoding("utf8");
+    sock.write("220 mock ESMTP\r\n");
+    var buf = "";
+    var stage = "cmd";   // cmd | authUser | authPass
+    var inData = false;
+    sock.on("data", function (d) {
+      buf += d;
+      while (true) {
+        if (inData) {
+          var end = buf.indexOf("\r\n.\r\n");
+          if (end < 0) return;
+          buf = buf.slice(end + 5);
+          inData = false;
+          sock.write("250 message accepted\r\n");
+          continue;
+        }
+        var nl = buf.indexOf("\r\n");
+        if (nl < 0) return;
+        var line = buf.slice(0, nl);
+        buf = buf.slice(nl + 2);
+        // Consume the two AUTH LOGIN payload lines by stage — NOT by content —
+        // so the empty password line ("") is acked rather than dropped.
+        if (stage === "authUser") { stage = "authPass"; sock.write("334 UGFzc3dvcmQ6\r\n"); continue; }
+        if (stage === "authPass") { stage = "cmd"; st.authAcked = true; sock.write("235 auth ok\r\n"); continue; }
+        var u = line.toUpperCase();
+        if (u.indexOf("EHLO") === 0)            { sock.write("250 mock\r\n"); }
+        else if (u.indexOf("AUTH LOGIN") === 0) { stage = "authUser"; sock.write("334 VXNlcm5hbWU6\r\n"); }
+        else if (u.indexOf("MAIL FROM") === 0)  { st.mailFromLine = line; sock.write("250 sender ok\r\n"); }
+        else if (u.indexOf("RCPT TO") === 0)    { sock.write("250 rcpt ok\r\n"); }
+        else if (u === "DATA")                  { inData = true; sock.write("354 send body\r\n"); }
+        else if (u === "QUIT")                  { sock.write("221 bye\r\n"); sock.end(); }
+        else                                    { sock.write("250 ok\r\n"); }
+      }
+    });
+    sock.on("error", function () { /* client teardown expected */ });
+  });
+  await new Promise(function (resolve, reject) {
+    st.server.listen(0, "127.0.0.1", function () { st.port = st.server.address().port; resolve(); });
+    st.server.on("error", reject);
+  });
+  try {
+    var t = tlsTransport(certPair, st.port, { user: "u" });   // NO pass → cfg.pass || "" fallback
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+    check("smtp-auth: missing pass sends empty AUTH password (cfg.pass||'' fallback), delivers",
+      r.code === 250 && st.authAcked === true);
+  } finally {
+    await new Promise(function (resolve) { st.server.close(function () { resolve(); }); });
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 async function run() {
   testSmtpTransportAcceptsChunkingOpts();
@@ -2501,6 +2765,15 @@ async function run() {
   await testReverseDnsIpv6Loopback();
   testSmtpNullCredentialsBuild();
 
+  // Further branch closures — resolver / stub / config-throw paths (no cert).
+  await testReverseDnsForwardConfirmBranches();
+  await testValidateMessageInheritedHeaderSkipped();
+  await testHttpTransportMessagelessErrorWrap();
+  await testResendBodylessResponse();
+  await testSmtpConnectSyncThrow();
+  await testCommercialAuditThrowSwallowed();
+  await testSmtpNullFromExtractAndUtf8Default();
+
   // SMTP state machine over loopback TLS — mint one cert pair, reuse.
   var ca = await b.mtlsEngine.generateCa({ generation: 1 });
   var leaf = await b.mtlsEngine.signClientCert({
@@ -2537,6 +2810,12 @@ async function run() {
   await testSmtpLongAsciiSubjectNoSmtpUtf8(certPair);
   await testSmtpOutboundSmugglingRefused(certPair);
   await testSmtpDkimSignNonErrorThrow();
+
+  // Additional loopback-TLS branch closures.
+  await testSmtpBlankResponseLineSkipped(certPair);
+  await testSmtpBdatAuditThrowSwallowed(certPair);
+  await testSmtpBinaryMimeSkipsFalsyAttachmentSlot(certPair);
+  await testSmtpAuthEmptyPassword(certPair);
 }
 
 module.exports = { run: run };
