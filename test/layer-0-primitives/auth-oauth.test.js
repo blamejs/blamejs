@@ -531,20 +531,22 @@ async function scenarioTokenFlows(base, routes) {
   check("clientCredentialsManager: concurrent getToken shares one in-flight fetch",
     inflightResults[0] === "cc-inflight" && inflightResults[1] === "cc-inflight");
 
-  // A 429 rides out on the still-cached token; a huge refreshSkew forces every
-  // getToken() to attempt a re-fetch (so the 429 path is reached with a cache).
-  routes["/token"] = { json: { access_token: "cc-429-old", expires_in: 3600 } };
-  var mgr429 = oa.clientCredentialsManager({ refreshSkewSec: 100000 });
-  var oldTok = await aresolves("clientCredentialsManager: primes a cached token",
-    function () { return mgr429.getToken(); });
-  check("clientCredentialsManager: cached token primed", oldTok === "cc-429-old");
-  routes["/token"] = { status: 429, json: { error: "slow_down" } };
-  var served = await aresolves("clientCredentialsManager: a 429 serves the cached token",
-    function () { return mgr429.getToken(); });
-  check("clientCredentialsManager: a 429 rides out on the cached token", served === "cc-429-old");
-  var served2 = await aresolves("clientCredentialsManager: within the backoff window, serve cache",
-    function () { return mgr429.getToken(); });
-  check("clientCredentialsManager: backoff-window getToken serves the cache without re-hitting the AS", served2 === "cc-429-old");
+  // A 429 rides out on a still-valid cached token. To reach the backoff-serve
+  // path, the token must be past its refresh-skew window (so getToken attempts a
+  // re-fetch) yet still valid — an AGED token: 3s lifetime, 1s skew, aged ~2.2s.
+  routes["/token"] = { json: { access_token: "cc-aged", expires_in: 3 } };
+  var mgrAged = oa.clientCredentialsManager({ refreshSkewSec: 1, backoffSec: 60 });
+  var aged1 = await aresolves("clientCredentialsManager: primes an aging token",
+    function () { return mgrAged.getToken(); });
+  check("clientCredentialsManager: aging token primed", aged1 === "cc-aged");
+  await helpers.passiveObserve(2200, "aged-token backoff: age past the refresh-skew window (still valid)");
+  routes["/token"] = { status: 429, json: { error: "slow_down" } };   // a re-fetch WOULD 429
+  var served = await aresolves("clientCredentialsManager: the 429 fetch serves the still-valid aged token",
+    function () { return mgrAged.getToken(); });
+  check("clientCredentialsManager: a 429 rides out on the aged-but-valid cached token", served === "cc-aged");
+  var served2 = await aresolves("clientCredentialsManager: a subsequent getToken serves the cache during backoff",
+    function () { return mgrAged.getToken(); });
+  check("clientCredentialsManager: backoff-window getToken serves the cache without re-hitting the AS", served2 === "cc-aged");
 
   // A 429 with NO cached token propagates the error.
   routes["/token"] = { status: 429, json: { error: "slow_down" } };
@@ -643,6 +645,18 @@ async function scenarioTokenFlows(base, routes) {
   check("exchangeCode basic: credentials in the Authorization header (framework-wide auth method)",
     seenAuthEx === "Basic " + Buffer.from(encodeURIComponent("ac-basic") + ":" + encodeURIComponent("sec"), "utf8").toString("base64"));
   check("exchangeCode basic: client_secret NOT in the body", seenBodyEx.indexOf("client_secret") === -1);
+  // Basic client auth also covers the revocation endpoint (RFC 7009) — a manual
+  // token POST that composes the same helper as _postForm.
+  var seenRevAuth = null, seenRevBody = null;
+  routes["/revoke"] = function (req, res, rbody) {
+    seenRevAuth = req.headers.authorization || null; seenRevBody = rbody;
+    res.writeHead(200); res.end("{}");
+  };
+  await aresolves("revokeToken: works with a client_secret_basic client",
+    function () { return oaBasicAc.revokeToken("some-token"); });
+  check("revokeToken basic: credentials in the Authorization header (framework-wide)",
+    seenRevAuth === "Basic " + Buffer.from(encodeURIComponent("ac-basic") + ":" + encodeURIComponent("sec"), "utf8").toString("base64"));
+  check("revokeToken basic: client_secret NOT in the body", seenRevBody.indexOf("client_secret") === -1);
 
   // clientCredentials + manager reject unknown / non-object opts (config-time throw).
   var eBadCc = null; try { await oa.clientCredentials({ bogus: 1 }); } catch (x) { eBadCc = x; }
@@ -685,6 +699,25 @@ async function scenarioTokenFlows(base, routes) {
   routes["/token"] = _mk429WithRetryAfter("not-a-date");                       // unparseable
   await athrows("clientCredentialsManager: an unparseable Retry-After falls back to the fixed backoff",
     function () { return oa.clientCredentialsManager().getToken(); }, "auth-oauth/token-error-429");
+
+  // PAR is a redirect-based flow — refused on an M2M-only client (no redirectUri).
+  await athrows("pushAuthorizationRequest: refused without a configured redirectUri",
+    function () { return oaM2M.pushAuthorizationRequest(); }, "auth-oauth/no-redirect-uri");
+
+  // A token whose lifetime is <= refreshSkewSec is still CACHED (served while
+  // valid), not re-fetched on every call.
+  routes["/token"] = { json: { access_token: "cc-short-1", expires_in: 60 } };   // 60s life
+  var mgrShort = oa.clientCredentialsManager({ refreshSkewSec: 60 });            // skew == lifetime
+  var s1 = await aresolves("clientCredentialsManager: first short-token fetch", function () { return mgrShort.getToken(); });
+  check("clientCredentialsManager: short-lived token fetched", s1 === "cc-short-1");
+  routes["/token"] = { json: { access_token: "cc-short-2", expires_in: 60 } };   // a re-fetch would return this
+  var s2 = await aresolves("clientCredentialsManager: short-token served from cache", function () { return mgrShort.getToken(); });
+  check("clientCredentialsManager: a token whose lifetime <= skew is cached, not re-fetched every call", s2 === "cc-short-1");
+  // A token with no expires_in is fetched each call (lifetimeMs null path).
+  routes["/token"] = { json: { access_token: "cc-mgr-noexp" } };
+  var noExpTok = await aresolves("clientCredentialsManager: a no-expires_in token is fetched",
+    function () { return oa.clientCredentialsManager().getToken(); });
+  check("clientCredentialsManager: a no-expires_in token is served", noExpTok === "cc-mgr-noexp");
 
   // exchangeToken (RFC 8693) full flow.
   routes["/token"] = { json: { access_token: "at-x", token_type: "Bearer" } };

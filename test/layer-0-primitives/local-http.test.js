@@ -224,12 +224,20 @@ function testValidation() {
     threw(function () { b.localHttp.create({ host: "example.com", port: 80 }); }).code === "local-http/non-loopback-host");
   check("localHttp.create: a non-string host is refused",
     threw(function () { b.localHttp.create({ host: 123, port: 80 }); }).code === "local-http/non-loopback-host");
-  check("localHttp.create: a trailing-dot loopback is accepted (localhost.)",
-    (function () { try { b.localHttp.create({ host: "localhost.", port: 80 }); return true; } catch (_e) { return false; } })());
-  check("localHttp.create: 127.x loopback accepted",
+  check("localHttp.create: 127.x loopback IP literal accepted",
     (function () { try { b.localHttp.create({ host: "127.0.0.5", port: 80 }); return true; } catch (_e) { return false; } })());
   check("localHttp.create: 127.255.255.255 (valid 127/8) accepted",
     (function () { try { b.localHttp.create({ host: "127.255.255.255", port: 80 }); return true; } catch (_e) { return false; } })());
+  // A hostname (even "localhost") is refused — the connect host must be a
+  // loopback IP LITERAL so a resolver can't steer it off-loopback.
+  check("localHttp.create: the 'localhost' hostname is refused (require an IP literal)",
+    threw(function () { b.localHttp.create({ host: "localhost", port: 80 }); }).code === "local-http/non-loopback-host");
+  check("localHttp.create: 'localhost.' is refused",
+    threw(function () { b.localHttp.create({ host: "localhost.", port: 80 }); }).code === "local-http/non-loopback-host");
+  check("localHttp.create: 127.001.002.003 (leading-zero, not an IP literal) refused",
+    threw(function () { b.localHttp.create({ host: "127.001.002.003", port: 80 }); }).code === "local-http/non-loopback-host");
+  check("localHttp.create: 127.1 (short-form, not an IP literal) refused",
+    threw(function () { b.localHttp.create({ host: "127.1", port: 80 }); }).code === "local-http/non-loopback-host");
   check("localHttp.create: 127.300.0.1 (out-of-range octet, not an IP) refused as non-loopback",
     threw(function () { b.localHttp.create({ host: "127.300.0.1", port: 80 }); }).code === "local-http/non-loopback-host");
   check("localHttp.create: 127.0.0.256 (out-of-range octet) refused",

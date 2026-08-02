@@ -533,6 +533,17 @@ function testTrustedIdentityHeaders() {
   check("trustedIdentityHeaders: no gate strips even a would-be-trusted peer",
     wouldBe.headers["tailscale-user-login"] === undefined);
 
+  // peerTrust must return an EXACT synchronous `true` — an async (Promise) or
+  // truthy-non-boolean result is NOT trusted (a Promise is truthy and would
+  // otherwise let an untrusted peer be impersonated).
+  var aReq = { socket: { remoteAddress: "1.2.3.4" }, headers: { "tailscale-user-login": "x" } };
+  var asyncPt = b.requestHelpers.trustedIdentityHeaders({ headers: HDRS, peerTrust: async function () { return true; } });
+  check("trustedIdentityHeaders: an async peerTrust (returns a Promise) is NOT trusted",
+    asyncPt.resolve(aReq).trusted === false);
+  var truthyPt = b.requestHelpers.trustedIdentityHeaders({ headers: HDRS, peerTrust: function () { return 1; } });
+  check("trustedIdentityHeaders: a truthy-non-boolean peerTrust is NOT trusted",
+    truthyPt.resolve(aReq).trusted === false);
+
   // Custom peerTrust predicate + custom 'as' property.
   var pt = b.requestHelpers.trustedIdentityHeaders({ headers: HDRS, peerTrust: function () { return true; }, as: "who" });
   var ptReq = { socket: { remoteAddress: "1.2.3.4" }, headers: { "tailscale-user-login": "svc" } };

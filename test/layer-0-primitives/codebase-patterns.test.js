@@ -6553,18 +6553,18 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The db-collection overflow read-modify-write must re-assert db-query's unconditional-write guard on its READ (qFetch._hasConditions() before qFetch.all()) — its per-_id writes carry a WHERE and would otherwise let an unconditional overflow update silently rewrite every row, inconsistent with the real-column path that db-query refuses.",
   },
   {
-    id: "local-http-loopback-guard-validates-octets",
+    id: "local-http-loopback-guard-requires-ip-literal",
     primitive: "b.localHttp",
     scanScope: "lib",
-    // The loopback-only guard classifies a 127.0.0.0/8 dotted-decimal as
-    // loopback. It MUST range-validate each octet (_octetInRange): a loose
-    // \d{1,3} admits "127.300.0.1", which is NOT a valid IP and is therefore
-    // resolved as a HOSTNAME — an SSRF bypass of the loopback-only guarantee
-    // that lets the client be pointed at an arbitrary internal host.
+    // The loopback-only guard must require an actual IP LITERAL (net.isIP), not a
+    // regex over the spelling. A hostname ("localhost") or a non-canonical form
+    // ("127.001.002.003", which net.isIP treats as 0) that a permissive regex
+    // admits would be sent through name resolution — a poisoned resolver could
+    // then steer it off-loopback, an SSRF bypass of the by-construction guarantee.
     regex: /function _isLoopbackHost/,
-    requires: /_octetInRange/,
+    requires: /net\.isIP/,
     allowlist: [],
-    reason: "b.localHttp's loopback guard must octet-validate its 127.0.0.0/8 match (_octetInRange) — a bare \\d{1,3} admits '127.300.0.1', which is not an IP and is resolved as a hostname, defeating the SSRF-safe-by-construction loopback guarantee.",
+    reason: "b.localHttp's loopback guard must require a loopback IP literal via net.isIP — a regex-only 127.0.0.0/8 check admits DNS-resolved spellings (a 'localhost' hostname, or a non-canonical '127.001.002.003' that net.isIP treats as 0), which name resolution could steer off-loopback and defeat the SSRF-safe-by-construction guarantee.",
   },
   {
     id: "oauth-cc-manager-backoff-never-serves-expired-token",
