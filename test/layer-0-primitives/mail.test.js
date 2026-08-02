@@ -1196,6 +1196,15 @@ function testSmtpConfigGates() {
     threw(function () { b.mail.transports.smtp({ host: "h", servername: 7 }); }).code === "mail/smtp-misconfigured");
   check("smtp: non-string host refused",
     threw(function () { b.mail.transports.smtp({ host: 999 }); }).code === "mail/smtp-misconfigured");
+  // A FALSY non-string ehloName (false / 0 / NaN) must be rejected too — the
+  // supplied value is validated BEFORE the `|| "blamejs"` default would swallow it.
+  check("smtp: falsy non-string ehloName (false) refused before defaulting",
+    threw(function () { b.mail.transports.smtp({ host: "h", ehloName: false }); }).code === "mail/smtp-misconfigured");
+  check("smtp: falsy non-string ehloName (0) refused before defaulting",
+    threw(function () { b.mail.transports.smtp({ host: "h", ehloName: 0 }); }).code === "mail/smtp-misconfigured");
+  // …while an omitted ehloName still defaults cleanly (undefined → "blamejs").
+  check("smtp: omitted ehloName still builds (defaults)",
+    (function () { try { return typeof b.mail.transports.smtp({ host: "h" }).send === "function"; } catch (_e) { return false; } })());
 }
 
 async function testSmtpDkimSignFailureRejectsPreConnect() {

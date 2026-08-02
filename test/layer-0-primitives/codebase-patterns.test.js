@@ -6476,6 +6476,19 @@ var KNOWN_ANTIPATTERNS = [
     reason: "extractActorContext must not let an empty req.ip shadow the connection/socket remoteAddress fallback — a blank actor IP nulls the actor key and fails per-actor quotas OPEN. Guard the emptiness (req.ip.length > 0) as the sibling reader does. An unguarded `typeof req.ip === \"string\") ctx.ip = req.ip` re-opens the fail-open.",
   },
   {
+    id: "mail-smtp-ehloname-validated-as-supplied-not-defaulted",
+    primitive: "b.mail",
+    scanScope: "lib",
+    // smtpTransport validates each identity field via _refuseCtlBytes. ehloName
+    // is the one field with a `|| "blamejs"` default, so it must validate the
+    // SUPPLIED opts.ehloName — not the post-default local `ehloName` — otherwise a
+    // falsy non-string (false / 0 / NaN) is swallowed by the default and slips the
+    // fail-fast guarantee that rejects a non-string config. Validate opts.ehloName.
+    regex: /_refuseCtlBytes\("ehloName",\s+ehloName\)/,
+    allowlist: [],
+    reason: "smtpTransport must validate the SUPPLIED opts.ehloName (before the `|| \"blamejs\"` default), not the defaulted local `ehloName` — else a falsy non-string ehloName (false / 0 / NaN) is silently defaulted instead of rejected as mail/smtp-misconfigured, inconsistent with the other fields. Validating the bare `ehloName` local re-opens the gap.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",

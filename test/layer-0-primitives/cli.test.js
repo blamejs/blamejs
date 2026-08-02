@@ -2836,10 +2836,12 @@ async function sectionAuditRelativeOut() {
   var savedSign = process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;
   var savedNtp = process.env.BLAMEJS_SKIP_NTP_CHECK;
   var PASS = "audit-cli-relout-passphrase";
-  // ctx.cwd is process.cwd() (the _captureCtx default), so the relative --out
-  // resolves under that dir; compute the SAME absolute target from ctx.cwd and
-  // clean it up either side of the run so nothing is left behind.
+  // Point ctx.cwd at the throwaway temp dir so the relative --out resolves INSIDE
+  // it — never under the developer's checkout, where a fixed-name dir could be
+  // real data that _rm would destroy on a normal `npm test`. The whole temp dir
+  // (archive included) is removed in finally.
   var ctx = _captureCtx();
+  ctx.cwd = dbDir;
   var resolvedOut = path.resolve(ctx.cwd, "rel-audit-out-dir");
   var tornDown = false;
   try {
