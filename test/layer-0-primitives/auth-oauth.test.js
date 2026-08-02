@@ -560,6 +560,39 @@ async function scenarioTokenFlows(base, routes) {
     function () { return mgrAged5.getToken(); });
   check("clientCredentialsManager: a non-429 transient error rides out on the valid cached token", served5 === "cc-aged5");
 
+  // A PERMANENT refresh error (401 invalid_client) is NOT masked by the cache —
+  // it propagates so a credential/config error is detected, even with a valid
+  // aged token still cached.
+  routes["/token"] = { json: { access_token: "cc-agedp", expires_in: 3 } };
+  var mgrAgedP = oa.clientCredentialsManager({ refreshSkewSec: 1 });
+  var ap = await aresolves("clientCredentialsManager: primes an aging token (permanent-error case)", function () { return mgrAgedP.getToken(); });
+  check("clientCredentialsManager: aging token primed (permanent-error case)", ap === "cc-agedp");
+  await helpers.passiveObserve(2200, "aged-token permanent-error: age past the refresh-skew window (still valid)");
+  routes["/token"] = { status: 401, json: { error: "invalid_client" } };   // a PERMANENT 4xx
+  await athrows("clientCredentialsManager: a permanent 401 propagates (not masked by the valid cache)",
+    function () { return mgrAgedP.getToken(); }, "auth-oauth/token-error-401");
+
+  // A malformed successful response (2xx, no access_token) is PERMANENT — propagates.
+  routes["/token"] = { json: { access_token: "cc-agedm", expires_in: 3 } };
+  var mgrAgedM = oa.clientCredentialsManager({ refreshSkewSec: 1 });
+  var am = await aresolves("clientCredentialsManager: primes an aging token (malformed-response case)", function () { return mgrAgedM.getToken(); });
+  check("clientCredentialsManager: aging token primed (malformed-response case)", am === "cc-agedm");
+  await helpers.passiveObserve(2200, "aged-token malformed-response: age past the refresh-skew window");
+  routes["/token"] = { json: { token_type: "Bearer" } };   // 2xx but NO access_token → permanent
+  await athrows("clientCredentialsManager: a malformed successful response propagates (not masked)",
+    function () { return mgrAgedM.getToken(); }, "auth-oauth/no-access-token");
+
+  // A transport / network error is TRANSIENT — rides out on the valid cache.
+  routes["/token"] = { json: { access_token: "cc-agednet", expires_in: 3 } };
+  var mgrNet = oa.clientCredentialsManager({ refreshSkewSec: 1 });
+  var an = await aresolves("clientCredentialsManager: primes an aging token (network-error case)", function () { return mgrNet.getToken(); });
+  check("clientCredentialsManager: aging token primed (network-error case)", an === "cc-agednet");
+  await helpers.passiveObserve(2200, "aged-token network-error: age past the refresh-skew window");
+  routes["/token"] = function (req, res) { req.socket.destroy(); };   // ECONNRESET — a transport error
+  var servedNet = await aresolves("clientCredentialsManager: a transport error serves the valid aged token",
+    function () { return mgrNet.getToken(); });
+  check("clientCredentialsManager: a transport/network error is transient (serves the cache)", servedNet === "cc-agednet");
+
   // A 429 with NO cached token propagates the error.
   routes["/token"] = { status: 429, json: { error: "slow_down" } };
   var mgrNoCache = oa.clientCredentialsManager();
@@ -657,8 +690,9 @@ async function scenarioTokenFlows(base, routes) {
   check("exchangeCode basic: credentials in the Authorization header (framework-wide auth method)",
     seenAuthEx === "Basic " + Buffer.from(encodeURIComponent("ac-basic") + ":" + encodeURIComponent("sec"), "utf8").toString("base64"));
   check("exchangeCode basic: client_secret NOT in the body", seenBodyEx.indexOf("client_secret") === -1);
-  // Basic client auth also covers the revocation endpoint (RFC 7009) — a manual
-  // token POST that composes the same helper as _postForm.
+  // The revocation endpoint (RFC 7009) authenticates with client_secret_post
+  // even for a client_secret_basic client — tokenEndpointAuthMethod is scoped to
+  // the token endpoint, and post is universally accepted here.
   var seenRevAuth = null, seenRevBody = null;
   routes["/revoke"] = function (req, res, rbody) {
     seenRevAuth = req.headers.authorization || null; seenRevBody = rbody;
@@ -666,9 +700,8 @@ async function scenarioTokenFlows(base, routes) {
   };
   await aresolves("revokeToken: works with a client_secret_basic client",
     function () { return oaBasicAc.revokeToken("some-token"); });
-  check("revokeToken basic: credentials in the Authorization header (framework-wide)",
-    seenRevAuth === "Basic " + Buffer.from(encodeURIComponent("ac-basic") + ":" + encodeURIComponent("sec"), "utf8").toString("base64"));
-  check("revokeToken basic: client_secret NOT in the body", seenRevBody.indexOf("client_secret") === -1);
+  check("revokeToken: no Basic Authorization header (token-endpoint auth not applied to revocation)", seenRevAuth === null);
+  check("revokeToken: client_secret sent in the body (client_secret_post)", seenRevBody.indexOf("client_secret=") !== -1);
 
   // An operator httpClient.headers config must NOT clobber the request's own
   // headers (Content-Type, Accept, the Basic Authorization header).
