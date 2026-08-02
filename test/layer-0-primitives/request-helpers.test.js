@@ -495,6 +495,76 @@ function testIpKeyForRateLimit() {
         k("203.0.113.47") !== b.requestHelpers.ipPrefix("203.0.113.47"));
 }
 
+function testTrustedIdentityHeaders() {
+  var TP = ["10.0.0.0/8"];
+  var HDRS = { login: "Tailscale-User-Login", name: "Tailscale-User-Name" };
+  var ident = b.requestHelpers.trustedIdentityHeaders({ trustedProxies: TP, headers: HDRS });
+  check("trustedIdentityHeaders: peerGated when trustedProxies given", ident.peerGated === true);
+  check("trustedIdentityHeaders: headerNames lowercased",
+    ident.headerNames.indexOf("tailscale-user-login") !== -1);
+
+  // Trusted peer (10.x) → identity surfaced from the family headers.
+  var trustedReq = { socket: { remoteAddress: "10.0.0.5" },
+    headers: { "tailscale-user-login": "alice@example.com", "tailscale-user-name": "Alice" } };
+  var r = ident.resolve(trustedReq);
+  check("trustedIdentityHeaders: trusted peer → trusted + identity",
+    r.trusted === true && r.identity.login === "alice@example.com" && r.identity.name === "Alice");
+
+  // Untrusted peer presenting a FORGED identity header → not trusted, empty identity.
+  var forged = { socket: { remoteAddress: "198.51.100.66" },
+    headers: { "tailscale-user-login": "attacker@evil.example" } };
+  var rf = ident.resolve(forged);
+  check("trustedIdentityHeaders: untrusted peer → not trusted, empty identity",
+    rf.trusted === false && Object.keys(rf.identity).length === 0);
+
+  // middleware: trusted sets req[as]; untrusted STRIPS the forged header + nulls it.
+  ident.middleware(trustedReq, {}, function () {});
+  check("trustedIdentityHeaders middleware: trusted sets req.proxyIdentity",
+    trustedReq.proxyIdentity && trustedReq.proxyIdentity.login === "alice@example.com");
+  ident.middleware(forged, {}, function () {});
+  check("trustedIdentityHeaders middleware: untrusted STRIPS the forged header (impersonation blocked)",
+    forged.headers["tailscale-user-login"] === undefined && forged.proxyIdentity === null);
+
+  // No gate → fail-closed: never trusted, always strips.
+  var nogate = b.requestHelpers.trustedIdentityHeaders({ headers: HDRS });
+  check("trustedIdentityHeaders: no gate → not peerGated (fail-closed)", nogate.peerGated === false);
+  var wouldBe = { socket: { remoteAddress: "10.0.0.5" }, headers: { "tailscale-user-login": "x" } };
+  nogate.middleware(wouldBe, {}, function () {});
+  check("trustedIdentityHeaders: no gate strips even a would-be-trusted peer",
+    wouldBe.headers["tailscale-user-login"] === undefined);
+
+  // Custom peerTrust predicate + custom 'as' property.
+  var pt = b.requestHelpers.trustedIdentityHeaders({ headers: HDRS, peerTrust: function () { return true; }, as: "who" });
+  var ptReq = { socket: { remoteAddress: "1.2.3.4" }, headers: { "tailscale-user-login": "svc" } };
+  pt.middleware(ptReq, {}, function () {});
+  check("trustedIdentityHeaders: custom peerTrust + custom 'as' surfaces identity",
+    ptReq.who && ptReq.who.login === "svc");
+
+  // _socketAddr falls back to the legacy req.connection when socket has no
+  // string remoteAddress (older Node request shapes / proxied streams).
+  var connReq = { socket: {}, connection: { remoteAddress: "10.0.0.9" },
+    headers: { "tailscale-user-login": "legacy@example.com" } };
+  var rc = ident.resolve(connReq);
+  check("trustedIdentityHeaders: req.connection remoteAddress fallback is honoured",
+    rc.trusted === true && rc.identity.login === "legacy@example.com");
+  // A peer with no resolvable address (neither socket nor connection) is untrusted.
+  var noAddr = ident.resolve({ socket: {}, headers: { "tailscale-user-login": "x" } });
+  check("trustedIdentityHeaders: a peer with no resolvable address is not trusted", noAddr.trusted === false);
+
+  // Config-time validation.
+  function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
+  check("trustedIdentityHeaders: no opts refused (defaults applied, then headers required)",
+    threw(function () { b.requestHelpers.trustedIdentityHeaders(); }) !== null);
+  check("trustedIdentityHeaders: missing headers refused",
+    threw(function () { b.requestHelpers.trustedIdentityHeaders({ trustedProxies: TP }); }) !== null);
+  check("trustedIdentityHeaders: empty headers refused",
+    threw(function () { b.requestHelpers.trustedIdentityHeaders({ headers: {} }); }) !== null);
+  check("trustedIdentityHeaders: non-string header name refused",
+    threw(function () { b.requestHelpers.trustedIdentityHeaders({ headers: { login: 123 } }); }) !== null);
+  check("trustedIdentityHeaders: bad peerTrust refused",
+    threw(function () { b.requestHelpers.trustedIdentityHeaders({ headers: HDRS, peerTrust: "nope" }); }) !== null);
+}
+
 async function run() {
   testSurface();
   testSafeHeadersDistinct();
@@ -507,6 +577,7 @@ async function run() {
   testClientIpLegacyFormsStillWork();
   testTrustedClientIpPeerGatedFlag();
   testTrustedClientIpResolves();
+  testTrustedIdentityHeaders();
   testTrustedProxyMappedPeerNormalized();
   testTrustedProtocol();
   testRequestProtocolNoProxy();

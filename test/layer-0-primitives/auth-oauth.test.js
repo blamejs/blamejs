@@ -454,6 +454,110 @@ async function scenarioTokenFlows(base, routes) {
     function () { return oa.refreshAccessToken("rt-old"); });
   check("refreshAccessToken: refreshed profile surfaced", fr3 && fr3.profile && fr3.profile.sub === "user-42");
 
+  // client_credentials grant (RFC 6749 §4.4) — machine-to-machine, no refresh_token.
+  routes["/token"] = { json: { access_token: "cc-1", token_type: "Bearer", expires_in: 3600, scope: "api:read api:write" } };
+  var cc = await aresolves("clientCredentials: full flow returns a token",
+    function () { return oa.clientCredentials(); });
+  check("clientCredentials: accessToken surfaced", cc && cc.accessToken === "cc-1");
+  check("clientCredentials: expiresIn + future expiresAt derived",
+    cc.expiresIn === 3600 && typeof cc.expiresAt === "number" && cc.expiresAt > Date.now());
+  check("clientCredentials: scope surfaced from the response", cc.scope === "api:read api:write");
+  // A response with no access_token is refused.
+  routes["/token"] = { json: { token_type: "Bearer" } };
+  await athrows("clientCredentials: missing access_token refused",
+    function () { return oa.clientCredentials(); }, "auth-oauth/no-access-token");
+
+  // clientCredentialsManager caches — a second getToken() with a live cache does
+  // NOT re-fetch (proven by flipping the route between calls; a re-fetch would
+  // return the new value).
+  routes["/token"] = { json: { access_token: "cc-cache-1", expires_in: 3600 } };
+  var mgr = oa.clientCredentialsManager();
+  var m1 = await aresolves("clientCredentialsManager: first getToken fetches",
+    function () { return mgr.getToken(); });
+  check("clientCredentialsManager: first token fetched", m1 === "cc-cache-1");
+  routes["/token"] = { json: { access_token: "cc-cache-2", expires_in: 3600 } };
+  var m2 = await aresolves("clientCredentialsManager: second getToken uses cache",
+    function () { return mgr.getToken(); });
+  check("clientCredentialsManager: cached token reused within its lifetime", m2 === "cc-cache-1");
+
+  // A token endpoint that omits expires_in yields a null (unknown) expiry.
+  routes["/token"] = { json: { access_token: "cc-noexp" } };
+  var ccNoExp = await aresolves("clientCredentials: no expires_in → null expiry",
+    function () { return oa.clientCredentials(); });
+  check("clientCredentials: null expiresIn/expiresAt when the AS omits expires_in",
+    ccNoExp.expiresIn === null && ccNoExp.expiresAt === null);
+
+  // Scope override resolution: array joins, empty array/string resolve to no scope.
+  routes["/token"] = { json: { access_token: "cc-arr" } };
+  var ccArr = await aresolves("clientCredentials: array scope override joins",
+    function () { return oa.clientCredentials({ scope: ["api:a", "api:b"] }); });
+  check("clientCredentials: array scope surfaced (space-joined) when AS echoes none", ccArr.scope === "api:a api:b");
+  routes["/token"] = { json: { access_token: "cc-str-scope" } };
+  var ccStr = await aresolves("clientCredentials: non-empty string scope override",
+    function () { return oa.clientCredentials({ scope: "api:single" }); });
+  check("clientCredentials: string scope surfaced verbatim when AS echoes none", ccStr.scope === "api:single");
+  routes["/token"] = { json: { access_token: "cc-empty-arr" } };
+  var ccEmptyArr = await aresolves("clientCredentials: empty-array scope override",
+    function () { return oa.clientCredentials({ scope: [] }); });
+  check("clientCredentials: an empty-array scope resolves to null", ccEmptyArr.scope === null);
+  routes["/token"] = { json: { access_token: "cc-empty-str" } };
+  var ccEmptyStr = await aresolves("clientCredentials: empty-string scope override",
+    function () { return oa.clientCredentials({ scope: "" }); });
+  check("clientCredentials: an empty-string scope resolves to null", ccEmptyStr.scope === null);
+  routes["/token"] = { json: { access_token: "cc-null-scope" } };
+  var ccNullScope = await aresolves("clientCredentials: null scope override → no scope",
+    function () { return oa.clientCredentials({ scope: null }); });
+  check("clientCredentials: a null scope resolves to null", ccNullScope.scope === null);
+
+  // A client with no clientSecret cannot use the client_credentials grant.
+  var oaNoSecret = mk(base, "cc-nosecret", { clientSecret: undefined });
+  await athrows("clientCredentials: a missing clientSecret is refused",
+    function () { return oaNoSecret.clientCredentials(); }, "auth-oauth/no-client-secret");
+
+  // Manager with explicit refreshSkewSec/backoffSec (the numeric arms of the
+  // skew/backoff resolution, vs. the default-arm manager above).
+  routes["/token"] = { json: { access_token: "cc-mgr-opts", expires_in: 3600 } };
+  var mgrOpts = oa.clientCredentialsManager({ refreshSkewSec: 30, backoffSec: 15 });
+  var mo = await aresolves("clientCredentialsManager: explicit skew/backoff opts fetch",
+    function () { return mgrOpts.getToken(); });
+  check("clientCredentialsManager: explicit-opts manager fetches a token", mo === "cc-mgr-opts");
+
+  // Concurrent getToken() calls share ONE in-flight fetch (no thundering herd).
+  routes["/token"] = { json: { access_token: "cc-inflight", expires_in: 3600 } };
+  var mgrIF = oa.clientCredentialsManager();
+  var pA = mgrIF.getToken();
+  var pB = mgrIF.getToken();   // shares pA's in-flight promise
+  var inflightResults = await Promise.all([pA, pB]);
+  check("clientCredentialsManager: concurrent getToken shares one in-flight fetch",
+    inflightResults[0] === "cc-inflight" && inflightResults[1] === "cc-inflight");
+
+  // A 429 rides out on the still-cached token; a huge refreshSkew forces every
+  // getToken() to attempt a re-fetch (so the 429 path is reached with a cache).
+  routes["/token"] = { json: { access_token: "cc-429-old", expires_in: 3600 } };
+  var mgr429 = oa.clientCredentialsManager({ refreshSkewSec: 100000 });
+  var oldTok = await aresolves("clientCredentialsManager: primes a cached token",
+    function () { return mgr429.getToken(); });
+  check("clientCredentialsManager: cached token primed", oldTok === "cc-429-old");
+  routes["/token"] = { status: 429, json: { error: "slow_down" } };
+  var served = await aresolves("clientCredentialsManager: a 429 serves the cached token",
+    function () { return mgr429.getToken(); });
+  check("clientCredentialsManager: a 429 rides out on the cached token", served === "cc-429-old");
+  var served2 = await aresolves("clientCredentialsManager: within the backoff window, serve cache",
+    function () { return mgr429.getToken(); });
+  check("clientCredentialsManager: backoff-window getToken serves the cache without re-hitting the AS", served2 === "cc-429-old");
+
+  // A 429 with NO cached token propagates the error.
+  routes["/token"] = { status: 429, json: { error: "slow_down" } };
+  var mgrNoCache = oa.clientCredentialsManager();
+  await athrows("clientCredentialsManager: a 429 with no cache throws",
+    function () { return mgrNoCache.getToken(); }, "auth-oauth/token-error-429");
+
+  // A NON-429 error propagates immediately (no backoff window is opened).
+  routes["/token"] = { status: 500, json: { error: "server_error" } };
+  var mgr500 = oa.clientCredentialsManager();
+  await athrows("clientCredentialsManager: a non-429 error propagates (no backoff)",
+    function () { return mgr500.getToken(); }, "auth-oauth/token-error-500");
+
   // exchangeToken (RFC 8693) full flow.
   routes["/token"] = { json: { access_token: "at-x", token_type: "Bearer" } };
   var xt = await aresolves("exchangeToken: full flow returns tokens",

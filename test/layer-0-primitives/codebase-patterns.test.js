@@ -6539,6 +6539,20 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Every STARTTLS line-protocol server that routes through the shared upgradeSocket / upgradeLineProtocol must pass a TLS-aware onTimeout (encrypted BYE/-ERR + close) — the shared helper strips the plain-socket idle handler, so a missing onTimeout leaves the upgraded session with no idle teardown at all.",
   },
   {
+    id: "db-collection-overflow-update-guards-unconditional-write",
+    primitive: "b.db.collection",
+    scanScope: "lib",
+    // The overflow-field read-modify-write reads matched rows (qFetch.all()) then
+    // writes each by _id — a WHERE'd write — so it slips past db-query's
+    // unconditional-write guard ("refusing unconditional update — call where(...)
+    // first"). It MUST re-assert that guard on the READ (qFetch._hasConditions())
+    // BEFORE qFetch.all(), or an unconditional overflow update (null / empty filter)
+    // silently mutates every row while the real-column path correctly refuses.
+    regex: /var qFetch = db\(\)\.from\(name\);(?:(?!qFetch\._hasConditions)[\s\S]){0,400}qFetch\.all\(\)/,
+    allowlist: [],
+    reason: "The db-collection overflow read-modify-write must re-assert db-query's unconditional-write guard on its READ (qFetch._hasConditions() before qFetch.all()) — its per-_id writes carry a WHERE and would otherwise let an unconditional overflow update silently rewrite every row, inconsistent with the real-column path that db-query refuses.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",
