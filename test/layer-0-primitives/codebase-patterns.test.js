@@ -6609,17 +6609,19 @@ var KNOWN_ANTIPATTERNS = [
     reason: "clientCredentials must not send the client's authorization-code scope default on a machine-to-machine request — it resolves scope via `ccopts.scope === undefined ? null : ccopts.scope` so no scope is sent unless one is explicitly supplied.",
   },
   {
-    id: "oauth-cc-supports-client-secret-basic",
+    id: "oauth-postform-supports-client-secret-basic",
     primitive: "b.auth.oauth",
     scanScope: "lib",
-    // clientCredentials must support RFC 6749 §2.3.1 client_secret_basic (HTTP
-    // Basic Authorization header) in addition to client_secret_post — some
-    // authorization servers require Basic. The auth-method branch that builds the
-    // Basic header is the structural guard against regressing to post-only.
-    regex: /"grant_type", "client_credentials"/,
-    requires: /authMethod === "client_secret_basic"/,
+    // Every token-endpoint POST must support RFC 6749 §2.3.1 client_secret_basic
+    // (HTTP Basic Authorization header) in addition to client_secret_post — some
+    // authorization servers require Basic. This client authentication is applied
+    // uniformly in _postForm (from the client's tokenEndpointAuthMethod), so it
+    // covers exchangeCode / refresh / revoke / clientCredentials alike; the Basic
+    // branch there is the structural guard against regressing to post-only.
+    regex: /req\.responseMode = "always-resolve"/,
+    requires: /tokenEndpointAuthMethod === "client_secret_basic"/,
     allowlist: [],
-    reason: "clientCredentials must honor tokenEndpointAuthMethod and support client_secret_basic (an HTTP Basic Authorization header) as well as client_secret_post — an AS that mandates Basic would otherwise be unreachable.",
+    reason: "_postForm (anchored on its always-resolve force, unique to b.auth.oauth) must honor the client's tokenEndpointAuthMethod and support client_secret_basic (an HTTP Basic Authorization header) as well as client_secret_post, uniformly for every token-endpoint POST — an AS that mandates Basic would otherwise be unreachable for the whole client.",
   },
   {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",

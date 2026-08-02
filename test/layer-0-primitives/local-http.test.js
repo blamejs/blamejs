@@ -190,6 +190,17 @@ async function testEndToEndDeadline() {
   } finally { clearInterval(timer); srv.server.close(); }
 }
 
+async function testPostJsonNonSerializable() {
+  var srv = await _startSocketServer(function (req, res) { res.writeHead(200); res.end("ok"); });
+  try {
+    var d = b.localHttp.create({ socketPath: srv.path, hostHeader: "d" });
+    var circular = {}; circular.self = circular;   // JSON.stringify throws on this
+    var e = null;
+    try { await d.postJson("/x", circular); } catch (err) { e = err; }
+    check("localHttp postJson: a non-serializable body rejects (not a synchronous throw)", e !== null);
+  } finally { srv.server.close(); }
+}
+
 async function testTransportError() {
   var missing = process.platform === "win32"
     ? "\\\\.\\pipe\\blamejs-lh-missing-" + process.pid
@@ -256,6 +267,7 @@ async function run() {
   await testBodyVariantsAndCustomHeaders();
   await testIpv6LoopbackBracket();
   await testEndToEndDeadline();
+  await testPostJsonNonSerializable();
   await testTransportError();
   testValidation();
   // bad request path (async refusal); also covers request() called with no opts.
@@ -266,6 +278,10 @@ async function run() {
   var ne = null;
   try { await client.request(); } catch (e) { ne = e; }
   check("localHttp.request: no opts → bad-path (defaults applied)", ne && ne.code === "local-http/bad-path");
+  var se = null;
+  try { await client.request({ path: "/a b" }); } catch (e) { se = e; }
+  check("localHttp.request: an unescaped space in the path is refused (typed, no sync http.request throw)",
+    se && se.code === "local-http/bad-path");
 }
 
 if (require.main === module) {

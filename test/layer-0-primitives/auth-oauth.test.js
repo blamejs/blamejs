@@ -606,12 +606,14 @@ async function scenarioTokenFlows(base, routes) {
     res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) });
     res.end(out);
   };
-  var oaBasic = mk(base, "cc-basic", { tokenEndpointAuthMethod: "client_secret_basic" });
+  // A secret containing ':' and '/' proves the RFC 6749 §2.3.1 form-urlencoding
+  // (a raw concat would corrupt the username:password split).
+  var oaBasic = mk(base, "cc-basic", { tokenEndpointAuthMethod: "client_secret_basic", clientSecret: "s:e/c" });
   var basicTok = await aresolves("clientCredentials: client_secret_basic issues a token",
     function () { return oaBasic.clientCredentials(); });
   check("clientCredentials basic: token issued", basicTok.accessToken === "basic-tok");
-  check("clientCredentials basic: credentials in the Authorization header",
-    seenAuth === "Basic " + Buffer.from("cc-basic:sec", "utf8").toString("base64"));
+  check("clientCredentials basic: credentials form-urlencoded in the Authorization header",
+    seenAuth === "Basic " + Buffer.from(encodeURIComponent("cc-basic") + ":" + encodeURIComponent("s:e/c"), "utf8").toString("base64"));
   check("clientCredentials basic: client_secret NOT in the request body", seenBody.indexOf("client_secret") === -1);
   check("clientCredentials: an unknown tokenEndpointAuthMethod is refused at create",
     (function () { try { mk(base, "cc-badauth", { tokenEndpointAuthMethod: "nope" }); return false; } catch (e) { return e.code === "auth-oauth/bad-auth-method"; } })());
@@ -625,6 +627,64 @@ async function scenarioTokenFlows(base, routes) {
   routes["/token"] = { json: { access_token: "should-not-be-fetched", expires_in: 3600 } };   // a fetch WOULD succeed
   await athrows("clientCredentialsManager: no network call during backoff (fails fast, no re-hammer)",
     function () { return mgrBackoff.getToken(); }, "auth-oauth/backoff-active");
+
+  // Client auth method (client_secret_basic) applies to EVERY token POST, not
+  // just clientCredentials — here the authorization-code exchange.
+  var seenAuthEx = null, seenBodyEx = null;
+  routes["/token"] = function (req, res, rbody) {
+    seenAuthEx = req.headers.authorization || null; seenBodyEx = rbody;
+    var out = JSON.stringify({ access_token: "at-basic-ex", token_type: "Bearer" });
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+  };
+  var oaBasicAc = mk(base, "ac-basic", { tokenEndpointAuthMethod: "client_secret_basic" });
+  await aresolves("exchangeCode: works with a client_secret_basic client",
+    function () { return oaBasicAc.exchangeCode({ code: "c", verifier: "v", skipNonceCheck: true }); });
+  check("exchangeCode basic: credentials in the Authorization header (framework-wide auth method)",
+    seenAuthEx === "Basic " + Buffer.from(encodeURIComponent("ac-basic") + ":" + encodeURIComponent("sec"), "utf8").toString("base64"));
+  check("exchangeCode basic: client_secret NOT in the body", seenBodyEx.indexOf("client_secret") === -1);
+
+  // clientCredentials + manager reject unknown / non-object opts (config-time throw).
+  var eBadCc = null; try { await oa.clientCredentials({ bogus: 1 }); } catch (x) { eBadCc = x; }
+  check("clientCredentials: an unknown opt key is refused", eBadCc !== null);
+  check("clientCredentialsManager: an unknown opt key is refused",
+    (function () { try { oa.clientCredentialsManager({ refreshSkewSecs: 5 }); return false; } catch (_e) { return true; } })());
+  check("clientCredentialsManager: a non-object arg is refused",
+    (function () { try { oa.clientCredentialsManager(300); return false; } catch (_e) { return true; } })());
+
+  // A 429 Retry-After (RFC 6585) overrides the fixed local backoff: a long
+  // Retry-After keeps the backoff window closed past the configured backoffSec.
+  routes["/token"] = function (req, res) {
+    var out = JSON.stringify({ error: "slow_down" });
+    res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "3600", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+  };
+  var mgrRA = oa.clientCredentialsManager({ backoffSec: 1 });   // short fixed backoff
+  await athrows("clientCredentialsManager: a 429 with Retry-After opens the backoff",
+    function () { return mgrRA.getToken(); }, "auth-oauth/token-error-429");
+  await helpers.passiveObserve(1100, "retry-after: wait past the 1s fixed backoff");
+  routes["/token"] = { json: { access_token: "should-not-fetch-ra", expires_in: 3600 } };   // a fetch WOULD succeed
+  await athrows("clientCredentialsManager: Retry-After keeps the backoff open past backoffSec (no fetch)",
+    function () { return mgrRA.getToken(); }, "auth-oauth/backoff-active");
+
+  // Retry-After value shapes (RFC 7231 §7.1.3): an HTTP-date (future + past) and
+  // an unparseable value are all handled — each still surfaces the 429.
+  function _mk429WithRetryAfter(val) {
+    return function (req, res) {
+      var out = JSON.stringify({ error: "slow_down" });
+      res.writeHead(429, { "Content-Type": "application/json", "Retry-After": val, "Content-Length": Buffer.byteLength(out) });
+      res.end(out);
+    };
+  }
+  routes["/token"] = _mk429WithRetryAfter("Wed, 21 Oct 2099 07:28:00 GMT");   // future HTTP-date
+  await athrows("clientCredentialsManager: a future HTTP-date Retry-After is handled",
+    function () { return oa.clientCredentialsManager().getToken(); }, "auth-oauth/token-error-429");
+  routes["/token"] = _mk429WithRetryAfter("Wed, 21 Oct 2001 07:28:00 GMT");   // past HTTP-date
+  await athrows("clientCredentialsManager: a past HTTP-date Retry-After is handled",
+    function () { return oa.clientCredentialsManager().getToken(); }, "auth-oauth/token-error-429");
+  routes["/token"] = _mk429WithRetryAfter("not-a-date");                       // unparseable
+  await athrows("clientCredentialsManager: an unparseable Retry-After falls back to the fixed backoff",
+    function () { return oa.clientCredentialsManager().getToken(); }, "auth-oauth/token-error-429");
 
   // exchangeToken (RFC 8693) full flow.
   routes["/token"] = { json: { access_token: "at-x", token_type: "Bearer" } };
