@@ -483,6 +483,27 @@ async function testTlsIdleTimeoutClosed() {
   }, { timeoutMs: 9000 });
 }
 
+// ---- STLS handshake window is bounded by the idle timeout ----
+// A peer that sends STLS then WITHHOLDS the TLS ClientHello must be timed out and
+// closed within the idle bound — the upgraded socket arms its idle timer before
+// the handshake completes. Disarming the plain timer without arming the TLS one
+// (arming only on "secure") would leave this half-open connection + its rate-limit
+// slot open indefinitely.
+async function testStlsHandshakeIsBounded() {
+  await helpers.withTestTimeout("pop3 stls handshake bound", async function () {
+    var s = await _makeServer({ idleTimeoutMs: 300 });
+    var sock = nodeNet.connect(s.port, "127.0.0.1");
+    sock.on("error", function () {});
+    await _readReply(sock);        // greeting
+    await _send(sock, "STLS");     // +OK begin TLS — but never start the handshake
+    var closed = false;
+    sock.on("close", function () { closed = true; });
+    await helpers.waitUntil(function () { return closed; },
+      { timeoutMs: 4000, label: "pop3 STLS-then-withhold-ClientHello closed within idle bound" });
+    check("STLS without a following ClientHello is closed within the idle timeout (handshake bounded)", closed);
+  }, { timeoutMs: 9000 });
+}
+
 // ---- USER arriving in the auth window (actor set, drop pending) ----
 async function testUserDuringAuthWindowRefused() {
   await helpers.withTestTimeout("pop3 user-during-auth-window", async function () {
@@ -877,6 +898,7 @@ async function run() {
   await testPostAuthWrongState();
   await testStlsHandshakeFailureClosed();
   await testTlsIdleTimeoutClosed();
+  await testStlsHandshakeIsBounded();
   await testUserDuringAuthWindowRefused();
   await testClearttextRefusedBalanced();
   await testNoAuthConfigured();
