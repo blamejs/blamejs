@@ -6489,6 +6489,27 @@ var KNOWN_ANTIPATTERNS = [
     reason: "smtpTransport must validate the SUPPLIED opts.ehloName (before the `|| \"blamejs\"` default), not the defaulted local `ehloName` — else a falsy non-string ehloName (false / 0 / NaN) is silently defaulted instead of rejected as mail/smtp-misconfigured, inconsistent with the other fields. Validating the bare `ehloName` local re-opens the gap.",
   },
   {
+    id: "mail-server-tls-upgrade-strips-timeout-listener-not-just-data",
+    primitive: "b.mail.server.tls.upgradeSocket",
+    scanScope: "lib",
+    // On a STARTTLS / STLS upgrade, upgradeSocket strips the plain socket's "data"
+    // listeners (so pre-handshake plaintext can't reach the post-TLS dispatcher).
+    // It MUST also strip the plain socket's "timeout" listeners — every line-
+    // protocol server (pop3/imap/managesieve/mx/submission) arms socket.setTimeout
+    // + a "timeout" handler that writes a PLAINTEXT idle reply on the plain socket.
+    // Left attached, it survives the wrap and fires after the handshake, injecting
+    // cleartext into the now-encrypted stream (TLS decode error / reset) instead of
+    // the TLS-aware onTimeout replying encrypted.
+    // Anchored on the `plainSocket` param of the shared server upgradeSocket —
+    // the SMTP CLIENT (lib/mail.js) uses `socket.removeAllListeners("data")` and
+    // its plain "timeout" handler calls fail() (reject+close, idempotent), never a
+    // plaintext socket.write, so it is correctly excluded.
+    regex: /plainSocket\.removeAllListeners\("data"\)/,
+    requires: /plainSocket\.removeAllListeners\("timeout"\)/,
+    allowlist: [],
+    reason: "The shared server upgradeSocket must strip the plain socket's \"timeout\" listeners (and disarm its idle timer) alongside \"data\" on a STARTTLS upgrade — else the pre-upgrade PLAINTEXT idle-timeout handler survives and injects cleartext into the encrypted channel on idle (plaintext-into-TLS). Stripping only \"data\" re-opens the class for every STARTTLS line-protocol server (pop3/imap/managesieve/mx/submission).",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",
