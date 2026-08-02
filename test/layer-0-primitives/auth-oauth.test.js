@@ -579,6 +579,53 @@ async function scenarioTokenFlows(base, routes) {
   await athrows("clientCredentialsManager: a 429 does NOT serve an expired cached token",
     function () { return mgrExp.getToken(); }, "auth-oauth/token-error-429");
 
+  // A machine-to-machine client needs no redirectUri; the redirect-flow methods
+  // still enforce one.
+  var oaM2M = mk(base, "cc-m2m", { redirectUri: undefined });
+  routes["/token"] = { json: { access_token: "m2m-tok", expires_in: 3600 } };
+  var m2mTok = await aresolves("clientCredentials: works on a client created without a redirectUri",
+    function () { return oaM2M.clientCredentials(); });
+  check("clientCredentials: an M2M-only client (no redirectUri) issues a token", m2mTok.accessToken === "m2m-tok");
+  await athrows("authorizationUrl: refused without a configured redirectUri",
+    function () { return oaM2M.authorizationUrl(); }, "auth-oauth/no-redirect-uri");
+  await athrows("exchangeCode: refused without a configured redirectUri",
+    function () { return oaM2M.exchangeCode({ code: "c" }); }, "auth-oauth/no-redirect-uri");
+
+  // M2M requests do NOT inherit the client's authorization-code scope default.
+  routes["/token"] = { json: { access_token: "m2m-noscope" } };   // response carries no scope
+  var noScope = await aresolves("clientCredentials: no scope defaulted for M2M",
+    function () { return oa.clientCredentials(); });               // oa has a configured ["openid"] scope
+  check("clientCredentials: does NOT inherit the client's auth-code scope default", noScope.scope === null);
+
+  // client_secret_basic sends credentials in the Authorization header, not the body.
+  var seenAuth = null, seenBody = null;
+  routes["/token"] = function (req, res, rbody) {
+    seenAuth = req.headers.authorization || null;
+    seenBody = rbody;
+    var out = JSON.stringify({ access_token: "basic-tok", expires_in: 3600 });
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+  };
+  var oaBasic = mk(base, "cc-basic", { tokenEndpointAuthMethod: "client_secret_basic" });
+  var basicTok = await aresolves("clientCredentials: client_secret_basic issues a token",
+    function () { return oaBasic.clientCredentials(); });
+  check("clientCredentials basic: token issued", basicTok.accessToken === "basic-tok");
+  check("clientCredentials basic: credentials in the Authorization header",
+    seenAuth === "Basic " + Buffer.from("cc-basic:sec", "utf8").toString("base64"));
+  check("clientCredentials basic: client_secret NOT in the request body", seenBody.indexOf("client_secret") === -1);
+  check("clientCredentials: an unknown tokenEndpointAuthMethod is refused at create",
+    (function () { try { mk(base, "cc-badauth", { tokenEndpointAuthMethod: "nope" }); return false; } catch (e) { return e.code === "auth-oauth/bad-auth-method"; } })());
+
+  // During a 429 backoff window, getToken makes NO network call: with no valid
+  // cache it fails fast rather than re-hammering the token endpoint.
+  routes["/token"] = { status: 429, json: { error: "slow_down" } };
+  var mgrBackoff = oa.clientCredentialsManager({ backoffSec: 60 });
+  await athrows("clientCredentialsManager: first 429 (no cache) opens the backoff window",
+    function () { return mgrBackoff.getToken(); }, "auth-oauth/token-error-429");
+  routes["/token"] = { json: { access_token: "should-not-be-fetched", expires_in: 3600 } };   // a fetch WOULD succeed
+  await athrows("clientCredentialsManager: no network call during backoff (fails fast, no re-hammer)",
+    function () { return mgrBackoff.getToken(); }, "auth-oauth/backoff-active");
+
   // exchangeToken (RFC 8693) full flow.
   routes["/token"] = { json: { access_token: "at-x", token_type: "Bearer" } };
   var xt = await aresolves("exchangeToken: full flow returns tokens",
@@ -1578,8 +1625,10 @@ async function run() {
           "auth-oauth/pkce-required");
   rejects("create: missing clientId refused",
           function () { X.create({ redirectUri: "https://x/cb" }); }, "auth-oauth/no-client-id");
-  rejects("create: missing redirectUri refused",
-          function () { X.create({ clientId: "a" }); }, "auth-oauth/no-redirect-uri");
+  // redirectUri is optional at create (M2M / client_credentials clients need
+  // none); authorizationUrl / exchangeCode enforce it at call time (covered above).
+  check("create: succeeds without a redirectUri (M2M-only client)",
+        (function () { try { X.create({ clientId: "a" }); return true; } catch (_e) { return false; } })());
   rejects("create: unknown provider preset refused",
           function () { X.create({ clientId: "a", redirectUri: "https://x/cb", provider: "nope" }); },
           "auth-oauth/unknown-provider");

@@ -6581,6 +6581,47 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The clientCredentialsManager 429 backoff must serve the cached token only while it is still valid (_servableDuringBackoff: expiresAt !== null && expiresAt > now) — a bare `if (cached)` would ride out the backoff on an already-expired, dead token.",
   },
   {
+    id: "oauth-cc-manager-no-network-call-during-backoff",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // Throughout a 429 backoff window getToken() must make NO token-endpoint
+    // request — re-hammering the AS is exactly what the backoff prevents. So a
+    // getToken() inside the window either serves the still-valid cached token or
+    // fails fast with auth-oauth/backoff-active; it must never fall through to a
+    // fetch. The presence of that coded throw is the structural guard.
+    regex: /backoffUntil = Date\.now\(\) \+ backoffMs/,
+    requires: /auth-oauth\/backoff-active/,
+    allowlist: [],
+    reason: "clientCredentialsManager.getToken() must not make a network call during a 429 backoff window — it serves the still-valid cache or throws auth-oauth/backoff-active. Removing that fail-fast throw would let it re-hammer the token endpoint mid-backoff.",
+  },
+  {
+    id: "oauth-cc-omits-authcode-scope-for-m2m",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // A client_credentials (machine-to-machine) request must NOT inherit the
+    // client's authorization-code / OIDC scope default (e.g. "openid"): it sends
+    // only an explicitly-supplied scope. clientCredentials therefore resolves
+    // scope from `ccopts.scope === undefined ? null : ccopts.scope` (null omits
+    // the client-scope fallback), never a bare `_scopeParam(ccopts.scope)`.
+    regex: /"grant_type", "client_credentials"/,
+    requires: /ccopts\.scope === undefined \? null/,
+    allowlist: [],
+    reason: "clientCredentials must not send the client's authorization-code scope default on a machine-to-machine request — it resolves scope via `ccopts.scope === undefined ? null : ccopts.scope` so no scope is sent unless one is explicitly supplied.",
+  },
+  {
+    id: "oauth-cc-supports-client-secret-basic",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // clientCredentials must support RFC 6749 §2.3.1 client_secret_basic (HTTP
+    // Basic Authorization header) in addition to client_secret_post — some
+    // authorization servers require Basic. The auth-method branch that builds the
+    // Basic header is the structural guard against regressing to post-only.
+    regex: /"grant_type", "client_credentials"/,
+    requires: /authMethod === "client_secret_basic"/,
+    allowlist: [],
+    reason: "clientCredentials must honor tokenEndpointAuthMethod and support client_secret_basic (an HTTP Basic Authorization header) as well as client_secret_post — an AS that mandates Basic would otherwise be unreachable.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",
