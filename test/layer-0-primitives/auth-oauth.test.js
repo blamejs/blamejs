@@ -548,6 +548,18 @@ async function scenarioTokenFlows(base, routes) {
     function () { return mgrAged.getToken(); });
   check("clientCredentialsManager: backoff-window getToken serves the cache without re-hitting the AS", served2 === "cc-aged");
 
+  // A transient NON-429 refresh failure (e.g. 503) also rides out on the
+  // still-valid aged cached token rather than failing the caller.
+  routes["/token"] = { json: { access_token: "cc-aged5", expires_in: 3 } };
+  var mgrAged5 = oa.clientCredentialsManager({ refreshSkewSec: 1 });
+  var a5 = await aresolves("clientCredentialsManager: primes an aging token (non-429 case)", function () { return mgrAged5.getToken(); });
+  check("clientCredentialsManager: aging token primed (non-429 case)", a5 === "cc-aged5");
+  await helpers.passiveObserve(2200, "aged-token non-429: age past the refresh-skew window (still valid)");
+  routes["/token"] = { status: 503, json: { error: "server_error" } };   // a transient non-429
+  var served5 = await aresolves("clientCredentialsManager: a 503 refresh failure serves the still-valid aged token",
+    function () { return mgrAged5.getToken(); });
+  check("clientCredentialsManager: a non-429 transient error rides out on the valid cached token", served5 === "cc-aged5");
+
   // A 429 with NO cached token propagates the error.
   routes["/token"] = { status: 429, json: { error: "slow_down" } };
   var mgrNoCache = oa.clientCredentialsManager();

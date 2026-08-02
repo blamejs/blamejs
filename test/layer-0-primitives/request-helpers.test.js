@@ -359,6 +359,25 @@ function testClientIpPeerGatedAllHopsTrusted() {
     b.requestHelpers.clientIp(req, { trustProxy: trust }) === "10.0.0.9");
 }
 
+function testTrustProxyRequiresBooleanTrue() {
+  // Function-form trustProxy must return an EXACT boolean true — an async
+  // (Promise) or truthy-non-boolean predicate must NOT trust the peer, else a
+  // forged X-Forwarded-* header would be honored for an access-control decision.
+  var asyncTrust = async function () { return true; };
+  var truthyTrust = function () { return 1; };
+  var ipReq = { socket: { remoteAddress: "10.0.0.9" }, headers: { "x-forwarded-for": "203.0.113.7" } };
+  check("clientIp: an async trustProxy is NOT trusted (falls to socket addr)",
+    b.requestHelpers.clientIp(ipReq, { trustProxy: asyncTrust }) === "10.0.0.9");
+  check("clientIp: a truthy-non-boolean trustProxy is NOT trusted",
+    b.requestHelpers.clientIp(ipReq, { trustProxy: truthyTrust }) === "10.0.0.9");
+  var protoReq = { socket: { encrypted: false, remoteAddress: "10.0.0.9" }, headers: { "x-forwarded-proto": "https" } };
+  check("requestProtocol: an async trustProxy is NOT trusted (ignores forged X-Forwarded-Proto)",
+    b.requestHelpers.requestProtocol(protoReq, { trustProxy: asyncTrust }) === "http");
+  var hostReq = { socket: { remoteAddress: "10.0.0.9" }, headers: { host: "real.example", "x-forwarded-host": "evil.example" } };
+  check("requestHost: an async trustProxy is NOT trusted (ignores forged X-Forwarded-Host)",
+    b.requestHelpers.requestHost(hostReq, { trustProxy: asyncTrust }) === "real.example");
+}
+
 function testClientIpLegacyFormsStillWork() {
   // Legacy spoofable forms preserved for edge-terminated deployments.
   var req = { socket: { remoteAddress: "10.0.0.1" },
@@ -585,6 +604,7 @@ async function run() {
   testClientIpPeerGatedTrustedPeer();
   testClientIpPeerGatedUntrustedPeerIgnoresXff();
   testClientIpPeerGatedAllHopsTrusted();
+  testTrustProxyRequiresBooleanTrue();
   testClientIpLegacyFormsStillWork();
   testTrustedClientIpPeerGatedFlag();
   testTrustedClientIpResolves();
