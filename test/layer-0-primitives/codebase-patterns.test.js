@@ -6430,6 +6430,21 @@ var KNOWN_ANTIPATTERNS = [
     reason: "DSN (mail-send-deliver.buildDsn, mail-bounce.dsn.build), MDN (mail-mdn.build) and ARC (mail-arc-sign.sign) report-header builders MUST compose safeBuffer.assertHeaderSafe on every structured field (and stripCrlf-fold the free-text 5xx reason). An unguarded `Name: value\\r\\n` built from a hostile original sender / peer MX is a header-injection vector (v0.15.68 root sweep — 4 HIGH + archive + srs). A new builder in this family that matches the report-header anchor but drops the guard re-opens the class.",
   },
   {
+    id: "mail-smtputf8-requirement-is-content-not-length-bounded",
+    primitive: "b.mail",
+    scanScope: "lib",
+    // The SMTPUTF8 (RFC 6531 §3.2) requirement is decided by whether a field
+    // holds a non-ASCII code point — NOT by length. _isAscii is a length-bounded
+    // (<= EMAIL_MAX_LEN) validity/ReDoS guard for email ADDRESSES; reusing it in
+    // _messageRequiresSmtpUtf8 misclassifies a long-but-pure-ASCII subject as
+    // non-ASCII content, so an otherwise-deliverable message is refused
+    // (eai-required-not-supported) whenever the peer does not advertise SMTPUTF8.
+    // The decision must use the length-agnostic _hasNonAscii content check.
+    regex: /function _messageRequiresSmtpUtf8\b(?:(?!\n})[\s\S]){0,4000}_isAscii\s*\(/,
+    allowlist: [],
+    reason: "_messageRequiresSmtpUtf8 decides the SMTPUTF8 wire requirement (RFC 6531 §3.2) purely on non-ASCII CONTENT via _hasNonAscii — never the length-bounded _isAscii, which caps at EMAIL_MAX_LEN and exists for address validity/ReDoS. A long pure-ASCII subject or address is ASCII and must not opt into SMTPUTF8, else delivery to a non-SMTPUTF8 peer fails. Any _isAscii( call inside this function re-introduces the length-vs-content conflation.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",

@@ -2278,18 +2278,29 @@ async function testSmtpUnicodeFromRequiresSmtpUtf8(certPair) {
   } finally { await closeServer(st); }
 }
 
-// A long (>254-octet) but pure-ASCII subject is treated as non-ASCII by the
-// length-bounded _isAscii guard, so the transaction opts into SMTPUTF8 when
-// the peer advertises it.
-async function testSmtpLongAsciiSubjectSmtpUtf8(certPair) {
-  var st = startTlsSmtp(certPair, { ext: ["SMTPUTF8", "8BITMIME"] });
-  await listen(st);
+// A long (>254-octet) but pure-ASCII subject does NOT require SMTPUTF8 — the
+// requirement is non-ASCII CONTENT (RFC 6531 §3.2), not length. It delivers to
+// a peer that does not advertise SMTPUTF8, with no SMTPUTF8 parameter on MAIL
+// FROM; and even against an SMTPUTF8 peer no parameter is added, since the
+// decision is content-driven, not peer-driven.
+async function testSmtpLongAsciiSubjectNoSmtpUtf8(certPair) {
+  var noEai = startTlsSmtp(certPair, { ext: ["8BITMIME"] });   // peer does NOT advertise SMTPUTF8
+  await listen(noEai);
   try {
-    var t = tlsTransport(certPair, st.port);
-    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "x".repeat(300), text: "hi" });
-    check("smtp-longsubj: >254-octet ASCII subject opts into SMTPUTF8 (length-bounded _isAscii)",
-      r.code === 250 && /SMTPUTF8/.test(st.mailFromLine || ""));
-  } finally { await closeServer(st); }
+    var t1 = tlsTransport(certPair, noEai.port);
+    var r1 = await t1.send({ from: "s@a.test", to: "r@b.test", subject: "x".repeat(300), text: "hi" });
+    check("smtp-longsubj: >254-octet ASCII subject delivers to a non-SMTPUTF8 peer with no SMTPUTF8 parameter",
+      r1.code === 250 && !/SMTPUTF8/.test(noEai.mailFromLine || ""));
+  } finally { await closeServer(noEai); }
+
+  var eai = startTlsSmtp(certPair, { ext: ["SMTPUTF8", "8BITMIME"] });   // peer DOES advertise it
+  await listen(eai);
+  try {
+    var t2 = tlsTransport(certPair, eai.port);
+    var r2 = await t2.send({ from: "s@a.test", to: "r@b.test", subject: "y".repeat(300), text: "hi" });
+    check("smtp-longsubj: a long ASCII subject adds no SMTPUTF8 even to an SMTPUTF8 peer (content-driven)",
+      r2.code === 250 && !/SMTPUTF8/.test(eai.mailFromLine || ""));
+  } finally { await closeServer(eai); }
 }
 
 // Outbound SMTP-smuggling refusal: a body carrying a bare-CR + smuggled verb
@@ -2443,7 +2454,7 @@ async function run() {
   await testSmtpAuthPasswordRejected(certPair);
   await testSmtpAutoDetectFamilyConnect(certPair);
   await testSmtpUnicodeFromRequiresSmtpUtf8(certPair);
-  await testSmtpLongAsciiSubjectSmtpUtf8(certPair);
+  await testSmtpLongAsciiSubjectNoSmtpUtf8(certPair);
   await testSmtpOutboundSmugglingRefused(certPair);
   await testSmtpDkimSignNonErrorThrow();
 }

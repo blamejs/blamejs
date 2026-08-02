@@ -2,15 +2,33 @@
   "$schema": "../scripts/release-notes-schema.json",
   "version": "0.18.6",
   "date": "2026-08-01",
-  "headline": "Error- and edge-path tests for the CLI, mail sender, BIMI verifier, and static-file server",
-  "summary": "Error, edge, and adversarial branches of the blamejs CLI (migrate/seed runner error codes, dev-runner watch/ignore/kill-signal flags and start-failure exit, restore/backup inspect and rollback paths, mtls / vault / config-drift subcommands), b.mail (SMTPUTF8 detection, address validation and EAI edges, SMTP-smuggling refusal, DKIM and interpret error paths, the console/http/resend transports, guardDomain cc/bcc validation), b.mail.bimi verification branches, and b.static's request and path-resolution branches are now under test. Behaviour is unchanged -- these pin guarantees the primitives already met.",
+  "headline": "Long pure-ASCII subjects deliver without SMTPUTF8; error- and edge-path tests for the CLI, mail, BIMI, and static server",
+  "summary": "b.mail no longer forces SMTPUTF8 on a long-but-pure-ASCII subject or address, so such a message delivers to a peer that does not advertise SMTPUTF8 (RFC 6531). Alongside the fix, error, edge, and adversarial branches of the blamejs CLI (migrate/seed runner error codes, dev-runner watch/ignore/kill-signal flags and start-failure exit, restore/backup inspect and rollback paths, mtls / vault / config-drift subcommands), b.mail (SMTPUTF8 detection, address validation and EAI edges, SMTP-smuggling refusal, DKIM and interpret error paths, the console/http/resend transports), b.mail.bimi verification branches, and b.static's request and path-resolution branches are now under test. Except for the SMTPUTF8 fix, behaviour is unchanged -- these pin guarantees the primitives already met.",
   "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A long pure-ASCII subject or address no longer forces SMTPUTF8",
+          "body": "b.mail treated any subject or address longer than 254 characters as non-ASCII content, so an otherwise-deliverable pure-ASCII message required SMTPUTF8 (RFC 6531) and was refused with `eai-required-not-supported` whenever the receiving server did not advertise SMTPUTF8. The requirement is now decided solely by whether a field carries a non-ASCII code point, independent of length: long ASCII subjects and addresses deliver to any peer, and genuinely non-ASCII content still opts into SMTPUTF8 where the peer advertises it."
+        }
+      ]
+    },
     {
       "heading": "Changed",
       "items": [
         {
           "title": "Error- and edge-path tests for the CLI, mail sender, BIMI verifier, and static-file server",
-          "body": "The blamejs CLI (migrate/seed runner coded-error paths, the dev runner's --watch / --ignore / --kill-signal handling and start-rejection exit, restore inspect/apply/rollback and list-rollbacks, backup inspect/verify, mtls show-cert / status, vault status, and config-drift inspect on a tampered sidecar), b.mail (long-ASCII SMTPUTF8 opt-in, reverse-DNS forward-confirm, address and EAI-domain validation edges, the outbound SMTP-smuggling refusal, DKIM-sign and interpret error fallbacks, the console / http / resend transports and their option defaults, guardDomain cc/bcc validation, and the CAN-SPAM refusal audit), b.mail.bimi's verification branches, and b.static's request and path-resolution error branches now have explicit tests for their boundary paths. Behaviour is unchanged -- the additions pin guarantees the primitives already met."
+          "body": "The blamejs CLI (migrate/seed runner coded-error paths, the dev runner's --watch / --ignore / --kill-signal handling and start-rejection exit, restore inspect/apply/rollback and list-rollbacks, backup inspect/verify, mtls show-cert / status, vault status, and config-drift inspect on a tampered sidecar), b.mail (long-ASCII SMTPUTF8 handling, reverse-DNS forward-confirm, address and EAI-domain validation edges, the outbound SMTP-smuggling refusal, DATA dot-stuffing transparency, DKIM-sign and interpret error fallbacks, the console / http / resend transports and their option defaults, guardDomain cc/bcc validation, and the CAN-SPAM refusal audit), b.mail.bimi's verification branches, and b.static's request and path-resolution error branches (including concurrency-slot release on a mid-stream client abort) now have explicit tests for their boundary paths."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "SMTPUTF8 requirement stays content-based, not length-bounded",
+          "body": "A source guard keeps b.mail's SMTPUTF8 decision keyed on the presence of a non-ASCII code point rather than the length-bounded ASCII validity check, so the long-ASCII-subject deliverability regression cannot return."
         }
       ]
     }

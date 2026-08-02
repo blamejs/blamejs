@@ -1697,43 +1697,68 @@ async function testNullActorKeyBypassesQuota() {
 // A client that disconnects mid-stream triggers the cancellation-propagation
 // path: the file stream is destroyed, the idle timer cleared, and the actor's
 // concurrency slot released while all are still live (the normal-completion path
-// clears them first, so this only runs on an abort). Capping concurrency at 1
-// makes the slot release OBSERVABLE: if the abort path fails to free the slot,
-// the actor stays pinned at the cap and every follow-up request is refused 429.
+// clears them first, so this only runs on an abort). To prove the RELEASE is the
+// abort path and not eventual normal completion, the stream is STALLED: a large
+// file plus a client that stops reading backpressures the server so the download
+// never finishes. With concurrency capped at 1, the slot is provably held while
+// the stall is parked (a concurrent request is refused 429), and only aborting
+// the stalled stream can free it (a follow-up then serves 200). A regressed abort
+// path leaves the slot pinned forever.
 async function testClientAbortMidStream() {
-  var big = Buffer.alloc(4 * 1024 * 1024, 0x61); // 4 MiB of 'a'
+  // 48 MiB comfortably exceeds loopback socket + kernel buffers, so pausing the
+  // client after the first bytes stalls the server mid-stream rather than letting
+  // it drain to completion. small.txt keeps the probe requests cheap (a 429 short-
+  // circuits before the file opens; the release probe serves a few bytes).
+  var big = Buffer.alloc(48 * 1024 * 1024, 0x61);
   var cache = b.cache.create({ namespace: "static-abort-" + process.pid, backend: "memory" });
   var ctx = await _ctx(
     { contentSafety: null, cache: cache, maxConcurrentDownloadsPerActor: 1 },
-    { "big.dat": big });
+    { "big.dat": big, "small.txt": Buffer.from("ok") });
+  var net = require("node:net");
+  var sock = null;
   try {
-    var net = require("node:net");
-    await new Promise(function (resolve) {
-      var sock = net.connect(ctx.port, "127.0.0.1", function () {
+    // Request 1: start the download, read the first bytes, then STOP reading so
+    // TCP backpressure stalls the server mid-stream while it holds the only slot.
+    await new Promise(function (resolve, reject) {
+      sock = net.connect(ctx.port, "127.0.0.1", function () {
         sock.write("GET /big.dat HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
       });
-      var done = false;
-      function finish() { if (!done) { done = true; resolve(); } }
+      var started = false;
       sock.on("data", function () {
-        // First bytes on the wire — the slot is now held; vanish while the stream is
-        // still flowing so ONLY the abort path (not a normal end) can release it.
-        try { sock.destroy(); } catch (_d) { /* already gone */ }
-        finish();
+        if (started) return;
+        started = true;
+        sock.pause();   // stop draining → backpressure → the server stream stalls, slot stays held
+        resolve();
       });
-      sock.on("error", finish);
-      sock.on("close", finish);
+      sock.on("error", reject);
     });
-    // The aborted stream must have released the actor's slot. Re-poll a fresh full
-    // request (the slot release lands on a later loop turn than the client close);
-    // a leaked slot answers 429 forever and fails this by exhausting the attempts.
-    var r = null;
-    for (var attempt = 0; attempt < 50; attempt += 1) {
-      r = await _get(ctx.port, "/big.dat");
-      if (r.statusCode === 200) break;
+
+    // While the stall is parked, the only slot is held: a concurrent request is
+    // refused 429. (This also proves the file is large enough to actually stall —
+    // a fully-drained stream would release the slot and answer 200 here.)
+    var held = null;
+    for (var i = 0; i < 50; i += 1) {
+      held = await _get(ctx.port, "/small.txt");
+      if (held.statusCode === 429) break;
     }
-    check("client-abort: the aborted stream releases its concurrency slot (a fresh full request then serves 200)",
-          r.statusCode === 200 && r.body.length === big.length);
+    check("client-abort: a stalled download holds its concurrency slot (a concurrent request is refused 429)",
+          held !== null && held.statusCode === 429);
+
+    // Abort the stalled stream. Because it never completed, ONLY the abort-cleanup
+    // path can release the slot.
+    sock.destroy();
+
+    // The slot must now be free: a fresh request serves 200. A regressed abort path
+    // leaves the slot pinned and this exhausts its retries still at 429.
+    var served = null;
+    for (var j = 0; j < 50; j += 1) {
+      served = await _get(ctx.port, "/small.txt");
+      if (served.statusCode === 200) break;
+    }
+    check("client-abort: aborting the stalled stream releases its slot (a fresh request then serves 200)",
+          served !== null && served.statusCode === 200 && served.body.toString() === "ok");
   } finally {
+    try { if (sock) sock.destroy(); } catch (_d) { /* already gone */ }
     ctx.close();
     if (typeof cache.close === "function") await cache.close();
   }
