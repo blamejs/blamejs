@@ -2751,6 +2751,14 @@ async function run() {
   await sectionRestoreApplyGuards();
   await sectionBackupVerifyBlockEntry();
   await sectionMtlsShowCertLoadThrows();
+
+  // Branch-coverage closers for the String(e) non-Error-throw fallback arms
+  // (a thrown value with no .message → the CLI stringifies it) and the restore
+  // apply SUCCESS body (a real decryptable bundle round-trips + reverts the
+  // live file), none reachable by the Error-with-message fixtures above.
+  await sectionDevStartRejectNonError();
+  await sectionApiSnapshotNonErrorThrows();
+  await sectionRestoreApplySuccess();
 }
 
 // The `dev` supervisor's run loop, driven in-process via the _dev / _onDevRunning
@@ -3254,6 +3262,126 @@ async function sectionMtlsShowCertLoadThrows() {
     check("mtls show-cert (oversize cert) → could-not-load message",
       /could not load CA cert:/.test(cs.err()));
   } finally { _rm(dataDir); }
+}
+
+// ---------------------------------------------------------------------------
+// dev start() rejects with a NON-Error value (a bare string). The dev start
+// catch reports `((e && e.message) || String(e))`; a string has no `.message`,
+// so control falls to the String(e) fallback arm (sectionDevSupervisorMore's
+// reject test throws a real Error, which only exercises the `.message` arm).
+// The seam-injected fake makes start() reject before any child spawns.
+// ---------------------------------------------------------------------------
+async function sectionDevStartRejectNonError() {
+  var failDev = {
+    start: function () { return Promise.reject("bare-string-start-failure"); },
+    stop:  function () { return Promise.resolve(); },
+  };
+  var cf = _captureCtx();
+  cf._dev = function () { return failDev; };
+  var rcf = await cli.main(["dev", "--command", "node"], cf);
+  check("dev start() rejects a non-Error → exit 1", rcf === 1);
+  check("dev start() rejects a non-Error → String(e) stringifies the bare value",
+    /blamejs dev: bare-string-start-failure/.test(cf.err()));
+}
+
+// ---------------------------------------------------------------------------
+// api-snapshot capture / compare where the operator --module THROWS a non-Error
+// value (a bare string) at load. require() propagates the string verbatim, and
+// the CLI catch's `(e && e.message)` is undefined for a string → the String(e)
+// fallback arm stringifies it. Distinct from sectionApiSnapshotCaptureThrow
+// (a valid module whose surface makes apiSnapshot.capture throw an Error WITH a
+// message, exercising only the `.message` arm) and from the bad-path load
+// failures above (a MODULE_NOT_FOUND Error, also with a message).
+// ---------------------------------------------------------------------------
+async function sectionApiSnapshotNonErrorThrows() {
+  var dir = _tmpDir("blamejs-cli-apisnap-nonerr");
+  try {
+    // A module that throws a bare string at load time. _resolveTargetModule
+    // clears the require cache before each require, so both the capture and the
+    // later compare re-run it (and re-throw) rather than seeing a cached fault.
+    var throwMod = path.join(dir, "throw-str.js");
+    fs.writeFileSync(throwMod, "throw 'bare-load-string-xyz';");
+
+    // capture: the module-LOAD catch stringifies the non-Error via String(e).
+    var snap = path.join(dir, "snap.json");
+    var cc = _captureCtx();
+    var rcc = await cli.main(["api-snapshot", "capture", "--file", snap, "--module", throwMod], cc);
+    check("api-snapshot capture (module throws non-Error) → exit 1", rcc === 1);
+    check("api-snapshot capture (module throws non-Error) → String(e) stringified",
+      /cannot load module: bare-load-string-xyz/.test(cc.err()));
+
+    // compare: a VALID saved snapshot (the read succeeds) then a --module that
+    // throws a non-Error → the current-surface-capture catch's String(e) arm
+    // (distinct from the saved-snapshot read catch and the module-load catch).
+    var goodMod = path.join(dir, "good.js");
+    fs.writeFileSync(goodMod, "module.exports = { version: \"1.0.0\", greet: function greet() {} };");
+    var snap2 = path.join(dir, "snap2.json");
+    var cCap = _captureCtx();
+    check("api-snapshot capture (good, for non-Error compare) → exit 0",
+      (await cli.main(["api-snapshot", "capture", "--file", snap2, "--module", goodMod], cCap)) === 0);
+    var ccmp = _captureCtx();
+    var rccmp = await cli.main(["api-snapshot", "compare", "--file", snap2, "--module", throwMod], ccmp);
+    check("api-snapshot compare (current module throws non-Error) → exit 1", rccmp === 1);
+    check("api-snapshot compare (current module throws non-Error) → String(e) stringified",
+      /cannot capture current surface: bare-load-string-xyz/.test(ccmp.err()));
+  } finally { _rm(dir); }
+}
+
+// ---------------------------------------------------------------------------
+// restore apply — the SUCCESS body (the "OK — restored" report block, exit 0).
+// A real best-effort (unsigned) bundle is built out-of-band with b.backup.create
+// against a seeded data dir; the live file is then mutated, and the CLI apply
+// pulls + decrypts + swaps the bundle back in. The earlier apply tests only
+// reach run()'s reject (unpullable bundle) → the success arms (report writes +
+// the return-0 path) went untested. --no-audit keeps the standalone no-boot
+// shape the restore-primitive tests use. Asserts PRESERVATION: the mutated live
+// file actually reverts to the bundle's original bytes (a success-line-only
+// check would pass even if nothing was restored).
+// ---------------------------------------------------------------------------
+async function sectionRestoreApplySuccess() {
+  var dir = _tmpDir("blamejs-cli-restore-apply-ok");
+  var PP = "restore-apply-cli-passphrase-123";
+  try {
+    var dataDir = path.join(dir, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, "db.enc"), "ORIGINAL-DB-BYTES");
+    fs.writeFileSync(path.join(dataDir, "db.key.enc"), "SEALED-DEK-BYTES");
+    var storageRoot = path.join(dir, "store");
+    var built = await b.backup.create({
+      dataDir:      dataDir,
+      storage:      b.backup.diskStorage({ root: storageRoot }),
+      passphrase:   PP,
+      files: [
+        { relativePath: "db.enc",     kind: "raw", required: true },
+        { relativePath: "db.key.enc", kind: "raw", required: true },
+      ],
+      vaultKeyJson: "{\"vault\":\"orig\"}",
+      audit:        false,
+    }).run();
+    check("restore apply success: bundle built", !!built.bundleId);
+
+    // Mutate the live file so a real restore is observable (bytes must revert).
+    fs.writeFileSync(path.join(dataDir, "db.enc"), "MUTATED-BYTES");
+
+    var rbRoot = path.join(dir, "rollbacks");
+    var c = _captureCtx();
+    var rc = await cli.main(
+      ["restore", "apply", "--data-dir", dataDir, "--storage-root", storageRoot,
+       "--bundle-id", built.bundleId, "--passphrase", PP,
+       "--rollback-root", rbRoot, "--no-audit"], c);
+    check("restore apply (real bundle) → exit 0", rc === 0);
+    check("restore apply (real bundle) → OK — restored summary", /OK — restored/.test(c.out()));
+    check("restore apply (real bundle) → reports the restored file count", /files:\s+2/.test(c.out()));
+    check("restore apply (real bundle) → reports a rollback path", /rollback at:\s+\S+/.test(c.out()));
+    check("restore apply (real bundle) → prints the rollback follow-up hint",
+      /blamejs restore rollback --data-dir /.test(c.out()));
+    // Preservation: the mutated live file actually reverted to the bundle bytes.
+    check("restore apply (real bundle) → live file reverted to bundle bytes",
+      fs.readFileSync(path.join(dataDir, "db.enc"), "utf8") === "ORIGINAL-DB-BYTES");
+    // ...and the other bundled file survived the swap too (not just db.enc).
+    check("restore apply (real bundle) → second bundled file preserved",
+      fs.readFileSync(path.join(dataDir, "db.key.enc"), "utf8") === "SEALED-DEK-BYTES");
+  } finally { _rm(dir); }
 }
 
 module.exports = { run: run };
