@@ -6489,6 +6489,56 @@ var KNOWN_ANTIPATTERNS = [
     reason: "smtpTransport must validate the SUPPLIED opts.ehloName (before the `|| \"blamejs\"` default), not the defaulted local `ehloName` — else a falsy non-string ehloName (false / 0 / NaN) is silently defaulted instead of rejected as mail/smtp-misconfigured, inconsistent with the other fields. Validating the bare `ehloName` local re-opens the gap.",
   },
   {
+    id: "mail-server-tls-upgrade-strips-timeout-listener-not-just-data",
+    primitive: "b.mail.server.tls.upgradeSocket",
+    scanScope: "lib",
+    // On a STARTTLS / STLS upgrade, upgradeSocket strips the plain socket's "data"
+    // listeners (so pre-handshake plaintext can't reach the post-TLS dispatcher).
+    // It MUST also strip the plain socket's "timeout" listeners — every line-
+    // protocol server (pop3/imap/managesieve/mx/submission) arms socket.setTimeout
+    // + a "timeout" handler that writes a PLAINTEXT idle reply on the plain socket.
+    // Left attached, it survives the wrap and fires after the handshake, injecting
+    // cleartext into the now-encrypted stream (TLS decode error / reset) instead of
+    // the TLS-aware onTimeout replying encrypted.
+    // Anchored on the `plainSocket` param of the shared server upgradeSocket —
+    // the SMTP CLIENT (lib/mail.js) uses `socket.removeAllListeners("data")` and
+    // its plain "timeout" handler calls fail() (reject+close, idempotent), never a
+    // plaintext socket.write, so it is correctly excluded.
+    regex: /plainSocket\.removeAllListeners\("data"\)/,
+    requires: /plainSocket\.removeAllListeners\("timeout"\)/,
+    allowlist: [],
+    reason: "The shared server upgradeSocket must strip the plain socket's \"timeout\" listeners alongside \"data\" on a STARTTLS upgrade — else the pre-upgrade PLAINTEXT idle-timeout handler survives and injects cleartext into the encrypted channel on idle (plaintext-into-TLS). Stripping only \"data\" re-opens the class for every STARTTLS line-protocol server (pop3/imap/managesieve/mx/submission).",
+  },
+  {
+    id: "mail-server-tls-upgrade-arms-idle-timer-before-handshake",
+    primitive: "b.mail.server.tls.upgradeSocket",
+    scanScope: "lib",
+    // upgradeSocket must arm the upgraded socket's idle timer BEFORE the handshake
+    // completes (right after new TLSSocket), not inside the on("secure") handler.
+    // Arming only on "secure" leaves the STARTTLS handshake window unbounded: a peer
+    // that sends STARTTLS then withholds / trickles the ClientHello holds the
+    // connection (and its tracked rate-limit slot) open indefinitely. This fires if
+    // tlsSocket.setTimeout(idleTimeoutMs) is armed within the on("secure") handler.
+    regex: /tlsSocket\.on\("secure"[\s\S]{0,220}tlsSocket\.setTimeout\(idleTimeoutMs\)/,
+    allowlist: [],
+    reason: "upgradeSocket must arm the TLS-aware idle timer immediately after wrapping the socket (before the handshake), so a STARTTLS-then-withhold-ClientHello peer is bounded by the idle timeout. Arming tlsSocket.setTimeout(idleTimeoutMs) inside the on(\"secure\") handler re-opens the unbounded-handshake DoS window.",
+  },
+  {
+    id: "mail-server-starttls-consumer-supplies-ontimeout",
+    primitive: "b.mail.server.tls.upgradeSocket",
+    scanScope: "lib",
+    // A line-protocol server that calls the shared upgradeSocket / upgradeLineProtocol
+    // MUST supply a TLS-aware onTimeout callback — upgradeSocket strips the plain-
+    // socket idle handler, so without onTimeout the upgraded session has NO idle
+    // teardown and can stay open indefinitely (managesieve shipped this way). Fires on
+    // a consumer file that upgrades but supplies no onTimeout: key. mail-server-tls.js
+    // itself DEFINES upgradeSocket (not `mailServerTls.upgrade…(`), so it is excluded.
+    regex: /mailServerTls\.(?:upgradeLineProtocol|upgradeSocket)\(/,
+    requires: /onTimeout:/,
+    allowlist: [],
+    reason: "Every STARTTLS line-protocol server that routes through the shared upgradeSocket / upgradeLineProtocol must pass a TLS-aware onTimeout (encrypted BYE/-ERR + close) — the shared helper strips the plain-socket idle handler, so a missing onTimeout leaves the upgraded session with no idle teardown at all.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",
