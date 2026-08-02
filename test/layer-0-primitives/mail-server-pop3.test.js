@@ -494,13 +494,15 @@ async function testStlsHandshakeIsBounded() {
     var s = await _makeServer({ idleTimeoutMs: 300 });
     var sock = nodeNet.connect(s.port, "127.0.0.1");
     sock.on("error", function () {});
-    await _readReply(sock);        // greeting
-    await _send(sock, "STLS");     // +OK begin TLS — but never start the handshake
-    var closed = false;
-    sock.on("close", function () { closed = true; });
-    await helpers.waitUntil(function () { return closed; },
-      { timeoutMs: 4000, label: "pop3 STLS-then-withhold-ClientHello closed within idle bound" });
-    check("STLS without a following ClientHello is closed within the idle timeout (handshake bounded)", closed);
+    try {
+      await _readReply(sock);        // greeting
+      await _send(sock, "STLS");     // +OK begin TLS — but never start the handshake
+      var closed = false;
+      sock.on("close", function () { closed = true; });
+      await helpers.waitUntil(function () { return closed; },
+        { timeoutMs: 4000, label: "pop3 STLS-then-withhold-ClientHello closed within idle bound" });
+      check("STLS without a following ClientHello is closed within the idle timeout (handshake bounded)", closed);
+    } finally { sock.destroy(); await s.srv.close(); }
   }, { timeoutMs: 9000 });
 }
 
