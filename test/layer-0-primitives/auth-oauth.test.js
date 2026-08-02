@@ -728,6 +728,16 @@ async function scenarioTokenFlows(base, routes) {
     (function () { try { oa.clientCredentialsManager({ refreshSkewSecs: 5 }); return false; } catch (_e) { return true; } })());
   check("clientCredentialsManager: a non-object arg is refused",
     (function () { try { oa.clientCredentialsManager(300); return false; } catch (_e) { return true; } })());
+  // An invalid scope shape (not string | string[]) is rejected rather than
+  // silently omitted (which would let the AS apply a broader default scope).
+  await athrows("clientCredentials: a numeric scope is refused",
+    function () { return oa.clientCredentials({ scope: 42 }); }, "auth-oauth/bad-scope");
+  await athrows("clientCredentials: an object scope is refused",
+    function () { return oa.clientCredentials({ scope: {} }); }, "auth-oauth/bad-scope");
+  await athrows("clientCredentials: an array scope with a non-string member is refused",
+    function () { return oa.clientCredentials({ scope: ["ok", 7] }); }, "auth-oauth/bad-scope");
+  check("clientCredentialsManager: an invalid scope is refused at construction",
+    (function () { try { oa.clientCredentialsManager({ scope: 42 }); return false; } catch (e) { return e.code === "auth-oauth/bad-scope"; } })());
 
   // A 429 Retry-After (RFC 6585) overrides the fixed local backoff: a long
   // Retry-After keeps the backoff window closed past the configured backoffSec.
