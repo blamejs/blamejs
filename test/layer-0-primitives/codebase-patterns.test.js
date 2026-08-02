@@ -6553,6 +6553,34 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The db-collection overflow read-modify-write must re-assert db-query's unconditional-write guard on its READ (qFetch._hasConditions() before qFetch.all()) — its per-_id writes carry a WHERE and would otherwise let an unconditional overflow update silently rewrite every row, inconsistent with the real-column path that db-query refuses.",
   },
   {
+    id: "local-http-loopback-guard-validates-octets",
+    primitive: "b.localHttp",
+    scanScope: "lib",
+    // The loopback-only guard classifies a 127.0.0.0/8 dotted-decimal as
+    // loopback. It MUST range-validate each octet (_octetInRange): a loose
+    // \d{1,3} admits "127.300.0.1", which is NOT a valid IP and is therefore
+    // resolved as a HOSTNAME — an SSRF bypass of the loopback-only guarantee
+    // that lets the client be pointed at an arbitrary internal host.
+    regex: /function _isLoopbackHost/,
+    requires: /_octetInRange/,
+    allowlist: [],
+    reason: "b.localHttp's loopback guard must octet-validate its 127.0.0.0/8 match (_octetInRange) — a bare \\d{1,3} admits '127.300.0.1', which is not an IP and is resolved as a hostname, defeating the SSRF-safe-by-construction loopback guarantee.",
+  },
+  {
+    id: "oauth-cc-manager-backoff-never-serves-expired-token",
+    primitive: "b.auth.oauth",
+    scanScope: "lib",
+    // The clientCredentialsManager 429 backoff may ride out on the cached token
+    // ONLY while it is still valid. Serving an already-expired token is worse
+    // than surfacing the rate-limit error and letting the caller retry, so both
+    // serve-cached paths must gate on _servableDuringBackoff (expiresAt > now),
+    // never a bare `if (cached) return cached.accessToken`.
+    regex: /backoffUntil = Date\.now\(\) \+ backoffMs/,
+    requires: /_servableDuringBackoff/,
+    allowlist: [],
+    reason: "The clientCredentialsManager 429 backoff must serve the cached token only while it is still valid (_servableDuringBackoff: expiresAt !== null && expiresAt > now) — a bare `if (cached)` would ride out the backoff on an already-expired, dead token.",
+  },
+  {
     id: "dsn-diagnostic-free-text-fold-must-strip-nul",
     primitive: "b.safeBuffer.foldHeaderText",
     scanScope: "lib",

@@ -146,6 +146,50 @@ async function testBodyVariantsAndCustomHeaders() {
   } finally { srv.server.close(); }
 }
 
+async function testIpv6LoopbackBracket() {
+  // A bracketed IPv6 loopback ([::1]) must be accepted AND normalized to ::1
+  // before connecting (http.request's `host` wants the unbracketed form).
+  var server = http.createServer(function (req, res) { res.writeHead(200); res.end("v6ok"); });
+  var bound = await new Promise(function (r) {
+    server.once("error", function () { r(false); });
+    try { server.listen(0, "::1", function () { r(true); }); } catch (_e) { r(false); }
+  });
+  if (!bound) {
+    server.close();
+    // No IPv6 loopback on this host — at least confirm create() accepts the form.
+    check("localHttp: bracketed [::1] host is accepted (no IPv6 loopback here to roundtrip)",
+      (function () { try { b.localHttp.create({ host: "[::1]", port: 1 }); return true; } catch (_e) { return false; } })());
+    return;
+  }
+  try {
+    var d = b.localHttp.create({ host: "[::1]", port: server.address().port, hostHeader: "v6" });
+    var r = await d.get("/x");
+    check("localHttp: a bracketed [::1] host connects to the IPv6 loopback", r.statusCode === 200 && r.text() === "v6ok");
+  } finally { server.close(); }
+}
+
+async function testEndToEndDeadline() {
+  // A response that dribbles a byte forever but never ends: the socket-idle
+  // timeout resets on each byte, so only the end-to-end deadline can bound it.
+  var timer = null;
+  var srv = await _startSocketServer(function (req, res) {
+    res.writeHead(200);
+    timer = setInterval(function () { try { res.write("."); } catch (_e) { /* socket gone */ } }, 25);
+    // Stop dribbling the moment the client disconnects (deadline → req.destroy),
+    // so the interval never fires on a dead socket or leaks the handle.
+    res.on("close", function () { clearInterval(timer); });
+  });
+  try {
+    var d = b.localHttp.create({ socketPath: srv.path, hostHeader: "d", timeoutMs: 300 });
+    var start = Date.now();
+    var e = null;
+    try { await d.get("/drip"); } catch (err) { e = err; }
+    var elapsed = Date.now() - start;
+    check("localHttp: a slow-drip response is bounded by the end-to-end deadline",
+      e && e.code === "local-http/timeout" && elapsed < 2500);
+  } finally { clearInterval(timer); srv.server.close(); }
+}
+
 async function testTransportError() {
   var missing = process.platform === "win32"
     ? "\\\\.\\pipe\\blamejs-lh-missing-" + process.pid
@@ -173,6 +217,14 @@ function testValidation() {
     (function () { try { b.localHttp.create({ host: "localhost.", port: 80 }); return true; } catch (_e) { return false; } })());
   check("localHttp.create: 127.x loopback accepted",
     (function () { try { b.localHttp.create({ host: "127.0.0.5", port: 80 }); return true; } catch (_e) { return false; } })());
+  check("localHttp.create: 127.255.255.255 (valid 127/8) accepted",
+    (function () { try { b.localHttp.create({ host: "127.255.255.255", port: 80 }); return true; } catch (_e) { return false; } })());
+  check("localHttp.create: 127.300.0.1 (out-of-range octet, not an IP) refused as non-loopback",
+    threw(function () { b.localHttp.create({ host: "127.300.0.1", port: 80 }); }).code === "local-http/non-loopback-host");
+  check("localHttp.create: 127.0.0.256 (out-of-range octet) refused",
+    threw(function () { b.localHttp.create({ host: "127.0.0.256", port: 80 }); }).code === "local-http/non-loopback-host");
+  check("localHttp.create: 127.0.0.1.evil.example (127-prefixed hostname) refused",
+    threw(function () { b.localHttp.create({ host: "127.0.0.1.evil.example", port: 80 }); }).code === "local-http/non-loopback-host");
   check("localHttp.create: an empty socketPath is refused",
     threw(function () { b.localHttp.create({ socketPath: "" }); }).code === "local-http/bad-socket-path");
   check("localHttp.create: an empty hostHeader is refused",
@@ -202,6 +254,8 @@ async function run() {
   await testTimeout();
   await testOneShotRequest();
   await testBodyVariantsAndCustomHeaders();
+  await testIpv6LoopbackBracket();
+  await testEndToEndDeadline();
   await testTransportError();
   testValidation();
   // bad request path (async refusal); also covers request() called with no opts.

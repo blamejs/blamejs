@@ -558,6 +558,27 @@ async function scenarioTokenFlows(base, routes) {
   await athrows("clientCredentialsManager: a non-429 error propagates (no backoff)",
     function () { return mgr500.getToken(); }, "auth-oauth/token-error-500");
 
+  // A 429 surfaces as a typed token-error even when the client is NOT in
+  // always-resolve mode (the token POST forces always-resolve internally), so
+  // the manager's backoff can classify it rather than an opaque HTTP rejection.
+  var oaDefaultMode = mk(base, "cc-default-mode", { httpClient: {} });
+  routes["/token"] = { status: 429, json: { error: "slow_down" } };
+  await athrows("clientCredentials: a 429 surfaces as token-error-429 without always-resolve",
+    function () { return oaDefaultMode.clientCredentials(); }, "auth-oauth/token-error-429");
+
+  // A 429 must NOT serve an EXPIRED cached token — only a still-valid one.
+  routes["/token"] = { json: { access_token: "cc-exp-old", expires_in: 1 } };
+  var mgrExp = oa.clientCredentialsManager({ refreshSkewSec: 100000 });   // always re-fetch
+  var primedExp = await aresolves("clientCredentialsManager: primes a 1s token",
+    function () { return mgrExp.getToken(); });
+  check("clientCredentialsManager: short-lived token primed", primedExp === "cc-exp-old");
+  var primeAt = Date.now();
+  await helpers.waitUntil(function () { return Date.now() > primeAt + 1200; },
+    { timeoutMs: 3000, label: "cc expired-token: wait for the 1s token to expire" });
+  routes["/token"] = { status: 429, json: { error: "slow_down" } };
+  await athrows("clientCredentialsManager: a 429 does NOT serve an expired cached token",
+    function () { return mgrExp.getToken(); }, "auth-oauth/token-error-429");
+
   // exchangeToken (RFC 8693) full flow.
   routes["/token"] = { json: { access_token: "at-x", token_type: "Bearer" } };
   var xt = await aresolves("exchangeToken: full flow returns tokens",
