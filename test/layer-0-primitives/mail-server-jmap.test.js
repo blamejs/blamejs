@@ -2486,7 +2486,7 @@ async function testDispatchMethodThrowsNonError() {
   var jmap = b.mail.server.jmap.create({
     mailStore: { appendMessage: function () {} },
     accountsFor: async function () { return { primaryAccounts: {}, accounts: {} }; },
-    methods: { "Boom/str": async function () { throw "bare-string-failure"; } },
+    methods: { "Boom/str": async function () { throw "bare-string-failure"; } },   // eslint-disable-line no-throw-literal -- method throws a non-Error to exercise the serverFail String(err) fallback
   });
   var rv = await jmap.dispatch({ id: "a" }, {
     using: [], methodCalls: [["Boom/str", {}, "c0"]],
@@ -2502,7 +2502,7 @@ async function testDispatchAccountsForThrowsNonError() {
   // serverFail refusal.
   var jmap = b.mail.server.jmap.create({
     mailStore: { appendMessage: function () {} },
-    accountsFor: async function () { throw "authz-subsystem-string"; },
+    accountsFor: async function () { throw "authz-subsystem-string"; },   // eslint-disable-line no-throw-literal -- non-Error throw exercises the authz-failure String(err) fallback
     methods: { "Core/echo": async function () { return {}; } },
   });
   var rv = await jmap.dispatch({ id: "a" }, {
@@ -2541,7 +2541,7 @@ async function testSessionAccountsForThrowsNonError() {
   // `(err && err.message) || String(err)` fallback → 500 serverFail.
   var jmap = b.mail.server.jmap.create({
     mailStore: { appendMessage: function () {} },
-    accountsFor: async function () { throw "session-authz-string"; },
+    accountsFor: async function () { throw "session-authz-string"; },   // eslint-disable-line no-throw-literal -- non-Error throw exercises the session-authz String(err) fallback
     methods: {},
   });
   var mr = _sessionMock(jmap);
@@ -2775,7 +2775,7 @@ async function testEmailSubmissionSetDeliverThrowsNonError() {
   // deliver throwing a bare string (no `.message`, no `_jmapType`) drives the
   // `_jmapErrorShape` `(err && err.message) || String(err)` fallback → the
   // serverFail description is String(err).
-  var es = _makeESHandler({ deliver: async function () { throw "mta-string-explosion"; } });
+  var es = _makeESHandler({ deliver: async function () { throw "mta-string-explosion"; } });   // eslint-disable-line no-throw-literal -- non-Error throw exercises the _jmapErrorShape String(err) fallback
   var rv = await es.handler({}, {
     accountId: "A1",
     create: { c1: { identityId: "I1", emailId: "E1",

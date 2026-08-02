@@ -1645,7 +1645,7 @@ async function testExportCsvSignerNonErrorThrow() {
       return b.db.exportCsv({
         table: "orders",
         signWith: {
-          sign:                    function () { throw "raw-string-hsm-fault"; },
+          sign:                    function () { throw "raw-string-hsm-fault"; },   // eslint-disable-line no-throw-literal -- simulates a signer throwing a non-Error to exercise the String(err) fallback
           getPublicKey:            function () { return ""; },
           getAlgorithm:            function () { return "x"; },
           getPublicKeyFingerprint: function () { return "y"; },
