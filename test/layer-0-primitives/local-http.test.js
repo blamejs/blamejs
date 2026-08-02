@@ -115,6 +115,7 @@ async function testTimeout() {
     var e = null;
     try { await d.get("/hang"); } catch (err) { e = err; }
     check("localHttp: a stalled daemon times out", e && e.code === "local-http/timeout");
+    check("localHttp: a timeout error is transient (retryable)", e && e.permanent === false);
   } finally { srv.server.close(); }
 }
 
@@ -210,6 +211,7 @@ async function testTransportError() {
   try { await d.get("/x"); } catch (err) { e = err; }
   check("localHttp: a transport error (no such socket) is surfaced",
     e && (e.code === "local-http/request-error" || e.code === "local-http/timeout"));
+  check("localHttp: a transport error is transient (retryable)", e && e.permanent === false);
 }
 
 function testValidation() {
@@ -260,6 +262,8 @@ function testValidation() {
     threw(function () { b.localHttp.create({ socketPath: "/x", maxResponseBytes: 0 }); }) !== null);
   check("localHttp.create: non-object opts refused",
     threw(function () { b.localHttp.create(null); }) !== null);
+  check("localHttp: a config error (non-loopback host) is PERMANENT (a retry can't fix it)",
+    threw(function () { b.localHttp.create({ host: "10.0.0.5", port: 1 }); }).permanent === true);
   check("localHttp errors are LocalHttpError",
     threw(function () { throw new b.localHttp.LocalHttpError("local-http/x", "y"); }) instanceof b.localHttp.LocalHttpError);
 }
@@ -282,7 +286,7 @@ async function run() {
   var client = b.localHttp.create({ socketPath: "/x.sock", hostHeader: "d" });
   var pe = null;
   try { await client.request({ path: "no-slash" }); } catch (e) { pe = e; }
-  check("localHttp.request: a path without a leading / is refused", pe && pe.code === "local-http/bad-path");
+  check("localHttp.request: a path without a leading / is refused", pe && pe.code === "local-http/bad-path" && pe.permanent === true);
   var ne = null;
   try { await client.request(); } catch (e) { ne = e; }
   check("localHttp.request: no opts → bad-path (defaults applied)", ne && ne.code === "local-http/bad-path");
