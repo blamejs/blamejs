@@ -1,0 +1,18 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.10",
+  "date": "2026-08-03",
+  "headline": "Broader verification- and edge-path test coverage for the SAML SP and the database primitives",
+  "summary": "Adversarial and edge branches of b.auth.saml and b.db are now under explicit test. No behaviour changes: every path — including the SAML signature-verification and audience/condition refusals, and the database encrypted-boot fallbacks — was confirmed to behave per its documented contract.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Verification- and edge-path tests for the SAML SP and database primitives",
+          "body": "b.auth.saml (the XML-signature Reference handling with no URI or no Transforms, a foreign-namespace Conditions element failing closed to no-audience-restriction, RSA-OAEP SHA-384/SHA-512 key transport with AES-128-GCM assertion decryption, ed25519 sign/verify dispatch, and the single-logout build/parse paths) and b.db (encrypted-boot key and envelope fallbacks, flush-to-disk after close, the audit-chain rollback check against a non-empty log, and the boot-time NTP check thresholds) now have explicit tests for their boundary branches. Behaviour is unchanged."
+        }
+      ]
+    }
+  ]
+}
