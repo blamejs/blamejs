@@ -2038,11 +2038,13 @@ async function testCacheExpiryBranches() {
   await helpers.passiveObserve(90, "network-dns: positive cache TTL expiry window");
   var second = await dnsModule.lookup("localhost"); // stale positive entry deleted, re-resolves
   // A cache HIT returns the stored value instance by reference (_cacheGet);
-  // a reclaim + re-resolve returns a FRESH instance. `second !== first`
-  // therefore distinguishes "evicted then re-resolved" from "served stale",
-  // which a value-only `.address` compare (localhost resolves identically) can't.
+  // a reclaim + re-resolve returns a FRESH instance. `second !== first` proves
+  // "evicted then re-resolved" rather than "served stale". Do NOT also require
+  // the same address: localhost is dual-stack (::1 + 127.0.0.1), so a fresh
+  // lookup may legitimately pick the other one — the fresh-instance check is
+  // the discriminator, and a string address confirms the re-resolution landed.
   check("lookup: expired positive cache entry is dropped then re-resolved (fresh instance)",
-    typeof second.address === "string" && second.address === first.address && second !== first);
+    typeof second.address === "string" && second !== first);
 
   // Positive TTL set with NO explicit negative TTL → the negative TTL derives
   // from the positive one (min(positive, 30s)); a second failing lookup within
