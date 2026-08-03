@@ -1989,11 +1989,13 @@ function _startDotServerRstAfterQuery(cert) {
 // the pooled TLS socket instead of reconnecting.
 function _startDotServerMulti(cert, replyBytes) {
   return new Promise(function (resolve) {
+    var conns = 0;   // count secureConnections so a test can prove socket reuse
     var srv = tls.createServer({
       key:        cert.keyPem,
       cert:       cert.certPem,
       minVersion: "TLSv1.3",
     }, function (sock) {
+      conns += 1;
       var got = [];
       sock.on("error", function () { /* fixture best-effort */ });
       sock.on("data", function (chunk) {
@@ -2015,7 +2017,8 @@ function _startDotServerMulti(cert, replyBytes) {
     srv.unref();
     var close = _trackAndClosable(srv);
     srv.listen(0, "127.0.0.1", function () {
-      resolve({ srv: srv, port: srv.address().port, close: close });
+      resolve({ srv: srv, port: srv.address().port, close: close,
+        connCount: function () { return conns; } });
     });
   });
 }
@@ -2034,8 +2037,12 @@ async function testCacheExpiryBranches() {
   var first = await dnsModule.lookup("localhost");
   await helpers.passiveObserve(90, "network-dns: positive cache TTL expiry window");
   var second = await dnsModule.lookup("localhost"); // stale positive entry deleted, re-resolves
-  check("lookup: expired positive cache entry is dropped then re-resolved",
-    typeof second.address === "string" && second.address === first.address);
+  // A cache HIT returns the stored value instance by reference (_cacheGet);
+  // a reclaim + re-resolve returns a FRESH instance. `second !== first`
+  // therefore distinguishes "evicted then re-resolved" from "served stale",
+  // which a value-only `.address` compare (localhost resolves identically) can't.
+  check("lookup: expired positive cache entry is dropped then re-resolved (fresh instance)",
+    typeof second.address === "string" && second.address === first.address && second !== first);
 
   // Positive TTL set with NO explicit negative TTL → the negative TTL derives
   // from the positive one (min(positive, 30s)); a second failing lookup within
@@ -2149,7 +2156,7 @@ async function testDotMidQueryReset() {
   dnsModule.setLookupTimeoutMs(3000);
   try {
     check("resolve4(DoT): mid-query connection reset surfaces a DnsError (_dotLookup onErr)",
-      await _throwsAsync(function () { return dnsModule.resolve4("abrupt.example.com"); }));
+      await _throwsAsync(function () { return dnsModule.resolve4("abrupt.example.com"); }, "dns/dot-failed"));
   } finally { r1.close(); await _drainTcpHandles(); }
 
   // querySvcb over DoT: same reset, through the raw-query onErr path.
@@ -2161,7 +2168,7 @@ async function testDotMidQueryReset() {
     check("querySvcb(DoT): mid-query connection reset surfaces a DnsError (_dotRawQuery onErr)",
       await _throwsAsync(function () {
         return dnsModule.querySvcb("abrupt.example.com", { transport: "dot" });
-      }));
+      }, "dns/dot-failed"));
   } finally { r2.close(); await _drainTcpHandles(); }
 }
 
@@ -2184,7 +2191,7 @@ async function testDotSocketReuse() {
     var a1 = await dnsModule.lookup("reuse.example.com", { family: 4 });
     var a2 = await dnsModule.lookup("reuse.example.com", { family: 4 });   // pooled socket reused (no reconnect)
     check("lookup(DoT): a back-to-back second lookup reuses the pooled TLS socket",
-      a1.address === "203.0.113.77" && a2.address === a1.address);
+      a1.address === "203.0.113.77" && a2.address === a1.address && aSrv.connCount() === 1);
   } finally { aSrv.close(); await _drainTcpHandles(); }
 
   // ---- raw-query pool reuse (_dotRawQuery pool-hit branch) ----
@@ -2201,7 +2208,7 @@ async function testDotSocketReuse() {
     var q2 = await dnsModule.querySvcb("reuse-svcb.example.com", { transport: "dot" });   // pooled socket reused
     check("querySvcb(DoT): a back-to-back second raw query reuses the pooled TLS socket",
       Array.isArray(q1) && q1.length === 1 && Array.isArray(q2) && q2.length === 1 &&
-      q2[0].params.alpn[0] === "h2");
+      q2[0].params.alpn[0] === "h2" && sSrv.connCount() === 1);
   } finally { sSrv.close(); await _drainTcpHandles(); }
 }
 
