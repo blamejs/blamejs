@@ -1746,27 +1746,36 @@ async function testEncryptedKeyUnsealEmpty() {
   }
 }
 
-// --- encrypted boot: an under-length db.enc is treated as "no snapshot" ------
+// --- encrypted boot: a truncated db.enc fails closed, never starts fresh -----
 async function testEncryptedShortEnvelope() {
-  var tmpDir = _mkTmp("db-cov-shortenc-");
-  var tmpfs = path.join(tmpDir, "tmpfs");
-  fs.mkdirSync(tmpfs, { recursive: true });
-  try {
-    await _freshVault(tmpDir);
-    // A db.enc too short to be a valid AEAD envelope (< 26 bytes) is treated as
-    // "no snapshot to decrypt" — boot proceeds on a fresh working copy rather
-    // than crashing the decrypt path on a truncated file.
-    fs.writeFileSync(path.join(tmpDir, "db.enc"), "short");
-    await b.db.init({ dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true,
-      atRest: "encrypted", frameworkTables: false, auditSigning: false, minFreeBytes: 0,
-      schema: [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }] });
-    check("encrypted boot ignores an under-26-byte db.enc and starts fresh",
-      b.db.getMode() === "encrypted");
-    b.db.from("t").insertOne({ _id: "z" });
-    check("the fresh working copy accepts writes after the short-envelope boot",
-      !!b.db.from("t").where({ _id: "z" }).first());
-  } finally {
-    _teardownPlain(tmpDir);
+  // A db.enc that EXISTS but is shorter than a valid AEAD envelope (a 1-byte
+  // version + a 24-byte nonce + a 16-byte tag = 41 bytes) is a truncated /
+  // corrupt durable snapshot — a real flush always writes a full envelope
+  // atomically. Boot must FAIL CLOSED across the WHOLE impossible-size range,
+  // not open a fresh database the next flush would persist over the corrupt
+  // copy (silent data loss). The operator restores db.enc from backup, or
+  // removes it to intentionally start empty. Both a tiny size (below the nonce)
+  // and a mid-range size (26-40, past the old 26-byte floor but still below a
+  // full envelope) must yield the typed db/enc-truncated, not a raw crypto error.
+  var sizes = [5, 30];
+  for (var i = 0; i < sizes.length; i++) {
+    var n = sizes[i];
+    var tmpDir = _mkTmp("db-cov-shortenc-" + n + "-");
+    var tmpfs = path.join(tmpDir, "tmpfs");
+    fs.mkdirSync(tmpfs, { recursive: true });
+    try {
+      await _freshVault(tmpDir);
+      fs.writeFileSync(path.join(tmpDir, "db.enc"), Buffer.alloc(n, 0x41));
+      var err = await _catch(function () {
+        return b.db.init({ dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true,
+          atRest: "encrypted", frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+          schema: [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }] });
+      });
+      check("encrypted boot with a " + n + "-byte (sub-envelope) db.enc fails closed with db/enc-truncated",
+        err && err.code === "db/enc-truncated");
+    } finally {
+      _teardownPlain(tmpDir);
+    }
   }
 }
 
@@ -1820,12 +1829,21 @@ async function testFlushToDiskAfterClose() {
       atRest: "encrypted", frameworkTables: false, auditSigning: false, minFreeBytes: 0,
       schema: [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }] });
     b.db.from("t").insertOne({ _id: "x" });
-    b.db.close();   // drops the live handle + removes the plaintext working copy
+    b.db.flushToDisk();   // persist the insert to db.enc while the handle is live
+    b.db.close();         // drops the live handle + removes the plaintext working copy
+    var encPath = path.join(tmpDir, "db.enc");
+    var encBefore = fs.readFileSync(encPath);   // the durable snapshot as of close
     // flushToDisk (encryptToDisk) after close must be a silent no-op: the WAL
     // checkpoint on the now-null handle is swallowed and the missing plaintext
-    // working copy short-circuits the re-encrypt — no throw, no stray file.
+    // working copy short-circuits the re-encrypt. Critically it must NOT write —
+    // an empty/garbage re-encrypt over the good snapshot is the silent-data-loss
+    // class the sibling truncated-envelope guard also defends.
     var threw = await _catch(function () { b.db.flushToDisk(); });
     check("flushToDisk after close is a silent no-op (no throw)", threw === null);
+    check("flushToDisk after close leaves the durable db.enc snapshot byte-identical",
+      fs.readFileSync(encPath).equals(encBefore));
+    check("flushToDisk after close does not resurrect a plaintext working copy in tmpfs",
+      fs.readdirSync(tmpfs).filter(function (f) { return /\.db$/.test(f); }).length === 0);
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -1866,16 +1884,26 @@ async function testNtpBootCheckResolution() {
     "BLAMEJS_NTP_DRIFT_WARN_MS", "BLAMEJS_NTP_DRIFT_FATAL_MS", "BLAMEJS_NTP_STRICT"];
   var saved = {};
   NTP_ENV.forEach(function (k) { saved[k] = process.env[k]; });
+  // Capture the boot NTP-drift event so the assertion pins the intended
+  // unreachable -> warning branch, not merely "init did not throw" (which every
+  // NTP outcome satisfies under STRICT=0).
+  var ntpDrift = [];
+  var onNtpDrift = function (payload) { ntpDrift.push(payload); };
+  b.events.on(b.events.EVENTS.NTP_DRIFT, onNtpDrift);
   try {
     await _freshVault(tmpDir);   // sets BLAMEJS_SKIP_NTP_CHECK=1
-    // Un-skip the boot NTP check and point it at an unreachable local endpoint
-    // with a tight timeout — the SNTP query fails fast (unreachable → soft
-    // "warning"), exercising the env-driven server / timeout / threshold
-    // resolution the skip-by-default fixtures never reach. Huge thresholds +
-    // STRICT=0 keep the outcome non-fatal regardless of the host clock, so boot
-    // always completes rather than refusing on drift.
+    // Un-skip the boot NTP check and point it at a guaranteed-unreachable
+    // endpoint with a tight timeout — the SNTP query fails fast (unreachable →
+    // soft "warning"), exercising the env-driven server / timeout / threshold
+    // resolution the skip-by-default fixtures never reach. 192.0.2.1 is
+    // RFC 5737 TEST-NET-1 (reserved for documentation, non-routable, no host
+    // will ever answer), so the unreachable branch fires DETERMINISTICALLY —
+    // unlike 127.0.0.1, which returns a valid response on a runner that happens
+    // to run a local NTP daemon. Huge thresholds + STRICT=0 keep the outcome
+    // non-fatal regardless of the host clock, so boot always completes on the
+    // soft-warning path rather than refusing on drift.
     delete process.env.BLAMEJS_SKIP_NTP_CHECK;
-    process.env.BLAMEJS_NTP_SERVERS        = "127.0.0.1";
+    process.env.BLAMEJS_NTP_SERVERS        = "192.0.2.1";
     process.env.BLAMEJS_NTP_TIMEOUT_MS     = "150";
     process.env.BLAMEJS_NTP_DRIFT_WARN_MS  = "999999999";
     process.env.BLAMEJS_NTP_DRIFT_FATAL_MS = "999999999";
@@ -1884,7 +1912,15 @@ async function testNtpBootCheckResolution() {
       frameworkTables: false, auditSigning: false, schema: [] });
     check("boot completes the NTP drift check (unreachable server, soft-warning path)",
       b.db.getMode() === "plain");
+    // Pin the branch: an unreachable server yields severity "warning" with a
+    // null drift (no sample to measure) and emits NTP_DRIFT. If env-var server
+    // resolution regressed to a reachable pool this would be "info" (no event).
+    check("the unreachable NTP server emits a warning-severity NTP_DRIFT with null drift",
+      ntpDrift.length >= 1 &&
+      ntpDrift[ntpDrift.length - 1].severity === "warning" &&
+      ntpDrift[ntpDrift.length - 1].driftMs === null);
   } finally {
+    b.events.off(b.events.EVENTS.NTP_DRIFT, onNtpDrift);
     NTP_ENV.forEach(function (k) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
