@@ -15,6 +15,19 @@
       ]
     },
     {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "SCT verification now binds each log key to the SCT's log ID",
+          "body": "An SCT's log ID is the SHA-256 of the log's public key (RFC 6962 §3.2). b.network.tls.ct.verifyScts now recomputes that hash from the configured key and refuses the SCT (reason \"log-id-key-mismatch\") when it does not equal the log ID the SCT names, before checking the signature. This prevents a misconfigured logKeys map from letting a key impersonate an approved log."
+        },
+        {
+          "title": "SCT verification counts distinct logs, refuses future timestamps, and validates the minimum",
+          "body": "verifyScts now counts SCTs from distinct logs, so duplicate SCTs from a single log can no longer satisfy a \"minimum 2 SCTs\" diversity policy (verifiedCount reflects distinct logs). It refuses an SCT whose timestamp is in the future (RFC 6962 §5.2; opts.now / opts.clockSkewMs override the clock and the default five-minute skew). A minScts that is not a positive integer is rejected at the entry point rather than silently accepting an unverified certificate. Parsing an SCT extension from a peer certificate now fails closed on malformed DER — it returns no SCT instead of throwing, so a hostile certificate cannot raise an uncaught error out of verifyScts, parseScts, or the requireScts predicate."
+        }
+      ]
+    },
+    {
       "heading": "Changed",
       "items": [
         {

@@ -1756,27 +1756,31 @@ function testOcspEvaluateDeepBinding() {
 function testCtVerifyMoreScts() {
   var ecPub = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
     .publicKey.export({ type: "spki", format: "pem" });
-  var logHex = "aa".repeat(32);
+  // The SCT log_id must be SHA-256(log key SPKI) so the verifier's log-id
+  // binding passes and these per-SCT failure branches are reached.
+  var logId = nodeCrypto.createHash("sha256")
+    .update(nodeCrypto.createPublicKey(ecPub).export({ type: "spki", format: "der" })).digest();
+  var logHex = logId.toString("hex");
   var kh = Buffer.alloc(32, 0xcd);   // issuer_key_hash — get past the precert gate
   function _logKeys(pem) { var m = {}; m[logHex] = pem; return m; }
   function _opts(pem) { return { logKeys: _logKeys(pem), minScts: 1, issuerKeyHash: kh }; }
 
   // Unsupported SCT hash algorithm (not sha256/384/512) with a present key.
-  var badHash = _buildSctBytes({ hashAlgo: 99 });
+  var badHash = _buildSctBytes({ logId: logId, hashAlgo: 99 });
   var badHashCert = _synthCert({ cn: "BadHash", exts: [_sctExt(_sctListRaw([badHash]))] });
   var r1 = nt.ct.verifyScts(badHashCert, _opts(ecPub));
   check("verifyScts unsupported SCT hash algo -> per-sct unsupported-hash-algo",
         r1.scts[0].reason === "unsupported-hash-algo");
 
   // Log key present but unparseable.
-  var okSct  = _buildSctBytes({});
+  var okSct  = _buildSctBytes({ logId: logId });
   var okCert = _synthCert({ cn: "OkSct", exts: [_sctExt(_sctListRaw([okSct]))] });
   var r2 = nt.ct.verifyScts(okCert, _opts("not a pem"));
   check("verifyScts unparseable log key -> log-key-parse-failed",
         r2.scts[0].reason === "log-key-parse-failed");
 
   // SCT claims RSA (sigAlgo 1) but the registered log key is EC → mismatch.
-  var rsaClaim = _buildSctBytes({ sigAlgo: 1 });
+  var rsaClaim = _buildSctBytes({ logId: logId, sigAlgo: 1 });
   var rsaCert  = _synthCert({ cn: "RsaClaim", exts: [_sctExt(_sctListRaw([rsaClaim]))] });
   var r3 = nt.ct.verifyScts(rsaCert, _opts(ecPub));
   check("verifyScts SCT-algo vs log-key-type mismatch -> log-key-algo-mismatch",
@@ -2483,16 +2487,17 @@ function testCtSctExtractorEdges() {
         nt.ct.parseScts(withEmpty).length === 1);
 
   // SCT extension whose extnValue does NOT wrap a second OCTET STRING
-  // (wraps a SEQUENCE instead) -> ct-bad-extension.
+  // (wraps a SEQUENCE instead) -> fails closed to no SCT, never throws (a
+  // hostile peer controls this cert; parseScts/verifyScts must not throw).
   var badInner = asn1.writeSequence([
     asn1.writeOid(OID_CT_SCT_LIST),
     asn1.writeOctetString(asn1.writeSequence([asn1.writeInteger(Buffer.from([1]))])),
   ]);
   var badInnerCert = _synthCert({ cn: "BadInner", exts: [badInner] });
-  var e1 = null;
-  try { nt.ct.parseScts(badInnerCert); } catch (e) { e1 = e; }
-  check("parseScts(SCT extnValue not wrapping OCTET STRING) throws ct-bad-extension",
-        e1 && e1.code === "tls/ct-bad-extension");
+  var e1 = null, parsed1;
+  try { parsed1 = nt.ct.parseScts(badInnerCert); } catch (e) { e1 = e; }
+  check("parseScts(SCT extnValue not wrapping OCTET STRING) fails closed to [] (no throw)",
+        e1 === null && Array.isArray(parsed1) && parsed1.length === 0);
 }
 
 // TLS-Feature (must-staple) extractor edge branches through inspectMustStaple.
@@ -2983,8 +2988,14 @@ function testCtVerifySctAlgoGateReadsSigAlgoField() {
   var issuerKp  = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var issuerSpkiDer = issuerKp.publicKey.export({ type: "spki", format: "der" });
   var issuerKh  = nodeCrypto.createHash("sha256").update(issuerSpkiDer).digest();
+  // The SCT log_id is the SHA-256 of the log key's SPKI (RFC 6962 §3.2); the
+  // verifier now enforces that binding, so tests must use the real log_id.
+  function logIdFor(pem) {
+    return nodeCrypto.createHash("sha256")
+      .update(nodeCrypto.createPublicKey(pem).export({ type: "spki", format: "der" })).digest();
+  }
   function reasonFor(sigAlgo, pem) {
-    var logId = Buffer.alloc(32, 0xbc);
+    var logId = logIdFor(pem);
     var sct   = _buildSctBytes({ logId: logId, sigAlgo: sigAlgo, hashAlgo: 4 });
     var cert  = _synthCert({ cn: "SCT Algo", exts: [_sctExt(_sctListRaw([sct]))] });
     var logKeys = {}; logKeys[logId.toString("hex")] = pem;
@@ -3024,7 +3035,7 @@ function testCtVerifySctAlgoGateReadsSigAlgoField() {
   function verifyGenuine(sigAlgo, kp, pem, keyHash, verifyOpts, label, hashAlgo, nodeAlgo) {
     hashAlgo = hashAlgo === undefined ? 4 : hashAlgo;   // default SCT HashAlgorithm sha256
     nodeAlgo = nodeAlgo || "sha256";
-    var logId = Buffer.alloc(32, 0xbc);
+    var logId = logIdFor(pem);   // SCT log_id must be SHA-256(log key SPKI)
     var ts    = 1700000000000;
     var placeholder = _synthCert({ cn: "SCT Genuine",
       exts: [_sctExt(_sctListRaw([_buildSctBytes(
@@ -3066,18 +3077,34 @@ function testCtVerifySctAlgoGateReadsSigAlgoField() {
 
   // Missing the issuing CA fails closed (embedded SCTs cannot verify without
   // it) rather than silently accepting or throwing.
-  var logKeysEc = {}; logKeysEc[Buffer.alloc(32, 0xbc).toString("hex")] = ecPem;
+  var ecLogId = logIdFor(ecPem);
+  var logKeysEc = {}; logKeysEc[ecLogId.toString("hex")] = ecPem;
   var rvNoIssuer = nt.ct.verifyScts(ecCert, { logKeys: logKeysEc, minScts: 1 });
   check("verifyScts: without the issuing CA it fails closed (issuer-key-required)",
         rvNoIssuer.ok === false && rvNoIssuer.reason === "issuer-key-required");
 
   // A WRONG issuer key hash changes the signed input, so the same signature
-  // no longer verifies — proves issuer_key_hash is actually bound.
+  // no longer verifies — proves issuer_key_hash is actually bound. (The log
+  // key still matches the SCT log_id, so this fails at the signature, not the
+  // log-id binding.)
   var rvWrongIssuer = nt.ct.verifyScts(ecCert,
     { logKeys: logKeysEc, minScts: 1, issuerKeyHash: Buffer.alloc(32, 0xff) });
   check("verifyScts: a wrong issuer_key_hash makes the genuine SCT fail (binds the issuer)",
         rvWrongIssuer.ok === false && !!rvWrongIssuer.scts[0] &&
-        rvWrongIssuer.scts[0].verified === false);
+        rvWrongIssuer.scts[0].verified === false &&
+        rvWrongIssuer.scts[0].reason === undefined);
+
+  // A log key that does NOT hash to the SCT's log_id is rejected before its
+  // signature is checked — the log_id is a commitment to the log's key, so a
+  // misconfigured map cannot let another key impersonate an approved log.
+  var otherEcPem = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .publicKey.export({ type: "spki", format: "pem" });
+  var lkMismatch = {}; lkMismatch[ecLogId.toString("hex")] = otherEcPem;
+  var rvBind = nt.ct.verifyScts(ecCert,
+    { logKeys: lkMismatch, minScts: 1, issuerKeyHash: issuerKh });
+  check("verifyScts: a key not hashing to the SCT log_id is refused (log-id-key-mismatch)",
+        rvBind.ok === false && !!rvBind.scts[0] &&
+        rvBind.scts[0].reason === "log-id-key-mismatch");
 
   // The issuerCertDer convenience path (SPKI extracted from a real issuer
   // cert) must resolve to the same hash and verify.
@@ -3091,12 +3118,90 @@ function testCtVerifySctAlgoGateReadsSigAlgoField() {
 
   // requireScts derives the issuer from the peer chain (peerCert.issuer-
   // Certificate.raw) when the operator does not pass one.
-  var logKeysReq = {}; logKeysReq[Buffer.alloc(32, 0xbc).toString("hex")] = ecPem;
+  var logKeysReq = {}; logKeysReq[ecLogId.toString("hex")] = ecPem;
   var reqCert = verifyGenuine(3, ecKp, ecPem, realIssuerKh, { issuerCertDer: realIssuerDer }, "ecdsa+req");
   var gate = nt.ct.requireScts({ logKeys: logKeysReq, minScts: 1 });
   var gateErr = gate({ raw: reqCert, issuerCertificate: { raw: realIssuerDer } });
   check("requireScts: derives the issuer from the peer chain and admits a genuine SCT",
         gateErr === null);
+}
+
+// verifyScts hardening: distinct-log counting (Chrome CT diversity), a
+// fail-closed extension walk over a hostile cert, minScts input validation,
+// and RFC 6962 §5.2 future-timestamp refusal.
+function testCtVerifyHardening() {
+  var ecKp   = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecPem  = ecKp.publicKey.export({ type: "spki", format: "pem" });
+  var logId  = nodeCrypto.createHash("sha256")
+    .update(ecKp.publicKey.export({ type: "spki", format: "der" })).digest();
+  var issuerKh = nodeCrypto.createHash("sha256").update(
+    nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+      .publicKey.export({ type: "spki", format: "der" })).digest();
+  var ts = 1700000000000;
+  var logKeys = {}; logKeys[logId.toString("hex")] = ecPem;
+  var opts = { logKeys: logKeys, issuerKeyHash: issuerKh };
+
+  // Sign a genuine precert_entry SCT over a fixed stripped TBS (the strip is
+  // independent of the SCT list, so a placeholder cert yields the same TBS).
+  var placeholder = _synthCert({ cn: "Dup", exts: [_sctExt(_sctListRaw(
+    [_buildSctBytes({ logId: logId, timestamp: ts, sig: Buffer.alloc(64, 0x01) })]))] });
+  var strippedTbs = nt._stripSctExtensionFromCert(placeholder);
+  var head = Buffer.alloc(12); head.writeBigUInt64BE(BigInt(ts), 2); head.writeUInt16BE(1, 10);
+  var tbsLen = Buffer.alloc(3); tbsLen.writeUIntBE(strippedTbs.length, 0, 3);
+  var signedEntry = Buffer.concat([head, issuerKh, tbsLen, strippedTbs, Buffer.from([0, 0])]);
+  var genuineSct = _buildSctBytes({ logId: logId, sigAlgo: 3, hashAlgo: 4, timestamp: ts,
+    sig: nodeCrypto.sign("sha256", signedEntry, ecKp.privateKey) });
+
+  // #1 — the SAME genuine SCT embedded twice is one distinct log, so it cannot
+  // satisfy a minScts:2 (diversity) policy, but does satisfy minScts:1.
+  var dupCert = _synthCert({ cn: "Dup", exts: [_sctExt(_sctListRaw([genuineSct, genuineSct]))] });
+  var rvDup2 = nt.ct.verifyScts(dupCert, Object.assign({ minScts: 2 }, opts));
+  check("verifyScts: duplicate SCTs from one log do not satisfy minScts:2 (log diversity)",
+        rvDup2.ok === false && rvDup2.verifiedCount === 1 && rvDup2.totalScts === 2);
+  var rvDup1 = nt.ct.verifyScts(dupCert, Object.assign({ minScts: 1 }, opts));
+  check("verifyScts: those same SCTs verify as one distinct log at minScts:1",
+        rvDup1.ok === true && rvDup1.verifiedCount === 1);
+
+  // #2 — a hostile cert whose extension is not (OID, ..., OCTET STRING) must
+  // NOT throw out of verifyScts; it fails closed to no-sct-extension.
+  var badExtCert = _synthCert({ cn: "BadExt", exts: [asn1.writeSequence(
+    [asn1.writeInteger(Buffer.from([1])), asn1.writeOctetString(Buffer.from([2]))])] });
+  var threwExt = false, rvBadExt;
+  try { rvBadExt = nt.ct.verifyScts(badExtCert, opts); } catch (_e) { threwExt = true; }
+  check("verifyScts: a malformed extension does not throw (fails closed)",
+        threwExt === false && rvBadExt.reason === "no-sct-extension");
+  // An SCT-OID extension whose value is not a nested OCTET STRING also fails closed.
+  var badSctCert = _synthCert({ cn: "BadSct", exts: [asn1.writeSequence(
+    [asn1.writeOid(OID_CT_SCT_LIST), asn1.writeOctetString(asn1.writeInteger(Buffer.from([9])))])] });
+  check("verifyScts: an SCT ext not wrapping a nested OCTET STRING fails closed",
+        nt.ct.verifyScts(badSctCert, opts).reason === "no-sct-extension");
+
+  // #3 — minScts must be a positive integer; a 0/negative policy would accept
+  // unverified certs, so it throws at the entry point.
+  var threwZero = false;
+  try { nt.ct.verifyScts(dupCert, Object.assign({ minScts: 0 }, opts)); }
+  catch (e) { threwZero = e && e.code === "tls/ct-bad-input"; }
+  check("verifyScts: minScts:0 throws tls/ct-bad-input (no fail-open policy)", threwZero === true);
+  var threwNeg = false;
+  try { nt.ct.verifyScts(dupCert, Object.assign({ minScts: -1 }, opts)); } catch (_e) { threwNeg = true; }
+  check("verifyScts: a negative minScts throws", threwNeg === true);
+
+  // #4 — an SCT timestamped in the future (relative to opts.now) is refused
+  // (RFC 6962 §5.2); a past-dated one is not refused on timestamp grounds.
+  var futSct = _buildSctBytes({ logId: logId, timestamp: 2000000000000 });   // ~2033
+  var futCert = _synthCert({ cn: "Fut", exts: [_sctExt(_sctListRaw([futSct]))] });
+  var rvFut = nt.ct.verifyScts(futCert, Object.assign({ now: 1700000000000 }, opts));
+  check("verifyScts: a future-dated SCT is refused (timestamp-in-future)",
+        rvFut.ok === false && !!rvFut.scts[0] && rvFut.scts[0].reason === "timestamp-in-future");
+  var rvPast = nt.ct.verifyScts(dupCert, Object.assign({ now: 1700000000001, minScts: 1 }, opts));
+  check("verifyScts: a past-dated SCT is not refused on timestamp grounds (reaches verification)",
+        !!rvPast.scts[0] && rvPast.scts[0].reason !== "timestamp-in-future");
+  // A non-finite clockSkewMs must not fail open — it falls back to the default
+  // skew, so the future SCT is still refused.
+  var rvNanSkew = nt.ct.verifyScts(futCert,
+    Object.assign({ now: 1700000000000, clockSkewMs: NaN }, opts));
+  check("verifyScts: a NaN clockSkewMs does not fail open (future SCT still refused)",
+        rvNanSkew.ok === false && rvNanSkew.scts[0].reason === "timestamp-in-future");
 }
 
 async function run() {
@@ -3180,6 +3285,7 @@ async function run() {
     testCtInspectAndParse();
     testCtVerifyScts();
     testCtVerifySctAlgoGateReadsSigAlgoField();
+    testCtVerifyHardening();
     testCtVerifyMoreScts();
     testCtParseSctErrors();
     testSctAndTlsFeatureTolerance();
