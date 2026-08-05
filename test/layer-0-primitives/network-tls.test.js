@@ -2834,11 +2834,19 @@ function testCtVerifyStripAndHashAlgos() {
   // wrong if either is mishandled, and counting SCTs cannot see that.
   var strippedMix = nt._stripSctExtensionFromCert(mixed);
   var sctOidDer = Buffer.from([0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x04, 0x02]);
+  var poisonOidDer = Buffer.from([0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x04, 0x03]);
   var tlsFeatOidDer = asn1.writeOid(OID_TLS_FEATURE);
   check("strip keeps the non-SCT (must-staple) extension OID in the TBS",
         strippedMix.indexOf(tlsFeatOidDer) !== -1);
   check("strip drops the SCT-list extension OID from the TBS",
         strippedMix.indexOf(sctOidDer) === -1);
+  // RFC 6962 §3.2: the signed tbs_certificate is reconstructed from the final
+  // cert "by extracting the TBSCertificate ... and deleting the SCT extension"
+  // — it is "without ... the poison extension". The reconstruction must NOT
+  // re-insert the precert poison OID (1.3.6.1.4.1.11129.2.4.3); doing so would
+  // differ from what the log signed and break every real embedded SCT.
+  check("strip does not re-insert the precert poison OID (RFC 6962 §3.2 delete-only)",
+        strippedMix.indexOf(poisonOidDer) === -1);
 
   // SCTs declaring sha384 / sha512 exercise the hash-algo → node-hash arms.
   var sct384 = _synthCert({ cn: "Sct384",
