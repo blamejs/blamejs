@@ -2923,10 +2923,10 @@ function testCtStripNoExtAndLongLength() {
 // "log-key-algo-mismatch" and nodeCrypto.verify was never reached, so CT SCT
 // signature verification could never succeed (fail-closed but non-functional).
 function testCtVerifySctAlgoGateReadsSigAlgoField() {
-  var ecPem  = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
-                 .publicKey.export({ type: "spki", format: "pem" });
-  var rsaPem = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
-                 .publicKey.export({ type: "spki", format: "pem" });
+  var ecKp  = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var rsaKp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var ecPem  = ecKp.publicKey.export({ type: "spki", format: "pem" });
+  var rsaPem = rsaKp.publicKey.export({ type: "spki", format: "pem" });
   function reasonFor(sigAlgo, pem) {
     var logId = Buffer.alloc(32, 0xbc);
     var sct   = _buildSctBytes({ logId: logId, sigAlgo: sigAlgo, hashAlgo: 4 });
@@ -2945,6 +2945,38 @@ function testCtVerifySctAlgoGateReadsSigAlgoField() {
   // at the gate — proves the fix reads the field, not that it disabled the gate.
   check("verifyScts: an ecdsa SCT against an RSA log key is still refused (log-key-algo-mismatch)",
         reasonFor(3, rsaPem) === "log-key-algo-mismatch");
+
+  // Passing the algo gate is necessary but not sufficient: the signature must
+  // actually verify. Sign the exact RFC 6962 §3.2 signed-entry the verifier
+  // reconstructs, with the log's own key, and assert the SCT verifies and
+  // rv.ok flips true — this is what the wrong-field bug prevented entirely
+  // (verifyScts / requireScts could never accept a valid SCT). The stripped
+  // signed-entry is independent of the SCT signature bytes, so a placeholder-
+  // signed cert yields the same entry the verifier builds from the final cert.
+  function verifyGenuine(sigAlgo, kp, pem, label) {
+    var logId = Buffer.alloc(32, 0xbc);
+    var ts    = 1700000000000;
+    var placeholder = _synthCert({ cn: "SCT Genuine",
+      exts: [_sctExt(_sctListRaw([_buildSctBytes(
+        { logId: logId, sigAlgo: sigAlgo, hashAlgo: 4, timestamp: ts,
+          sig: Buffer.alloc(64, 0x01) })]))] });
+    var stripped = nt._stripSctExtensionFromCert(placeholder);
+    var signedEntry = nt._buildSctSignedEntry(stripped,
+      { version: 0, timestamp: ts, extensions: Buffer.alloc(0) });
+    var realSig = nodeCrypto.sign("sha256", signedEntry, kp.privateKey);
+    var finalSct = _buildSctBytes(
+      { logId: logId, sigAlgo: sigAlgo, hashAlgo: 4, timestamp: ts, sig: realSig });
+    var cert = _synthCert({ cn: "SCT Genuine",
+      exts: [_sctExt(_sctListRaw([finalSct]))] });
+    var logKeys = {}; logKeys[logId.toString("hex")] = pem;
+    var rv = nt.ct.verifyScts(cert, { logKeys: logKeys, minScts: 1 });
+    check("verifyScts: a genuinely signed " + label + " SCT verifies (scts[0].verified true)",
+          !!(rv.scts[0] && rv.scts[0].verified === true));
+    check("verifyScts: a genuinely signed " + label + " SCT flips rv.ok true (>= minScts verified)",
+          rv.ok === true && rv.verifiedCount >= 1);
+  }
+  verifyGenuine(3, ecKp, ecPem, "ecdsa");
+  verifyGenuine(1, rsaKp, rsaPem, "rsa");
 }
 
 async function run() {
